@@ -1,0 +1,159 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>dev.frostlake</groupId>
+        <artifactId>frostlake-parent</artifactId>
+        <version>${revision}</version>
+        <relativePath>../pom.xml</relativePath>
+    </parent>
+
+    <artifactId>frostlake-perf-tests</artifactId>
+    <packaging>jar</packaging>
+
+    <name>Frostlake Perf Tests</name>
+    <description>Performance and embedded-DB comparison harness for Frostlake. Not published; the @Tag("perf") tests are excluded by default and run via -Pperf / -Pperf-mem.</description>
+
+    <properties>
+        <!-- Internal harness — never deployed. -->
+        <maven.deploy.skip>true</maven.deploy.skip>
+    </properties>
+
+    <dependencies>
+        <!-- The engine under test. -->
+        <dependency>
+            <groupId>dev.frostlake</groupId>
+            <artifactId>frostlake-db</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <!-- Engine test-jar: reuse BaseDatabaseTest and other shared test infrastructure. -->
+        <dependency>
+            <groupId>dev.frostlake</groupId>
+            <artifactId>frostlake-db</artifactId>
+            <version>${project.version}</version>
+            <type>test-jar</type>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <version>6.0.3</version>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- Embedded in-memory databases (Derby, H2, SQLite, HSQLDB, DuckDB) compared against
+             the engine in the perf harness. -->
+        <dependency>
+            <groupId>org.apache.derby</groupId>
+            <artifactId>derby</artifactId>
+            <version>10.17.1.0</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>com.h2database</groupId>
+            <artifactId>h2</artifactId>
+            <version>2.2.224</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.xerial</groupId>
+            <artifactId>sqlite-jdbc</artifactId>
+            <version>3.53.2.0</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.hsqldb</groupId>
+            <artifactId>hsqldb</artifactId>
+            <version>2.7.4</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.duckdb</groupId>
+            <artifactId>duckdb_jdbc</artifactId>
+            <version>1.5.3.0</version>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <version>3.5.5</version>
+                <configuration>
+                    <argLine>-Dpolyglot.engine.WarnInterpreterOnly=false</argLine>
+                    <excludedGroups>${perf.excludedGroups}</excludedGroups>
+                </configuration>
+            </plugin>
+            <!-- License-header audit for the perf tests (Apache RAT). -->
+            <plugin>
+                <groupId>org.apache.rat</groupId>
+                <artifactId>apache-rat-plugin</artifactId>
+                <version>0.16.1</version>
+                <configuration>
+                    <consoleOutput>true</consoleOutput>
+                    <includes>
+                        <include>src/test/java/dev/frostlake/**/*.java</include>
+                    </includes>
+                </configuration>
+                <executions>
+                    <execution>
+                        <id>check-license-headers</id>
+                        <phase>verify</phase>
+                        <goals>
+                            <goal>check</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+
+    <profiles>
+        <!-- Run ONLY the @Tag("perf") harnesses (default heap):
+               mvn verify -Pperf                                   (whole reactor)
+               mvn -pl perf-tests verify -Pperf -Dtest=EmbeddedDbComparisonTest   (just one) -->
+        <profile>
+            <id>perf</id>
+            <properties>
+                <perf.excludedGroups></perf.excludedGroups>
+            </properties>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-surefire-plugin</artifactId>
+                        <configuration>
+                            <groups>perf</groups>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+        <!-- Same as -Pperf, but the forked test JVM gets a fixed 12 GB max heap:
+               mvn verify -Pperf-mem -->
+        <profile>
+            <id>perf-mem</id>
+            <properties>
+                <perf.excludedGroups></perf.excludedGroups>
+            </properties>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-surefire-plugin</artifactId>
+                        <configuration>
+                            <argLine>-Xmx12g -Dpolyglot.engine.WarnInterpreterOnly=false</argLine>
+                            <groups>perf</groups>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
+</project>

@@ -1,0 +1,475 @@
+/*
+ * Copyright 2026 MLorek
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package dev.frostlake.executor.commands;
+
+import dev.frostlake.executor.QueryExecutor;
+import dev.frostlake.metastore.*;
+import dev.frostlake.metastore.model.*;
+import dev.frostlake.parser.FrostlakeParser;
+import dev.frostlake.storage.ResultSet;
+import dev.frostlake.storage.Row;
+import dev.frostlake.storage.StorageEngine;
+import dev.frostlake.stream.StreamManager;
+import dev.frostlake.types.*;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.util.ArrayList;
+import java.util.List;
+
+/**
+ * Handles DROP statements (DROP TABLE/VIEW/DATABASE/SCHEMA/STREAM/TASK/SEQUENCE/...), extracted from
+ * {@link DDLCommandHandler}, which keeps the public dispatch and delegates here. Shared schema-resolution
+ * helpers remain on DDLCommandHandler and are reached via the {@code ddl} back-reference.
+ */
+public class DropCommandHandler implements CommandHandler {
+
+    private static final Logger logger = LoggerFactory.getLogger(DropCommandHandler.class);
+
+    private final DDLCommandHandler ddl;
+    private final Catalog catalog;
+    private final QueryExecutor queryExecutor;
+    private final ColumnDefinitionParser columnParser;
+    private StreamManager streamManager;
+
+    DropCommandHandler(final DDLCommandHandler ddl, final Catalog catalog, final QueryExecutor queryExecutor,
+                       final ColumnDefinitionParser columnParser) {
+        this.ddl = ddl;
+        this.catalog = catalog;
+        this.queryExecutor = queryExecutor;
+        this.columnParser = columnParser;
+    }
+
+    void setStreamManager(final StreamManager streamManager) {
+        this.streamManager = streamManager;
+    }
+
+    @Override
+    public Catalog getCatalog() {
+        return catalog;
+    }
+
+    @Override
+    public QueryExecutor getQueryExecutor() {
+        return queryExecutor;
+    }
+
+    /** Only an owner / administrative role / DROP-granted role may drop the object. */
+    private void checkDrop(final SecurableObjectType objectType, final String objectName) {
+        if (queryExecutor.getSecurityManager() != null) {
+            queryExecutor.getSecurityManager().checkPermission(Privilege.DROP, objectType, objectName);
+        }
+    }
+
+    public Object handleDropStatement(final FrostlakeParser.DropStatementContext ctx) {
+        boolean ifExists = ctx.if_exists() != null;
+
+        try {
+            if (ctx.DATABASE() != null) {
+                String dbName = getText(ctx.identifier());
+                try {
+                    checkDrop(SecurableObjectType.DATABASE, dbName);
+                    final Database droppedDb = catalog.getDatabase(dbName);
+                    if (droppedDb != null) {
+                        catalog.recordDropped("DATABASE:" + dbName, new DroppedObject(droppedDb, null));
+                    }
+                    catalog.dropDatabase(dbName, false);
+                    if (streamManager != null) {
+                        streamManager.onDatabaseDropped(dbName);
+                    }
+                    logger.trace("Dropped database: {}", dbName);
+                } catch (final RuntimeException e) {
+                    if (!ifExists) throw e;
+                    logger.debug("Database does not exist (IF EXISTS): {}", dbName);
+                }
+            } else if (ctx.SCHEMA() != null) {
+                String schemaName = getText(ctx.qualifiedName());
+                String[] parts = qualifiedNameParts(ctx.qualifiedName());
+
+                try {
+                    checkDrop(SecurableObjectType.SCHEMA, schemaName);
+                    // Snapshot schema metadata for UNDROP (its tables' storage survives a DROP SCHEMA).
+                    final String snapDbName = parts.length == 1 ? catalog.getCurrentDatabase() : parts[0];
+                    final String snapSchemaName = parts.length == 1 ? parts[0] : parts[1];
+                    final Database snapDb = catalog.getDatabase(snapDbName);
+                    final Schema snapSchema = snapDb != null ? snapDb.getSchema(snapSchemaName) : null;
+                    if (snapSchema != null) {
+                        catalog.recordDropped("SCHEMA:" + snapDbName.toUpperCase() + "." + snapSchemaName.toUpperCase(),
+                            new DroppedObject(snapSchema, null));
+                    }
+                    if (parts.length == 1) {
+                        catalog.getDatabase(catalog.getCurrentDatabase()).dropSchema(parts[0], false);
+                        if (streamManager != null) {
+                            streamManager.onSchemaDropped(catalog.getCurrentDatabase(), parts[0]);
+                        }
+                    } else {
+                        catalog.getDatabase(parts[0]).dropSchema(parts[1], false);
+                        if (streamManager != null) {
+                            streamManager.onSchemaDropped(parts[0], parts[1]);
+                        }
+                    }
+                    logger.trace("Dropped schema: {}", schemaName);
+                } catch (final RuntimeException e) {
+                    if (!ifExists) throw e;
+                    logger.debug("Schema does not exist (IF EXISTS): {}", schemaName);
+                }
+            } else if (ctx.DYNAMIC() != null && ctx.TABLE() != null) {
+                String qn = getText(ctx.qualifiedName()); String[] parts = qualifiedNameParts(ctx.qualifiedName());
+                try {
+                    Schema schema = parts.length == 1 ? ddl.resolveCurrentSchema()
+                        : parts.length == 2 ? catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0])
+                        : catalog.getDatabase(parts[0]).getSchema(parts[1]);
+                    checkDrop(SecurableObjectType.DYNAMIC_TABLE, qn);
+                    schema.dropDynamicTable(parts[parts.length - 1].toUpperCase());
+                    logger.trace("Dropped dynamic table: {}", qn);
+                } catch (final RuntimeException e) {
+                    if (!ifExists) throw e;
+                    logger.debug("Dynamic table does not exist (IF EXISTS): {}", qn);
+                }
+            } else if (ctx.TABLE() != null) {
+                String qualifiedName = queryExecutor.resolveObjectName(ctx.objectName());
+
+                try {
+                    Table table = catalog.resolveTable(qualifiedName);
+                    checkDrop(SecurableObjectType.TABLE, qualifiedName);
+                    String[] parts = qualifiedName.split("\\.");
+                    Schema schema;
+                    String databaseName;
+                    String tableName;
+
+                    if (parts.length == 1) {
+                        schema = ddl.resolveCurrentSchema();
+                        databaseName = catalog.getCurrentDatabase();
+                        tableName = parts[0];
+                    } else if (parts.length == 2) {
+                        if (catalog.getCurrentDatabase() == null) {
+                            throw new RuntimeException("No database selected");
+                        }
+                        databaseName = catalog.getCurrentDatabase();
+                        schema = catalog.getDatabase(databaseName).getSchema(parts[0]);
+                        tableName = parts[1];
+                    } else if (parts.length == 3) {
+                        databaseName = parts[0];
+                        schema = catalog.getDatabase(databaseName).getSchema(parts[1]);
+                        tableName = parts[2];
+                    } else {
+                        throw new RuntimeException("Invalid table name: " + qualifiedName);
+                    }
+
+                    String fullyQualifiedName = databaseName.toUpperCase() + "." + schema.getName().toUpperCase() + "." + tableName.toUpperCase();
+                    // Snapshot table metadata + rows for UNDROP before removing the storage.
+                    final List<Row> snapshotRows =
+                        new ArrayList<>(queryExecutor.getStorageEngine().getTableStorage(fullyQualifiedName).scan());
+                    catalog.recordDropped("TABLE:" + fullyQualifiedName, new DroppedObject(table, snapshotRows));
+
+                    schema.dropTable(table.getName());
+                    queryExecutor.getStorageEngine().dropTable(fullyQualifiedName);
+                    if (streamManager != null) {
+                        streamManager.onTableDropped(fullyQualifiedName);
+                    }
+
+                    logger.trace("Dropped table: {}", qualifiedName);
+                } catch (final RuntimeException e) {
+                    if (!ifExists) throw e;
+                    logger.debug("Table does not exist (IF EXISTS): {}", qualifiedName);
+                }
+            } else if (ctx.VIEW() != null && ctx.MATERIALIZED() == null) {
+                String qualifiedName = getText(ctx.qualifiedName());
+                String[] parts = qualifiedNameParts(ctx.qualifiedName());
+
+                try {
+                    Schema schema;
+                    String viewName;
+
+                    if (parts.length == 1) {
+                        schema = ddl.resolveCurrentSchema();
+                        viewName = parts[0];
+                    } else if (parts.length == 2) {
+                        if (catalog.getCurrentDatabase() == null) {
+                            throw new RuntimeException("No database selected");
+                        }
+                        schema = catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0]);
+                        viewName = parts[1];
+                    } else if (parts.length == 3) {
+                        schema = catalog.getDatabase(parts[0]).getSchema(parts[1]);
+                        viewName = parts[2];
+                    } else {
+                        throw new RuntimeException("Invalid view name: " + qualifiedName);
+                    }
+
+                    checkDrop(SecurableObjectType.VIEW, qualifiedName);
+                    schema.dropView(viewName);
+                    logger.trace("Dropped view: {}", qualifiedName);
+                } catch (final RuntimeException e) {
+                    if (!ifExists) throw e;
+                    logger.debug("View does not exist (IF EXISTS): {}", qualifiedName);
+                }
+            } else if (ctx.VIEW() != null && ctx.MATERIALIZED() != null) {
+                String qualifiedName = getText(ctx.qualifiedName());
+                String[] parts = qualifiedNameParts(ctx.qualifiedName());
+
+                try {
+                    Schema schema;
+                    String mvName;
+
+                    if (parts.length == 1) {
+                        schema = ddl.resolveCurrentSchema();
+                        mvName = parts[0];
+                    } else if (parts.length == 2) {
+                        if (catalog.getCurrentDatabase() == null) {
+                            throw new RuntimeException("No database selected");
+                        }
+                        schema = catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0]);
+                        mvName = parts[1];
+                    } else if (parts.length == 3) {
+                        schema = catalog.getDatabase(parts[0]).getSchema(parts[1]);
+                        mvName = parts[2];
+                    } else {
+                        throw new RuntimeException("Invalid materialized view name: " + qualifiedName);
+                    }
+
+                    checkDrop(SecurableObjectType.MATERIALIZED_VIEW, qualifiedName);
+                    schema.dropMaterializedView(mvName);
+                    logger.trace("Dropped materialized view: {}", qualifiedName);
+                } catch (final RuntimeException e) {
+                    if (!ifExists) throw e;
+                    logger.debug("Materialized view does not exist (IF EXISTS): {}", qualifiedName);
+                }
+            } else if (ctx.STREAM() != null) {
+                String streamQn = getText(ctx.qualifiedName());
+                String streamName = ddl.extractObjectName(streamQn);
+
+                try {
+                    Schema schema = ddl.resolveSchemaFromQualifiedName(streamQn);
+                    checkDrop(SecurableObjectType.STREAM, streamQn);
+                    schema.dropStream(streamName);
+                    logger.trace("Dropped stream: {}", streamName);
+                } catch (final RuntimeException e) {
+                    if (!ifExists) throw e;
+                    logger.debug("Stream does not exist (IF EXISTS): {}", streamName);
+                }
+            } else if (ctx.TASK() != null) {
+                String taskQn = getText(ctx.qualifiedName());
+                String taskName = ddl.extractObjectName(taskQn);
+
+                try {
+                    Schema schema = ddl.resolveSchemaFromQualifiedName(taskQn);
+                    checkDrop(SecurableObjectType.TASK, taskQn);
+                    schema.dropTask(taskName);
+                    logger.trace("Dropped task: {}", taskName);
+                } catch (final RuntimeException e) {
+                    if (!ifExists) throw e;
+                    logger.debug("Task does not exist (IF EXISTS): {}", taskName);
+                }
+            } else if (ctx.PIPE() != null) {
+                String pipeName = getText(ctx.qualifiedName());
+
+                try {
+                    Schema schema = ddl.resolveCurrentSchema();
+                    checkDrop(SecurableObjectType.PIPE, pipeName);
+                    schema.dropPipe(pipeName);
+                    logger.trace("Dropped pipe: {}", pipeName);
+                } catch (final RuntimeException e) {
+                    if (!ifExists) throw e;
+                    logger.debug("Pipe does not exist (IF EXISTS): {}", pipeName);
+                }
+            } else if (ctx.SEQUENCE() != null) {
+                String seqQn = getText(ctx.qualifiedName());
+                String sequenceName = ddl.extractObjectName(seqQn);
+
+                try {
+                    Schema schema = ddl.resolveSchemaFromQualifiedName(seqQn);
+                    schema.dropSequence(sequenceName);
+                    logger.trace("Dropped sequence: {}", sequenceName);
+                } catch (final RuntimeException e) {
+                    if (!ifExists) throw e;
+                    logger.debug("Sequence does not exist (IF EXISTS): {}", sequenceName);
+                }
+            } else if (ctx.WAREHOUSE() != null) {
+                String warehouseName = getText(ctx.identifier());
+
+                try {
+                    catalog.dropWarehouse(warehouseName);
+                    logger.trace("Dropped warehouse: {}", warehouseName);
+                } catch (final RuntimeException e) {
+                    if (!ifExists) throw e;
+                    logger.debug("Warehouse does not exist (IF EXISTS): {}", warehouseName);
+                }
+            } else if (ctx.STAGE() != null) {
+                String stageName = getText(ctx.qualifiedName());
+
+                try {
+                    checkDrop(SecurableObjectType.STAGE, stageName);
+                    catalog.dropStage(stageName);
+                    logger.trace("Dropped stage: {}", stageName);
+                } catch (final RuntimeException e) {
+                    if (!ifExists) throw e;
+                    logger.debug("Stage does not exist (IF EXISTS): {}", stageName);
+                }
+            } else if (ctx.FILE() != null && ctx.FORMAT() != null) {
+                String fileFormatName = getText(ctx.qualifiedName());
+
+                try {
+                    catalog.dropFileFormat(fileFormatName);
+                    logger.trace("Dropped file format: {}", fileFormatName);
+                } catch (final RuntimeException e) {
+                    if (!ifExists) throw e;
+                    logger.debug("File format does not exist (IF EXISTS): {}", fileFormatName);
+                }
+            } else if (ctx.FUNCTION() != null) {
+                String qualifiedName = getText(ctx.qualifiedName());
+                String[] parts = qualifiedNameParts(ctx.qualifiedName());
+
+                try {
+                    Schema schema;
+                    String functionName;
+
+                    if (parts.length == 1) {
+                        schema = ddl.resolveCurrentSchema();
+                        functionName = parts[0].toUpperCase();
+                    } else if (parts.length == 2) {
+                        if (catalog.getCurrentDatabase() == null) {
+                            throw new RuntimeException("No database selected");
+                        }
+                        schema = catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0]);
+                        functionName = parts[1].toUpperCase();
+                    } else if (parts.length == 3) {
+                        schema = catalog.getDatabase(parts[0]).getSchema(parts[1]);
+                        functionName = parts[2].toUpperCase();
+                    } else {
+                        throw new RuntimeException("Invalid function name: " + qualifiedName);
+                    }
+
+                    // Check if parameter types were provided
+                    if (ctx.dataTypeList() != null) {
+                        List<DataType> argumentTypes = new ArrayList<>();
+                        for (final FrostlakeParser.DataTypeNameContext dtCtx : ctx.dataTypeList().dataTypeName()) {
+                            argumentTypes.add(columnParser.parseDataType(dtCtx));
+                        }
+                        // Drop specific overload by signature
+                        schema.dropFunctionBySignature(functionName, argumentTypes);
+                    } else {
+                        // Drop all overloads
+                        schema.dropFunction(functionName);
+                    }
+                    logger.trace("Dropped function: {}", qualifiedName);
+                } catch (final RuntimeException e) {
+                    if (!ifExists) throw e;
+                    logger.debug("Function does not exist (IF EXISTS): {}", qualifiedName);
+                }
+            } else if (ctx.PROCEDURE() != null) {
+                String qualifiedName = getText(ctx.qualifiedName());
+                String[] parts = qualifiedNameParts(ctx.qualifiedName());
+
+                try {
+                    Schema schema;
+                    String procedureName;
+
+                    if (parts.length == 1) {
+                        schema = ddl.resolveCurrentSchema();
+                        procedureName = parts[0].toUpperCase();
+                    } else if (parts.length == 2) {
+                        if (catalog.getCurrentDatabase() == null) {
+                            throw new RuntimeException("No database selected");
+                        }
+                        schema = catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0]);
+                        procedureName = parts[1].toUpperCase();
+                    } else if (parts.length == 3) {
+                        schema = catalog.getDatabase(parts[0]).getSchema(parts[1]);
+                        procedureName = parts[2].toUpperCase();
+                    } else {
+                        throw new RuntimeException("Invalid procedure name: " + qualifiedName);
+                    }
+
+                    // Check if parameter types were provided
+                    if (ctx.dataTypeList() != null) {
+                        List<DataType> argumentTypes = new ArrayList<>();
+                        for (final FrostlakeParser.DataTypeNameContext dtCtx : ctx.dataTypeList().dataTypeName()) {
+                            argumentTypes.add(columnParser.parseDataType(dtCtx));
+                        }
+                        // Drop specific overload by signature
+                        schema.dropProcedureBySignature(procedureName, argumentTypes);
+                    } else {
+                        // Drop all overloads
+                        schema.dropProcedure(procedureName);
+                    }
+                    logger.trace("Dropped procedure: {}", qualifiedName);
+                } catch (final RuntimeException e) {
+                    if (!ifExists) throw e;
+                    logger.debug("Procedure does not exist (IF EXISTS): {}", qualifiedName);
+                }
+            } else if (ctx.USER() != null) {
+                String userName = getText(ctx.identifier());
+
+                try {
+                    catalog.dropUser(userName);
+                    logger.trace("Dropped user: {}", userName);
+                } catch (final RuntimeException e) {
+                    if (!ifExists) throw e;
+                    logger.debug("User does not exist (IF EXISTS): {}", userName);
+                }
+            } else if (ctx.ROLE() != null) {
+                String roleName = getText(ctx.identifier());
+
+                try {
+                    catalog.dropRole(roleName);
+                    logger.trace("Dropped role: {}", roleName);
+                } catch (final RuntimeException e) {
+                    if (!ifExists) throw e;
+                    logger.debug("Role does not exist (IF EXISTS): {}", roleName);
+                }
+            } else if (ctx.TAG() != null) {
+                String tagName = getText(ctx.qualifiedName());
+                try {
+                    checkDrop(SecurableObjectType.TAG, tagName);
+                    catalog.dropTag(tagName);
+                    logger.trace("Dropped tag: {}", tagName);
+                } catch (final RuntimeException e) {
+                    if (!ifExists) throw e;
+                    logger.debug("Tag does not exist (IF EXISTS): {}", tagName);
+                }
+            } else if (ctx.MASKING() != null && ctx.POLICY() != null && ctx.ROW() == null) {
+                String[] parts = qualifiedNameParts(ctx.qualifiedName());
+                try {
+                    Schema schema = parts.length == 1 ? ddl.resolveCurrentSchema()
+                        : parts.length == 2 ? catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0])
+                        : catalog.getDatabase(parts[0]).getSchema(parts[1]);
+                    checkDrop(SecurableObjectType.MASKING_POLICY, getText(ctx.qualifiedName()));
+                    schema.dropMaskingPolicy(parts[parts.length - 1].toUpperCase());
+                    logger.trace("Dropped masking policy: {}", getText(ctx.qualifiedName()));
+                } catch (final RuntimeException e) { if (!ifExists) throw e; }
+            } else if (ctx.ROW() != null && ctx.ACCESS() != null && ctx.POLICY() != null) {
+                String[] parts = qualifiedNameParts(ctx.qualifiedName());
+                try {
+                    Schema schema = parts.length == 1 ? ddl.resolveCurrentSchema()
+                        : parts.length == 2 ? catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0])
+                        : catalog.getDatabase(parts[0]).getSchema(parts[1]);
+                    checkDrop(SecurableObjectType.ROW_ACCESS_POLICY, getText(ctx.qualifiedName()));
+                    schema.dropRowAccessPolicy(parts[parts.length - 1].toUpperCase());
+                    logger.trace("Dropped row access policy: {}", getText(ctx.qualifiedName()));
+                } catch (final RuntimeException e) { if (!ifExists) throw e; }
+            }
+
+            return null;
+        } catch (final Exception e) {
+            if (e instanceof SecurityException) throw (SecurityException) e;
+            throw new RuntimeException("Failed to execute DROP statement: " + e.getMessage(), e);
+        }
+    }
+
+}

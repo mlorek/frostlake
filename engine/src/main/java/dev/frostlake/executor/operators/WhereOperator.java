@@ -1,0 +1,217 @@
+/*
+ * Copyright 2026 MLorek
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package dev.frostlake.executor.operators;
+
+import dev.frostlake.executor.ExpressionEvaluator;
+import dev.frostlake.executor.expressions.Expression;
+import dev.frostlake.metastore.Catalog;
+import dev.frostlake.storage.Row;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.util.ArrayList;
+import java.util.List;
+
+/**
+ * WHERE clause operator - filters rows based on a predicate expression.
+ *
+ * This operator supports three evaluation modes:
+ * - SIMPLE: For single-table queries
+ * - WITH_ALIASES: For multi-table JOINs with table aliases
+ * - WITH_LATERAL_CONTEXT: For LATERAL joins with outer row context
+ */
+public class WhereOperator implements Operator {
+    private static final Logger logger = LoggerFactory.getLogger(WhereOperator.class);
+
+    private final String whereExpression;
+    private final WhereEvaluationMode mode;
+
+    public WhereOperator(final String whereExpression, final WhereEvaluationMode mode) {
+        this.whereExpression = whereExpression;
+        this.mode = mode;
+    }
+
+    public WhereOperator(final String whereExpression) {
+        this(whereExpression, WhereEvaluationMode.SIMPLE);
+    }
+
+    /**
+     * Create a WHERE operator with automatic mode detection.
+     */
+    public static WhereOperator create(final String whereExpression, final OperatorContext context) {
+        WhereEvaluationMode mode;
+        if (context.hasLateralContext()) {
+            mode = WhereEvaluationMode.WITH_LATERAL_CONTEXT;
+        } else if (context.hasMultipleTables()) {
+            mode = WhereEvaluationMode.WITH_ALIASES;
+        } else {
+            mode = WhereEvaluationMode.SIMPLE;
+        }
+        return new WhereOperator(whereExpression, mode);
+    }
+
+    @Override
+    public List<Row> execute(final List<Row> input, final OperatorContext context) {
+        if (whereExpression == null || whereExpression.trim().isEmpty()) {
+            return input;
+        }
+
+        logger.debug("Applying WHERE filter: {} (mode: {})", whereExpression, mode);
+
+        switch (mode) {
+            case WITH_LATERAL_CONTEXT:
+                return filterWithLateralContext(input, context);
+            case WITH_ALIASES:
+                return filterWithAliases(input, context);
+            case SIMPLE:
+            default:
+                return filterSimple(input, context);
+        }
+    }
+
+    @Override
+    public String getDescription() {
+        return String.format("WHERE[%s, mode=%s]",
+            whereExpression.length() > 50 ? whereExpression.substring(0, 47) + "..." : whereExpression,
+            mode);
+    }
+
+    private Catalog getCatalog(final OperatorContext context) {
+        if (context.getQueryExecutor() != null) {
+            return context.getQueryExecutor().getCatalog();
+        }
+        return null;
+    }
+
+    /**
+     * Simple filtering for single table queries.
+     */
+    private List<Row> filterSimple(final List<Row> rows, final OperatorContext context) {
+        ExpressionEvaluator evaluator = new ExpressionEvaluator(
+            context.getTable(),
+            context.getFunctionRegistry(),
+            getCatalog(context),
+            context.getQueryExecutor()
+        );
+        // Pass lateral context for nested correlated subqueries
+        if (context.getLateralContext() != null) {
+            evaluator.setOuterLateralContext(context.getLateralContext());
+        }
+        // Parse the predicate once, then evaluate the AST per row.
+        final Expression parsed = ExpressionEvaluator.parse(whereExpression);
+        List<Row> filtered = new ArrayList<>();
+
+        for (final Row row : rows) {
+            Object result = evaluator.evaluate(parsed, row);
+            if (result instanceof Boolean && (Boolean) result) {
+                filtered.add(row);
+            }
+        }
+
+        logger.debug("WHERE filter: {} -> {} rows", rows.size(), filtered.size());
+        return filtered;
+    }
+
+    /**
+     * Alias-aware filtering for multi-table queries with JOINs.
+     * Falls back to simple evaluation if alias resolution fails.
+     */
+    private List<Row> filterWithAliases(final List<Row> rows, final OperatorContext context) {
+        List<Row> filtered = new ArrayList<>();
+        final Expression parsed = ExpressionEvaluator.parse(whereExpression);
+
+        for (final Row row : rows) {
+            try {
+                // Try to evaluate with alias support
+                Object result = evaluateWithAliases(parsed, row, context);
+                if (result instanceof Boolean && (Boolean) result) {
+                    filtered.add(row);
+                }
+            } catch (final Exception e) {
+                logger.warn("Failed to evaluate WHERE clause with aliases: {}, trying simple evaluation",
+                    e.getMessage());
+                // Fallback to simple evaluation
+                try {
+                    ExpressionEvaluator evaluator = new ExpressionEvaluator(
+                        context.getTable(),
+                        context.getFunctionRegistry(),
+                        getCatalog(context),
+                        context.getQueryExecutor()
+                    );
+                    Object result = evaluator.evaluate(parsed, row);
+                    if (result instanceof Boolean && (Boolean) result) {
+                        filtered.add(row);
+                    }
+                } catch (final Exception e2) {
+                    logger.error("WHERE clause evaluation failed completely: {}", e2.getMessage());
+                }
+            }
+        }
+
+        logger.debug("WHERE filter (with aliases): {} -> {} rows", rows.size(), filtered.size());
+        return filtered;
+    }
+
+    /**
+     * Lateral context filtering for LATERAL joins.
+     * Falls back to alias-aware evaluation if lateral context is not available.
+     */
+    private List<Row> filterWithLateralContext(final List<Row> rows, final OperatorContext context) {
+        if (!context.hasLateralContext()) {
+            logger.warn("Lateral context not available, falling back to alias-aware evaluation");
+            return filterWithAliases(rows, context);
+        }
+
+        List<Row> filtered = new ArrayList<>();
+        final Expression parsed = ExpressionEvaluator.parse(whereExpression);
+
+        for (final Row row : rows) {
+            try {
+                // For lateral context, we need to evaluate with outer row values
+                // This is a placeholder - full implementation would require QueryExecutor integration
+                Object result = evaluateWithAliases(parsed, row, context);
+                if (result instanceof Boolean && (Boolean) result) {
+                    filtered.add(row);
+                }
+            } catch (final Exception e) {
+                logger.warn("Failed to evaluate WHERE clause with lateral context: {}", e.getMessage());
+            }
+        }
+
+        logger.debug("WHERE filter (with lateral): {} -> {} rows", rows.size(), filtered.size());
+        return filtered;
+    }
+
+    /**
+     * Evaluate expression with alias and multi-table support.
+     * Uses custom expression evaluator from context if available, otherwise falls back to simple evaluation.
+     */
+    private Object evaluateWithAliases(final Expression expr, final Row row, final OperatorContext context) {
+        // Use custom expression evaluator if available (for JOIN queries)
+        if (context.hasCustomExpressionEvaluator()) {
+            return context.getExpressionEvaluator().evaluate(expr, row);
+        }
+
+        // Fallback to simple evaluation
+        ExpressionEvaluator evaluator = new ExpressionEvaluator(
+            context.getTable(),
+            context.getFunctionRegistry(),
+            getCatalog(context)
+        );
+        return evaluator.evaluate(expr, row);
+    }
+}

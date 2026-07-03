@@ -1,0 +1,162 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>dev.frostlake</groupId>
+    <artifactId>frostlake-parent</artifactId>
+    <version>${revision}</version>
+    <packaging>pom</packaging>
+
+    <name>Frostlake (parent)</name>
+    <description>Multi-module build for Frostlake — an embeddable SQL engine emulating core Snowflake features for local and CI testing.</description>
+    <url>https://frostlake.dev</url>
+
+    <licenses>
+        <license>
+            <name>Apache License, Version 2.0</name>
+            <url>https://www.apache.org/licenses/LICENSE-2.0.txt</url>
+            <distribution>repo</distribution>
+        </license>
+    </licenses>
+
+    <developers>
+        <developer>
+            <id>mlorek</id>
+            <name>MLorek</name>
+            <url>https://frostlake.dev</url>
+        </developer>
+    </developers>
+
+    <scm>
+        <connection>scm:git:https://github.com/mlorek/frostlake.git</connection>
+        <developerConnection>scm:git:ssh://git@github.com/mlorek/frostlake.git</developerConnection>
+        <url>https://github.com/mlorek/frostlake</url>
+        <tag>HEAD</tag>
+    </scm>
+
+    <modules>
+        <module>engine</module>
+        <module>formats</module>
+        <module>perf-tests</module>
+    </modules>
+
+    <properties>
+        <!-- Single source of truth for the project version (Maven "CI-friendly" ${revision}). Every module
+             inherits it via <parent><version>${revision}</version>; bump here (or pass -Drevision=X). The
+             flatten-maven-plugin below rewrites ${revision} to a literal in the installed/deployed poms so
+             consumers never see the placeholder. -->
+        <revision>0.1.0</revision>
+        <maven.compiler.source>17</maven.compiler.source>
+        <maven.compiler.target>17</maven.compiler.target>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <!-- Perf harnesses are @Tag("perf"); excluded by default, included via the perf/perf-mem
+             profiles defined in the perf-tests module. -->
+        <perf.excludedGroups>perf</perf.excludedGroups>
+        <!-- Publishing (see the release profile below): the aggregator parent and the perf-tests harness are
+             NOT published to Central; the two library jars (frostlake-db, frostlake-formats) override this to
+             false. The central-publishing-maven-plugin honours maven.deploy.skip, so a skipped module is left
+             out of the release bundle. -->
+        <maven.deploy.skip>true</maven.deploy.skip>
+    </properties>
+
+    <build>
+        <plugins>
+            <!-- Resolve the ${revision} CI-friendly version to a literal in the published pom of every module,
+                 and (flattenMode=oss) inline the inherited Central-required metadata — name, description, url,
+                 licenses, developers, scm — into each published pom while dropping the <parent> reference. This
+                 makes every deployed artifact's pom self-contained and Maven-Central-valid on its own, so the
+                 aggregator parent need not be published for consumers to resolve those elements. Inherited by
+                 all children. Without it, install/deploy would emit poms containing a raw ${revision}. -->
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>flatten-maven-plugin</artifactId>
+                <version>1.6.0</version>
+                <configuration>
+                    <updatePomFile>true</updatePomFile>
+                    <flattenMode>oss</flattenMode>
+                </configuration>
+                <executions>
+                    <execution>
+                        <id>flatten</id>
+                        <phase>process-resources</phase>
+                        <goals>
+                            <goal>flatten</goal>
+                        </goals>
+                    </execution>
+                    <execution>
+                        <id>flatten.clean</id>
+                        <phase>clean</phase>
+                        <goals>
+                            <goal>clean</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+
+    <profiles>
+        <!-- Release/publish profile (activate with -Prelease). Lives here in the parent so BOTH published
+             library modules — frostlake-db and frostlake-formats — inherit the same source + javadoc + GPG
+             attach and the central-publishing hookup, and each publishes as its own separate jar. The
+             aggregator parent and perf-tests keep maven.deploy.skip=true, so they are left out of the bundle. -->
+        <profile>
+            <id>release</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-source-plugin</artifactId>
+                        <version>3.4.0</version>
+                        <executions>
+                            <execution>
+                                <id>attach-sources</id>
+                                <goals><goal>jar-no-fork</goal></goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-javadoc-plugin</artifactId>
+                        <version>3.12.0</version>
+                        <configuration>
+                            <!-- The published modules are not javadoc-clean; don't fail the release on doc lint. -->
+                            <doclint>none</doclint>
+                            <failOnError>false</failOnError>
+                        </configuration>
+                        <executions>
+                            <execution>
+                                <id>attach-javadocs</id>
+                                <goals><goal>jar</goal></goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-gpg-plugin</artifactId>
+                        <version>3.2.8</version>
+                        <executions>
+                            <execution>
+                                <id>sign-artifacts</id>
+                                <phase>verify</phase>
+                                <goals><goal>sign</goal></goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+                    <plugin>
+                        <groupId>org.sonatype.central</groupId>
+                        <artifactId>central-publishing-maven-plugin</artifactId>
+                        <version>0.11.0</version>
+                        <extensions>true</extensions>
+                        <configuration>
+                            <publishingServerId>central</publishingServerId>
+                            <autoPublish>true</autoPublish>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
+</project>

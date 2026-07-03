@@ -1,0 +1,2 @@
+dev.frostlake.executor.copy.JsonStageReader
+dev.frostlake.executor.copy.XmlStageReader

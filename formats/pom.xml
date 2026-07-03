@@ -1,0 +1,136 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>dev.frostlake</groupId>
+        <artifactId>frostlake-parent</artifactId>
+        <version>${revision}</version>
+        <relativePath>../pom.xml</relativePath>
+    </parent>
+
+    <artifactId>frostlake-formats</artifactId>
+    <packaging>jar</packaging>
+
+    <name>Frostlake Formats</name>
+    <description>Optional COPY load-format readers (Avro, Parquet, ORC) for Frostlake, contributed to the
+        engine as a StageFileReader ServiceLoader SPI. Keeps the heavy Hadoop/Avro/ORC dependencies out of
+        the core frostlake-db artifact — add this module to the classpath to load those formats.</description>
+
+    <!-- frostlake-formats IS published to Central as its own separate jar; override the parent's deploy skip. -->
+    <properties>
+        <maven.deploy.skip>false</maven.deploy.skip>
+    </properties>
+
+    <dependencies>
+        <!-- The engine: provides the StageFileReader SPI these readers implement (and DatabaseEngine for
+             the round-trip tests). Compile scope, one direction (formats -> engine); the engine never
+             depends back on this module — it discovers the readers at runtime via ServiceLoader. -->
+        <dependency>
+            <groupId>dev.frostlake</groupId>
+            <artifactId>frostlake-db</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
+        <!-- Apache Avro: read .avro container files (TYPE = 'AVRO'). Pure-Java, no Hadoop; brings a
+             Jackson 2.x that coexists with the engine's Jackson 3. -->
+        <dependency>
+            <groupId>org.apache.avro</groupId>
+            <artifactId>avro</artifactId>
+            <version>1.12.1</version>
+        </dependency>
+
+        <!-- Apache Parquet (parquet-avro): read .parquet files (TYPE = 'PARQUET'). Reads a local file via
+             LocalInputFile and surfaces rows as Avro GenericRecords (shared converter). parquet-avro's API
+             references org.apache.hadoop.fs.Path, so Hadoop's client API/runtime is needed on the classpath
+             (the two shaded hadoop-client-* jars, not the sprawling hadoop-common tree). -->
+        <dependency>
+            <groupId>org.apache.parquet</groupId>
+            <artifactId>parquet-avro</artifactId>
+            <version>1.17.1</version>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.hadoop</groupId>
+            <artifactId>hadoop-client-api</artifactId>
+            <version>3.5.0</version>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.hadoop</groupId>
+            <artifactId>hadoop-client-runtime</artifactId>
+            <version>3.5.0</version>
+            <scope>runtime</scope>
+        </dependency>
+
+        <!-- Apache ORC: read .orc files (TYPE = 'ORC'). Reads a local file via the Hadoop LocalFileSystem
+             (already on the classpath from Parquet) and yields column-vector batches. orc-core references
+             org.apache.hadoop.hive.ql.exec.vector.* (ColumnVector / VectorizedRowBatch) but declares
+             hive-storage-api only as a provided/ignored dependency, so it must be supplied explicitly;
+             2.8.1 is the version orc-core 2.3.0 is built against. -->
+        <dependency>
+            <groupId>org.apache.orc</groupId>
+            <artifactId>orc-core</artifactId>
+            <version>2.3.0</version>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.hive</groupId>
+            <artifactId>hive-storage-api</artifactId>
+            <version>2.8.1</version>
+        </dependency>
+        <!-- ORC's file metadata is protobuf-defined; orc-format's generated OrcProto classes reference the
+             unrelocated com.google.protobuf.* at runtime. hadoop-client-runtime only ships a *shaded*
+             protobuf, so the plain protobuf-java must be supplied. -->
+        <dependency>
+            <groupId>com.google.protobuf</groupId>
+            <artifactId>protobuf-java</artifactId>
+            <version>4.35.1</version>
+            <scope>runtime</scope>
+        </dependency>
+
+        <!-- Testing -->
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <version>6.0.3</version>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <version>3.5.5</version>
+                <configuration>
+                    <argLine>-Dpolyglot.engine.WarnInterpreterOnly=false</argLine>
+                    <excludedGroups>${perf.excludedGroups}</excludedGroups>
+                </configuration>
+            </plugin>
+            <!-- License-header audit (Apache RAT): fails the build at `verify` if any owned .java file is
+                 missing the Apache-2.0 header. -->
+            <plugin>
+                <groupId>org.apache.rat</groupId>
+                <artifactId>apache-rat-plugin</artifactId>
+                <version>0.16.1</version>
+                <configuration>
+                    <consoleOutput>true</consoleOutput>
+                    <includes>
+                        <include>src/main/java/dev/frostlake/**/*.java</include>
+                        <include>src/test/java/dev/frostlake/**/*.java</include>
+                    </includes>
+                </configuration>
+                <executions>
+                    <execution>
+                        <id>check-license-headers</id>
+                        <phase>verify</phase>
+                        <goals>
+                            <goal>check</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+</project>

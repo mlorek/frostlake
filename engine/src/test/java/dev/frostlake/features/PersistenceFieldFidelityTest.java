@@ -1,0 +1,269 @@
+/*
+ * Copyright 2026 MLorek
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package dev.frostlake.features;
+
+import dev.frostlake.DatabaseEngine;
+import dev.frostlake.config.EngineConfig;
+import dev.frostlake.metastore.Catalog;
+import dev.frostlake.metastore.model.Privilege;
+import dev.frostlake.metastore.model.Role;
+import dev.frostlake.metastore.model.ScalingPolicy;
+import dev.frostlake.metastore.model.Schema;
+import dev.frostlake.metastore.model.Table;
+import dev.frostlake.metastore.model.User;
+import dev.frostlake.metastore.model.Warehouse;
+
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+
+import java.io.File;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+/**
+ * Round-trips catalog model FIELDS that snapshot persistence previously dropped — silently flipping
+ * security-relevant state (SECURE VIEW, disabled user, READ ONLY database) or losing constraint/scaling
+ * metadata (UNIQUE, IDENTITY, collation, foreign keys, TRANSIENT, CLUSTER BY, warehouse scaling, ownership,
+ * column-level grants) across a save/reload. Each test mutates state with one engine, lets {@code shutdown()}
+ * persist, then opens a second engine over the same directory and asserts the field survived.
+ */
+public class PersistenceFieldFidelityTest {
+
+    private EngineConfig config;
+    private Path dataDir;
+
+    @BeforeEach
+    public void setUp() throws IOException {
+        dataDir = Files.createTempDirectory("persist_fields_");
+        config = new EngineConfig();
+        config.setProperty(EngineConfig.PROP_PERSISTENCE_ENABLED, "true");
+        config.setProperty(EngineConfig.PROP_PERSISTENCE_DIRECTORY, dataDir.toString());
+        config.setProperty(EngineConfig.PROP_PERSISTENCE_AUTO_SAVE, "false");
+    }
+
+    @AfterEach
+    public void tearDown() {
+        if (dataDir != null) {
+            deleteRecursively(dataDir.toFile());
+        }
+    }
+
+    /** A fresh engine over the shared data directory with an empty test_db.test_schema in context. */
+    private DatabaseEngine freshEngine() {
+        final DatabaseEngine engine = new DatabaseEngine(config);
+        engine.execute("CREATE DATABASE IF NOT EXISTS test_db");
+        engine.execute("USE DATABASE test_db");
+        engine.execute("CREATE SCHEMA IF NOT EXISTS test_schema");
+        engine.execute("USE SCHEMA test_schema");
+        return engine;
+    }
+
+    /** A second engine over the same directory — its constructor restores the persisted catalog. */
+    private DatabaseEngine reopenEngine() {
+        final DatabaseEngine engine = new DatabaseEngine(config);
+        engine.execute("USE DATABASE test_db");
+        engine.execute("USE SCHEMA test_schema");
+        return engine;
+    }
+
+    private Schema schema(final DatabaseEngine engine) {
+        return engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
+    }
+
+    @Test
+    public void secureViewStaysSecure() {
+        final DatabaseEngine engine1 = freshEngine();
+        engine1.execute("CREATE SECURE VIEW sv AS SELECT 1 AS x");
+        assertTrue(schema(engine1).getView("sv").isSecure(), "precondition: created view is secure");
+        engine1.shutdown();
+
+        final DatabaseEngine engine2 = reopenEngine();
+        assertTrue(schema(engine2).getView("sv").isSecure(), "SECURE VIEW must not degrade to a plain view");
+        engine2.shutdown();
+    }
+
+    @Test
+    public void readOnlyDatabaseStaysReadOnly() {
+        final DatabaseEngine engine1 = freshEngine();
+        engine1.getCatalog().getDatabase("test_db").setReadOnly(true);
+        engine1.shutdown();
+
+        final DatabaseEngine engine2 = reopenEngine();
+        assertTrue(engine2.getCatalog().getDatabase("test_db").isReadOnly(),
+            "READ ONLY database must not become writable");
+        engine2.shutdown();
+    }
+
+    @Test
+    public void columnUniqueAndIdentitySurvive() {
+        final DatabaseEngine engine1 = freshEngine();
+        engine1.execute("CREATE TABLE t (id INTEGER IDENTITY(100,5), email VARCHAR UNIQUE)");
+        engine1.shutdown();
+
+        final DatabaseEngine engine2 = reopenEngine();
+        final Table t = schema(engine2).getTable("t");
+        assertTrue(t.getColumn("email").isUnique(), "UNIQUE flag must survive");
+        assertTrue(t.getColumn("id").isAutoIncrement(), "IDENTITY/autoIncrement flag must survive");
+        assertEquals(100L, t.getColumn("id").getIdentityStart(), "IDENTITY start must survive");
+        assertEquals(5L, t.getColumn("id").getIdentityIncrement(), "IDENTITY increment must survive");
+        engine2.shutdown();
+    }
+
+    @Test
+    public void columnForeignKeyReferenceSurvives() {
+        final DatabaseEngine engine1 = freshEngine();
+        engine1.execute("CREATE TABLE parent (id INTEGER PRIMARY KEY)");
+        engine1.execute("CREATE TABLE child (pid INTEGER REFERENCES parent(id))");
+        engine1.shutdown();
+
+        final DatabaseEngine engine2 = reopenEngine();
+        assertEquals("parent",
+            schema(engine2).getTable("child").getColumn("pid").getReferencedTable().toLowerCase(),
+            "column-level REFERENCES target must survive");
+        engine2.shutdown();
+    }
+
+    @Test
+    public void tableForeignKeyConstraintSurvives() {
+        final DatabaseEngine engine1 = freshEngine();
+        engine1.execute("CREATE TABLE p2 (id INTEGER PRIMARY KEY)");
+        engine1.execute("CREATE TABLE c2 (pid INTEGER, FOREIGN KEY (pid) REFERENCES p2(id))");
+        assertFalse(schema(engine1).getTable("c2").getForeignKeys().isEmpty(), "precondition: FK captured");
+        engine1.shutdown();
+
+        final DatabaseEngine engine2 = reopenEngine();
+        assertFalse(schema(engine2).getTable("c2").getForeignKeys().isEmpty(),
+            "table-level FOREIGN KEY must survive");
+        engine2.shutdown();
+    }
+
+    @Test
+    public void transientAndClusterKeysSurvive() {
+        final DatabaseEngine engine1 = freshEngine();
+        engine1.execute("CREATE TRANSIENT TABLE tt (id INTEGER, region VARCHAR) CLUSTER BY (region)");
+        engine1.shutdown();
+
+        final DatabaseEngine engine2 = reopenEngine();
+        final Table tt = schema(engine2).getTable("tt");
+        assertTrue(tt.isTransient(), "TRANSIENT flag must survive");
+        assertTrue(tt.getClusterKeys().contains("region"), "CLUSTER BY keys must survive");
+        engine2.shutdown();
+    }
+
+    @Test
+    public void warehouseScalingAndOwnerSurvive() {
+        final DatabaseEngine engine1 = freshEngine();
+        engine1.execute("CREATE WAREHOUSE test_wh WAREHOUSE_SIZE = 'SMALL'");
+        final Warehouse wh1 = engine1.getCatalog().getWarehouse("test_wh");
+        wh1.setMinClusterCount(2);
+        wh1.setMaxClusterCount(4);
+        wh1.setScalingPolicy(ScalingPolicy.ECONOMY);
+        wh1.setOwner("SECURITYADMIN");
+        engine1.shutdown();
+
+        final DatabaseEngine engine2 = reopenEngine();
+        final Warehouse wh2 = engine2.getCatalog().getWarehouse("test_wh");
+        assertEquals(2, wh2.getMinClusterCount(), "MIN_CLUSTER_COUNT must survive");
+        assertEquals(4, wh2.getMaxClusterCount(), "MAX_CLUSTER_COUNT must survive");
+        assertEquals(ScalingPolicy.ECONOMY, wh2.getScalingPolicy(), "SCALING_POLICY must survive");
+        assertEquals("SECURITYADMIN", wh2.getOwner(), "warehouse owner must survive");
+        engine2.shutdown();
+    }
+
+    @Test
+    public void disabledUserStaysDisabled() {
+        final DatabaseEngine engine1 = freshEngine();
+        final Catalog catalog1 = engine1.getCatalog();
+        catalog1.createUser("bob", "secret", "PUBLIC");
+        final User bob1 = catalog1.getUser("bob");
+        bob1.setEnabled(false);
+        bob1.setOwner("SECURITYADMIN");
+        engine1.shutdown();
+
+        final DatabaseEngine engine2 = reopenEngine();
+        final User bob2 = engine2.getCatalog().getUser("bob");
+        assertFalse(bob2.isEnabled(), "a disabled user must not be re-enabled on reload");
+        assertEquals("SECURITYADMIN", bob2.getOwner(), "user owner must survive");
+        engine2.shutdown();
+    }
+
+    @Test
+    public void roleOwnerAndColumnGrantSurvive() {
+        final DatabaseEngine engine1 = freshEngine();
+        engine1.execute("CREATE TABLE grants_tbl (id INTEGER, secret VARCHAR)");
+        final Catalog catalog1 = engine1.getCatalog();
+        catalog1.createRole("analyst");
+        final Role role1 = catalog1.getRole("analyst");
+        role1.setOwner("SECURITYADMIN");
+        role1.grantColumnPrivilege("TABLE", "TEST_DB.TEST_SCHEMA.GRANTS_TBL", "SECRET", Privilege.SELECT);
+        engine1.shutdown();
+
+        final DatabaseEngine engine2 = reopenEngine();
+        final Role role2 = engine2.getCatalog().getRole("analyst");
+        assertEquals("SECURITYADMIN", role2.getOwner(), "role owner must survive");
+        assertFalse(role2.getAllColumnPrivileges().isEmpty(), "column-level grant must survive");
+        assertNotNull(role2.getAllColumnPrivileges().get("TABLE:TEST_DB.TEST_SCHEMA.GRANTS_TBL"),
+            "column grant must be restored under its object key");
+        engine2.shutdown();
+    }
+
+    @Test
+    public void taskAlterParametersSurvive() {
+        final DatabaseEngine engine1 = freshEngine();
+        engine1.execute("CREATE TASK t_task SCHEDULE = '1 MINUTE' AS SELECT 1");
+        engine1.getCatalog().getDatabase("test_db").getSchema("test_schema")
+            .getTask("t_task").setErrorIntegration("my_error_int");
+        engine1.shutdown();
+
+        final DatabaseEngine engine2 = reopenEngine();
+        assertEquals("my_error_int",
+            schema(engine2).getTask("t_task").getErrorIntegration(),
+            "ALTER TASK error-integration parameter must survive");
+        engine2.shutdown();
+    }
+
+    @Test
+    public void expressionColumnDefaultStaysAnExpressionAcrossReload() {
+        final DatabaseEngine engine1 = freshEngine();
+        engine1.execute("CREATE TABLE t (id INTEGER, qty INTEGER DEFAULT 10 + 5)");
+        engine1.shutdown();
+
+        // After reload the default must still be EVALUATED (→ 15), not restored as the literal text "10 + 5".
+        final DatabaseEngine engine2 = reopenEngine();
+        engine2.execute("INSERT INTO t (id) VALUES (1)");
+        final Object qty = engine2.executeQuery("SELECT qty FROM t WHERE id = 1").getRows().get(0).getValue(0);
+        assertEquals(15L, ((Number) qty).longValue(), "expression default must survive reload as an expression");
+        engine2.shutdown();
+    }
+
+    private void deleteRecursively(final File file) {
+        final File[] children = file.listFiles();
+        if (children != null) {
+            for (final File child : children) {
+                deleteRecursively(child);
+            }
+        }
+        file.delete();
+    }
+}

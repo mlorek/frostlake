@@ -1,0 +1,35 @@
+# Compiled class files
+*.class
+target/
+*.jar
+*.war
+*.ear
+
+# IDE files
+.idea/
+*.iml
+.vscode/
+*.swp
+*.swo
+*~
+
+# Maven
+.mvn/
+mvnw
+mvnw.cmd
+
+# Logs
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Generated sources
+generated-sources/
+generated-test-sources/
+dependency-reduced-pom.xml
+# flatten-maven-plugin output (resolves ${revision} for install/deploy; regenerated each build)
+.flattened-pom.xml
+docs
+logs

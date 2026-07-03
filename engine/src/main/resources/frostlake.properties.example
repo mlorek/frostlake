@@ -1,0 +1,61 @@
+# Frostlake SQL Engine Configuration
+# Copy this file to frostlake.properties (on the classpath / project dir) or to
+# ~/.frostlake/frostlake.properties, and customize. All keys are optional; the
+# built-in defaults (the values shown below) apply when a key is absent.
+
+# HTTP Server Configuration
+http.port=8080
+http.host=localhost
+http.maxConnections=100
+
+# Database Defaults
+database.default=SNOWFLAKE
+schema.default=PUBLIC
+
+# Account Configuration
+# The account identifier returned by CURRENT_ACCOUNT() function
+# This should be an alphanumeric string that identifies your database instance
+account.id=ABC12345
+
+# Storage Configuration
+storage.inMemory=true
+
+# Persistence Configuration
+persistence.enabled=false
+# Persisted-data directory (catalog snapshot + per-table data + WAL). Defaults to the SQL_ENGINE_DATA_DIR
+# environment variable when set, otherwise <user-home>/.frostlake_engine/data. Uncomment to pin an explicit
+# location such as the current working directory:
+# persistence.directory=./data
+persistence.autoSave=true
+persistence.saveIntervalSeconds=60
+
+# Durability (write-ahead log) — off by default; durability matters least for the in-memory local/CI use.
+# When enabled, each committed transaction (autocommit statement or explicit BEGIN...COMMIT block) is
+# appended to the WAL and fsync'd before COMMIT returns, and replayed on startup to recover committed work.
+durability.walEnabled=false
+# WAL file location. Defaults to <persisted-data directory>/wal.log (see persistence.directory above).
+# Uncomment to override explicitly:
+# durability.walFile=./data/wal.log
+# Write a checkpoint (full state snapshot + log truncation) after this many committed transactions, bounding
+# the log's growth and speeding recovery. 0 disables automatic checkpointing.
+durability.checkpointInterval=0
+
+# Command toggles
+# REMOVE / RM @stage deletes the files backing a stage on the local filesystem. Off by default as a safety
+# guard against accidental data loss; set to true to allow it.
+command.removeEnabled=false
+
+# Logging Configuration
+logging.level=INFO
+
+# Stage S3 -> local filesystem resolution
+# Maps s3://bucket/key references to local files for local/CI testing — both stage file operations
+# (LIST / GET / PUT / REMOVE) on S3-backed stages and the JAR(s) named in a UDF/procedure IMPORTS clause
+# (by s3:// URL or via an S3-backed @stage). An unmapped key resolves under stage.s3.localRoot as
+# <root>/bucket/key.
+# Both settings are optional; the defaults below apply when unset.
+#
+# Fallback base for s3:// resolution (default: <user-home>/.frostlake_stages/s3):
+# stage.s3.localRoot=/var/frostlake_stages/s3
+# Explicit prefix overrides: ';'-separated 's3prefix=localdir' pairs, longest matching prefix wins:
+# stage.s3.localMappings=s3://prod-bucket/lib/=/opt/jars; s3://data/=/srv/data

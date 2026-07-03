@@ -1,0 +1,41 @@
+/*
+ * Copyright 2026 MLorek
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package dev.frostlake.functions.scalar.string;
+
+import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.types.StringType;
+
+import java.util.List;
+
+public class Insert extends BuiltInFunction {
+    public Insert() { super("INSERT", StringType.VARCHAR); }
+
+    @Override
+    public Object evaluate(final List<Object> args) {
+        if (args.get(0) == null) return null;
+        String base = args.get(0).toString();
+        int pos = ((Number) args.get(1)).intValue() - 1;
+        int len = ((Number) args.get(2)).intValue();
+        String ins = args.get(3) == null ? "" : args.get(3).toString();
+        pos = Math.max(0, Math.min(pos, base.length()));
+        int end = Math.min(pos + len, base.length());
+        return base.substring(0, pos) + ins + base.substring(end);
+    }
+
+    @Override public int getMinArgCount() { return 4; }
+    @Override public int getMaxArgCount() { return 4; }
+}

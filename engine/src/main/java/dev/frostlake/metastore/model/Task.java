@@ -1,0 +1,245 @@
+/*
+ * Copyright 2026 MLorek
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package dev.frostlake.metastore.model;
+
+
+import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.List;
+
+/**
+ * Represents a Snowflake Task - Scheduled SQL execution
+ */
+public class Task {
+
+    private final String name;
+    // schedule / scheduleType / sqlStatement / warehouse are mutable so ALTER TASK … SET/MODIFY can change them.
+    private String schedule;
+    private ScheduleType scheduleType;
+    private String sqlStatement;
+    private String warehouse;
+    private final List<String> predecessors; // Tasks that must complete before this one
+    private final LocalDateTime createdAt;
+    private TaskState state;
+    private LocalDateTime lastRunTime;
+    private LocalDateTime nextRunTime;
+    private final List<TaskExecution> executionHistory;
+    private int successCount;
+    private int failureCount;
+    private String comment;
+    private String condition;
+    private int suspendTaskAfterNumFailures = 10;
+    private int taskAutoRetryAttempts = 0;
+    private String userTaskManagedInitialWarehouseSize;
+    private String serverlessTaskMaxStatementSize;
+    private String targetCompletionInterval;
+    private String errorIntegration;
+    private int userTaskMinimumTriggerIntervalInSeconds = 30;
+    private boolean allowOverlappingExecution = false;
+    private long userTaskTimeoutMs = 3600000L; // default 1 hour
+
+    public Task(final String name, final String schedule, final ScheduleType scheduleType,
+                final String sqlStatement, final String warehouse) {
+        this.name = name;
+        this.schedule = schedule;
+        this.scheduleType = scheduleType;
+        this.sqlStatement = sqlStatement;
+        this.warehouse = warehouse;
+        this.predecessors = new ArrayList<>();
+        this.createdAt = LocalDateTime.now();
+        this.state = TaskState.SUSPENDED; // Tasks start suspended by default
+        this.executionHistory = new ArrayList<>();
+        this.successCount = 0;
+        this.failureCount = 0;
+    }
+
+    public void addPredecessor(final String taskName) {
+        predecessors.add(taskName);
+    }
+
+    public void recordExecution(final TaskExecution execution) {
+        executionHistory.add(execution);
+        lastRunTime = execution.getStartTime();
+
+        if (execution.getState().equals("SUCCESS")) {
+            successCount++;
+            failureCount = 0; // SUSPEND_TASK_AFTER_NUM_FAILURES counts CONSECUTIVE failures
+        } else if (execution.getState().equals("FAILED")) {
+            failureCount++;
+        }
+    }
+
+    // The task-graph return value of this task's most recent run (SYSTEM$SET_RETURN_VALUE), readable
+    // by direct successors via SYSTEM$GET_PREDECESSOR_RETURN_VALUE.
+    private String lastReturnValue;
+
+    public String getLastReturnValue() {
+        return lastReturnValue;
+    }
+
+    public void setLastReturnValue(final String lastReturnValue) {
+        this.lastReturnValue = lastReturnValue;
+    }
+
+    /** Owning role; defaults to SYSADMIN until stamped with the creating role at CREATE. */
+    private String owner = "SYSADMIN";
+
+    public String getName() {
+        return name;
+    }
+
+    public String getOwner() {
+        return owner;
+    }
+
+    public void setOwner(final String owner) {
+        this.owner = owner;
+    }
+
+    public String getSchedule() {
+        return schedule;
+    }
+
+    public ScheduleType getScheduleType() {
+        return scheduleType;
+    }
+
+    public String getSqlStatement() {
+        return sqlStatement;
+    }
+
+    public String getWarehouse() {
+        return warehouse;
+    }
+
+    public List<String> getPredecessors() {
+        return predecessors;
+    }
+
+    public LocalDateTime getCreatedAt() {
+        return createdAt;
+    }
+
+    public TaskState getState() {
+        return state;
+    }
+
+    public void setState(final TaskState state) {
+        this.state = state;
+    }
+
+    public LocalDateTime getLastRunTime() {
+        return lastRunTime;
+    }
+
+    public void setLastRunTime(final LocalDateTime lastRunTime) {
+        this.lastRunTime = lastRunTime;
+    }
+
+    public LocalDateTime getNextRunTime() {
+        return nextRunTime;
+    }
+
+    public void setNextRunTime(final LocalDateTime nextRunTime) {
+        this.nextRunTime = nextRunTime;
+    }
+
+    public List<TaskExecution> getExecutionHistory() {
+        return executionHistory;
+    }
+
+    public int getSuccessCount() {
+        return successCount;
+    }
+
+    public int getFailureCount() {
+        return failureCount;
+    }
+
+    public boolean isActive() {
+        return state == TaskState.STARTED;
+    }
+
+    public String getComment() {
+        return comment;
+    }
+
+    public void setComment(final String comment) {
+        this.comment = comment;
+    }
+
+    public String getCondition() {
+        return condition;
+    }
+
+    public void setCondition(final String condition) {
+        this.condition = condition;
+    }
+
+    public void setSchedule(final String schedule) {
+        this.schedule = schedule;
+    }
+
+    public void setScheduleType(final ScheduleType scheduleType) {
+        this.scheduleType = scheduleType;
+    }
+
+    public void setSqlStatement(final String sqlStatement) {
+        this.sqlStatement = sqlStatement;
+    }
+
+    public void setWarehouse(final String warehouse) {
+        this.warehouse = warehouse;
+    }
+
+    public int getSuspendTaskAfterNumFailures() { return suspendTaskAfterNumFailures; }
+    public void setSuspendTaskAfterNumFailures(final int v) { this.suspendTaskAfterNumFailures = v; }
+
+    public int getTaskAutoRetryAttempts() { return taskAutoRetryAttempts; }
+    public void setTaskAutoRetryAttempts(final int v) { this.taskAutoRetryAttempts = v; }
+
+    public String getUserTaskManagedInitialWarehouseSize() { return userTaskManagedInitialWarehouseSize; }
+    public void setUserTaskManagedInitialWarehouseSize(final String v) { this.userTaskManagedInitialWarehouseSize = v; }
+
+    public String getServerlessTaskMaxStatementSize() { return serverlessTaskMaxStatementSize; }
+    public void setServerlessTaskMaxStatementSize(final String v) { this.serverlessTaskMaxStatementSize = v; }
+
+    public String getTargetCompletionInterval() { return targetCompletionInterval; }
+    public void setTargetCompletionInterval(final String v) { this.targetCompletionInterval = v; }
+
+    public String getErrorIntegration() { return errorIntegration; }
+    public void setErrorIntegration(final String v) { this.errorIntegration = v; }
+
+    public int getUserTaskMinimumTriggerIntervalInSeconds() { return userTaskMinimumTriggerIntervalInSeconds; }
+    public void setUserTaskMinimumTriggerIntervalInSeconds(final int v) { this.userTaskMinimumTriggerIntervalInSeconds = v; }
+
+    public boolean isAllowOverlappingExecution() {
+        return allowOverlappingExecution;
+    }
+
+    public void setAllowOverlappingExecution(final boolean allowOverlappingExecution) {
+        this.allowOverlappingExecution = allowOverlappingExecution;
+    }
+
+    public long getUserTaskTimeoutMs() {
+        return userTaskTimeoutMs;
+    }
+
+    public void setUserTaskTimeoutMs(final long userTaskTimeoutMs) {
+        this.userTaskTimeoutMs = userTaskTimeoutMs;
+    }
+}

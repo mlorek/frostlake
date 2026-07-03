@@ -1,0 +1,206 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>dev.frostlake</groupId>
+        <artifactId>frostlake-parent</artifactId>
+        <version>${revision}</version>
+        <relativePath>../pom.xml</relativePath>
+    </parent>
+
+    <artifactId>frostlake-db</artifactId>
+    <packaging>jar</packaging>
+
+    <name>Frostlake</name>
+    <description>An embeddable SQL engine emulating core Snowflake features for local and CI testing.</description>
+
+    <!-- frostlake-db IS published to Central; override the parent's default deploy skip. -->
+    <properties>
+        <maven.deploy.skip>false</maven.deploy.skip>
+    </properties>
+
+    <dependencies>
+        <!-- ANTLR for SQL parsing -->
+        <dependency>
+            <groupId>org.antlr</groupId>
+            <artifactId>antlr4-runtime</artifactId>
+            <version>4.13.2</version>
+        </dependency>
+
+        <!-- JSON support -->
+        <dependency>
+            <groupId>tools.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
+            <version>3.2.0</version>
+            <scope>compile</scope>
+        </dependency>
+
+        <!-- Logging -->
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-api</artifactId>
+            <version>2.0.17</version>
+        </dependency>
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-simple</artifactId>
+            <version>2.0.17</version>
+        </dependency>
+
+        <!-- JLine for interactive console with history support -->
+        <dependency>
+            <groupId>org.jline</groupId>
+            <artifactId>jline</artifactId>
+            <version>3.30.9</version>
+        </dependency>
+
+        <!-- GraalVM JavaScript for UDF support -->
+        <dependency>
+            <groupId>org.graalvm.js</groupId>
+            <artifactId>js</artifactId>
+            <version>23.0.11</version>
+        </dependency>
+        <dependency>
+            <groupId>org.graalvm.js</groupId>
+            <artifactId>js-scriptengine</artifactId>
+            <version>25.0.2</version>
+        </dependency>
+
+        <!-- Jython for Python UDF support -->
+        <dependency>
+            <groupId>org.python</groupId>
+            <artifactId>jython-standalone</artifactId>
+            <version>2.7.4</version>
+        </dependency>
+
+        <!-- Scala compiler for in-process Scala UDF/procedure compilation (no external scalac) -->
+        <dependency>
+            <groupId>org.scala-lang</groupId>
+            <artifactId>scala-compiler</artifactId>
+            <version>2.13.18</version>
+        </dependency>
+
+        <!-- Testing -->
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <version>6.0.3</version>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- NOTE: the heavy COPY load-format readers (Avro, Parquet, ORC) and their Hadoop/Avro/ORC
+             dependencies live in the sibling `frostlake-formats` module, not here. The engine ships only the
+             zero-dependency JSON and XML readers and discovers the rest at runtime via a StageFileReader
+             ServiceLoader SPI, so `frostlake-db` stays lean (no Hadoop on its classpath). -->
+    </dependencies>
+
+    <build>
+        <!-- Filter only frostlake-version.properties so the build stamps in ${project.version};
+             copy every other resource verbatim (leaving any placeholders in other files untouched). -->
+        <resources>
+            <resource>
+                <directory>src/main/resources</directory>
+                <filtering>true</filtering>
+                <includes>
+                    <include>frostlake-version.properties</include>
+                </includes>
+            </resource>
+            <resource>
+                <directory>src/main/resources</directory>
+                <filtering>false</filtering>
+                <excludes>
+                    <exclude>frostlake-version.properties</exclude>
+                </excludes>
+            </resource>
+        </resources>
+        <plugins>
+            <plugin>
+                <groupId>org.antlr</groupId>
+                <artifactId>antlr4-maven-plugin</artifactId>
+                <version>4.13.2</version>
+                <configuration>
+                    <visitor>true</visitor>
+                    <listener>true</listener>
+                </configuration>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>antlr4</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <version>3.15.0</version>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <version>3.5.5</version>
+                <configuration>
+                    <argLine>-Dpolyglot.engine.WarnInterpreterOnly=false</argLine>
+                    <excludedGroups>${perf.excludedGroups}</excludedGroups>
+                </configuration>
+            </plugin>
+            <!-- Publish a test-jar so the perf-tests module can reuse BaseDatabaseTest and other
+                 shared test infrastructure. Bound to test-compile so the artifact is available to
+                 downstream reactor modules during `mvn test` as well as `mvn verify`. -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-jar-plugin</artifactId>
+                <version>3.4.2</version>
+                <executions>
+                    <execution>
+                        <id>make-test-jar</id>
+                        <phase>test-compile</phase>
+                        <goals>
+                            <goal>test-jar</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+            <!-- License-header audit (Apache RAT): fails the build at `verify` if any engine-owned
+                 .java file (dev.frostlake main/test + the com.snowflake.snowpark_java stubs) is
+                 missing the Apache-2.0 header. Standalone:  mvn apache-rat:check -->
+            <plugin>
+                <groupId>org.apache.rat</groupId>
+                <artifactId>apache-rat-plugin</artifactId>
+                <version>0.16.1</version>
+                <configuration>
+                    <consoleOutput>true</consoleOutput>
+                    <includes>
+                        <include>src/main/java/dev/frostlake/**/*.java</include>
+                        <include>src/test/java/dev/frostlake/**/*.java</include>
+                        <include>src/main/java/com/snowflake/snowpark_java/**/*.java</include>
+                    </includes>
+                </configuration>
+                <executions>
+                    <execution>
+                        <id>check-license-headers</id>
+                        <phase>verify</phase>
+                        <goals>
+                            <goal>check</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+            <!-- Third-party dependency-license report. Run on demand:
+                   mvn license:add-third-party
+                 -> target/generated-sources/license/THIRD-PARTY.txt (shipped compile/runtime deps only). -->
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>license-maven-plugin</artifactId>
+                <version>2.3.0</version>
+                <configuration>
+                    <excludedScopes>test,provided</excludedScopes>
+                    <outputDirectory>${project.build.directory}/generated-sources/license</outputDirectory>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+</project>

@@ -1,0 +1,26 @@
+Frostlake
+Copyright 2026 MLorek
+
+Licensed under the Apache License, Version 2.0 (see the LICENSE file).
+
+------------------------------------------------------------------------
+Trademark notice
+------------------------------------------------------------------------
+Frostlake is an independent project and is not affiliated with, endorsed by,
+or sponsored by Snowflake Inc. "Snowflake" and "Snowpark" are trademarks of
+Snowflake Inc.; they are used in this project only nominatively, to describe
+compatibility.
+
+------------------------------------------------------------------------
+Third-party components
+------------------------------------------------------------------------
+This product depends on software from third parties, each distributed under
+its own license (see each project for full license and NOTICE text):
+
+  - ANTLR 4 runtime .............. BSD-3-Clause
+  - Jackson (databind) ........... Apache-2.0
+  - SLF4J ........................ MIT
+  - JLine ........................ BSD-3-Clause
+  - GraalVM JavaScript ........... Universal Permissive License 1.0 (UPL)
+  - Jython ....................... Python Software Foundation License
+  - Scala compiler ............... Apache-2.0
