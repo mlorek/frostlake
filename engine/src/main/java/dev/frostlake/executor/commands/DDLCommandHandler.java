@@ -240,11 +240,11 @@ public class DDLCommandHandler implements CommandHandler {
             }
         }
 
-        // Resolve a view stream's base table up front (outside the creation try) so ineligible
+        // Resolve a view stream's base table(s) up front (outside the creation try) so ineligible
         // views are always rejected instead of being swallowed by IF NOT EXISTS handling. Change
-        // capture on the stream matches DML against this base table.
-        final String viewBaseTable = sourceType == StreamSourceType.VIEW
-            ? queryExecutor.resolveViewStreamBaseTable(sourceView) : null;
+        // capture on the stream matches DML against these base tables (one per UNION ALL branch).
+        final List<String> viewBaseTables = sourceType == StreamSourceType.VIEW
+            ? queryExecutor.resolveViewStreamBaseTables(sourceView) : null;
 
         try {
             boolean appendOnly = false;
@@ -262,8 +262,8 @@ public class DDLCommandHandler implements CommandHandler {
 
             StreamType type = appendOnly ? StreamType.APPEND_ONLY : StreamType.STANDARD;
             Stream stream = new Stream(streamName, sourceName, sourceType, type, showInitialRows);
-            if (viewBaseTable != null) {
-                stream.setBaseTableName(viewBaseTable);
+            if (viewBaseTables != null) {
+                stream.setBaseTableNames(viewBaseTables);
             }
 
             String comment = extractCommentFromList(ctx.commentClause());

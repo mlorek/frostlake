@@ -43,7 +43,7 @@ undropStatement
 createStatement
     : CREATE or_replace? DATABASE if_not_exists? identifier (CLONE identifier)? (DATA_RETENTION_TIME_IN_DAYS EQ INTEGER_LITERAL)? commentClause? SEMI?
     | CREATE or_replace? SCHEMA if_not_exists? qualifiedName (CLONE qualifiedName)? commentClause? SEMI?
-    | CREATE or_replace? (TRANSIENT | TEMPORARY | TEMP)? TABLE if_not_exists? objectName commentClause? (LPAREN columnList RPAREN | CLONE qualifiedName | columnListOptional? AS selectStatement) clusterByClause? commentClause? SEMI?
+    | CREATE or_replace? (TRANSIENT | TEMPORARY | TEMP)? TABLE if_not_exists? objectName commentClause? clusterByClause? (LPAREN columnList RPAREN | CLONE qualifiedName | columnListOptional? AS selectStatement) clusterByClause? commentClause? SEMI?
     | CREATE or_replace? SECURE? VIEW if_not_exists? qualifiedName (LPAREN viewColumnList RPAREN)? commentClause? AS selectStatement commentClause? SEMI?
     | CREATE or_replace? SECURE? MATERIALIZED VIEW if_not_exists? qualifiedName (LPAREN viewColumnList RPAREN)? commentClause? AS selectStatement commentClause? SEMI?
     | CREATE or_replace? DYNAMIC TABLE if_not_exists? qualifiedName dynamicTableOptions AS selectStatement commentClause? SEMI?
@@ -1226,7 +1226,7 @@ limitClause
     ;
 
 fetchClause
-    : FETCH (FIRST | NEXT) INTEGER_LITERAL ROWS? ONLY
+    : FETCH (FIRST | NEXT) INTEGER_LITERAL (ROW | ROWS)? ONLY
     ;
 
 transactionStatement
@@ -1507,7 +1507,7 @@ exceptionCondition
 // SELECT expr1, expr2 INTO var1, var2 FROM table [WHERE ...]
 // Targets may be plain identifiers or bind variables (:varname)
 selectIntoStatement
-    : SELECT DISTINCT? selectList INTO intoTargetList (FROM tableExpression whereClause? groupByClause? havingClause?)? SEMI?
+    : SELECT DISTINCT? selectList INTO intoTargetList (FROM tableExpression whereClause? groupByClause? havingClause? qualifyClause?)? orderByClause? (limitClause | fetchClause)? SEMI?
     ;
 
 intoTargetList
@@ -1570,6 +1570,7 @@ expression
     | LPAREN selectStatement RPAREN                              # ScalarSubqueryExpr
     | expression COLON identifier ((DOT | COLON) identifier)*    # ObjectAccessExpr
     | expression LBRACKET expression RBRACKET                    # ArrayAccessExpr
+    | expression DOT identifier                                  # FieldAccessExpr
     | expression DOUBLE_COLON dataTypeName typeParameters?       # CastExpr2
     | expression PIPE_PIPE expression                            # ConcatExpr
     | expression op=(STAR | SLASH | PERCENT) expression          # MultiplicativeExpr

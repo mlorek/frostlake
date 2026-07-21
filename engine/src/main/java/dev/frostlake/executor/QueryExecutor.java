@@ -3255,33 +3255,13 @@ public class QueryExecutor {
             throw new RuntimeException("Source view not found for stream "
                 + stream.getName() + ": " + stream.getSourceTableName());
         }
-        final String baseName = stream.getBaseTableName() != null
-            ? stream.getBaseTableName() : resolveViewStreamBaseTable(view);
-        final Table baseTable = catalog.resolveTable(baseName);
+        final List<FrostlakeParser.SelectClauseContext> branches = resolveViewStreamBranches(view);
 
-        final FrostlakeParser.SelectClauseContext clause =
-            parseSelectStatement(view.getDefinition()).selectOperand(0).selectClause();
-        final String whereText = clause.whereClause().isEmpty()
-            ? null : getOriginalText(clause.whereClause().get(0).booleanExpr());
-        final List<FrostlakeParser.SelectItemContext> items = clause.selectList().selectItem();
-        final boolean identity = items.size() == 1 && SelectItemAccessors.isStarItem(items.get(0));
-
-        // Output columns take the VIEW's shape (explicit view column names override when they match).
-        final List<TableColumn> columns = new ArrayList<>();
-        final List<String> projectionExprs = new ArrayList<>();
-        if (identity) {
-            columns.addAll(baseTable.getColumns());
-        } else {
-            for (final FrostlakeParser.SelectItemContext item : items) {
-                final String exprText = getOriginalText(SelectItemAccessors.getItemExpression(item));
-                projectionExprs.add(exprText);
-                final String columnName = SelectItemAccessors.getItemAlias(item) != null
-                    ? getIdentifier(SelectItemAccessors.getItemAlias(item)) : exprText;
-                final DataType columnType = baseTable.hasColumn(exprText.trim())
-                    ? baseTable.getColumn(exprText.trim()).getDataType() : VariantType.VARIANT;
-                columns.add(new TableColumn(columnName.toUpperCase(), columnType, true, null, false, false, false));
-            }
-        }
+        // Column shape follows the FIRST branch (a UNION ALL takes its output names/types from the
+        // first query), then explicit view column names override when the counts match.
+        final FrostlakeParser.SelectClauseContext firstBranch = branches.get(0);
+        final Table firstBase = catalog.resolveTable(branchBaseTable(firstBranch));
+        final List<TableColumn> columns = viewStreamColumns(firstBranch, firstBase);
         if (view.hasExplicitColumnNames() && view.getColumnNames().size() == columns.size()) {
             for (int i = 0; i < columns.size(); i++) {
                 columns.set(i, new TableColumn(view.getColumnNames().get(i).toUpperCase(),
@@ -3291,29 +3271,74 @@ public class QueryExecutor {
         appendStreamMetadataColumns(columns);
         final Table virtual = new Table(alias != null ? alias : stream.getName(), columns, false);
 
-        final ExpressionEvaluator projectionEval =
-            new ExpressionEvaluator(baseTable, functionRegistry, catalog, this);
+        // Each UNION ALL branch replays the change records captured from its own base table through its
+        // own projection and filter; records are routed to a branch by the table they were captured from.
         final List<Row> rows = new ArrayList<>();
-        for (final StreamRecord record : stream.getUnconsumedNetRecords()) {
-            final Row baseRow = new Row(record.getValues());
-            if (whereText != null) {
-                final Object keep = projectionEval.evaluate(whereText, baseRow);
-                if (!(keep instanceof Boolean) || !((Boolean) keep).booleanValue()) {
+        for (final FrostlakeParser.SelectClauseContext branch : branches) {
+            final String branchTable = branchBaseTable(branch);
+            final Table baseTable = catalog.resolveTable(branchTable);
+            final String whereText = branch.whereClause().isEmpty()
+                ? null : getOriginalText(branch.whereClause().get(0).booleanExpr());
+            final List<FrostlakeParser.SelectItemContext> items = branch.selectList().selectItem();
+            final boolean identity = items.size() == 1 && SelectItemAccessors.isStarItem(items.get(0));
+            final List<String> projectionExprs = new ArrayList<>();
+            if (!identity) {
+                for (final FrostlakeParser.SelectItemContext item : items) {
+                    projectionExprs.add(getOriginalText(SelectItemAccessors.getItemExpression(item)));
+                }
+            }
+            final ExpressionEvaluator projectionEval =
+                new ExpressionEvaluator(baseTable, functionRegistry, catalog, this);
+            for (final StreamRecord record : stream.getUnconsumedNetRecords()) {
+                // A null tag (single-branch view, or a legacy record) is kept — a lone branch owns
+                // every record; otherwise the record belongs to the branch it was captured from.
+                if (record.getSourceTable() != null && !record.getSourceTable().equalsIgnoreCase(branchTable)) {
                     continue;
                 }
-            }
-            final List<Object> values = new ArrayList<>();
-            if (identity) {
-                values.addAll(record.getValues());
-            } else {
-                for (final String exprText : projectionExprs) {
-                    values.add(projectionEval.evaluate(exprText, baseRow));
+                final Row baseRow = new Row(record.getValues());
+                if (whereText != null) {
+                    final Object keep = projectionEval.evaluate(whereText, baseRow);
+                    if (!(keep instanceof Boolean) || !((Boolean) keep).booleanValue()) {
+                        continue;
+                    }
                 }
+                final List<Object> values = new ArrayList<>();
+                if (identity) {
+                    values.addAll(record.getValues());
+                } else {
+                    for (final String exprText : projectionExprs) {
+                        values.add(projectionEval.evaluate(exprText, baseRow));
+                    }
+                }
+                appendStreamMetadataValues(values, record);
+                rows.add(new Row(values));
             }
-            appendStreamMetadataValues(values, record);
-            rows.add(new Row(values));
         }
         return new TableData(virtual, rows, alias);
+    }
+
+    /**
+     * Build the output columns for one view-stream branch: the base table's columns for a {@code SELECT *}
+     * identity projection, otherwise one column per projected select item (alias name when present, else
+     * the expression text; type taken from the base column when the item is a bare column, else VARIANT).
+     */
+    private List<TableColumn> viewStreamColumns(final FrostlakeParser.SelectClauseContext branch, final Table baseTable) {
+        final List<FrostlakeParser.SelectItemContext> items = branch.selectList().selectItem();
+        final boolean identity = items.size() == 1 && SelectItemAccessors.isStarItem(items.get(0));
+        final List<TableColumn> columns = new ArrayList<>();
+        if (identity) {
+            columns.addAll(baseTable.getColumns());
+        } else {
+            for (final FrostlakeParser.SelectItemContext item : items) {
+                final String exprText = getOriginalText(SelectItemAccessors.getItemExpression(item));
+                final String columnName = SelectItemAccessors.getItemAlias(item) != null
+                    ? getIdentifier(SelectItemAccessors.getItemAlias(item)) : exprText;
+                final DataType columnType = baseTable.hasColumn(exprText.trim())
+                    ? baseTable.getColumn(exprText.trim()).getDataType() : VariantType.VARIANT;
+                columns.add(new TableColumn(columnName.toUpperCase(), columnType, true, null, false, false, false));
+            }
+        }
+        return columns;
     }
 
     private void appendStreamMetadataColumns(final List<TableColumn> columns) {
@@ -3329,37 +3354,74 @@ public class QueryExecutor {
     }
 
     /**
-     * Resolve the single base table of a view eligible for change tracking (CREATE STREAM ON VIEW):
-     * a plain projection over one table, optionally filtered — {@code SELECT ... FROM t [WHERE ...]}.
-     * Joins, set operators, GROUP BY/HAVING/QUALIFY, DISTINCT, CTEs, and subquery sources are
-     * rejected, mirroring Snowflake's change-tracking restrictions. Returns the bare (upper-case)
-     * table name, which is what change capture matches on.
+     * Resolve the base tables of a view eligible for change tracking (CREATE STREAM ON VIEW). A view
+     * stream supports projections, WHERE filters, and {@code UNION ALL} over single-table branches —
+     * {@code SELECT ... FROM t [WHERE ...] [UNION ALL SELECT ... FROM t2 [WHERE ...]] ...}. Plain
+     * {@code UNION} (which deduplicates), joins, GROUP BY/HAVING/QUALIFY, DISTINCT, LIMIT, CTEs, and
+     * subquery sources are rejected, matching Snowflake's change-tracking restrictions. Returns one
+     * bare (upper-case) base table name per branch — the names change capture matches on.
      */
+    public List<String> resolveViewStreamBaseTables(final View view) {
+        final List<String> tables = new ArrayList<>();
+        for (final FrostlakeParser.SelectClauseContext branch : resolveViewStreamBranches(view)) {
+            tables.add(branchBaseTable(branch));
+        }
+        return tables;
+    }
+
+    /** Back-compat single-table resolver: the first (often only) branch's base table. */
     public String resolveViewStreamBaseTable(final View view) {
+        return resolveViewStreamBaseTables(view).get(0);
+    }
+
+    /**
+     * Parse and validate a change-tracking-eligible view, returning one {@code selectClause} per
+     * branch (a plain view has one; a {@code UNION ALL} view has one per arm). Throws with a
+     * descriptive message when the view uses a construct change tracking does not support.
+     */
+    private List<FrostlakeParser.SelectClauseContext> resolveViewStreamBranches(final View view) {
         final String reject = "CREATE STREAM on view " + view.getName()
-            + ": change tracking supports only simple single-table views (SELECT ... FROM t [WHERE ...])";
+            + ": change tracking supports projections, filters, and UNION ALL over single-table branches"
+            + " (SELECT ... FROM t [WHERE ...] [UNION ALL ...]); plain UNION, DISTINCT, GROUP BY, QUALIFY,"
+            + " LIMIT, joins, and subquery sources are not supported";
         final FrostlakeParser.SelectStatementContext sel;
         try {
             sel = parseSelectStatement(view.getDefinition());
         } catch (final Exception e) {
             throw new RuntimeException(reject, e);
         }
-        if (sel.withClause() != null || sel.selectOperand().size() != 1
-                || sel.selectOperand(0).selectClause() == null) {
+        if (sel.withClause() != null || sel.limitClause() != null || sel.fetchClause() != null) {
             throw new RuntimeException(reject);
         }
-        final FrostlakeParser.SelectClauseContext clause = sel.selectOperand(0).selectClause();
-        if (clause.DISTINCT() != null || clause.groupByClause() != null || clause.havingClause() != null
-                || clause.qualifyClause() != null || clause.tableExpression() == null) {
-            throw new RuntimeException(reject);
+        for (final FrostlakeParser.SetOperatorContext op : sel.setOperator()) {
+            // Only UNION ALL is allowed between branches: plain UNION deduplicates (which change
+            // tracking cannot express), and INTERSECT / EXCEPT / MINUS are unsupported.
+            if (op.UNION() == null || op.ALL() == null) {
+                throw new RuntimeException(reject);
+            }
         }
-        final FrostlakeParser.TableExpressionContext tableExpr = clause.tableExpression();
-        if (tableExpr.tableReference().size() != 1 || !tableExpr.joinClause().isEmpty()
-                || tableExpr.tableReference(0).tableSource().qualifiedName() == null) {
-            throw new RuntimeException(reject);
+        final List<FrostlakeParser.SelectClauseContext> branches = new ArrayList<>();
+        for (final FrostlakeParser.SelectOperandContext operand : sel.selectOperand()) {
+            final FrostlakeParser.SelectClauseContext clause = operand.selectClause();
+            if (clause == null || clause.DISTINCT() != null || clause.groupByClause() != null
+                    || clause.havingClause() != null || clause.qualifyClause() != null
+                    || clause.tableExpression() == null) {
+                throw new RuntimeException(reject);
+            }
+            final FrostlakeParser.TableExpressionContext tableExpr = clause.tableExpression();
+            if (tableExpr.tableReference().size() != 1 || !tableExpr.joinClause().isEmpty()
+                    || tableExpr.tableReference(0).tableSource().qualifiedName() == null) {
+                throw new RuntimeException(reject);
+            }
+            branches.add(clause);
         }
-        final String qualified = getQualifiedName(tableExpr.tableReference(0).tableSource().qualifiedName());
-        final String[] parts = ParseTreeText.qualifiedNameParts(tableExpr.tableReference(0).tableSource().qualifiedName());
+        return branches;
+    }
+
+    /** Bare (upper-case) base table name of a single view-stream branch. */
+    private String branchBaseTable(final FrostlakeParser.SelectClauseContext branch) {
+        final String[] parts = ParseTreeText.qualifiedNameParts(
+            branch.tableExpression().tableReference(0).tableSource().qualifiedName());
         return parts[parts.length - 1].toUpperCase();
     }
 

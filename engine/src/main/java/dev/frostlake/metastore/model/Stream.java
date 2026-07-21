@@ -20,6 +20,7 @@ package dev.frostlake.metastore.model;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 
 /**
  * Represents a Snowflake Stream - Change Data Capture (CDC) mechanism
@@ -106,20 +107,20 @@ public class Stream {
                 final List<Object> oldImage = record.getValues();
                 final List<Object> newImage = raw.get(i + 1).getValues();
                 i++;
-                final StreamNetChange existing = findByCurrentImage(net, oldImage);
+                final StreamNetChange existing = findByCurrentImage(net, oldImage, record.getSourceTable());
                 if (existing != null) {
                     existing.setNewValues(newImage);
                 } else {
-                    net.add(new StreamNetChange(oldImage, newImage, record.getRowId()));
+                    net.add(new StreamNetChange(oldImage, newImage, record.getRowId(), record.getSourceTable()));
                 }
             } else if (record.getChangeType() == ChangeType.INSERT) {
-                net.add(new StreamNetChange(null, record.getValues(), record.getRowId()));
+                net.add(new StreamNetChange(null, record.getValues(), record.getRowId(), record.getSourceTable()));
             } else {
                 // Plain DELETE: cancel a row born in this window, close out an updated row, or
                 // record the delete of a pre-existing row.
-                final StreamNetChange existing = findByCurrentImage(net, record.getValues());
+                final StreamNetChange existing = findByCurrentImage(net, record.getValues(), record.getSourceTable());
                 if (existing == null) {
-                    net.add(new StreamNetChange(record.getValues(), null, record.getRowId()));
+                    net.add(new StreamNetChange(record.getValues(), null, record.getRowId(), record.getSourceTable()));
                 } else if (existing.getOldValues() == null) {
                     net.remove(existing);
                 } else {
@@ -134,22 +135,25 @@ public class Stream {
                 continue;
             }
             if (change.getOldValues() == null) {
-                out.add(new StreamRecord(change.getNewValues(), ChangeType.INSERT, false, change.getRowId()));
+                out.add(new StreamRecord(change.getNewValues(), ChangeType.INSERT, false, change.getRowId(), change.getSourceTable()));
             } else if (change.getNewValues() == null) {
-                out.add(new StreamRecord(change.getOldValues(), ChangeType.DELETE, false, change.getRowId()));
+                out.add(new StreamRecord(change.getOldValues(), ChangeType.DELETE, false, change.getRowId(), change.getSourceTable()));
             } else {
-                out.add(new StreamRecord(change.getOldValues(), ChangeType.DELETE, true, change.getRowId()));
-                out.add(new StreamRecord(change.getNewValues(), ChangeType.INSERT, true, change.getRowId()));
+                out.add(new StreamRecord(change.getOldValues(), ChangeType.DELETE, true, change.getRowId(), change.getSourceTable()));
+                out.add(new StreamRecord(change.getNewValues(), ChangeType.INSERT, true, change.getRowId(), change.getSourceTable()));
             }
         }
         return out;
     }
 
-    /** The net entry whose CURRENT image equals the given row values, or null. First match wins
-     *  (identical duplicate rows are indistinguishable in a value-chained model). */
-    private StreamNetChange findByCurrentImage(final List<StreamNetChange> net, final List<Object> image) {
+    /** The net entry whose CURRENT image equals the given row values (from the same source table), or
+     *  null. First match wins (identical duplicate rows are indistinguishable in a value-chained model).
+     *  Scoping by source table keeps UNION ALL branches over look-alike rows from cross-cancelling. */
+    private StreamNetChange findByCurrentImage(final List<StreamNetChange> net, final List<Object> image,
+                                               final String sourceTable) {
         for (final StreamNetChange change : net) {
-            if (change.getNewValues() != null && change.getNewValues().equals(image)) {
+            if (change.getNewValues() != null && change.getNewValues().equals(image)
+                    && Objects.equals(change.getSourceTable(), sourceTable)) {
                 return change;
             }
         }
@@ -168,16 +172,33 @@ public class Stream {
     /** Owning role; defaults to SYSADMIN until stamped with the creating role at CREATE. */
     private String owner = "SYSADMIN";
 
-    // Bare (upper-case) name of the single base table backing a VIEW-sourced stream — change
-    // capture matches DML against it. Null for TABLE-sourced streams.
-    private String baseTableName;
+    // Bare (upper-case) names of the base table(s) backing a VIEW-sourced stream — change capture
+    // matches DML against any of them. A simple view has one; a UNION ALL view has one per branch.
+    // Empty for TABLE-sourced streams.
+    private final List<String> baseTableNames = new ArrayList<>();
 
+    /** First base table, or null if none — kept for callers and persistence that assume a single table. */
     public String getBaseTableName() {
-        return baseTableName;
+        return baseTableNames.isEmpty() ? null : baseTableNames.get(0);
     }
 
     public void setBaseTableName(final String baseTableName) {
-        this.baseTableName = baseTableName;
+        baseTableNames.clear();
+        if (baseTableName != null) {
+            baseTableNames.add(baseTableName);
+        }
+    }
+
+    /** All base tables backing a VIEW-sourced stream (one per UNION ALL branch); empty for table streams. */
+    public List<String> getBaseTableNames() {
+        return baseTableNames;
+    }
+
+    public void setBaseTableNames(final List<String> names) {
+        baseTableNames.clear();
+        if (names != null) {
+            baseTableNames.addAll(names);
+        }
     }
 
     public String getName() {

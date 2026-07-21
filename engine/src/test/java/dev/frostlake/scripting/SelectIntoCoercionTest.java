@@ -22,6 +22,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -29,8 +30,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * Typed procedural variables: a value assigned to a DECLAREd variable — via DEFAULT, {@code :=},
  * SELECT INTO, or FETCH INTO — is coerced to the declared type the way Snowflake casts on
  * assignment (numeric strings parse, fractional values round half away from zero into integral
- * types, FLOAT holds doubles, booleans convert like TO_BOOLEAN). SELECT INTO additionally enforces
- * that its query returns exactly one row with as many columns as INTO targets.
+ * types, FLOAT holds doubles, booleans convert like TO_BOOLEAN). SELECT INTO additionally requires
+ * its query to return at most one row (zero rows sets the targets to NULL; more than one is an
+ * error) with as many columns as INTO targets.
  */
 public class SelectIntoCoercionTest extends BaseDatabaseTest {
 
@@ -119,19 +121,12 @@ public class SelectIntoCoercionTest extends BaseDatabaseTest {
 
     // ── SELECT INTO row-count and column-count enforcement ────────────────────────────────────────
 
+    // Zero rows is NOT an error: the target is set to NULL and the block continues (Snowflake semantics).
     @Test
-    public void selectIntoZeroRowsErrors() {
+    public void selectIntoZeroRowsAssignsNull() {
         seedNums();
-        final RuntimeException ex = assertThrows(RuntimeException.class, new Executable() {
-            @Override
-            public void execute() {
-                engine.executeQuery(
-                    "DECLARE t INTEGER; BEGIN SELECT n INTO t FROM nums WHERE n > 100;"
-                    + " RETURN t; END");
-            }
-        });
-        assertTrue(ex.getMessage().contains("wrong number of rows: 0"),
-            "unexpected message: " + ex.getMessage());
+        assertNull(ret(
+            "DECLARE t INTEGER; BEGIN SELECT n INTO t FROM nums WHERE n > 100; RETURN t; END"));
     }
 
     @Test
@@ -148,12 +143,12 @@ public class SelectIntoCoercionTest extends BaseDatabaseTest {
             "unexpected message: " + ex.getMessage());
     }
 
-    // The row-count error is an ordinary statement error — catchable by an EXCEPTION handler.
+    // The too-many-rows error is an ordinary statement error — catchable by an EXCEPTION handler.
     @Test
-    public void selectIntoZeroRowsCatchableByHandler() {
+    public void selectIntoMultipleRowsCatchableByHandler() {
         seedNums();
         assertEquals("caught", ret(
-            "DECLARE t INTEGER; BEGIN SELECT n INTO t FROM nums WHERE n > 100; RETURN t;"
+            "DECLARE t INTEGER; BEGIN SELECT n INTO t FROM nums; RETURN t;"
             + " EXCEPTION WHEN OTHER THEN RETURN 'caught'; END"));
     }
 

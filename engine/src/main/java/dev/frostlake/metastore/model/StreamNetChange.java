@@ -29,11 +29,18 @@ public class StreamNetChange {
     private final List<Object> oldValues;
     private List<Object> newValues;
     private final long rowId;
+    private final String sourceTable;
 
     public StreamNetChange(final List<Object> oldValues, final List<Object> newValues, final long rowId) {
+        this(oldValues, newValues, rowId, null);
+    }
+
+    public StreamNetChange(final List<Object> oldValues, final List<Object> newValues, final long rowId,
+                           final String sourceTable) {
         this.oldValues = oldValues;
         this.newValues = newValues;
         this.rowId = rowId;
+        this.sourceTable = sourceTable;
     }
 
     public List<Object> getOldValues() {
@@ -51,5 +58,10 @@ public class StreamNetChange {
 
     public long getRowId() {
         return rowId;
+    }
+
+    /** Bare (upper-case) base table this net change was captured from; null for single-source streams. */
+    public String getSourceTable() {
+        return sourceTable;
     }
 }

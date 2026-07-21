@@ -341,6 +341,17 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
     }
 
     @Override
+    public Expression visitFieldAccessExpr(final FrostlakeParser.FieldAccessExprContext ctx) {
+        // A postfix `.field` on a semi-structured value (e.g. the object at c[0] in c[0].b): reuse
+        // ObjectAccessExpression as a single-segment path so the same JSON property extraction that
+        // powers colon paths applies. A bare column reference a.b stays a QualifiedNameExpr (the
+        // greedy qualifiedName rule consumes it), so this only fires after a subscript/paren/etc.
+        final List<String> pathParts = new ArrayList<>();
+        pathParts.add(ctx.identifier().getText());
+        return new ObjectAccessExpression(visit(ctx.expression()), pathParts);
+    }
+
+    @Override
     public Expression visitJsonObjectExpr(final FrostlakeParser.JsonObjectExprContext ctx) {
         final Map<String, Expression> props = new LinkedHashMap<>();
         for (final FrostlakeParser.JsonKeyValuePairContext pair : ctx.jsonObjectLiteral().jsonKeyValuePair()) {

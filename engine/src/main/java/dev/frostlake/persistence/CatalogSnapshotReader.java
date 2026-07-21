@@ -343,7 +343,11 @@ final class CatalogSnapshotReader {
                     Stream stream = new Stream(streamSnapshot.name, streamSnapshot.sourceTableName,
                         StreamSourceType.valueOf(streamSnapshot.sourceType),
                         StreamType.valueOf(streamSnapshot.streamType), streamSnapshot.showInitialRows);
-                    stream.setBaseTableName(streamSnapshot.baseTableName);
+                    if (streamSnapshot.baseTableNames != null && !streamSnapshot.baseTableNames.isEmpty()) {
+                        stream.setBaseTableNames(streamSnapshot.baseTableNames);
+                    } else {
+                        stream.setBaseTableName(streamSnapshot.baseTableName);
+                    }
                     stream.setStale(streamSnapshot.stale);
                     stream.setComment(streamSnapshot.comment);
                     if (streamSnapshot.owner != null) {
@@ -352,7 +356,8 @@ final class CatalogSnapshotReader {
                     if (streamSnapshot.records != null) {
                         for (final StreamRecordSnapshot recSnapshot : streamSnapshot.records) {
                             stream.addRecord(new StreamRecord(recSnapshot.values,
-                                ChangeType.valueOf(recSnapshot.changeType), recSnapshot.update, recSnapshot.rowId));
+                                ChangeType.valueOf(recSnapshot.changeType), recSnapshot.update, recSnapshot.rowId,
+                                recSnapshot.sourceTable));
                         }
                     }
                     schema.addStream(stream);

@@ -31,6 +31,9 @@ public class StreamSnapshot implements Serializable {
     public String name;
     public String sourceTableName;
     public String baseTableName;
+    // All base tables of a VIEW-sourced stream (one per UNION ALL branch). Older snapshots have only
+    // baseTableName; the reader falls back to it when this list is null/empty.
+    public List<String> baseTableNames = new ArrayList<>();
     public String sourceType;
     public String streamType;
     public boolean showInitialRows;

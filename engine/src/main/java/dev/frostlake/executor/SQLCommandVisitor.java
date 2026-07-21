@@ -806,33 +806,48 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
             if (ctx.whereClause() != null) selectSql.append(" ").append(getOriginalText(ctx.whereClause()));
             if (ctx.groupByClause() != null) selectSql.append(" ").append(getOriginalText(ctx.groupByClause()));
             if (ctx.havingClause() != null) selectSql.append(" ").append(getOriginalText(ctx.havingClause()));
+            if (ctx.qualifyClause() != null) selectSql.append(" ").append(getOriginalText(ctx.qualifyClause()));
         }
+        // ORDER BY / LIMIT / FETCH apply to the whole query, e.g. SELECT c INTO :v FROM t ORDER BY c LIMIT 1.
+        if (ctx.orderByClause() != null) selectSql.append(" ").append(getOriginalText(ctx.orderByClause()));
+        if (ctx.limitClause() != null) selectSql.append(" ").append(getOriginalText(ctx.limitClause()));
+        if (ctx.fetchClause() != null) selectSql.append(" ").append(getOriginalText(ctx.fetchClause()));
         List<ResultSet> results = queryExecutor.execute(selectSql.toString());
         ResultSet rs = results.isEmpty() ? null : results.get(0);
-        // Snowflake requires the SELECT of a SELECT ... INTO to produce exactly one row.
         final int rowCount = rs == null ? 0 : rs.getRowCount();
-        if (rowCount != 1) {
+        List<FrostlakeParser.IntoTargetContext> targets = ctx.intoTargetList().intoTarget();
+
+        // Snowflake: a SELECT ... INTO that matches no rows is not an error — every target is set to
+        // NULL and the block continues, so an absent lookup value simply yields NULL.
+        if (rowCount == 0) {
+            for (final FrostlakeParser.IntoTargetContext target : targets) {
+                assignSelectIntoTarget(getText(target.identifier()), null);
+            }
+            logger.trace("SELECT INTO: no rows matched; assigned NULL to {} target(s)", targets.size());
+            return null;
+        }
+        // More than one row remains an error — narrow the query (e.g. with LIMIT) to a single row.
+        if (rowCount > 1) {
             throw new RuntimeException(
                 "Select statement in SELECT INTO returned wrong number of rows: " + rowCount);
         }
-        List<FrostlakeParser.IntoTargetContext> targets = ctx.intoTargetList().intoTarget();
         Row firstRow = rs.getRows().get(0);
         if (targets.size() != firstRow.getValues().size()) {
             throw new RuntimeException("SELECT INTO: number of INTO targets (" + targets.size()
                 + ") does not match the number of selected columns (" + firstRow.getValues().size() + ")");
         }
         for (int i = 0; i < targets.size(); i++) {
-            String varName = getText(targets.get(i).identifier());
-            Object value = firstRow.getValue(i);
-            if (proceduralExecutor != null) {
-                // Assignment through SetStatement coerces to the target's declared type.
-                proceduralExecutor.executeStatement(
-                    new SetStatement(varName,
-                        new LiteralExpression(value)));
-            }
+            assignSelectIntoTarget(getText(targets.get(i).identifier()), firstRow.getValue(i));
         }
         logger.trace("SELECT INTO: assigned {} variable(s)", targets.size());
         return null;
+    }
+
+    /** Assign a value to a SELECT INTO target through SetStatement, coercing it to the declared type. */
+    private void assignSelectIntoTarget(final String varName, final Object value) {
+        if (proceduralExecutor != null) {
+            proceduralExecutor.executeStatement(new SetStatement(varName, new LiteralExpression(value)));
+        }
     }
 
     private FrostlakeParser.SelectStatementContext parseSelectStatement(final String sql) {

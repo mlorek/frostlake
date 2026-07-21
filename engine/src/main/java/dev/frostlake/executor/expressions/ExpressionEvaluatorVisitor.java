@@ -753,9 +753,8 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
             if (!first) {
                 json.append(", ");
             }
-            Object value = entry.getValue().accept(this);
             json.append("\"").append(entry.getKey()).append("\": ");
-            json.append(formatJsonValue(value));
+            json.append(jsonElementText(entry.getValue(), entry.getValue().accept(this)));
             first = false;
         }
 
@@ -771,8 +770,8 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
             if (i > 0) {
                 json.append(", ");
             }
-            Object value = expr.getElements().get(i).accept(this);
-            json.append(formatJsonValue(value));
+            final Expression element = expr.getElements().get(i);
+            json.append(jsonElementText(element, element.accept(this)));
         }
 
         json.append("]");
@@ -994,6 +993,21 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
 
     private String formatJsonValue(final Object value) {
         return JsonPathExtractor.formatJsonValue(value);
+    }
+
+    /**
+     * Render a value as it should appear inside a JSON object/array literal. A nested object or array
+     * literal ({@code {...}} / {@code [...]}) has already been evaluated to a JSON string, so it is
+     * embedded raw; every other value is formatted as a JSON scalar (strings quoted, numbers bare).
+     * Without this, a nested literal would be re-quoted as a string, e.g. {@code [{'b':1}]} would store
+     * the malformed {@code ["{"b": 1}"]} and later {@code c[0]} would fail to parse.
+     */
+    private String jsonElementText(final Expression element, final Object value) {
+        if (value instanceof String
+                && (element instanceof JsonObjectExpression || element instanceof JsonArrayExpression)) {
+            return (String) value;
+        }
+        return formatJsonValue(value);
     }
 
     private Object evaluateExists(final String subquery) {

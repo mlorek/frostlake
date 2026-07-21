@@ -162,6 +162,7 @@ final class CatalogSnapshotWriter {
                     streamSnapshot.name = stream.getName();
                     streamSnapshot.sourceTableName = stream.getSourceTableName();
                     streamSnapshot.baseTableName = stream.getBaseTableName();
+                    streamSnapshot.baseTableNames = new ArrayList<>(stream.getBaseTableNames());
                     streamSnapshot.sourceType = stream.getSourceType().name();
                     streamSnapshot.streamType = stream.getStreamType().name();
                     streamSnapshot.showInitialRows = stream.isShowInitialRows();
@@ -174,6 +175,7 @@ final class CatalogSnapshotWriter {
                         recSnapshot.changeType = rec.getChangeType().name();
                         recSnapshot.update = rec.isUpdate();
                         recSnapshot.rowId = rec.getRowId();
+                        recSnapshot.sourceTable = rec.getSourceTable();
                         streamSnapshot.records.add(recSnapshot);
                     }
                     schemaSnapshot.streams.add(streamSnapshot);

@@ -210,12 +210,9 @@ public class CreateTableHandler implements CommandHandler {
                     table.setComment(comment);
                 }
 
-                // Extract cluster keys
-                if (ctx.clusterByClause() != null) {
-                    List<String> clusterKeys = new ArrayList<>();
-                    for (final FrostlakeParser.ExpressionContext exprCtx : ctx.clusterByClause().expressionList().expression()) {
-                        clusterKeys.add(exprCtx.getText());
-                    }
+                // Extract cluster keys (CLUSTER BY may appear before or after the column list)
+                List<String> clusterKeys = extractClusterKeys(ctx);
+                if (!clusterKeys.isEmpty()) {
                     table.setClusterKeys(clusterKeys);
                 }
 
@@ -256,12 +253,9 @@ public class CreateTableHandler implements CommandHandler {
                     table.setComment(comment);
                 }
 
-                // Extract cluster keys
-                if (ctx.clusterByClause() != null) {
-                    List<String> clusterKeys = new ArrayList<>();
-                    for (final FrostlakeParser.ExpressionContext exprCtx : ctx.clusterByClause().expressionList().expression()) {
-                        clusterKeys.add(exprCtx.getText());
-                    }
+                // Extract cluster keys (CLUSTER BY may appear before or after the column list)
+                List<String> clusterKeys = extractClusterKeys(ctx);
+                if (!clusterKeys.isEmpty()) {
                     table.setClusterKeys(clusterKeys);
                 }
 
@@ -277,6 +271,23 @@ public class CreateTableHandler implements CommandHandler {
             ddl.handleIfNotExists(ifNotExists, e, qualifiedName);
         }
         return null;
+    }
+
+    /**
+     * Collects the {@code CLUSTER BY} key expressions for a CREATE TABLE. Snowflake accepts the clause
+     * either immediately after the table name (before the column list) or after the column list; the
+     * grammar allows {@code clusterByClause} in both positions, so this reads whichever one was supplied.
+     * Returns an empty list when no clustering key was given.
+     */
+    private static List<String> extractClusterKeys(final FrostlakeParser.CreateStatementContext ctx) {
+        List<String> clusterKeys = new ArrayList<>();
+        List<FrostlakeParser.ClusterByClauseContext> clauses = ctx.clusterByClause();
+        if (!clauses.isEmpty()) {
+            for (final FrostlakeParser.ExpressionContext exprCtx : clauses.get(0).expressionList().expression()) {
+                clusterKeys.add(exprCtx.getText());
+            }
+        }
+        return clusterKeys;
     }
 
 }
