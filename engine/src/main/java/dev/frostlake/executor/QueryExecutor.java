@@ -1656,6 +1656,15 @@ public class QueryExecutor {
         storageEngine.renameTable(oldQualified, newQualified);
     }
 
+    /** Re-key a moved table's row storage to a new database/schema/name (cross-schema RENAME TO). */
+    public void moveTableStorage(final String oldName, final String targetDatabase,
+                                 final String targetSchema, final String newShortName) {
+        final String oldQualified = getFullyQualifiedTableName(oldName);
+        final String newQualified =
+            (targetDatabase + "." + targetSchema + "." + newShortName).toUpperCase();
+        storageEngine.renameTable(oldQualified, newQualified);
+    }
+
     /**
      * Backfill every existing row of a table after ALTER TABLE ADD COLUMN, appending one value for the
      * new column so stored rows match the widened schema — otherwise every read of the new column throws
@@ -4234,9 +4243,15 @@ public class QueryExecutor {
             }
         }
 
-        // If not found in lateral context, try standard evaluation
+        // Not a bare correlated column (e.g. it's parse_json(column5) or column5::VARIANT): evaluate the
+        // whole expression WITH the lateral context in scope, so column references inside a function
+        // wrapper or cast resolve against the outer row rather than failing as "column not found".
         try {
-            return evaluateExpression(expr, null, null);
+            final Table dummyTable = new Table("DUMMY", new ArrayList<>(), false);
+            final Row dummyRow = new Row(new ArrayList<>());
+            final ExpressionEvaluator evaluator = new ExpressionEvaluator(dummyTable, functionRegistry, catalog, this);
+            evaluator.setOuterLateralContext(lateralContext);
+            return evaluator.evaluate(expr, dummyRow);
         } catch (final Exception e) {
             throw new RuntimeException("Unable to evaluate expression '" + expr + "' in LATERAL context: " + e.getMessage(), e);
         }

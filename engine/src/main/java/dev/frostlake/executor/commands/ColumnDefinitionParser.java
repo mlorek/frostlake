@@ -17,6 +17,7 @@
 package dev.frostlake.executor.commands;
 
 import dev.frostlake.executor.QueryExecutor;
+import dev.frostlake.executor.SqlStringLiterals;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.model.*;
 import dev.frostlake.parser.FrostlakeParser;
@@ -500,10 +501,7 @@ public class ColumnDefinitionParser implements CommandHandler {
     }
 
     private String extractStringLiteral(final TerminalNode node) {
-        String text = node.getText();
-        String content = text.substring(1, text.length() - 1);
-        content = content.replace("''", "'");
-        return content;
+        return SqlStringLiterals.decode(node.getText());
     }
 
     private String getOriginalText(final ParserRuleContext ctx) {

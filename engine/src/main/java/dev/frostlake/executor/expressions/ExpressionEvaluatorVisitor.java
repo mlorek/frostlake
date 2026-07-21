@@ -21,9 +21,11 @@ import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.FunctionRegistry;
 import dev.frostlake.metastore.Catalog;
+import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.model.Function;
 import dev.frostlake.metastore.model.Parameter;
 import dev.frostlake.metastore.model.Schema;
+import dev.frostlake.metastore.model.Sequence;
 import dev.frostlake.metastore.model.Stream;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.TableColumn;
@@ -352,7 +354,43 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
                 break;
         }
 
+        // Snowflake sequence pseudo-columns: <sequence>.NEXTVAL / <sequence>.CURRVAL. Resolved as a
+        // last resort (after column resolution) so a real column of that name still wins; this is what
+        // lets a column DEFAULT of seq.NEXTVAL work at INSERT and MERGE time.
+        if (expr.isQualified()) {
+            final String op = columnName.toUpperCase();
+            if ("NEXTVAL".equals(op) || "CURRVAL".equals(op)) {
+                final Sequence sequence = resolveSequence(expr.getTableName());
+                if (sequence != null) {
+                    return "NEXTVAL".equals(op) ? sequence.nextVal() : sequence.currVal();
+                }
+            }
+        }
+
         throw new RuntimeException("Column not found: " + expr);
+    }
+
+    /**
+     * Resolve a (possibly schema/database-qualified) sequence name for the {@code seq.NEXTVAL} /
+     * {@code seq.CURRVAL} pseudo-column syntax. Returns null when it does not name a sequence, so the
+     * caller falls back to the ordinary "column not found" error.
+     */
+    private Sequence resolveSequence(final String name) {
+        final Catalog cat = catalog != null ? catalog : (queryExecutor != null ? queryExecutor.getCatalog() : null);
+        if (cat == null || cat.getCurrentDatabase() == null) {
+            return null;
+        }
+        try {
+            final String[] parts = QualifiedName.parse(name).parts();
+            if (parts.length == 1) {
+                return cat.getDatabase(cat.getCurrentDatabase()).getSchema(cat.getCurrentSchema()).getSequence(parts[0]);
+            } else if (parts.length == 2) {
+                return cat.getDatabase(cat.getCurrentDatabase()).getSchema(parts[0]).getSequence(parts[1]);
+            }
+            return cat.getDatabase(parts[0]).getSchema(parts[1]).getSequence(parts[2]);
+        } catch (final RuntimeException e) {
+            return null;
+        }
     }
 
     @Override

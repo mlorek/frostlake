@@ -17,14 +17,13 @@
 package dev.frostlake.functions.scalar.semistructured;
 
 import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.functions.scalar.JsonTypeHelper;
 import dev.frostlake.types.VariantType;
-import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.JsonNode;
 
 import java.util.List;
 
 public class TryParseJson extends BuiltInFunction {
-
-    private static final ObjectMapper MAPPER = new ObjectMapper();
 
     public TryParseJson() { super("TRY_PARSE_JSON", VariantType.VARIANT); }
 
@@ -33,15 +32,10 @@ public class TryParseJson extends BuiltInFunction {
         if (args.get(0) == null) return null;
         String input = args.get(0).toString().trim();
         if (input.equalsIgnoreCase("null")) return null;
-        try {
-            return MAPPER.readTree(input).toString();
-        } catch (final Exception e) {
-            String relaxed = input.replace("\\'", "'");
-            if (!relaxed.equals(input)) {
-                try { return MAPPER.readTree(relaxed).toString(); } catch (final Exception ignored) {}
-            }
-            return null; // TRY_ variant returns NULL on invalid JSON
-        }
+        // Parse leniently (Snowflake tolerates \' and invalid backslash escapes such as a regex \d);
+        // TRY_ variant returns NULL when it still cannot be parsed.
+        final JsonNode node = JsonTypeHelper.parseLenient(input);
+        return node == null ? null : node.toString();
     }
 
     @Override public int getMinArgCount() { return 1; }

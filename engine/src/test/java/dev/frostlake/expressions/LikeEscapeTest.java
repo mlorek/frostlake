@@ -57,8 +57,10 @@ public class LikeEscapeTest extends BaseDatabaseTest {
 
     @Test
     public void defaultBackslashEscapeStillWorks() {
-        assertTrue(like("'a_b' LIKE 'a\\_b' ESCAPE '\\'"));
-        assertFalse(like("'axb' LIKE 'a\\_b' ESCAPE '\\'"));
+        // A single backslash string literal is '\\' in Snowflake (\' is an escaped quote, so '\' is not a
+        // one-backslash string). The escape character here is therefore ESCAPE '\\'.
+        assertTrue(like("'a_b' LIKE 'a\\_b' ESCAPE '\\\\'"));
+        assertFalse(like("'axb' LIKE 'a\\_b' ESCAPE '\\\\'"));
     }
 
     @Test

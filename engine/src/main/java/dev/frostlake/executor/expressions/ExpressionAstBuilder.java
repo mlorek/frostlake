@@ -16,6 +16,7 @@
 
 package dev.frostlake.executor.expressions;
 
+import dev.frostlake.executor.SqlStringLiterals;
 import dev.frostlake.parser.FrostlakeBaseVisitor;
 import dev.frostlake.parser.FrostlakeParser;
 
@@ -295,6 +296,14 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
     }
 
     @Override
+    public Expression visitCollateFuncExpr(final FrostlakeParser.CollateFuncExprContext ctx) {
+        // COLLATE(expr, 'spec') — the function form of Snowflake's COLLATE. Expression-level collation
+        // metadata is not modelled, so the collation is a parse-time pass-through: the value is the inner
+        // expression's value and comparisons stay binary (correct for consistent-case data).
+        return visit(ctx.expression());
+    }
+
+    @Override
     public Expression visitCastExpr2(final FrostlakeParser.CastExpr2Context ctx) {
         return new CastExpression(visit(ctx.expression()), typeText(ctx.dataTypeName(), ctx.typeParameters()));
     }
@@ -569,27 +578,8 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
     }
 
     private String unquoteString(final String raw) {
-        // Strip the surrounding single quotes, then unescape. Mirrors the legacy ExpressionParser:
-        // '' -> ', \' -> ', \\ -> \, \n/\t/\r -> control chars; other backslashes kept verbatim.
-        final String inner = raw.substring(1, raw.length() - 1);
-        final StringBuilder sb = new StringBuilder(inner.length());
-        for (int i = 0; i < inner.length(); i++) {
-            final char c = inner.charAt(i);
-            if (c == '\\' && i + 1 < inner.length()) {
-                final char next = inner.charAt(i + 1);
-                if (next == '\'') { sb.append('\''); i++; }
-                else if (next == '\\') { sb.append('\\'); i++; }
-                else if (next == 'n') { sb.append('\n'); i++; }
-                else if (next == 't') { sb.append('\t'); i++; }
-                else if (next == 'r') { sb.append('\r'); i++; }
-                else { sb.append(c); }
-            } else if (c == '\'' && i + 1 < inner.length() && inner.charAt(i + 1) == '\'') {
-                sb.append('\''); i++;
-            } else {
-                sb.append(c);
-            }
-        }
-        return sb.toString();
+        // Canonical decode: '' -> ', \' -> ', \\ -> \, \n/\t/\r -> control chars; other backslashes kept.
+        return SqlStringLiterals.decode(raw);
     }
 
     private String unquoteDollar(final String raw) {

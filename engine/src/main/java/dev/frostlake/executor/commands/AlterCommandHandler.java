@@ -184,11 +184,42 @@ public class AlterCommandHandler implements CommandHandler {
                         queryExecutor.swapTables(tableName, other);
                         logger.trace("Swapped table {} with {}", tableName, other);
                     } else if (ctx.tableAction().RENAME() != null && ctx.tableAction().COLUMN() == null) {
-                        // RENAME table (catalog metadata AND the row storage, so the new name is queryable)
-                        String newName = visitor.getText(ctx.tableAction().identifier(0));
-                        queryExecutor.renameTableStorage(tableName, newName);
-                        catalog.renameTable(tableName, newName);
-                        logger.trace("Renamed table {} to {}", tableName, newName);
+                        // RENAME table. A qualified target that names a different schema/database MOVES the
+                        // table there (Snowflake semantics); otherwise it is renamed in place. Both the
+                        // catalog entry and the row storage are re-keyed so the new location is queryable.
+                        final String[] targetParts = qualifiedNameParts(ctx.tableAction().qualifiedName());
+                        final String[] srcParts = QualifiedName.parse(
+                            queryExecutor.getFullyQualifiedTableName(tableName)).parts();
+                        final String srcDb = srcParts[0];
+                        final String srcSchema = srcParts[1];
+                        final String targetDb;
+                        final String targetSchema;
+                        final String newName;
+                        if (targetParts.length == 3) {
+                            targetDb = targetParts[0];
+                            targetSchema = targetParts[1];
+                            newName = targetParts[2];
+                        } else if (targetParts.length == 2) {
+                            targetDb = srcDb;
+                            targetSchema = targetParts[0];
+                            newName = targetParts[1];
+                        } else {
+                            targetDb = srcDb;
+                            targetSchema = srcSchema;
+                            newName = targetParts[0];
+                        }
+                        if (targetDb.equalsIgnoreCase(srcDb) && targetSchema.equalsIgnoreCase(srcSchema)) {
+                            queryExecutor.renameTableStorage(tableName, newName);
+                            catalog.renameTable(tableName, newName);
+                            logger.trace("Renamed table {} to {}", tableName, newName);
+                        } else {
+                            // Validate + move the catalog entry first (throws cleanly if the destination is
+                            // missing or the name is taken), then re-key storage, so a rejected move mutates
+                            // nothing.
+                            catalog.moveTable(tableName, targetDb, targetSchema, newName);
+                            queryExecutor.moveTableStorage(tableName, targetDb, targetSchema, newName);
+                            logger.trace("Moved table {} to {}.{}.{}", tableName, targetDb, targetSchema, newName);
+                        }
                     } else if (ctx.tableAction().ADD() != null && ctx.tableAction().columnDef() != null) {
                         // ADD COLUMN — build the full column (data type + DEFAULT / NOT NULL / …) via the
                         // shared parser, then backfill existing rows so their width matches the new schema.

@@ -848,7 +848,7 @@ final class GroupByAggregateEvaluator {
     private String unquoteDelimiter(final String raw) {
         final String trimmed = raw.trim();
         if (trimmed.length() >= 2 && trimmed.charAt(0) == '\'' && trimmed.charAt(trimmed.length() - 1) == '\'') {
-            return trimmed.substring(1, trimmed.length() - 1).replace("''", "'");
+            return SqlStringLiterals.decode(trimmed);
         }
         return trimmed;
     }

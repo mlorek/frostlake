@@ -555,6 +555,7 @@ warehouseProperty
     | STATEMENT_TIMEOUT_IN_SECONDS EQ INTEGER_LITERAL
     | ENABLE_QUERY_ACCELERATION EQ booleanValue
     | QUERY_ACCELERATION_MAX_SCALE_FACTOR EQ INTEGER_LITERAL
+    | GENERATION EQ (STRING_LITERAL | INTEGER_LITERAL)
     | COMMENT EQ STRING_LITERAL
     ;
 
@@ -660,7 +661,7 @@ schemaAction
     ;
 
 tableAction
-    : RENAME TO? identifier
+    : RENAME TO? qualifiedName
     | SWAP WITH qualifiedName
     | ADD COLUMN if_not_exists? columnDef
     | DROP COLUMN if_exists? identifier
@@ -1559,6 +1560,7 @@ expression
     | INTERVAL STRING_LITERAL                                    # IntervalStringExpr
     | dateTimeLiteralType STRING_LITERAL                         # TypedDateTimeLiteralExpr
     | CAST LPAREN expression AS dataTypeName typeParameters? RPAREN              # CastExpr
+    | COLLATE LPAREN expression COMMA STRING_LITERAL RPAREN                      # CollateFuncExpr
     | functionName LPAREN identifier FROM expression RPAREN                      # ExtractFromExpr
     | functionName LPAREN DISTINCT? STAR RPAREN                  # FunctionCallStarExpr
     | functionName LPAREN expression (COMMA namedArgument)+ RPAREN overClause?  # FunctionCallMixedArgsExpr
@@ -1661,6 +1663,8 @@ identifier
     | ALLOW_OVERLAPPING_EXECUTION
     | BEFORE        // Allow BEFORE as identifier
     | CALLER        // Allow CALLER as identifier
+    | CLOSE         // Allow CLOSE as identifier (e.g. a qualified fn name like tools.stats.close(); the
+                    // CLOSE <cursor> statement is a separate rule, disambiguated by context)
     | COLUMNS       // Allow COLUMNS as identifier (for INFORMATION_SCHEMA views)
     | COMMENT       // Allow COMMENT as identifier
     | COPY          // Allow COPY as identifier (table name)
@@ -1685,7 +1689,10 @@ identifier
     | FIRST         // Allow FIRST as identifier (also ORDER BY ... NULLS FIRST)
     | FLATTEN       // Allow FLATTEN as identifier (table function)
     | FUNCTIONS     // Allow FUNCTIONS as identifier (INFORMATION_SCHEMA view)
+    | GENERATION    // Allow GENERATION as identifier (also a CREATE WAREHOUSE property)
     | GENERATOR     // Allow GENERATOR as identifier (table function)
+    | GET           // Allow GET as identifier (the GET(array/object, key) semi-structured function; the
+                    // GET stage command is a separate statement, disambiguated by context)
     | GRANTS        // Allow GRANTS as identifier
     | GROUPING      // Allow GROUPING as identifier (function name)
     | HOUR          // Allow HOUR as identifier (can be column name)
@@ -2110,6 +2117,7 @@ STATEMENT_QUEUED_TIMEOUT_IN_SECONDS: S T A T E M E N T UNDERSCORE Q U E U E D UN
 STATEMENT_TIMEOUT_IN_SECONDS: S T A T E M E N T UNDERSCORE T I M E O U T UNDERSCORE I N UNDERSCORE S E C O N D S;
 ENABLE_QUERY_ACCELERATION: E N A B L E UNDERSCORE Q U E R Y UNDERSCORE A C C E L E R A T I O N;
 QUERY_ACCELERATION_MAX_SCALE_FACTOR: Q U E R Y UNDERSCORE A C C E L E R A T I O N UNDERSCORE M A X UNDERSCORE S C A L E UNDERSCORE F A C T O R;
+GENERATION: G E N E R A T I O N;
 STANDARD: S T A N D A R D;
 ECONOMY: E C O N O M Y;
 MULTI_STATEMENT_COUNT: M U L T I UNDERSCORE S T A T E M E N T UNDERSCORE C O U N T;
@@ -2360,7 +2368,7 @@ IDENTIFIER: [a-zA-Z_][a-zA-Z0-9_$]*;
 // Literals
 INTEGER_LITERAL: [0-9]+;
 FLOAT_LITERAL: [0-9]+ DOT [0-9]+ ([eE] [+-]? [0-9]+)?;
-STRING_LITERAL: '\'' (~['] | '\'\'' | '\\' .)* '\'';      // Single quoted strings with newlines
+STRING_LITERAL: '\'' ('\\' . | '\'\'' | ~['\\])* '\'';    // Single-quoted. Backslash is EXCLUDED from ~[..] so it always begins a '\\' . escape (incl. \'); otherwise maximal-munch lets \'' lex as \ + '' and mis-aligns the string boundaries. Decode via SqlStringLiterals.
 DOLLAR_QUOTED_STRING: '$$' .*? '$$';
 
 // Operators and Punctuation

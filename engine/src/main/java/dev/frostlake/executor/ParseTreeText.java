@@ -103,10 +103,7 @@ public final class ParseTreeText {
     }
 
     public static String extractStringLiteral(final TerminalNode node) {
-        String text = node.getText();
-        String content = text.substring(1, text.length() - 1);
-        content = content.replace("''", "'");
-        return content;
+        return SqlStringLiterals.decode(node.getText());
     }
 
     public static String getIdentifier(final TerminalNode node) {

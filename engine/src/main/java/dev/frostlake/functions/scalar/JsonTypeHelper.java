@@ -28,8 +28,54 @@ public class JsonTypeHelper {
         if (value == null) return null;
         // Already a JsonNode (shouldn't happen but handle defensively)
         if (value instanceof JsonNode) return (JsonNode) value;
-        String s = value.toString().trim();
-        try { return MAPPER.readTree(s); }
-        catch (final Exception e) { return null; }
+        return parseLenient(value.toString().trim());
+    }
+
+    /**
+     * Parse JSON the way Snowflake tolerates it: strictly first, and on failure retry after relaxing two
+     * things a strict parser rejects but Snowflake accepts — an over-escaped quote ({@code \'}, whose
+     * backslash is dropped) and invalid backslash escapes (e.g. a regex {@code \d}, whose backslash is
+     * kept literally). Returns null if it still cannot be parsed.
+     */
+    public static JsonNode parseLenient(final String input) {
+        try {
+            return MAPPER.readTree(input);
+        } catch (final Exception e) {
+            final String relaxed = escapeInvalidBackslashes(input.replace("\\'", "'"));
+            if (!relaxed.equals(input)) {
+                try {
+                    return MAPPER.readTree(relaxed);
+                } catch (final Exception ignored) {
+                    // still not parseable
+                }
+            }
+            return null;
+        }
+    }
+
+    /**
+     * Escape every backslash that does not begin a valid JSON escape (i.e. is not followed by one of the
+     * characters {@code " \ / b f n r t u}), so an invalid escape such as a regex {@code \d} survives
+     * parsing as a literal {@code \d} instead of being rejected. Valid escapes and already-escaped
+     * backslashes are left untouched.
+     */
+    public static String escapeInvalidBackslashes(final String s) {
+        final StringBuilder sb = new StringBuilder(s.length() + 8);
+        for (int i = 0; i < s.length(); i++) {
+            final char c = s.charAt(i);
+            if (c != '\\') {
+                sb.append(c);
+                continue;
+            }
+            final char next = i + 1 < s.length() ? s.charAt(i + 1) : '\0';
+            if (next == '"' || next == '\\' || next == '/' || next == 'b' || next == 'f'
+                    || next == 'n' || next == 'r' || next == 't' || next == 'u') {
+                sb.append(c).append(next);
+                i++;
+            } else {
+                sb.append('\\').append('\\');
+            }
+        }
+        return sb.toString();
     }
 }

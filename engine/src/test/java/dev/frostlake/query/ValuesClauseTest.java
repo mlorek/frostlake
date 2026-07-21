@@ -203,6 +203,24 @@ public class ValuesClauseTest {
     }
 
     @Test
+    public void testSelectStarFromValuesEmptyStringsLabelsColumns() {
+        logger.info("Testing SELECT * FROM VALUES with empty-string tuples labels COLUMN1..n");
+
+        // The reported query: empty-string values still auto-name the columns COLUMN1..COLUMNn.
+        ResultSet rs = engine.executeQuery(
+            "SELECT * FROM VALUES ('', '', '', '', ''), ('', '', '', '', '')");
+
+        assertNotNull(rs, "Result set should not be null");
+        assertEquals(2, rs.getRowCount(), "Should return 2 rows");
+        assertEquals(5, rs.getColumns().size(), "Should have 5 columns");
+        for (int i = 0; i < 5; i++) {
+            assertEquals("COLUMN" + (i + 1), rs.getColumns().get(i).getName(),
+                "Column " + (i + 1) + " should be COLUMN" + (i + 1));
+            assertEquals("", rs.getRows().get(0).getValue(i), "Value should be the empty string");
+        }
+    }
+
+    @Test
     public void testUserQueryExample() {
         logger.info("Testing user's exact query example");
 

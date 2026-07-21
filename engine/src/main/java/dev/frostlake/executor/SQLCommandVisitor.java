@@ -1267,28 +1267,7 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
     }
 
     public String extractStringLiteral(final TerminalNode node) {
-        String text = node.getText();
-        // Remove outer quotes
-        String content = text.substring(1, text.length() - 1);
-        // Unescape: \' -> ', \\ -> \, '' -> '
-        StringBuilder sb = new StringBuilder(content.length());
-        for (int i = 0; i < content.length(); i++) {
-            char c = content.charAt(i);
-            if (c == '\\' && i + 1 < content.length()) {
-                char next = content.charAt(i + 1);
-                if (next == '\'') { sb.append('\''); i++; }
-                else if (next == '\\') { sb.append('\\'); i++; }
-                else if (next == 'n') { sb.append('\n'); i++; }
-                else if (next == 't') { sb.append('\t'); i++; }
-                else if (next == 'r') { sb.append('\r'); i++; }
-                else { sb.append(c); }
-            } else if (c == '\'' && i + 1 < content.length() && content.charAt(i + 1) == '\'') {
-                sb.append('\''); i++; // '' -> '
-            } else {
-                sb.append(c);
-            }
-        }
-        return sb.toString();
+        return SqlStringLiterals.decode(node.getText());
     }
 
     private String extractComment(final FrostlakeParser.CommentClauseContext ctx) {

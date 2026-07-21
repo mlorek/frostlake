@@ -566,4 +566,57 @@ public class SequencesTest extends BaseDatabaseTest {
         ResultSet v2 = engine.executeQuery("SELECT NEXTVAL('seq_inc') as val");
         assertEquals(11L, ((Number) v2.getRows().get(0).getValues().get(0)).longValue());
     }
+
+    @Test
+    public void testNextValDotSyntax() {
+        logger.info("Testing the seq.NEXTVAL pseudo-column syntax");
+        engine.execute("CREATE SEQUENCE dseq START WITH 5 INCREMENT BY 5");
+        assertEquals(5L, ((Number) engine.executeQuery("SELECT dseq.NEXTVAL AS v")
+            .getRows().get(0).getValue(0)).longValue());
+        assertEquals(10L, ((Number) engine.executeQuery("SELECT dseq.NEXTVAL AS v")
+            .getRows().get(0).getValue(0)).longValue());
+    }
+
+    @Test
+    public void testCurrValDotSyntax() {
+        logger.info("Testing the seq.CURRVAL pseudo-column syntax");
+        engine.execute("CREATE SEQUENCE cseq START WITH 1 INCREMENT BY 1");
+        engine.executeQuery("SELECT cseq.NEXTVAL AS v");
+        assertEquals(1L, ((Number) engine.executeQuery("SELECT cseq.CURRVAL AS v")
+            .getRows().get(0).getValue(0)).longValue());
+    }
+
+    @Test
+    public void testSequenceDefaultAppliedOnInsert() {
+        logger.info("Testing a column DEFAULT of seq.NEXTVAL on plain INSERT");
+        engine.execute("CREATE SEQUENCE iseq START WITH 100 INCREMENT BY 1");
+        engine.execute("CREATE TABLE idef (id INTEGER DEFAULT iseq.NEXTVAL, name VARCHAR)");
+        engine.execute("INSERT INTO idef (name) VALUES ('a')");
+        engine.execute("INSERT INTO idef (name) VALUES ('b')");
+
+        ResultSet rs = engine.executeQuery("SELECT id FROM idef ORDER BY id");
+        assertEquals(2, rs.getRowCount());
+        assertEquals(100L, ((Number) rs.getRows().get(0).getValue(0)).longValue());
+        assertEquals(101L, ((Number) rs.getRows().get(1).getValue(0)).longValue());
+    }
+
+    @Test
+    public void testSequenceDefaultAppliedOnMerge() {
+        // The reported scenario: MERGE ... WHEN NOT MATCHED THEN INSERT must apply the seq.NEXTVAL DEFAULT
+        // for omitted columns instead of failing with "column not found <seq.nextval>".
+        logger.info("Testing a sequence column DEFAULT applied by MERGE INSERT");
+        engine.execute("CREATE SEQUENCE mseq START WITH 100 INCREMENT BY 1");
+        engine.execute("CREATE TABLE mtgt (id INTEGER DEFAULT mseq.NEXTVAL, name VARCHAR)");
+        engine.execute("CREATE TABLE msrc (name VARCHAR)");
+        engine.execute("INSERT INTO msrc VALUES ('a'), ('b')");
+
+        engine.execute(
+            "MERGE INTO mtgt t USING msrc s ON t.name = s.name"
+            + " WHEN NOT MATCHED THEN INSERT (name) VALUES (s.name)");
+
+        ResultSet rs = engine.executeQuery("SELECT id FROM mtgt ORDER BY id");
+        assertEquals(2, rs.getRowCount());
+        assertEquals(100L, ((Number) rs.getRows().get(0).getValue(0)).longValue());
+        assertEquals(101L, ((Number) rs.getRows().get(1).getValue(0)).longValue());
+    }
 }

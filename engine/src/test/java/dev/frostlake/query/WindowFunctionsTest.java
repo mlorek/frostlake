@@ -56,6 +56,31 @@ public class WindowFunctionsTest {
     }
 
     @Test
+    public void denseRankMultiKeyOrderByQualifiedAndCast() {
+        // A multi-key window ORDER BY whose keys are QUALIFIED (employees.salary) and a CAST
+        // (employees.name::VARCHAR): every key must participate in the ordering and tie-break, not just
+        // the first bare column. Bob and Charlie tie on salary (95000); the name key separates them.
+        ResultSet result = engine.executeQuery("""
+            SELECT name,
+                   DENSE_RANK() OVER (ORDER BY employees.salary DESC, employees.name::VARCHAR) AS rnk
+            FROM employees
+            ORDER BY rnk
+            """);
+
+        assertEquals(5, result.getRowCount());
+        assertEquals("Alice", result.getRows().get(0).getValue(0));
+        assertEquals(1L, ((Number) result.getRows().get(0).getValue(1)).longValue());
+        assertEquals("Bob", result.getRows().get(1).getValue(0));
+        assertEquals(2L, ((Number) result.getRows().get(1).getValue(1)).longValue());
+        assertEquals("Charlie", result.getRows().get(2).getValue(0));
+        assertEquals(3L, ((Number) result.getRows().get(2).getValue(1)).longValue());
+        assertEquals("David", result.getRows().get(3).getValue(0));
+        assertEquals(4L, ((Number) result.getRows().get(3).getValue(1)).longValue());
+        assertEquals("Eve", result.getRows().get(4).getValue(0));
+        assertEquals(5L, ((Number) result.getRows().get(4).getValue(1)).longValue());
+    }
+
+    @Test
     public void testRowNumber() {
         // ROW_NUMBER assigns unique sequential numbers even with ties
         ResultSet result = engine.executeQuery("""

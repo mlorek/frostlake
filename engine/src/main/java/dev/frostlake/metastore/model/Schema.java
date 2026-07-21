@@ -89,6 +89,10 @@ public class Schema extends SqlObject {
         return table;
     }
 
+    public boolean hasTable(final String name) {
+        return tables.containsKey(name.toUpperCase());
+    }
+
     public List<Table> getTables() {
         return new ArrayList<>(tables.values());
     }
