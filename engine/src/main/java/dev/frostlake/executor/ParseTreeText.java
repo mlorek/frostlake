@@ -60,17 +60,7 @@ public final class ParseTreeText {
     }
 
     public static String getIdentifier(final FrostlakeParser.IdentifierContext ctx) {
-        if (ctx.QUOTED_IDENTIFIER() != null) {
-            String quoted = ctx.QUOTED_IDENTIFIER().getText();
-            return quoted.substring(1, quoted.length() - 1);
-        }
-        if (ctx.POSITIONAL_PARAMETER() != null) {
-            String param = ctx.POSITIONAL_PARAMETER().getText();
-            int position = Integer.parseInt(param.substring(1));
-            return "COLUMN" + position;
-        }
-        // Handle regular identifiers and keywords used as identifiers
-        return ctx.getText();
+        return SqlIdentifiers.canonical(ctx);
     }
 
     public static String getQualifiedName(final FrostlakeParser.QualifiedNameContext ctx) {

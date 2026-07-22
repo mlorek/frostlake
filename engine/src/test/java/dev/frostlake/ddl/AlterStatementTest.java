@@ -309,7 +309,7 @@ public class AlterStatementTest {
 
         final var schema = engine.getCatalog().getDatabase("TEST_DB").getSchema("TEST_SCHEMA");
         // Re-keyed: findable by the new name (MV names are stored verbatim, so no upper-casing here)...
-        assertEquals("mv_new", schema.getMaterializedView("mv_new").getName());
+        assertEquals("MV_NEW", schema.getMaterializedView("mv_new").getName());
         // ...and no longer findable by the old name.
         assertThrows(RuntimeException.class, new Executable() {
             @Override

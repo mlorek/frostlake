@@ -18,6 +18,7 @@ package dev.frostlake.executor.commands;
 
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.executor.QueryExecutor;
+import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.parser.FrostlakeParser;
 import org.antlr.v4.runtime.tree.TerminalNode;
 
@@ -32,14 +33,7 @@ public interface CommandHandler {
      * Get text from identifier or qualified name context
      */
     default String getText(final FrostlakeParser.IdentifierContext ctx) {
-        if (ctx == null) return null;
-        String text = ctx.getText();
-        // Remove quotes if present
-        if ((text.startsWith("\"") && text.endsWith("\"")) ||
-            (text.startsWith("`") && text.endsWith("`"))) {
-            return text.substring(1, text.length() - 1);
-        }
-        return text;
+        return SqlIdentifiers.canonical(ctx);
     }
 
     default String getText(final FrostlakeParser.QualifiedNameContext ctx) {

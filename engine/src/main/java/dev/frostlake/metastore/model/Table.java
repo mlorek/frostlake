@@ -32,6 +32,10 @@ public class Table extends SqlObject {
     private final Map<String, Integer> columnIndex;
     private final boolean isTemporary;
     private final boolean isTransient;
+    // Declared with CREATE HYBRID TABLE. Frostlake stores hybrid tables as ordinary tables (row storage,
+    // constraints not specially enforced); this flag only preserves the declaration for SHOW HYBRID TABLES
+    // and the reported kind.
+    private boolean hybrid;
     private long rowCount;
     private List<String> clusterKeys;
     private String rowAccessPolicyName;  // qualified name of attached row access policy, or null
@@ -107,6 +111,14 @@ public class Table extends SqlObject {
 
     public boolean isTransient() {
         return isTransient;
+    }
+
+    public boolean isHybrid() {
+        return hybrid;
+    }
+
+    public void setHybrid(final boolean hybrid) {
+        this.hybrid = hybrid;
     }
 
     public long getRowCount() {
@@ -218,6 +230,75 @@ public class Table extends SqlObject {
                 primaryKeys.add(colName);
             }
         }
+    }
+
+    // Rebuild a column with different PRIMARY KEY / UNIQUE flags (both are final on TableColumn), carrying
+    // over the rest of its metadata — comment, collation, foreign-key reference and masking policy — so
+    // dropping one constraint never silently discards another that shares the column.
+    private TableColumn copyColumnWithConstraintFlags(final TableColumn oldColumn,
+                                                      final boolean primaryKey, final boolean unique) {
+        final TableColumn newColumn = new TableColumn(oldColumn.getName(), oldColumn.getDataType(),
+                oldColumn.isNullable(), oldColumn.getDefaultValue(), primaryKey, unique,
+                oldColumn.isAutoIncrement());
+        newColumn.setComment(oldColumn.getComment());
+        newColumn.setCollation(oldColumn.getCollation());
+        newColumn.setReferencedTable(oldColumn.getReferencedTable());
+        newColumn.setReferencedColumn(oldColumn.getReferencedColumn());
+        newColumn.setOnDelete(oldColumn.getOnDelete());
+        newColumn.setOnUpdate(oldColumn.getOnUpdate());
+        newColumn.setRely(oldColumn.getRely());
+        newColumn.setMaskingPolicyName(oldColumn.getMaskingPolicyName());
+        return newColumn;
+    }
+
+    public void dropPrimaryKey() {
+        for (int i = 0; i < columns.size(); i++) {
+            final TableColumn oldColumn = columns.get(i);
+            if (oldColumn.isPrimaryKey()) {
+                columns.set(i, copyColumnWithConstraintFlags(oldColumn, false, oldColumn.isUnique()));
+            }
+        }
+        primaryKeys.clear();
+    }
+
+    public void dropUnique(final List<String> columnNames) {
+        for (final String colName : columnNames) {
+            final Integer index = columnIndex.get(colName.toUpperCase());
+            if (index == null) {
+                throw new RuntimeException("Column does not exist: " + colName);
+            }
+            final TableColumn oldColumn = columns.get(index);
+            if (oldColumn.isUnique()) {
+                columns.set(index, copyColumnWithConstraintFlags(oldColumn, oldColumn.isPrimaryKey(), false));
+            }
+        }
+    }
+
+    // Drop the FOREIGN KEY whose column list matches (ALTER TABLE ... DROP FOREIGN KEY (cols)): remove the
+    // constraint record and clear the reference metadata on those columns so it no longer surfaces.
+    public void dropForeignKeyColumns(final List<String> columnNames) {
+        final List<String> target = upperCased(columnNames);
+        for (int i = foreignKeys.size() - 1; i >= 0; i--) {
+            if (upperCased(foreignKeys.get(i).getColumnNames()).equals(target)) {
+                foreignKeys.remove(i);
+            }
+        }
+        for (final String colName : columnNames) {
+            final Integer index = columnIndex.get(colName.toUpperCase());
+            if (index != null) {
+                final TableColumn col = columns.get(index);
+                col.setReferencedTable(null);
+                col.setReferencedColumn(null);
+            }
+        }
+    }
+
+    private List<String> upperCased(final List<String> names) {
+        final List<String> out = new ArrayList<>(names.size());
+        for (final String n : names) {
+            out.add(n.toUpperCase());
+        }
+        return out;
     }
 
     public void addUniqueConstraint(final List<String> columnNames) {

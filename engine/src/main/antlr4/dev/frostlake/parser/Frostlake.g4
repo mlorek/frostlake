@@ -43,7 +43,7 @@ undropStatement
 createStatement
     : CREATE or_replace? DATABASE if_not_exists? identifier (CLONE identifier)? (DATA_RETENTION_TIME_IN_DAYS EQ INTEGER_LITERAL)? commentClause? SEMI?
     | CREATE or_replace? SCHEMA if_not_exists? qualifiedName (CLONE qualifiedName)? commentClause? SEMI?
-    | CREATE or_replace? (TRANSIENT | TEMPORARY | TEMP)? TABLE if_not_exists? objectName commentClause? clusterByClause? (LPAREN columnList RPAREN | CLONE qualifiedName | columnListOptional? AS selectStatement) clusterByClause? commentClause? SEMI?
+    | CREATE or_replace? (TRANSIENT | TEMPORARY | TEMP | HYBRID)? TABLE if_not_exists? objectName commentClause? clusterByClause? (LPAREN columnList RPAREN | CLONE qualifiedName | columnListOptional? AS selectStatement) clusterByClause? commentClause? SEMI?
     | CREATE or_replace? SECURE? VIEW if_not_exists? qualifiedName (LPAREN viewColumnList RPAREN)? commentClause? AS selectStatement commentClause? SEMI?
     | CREATE or_replace? SECURE? MATERIALIZED VIEW if_not_exists? qualifiedName (LPAREN viewColumnList RPAREN)? commentClause? AS selectStatement commentClause? SEMI?
     | CREATE or_replace? DYNAMIC TABLE if_not_exists? qualifiedName dynamicTableOptions AS selectStatement commentClause? SEMI?
@@ -385,6 +385,7 @@ bodyDefinition
 
 taskBody
     : sqlStatement                // Raw SQL statement
+    | callStatement               // CALL <procedure>(...) — a task that just invokes a stored procedure
     | executeImmediateStatement   // EXECUTE IMMEDIATE expression
     | bodyDefinition              // String literal (single or dollar-quoted)
     ;
@@ -675,6 +676,9 @@ tableAction
     | CLUSTER BY LPAREN expressionList RPAREN
     | ADD tableConstraint
     | DROP CONSTRAINT identifier
+    | DROP PRIMARY KEY
+    | DROP UNIQUE LPAREN identifierList RPAREN
+    | DROP FOREIGN KEY LPAREN identifierList RPAREN
     | ALTER COLUMN identifier SET MASKING POLICY qualifiedName (USING LPAREN identifierList RPAREN)?
     | ALTER COLUMN identifier UNSET MASKING POLICY
     | ADD ROW ACCESS POLICY qualifiedName ON LPAREN identifierList RPAREN
@@ -1264,6 +1268,7 @@ showStatement
     | SHOW VIEWS (LIKE STRING_LITERAL)? (IN (DATABASE | SCHEMA)? qualifiedName)? SEMI?
     | SHOW MATERIALIZED VIEWS (LIKE STRING_LITERAL)? (IN (DATABASE | SCHEMA)? qualifiedName)? SEMI?
     | SHOW DYNAMIC TABLES (LIKE STRING_LITERAL)? (IN (DATABASE | SCHEMA)? qualifiedName)? SEMI?
+    | SHOW HYBRID TABLES (LIKE STRING_LITERAL)? (IN (DATABASE | SCHEMA)? qualifiedName)? SEMI?
     | SHOW COLUMNS (IN | FROM) TABLE? qualifiedName SEMI?
     | SHOW STREAMS (LIKE STRING_LITERAL)? (IN (DATABASE | SCHEMA | ACCOUNT)? qualifiedName)? SEMI?
     | SHOW TASKS (LIKE STRING_LITERAL)? (IN (DATABASE | SCHEMA | ACCOUNT)? qualifiedName)? SEMI?
@@ -1697,6 +1702,7 @@ identifier
     | GROUPING      // Allow GROUPING as identifier (function name)
     | HOUR          // Allow HOUR as identifier (can be column name)
     | HOURS         // Allow HOURS as identifier (can be column name)
+    | HYBRID        // Allow HYBRID as identifier (also a CREATE [HYBRID] TABLE modifier)
     | IGNORE        // Allow IGNORE as identifier (also FIRST_VALUE(...) IGNORE NULLS)
     | RESPECT       // Allow RESPECT as identifier (also FIRST_VALUE(...) RESPECT NULLS)
     | INCREMENTAL   // Allow INCREMENTAL as identifier
@@ -2124,6 +2130,7 @@ MULTI_STATEMENT_COUNT: M U L T I UNDERSCORE S T A T E M E N T UNDERSCORE C O U N
 CLUSTER: C L U S T E R;
 COLLATE: C O L L A T E;
 TRANSIENT: T R A N S I E N T;
+HYBRID: H Y B R I D;
 TEMPORARY: T E M P O R A R Y;
 TEMP: T E M P;
 REPLACE: R E P L A C E;

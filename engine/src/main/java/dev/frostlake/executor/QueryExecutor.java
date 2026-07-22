@@ -1643,7 +1643,9 @@ public class QueryExecutor {
             }
             return nameVal.toString();
         }
-        return ctx.qualifiedName().getText();
+        // Fold the identifier parts (unquoted -> upper-case, quoted preserved) rather than returning the
+        // raw text, so a created object's canonical name matches Snowflake.
+        return getQualifiedName(ctx.qualifiedName());
     }
 
     /** Re-key a renamed table's row storage: the new name keeps the old table's database/schema. */
@@ -3796,10 +3798,12 @@ public class QueryExecutor {
                 Table t = entry.getValue();
                 for (int i = 0; i < t.getColumns().size(); i++) {
                     String colName = t.getColumns().get(i).getName();
-                    lateralContext.put(colName, leftRow.getValue(offset + i));
+                    // Keys are upper-cased so a lateral/correlated reference matches regardless of the
+                    // case its alias and column were written in (references now fold to upper-case).
+                    lateralContext.put(colName.toUpperCase(), leftRow.getValue(offset + i));
                     // Also add with table prefix and alias prefix
-                    lateralContext.put(t.getName() + "." + colName, leftRow.getValue(offset + i));
-                    lateralContext.put(alias + "." + colName, leftRow.getValue(offset + i));
+                    lateralContext.put((t.getName() + "." + colName).toUpperCase(), leftRow.getValue(offset + i));
+                    lateralContext.put((alias + "." + colName).toUpperCase(), leftRow.getValue(offset + i));
                 }
                 offset += t.getColumns().size();
             }

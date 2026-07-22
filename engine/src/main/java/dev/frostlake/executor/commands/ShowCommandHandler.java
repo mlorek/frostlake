@@ -75,6 +75,15 @@ public class ShowCommandHandler implements CommandHandler {
             String schemaName = null;
             if (ctx.qualifiedName() != null) schemaName = getText(ctx.qualifiedName());
             return showExecutor.showDynamicTables(schemaName);
+        } else if (ctx.HYBRID() != null && ctx.TABLES() != null) {
+            if (ctx.DATABASE() != null && ctx.qualifiedName() != null) {
+                return showExecutor.showHybridTablesInDatabase(getText(ctx.qualifiedName()));
+            }
+            String schemaName = null;
+            if (ctx.IN() != null && ctx.qualifiedName() != null) {
+                schemaName = getText(ctx.qualifiedName());
+            }
+            return showExecutor.showHybridTables(schemaName);
         } else if (ctx.TABLES() != null) {
             if (ctx.DATABASE() != null && ctx.qualifiedName() != null) {
                 return showExecutor.showTablesInDatabase(getText(ctx.qualifiedName()));

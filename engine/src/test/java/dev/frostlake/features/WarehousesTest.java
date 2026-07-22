@@ -62,7 +62,7 @@ public class WarehousesTest {
 
         Warehouse wh = engine.getCatalog().getWarehouse("test_wh");
         assertNotNull(wh);
-        assertEquals("test_wh", wh.getName());
+        assertEquals("TEST_WH", wh.getName());
         assertEquals(WarehouseSize.SMALL, wh.getSize());
         assertEquals(WarehouseState.SUSPENDED, wh.getState());
     }

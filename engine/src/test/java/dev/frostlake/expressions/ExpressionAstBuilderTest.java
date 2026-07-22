@@ -75,8 +75,8 @@ public class ExpressionAstBuilderTest {
 
     @Test
     public void testColumnReferences() {
-        assertEquals("name", ast("name"));
-        assertEquals("u.name", ast("u.name"));
+        assertEquals("NAME", ast("name"));
+        assertEquals("U.NAME", ast("u.name"));
     }
 
     @Test
@@ -88,22 +88,22 @@ public class ExpressionAstBuilderTest {
 
     @Test
     public void testComparisonsAndLogical() {
-        assertEquals("(a > 1)", ast("a > 1"));
-        assertEquals("(a >= 1)", ast("a >= 1"));
-        assertEquals("((a = 1) AND (b = 2))", ast("a = 1 AND b = 2"));
-        assertEquals("((a = 1) OR (b = 2))", ast("a = 1 OR b = 2"));
+        assertEquals("(A > 1)", ast("a > 1"));
+        assertEquals("(A >= 1)", ast("a >= 1"));
+        assertEquals("((A = 1) AND (B = 2))", ast("a = 1 AND b = 2"));
+        assertEquals("((A = 1) OR (B = 2))", ast("a = 1 OR b = 2"));
     }
 
     @Test
     public void testLogicalPrecedence() {
         // AND binds tighter than OR.
-        assertEquals("((a AND b) OR c)", ast("a AND b OR c"));
+        assertEquals("((A AND B) OR C)", ast("a AND b OR c"));
     }
 
     @Test
     public void testUnary() {
-        assertEquals("(NOT active)", ast("NOT active"));
-        assertEquals("(NOT (a = b))", ast("NOT (a = b)"));
+        assertEquals("(NOT ACTIVE)", ast("NOT active"));
+        assertEquals("(NOT (A = B))", ast("NOT (a = b)"));
         assertEquals("(- 5)", ast("-5"));
         assertEquals("5", ast("+5"));
     }
@@ -117,63 +117,63 @@ public class ExpressionAstBuilderTest {
 
     @Test
     public void testIsNull() {
-        assertEquals("(a IS NULL)", ast("a IS NULL"));
-        assertEquals("(a IS NOT NULL)", ast("a IS NOT NULL"));
+        assertEquals("(A IS NULL)", ast("a IS NULL"));
+        assertEquals("(A IS NOT NULL)", ast("a IS NOT NULL"));
     }
 
     @Test
     public void testLike() {
-        assertEquals("(name LIKE 'a%')", ast("name LIKE 'a%'"));
-        assertEquals("(name NOT LIKE 'a%')", ast("name NOT LIKE 'a%'"));
-        assertEquals("(name ILIKE 'a%')", ast("name ILIKE 'a%'"));
-        assertEquals("(name NOT ILIKE 'a%')", ast("name NOT ILIKE 'a%'"));
+        assertEquals("(NAME LIKE 'a%')", ast("name LIKE 'a%'"));
+        assertEquals("(NAME NOT LIKE 'a%')", ast("name NOT LIKE 'a%'"));
+        assertEquals("(NAME ILIKE 'a%')", ast("name ILIKE 'a%'"));
+        assertEquals("(NAME NOT ILIKE 'a%')", ast("name NOT ILIKE 'a%'"));
         // The ESCAPE char is carried on the LIKE node (honored at evaluation) but not shown in toString.
-        assertEquals("(name LIKE 'a%')", ast("name LIKE 'a%' ESCAPE '!'"));
+        assertEquals("(NAME LIKE 'a%')", ast("name LIKE 'a%' ESCAPE '!'"));
     }
 
     @Test
     public void testBetween() {
-        assertEquals("(x BETWEEN 1 AND 10)", ast("x BETWEEN 1 AND 10"));
-        assertEquals("(x NOT BETWEEN 1 AND 10)", ast("x NOT BETWEEN 1 AND 10"));
+        assertEquals("(X BETWEEN 1 AND 10)", ast("x BETWEEN 1 AND 10"));
+        assertEquals("(X NOT BETWEEN 1 AND 10)", ast("x NOT BETWEEN 1 AND 10"));
     }
 
     @Test
     public void testInList() {
-        assertEquals("(x IN (1, 2, 3))", ast("x IN (1, 2, 3)"));
-        assertEquals("(x NOT IN (1, 2))", ast("x NOT IN (1, 2)"));
+        assertEquals("(X IN (1, 2, 3))", ast("x IN (1, 2, 3)"));
+        assertEquals("(X NOT IN (1, 2))", ast("x NOT IN (1, 2)"));
     }
 
     // ---- Phase 1: CASE / CAST ----
 
     @Test
     public void testSearchedCase() {
-        assertEquals("(CASE WHEN (a > 1) THEN 'big' ELSE 'small' END)",
+        assertEquals("(CASE WHEN (A > 1) THEN 'big' ELSE 'small' END)",
             ast("CASE WHEN a > 1 THEN 'big' ELSE 'small' END"));
-        assertEquals("(CASE WHEN a THEN 1 END)", ast("CASE WHEN a THEN 1 END"));
+        assertEquals("(CASE WHEN A THEN 1 END)", ast("CASE WHEN a THEN 1 END"));
     }
 
     @Test
     public void testSimpleCase() {
         // CASE <operand> WHEN v ... rewrites each WHEN into (operand = v).
-        assertEquals("(CASE WHEN (x = 1) THEN 'one' WHEN (x = 2) THEN 'two' ELSE 'other' END)",
+        assertEquals("(CASE WHEN (X = 1) THEN 'one' WHEN (X = 2) THEN 'two' ELSE 'other' END)",
             ast("CASE x WHEN 1 THEN 'one' WHEN 2 THEN 'two' ELSE 'other' END"));
     }
 
     @Test
     public void testCast() {
-        assertEquals("(x :: INT)", ast("x :: INT"));
-        assertEquals("(x :: VARCHAR)", ast("CAST(x AS VARCHAR)"));
-        assertEquals("(y :: NUMBER(10,2))", ast("y :: NUMBER(10,2)"));
+        assertEquals("(X :: INT)", ast("x :: INT"));
+        assertEquals("(X :: VARCHAR)", ast("CAST(x AS VARCHAR)"));
+        assertEquals("(Y :: NUMBER(10,2))", ast("y :: NUMBER(10,2)"));
     }
 
     // ---- Phase 1: functions, JSON, access, interval, vars ----
 
     @Test
     public void testFunctionCalls() {
-        assertEquals("COALESCE(a, b, 0)", ast("COALESCE(a, b, 0)"));
+        assertEquals("COALESCE(A, B, 0)", ast("COALESCE(a, b, 0)"));
         assertEquals("ABS(5)", ast("ABS(5)"));
         assertEquals("COUNT(*)", ast("COUNT(*)"));
-        assertEquals("COUNT(DISTINCT x)", ast("COUNT(DISTINCT x)"));
+        assertEquals("COUNT(DISTINCT X)", ast("COUNT(DISTINCT x)"));
     }
 
     @Test
@@ -184,9 +184,9 @@ public class ExpressionAstBuilderTest {
 
     @Test
     public void testAccessPaths() {
-        assertEquals("(data:name)", ast("data:name"));
-        assertEquals("(data:addr.city)", ast("data:addr.city"));
-        assertEquals("(arr[0])", ast("arr[0]"));
+        assertEquals("(DATA:name)", ast("data:name"));
+        assertEquals("(DATA:addr.city)", ast("data:addr.city"));
+        assertEquals("(ARR[0])", ast("arr[0]"));
     }
 
     @Test
@@ -203,7 +203,7 @@ public class ExpressionAstBuilderTest {
         assertEquals("CURRENT_TIMESTAMP()", ast("CURRENT_TIMESTAMP"));
         assertEquals("CURRENT_USER()", ast("CURRENT_USER"));
         assertEquals("SYSTEM$STREAM_HAS_DATA('s1')", ast("SYSTEM$STREAM_HAS_DATA('s1')"));
-        assertEquals("SYSTEM$TYPEOF(x)", ast("SYSTEM$TYPEOF(x)"));
+        assertEquals("SYSTEM$TYPEOF(X)", ast("SYSTEM$TYPEOF(x)"));
     }
 
     // ---- Phase 1: subqueries ----
@@ -212,17 +212,17 @@ public class ExpressionAstBuilderTest {
     public void testSubqueriesAndExists() {
         assertEquals("(subquery SELECT max(x) FROM t)", ast("(SELECT max(x) FROM t)"));
         assertEquals("(EXISTS (subquery SELECT 1 FROM t))", ast("EXISTS (SELECT 1 FROM t)"));
-        assertEquals("(x IN ((subquery SELECT y FROM t)))", ast("x IN (SELECT y FROM t)"));
-        assertEquals("(x > ALL (subquery SELECT y FROM t))", ast("x > ALL (SELECT y FROM t)"));
+        assertEquals("(X IN ((subquery SELECT y FROM t)))", ast("x IN (SELECT y FROM t)"));
+        assertEquals("(X > ALL (subquery SELECT y FROM t))", ast("x > ALL (SELECT y FROM t)"));
     }
 
     // ---- Deferred constructs must fail loudly ----
 
     @Test
     public void testTupleIn() {
-        assertEquals("((a, b) IN (1, 2))", ast("(a, b) IN (1, 2)"));
-        assertEquals("((a, b) NOT IN (1, 2, 3, 4))", ast("(a, b) NOT IN (1, 2, 3, 4)"));
-        assertEquals("((a, b) IN ((subquery SELECT x, y FROM t)))", ast("(a, b) IN (SELECT x, y FROM t)"));
+        assertEquals("((A, B) IN (1, 2))", ast("(a, b) IN (1, 2)"));
+        assertEquals("((A, B) NOT IN (1, 2, 3, 4))", ast("(a, b) NOT IN (1, 2, 3, 4)"));
+        assertEquals("((A, B) IN ((subquery SELECT x, y FROM t)))", ast("(a, b) IN (SELECT x, y FROM t)"));
     }
 
     // A window function nested in an expression now builds a WindowFunctionExpression node (keyed by its
@@ -245,7 +245,7 @@ public class ExpressionAstBuilderTest {
     @Test
     public void testNamedArguments() {
         assertEquals("FOO(x => 1)", ast("foo(x => 1)"));
-        assertEquals("FOO(a, x => 1)", ast("foo(a, x => 1)"));
+        assertEquals("FOO(A, x => 1)", ast("foo(a, x => 1)"));
         assertEquals("FOO(a => 1, b => 2)", ast("foo(a => 1, b => 2)"));
     }
 

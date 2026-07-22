@@ -34,6 +34,7 @@ public class TableSnapshot implements Serializable {
     // TEMPORARY / TRANSIENT table flags. Primitives default to false on old snapshots (a permanent table).
     public boolean temporary;
     public boolean isTransient;
+    public boolean hybrid;
     // CLUSTER BY keys and table-level FOREIGN KEY constraints. Null on old snapshots — restore null-guards.
     public List<String> clusterKeys;
     public List<ForeignKeyConstraintSnapshot> foreignKeys;

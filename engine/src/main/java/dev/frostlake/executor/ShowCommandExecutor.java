@@ -98,6 +98,14 @@ public class ShowCommandExecutor {
         return relationalExecutor.showTablesInDatabase(databaseName);
     }
 
+    public ResultSet showHybridTables(final String schemaName) {
+        return relationalExecutor.showHybridTables(schemaName);
+    }
+
+    public ResultSet showHybridTablesInDatabase(final String databaseName) {
+        return relationalExecutor.showHybridTablesInDatabase(databaseName);
+    }
+
     public ResultSet showViewsInDatabase(final String databaseName) {
         return relationalExecutor.showViewsInDatabase(databaseName);
     }

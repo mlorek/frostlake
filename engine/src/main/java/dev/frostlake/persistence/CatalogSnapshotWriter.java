@@ -77,6 +77,7 @@ final class CatalogSnapshotWriter {
                     tableSnapshot.createdAt = table.getCreatedTime();
                     tableSnapshot.temporary = table.isTemporary();
                     tableSnapshot.isTransient = table.isTransient();
+                    tableSnapshot.hybrid = table.isHybrid();
                     tableSnapshot.clusterKeys = table.getClusterKeys() != null && !table.getClusterKeys().isEmpty()
                         ? new ArrayList<>(table.getClusterKeys()) : null;
 

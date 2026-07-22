@@ -87,6 +87,8 @@ public class CreateInfrastructureHandler implements CommandHandler {
             String sqlText;
             if (ctx.taskBody().sqlStatement() != null) {
                 sqlText = ddl.getOriginalText(ctx.taskBody().sqlStatement());
+            } else if (ctx.taskBody().callStatement() != null) {
+                sqlText = ddl.getOriginalText(ctx.taskBody().callStatement());
             } else if (ctx.taskBody().executeImmediateStatement() != null) {
                 sqlText = ddl.getOriginalText(ctx.taskBody().executeImmediateStatement());
             } else if (ctx.taskBody().bodyDefinition() != null) {

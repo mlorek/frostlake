@@ -88,7 +88,7 @@ public class StagesTest {
 
         Stage stage = engine.getCatalog().getStage("my_stage");
         assertNotNull(stage);
-        assertEquals("my_stage", stage.getName());
+        assertEquals("MY_STAGE", stage.getName());
         assertEquals(StageType.INTERNAL, stage.getType());
         assertEquals("file://" + testStageDir, stage.getUrl());
     }
@@ -345,7 +345,7 @@ public class StagesTest {
 
         boolean foundMyStage = false;
         for (final Stage stage : stages) {
-            if ("my_stage".equals(stage.getName())) {
+            if ("MY_STAGE".equals(stage.getName())) {
                 foundMyStage = true;
                 break;
             }

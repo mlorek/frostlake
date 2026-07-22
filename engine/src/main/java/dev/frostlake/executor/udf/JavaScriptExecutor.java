@@ -62,7 +62,11 @@ public class JavaScriptExecutor {
         final ScriptEngine engine = threadEngine();
         try {
             for (int i = 0; i < parameters.size(); i++) {
-                engine.put(parameters.get(i).getName(), arguments.get(i));
+                // Expose each argument under its canonical (upper-cased) name and its lower-cased form, so a
+                // body may reference the parameter in either case (Snowflake folds arg names to upper-case).
+                final String paramName = parameters.get(i).getName();
+                engine.put(paramName, arguments.get(i));
+                engine.put(paramName.toLowerCase(), arguments.get(i));
             }
             final String wrappedCode = wrap(function.getBody().trim());
             final Object result = engine instanceof Compilable

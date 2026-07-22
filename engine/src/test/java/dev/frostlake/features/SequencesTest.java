@@ -43,7 +43,7 @@ public class SequencesTest extends BaseDatabaseTest {
         ResultSet sequences = engine.executeQuery("SHOW SEQUENCES");
         assertNotNull(sequences);
         assertEquals(1, sequences.getRowCount());
-        assertEquals("seq1", sequences.getRows().get(0).getValue(sequences.getColumnIndex("name")));
+        assertEquals("SEQ1", sequences.getRows().get(0).getValue(sequences.getColumnIndex("name")));
         logger.info("Created sequence: seq1");
     }
 
@@ -56,7 +56,7 @@ public class SequencesTest extends BaseDatabaseTest {
         ResultSet sequences = engine.executeQuery("SHOW SEQUENCES");
         assertNotNull(sequences);
         assertEquals(1, sequences.getRowCount());
-        assertEquals("seq_custom", sequences.getRows().get(0).getValue(sequences.getColumnIndex("name")));
+        assertEquals("SEQ_CUSTOM", sequences.getRows().get(0).getValue(sequences.getColumnIndex("name")));
         assertEquals(100L, sequences.getRows().get(0).getValue(sequences.getColumnIndex("start_value")));
         assertEquals(5L, sequences.getRows().get(0).getValue(sequences.getColumnIndex("increment")));
         logger.info("Created sequence with START=100, INCREMENT=5");

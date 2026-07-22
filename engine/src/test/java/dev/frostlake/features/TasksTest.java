@@ -24,6 +24,7 @@ import dev.frostlake.metastore.model.Stream;
 import dev.frostlake.metastore.model.Task;
 import dev.frostlake.metastore.model.TaskExecution;
 import dev.frostlake.metastore.model.TaskState;
+import dev.frostlake.storage.ResultSet;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -168,5 +169,33 @@ public class TasksTest extends BaseDatabaseTest {
 
         assertEquals(2, stream.getUnconsumedCount());
         assertEquals(TaskState.SUSPENDED, task.getState());
+    }
+
+    @Test
+    public void testCreateTaskWithCallBodyExecutesProcedure() {
+        // A task whose body is just CALL <procedure>() — a very common Snowflake pattern.
+        engine.execute("CREATE TABLE ran_marker (v VARCHAR)");
+        engine.execute("""
+            CREATE OR REPLACE PROCEDURE refresh_data() RETURNS VARCHAR LANGUAGE SQL AS
+            BEGIN INSERT INTO ran_marker VALUES ('ran'); RETURN 'ok'; END
+            """);
+        engine.execute("""
+            CREATE OR REPLACE TASK refresh_task
+            SCHEDULE = 'USING CRON 0 0 * * * UTC'
+            USER_TASK_MANAGED_INITIAL_WAREHOUSE_SIZE = 'XSMALL'
+            AS
+            CALL refresh_data()
+            """);
+
+        final Task task = engine.getCatalog().getDatabase("test_db").getSchema("test_schema").getTask("refresh_task");
+        assertNotNull(task);
+        assertTrue(task.getSqlStatement().toUpperCase().contains("CALL"), "task body should be the CALL statement");
+
+        engine.execute("ALTER TASK refresh_task RESUME");
+        engine.execute("EXECUTE TASK refresh_task");
+
+        final ResultSet rs = engine.executeQuery("SELECT COUNT(*) FROM ran_marker");
+        assertEquals(1, ((Number) rs.getRows().get(0).getValue(0)).intValue(),
+            "the CALL body should have executed the procedure");
     }
 }

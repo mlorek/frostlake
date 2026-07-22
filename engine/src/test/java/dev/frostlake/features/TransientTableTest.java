@@ -177,7 +177,7 @@ public class TransientTableTest {
         assertNotNull(table);
         assertTrue(table.isTransient());
         assertEquals(1, table.getPrimaryKeys().size());
-        assertEquals("id", table.getPrimaryKeys().get(0));
+        assertEquals("ID", table.getPrimaryKeys().get(0));
 
         logger.info("TRANSIENT table with constraints works correctly");
     }

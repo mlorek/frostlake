@@ -85,7 +85,7 @@ public class InformationSchemaExample {
             ResultSet columns = engine.executeQuery("""
                 SELECT COLUMN_NAME, DATA_TYPE, ORDINAL_POSITION
                 FROM INFORMATION_SCHEMA.COLUMNS
-                WHERE TABLE_NAME = 'employees'
+                WHERE TABLE_NAME = 'EMPLOYEES'
                 ORDER BY ORDINAL_POSITION
                 """);
             for (final Row row : columns.getRows()) {

@@ -284,6 +284,7 @@ final class CatalogSnapshotReader {
 
                 Table table = new Table(tableSnapshot.name, columns,
                     tableSnapshot.temporary, tableSnapshot.isTransient);
+                table.setHybrid(tableSnapshot.hybrid);
                 table.setComment(tableSnapshot.comment);
                 if (tableSnapshot.clusterKeys != null) {
                     table.setClusterKeys(tableSnapshot.clusterKeys);

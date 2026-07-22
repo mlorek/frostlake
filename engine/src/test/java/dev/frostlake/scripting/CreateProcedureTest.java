@@ -56,8 +56,8 @@ public class CreateProcedureTest {
         assertNotNull(proc, "Procedure should be created");
         assertEquals("UPDATE_DATA", proc.getName());
         assertEquals(2, proc.getParameters().size());
-        assertEquals("id", proc.getParameters().get(0).getName());
-        assertEquals("value", proc.getParameters().get(1).getName());
+        assertEquals("ID", proc.getParameters().get(0).getName());
+        assertEquals("VALUE", proc.getParameters().get(1).getName());
         assertEquals("UPDATE statement", proc.getBody());
     }
 
@@ -122,9 +122,9 @@ public class CreateProcedureTest {
         assertNotNull(proc, "Procedure should be created");
         assertEquals("INSERT_RECORD", proc.getName());
         assertEquals(3, proc.getParameters().size());
-        assertEquals("name", proc.getParameters().get(0).getName());
-        assertEquals("age", proc.getParameters().get(1).getName());
-        assertEquals("active", proc.getParameters().get(2).getName());
+        assertEquals("NAME", proc.getParameters().get(0).getName());
+        assertEquals("AGE", proc.getParameters().get(1).getName());
+        assertEquals("ACTIVE", proc.getParameters().get(2).getName());
         assertEquals("INSERT statement", proc.getBody());
     }
 
@@ -193,7 +193,7 @@ public class CreateProcedureTest {
         assertNotNull(proc, "Procedure should be created");
         assertEquals("CHECK_VALUE", proc.getName());
         assertEquals(1, proc.getParameters().size());
-        assertEquals("max_count", proc.getParameters().get(0).getName());
+        assertEquals("MAX_COUNT", proc.getParameters().get(0).getName());
         assertTrue(proc.getBody().contains("IF"), "Body should contain IF statement");
         assertTrue(proc.getBody().contains("ELSE"), "Body should contain ELSE clause");
         assertTrue(proc.getBody().contains("END IF"), "Body should contain END IF");
@@ -225,7 +225,7 @@ public class CreateProcedureTest {
         assertNotNull(proc, "Procedure should be created");
         assertEquals("PROCESS_WITH_LOOP", proc.getName());
         assertEquals(1, proc.getParameters().size());
-        assertEquals("max_iterations", proc.getParameters().get(0).getName());
+        assertEquals("MAX_ITERATIONS", proc.getParameters().get(0).getName());
 
         // Verify return type is OBJECT
         assertNotNull(proc.getReturnType(), "Return type should not be null");

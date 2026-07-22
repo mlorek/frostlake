@@ -16,6 +16,7 @@
 
 package dev.frostlake.executor.expressions;
 
+import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.executor.SqlStringLiterals;
 import dev.frostlake.parser.FrostlakeBaseVisitor;
 import dev.frostlake.parser.FrostlakeParser;
@@ -101,15 +102,15 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
     public Expression visitQualifiedNameExpr(final FrostlakeParser.QualifiedNameExprContext ctx) {
         final List<FrostlakeParser.IdentifierContext> parts = ctx.qualifiedName().identifier();
         if (parts.size() == 1) {
-            return new ColumnReferenceExpression(parts.get(0).getText());
+            return new ColumnReferenceExpression(SqlIdentifiers.canonical(parts.get(0)));
         }
-        final String column = parts.get(parts.size() - 1).getText();
+        final String column = SqlIdentifiers.canonical(parts.get(parts.size() - 1));
         final StringBuilder table = new StringBuilder();
         for (int i = 0; i < parts.size() - 1; i++) {
             if (i > 0) {
                 table.append('.');
             }
-            table.append(parts.get(i).getText());
+            table.append(SqlIdentifiers.canonical(parts.get(i)));
         }
         return new ColumnReferenceExpression(table.toString(), column);
     }

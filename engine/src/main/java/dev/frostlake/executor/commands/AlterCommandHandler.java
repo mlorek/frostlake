@@ -256,6 +256,26 @@ public class AlterCommandHandler implements CommandHandler {
                         String constraintName = visitor.getText(ctx.tableAction().identifier(0));
                         table.dropForeignKey(constraintName);
                         logger.trace("Dropped constraint {} from table {}", constraintName, tableName);
+                    } else if (ctx.tableAction().DROP() != null && ctx.tableAction().PRIMARY() != null) {
+                        // DROP PRIMARY KEY
+                        table.dropPrimaryKey();
+                        logger.trace("Dropped PRIMARY KEY from table {}", tableName);
+                    } else if (ctx.tableAction().DROP() != null && ctx.tableAction().UNIQUE() != null) {
+                        // DROP UNIQUE (cols)
+                        List<String> columns = new ArrayList<>();
+                        for (final FrostlakeParser.IdentifierContext idCtx : ctx.tableAction().identifierList().identifier()) {
+                            columns.add(visitor.getText(idCtx));
+                        }
+                        table.dropUnique(columns);
+                        logger.trace("Dropped UNIQUE {} from table {}", columns, tableName);
+                    } else if (ctx.tableAction().DROP() != null && ctx.tableAction().FOREIGN() != null) {
+                        // DROP FOREIGN KEY (cols)
+                        List<String> columns = new ArrayList<>();
+                        for (final FrostlakeParser.IdentifierContext idCtx : ctx.tableAction().identifierList().identifier()) {
+                            columns.add(visitor.getText(idCtx));
+                        }
+                        table.dropForeignKeyColumns(columns);
+                        logger.trace("Dropped FOREIGN KEY {} from table {}", columns, tableName);
                     } else if (ctx.tableAction().RENAME() != null && ctx.tableAction().COLUMN() != null) {
                         // RENAME COLUMN
                         String oldName = visitor.getText(ctx.tableAction().identifier(0));

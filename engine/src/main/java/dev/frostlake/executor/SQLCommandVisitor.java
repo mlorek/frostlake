@@ -1047,8 +1047,24 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
             // on the shared procedural executor (so its RETURN / control flow / statements actually
             // run — not merely logged), and surface the RETURN value. Parameters are declared in a
             // dedicated scope so they don't leak past the CALL.
+            //
+            // Run the body with the procedure's home database/schema as the current context, so an
+            // unqualified/partially-qualified reference inside (e.g. UTILS.IS_VALID_TIER, or a bare table)
+            // resolves relative to where the procedure lives — matching Snowflake — rather than against the
+            // caller's current database. Restored in the finally.
+            final String savedDb = catalog.getCurrentDatabase();
+            final String savedSchema = catalog.getCurrentSchema();
+            final String homeDb = parts.length == 3 ? parts[0] : savedDb;
+            final String homeSchema = parts.length == 3 ? parts[1]
+                : parts.length == 2 ? parts[0] : savedSchema;
             proceduralExecutor.enterScope();
             try {
+                if (homeDb != null) {
+                    catalog.useDatabase(homeDb);
+                    if (homeSchema != null) {
+                        catalog.useSchema(homeSchema);
+                    }
+                }
                 for (int i = 0; i < params.size(); i++) {
                     proceduralExecutor.markDeclaredInCurrentScope(params.get(i).getName());
                     proceduralExecutor.setVariable(params.get(i).getName(), arguments.get(i));
@@ -1095,6 +1111,12 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
                 throw new RuntimeException("Failed to execute procedure: " + e.getMessage(), e);
             } finally {
                 proceduralExecutor.exitScope();
+                if (savedDb != null) {
+                    catalog.useDatabase(savedDb);
+                    if (savedSchema != null) {
+                        catalog.useSchema(savedSchema);
+                    }
+                }
             }
         }
 
@@ -1220,27 +1242,7 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
     // ==================== HELPER METHODS ====================
 
     public String getText(final FrostlakeParser.IdentifierContext ctx) {
-        if (ctx.QUOTED_IDENTIFIER() != null) {
-            String quoted = ctx.QUOTED_IDENTIFIER().getText();
-            return quoted.substring(1, quoted.length() - 1); // Remove quotes
-        }
-        if (ctx.POSITIONAL_PARAMETER() != null) {
-            String param = ctx.POSITIONAL_PARAMETER().getText();
-            int position = Integer.parseInt(param.substring(1));
-            return "COLUMN" + position;
-        }
-        if (ctx.IDENTIFIER() != null) {
-            return ctx.IDENTIFIER().getText();
-        }
-        if (ctx.KW_IDENTIFIER() != null) {
-            return ctx.KW_IDENTIFIER().getText();
-        }
-        // Handle keywords used as identifiers
-        if (ctx.DATE() != null) return ctx.DATE().getText();
-        if (ctx.TIMESTAMP() != null) return ctx.TIMESTAMP().getText();
-        if (ctx.COMMENT() != null) return ctx.COMMENT().getText();
-        // Fallback to getText() which concatenates all tokens
-        return ctx.getText();
+        return SqlIdentifiers.canonical(ctx);
     }
 
     public String getText(final FrostlakeParser.QualifiedNameContext ctx) {

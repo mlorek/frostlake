@@ -37,7 +37,7 @@ public class CreateTableTest extends BaseDatabaseTest {
         Table table = schema.getTable("users");
 
         assertNotNull(table, "Table should exist");
-        assertEquals("users", table.getName());
+        assertEquals("USERS", table.getName());
         assertEquals(3, table.getColumns().size());
     }
 
@@ -162,7 +162,7 @@ public class CreateTableTest extends BaseDatabaseTest {
         Table table = schema.getTable("users");
 
         assertNotNull(table);
-        assertEquals("users", table.getName());
+        assertEquals("USERS", table.getName());
     }
 
     @Test
