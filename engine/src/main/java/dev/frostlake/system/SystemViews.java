@@ -203,6 +203,14 @@ public class SystemViews {
                             result.addRow(constraint(db, schema, table, col, "FOREIGN KEY"));
                         }
                     }
+                    // Table-level FOREIGN KEY constraints (FOREIGN KEY (cols) REFERENCES …) live in the
+                    // constraint list rather than as a column reference like an inline REFERENCES, so emit
+                    // them too. Snowflake does not distinguish the two declaration forms in TABLE_CONSTRAINTS.
+                    for (final ForeignKeyConstraint fk : table.getForeignKeys()) {
+                        for (final String fkColumn : fk.getColumnNames()) {
+                            result.addRow(foreignKeyConstraintRow(db, schema, table, fk, fkColumn));
+                        }
+                    }
                 }
             }
         }
@@ -217,6 +225,22 @@ public class SystemViews {
         return new Row(db.getName(), schema.getName(), name,
                        db.getName(), schema.getName(), table.getName(),
                        type, "NO", "NO", rely, rely, null);
+    }
+
+    // Constraint name for a table-level FK: the explicit CONSTRAINT name if given, else the same
+    // generated {table}_{column}_FK shape used for inline foreign keys so the two views line up.
+    private String foreignKeyName(final Table table, final ForeignKeyConstraint fk, final String columnName) {
+        return fk.getConstraintName() != null && !fk.getConstraintName().isEmpty()
+            ? fk.getConstraintName()
+            : table.getName() + "_" + columnName + "_FK";
+    }
+
+    private Row foreignKeyConstraintRow(final Database db, final Schema schema, final Table table,
+                                        final ForeignKeyConstraint fk, final String columnName) {
+        final String rely = fk.getRely() != null && fk.getRely() ? "YES" : "NO";
+        return new Row(db.getName(), schema.getName(), foreignKeyName(table, fk, columnName),
+                       db.getName(), schema.getName(), table.getName(),
+                       "FOREIGN KEY", "NO", "NO", rely, rely, null);
     }
 
     // ── REFERENTIAL_CONSTRAINTS ───────────────────────────────────────────────
@@ -240,6 +264,19 @@ public class SystemViews {
                                 "NONE", "NO ACTION", "NO ACTION", null
                             ));
                         }
+                    }
+                    // Table-level FOREIGN KEY constraints (one referential row per constraint).
+                    for (final ForeignKeyConstraint fk : table.getForeignKeys()) {
+                        result.addRow(new Row(
+                            db.getName(), schema.getName(),
+                            foreignKeyName(table, fk, fk.getColumnNames().get(0)),
+                            db.getName(), schema.getName(),
+                            fk.getReferencedTable() + "_PK",
+                            "NONE",
+                            fk.getOnUpdate() != null ? fk.getOnUpdate() : "NO ACTION",
+                            fk.getOnDelete() != null ? fk.getOnDelete() : "NO ACTION",
+                            null
+                        ));
                     }
                 }
             }

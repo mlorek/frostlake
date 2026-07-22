@@ -98,7 +98,7 @@ public class InformationSchemaPerDatabaseTest extends BaseJdbcTest {
         // Test fully qualified access to INFORMATION_SCHEMA in different database
         statement.execute("USE DATABASE db3");
         ResultSet crossDbQuery = statement.executeQuery(
-            "SELECT * FROM db1.INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = 'db1_table'"
+            "SELECT * FROM db1.INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = 'DB1_TABLE'"
         );
         assertTrue(crossDbQuery.next(), "Should be able to query INFORMATION_SCHEMA in db1 from db3 context");
         crossDbQuery.close();

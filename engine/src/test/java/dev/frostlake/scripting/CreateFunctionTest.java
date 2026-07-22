@@ -56,8 +56,8 @@ public class CreateFunctionTest {
         assertNotNull(func, "Function should be created");
         assertEquals("ADD_NUMBERS", func.getName());
         assertEquals(2, func.getParameters().size());
-        assertEquals("x", func.getParameters().get(0).getName());
-        assertEquals("y", func.getParameters().get(1).getName());
+        assertEquals("X", func.getParameters().get(0).getName());
+        assertEquals("Y", func.getParameters().get(1).getName());
         assertFalse(func.isTableFunction(), "Should be scalar function");
         assertEquals("x + y", func.getBody());
     }
@@ -140,7 +140,7 @@ public class CreateFunctionTest {
         assertNotNull(func, "Function should be created");
         assertEquals("DOUBLE_VAL", func.getName());
         assertEquals(1, func.getParameters().size());
-        assertEquals("x", func.getParameters().get(0).getName());
+        assertEquals("X", func.getParameters().get(0).getName());
         assertEquals("x * 2", func.getBody());
     }
 

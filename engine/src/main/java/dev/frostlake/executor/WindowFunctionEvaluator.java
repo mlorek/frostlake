@@ -23,6 +23,7 @@ import dev.frostlake.storage.Row;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -451,8 +452,7 @@ final class WindowFunctionEvaluator {
         List<Object> key = new ArrayList<>();
         if (partitionBy != null) {
             for (final FrostlakeParser.ExpressionContext expr : partitionBy.expressionList().expression()) {
-                int colIndex = resolveWindowOrderColumn(ParseTreeText.getOriginalText(expr), table);
-                key.add(colIndex >= 0 && colIndex < row.getValues().size() ? row.getValue(colIndex) : null);
+                key.add(evaluateOrderKey(ParseTreeText.getOriginalText(expr), row, table));
             }
         }
         return key;
@@ -489,21 +489,21 @@ final class WindowFunctionEvaluator {
 
         // Find position and check for ties
         long rank = 1;
-        Object currentOrderValue = null;
-        Object previousOrderValue = null;
+        List<Object> currentOrderKey = null;
+        List<Object> previousOrderKey = null;
 
         for (int i = 0; i < sortedRows.size(); i++) {
             Row row = sortedRows.get(i);
 
-            // Get the ORDER BY value for this row
+            // The full ORDER BY key tuple for this row (every key, not just the first).
             if (overClause.orderByClause() != null) {
-                currentOrderValue = getOrderByValue(row, overClause.orderByClause(), table);
+                currentOrderKey = orderKeyTuple(row, overClause.orderByClause(), table);
             }
 
-            // Check for ties with previous row
-            if (i > 0 && previousOrderValue != null && currentOrderValue != null) {
-                if (!compareOrderValues(currentOrderValue, previousOrderValue)) {
-                    // Values are different, increment rank by number of rows with previous value
+            // Check for ties with the previous row across ALL keys.
+            if (i > 0 && previousOrderKey != null && currentOrderKey != null) {
+                if (!orderKeyTuplesEqual(currentOrderKey, previousOrderKey)) {
+                    // Key tuple changed — rank jumps to this row's position (gaps allowed).
                     rank = i + 1;
                 }
             }
@@ -512,7 +512,7 @@ final class WindowFunctionEvaluator {
                 return rank;
             }
 
-            previousOrderValue = currentOrderValue;
+            previousOrderKey = currentOrderKey;
         }
 
         // Fallback
@@ -530,21 +530,21 @@ final class WindowFunctionEvaluator {
 
         // Find position and check for ties (dense rank has no gaps)
         long rank = 1;
-        Object currentOrderValue = null;
-        Object previousOrderValue = null;
+        List<Object> currentOrderKey = null;
+        List<Object> previousOrderKey = null;
 
         for (int i = 0; i < sortedRows.size(); i++) {
             Row row = sortedRows.get(i);
 
-            // Get the ORDER BY value for this row
+            // The full ORDER BY key tuple for this row (every key, not just the first).
             if (overClause.orderByClause() != null) {
-                currentOrderValue = getOrderByValue(row, overClause.orderByClause(), table);
+                currentOrderKey = orderKeyTuple(row, overClause.orderByClause(), table);
             }
 
-            // Check for ties with previous row
-            if (i > 0 && previousOrderValue != null && currentOrderValue != null) {
-                if (!compareOrderValues(currentOrderValue, previousOrderValue)) {
-                    // Values are different, increment rank by 1 (no gaps in dense rank)
+            // Check for ties with the previous row across ALL keys.
+            if (i > 0 && previousOrderKey != null && currentOrderKey != null) {
+                if (!orderKeyTuplesEqual(currentOrderKey, previousOrderKey)) {
+                    // Key tuple changed — increment by 1 (no gaps in dense rank).
                     rank++;
                 }
             }
@@ -553,7 +553,7 @@ final class WindowFunctionEvaluator {
                 return rank;
             }
 
-            previousOrderValue = currentOrderValue;
+            previousOrderKey = currentOrderKey;
         }
 
         // Fallback
@@ -905,9 +905,9 @@ final class WindowFunctionEvaluator {
         if (overClause.orderByClause() == null) {
             return 0;
         }
-        final Object cur = getOrderByValue(partition.get(pos), overClause.orderByClause(), table);
+        final List<Object> cur = orderKeyTuple(partition.get(pos), overClause.orderByClause(), table);
         int i = pos;
-        while (i > 0 && compareOrderValues(getOrderByValue(partition.get(i - 1), overClause.orderByClause(), table), cur)) {
+        while (i > 0 && orderKeyTuplesEqual(orderKeyTuple(partition.get(i - 1), overClause.orderByClause(), table), cur)) {
             i--;
         }
         return i;
@@ -920,10 +920,10 @@ final class WindowFunctionEvaluator {
         if (overClause.orderByClause() == null) {
             return partition.size() - 1;
         }
-        final Object cur = getOrderByValue(partition.get(pos), overClause.orderByClause(), table);
+        final List<Object> cur = orderKeyTuple(partition.get(pos), overClause.orderByClause(), table);
         int i = pos;
         while (i < partition.size() - 1
-                && compareOrderValues(getOrderByValue(partition.get(i + 1), overClause.orderByClause(), table), cur)) {
+                && orderKeyTuplesEqual(orderKeyTuple(partition.get(i + 1), overClause.orderByClause(), table), cur)) {
             i++;
         }
         return i;
@@ -965,26 +965,10 @@ final class WindowFunctionEvaluator {
         if (columnExpr == null || table == null) {
             return null;
         }
-
-        try {
-            // Try as column number
-            int colIndex = Integer.parseInt(columnExpr) - 1;
-            if (colIndex >= 0 && colIndex < row.getValues().size()) {
-                return row.getValue(colIndex);
-            }
-        } catch (final NumberFormatException e) {
-            // Try as column name
-            try {
-                int colIndex = table.getColumnIndex(columnExpr);
-                if (colIndex >= 0 && colIndex < row.getValues().size()) {
-                    return row.getValue(colIndex);
-                }
-            } catch (final Exception ex) {
-                logger.warn("Could not find column: {}", columnExpr);
-            }
-        }
-
-        return null;
+        // Same resolution as ORDER BY keys: an ordinal, else the evaluated expression — so LAG / LEAD /
+        // FIRST_VALUE / NTH_VALUE accept qualified names and casts (e.g. LAG(t.value::VARCHAR)), not just
+        // bare column names.
+        return evaluateOrderKey(columnExpr, row, table);
     }
 
     private Object parseLiteralValue(final String literal) {
@@ -1036,30 +1020,38 @@ final class WindowFunctionEvaluator {
             return sorted;
         }
 
-        // Resolve each ORDER BY item's column index + direction ONCE — these are row-independent, yet the
-        // old comparator re-extracted the expression text and re-resolved the column on every comparison
-        // (and this sort runs once per row, so the resolution cost was multiplied by O(rows^2 log rows)).
+        // Direction/nulls flags and expression texts are row-independent — resolve them ONCE.
         final List<FrostlakeParser.OrderItemContext> items = orderByClause.orderItem();
-        final int[] colIndexes = new int[items.size()];
         final boolean[] ascending = new boolean[items.size()];
         final Boolean[] nullsFirst = new Boolean[items.size()];
+        final String[] exprTexts = new String[items.size()];
         for (int i = 0; i < items.size(); i++) {
             ascending[i] = items.get(i).DESC() == null;
             nullsFirst[i] = ValueComparisons.nullsFirstFlag(items.get(i));
-            colIndexes[i] = resolveWindowOrderColumn(ParseTreeText.getOriginalText(items.get(i).expression()), table);
+            exprTexts[i] = ParseTreeText.getOriginalText(items.get(i).expression());
+        }
+
+        // Evaluate each row's ORDER BY keys ONCE (so qualified names, casts, and expressions all resolve —
+        // not just bare column names), then compare the cached tuples; the sort runs once per partition, so
+        // re-evaluating on every comparison would be O(rows^2 log rows).
+        final Map<Row, Object[]> keyCache = new IdentityHashMap<>();
+        for (final Row r : sorted) {
+            final Object[] keys = new Object[items.size()];
+            for (int i = 0; i < items.size(); i++) {
+                keys[i] = evaluateOrderKey(exprTexts[i], r, table);
+            }
+            keyCache.put(r, keys);
         }
 
         sorted.sort(new Comparator<Row>() {
             @Override
             public int compare(final Row row1, final Row row2) {
-                for (int i = 0; i < colIndexes.length; i++) {
-                    int colIndex = colIndexes[i];
-                    if (colIndex >= 0 && colIndex < row1.getValues().size()) {
-                        int cmp = ValueComparisons.compareOrderKey(row1.getValue(colIndex), row2.getValue(colIndex),
-                            ascending[i], nullsFirst[i]);
-                        if (cmp != 0) {
-                            return cmp;
-                        }
+                final Object[] k1 = keyCache.get(row1);
+                final Object[] k2 = keyCache.get(row2);
+                for (int i = 0; i < exprTexts.length; i++) {
+                    final int cmp = ValueComparisons.compareOrderKey(k1[i], k2[i], ascending[i], nullsFirst[i]);
+                    if (cmp != 0) {
+                        return cmp;
                     }
                 }
                 return 0;
@@ -1070,54 +1062,57 @@ final class WindowFunctionEvaluator {
     }
 
     /**
-     * Resolve a window ORDER BY expression to a 0-based column index: a 1-based ordinal, else a column
-     * name, else -1 (unresolved — ignored in comparison, preserving the previous behavior).
+     * Evaluate one window ORDER BY / PARTITION BY key for a row. A bare 1-based ordinal selects a column by
+     * position; otherwise the expression is EVALUATED — so qualified names ({@code t.value}), casts
+     * ({@code t.value::VARCHAR}), and arbitrary expressions resolve, not only bare column names. Returns
+     * null when it cannot be evaluated.
      */
-    private int resolveWindowOrderColumn(final String expr, final Table table) {
+    private Object evaluateOrderKey(final String exprText, final Row row, final Table table) {
+        final String trimmed = exprText.trim();
         try {
-            return Integer.parseInt(expr) - 1;
-        } catch (final NumberFormatException e) {
-            if (table != null) {
-                try {
-                    return table.getColumnIndex(expr);
-                } catch (final Exception ex) {
-                    // Column not found
-                }
+            final int ordinal = Integer.parseInt(trimmed) - 1;
+            if (ordinal >= 0 && ordinal < row.getValues().size()) {
+                return row.getValue(ordinal);
             }
+        } catch (final NumberFormatException ignored) {
+            // not a positional ordinal — fall through to expression evaluation
         }
-        return -1;
+        try {
+            return executor.evaluateExpression(trimmed, row, table);
+        } catch (final RuntimeException e) {
+            return null;
+        }
     }
 
+    /** All ORDER BY key values for a row, in order — used for peer/tie detection across EVERY key. */
+    private List<Object> orderKeyTuple(final Row row, final FrostlakeParser.OrderByClauseContext orderByClause,
+                                       final Table table) {
+        final List<Object> keys = new ArrayList<>();
+        for (final FrostlakeParser.OrderItemContext item : orderByClause.orderItem()) {
+            keys.add(evaluateOrderKey(ParseTreeText.getOriginalText(item.expression()), row, table));
+        }
+        return keys;
+    }
+
+    /** Two ORDER BY tuples are peers when every key compares equal (NULLs peer with NULLs). */
+    private boolean orderKeyTuplesEqual(final List<Object> a, final List<Object> b) {
+        if (a.size() != b.size()) {
+            return false;
+        }
+        for (int i = 0; i < a.size(); i++) {
+            if (!compareOrderValues(a.get(i), b.get(i))) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** The first ORDER BY key's value for a row — used by RANGE frames, which require a single numeric key. */
     private Object getOrderByValue(final Row row, final FrostlakeParser.OrderByClauseContext orderByClause, final Table table) {
         if (orderByClause.orderItem().isEmpty()) {
             return null;
         }
-
-        // Get first ORDER BY expression
-        FrostlakeParser.OrderItemContext item = orderByClause.orderItem().get(0);
-        String expr = ParseTreeText.getOriginalText(item.expression());
-
-        try {
-            // Try as column number
-            int colIndex = Integer.parseInt(expr) - 1;
-            if (colIndex >= 0 && colIndex < row.getValues().size()) {
-                return row.getValue(colIndex);
-            }
-        } catch (final NumberFormatException e) {
-            // Try as column name
-            if (table != null) {
-                try {
-                    int colIndex = table.getColumnIndex(expr);
-                    if (colIndex >= 0 && colIndex < row.getValues().size()) {
-                        return row.getValue(colIndex);
-                    }
-                } catch (final Exception ex) {
-                    // Column not found
-                }
-            }
-        }
-
-        return null;
+        return evaluateOrderKey(ParseTreeText.getOriginalText(orderByClause.orderItem().get(0).expression()), row, table);
     }
 
     private boolean compareOrderValues(final Object val1, final Object val2) {

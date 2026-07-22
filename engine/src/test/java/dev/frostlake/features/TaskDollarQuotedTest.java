@@ -43,7 +43,7 @@ public class TaskDollarQuotedTest extends BaseJdbcTest {
         // Verify task was created
         ResultSet rs = statement.executeQuery("SHOW TASKS");
         assertTrue(rs.next());
-        assertEquals("daily_summary", rs.getString("name"));
+        assertEquals("DAILY_SUMMARY", rs.getString("name"));
         rs.close();
     }
 
@@ -60,7 +60,7 @@ public class TaskDollarQuotedTest extends BaseJdbcTest {
         // Verify task was created
         ResultSet rs = statement.executeQuery("SHOW TASKS");
         assertTrue(rs.next());
-        assertEquals("simple_task", rs.getString("name"));
+        assertEquals("SIMPLE_TASK", rs.getString("name"));
         rs.close();
     }
 
@@ -77,7 +77,7 @@ public class TaskDollarQuotedTest extends BaseJdbcTest {
         // Verify task was created
         ResultSet rs = statement.executeQuery("SHOW TASKS");
         assertTrue(rs.next());
-        assertEquals("quoted_task", rs.getString("name"));
+        assertEquals("QUOTED_TASK", rs.getString("name"));
         rs.close();
     }
 
@@ -106,7 +106,7 @@ public class TaskDollarQuotedTest extends BaseJdbcTest {
         // Verify task was created
         ResultSet rs = statement.executeQuery("SHOW TASKS");
         assertTrue(rs.next());
-        assertEquals("complex_etl", rs.getString("name"));
+        assertEquals("COMPLEX_ETL", rs.getString("name"));
         rs.close();
     }
 
@@ -123,7 +123,7 @@ public class TaskDollarQuotedTest extends BaseJdbcTest {
         // Verify task was created
         ResultSet rs = statement.executeQuery("SHOW TASKS");
         assertTrue(rs.next());
-        assertEquals("filter_task", rs.getString("name"));
+        assertEquals("FILTER_TASK", rs.getString("name"));
         rs.close();
     }
 
@@ -155,7 +155,7 @@ public class TaskDollarQuotedTest extends BaseJdbcTest {
         // Verify task was created
         ResultSet rs = statement.executeQuery("SHOW TASKS");
         assertTrue(rs.next());
-        assertEquals("weekly_report", rs.getString("name"));
+        assertEquals("WEEKLY_REPORT", rs.getString("name"));
         rs.close();
     }
 
@@ -172,7 +172,7 @@ public class TaskDollarQuotedTest extends BaseJdbcTest {
         // Verify task was created
         ResultSet rs = statement.executeQuery("SHOW TASKS");
         assertTrue(rs.next());
-        assertEquals("json_export", rs.getString("name"));
+        assertEquals("JSON_EXPORT", rs.getString("name"));
         rs.close();
     }
 }

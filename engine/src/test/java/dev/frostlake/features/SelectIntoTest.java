@@ -83,4 +83,114 @@ public class SelectIntoTest {
         assertEquals(1, rs.getRowCount());
         assertEquals(42L, Long.parseLong(rs.getRows().get(0).getValue(0).toString()));
     }
+
+    @Test
+    public void testSelectIntoWithLimit() {
+        // LIMIT reduces a multi-row result to the single row that SELECT INTO requires.
+        ResultSet rs = engine.executeQuery("""
+            DECLARE
+                v INTEGER;
+            BEGIN
+                CREATE OR REPLACE TABLE nums(n INTEGER);
+                INSERT INTO nums VALUES (10), (20), (30);
+                SELECT n INTO v FROM nums ORDER BY n DESC LIMIT 1;
+                RETURN v;
+            END
+            """);
+        assertNotNull(rs);
+        assertEquals(1, rs.getRowCount());
+        assertEquals(30L, Long.parseLong(rs.getRows().get(0).getValue(0).toString()));
+    }
+
+    @Test
+    public void testSelectIntoWithLimitOffset() {
+        ResultSet rs = engine.executeQuery("""
+            DECLARE
+                v INTEGER;
+            BEGIN
+                CREATE OR REPLACE TABLE nums(n INTEGER);
+                INSERT INTO nums VALUES (10), (20), (30);
+                SELECT n INTO v FROM nums ORDER BY n ASC LIMIT 1 OFFSET 1;
+                RETURN v;
+            END
+            """);
+        assertNotNull(rs);
+        assertEquals(1, rs.getRowCount());
+        assertEquals(20L, Long.parseLong(rs.getRows().get(0).getValue(0).toString()));
+    }
+
+    @Test
+    public void testSelectIntoWithFetchFirst() {
+        ResultSet rs = engine.executeQuery("""
+            DECLARE
+                v INTEGER;
+            BEGIN
+                CREATE OR REPLACE TABLE nums(n INTEGER);
+                INSERT INTO nums VALUES (10), (20), (30);
+                SELECT n INTO v FROM nums ORDER BY n DESC FETCH FIRST 1 ROW ONLY;
+                RETURN v;
+            END
+            """);
+        assertNotNull(rs);
+        assertEquals(1, rs.getRowCount());
+        assertEquals(30L, Long.parseLong(rs.getRows().get(0).getValue(0).toString()));
+    }
+
+    @Test
+    public void testSelectIntoWithQualify() {
+        // QUALIFY over a window function also narrows the result to one row before INTO assigns it.
+        ResultSet rs = engine.executeQuery("""
+            DECLARE
+                v INTEGER;
+            BEGIN
+                CREATE OR REPLACE TABLE nums(n INTEGER);
+                INSERT INTO nums VALUES (10), (20), (30);
+                SELECT n INTO v FROM nums QUALIFY ROW_NUMBER() OVER (ORDER BY n DESC) = 1;
+                RETURN v;
+            END
+            """);
+        assertNotNull(rs);
+        assertEquals(1, rs.getRowCount());
+        assertEquals(30L, Long.parseLong(rs.getRows().get(0).getValue(0).toString()));
+    }
+
+    @Test
+    public void testSelectIntoNoRowsAssignsNull() {
+        // A SELECT INTO whose query matches nothing is not an error — the target becomes NULL and the
+        // block continues, so the lookup simply returns NULL.
+        ResultSet rs = engine.executeQuery("""
+            DECLARE
+                col_type STRING;
+            BEGIN
+                CREATE OR REPLACE TABLE cols(name STRING, data_type STRING);
+                SELECT data_type INTO :col_type FROM cols WHERE name = 'missing' LIMIT 1;
+                RETURN :col_type;
+            END
+            """);
+        assertNotNull(rs);
+        assertEquals(1, rs.getRowCount());
+        assertNull(rs.getRows().get(0).getValue(0));
+    }
+
+    @Test
+    public void testSelectIntoFromInformationSchemaNoMatchReturnsNull() {
+        // The reported repro: a metadata lookup that matches no column yields NULL, not an error.
+        ResultSet rs = engine.executeQuery("""
+            DECLARE
+                col_type STRING;
+            BEGIN
+                SELECT data_type
+                INTO :col_type
+                FROM information_schema.columns
+                WHERE table_name = 'dummy'
+                  AND table_schema = 'dummy'
+                  AND column_name = 'dummy'
+                LIMIT 1;
+                RETURN :col_type;
+            END
+            """);
+        assertNotNull(rs);
+        assertEquals(1, rs.getRowCount());
+        assertNull(rs.getRows().get(0).getValue(0));
+    }
 }

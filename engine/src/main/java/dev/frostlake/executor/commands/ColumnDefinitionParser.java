@@ -17,6 +17,7 @@
 package dev.frostlake.executor.commands;
 
 import dev.frostlake.executor.QueryExecutor;
+import dev.frostlake.executor.SqlStringLiterals;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.model.*;
 import dev.frostlake.parser.FrostlakeParser;
@@ -395,6 +396,11 @@ public class ColumnDefinitionParser implements CommandHandler {
             // Handle literal expressions
             if (expr instanceof FrostlakeParser.LiteralExprContext) {
                 FrostlakeParser.LiteralExprContext literalCtx = (FrostlakeParser.LiteralExprContext) expr;
+                // Keep DEFAULT NULL as the canonical text "NULL" (mirrors the qualified-name path below),
+                // so the column records an explicit NULL default that is evaluated at insert time.
+                if (literalCtx.literal().NULL() != null) {
+                    return "NULL";
+                }
                 return parseLiteral(literalCtx.literal());
             }
 
@@ -487,7 +493,9 @@ public class ColumnDefinitionParser implements CommandHandler {
         } else if (ctx.FALSE() != null) {
             return false;
         } else if (ctx.NULL() != null) {
-            return "NULL";
+            // A NULL literal is a real null. (Passing NULL as a CALL argument or SET value must bind
+            // null, not the string "NULL" — otherwise :param IS NOT NULL is wrongly true.)
+            return null;
         }
         return null;
     }
@@ -500,10 +508,7 @@ public class ColumnDefinitionParser implements CommandHandler {
     }
 
     private String extractStringLiteral(final TerminalNode node) {
-        String text = node.getText();
-        String content = text.substring(1, text.length() - 1);
-        content = content.replace("''", "'");
-        return content;
+        return SqlStringLiterals.decode(node.getText());
     }
 
     private String getOriginalText(final ParserRuleContext ctx) {

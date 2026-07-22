@@ -806,33 +806,48 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
             if (ctx.whereClause() != null) selectSql.append(" ").append(getOriginalText(ctx.whereClause()));
             if (ctx.groupByClause() != null) selectSql.append(" ").append(getOriginalText(ctx.groupByClause()));
             if (ctx.havingClause() != null) selectSql.append(" ").append(getOriginalText(ctx.havingClause()));
+            if (ctx.qualifyClause() != null) selectSql.append(" ").append(getOriginalText(ctx.qualifyClause()));
         }
+        // ORDER BY / LIMIT / FETCH apply to the whole query, e.g. SELECT c INTO :v FROM t ORDER BY c LIMIT 1.
+        if (ctx.orderByClause() != null) selectSql.append(" ").append(getOriginalText(ctx.orderByClause()));
+        if (ctx.limitClause() != null) selectSql.append(" ").append(getOriginalText(ctx.limitClause()));
+        if (ctx.fetchClause() != null) selectSql.append(" ").append(getOriginalText(ctx.fetchClause()));
         List<ResultSet> results = queryExecutor.execute(selectSql.toString());
         ResultSet rs = results.isEmpty() ? null : results.get(0);
-        // Snowflake requires the SELECT of a SELECT ... INTO to produce exactly one row.
         final int rowCount = rs == null ? 0 : rs.getRowCount();
-        if (rowCount != 1) {
+        List<FrostlakeParser.IntoTargetContext> targets = ctx.intoTargetList().intoTarget();
+
+        // Snowflake: a SELECT ... INTO that matches no rows is not an error — every target is set to
+        // NULL and the block continues, so an absent lookup value simply yields NULL.
+        if (rowCount == 0) {
+            for (final FrostlakeParser.IntoTargetContext target : targets) {
+                assignSelectIntoTarget(getText(target.identifier()), null);
+            }
+            logger.trace("SELECT INTO: no rows matched; assigned NULL to {} target(s)", targets.size());
+            return null;
+        }
+        // More than one row remains an error — narrow the query (e.g. with LIMIT) to a single row.
+        if (rowCount > 1) {
             throw new RuntimeException(
                 "Select statement in SELECT INTO returned wrong number of rows: " + rowCount);
         }
-        List<FrostlakeParser.IntoTargetContext> targets = ctx.intoTargetList().intoTarget();
         Row firstRow = rs.getRows().get(0);
         if (targets.size() != firstRow.getValues().size()) {
             throw new RuntimeException("SELECT INTO: number of INTO targets (" + targets.size()
                 + ") does not match the number of selected columns (" + firstRow.getValues().size() + ")");
         }
         for (int i = 0; i < targets.size(); i++) {
-            String varName = getText(targets.get(i).identifier());
-            Object value = firstRow.getValue(i);
-            if (proceduralExecutor != null) {
-                // Assignment through SetStatement coerces to the target's declared type.
-                proceduralExecutor.executeStatement(
-                    new SetStatement(varName,
-                        new LiteralExpression(value)));
-            }
+            assignSelectIntoTarget(getText(targets.get(i).identifier()), firstRow.getValue(i));
         }
         logger.trace("SELECT INTO: assigned {} variable(s)", targets.size());
         return null;
+    }
+
+    /** Assign a value to a SELECT INTO target through SetStatement, coercing it to the declared type. */
+    private void assignSelectIntoTarget(final String varName, final Object value) {
+        if (proceduralExecutor != null) {
+            proceduralExecutor.executeStatement(new SetStatement(varName, new LiteralExpression(value)));
+        }
     }
 
     private FrostlakeParser.SelectStatementContext parseSelectStatement(final String sql) {
@@ -1032,8 +1047,24 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
             // on the shared procedural executor (so its RETURN / control flow / statements actually
             // run — not merely logged), and surface the RETURN value. Parameters are declared in a
             // dedicated scope so they don't leak past the CALL.
+            //
+            // Run the body with the procedure's home database/schema as the current context, so an
+            // unqualified/partially-qualified reference inside (e.g. UTILS.IS_VALID_TIER, or a bare table)
+            // resolves relative to where the procedure lives — matching Snowflake — rather than against the
+            // caller's current database. Restored in the finally.
+            final String savedDb = catalog.getCurrentDatabase();
+            final String savedSchema = catalog.getCurrentSchema();
+            final String homeDb = parts.length == 3 ? parts[0] : savedDb;
+            final String homeSchema = parts.length == 3 ? parts[1]
+                : parts.length == 2 ? parts[0] : savedSchema;
             proceduralExecutor.enterScope();
             try {
+                if (homeDb != null) {
+                    catalog.useDatabase(homeDb);
+                    if (homeSchema != null) {
+                        catalog.useSchema(homeSchema);
+                    }
+                }
                 for (int i = 0; i < params.size(); i++) {
                     proceduralExecutor.markDeclaredInCurrentScope(params.get(i).getName());
                     proceduralExecutor.setVariable(params.get(i).getName(), arguments.get(i));
@@ -1080,6 +1111,12 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
                 throw new RuntimeException("Failed to execute procedure: " + e.getMessage(), e);
             } finally {
                 proceduralExecutor.exitScope();
+                if (savedDb != null) {
+                    catalog.useDatabase(savedDb);
+                    if (savedSchema != null) {
+                        catalog.useSchema(savedSchema);
+                    }
+                }
             }
         }
 
@@ -1205,27 +1242,7 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
     // ==================== HELPER METHODS ====================
 
     public String getText(final FrostlakeParser.IdentifierContext ctx) {
-        if (ctx.QUOTED_IDENTIFIER() != null) {
-            String quoted = ctx.QUOTED_IDENTIFIER().getText();
-            return quoted.substring(1, quoted.length() - 1); // Remove quotes
-        }
-        if (ctx.POSITIONAL_PARAMETER() != null) {
-            String param = ctx.POSITIONAL_PARAMETER().getText();
-            int position = Integer.parseInt(param.substring(1));
-            return "COLUMN" + position;
-        }
-        if (ctx.IDENTIFIER() != null) {
-            return ctx.IDENTIFIER().getText();
-        }
-        if (ctx.KW_IDENTIFIER() != null) {
-            return ctx.KW_IDENTIFIER().getText();
-        }
-        // Handle keywords used as identifiers
-        if (ctx.DATE() != null) return ctx.DATE().getText();
-        if (ctx.TIMESTAMP() != null) return ctx.TIMESTAMP().getText();
-        if (ctx.COMMENT() != null) return ctx.COMMENT().getText();
-        // Fallback to getText() which concatenates all tokens
-        return ctx.getText();
+        return SqlIdentifiers.canonical(ctx);
     }
 
     public String getText(final FrostlakeParser.QualifiedNameContext ctx) {
@@ -1252,28 +1269,7 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
     }
 
     public String extractStringLiteral(final TerminalNode node) {
-        String text = node.getText();
-        // Remove outer quotes
-        String content = text.substring(1, text.length() - 1);
-        // Unescape: \' -> ', \\ -> \, '' -> '
-        StringBuilder sb = new StringBuilder(content.length());
-        for (int i = 0; i < content.length(); i++) {
-            char c = content.charAt(i);
-            if (c == '\\' && i + 1 < content.length()) {
-                char next = content.charAt(i + 1);
-                if (next == '\'') { sb.append('\''); i++; }
-                else if (next == '\\') { sb.append('\\'); i++; }
-                else if (next == 'n') { sb.append('\n'); i++; }
-                else if (next == 't') { sb.append('\t'); i++; }
-                else if (next == 'r') { sb.append('\r'); i++; }
-                else { sb.append(c); }
-            } else if (c == '\'' && i + 1 < content.length() && content.charAt(i + 1) == '\'') {
-                sb.append('\''); i++; // '' -> '
-            } else {
-                sb.append(c);
-            }
-        }
-        return sb.toString();
+        return SqlStringLiterals.decode(node.getText());
     }
 
     private String extractComment(final FrostlakeParser.CommentClauseContext ctx) {

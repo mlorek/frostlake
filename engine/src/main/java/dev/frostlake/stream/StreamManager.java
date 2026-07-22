@@ -25,6 +25,7 @@ import dev.frostlake.storage.Row;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
@@ -68,7 +69,8 @@ public class StreamManager {
                         row.getValues(),
                         ChangeType.INSERT,
                         false,
-                        rowId
+                        rowId,
+                        tableName.toUpperCase()
                     );
                     stream.addRecord(record);
                     logger.debug("Tracked INSERT to stream: {}", stream.getName());
@@ -103,7 +105,8 @@ public class StreamManager {
                         oldRow.getValues(),
                         ChangeType.DELETE,
                         true,
-                        rowId
+                        rowId,
+                        tableName.toUpperCase()
                     );
                     stream.addRecord(deleteRecord);
 
@@ -111,7 +114,8 @@ public class StreamManager {
                         newRow.getValues(),
                         ChangeType.INSERT,
                         true,
-                        rowId
+                        rowId,
+                        tableName.toUpperCase()
                     );
                     stream.addRecord(insertRecord);
 
@@ -146,7 +150,8 @@ public class StreamManager {
                         row.getValues(),
                         ChangeType.DELETE,
                         false,
-                        rowId
+                        rowId,
+                        tableName.toUpperCase()
                     );
                     stream.addRecord(record);
                     logger.debug("Tracked DELETE to stream: {}", stream.getName());
@@ -163,13 +168,21 @@ public class StreamManager {
      * A qualified source name is reduced to its last segment before comparing.
      */
     private boolean capturesTable(final Stream stream, final String tableName) {
-        String captureName = stream.getBaseTableName() != null
-            ? stream.getBaseTableName() : stream.getSourceTableName();
-        final int dot = captureName.lastIndexOf('.');
-        if (dot >= 0) {
-            captureName = captureName.substring(dot + 1);
+        // A view stream tracks one base table per branch (UNION ALL); a table stream tracks its source.
+        final List<String> captureNames = stream.getBaseTableNames().isEmpty()
+            ? Collections.singletonList(stream.getSourceTableName())
+            : stream.getBaseTableNames();
+        for (final String captureName : captureNames) {
+            String name = captureName;
+            final int dot = name.lastIndexOf('.');
+            if (dot >= 0) {
+                name = name.substring(dot + 1);
+            }
+            if (name.equalsIgnoreCase(tableName)) {
+                return true;
+            }
         }
-        return captureName.equalsIgnoreCase(tableName);
+        return false;
     }
 
     /**

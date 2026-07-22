@@ -69,7 +69,11 @@ public class PythonExecutor {
         try {
             final PythonInterpreter interp = INTERP.get();
             for (int i = 0; i < parameters.size(); i++) {
-                interp.set(parameters.get(i).getName(), arguments.get(i));
+                // Bind each argument under both its canonical (upper-cased) name and its lower-cased form:
+                // the generated def uses the canonical name, a lower-case body reference finds the global.
+                final String pName = parameters.get(i).getName();
+                interp.set(pName, arguments.get(i));
+                interp.set(pName.toLowerCase(), arguments.get(i));
             }
 
             final String pythonCode = buildCode(function, parameters);

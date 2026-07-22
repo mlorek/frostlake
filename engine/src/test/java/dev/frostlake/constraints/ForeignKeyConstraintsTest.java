@@ -49,8 +49,8 @@ public class ForeignKeyConstraintsTest extends BaseDatabaseTest {
         TableColumn parentIdCol = childTable.getColumn("parent_id");
 
         assertTrue(parentIdCol.hasForeignKey());
-        assertEquals("parent_table", parentIdCol.getReferencedTable());
-        assertEquals("id", parentIdCol.getReferencedColumn());
+        assertEquals("PARENT_TABLE", parentIdCol.getReferencedTable());
+        assertEquals("ID", parentIdCol.getReferencedColumn());
         assertNull(parentIdCol.getOnDelete());
         assertNull(parentIdCol.getOnUpdate());
 
@@ -73,8 +73,8 @@ public class ForeignKeyConstraintsTest extends BaseDatabaseTest {
         TableColumn deptIdCol = empTable.getColumn("dept_id");
 
         assertTrue(deptIdCol.hasForeignKey());
-        assertEquals("departments", deptIdCol.getReferencedTable());
-        assertEquals("dept_id", deptIdCol.getReferencedColumn());
+        assertEquals("DEPARTMENTS", deptIdCol.getReferencedTable());
+        assertEquals("DEPT_ID", deptIdCol.getReferencedColumn());
         assertEquals("CASCADE", deptIdCol.getOnDelete());
         assertEquals("CASCADE", deptIdCol.getOnUpdate());
 
@@ -100,10 +100,10 @@ public class ForeignKeyConstraintsTest extends BaseDatabaseTest {
         ForeignKeyConstraint fk = ordersTable.getForeignKeys().get(0);
         assertNull(fk.getConstraintName());
         assertEquals(1, fk.getColumnNames().size());
-        assertEquals("customer_id", fk.getColumnNames().get(0));
-        assertEquals("customers", fk.getReferencedTable());
+        assertEquals("CUSTOMER_ID", fk.getColumnNames().get(0));
+        assertEquals("CUSTOMERS", fk.getReferencedTable());
         assertEquals(1, fk.getReferencedColumns().size());
-        assertEquals("customer_id", fk.getReferencedColumns().get(0));
+        assertEquals("CUSTOMER_ID", fk.getReferencedColumns().get(0));
 
         logger.info("Table-level foreign key parsed correctly");
     }
@@ -125,10 +125,10 @@ public class ForeignKeyConstraintsTest extends BaseDatabaseTest {
         assertEquals(1, invTable.getForeignKeys().size());
 
         ForeignKeyConstraint fk = invTable.getForeignKeys().get(0);
-        assertEquals("fk_product", fk.getConstraintName());
-        assertEquals("product_id", fk.getColumnNames().get(0));
-        assertEquals("products", fk.getReferencedTable());
-        assertEquals("product_id", fk.getReferencedColumns().get(0));
+        assertEquals("FK_PRODUCT", fk.getConstraintName());
+        assertEquals("PRODUCT_ID", fk.getColumnNames().get(0));
+        assertEquals("PRODUCTS", fk.getReferencedTable());
+        assertEquals("PRODUCT_ID", fk.getReferencedColumns().get(0));
 
         logger.info("Named foreign key constraint parsed correctly");
     }
@@ -152,12 +152,12 @@ public class ForeignKeyConstraintsTest extends BaseDatabaseTest {
 
         ForeignKeyConstraint fk = contactTable.getForeignKeys().get(0);
         assertEquals(2, fk.getColumnNames().size());
-        assertEquals("first_name", fk.getColumnNames().get(0));
-        assertEquals("last_name", fk.getColumnNames().get(1));
-        assertEquals("person", fk.getReferencedTable());
+        assertEquals("FIRST_NAME", fk.getColumnNames().get(0));
+        assertEquals("LAST_NAME", fk.getColumnNames().get(1));
+        assertEquals("PERSON", fk.getReferencedTable());
         assertEquals(2, fk.getReferencedColumns().size());
-        assertEquals("first_name", fk.getReferencedColumns().get(0));
-        assertEquals("last_name", fk.getReferencedColumns().get(1));
+        assertEquals("FIRST_NAME", fk.getReferencedColumns().get(0));
+        assertEquals("LAST_NAME", fk.getReferencedColumns().get(1));
 
         logger.info("Multi-column foreign key parsed correctly");
     }
@@ -268,15 +268,15 @@ public class ForeignKeyConstraintsTest extends BaseDatabaseTest {
         assertEquals(2, empTable.getForeignKeys().size());
 
         ForeignKeyConstraint fk1 = empTable.getForeignKeys().get(0);
-        assertEquals("manager_id", fk1.getColumnNames().get(0));
-        assertEquals("users", fk1.getReferencedTable());
-        assertEquals("user_id", fk1.getReferencedColumns().get(0));
+        assertEquals("MANAGER_ID", fk1.getColumnNames().get(0));
+        assertEquals("USERS", fk1.getReferencedTable());
+        assertEquals("USER_ID", fk1.getReferencedColumns().get(0));
         assertNull(fk1.getOnDelete());
 
         ForeignKeyConstraint fk2 = empTable.getForeignKeys().get(1);
-        assertEquals("dept_id", fk2.getColumnNames().get(0));
-        assertEquals("departments", fk2.getReferencedTable());
-        assertEquals("dept_id", fk2.getReferencedColumns().get(0));
+        assertEquals("DEPT_ID", fk2.getColumnNames().get(0));
+        assertEquals("DEPARTMENTS", fk2.getReferencedTable());
+        assertEquals("DEPT_ID", fk2.getReferencedColumns().get(0));
         assertEquals("CASCADE", fk2.getOnDelete());
 
         logger.info("Multiple foreign keys parsed correctly");
@@ -379,8 +379,8 @@ public class ForeignKeyConstraintsTest extends BaseDatabaseTest {
         TableColumn lookupCol = mainTable.getColumn("lookup_id");
 
         assertTrue(lookupCol.hasForeignKey());
-        assertEquals("other_schema.lookup", lookupCol.getReferencedTable());
-        assertEquals("lookup_id", lookupCol.getReferencedColumn());
+        assertEquals("OTHER_SCHEMA.LOOKUP", lookupCol.getReferencedTable());
+        assertEquals("LOOKUP_ID", lookupCol.getReferencedColumn());
 
         logger.info("Qualified table name in foreign key works correctly");
     }
@@ -402,7 +402,7 @@ public class ForeignKeyConstraintsTest extends BaseDatabaseTest {
 
         assertTrue(parentIdCol.isUnique());
         assertTrue(parentIdCol.hasForeignKey());
-        assertEquals("parent", parentIdCol.getReferencedTable());
+        assertEquals("PARENT", parentIdCol.getReferencedTable());
 
         logger.info("UNIQUE and FOREIGN KEY combination works correctly");
     }
@@ -517,7 +517,7 @@ public class ForeignKeyConstraintsTest extends BaseDatabaseTest {
         TableColumn parentIdCol = childTable.getColumn("parent_id");
 
         assertTrue(parentIdCol.hasForeignKey());
-        assertEquals("parent_rely", parentIdCol.getReferencedTable());
+        assertEquals("PARENT_RELY", parentIdCol.getReferencedTable());
         assertNotNull(parentIdCol.getRely());
         assertTrue(parentIdCol.getRely());
 
@@ -580,7 +580,7 @@ public class ForeignKeyConstraintsTest extends BaseDatabaseTest {
         Table txnTable = engine.getCatalog().resolveTable("transactions_tbl");
         ForeignKeyConstraint fk = txnTable.getForeignKeys().get(0);
 
-        assertEquals("fk_account", fk.getConstraintName());
+        assertEquals("FK_ACCOUNT", fk.getConstraintName());
         assertEquals("CASCADE", fk.getOnDelete());
         assertNotNull(fk.getRely());
         assertFalse(fk.getRely());
@@ -602,8 +602,8 @@ public class ForeignKeyConstraintsTest extends BaseDatabaseTest {
 
         Table table = engine.getCatalog().resolveTable("compound_key");
         assertEquals(2, table.getPrimaryKeys().size());
-        assertTrue(table.getPrimaryKeys().contains("first_name"));
-        assertTrue(table.getPrimaryKeys().contains("last_name"));
+        assertTrue(table.getPrimaryKeys().contains("FIRST_NAME"));
+        assertTrue(table.getPrimaryKeys().contains("LAST_NAME"));
 
         logger.info("Table-level PRIMARY KEY RELY parsed correctly");
     }

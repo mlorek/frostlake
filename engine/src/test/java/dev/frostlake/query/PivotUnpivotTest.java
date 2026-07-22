@@ -102,8 +102,8 @@ public class PivotUnpivotTest extends BaseDatabaseTest {
 
         // Check column names use aliases
         assertEquals("region", result.getColumns().get(0).getName().toLowerCase());
-        assertEquals("January", result.getColumns().get(1).getName());
-        assertEquals("February", result.getColumns().get(2).getName());
+        assertEquals("JANUARY", result.getColumns().get(1).getName());
+        assertEquals("FEBRUARY", result.getColumns().get(2).getName());
     }
 
     @Test
@@ -145,8 +145,8 @@ public class PivotUnpivotTest extends BaseDatabaseTest {
         // Should have 3 columns: product, quarter, amount
         assertEquals(3, result.getColumns().size());
         assertEquals("product", result.getColumns().get(0).getName().toLowerCase());
-        assertEquals("quarter", result.getColumns().get(1).getName());
-        assertEquals("amount", result.getColumns().get(2).getName());
+        assertEquals("QUARTER", result.getColumns().get(1).getName());
+        assertEquals("AMOUNT", result.getColumns().get(2).getName());
 
         // Check first 3 rows (product A)
         assertEquals("A", result.getRows().get(0).getValue(0));
@@ -192,18 +192,18 @@ public class PivotUnpivotTest extends BaseDatabaseTest {
         assertEquals(4, result.getColumns().size());
         assertEquals("region", result.getColumns().get(0).getName().toLowerCase());
         assertEquals("product", result.getColumns().get(1).getName().toLowerCase());
-        assertEquals("month", result.getColumns().get(2).getName());
-        assertEquals("sales", result.getColumns().get(3).getName());
+        assertEquals("MONTH", result.getColumns().get(2).getName());
+        assertEquals("SALES", result.getColumns().get(3).getName());
 
         // Check first 2 rows
         assertEquals("East", result.getRows().get(0).getValue(0));
         assertEquals("Widget", result.getRows().get(0).getValue(1));
-        assertEquals("jan", result.getRows().get(0).getValue(2));
+        assertEquals("JAN", result.getRows().get(0).getValue(2));
         assertEquals(100L, ((Number) result.getRows().get(0).getValue(3)).longValue());
 
         assertEquals("East", result.getRows().get(1).getValue(0));
         assertEquals("Widget", result.getRows().get(1).getValue(1));
-        assertEquals("feb", result.getRows().get(1).getValue(2));
+        assertEquals("FEB", result.getRows().get(1).getValue(2));
         assertEquals(120L, ((Number) result.getRows().get(1).getValue(3)).longValue());
     }
 

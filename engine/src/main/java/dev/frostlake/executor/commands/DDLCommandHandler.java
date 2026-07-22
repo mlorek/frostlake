@@ -17,6 +17,7 @@
 package dev.frostlake.executor.commands;
 
 import dev.frostlake.executor.QueryExecutor;
+import dev.frostlake.executor.SqlStringLiterals;
 import dev.frostlake.metastore.*;
 import dev.frostlake.metastore.model.*;
 import dev.frostlake.metastore.model.ScalingPolicy;
@@ -240,11 +241,11 @@ public class DDLCommandHandler implements CommandHandler {
             }
         }
 
-        // Resolve a view stream's base table up front (outside the creation try) so ineligible
+        // Resolve a view stream's base table(s) up front (outside the creation try) so ineligible
         // views are always rejected instead of being swallowed by IF NOT EXISTS handling. Change
-        // capture on the stream matches DML against this base table.
-        final String viewBaseTable = sourceType == StreamSourceType.VIEW
-            ? queryExecutor.resolveViewStreamBaseTable(sourceView) : null;
+        // capture on the stream matches DML against these base tables (one per UNION ALL branch).
+        final List<String> viewBaseTables = sourceType == StreamSourceType.VIEW
+            ? queryExecutor.resolveViewStreamBaseTables(sourceView) : null;
 
         try {
             boolean appendOnly = false;
@@ -262,8 +263,8 @@ public class DDLCommandHandler implements CommandHandler {
 
             StreamType type = appendOnly ? StreamType.APPEND_ONLY : StreamType.STANDARD;
             Stream stream = new Stream(streamName, sourceName, sourceType, type, showInitialRows);
-            if (viewBaseTable != null) {
-                stream.setBaseTableName(viewBaseTable);
+            if (viewBaseTables != null) {
+                stream.setBaseTableNames(viewBaseTables);
             }
 
             String comment = extractCommentFromList(ctx.commentClause());
@@ -684,10 +685,7 @@ public class DDLCommandHandler implements CommandHandler {
     }
 
     String extractStringLiteral(final TerminalNode node) {
-        String text = node.getText();
-        String content = text.substring(1, text.length() - 1);
-        content = content.replace("''", "'");
-        return content;
+        return SqlStringLiterals.decode(node.getText());
     }
 
     void cloneSchemaData(final String sourceDb, final String sourceSchema,
@@ -748,11 +746,29 @@ public class DDLCommandHandler implements CommandHandler {
     WarehouseSize parseWarehouseSize(final FrostlakeParser.WarehousePropertiesContext ctx) {
         for (final FrostlakeParser.WarehousePropertyContext prop : ctx.warehouseProperty()) {
             if (prop.WAREHOUSE_SIZE() != null) {
-                String sizeStr = extractStringLiteral(prop.STRING_LITERAL());
-                return parseWarehouseSizeString(sizeStr);
+                return parseWarehouseSizeString(warehouseSizeValue(prop));
             }
         }
         return WarehouseSize.X_SMALL;
+    }
+
+    /**
+     * The WAREHOUSE_SIZE value as text — the grammar allows a quoted literal, an unquoted identifier
+     * (e.g. {@code XSMALL}), or a session variable ({@code $var}) resolved to its value. Without covering
+     * all three, WAREHOUSE_SIZE = XSMALL / $var throws an NPE (STRING_LITERAL is null).
+     */
+    private String warehouseSizeValue(final FrostlakeParser.WarehousePropertyContext prop) {
+        if (prop.SESSION_VAR_REF() != null) {
+            final String varName = prop.SESSION_VAR_REF().getText().substring(1).toUpperCase();
+            final Object val = queryExecutor != null && queryExecutor.getSecurityManager() != null
+                ? queryExecutor.getSecurityManager().getSessionContext().getSessionParameter(varName)
+                : queryExecutor != null ? queryExecutor.getSessionVariables().get(varName) : null;
+            return val != null ? val.toString() : "X-Small";
+        }
+        if (prop.identifier() != null) {
+            return getText(prop.identifier());
+        }
+        return extractStringLiteral(prop.STRING_LITERAL());
     }
 
     WarehouseSize parseWarehouseSizeString(final String sizeStr) {
@@ -784,19 +800,7 @@ public class DDLCommandHandler implements CommandHandler {
             String type = prop.STANDARD() != null ? "STANDARD" : extractStringLiteral(prop.STRING_LITERAL());
             warehouse.setWarehouseType(type);
         } else if (prop.WAREHOUSE_SIZE() != null) {
-            String sizeStr;
-            if (prop.SESSION_VAR_REF() != null) {
-                String varName = prop.SESSION_VAR_REF().getText().substring(1).toUpperCase();
-                Object val = queryExecutor != null && queryExecutor.getSecurityManager() != null
-                    ? queryExecutor.getSecurityManager().getSessionContext().getSessionParameter(varName)
-                    : queryExecutor != null ? queryExecutor.getSessionVariables().get(varName) : null;
-                sizeStr = val != null ? val.toString() : "X-Small";
-            } else if (prop.identifier() != null) {
-                sizeStr = getText(prop.identifier());
-            } else {
-                sizeStr = extractStringLiteral(prop.STRING_LITERAL());
-            }
-            warehouse.setSize(parseWarehouseSizeString(sizeStr));
+            warehouse.setSize(parseWarehouseSizeString(warehouseSizeValue(prop)));
         } else if (prop.AUTO_SUSPEND() != null) {
             warehouse.setAutoSuspendSeconds(Integer.parseInt(prop.INTEGER_LITERAL().getText()));
         } else if (prop.AUTO_RESUME() != null) {
@@ -826,6 +830,10 @@ public class DDLCommandHandler implements CommandHandler {
             warehouse.setEnableQueryAcceleration(prop.booleanValue().TRUE() != null);
         } else if (prop.QUERY_ACCELERATION_MAX_SCALE_FACTOR() != null) {
             warehouse.setQueryAccelerationMaxScaleFactor(Integer.parseInt(prop.INTEGER_LITERAL().getText()));
+        } else if (prop.GENERATION() != null) {
+            warehouse.setGeneration(prop.STRING_LITERAL() != null
+                ? extractStringLiteral(prop.STRING_LITERAL())
+                : prop.INTEGER_LITERAL().getText());
         } else if (prop.COMMENT() != null) {
             warehouse.setComment(extractStringLiteral(prop.STRING_LITERAL()));
         }

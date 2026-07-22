@@ -155,7 +155,7 @@ public class AlterTableConstraintsTest {
 
         ForeignKeyConstraint fk = foreignKeys.get(0);
         assertEquals(1, fk.getColumnNames().size());
-        assertTrue(fk.getColumnNames().contains("dept_id"));
+        assertTrue(fk.getColumnNames().contains("DEPT_ID"));
         assertTrue(fk.getReferencedTable().equalsIgnoreCase("departments"));
 
         logger.info("ALTER TABLE ADD FOREIGN KEY works correctly");
@@ -174,7 +174,7 @@ public class AlterTableConstraintsTest {
         assertEquals(1, foreignKeys.size());
 
         ForeignKeyConstraint fk = foreignKeys.get(0);
-        assertEquals("fk_cities_countries", fk.getConstraintName());
+        assertEquals("FK_CITIES_COUNTRIES", fk.getConstraintName());
 
         logger.info("ALTER TABLE ADD named FOREIGN KEY works correctly");
     }
@@ -248,8 +248,8 @@ public class AlterTableConstraintsTest {
 
         ForeignKeyConstraint fk = foreignKeys.get(0);
         assertEquals(2, fk.getColumnNames().size());
-        assertTrue(fk.getColumnNames().contains("order_id"));
-        assertTrue(fk.getColumnNames().contains("customer_id"));
+        assertTrue(fk.getColumnNames().contains("ORDER_ID"));
+        assertTrue(fk.getColumnNames().contains("CUSTOMER_ID"));
 
         logger.info("ALTER TABLE ADD composite FOREIGN KEY works correctly");
     }

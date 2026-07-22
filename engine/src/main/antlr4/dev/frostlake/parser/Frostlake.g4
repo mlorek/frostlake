@@ -43,7 +43,7 @@ undropStatement
 createStatement
     : CREATE or_replace? DATABASE if_not_exists? identifier (CLONE identifier)? (DATA_RETENTION_TIME_IN_DAYS EQ INTEGER_LITERAL)? commentClause? SEMI?
     | CREATE or_replace? SCHEMA if_not_exists? qualifiedName (CLONE qualifiedName)? commentClause? SEMI?
-    | CREATE or_replace? (TRANSIENT | TEMPORARY | TEMP)? TABLE if_not_exists? objectName commentClause? (LPAREN columnList RPAREN | CLONE qualifiedName | columnListOptional? AS selectStatement) clusterByClause? commentClause? SEMI?
+    | CREATE or_replace? (TRANSIENT | TEMPORARY | TEMP | HYBRID)? TABLE if_not_exists? objectName commentClause? clusterByClause? (LPAREN columnList RPAREN | CLONE qualifiedName | columnListOptional? AS selectStatement) clusterByClause? commentClause? SEMI?
     | CREATE or_replace? SECURE? VIEW if_not_exists? qualifiedName (LPAREN viewColumnList RPAREN)? commentClause? AS selectStatement commentClause? SEMI?
     | CREATE or_replace? SECURE? MATERIALIZED VIEW if_not_exists? qualifiedName (LPAREN viewColumnList RPAREN)? commentClause? AS selectStatement commentClause? SEMI?
     | CREATE or_replace? DYNAMIC TABLE if_not_exists? qualifiedName dynamicTableOptions AS selectStatement commentClause? SEMI?
@@ -385,6 +385,7 @@ bodyDefinition
 
 taskBody
     : sqlStatement                // Raw SQL statement
+    | callStatement               // CALL <procedure>(...) — a task that just invokes a stored procedure
     | executeImmediateStatement   // EXECUTE IMMEDIATE expression
     | bodyDefinition              // String literal (single or dollar-quoted)
     ;
@@ -555,6 +556,7 @@ warehouseProperty
     | STATEMENT_TIMEOUT_IN_SECONDS EQ INTEGER_LITERAL
     | ENABLE_QUERY_ACCELERATION EQ booleanValue
     | QUERY_ACCELERATION_MAX_SCALE_FACTOR EQ INTEGER_LITERAL
+    | GENERATION EQ (STRING_LITERAL | INTEGER_LITERAL)
     | COMMENT EQ STRING_LITERAL
     ;
 
@@ -660,7 +662,7 @@ schemaAction
     ;
 
 tableAction
-    : RENAME TO? identifier
+    : RENAME TO? qualifiedName
     | SWAP WITH qualifiedName
     | ADD COLUMN if_not_exists? columnDef
     | DROP COLUMN if_exists? identifier
@@ -674,6 +676,9 @@ tableAction
     | CLUSTER BY LPAREN expressionList RPAREN
     | ADD tableConstraint
     | DROP CONSTRAINT identifier
+    | DROP PRIMARY KEY
+    | DROP UNIQUE LPAREN identifierList RPAREN
+    | DROP FOREIGN KEY LPAREN identifierList RPAREN
     | ALTER COLUMN identifier SET MASKING POLICY qualifiedName (USING LPAREN identifierList RPAREN)?
     | ALTER COLUMN identifier UNSET MASKING POLICY
     | ADD ROW ACCESS POLICY qualifiedName ON LPAREN identifierList RPAREN
@@ -1226,7 +1231,7 @@ limitClause
     ;
 
 fetchClause
-    : FETCH (FIRST | NEXT) INTEGER_LITERAL ROWS? ONLY
+    : FETCH (FIRST | NEXT) INTEGER_LITERAL (ROW | ROWS)? ONLY
     ;
 
 transactionStatement
@@ -1263,6 +1268,7 @@ showStatement
     | SHOW VIEWS (LIKE STRING_LITERAL)? (IN (DATABASE | SCHEMA)? qualifiedName)? SEMI?
     | SHOW MATERIALIZED VIEWS (LIKE STRING_LITERAL)? (IN (DATABASE | SCHEMA)? qualifiedName)? SEMI?
     | SHOW DYNAMIC TABLES (LIKE STRING_LITERAL)? (IN (DATABASE | SCHEMA)? qualifiedName)? SEMI?
+    | SHOW HYBRID TABLES (LIKE STRING_LITERAL)? (IN (DATABASE | SCHEMA)? qualifiedName)? SEMI?
     | SHOW COLUMNS (IN | FROM) TABLE? qualifiedName SEMI?
     | SHOW STREAMS (LIKE STRING_LITERAL)? (IN (DATABASE | SCHEMA | ACCOUNT)? qualifiedName)? SEMI?
     | SHOW TASKS (LIKE STRING_LITERAL)? (IN (DATABASE | SCHEMA | ACCOUNT)? qualifiedName)? SEMI?
@@ -1507,7 +1513,7 @@ exceptionCondition
 // SELECT expr1, expr2 INTO var1, var2 FROM table [WHERE ...]
 // Targets may be plain identifiers or bind variables (:varname)
 selectIntoStatement
-    : SELECT DISTINCT? selectList INTO intoTargetList (FROM tableExpression whereClause? groupByClause? havingClause?)? SEMI?
+    : SELECT DISTINCT? selectList INTO intoTargetList (FROM tableExpression whereClause? groupByClause? havingClause? qualifyClause?)? orderByClause? (limitClause | fetchClause)? SEMI?
     ;
 
 intoTargetList
@@ -1559,6 +1565,7 @@ expression
     | INTERVAL STRING_LITERAL                                    # IntervalStringExpr
     | dateTimeLiteralType STRING_LITERAL                         # TypedDateTimeLiteralExpr
     | CAST LPAREN expression AS dataTypeName typeParameters? RPAREN              # CastExpr
+    | COLLATE LPAREN expression COMMA STRING_LITERAL RPAREN                      # CollateFuncExpr
     | functionName LPAREN identifier FROM expression RPAREN                      # ExtractFromExpr
     | functionName LPAREN DISTINCT? STAR RPAREN                  # FunctionCallStarExpr
     | functionName LPAREN expression (COMMA namedArgument)+ RPAREN overClause?  # FunctionCallMixedArgsExpr
@@ -1570,6 +1577,7 @@ expression
     | LPAREN selectStatement RPAREN                              # ScalarSubqueryExpr
     | expression COLON identifier ((DOT | COLON) identifier)*    # ObjectAccessExpr
     | expression LBRACKET expression RBRACKET                    # ArrayAccessExpr
+    | expression DOT identifier                                  # FieldAccessExpr
     | expression DOUBLE_COLON dataTypeName typeParameters?       # CastExpr2
     | expression PIPE_PIPE expression                            # ConcatExpr
     | expression op=(STAR | SLASH | PERCENT) expression          # MultiplicativeExpr
@@ -1660,6 +1668,8 @@ identifier
     | ALLOW_OVERLAPPING_EXECUTION
     | BEFORE        // Allow BEFORE as identifier
     | CALLER        // Allow CALLER as identifier
+    | CLOSE         // Allow CLOSE as identifier (e.g. a qualified fn name like tools.stats.close(); the
+                    // CLOSE <cursor> statement is a separate rule, disambiguated by context)
     | COLUMNS       // Allow COLUMNS as identifier (for INFORMATION_SCHEMA views)
     | COMMENT       // Allow COMMENT as identifier
     | COPY          // Allow COPY as identifier (table name)
@@ -1684,11 +1694,15 @@ identifier
     | FIRST         // Allow FIRST as identifier (also ORDER BY ... NULLS FIRST)
     | FLATTEN       // Allow FLATTEN as identifier (table function)
     | FUNCTIONS     // Allow FUNCTIONS as identifier (INFORMATION_SCHEMA view)
+    | GENERATION    // Allow GENERATION as identifier (also a CREATE WAREHOUSE property)
     | GENERATOR     // Allow GENERATOR as identifier (table function)
+    | GET           // Allow GET as identifier (the GET(array/object, key) semi-structured function; the
+                    // GET stage command is a separate statement, disambiguated by context)
     | GRANTS        // Allow GRANTS as identifier
     | GROUPING      // Allow GROUPING as identifier (function name)
     | HOUR          // Allow HOUR as identifier (can be column name)
     | HOURS         // Allow HOURS as identifier (can be column name)
+    | HYBRID        // Allow HYBRID as identifier (also a CREATE [HYBRID] TABLE modifier)
     | IGNORE        // Allow IGNORE as identifier (also FIRST_VALUE(...) IGNORE NULLS)
     | RESPECT       // Allow RESPECT as identifier (also FIRST_VALUE(...) RESPECT NULLS)
     | INCREMENTAL   // Allow INCREMENTAL as identifier
@@ -2109,12 +2123,14 @@ STATEMENT_QUEUED_TIMEOUT_IN_SECONDS: S T A T E M E N T UNDERSCORE Q U E U E D UN
 STATEMENT_TIMEOUT_IN_SECONDS: S T A T E M E N T UNDERSCORE T I M E O U T UNDERSCORE I N UNDERSCORE S E C O N D S;
 ENABLE_QUERY_ACCELERATION: E N A B L E UNDERSCORE Q U E R Y UNDERSCORE A C C E L E R A T I O N;
 QUERY_ACCELERATION_MAX_SCALE_FACTOR: Q U E R Y UNDERSCORE A C C E L E R A T I O N UNDERSCORE M A X UNDERSCORE S C A L E UNDERSCORE F A C T O R;
+GENERATION: G E N E R A T I O N;
 STANDARD: S T A N D A R D;
 ECONOMY: E C O N O M Y;
 MULTI_STATEMENT_COUNT: M U L T I UNDERSCORE S T A T E M E N T UNDERSCORE C O U N T;
 CLUSTER: C L U S T E R;
 COLLATE: C O L L A T E;
 TRANSIENT: T R A N S I E N T;
+HYBRID: H Y B R I D;
 TEMPORARY: T E M P O R A R Y;
 TEMP: T E M P;
 REPLACE: R E P L A C E;
@@ -2359,7 +2375,7 @@ IDENTIFIER: [a-zA-Z_][a-zA-Z0-9_$]*;
 // Literals
 INTEGER_LITERAL: [0-9]+;
 FLOAT_LITERAL: [0-9]+ DOT [0-9]+ ([eE] [+-]? [0-9]+)?;
-STRING_LITERAL: '\'' (~['] | '\'\'' | '\\' .)* '\'';      // Single quoted strings with newlines
+STRING_LITERAL: '\'' ('\\' . | '\'\'' | ~['\\])* '\'';    // Single-quoted. Backslash is EXCLUDED from ~[..] so it always begins a '\\' . escape (incl. \'); otherwise maximal-munch lets \'' lex as \ + '' and mis-aligns the string boundaries. Decode via SqlStringLiterals.
 DOLLAR_QUOTED_STRING: '$$' .*? '$$';
 
 // Operators and Punctuation

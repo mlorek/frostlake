@@ -798,6 +798,27 @@ public class Catalog {
         schema.addTable(table);
     }
 
+    /**
+     * Move a table to a (possibly different) schema/database, optionally renaming it — the qualified-target
+     * form of {@code ALTER TABLE ... RENAME TO db.schema.name}. The destination database and schema must
+     * already exist (else {@link #getDatabase}/{@code getSchema} throw), and no table of the new name may
+     * already exist there. Membership is checked before any mutation, so a rejected move leaves the catalog
+     * untouched.
+     */
+    public void moveTable(final String sourceQualifiedName, final String targetDatabase,
+                          final String targetSchema, final String newName) {
+        final Table table = resolveTable(sourceQualifiedName);
+        final Schema source = resolveSchemaForTable(sourceQualifiedName);
+        final Schema target = getDatabase(targetDatabase).getSchema(targetSchema);
+        if (target.hasTable(newName)) {
+            throw new RuntimeException("Table already exists: "
+                + targetDatabase + "." + targetSchema + "." + newName);
+        }
+        source.dropTable(table.getName());
+        table.rename(newName);
+        target.addTable(table);
+    }
+
     public void renameView(final String qualifiedName, final String newName) {
         View view = resolveView(qualifiedName);
         Schema schema = resolveSchemaForTable(qualifiedName);

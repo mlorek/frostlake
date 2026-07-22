@@ -30,4 +30,7 @@ public class StreamRecordSnapshot implements Serializable {
     public String changeType;
     public boolean update;
     public long rowId;
+    // Bare (upper-case) base table this change was captured from; routes records to a UNION ALL
+    // view-stream branch. Null in older snapshots and for single-source streams.
+    public String sourceTable;
 }

@@ -111,12 +111,12 @@ public class JavaScriptUDFPracticalTest {
         logger.info("Testing JSON extraction JavaScript UDF");
 
         engine.execute("""
-            CREATE FUNCTION extract_json_field(json VARCHAR, field VARCHAR)
+            CREATE FUNCTION extract_json_field(doc VARCHAR, field VARCHAR)
             RETURNS VARCHAR
             LANGUAGE JAVASCRIPT
             AS $$
                 try {
-                    var obj = JSON.parse(json);
+                    var obj = JSON.parse(doc);
                     return obj[field] ? String(obj[field]) : null;
                 } catch (e) {
                     return null;

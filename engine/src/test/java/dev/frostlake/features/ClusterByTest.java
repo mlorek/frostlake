@@ -390,4 +390,73 @@ public class ClusterByTest {
 
         logger.info("CLUSTER BY with concatenation expression created successfully");
     }
+
+    @Test
+    public void testClusterByBeforeColumnList() {
+        logger.info("Testing CREATE TABLE with CLUSTER BY before the column list");
+
+        // Snowflake accepts CLUSTER BY immediately after the table name, before the column definitions.
+        engine.execute("CREATE TABLE lead_single CLUSTER BY (i) (i INTEGER, name VARCHAR)");
+
+        Table table = engine.getCatalog().resolveTable("lead_single");
+        assertNotNull(table);
+
+        List<String> clusterKeys = table.getClusterKeys();
+        assertNotNull(clusterKeys);
+        assertEquals(1, clusterKeys.size());
+        assertEquals("i", clusterKeys.get(0));
+
+        logger.info("CLUSTER BY before column list created successfully");
+    }
+
+    @Test
+    public void testClusterByBeforeColumnListMultipleKeys() {
+        logger.info("Testing CREATE TABLE with multiple CLUSTER BY keys before the column list");
+
+        engine.execute("CREATE TABLE lead_multi CLUSTER BY (region, status) (id INTEGER, region VARCHAR, status VARCHAR)");
+
+        Table table = engine.getCatalog().resolveTable("lead_multi");
+        assertNotNull(table);
+
+        List<String> clusterKeys = table.getClusterKeys();
+        assertNotNull(clusterKeys);
+        assertEquals(2, clusterKeys.size());
+        assertEquals("region", clusterKeys.get(0));
+        assertEquals("status", clusterKeys.get(1));
+
+        logger.info("Multiple CLUSTER BY keys before column list created successfully");
+    }
+
+    @Test
+    public void testClusterByBeforeColumnListWithExpression() {
+        logger.info("Testing CREATE TABLE with an expression CLUSTER BY before the column list");
+
+        engine.execute("CREATE TABLE lead_expr CLUSTER BY (UPPER(name)) (id INTEGER, name VARCHAR)");
+
+        Table table = engine.getCatalog().resolveTable("lead_expr");
+        assertNotNull(table);
+
+        List<String> clusterKeys = table.getClusterKeys();
+        assertNotNull(clusterKeys);
+        assertEquals(1, clusterKeys.size());
+        assertEquals("UPPER(name)", clusterKeys.get(0));
+
+        logger.info("Expression CLUSTER BY before column list created successfully");
+    }
+
+    @Test
+    public void testClusterByBeforeColumnListInsertAndSelect() {
+        logger.info("Testing INSERT and SELECT on a table declared with CLUSTER BY before the column list");
+
+        engine.execute("CREATE TABLE lead_data CLUSTER BY (category) (item_id INTEGER, category VARCHAR, quantity INTEGER)");
+        engine.execute("INSERT INTO lead_data VALUES (1, 'Electronics', 100)");
+        engine.execute("INSERT INTO lead_data VALUES (2, 'Furniture', 50)");
+        engine.execute("INSERT INTO lead_data VALUES (3, 'Electronics', 75)");
+
+        ResultSet rs = engine.executeQuery("SELECT * FROM lead_data WHERE category = 'Electronics'");
+        assertNotNull(rs);
+        assertEquals(2, rs.getRowCount());
+
+        logger.info("INSERT and SELECT on leading-CLUSTER-BY table works correctly");
+    }
 }

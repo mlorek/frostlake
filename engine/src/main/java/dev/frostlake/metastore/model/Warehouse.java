@@ -53,6 +53,7 @@ public class Warehouse implements Taggable {
     private int statementTimeoutSeconds = 0;
     private boolean enableQueryAcceleration = false;
     private int queryAccelerationMaxScaleFactor = 8;
+    private String generation;
 
     public Warehouse(final String name, final WarehouseSize size) {
         this.name = name;
@@ -256,6 +257,9 @@ public class Warehouse implements Taggable {
 
     public int getQueryAccelerationMaxScaleFactor() { return queryAccelerationMaxScaleFactor; }
     public void setQueryAccelerationMaxScaleFactor(final int v) { this.queryAccelerationMaxScaleFactor = v; }
+
+    public String getGeneration() { return generation; }
+    public void setGeneration(final String generation) { this.generation = generation; }
 
     public void rename(final String newName) {
         this.name = newName;

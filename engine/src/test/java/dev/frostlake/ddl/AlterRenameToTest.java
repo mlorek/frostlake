@@ -19,8 +19,11 @@ package dev.frostlake.ddl;
 import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * ALTER … RENAME accepts the canonical Snowflake {@code RENAME TO <name>} syntax (the {@code TO} keyword),
@@ -54,5 +57,75 @@ public class AlterRenameToTest extends BaseDatabaseTest {
         engine.execute("CREATE TABLE r3 (id INTEGER)");
         engine.execute("ALTER TABLE r3 RENAME r4");
         assertEquals(0L, count("r4"));
+    }
+
+    @Test
+    public void renameToQualifiedSameSchema() {
+        // A qualified target in the same schema is just a rename in place.
+        engine.execute("CREATE TABLE q1 (id INTEGER)");
+        engine.execute("INSERT INTO q1 VALUES (7)");
+        engine.execute("ALTER TABLE test_schema.q1 RENAME TO test_schema.q2");
+        assertEquals(1L, count("q2"));
+    }
+
+    @Test
+    public void renameToOtherSchemaMovesTableWithData() {
+        engine.execute("CREATE SCHEMA s2");
+        engine.execute("CREATE TABLE m1 (id INTEGER)");
+        engine.execute("INSERT INTO m1 VALUES (1), (2)");
+        engine.execute("ALTER TABLE test_schema.m1 RENAME TO s2.m2");
+
+        assertEquals(2L, count("s2.m2"));                        // data moved with the table
+        assertThrows(RuntimeException.class, new Executable() {  // gone from the source schema
+            @Override
+            public void execute() {
+                engine.executeQuery("SELECT COUNT(*) FROM test_schema.m1");
+            }
+        });
+    }
+
+    @Test
+    public void ifExistsQualifiedRenameMovesTable() {
+        // The reported form: ALTER TABLE IF EXISTS s1.t1 RENAME TO s2.t2.
+        engine.execute("CREATE SCHEMA s2");
+        engine.execute("CREATE TABLE t1 (id INTEGER)");
+        engine.execute("INSERT INTO t1 VALUES (9)");
+        engine.execute("ALTER TABLE IF EXISTS test_schema.t1 RENAME TO s2.t2");
+        assertEquals(1L, count("s2.t2"));
+    }
+
+    @Test
+    public void ifExistsMissingSourceIsNoOp() {
+        engine.execute("CREATE SCHEMA s2");
+        // IF EXISTS on a missing source table must not raise.
+        engine.execute("ALTER TABLE IF EXISTS test_schema.nope RENAME TO s2.whatever");
+    }
+
+    @Test
+    public void moveToMissingSchemaErrors() {
+        engine.execute("CREATE TABLE mm (id INTEGER)");
+        final RuntimeException ex = assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.execute("ALTER TABLE test_schema.mm RENAME TO no_such_schema.x");
+            }
+        });
+        assertTrue(ex.getMessage().toLowerCase().contains("schema"),
+            "expected a missing-schema error: " + ex.getMessage());
+    }
+
+    @Test
+    public void moveOntoExistingNameErrors() {
+        engine.execute("CREATE SCHEMA s2");
+        engine.execute("CREATE TABLE dup (id INTEGER)");
+        engine.execute("CREATE TABLE s2.dup (id INTEGER)");
+        final RuntimeException ex = assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.execute("ALTER TABLE test_schema.dup RENAME TO s2.dup");
+            }
+        });
+        assertTrue(ex.getMessage().toLowerCase().contains("already exists"),
+            "expected a name-collision error: " + ex.getMessage());
     }
 }

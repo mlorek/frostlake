@@ -22,6 +22,7 @@ import dev.frostlake.metastore.model.ScalingPolicy;
 import dev.frostlake.metastore.model.Warehouse;
 import dev.frostlake.metastore.model.WarehouseSize;
 import dev.frostlake.metastore.model.WarehouseState;
+import dev.frostlake.storage.ResultSet;
 import java.time.LocalDateTime;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -61,9 +62,29 @@ public class WarehousesTest {
 
         Warehouse wh = engine.getCatalog().getWarehouse("test_wh");
         assertNotNull(wh);
-        assertEquals("test_wh", wh.getName());
+        assertEquals("TEST_WH", wh.getName());
         assertEquals(WarehouseSize.SMALL, wh.getSize());
         assertEquals(WarehouseState.SUSPENDED, wh.getState());
+    }
+
+    @Test
+    public void testCreateWarehouseWithUnquotedSize() {
+        // WAREHOUSE_SIZE = MEDIUM (unquoted identifier) — Snowflake accepts it; it previously threw an NPE.
+        engine.execute("CREATE WAREHOUSE uq_wh WAREHOUSE_SIZE = MEDIUM");
+        Warehouse wh = engine.getCatalog().getWarehouse("uq_wh");
+        assertNotNull(wh);
+        assertEquals(WarehouseSize.MEDIUM, wh.getSize());
+    }
+
+    @Test
+    public void testCreateWarehouseWithSessionVariableSize() {
+        // WAREHOUSE_SIZE = $var — the size comes from a session variable. Previously this threw an NPE
+        // that IF NOT EXISTS silently swallowed, leaving the warehouse uncreated.
+        engine.execute("SET whsz = (SELECT 'LARGE')");
+        engine.execute("CREATE WAREHOUSE IF NOT EXISTS sv_wh WAREHOUSE_SIZE = $whsz MAX_CLUSTER_COUNT = 2");
+        Warehouse wh = engine.getCatalog().getWarehouse("sv_wh");
+        assertNotNull(wh, "warehouse should be created, not silently skipped");
+        assertEquals(WarehouseSize.LARGE, wh.getSize());
     }
 
     @Test
@@ -292,5 +313,41 @@ public class WarehousesTest {
 
         var warehouses = engine.getCatalog().getAllWarehouses();
         assertTrue(warehouses.size() >= 4); // Including COMPUTE_WH
+    }
+
+    @Test
+    public void createWarehouseWithGenerationClause() {
+        // GENERATION (a Snowflake warehouse-generation property) must parse and be retained.
+        engine.execute("""
+            CREATE WAREHOUSE IF NOT EXISTS gen_wh
+                WAREHOUSE_SIZE                      = 'MEDIUM'
+                ENABLE_QUERY_ACCELERATION           = TRUE
+                QUERY_ACCELERATION_MAX_SCALE_FACTOR = 4
+                STATEMENT_TIMEOUT_IN_SECONDS        = 21600
+                GENERATION                          = '1'
+            """);
+        Warehouse wh = engine.getCatalog().getWarehouse("gen_wh");
+        assertNotNull(wh);
+        assertEquals("1", wh.getGeneration());
+    }
+
+    @Test
+    public void generationClauseAcceptsIntegerValue() {
+        engine.execute("CREATE WAREHOUSE gen_wh_int WAREHOUSE_SIZE = 'SMALL' GENERATION = 2");
+        assertEquals("2", engine.getCatalog().getWarehouse("gen_wh_int").getGeneration());
+    }
+
+    @Test
+    public void alterWarehouseSetGeneration() {
+        engine.execute("CREATE WAREHOUSE gen_wh_alt WAREHOUSE_SIZE = 'SMALL'");
+        engine.execute("ALTER WAREHOUSE gen_wh_alt SET GENERATION = '3'");
+        assertEquals("3", engine.getCatalog().getWarehouse("gen_wh_alt").getGeneration());
+    }
+
+    @Test
+    public void generationStillUsableAsIdentifier() {
+        // Adding the GENERATION keyword must not stop 'generation' being a plain identifier.
+        ResultSet rs = engine.executeQuery("SELECT 1 AS generation");
+        assertEquals(1, ((Number) rs.getRows().get(0).getValue(0)).intValue());
     }
 }

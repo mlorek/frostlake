@@ -66,8 +66,8 @@ public class CreateTableAsSelectTest {
         Table table = engine.getCatalog().resolveTable("target");
         assertNotNull(table);
         assertEquals(2, table.getColumns().size());
-        assertEquals("id", table.getColumn("id").getName());
-        assertEquals("name", table.getColumn("name").getName());
+        assertEquals("ID", table.getColumn("id").getName());
+        assertEquals("NAME", table.getColumn("name").getName());
 
         ResultSet rs = engine.executeQuery("SELECT * FROM target");
         assertEquals(2, rs.getRowCount());
@@ -84,8 +84,8 @@ public class CreateTableAsSelectTest {
         Table table = engine.getCatalog().resolveTable("tbl");
         assertNotNull(table);
         assertEquals(2, table.getColumns().size());
-        assertEquals("c", table.getColumn("c").getName());
-        assertEquals("d", table.getColumn("d").getName());
+        assertEquals("C", table.getColumn("c").getName());
+        assertEquals("D", table.getColumn("d").getName());
 
         ResultSet rs = engine.executeQuery("SELECT * FROM tbl");
         assertEquals(1, rs.getRowCount());
@@ -112,7 +112,7 @@ public class CreateTableAsSelectTest {
         Table table = engine.getCatalog().resolveTable("test");
         assertNotNull(table);
         assertEquals(2, table.getColumns().size());
-        assertEquals("value", table.getColumn("value").getName());
+        assertEquals("VALUE", table.getColumn("value").getName());
 
         ResultSet rs2 = engine.executeQuery("SELECT * FROM test");
         assertEquals(1, rs2.getRowCount());

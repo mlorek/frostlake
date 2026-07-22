@@ -117,25 +117,25 @@ public class InformationSchemaTest extends BaseJdbcTest {
 
         // Query INFORMATION_SCHEMA.COLUMNS
         ResultSet rs = statement.executeQuery(
-            "SELECT * FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'employees' ORDER BY ORDINAL_POSITION"
+            "SELECT * FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'EMPLOYEES' ORDER BY ORDINAL_POSITION"
         );
 
         // Check column 1: id
         assertTrue(rs.next(), "Should have first column");
-        assertEquals("employees", rs.getString("TABLE_NAME"));
-        assertEquals("id", rs.getString("COLUMN_NAME"));
+        assertEquals("EMPLOYEES", rs.getString("TABLE_NAME"));
+        assertEquals("ID", rs.getString("COLUMN_NAME"));
         assertEquals(1, rs.getInt("ORDINAL_POSITION"));
         assertEquals("INTEGER", rs.getString("DATA_TYPE"));
 
         // Check column 2: name
         assertTrue(rs.next(), "Should have second column");
-        assertEquals("name", rs.getString("COLUMN_NAME"));
+        assertEquals("NAME", rs.getString("COLUMN_NAME"));
         assertEquals(2, rs.getInt("ORDINAL_POSITION"));
         assertEquals("VARCHAR", rs.getString("DATA_TYPE"));
 
         // Check column 3: salary
         assertTrue(rs.next(), "Should have third column");
-        assertEquals("salary", rs.getString("COLUMN_NAME"));
+        assertEquals("SALARY", rs.getString("COLUMN_NAME"));
         assertEquals(3, rs.getInt("ORDINAL_POSITION"));
         // Note: DECIMAL type is stored as NUMBER internally
         assertTrue("NUMBER".equals(rs.getString("DATA_TYPE")) || "DECIMAL".equals(rs.getString("DATA_TYPE")),
@@ -224,7 +224,7 @@ public class InformationSchemaTest extends BaseJdbcTest {
             FROM INFORMATION_SCHEMA.TABLES t
             INNER JOIN INFORMATION_SCHEMA.COLUMNS c
               ON t.TABLE_NAME = c.TABLE_NAME
-            WHERE t.TABLE_NAME = 'orders'
+            WHERE t.TABLE_NAME = 'ORDERS'
             """);
 
         int count = 0;

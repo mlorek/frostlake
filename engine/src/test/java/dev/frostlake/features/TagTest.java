@@ -69,7 +69,7 @@ public class TagTest {
 
         Tag tag = engine.getCatalog().getTag("cost_center");
         assertNotNull(tag);
-        assertEquals("cost_center", tag.getName());
+        assertEquals("COST_CENTER", tag.getName());
         assertFalse(tag.hasAllowedValues());
         assertFalse(tag.isMasking());
     }
@@ -82,7 +82,7 @@ public class TagTest {
 
         Tag tag = engine.getCatalog().getTag("department");
         assertNotNull(tag);
-        assertEquals("department", tag.getName());
+        assertEquals("DEPARTMENT", tag.getName());
         assertTrue(tag.hasAllowedValues());
         assertEquals(4, tag.getAllowedValues().size());
         assertTrue(tag.isValueAllowed("HR"));
@@ -98,7 +98,7 @@ public class TagTest {
 
         Tag tag = engine.getCatalog().getTag("sensitive_data");
         assertNotNull(tag);
-        assertEquals("sensitive_data", tag.getName());
+        assertEquals("SENSITIVE_DATA", tag.getName());
         assertTrue(tag.isMasking());
     }
 
@@ -110,7 +110,7 @@ public class TagTest {
 
         Tag tag = engine.getCatalog().getTag("project_code");
         assertNotNull(tag);
-        assertEquals("project_code", tag.getName());
+        assertEquals("PROJECT_CODE", tag.getName());
         assertEquals("Project identifier tag", tag.getComment());
     }
 
@@ -170,7 +170,7 @@ public class TagTest {
         String nameProperty = (String) rs.getRows().get(0).getValues().get(0);
         String nameValue = (String) rs.getRows().get(0).getValues().get(1);
         assertEquals("name", nameProperty);
-        assertEquals("department", nameValue);
+        assertEquals("DEPARTMENT", nameValue);
     }
 
     @Test
@@ -243,7 +243,7 @@ public class TagTest {
         assertTrue(engine.getCatalog().hasTag("project_id"));
 
         Tag tag = engine.getCatalog().getTag("project_id");
-        assertEquals("project_id", tag.getName());
+        assertEquals("PROJECT_ID", tag.getName());
     }
 
     @Test

@@ -69,6 +69,9 @@ public class CreateTableHandler implements CommandHandler {
         String[] parts = qualifiedName.split("\\.");
         boolean isTransient = ctx.TRANSIENT() != null;
         boolean isTemporary = ctx.TEMPORARY() != null || ctx.TEMP() != null;
+        // CREATE HYBRID TABLE is accepted and stored as an ordinary table; the flag is kept only so
+        // SHOW HYBRID TABLES and the reported kind reflect the declaration.
+        boolean isHybrid = ctx.HYBRID() != null;
         boolean orReplace = ctx.or_replace() != null;
 
         try {
@@ -161,6 +164,7 @@ public class CreateTableHandler implements CommandHandler {
 
                 table.setClusterKeys(sourceTable.getClusterKeys());
                 table.setOwner(catalog.currentRoleForOwner());
+                table.setHybrid(isHybrid);
                 schema.addTable(table);
 
                 String fullyQualifiedName = databaseName.toUpperCase() + "." + schema.getName().toUpperCase() + "." + tableName.toUpperCase();
@@ -210,16 +214,14 @@ public class CreateTableHandler implements CommandHandler {
                     table.setComment(comment);
                 }
 
-                // Extract cluster keys
-                if (ctx.clusterByClause() != null) {
-                    List<String> clusterKeys = new ArrayList<>();
-                    for (final FrostlakeParser.ExpressionContext exprCtx : ctx.clusterByClause().expressionList().expression()) {
-                        clusterKeys.add(exprCtx.getText());
-                    }
+                // Extract cluster keys (CLUSTER BY may appear before or after the column list)
+                List<String> clusterKeys = extractClusterKeys(ctx);
+                if (!clusterKeys.isEmpty()) {
                     table.setClusterKeys(clusterKeys);
                 }
 
                 table.setOwner(catalog.currentRoleForOwner());
+                table.setHybrid(isHybrid);
                 schema.addTable(table);
 
                 String fullyQualifiedName = databaseName.toUpperCase() + "." + schema.getName().toUpperCase() + "." + tableName.toUpperCase();
@@ -256,16 +258,14 @@ public class CreateTableHandler implements CommandHandler {
                     table.setComment(comment);
                 }
 
-                // Extract cluster keys
-                if (ctx.clusterByClause() != null) {
-                    List<String> clusterKeys = new ArrayList<>();
-                    for (final FrostlakeParser.ExpressionContext exprCtx : ctx.clusterByClause().expressionList().expression()) {
-                        clusterKeys.add(exprCtx.getText());
-                    }
+                // Extract cluster keys (CLUSTER BY may appear before or after the column list)
+                List<String> clusterKeys = extractClusterKeys(ctx);
+                if (!clusterKeys.isEmpty()) {
                     table.setClusterKeys(clusterKeys);
                 }
 
                 table.setOwner(catalog.currentRoleForOwner());
+                table.setHybrid(isHybrid);
                 schema.addTable(table);
 
                 String fullyQualifiedName = databaseName.toUpperCase() + "." + schema.getName().toUpperCase() + "." + tableName.toUpperCase();
@@ -277,6 +277,23 @@ public class CreateTableHandler implements CommandHandler {
             ddl.handleIfNotExists(ifNotExists, e, qualifiedName);
         }
         return null;
+    }
+
+    /**
+     * Collects the {@code CLUSTER BY} key expressions for a CREATE TABLE. Snowflake accepts the clause
+     * either immediately after the table name (before the column list) or after the column list; the
+     * grammar allows {@code clusterByClause} in both positions, so this reads whichever one was supplied.
+     * Returns an empty list when no clustering key was given.
+     */
+    private static List<String> extractClusterKeys(final FrostlakeParser.CreateStatementContext ctx) {
+        List<String> clusterKeys = new ArrayList<>();
+        List<FrostlakeParser.ClusterByClauseContext> clauses = ctx.clusterByClause();
+        if (!clauses.isEmpty()) {
+            for (final FrostlakeParser.ExpressionContext exprCtx : clauses.get(0).expressionList().expression()) {
+                clusterKeys.add(exprCtx.getText());
+            }
+        }
+        return clusterKeys;
     }
 
 }

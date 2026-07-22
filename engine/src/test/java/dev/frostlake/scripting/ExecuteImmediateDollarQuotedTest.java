@@ -39,7 +39,7 @@ public class ExecuteImmediateDollarQuotedTest extends BaseJdbcTest {
         // Verify table was created
         ResultSet rs = statement.executeQuery("SHOW TABLES");
         assertTrue(rs.next(), "Table should be created");
-        assertEquals("products", rs.getString("name"));
+        assertEquals("PRODUCTS", rs.getString("name"));
         rs.close();
     }
 
@@ -104,7 +104,7 @@ public class ExecuteImmediateDollarQuotedTest extends BaseJdbcTest {
         ResultSet rs = statement.executeQuery("SHOW TABLES");
         boolean found = false;
         while (rs.next()) {
-            if ("inventory".equals(rs.getString("name"))) {
+            if ("INVENTORY".equals(rs.getString("name"))) {
                 found = true;
                 break;
             }
@@ -163,7 +163,7 @@ public class ExecuteImmediateDollarQuotedTest extends BaseJdbcTest {
         int count = 0;
         while (rs.next()) {
             String tableName = rs.getString("name");
-            if ("test1".equals(tableName) || "test2".equals(tableName)) {
+            if ("TEST1".equals(tableName) || "TEST2".equals(tableName)) {
                 count++;
             }
         }

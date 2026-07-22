@@ -134,15 +134,25 @@ final class ShowRelationalExecutor {
     }
 
     public ResultSet showTables(final String schemaName) {
-        return showTablesScoped(schemaName, null);
+        return showTablesScoped(schemaName, null, false);
     }
 
     /** SHOW TABLES IN DATABASE &lt;db&gt;: every table across all schemas of the database. */
     public ResultSet showTablesInDatabase(final String databaseName) {
-        return showTablesScoped(null, databaseName);
+        return showTablesScoped(null, databaseName, false);
     }
 
-    private ResultSet showTablesScoped(final String schemaName, final String databaseName) {
+    /** SHOW HYBRID TABLES: only tables declared with CREATE HYBRID TABLE. */
+    public ResultSet showHybridTables(final String schemaName) {
+        return showTablesScoped(schemaName, null, true);
+    }
+
+    public ResultSet showHybridTablesInDatabase(final String databaseName) {
+        return showTablesScoped(null, databaseName, true);
+    }
+
+    private ResultSet showTablesScoped(final String schemaName, final String databaseName,
+                                       final boolean hybridOnly) {
         List<ResultSetColumn> columns = Arrays.asList(
             new ResultSetColumn("created_on", StringType.VARCHAR),
             new ResultSetColumn("name", StringType.VARCHAR),
@@ -164,7 +174,11 @@ final class ShowRelationalExecutor {
         for (final Schema schema : resolveScopeSchemas(schemaName, databaseName)) {
             final String scName = schema.getName();
             for (final Table table : schema.getTables()) {
-                final String kind = table.isTemporary() ? "TEMPORARY TABLE"
+                if (hybridOnly && !table.isHybrid()) {
+                    continue;
+                }
+                final String kind = table.isHybrid() ? "HYBRID TABLE"
+                    : table.isTemporary() ? "TEMPORARY TABLE"
                     : table.isTransient() ? "TRANSIENT TABLE" : "TABLE";
                 rows.add(new Row(Arrays.asList(
                     table.getCreatedTime().toString(),

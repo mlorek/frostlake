@@ -26,13 +26,20 @@ public class StreamRecord {
     private final boolean isUpdate;
     private final long rowId;
     private final LocalDateTime timestamp;
+    private final String sourceTable;
 
     public StreamRecord(final List<Object> values, final ChangeType changeType, final boolean isUpdate, final long rowId) {
+        this(values, changeType, isUpdate, rowId, null);
+    }
+
+    public StreamRecord(final List<Object> values, final ChangeType changeType, final boolean isUpdate,
+                        final long rowId, final String sourceTable) {
         this.values = values;
         this.changeType = changeType;
         this.isUpdate = isUpdate;
         this.rowId = rowId;
         this.timestamp = LocalDateTime.now();
+        this.sourceTable = sourceTable;
     }
 
     public List<Object> getValues() {
@@ -53,5 +60,13 @@ public class StreamRecord {
 
     public LocalDateTime getTimestamp() {
         return timestamp;
+    }
+
+    /**
+     * Bare (upper-case) name of the base table this change was captured from. Used to route records to the
+     * matching branch of a {@code UNION ALL} view stream; null for table streams and single-branch views.
+     */
+    public String getSourceTable() {
+        return sourceTable;
     }
 }

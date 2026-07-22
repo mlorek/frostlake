@@ -52,7 +52,7 @@ public class AlterTaskStreamActionsTest extends BaseDatabaseTest {
         engine.execute("ALTER TASK tk SET SCHEDULE = '10 MINUTE'");
         engine.execute("ALTER TASK tk SET WAREHOUSE = wh2");
         assertEquals("10 MINUTE", task().getSchedule());
-        assertEquals("wh2", task().getWarehouse());
+        assertEquals("WH2", task().getWarehouse());
     }
 
     @Test

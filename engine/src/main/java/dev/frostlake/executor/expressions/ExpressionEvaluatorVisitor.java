@@ -21,9 +21,11 @@ import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.FunctionRegistry;
 import dev.frostlake.metastore.Catalog;
+import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.model.Function;
 import dev.frostlake.metastore.model.Parameter;
 import dev.frostlake.metastore.model.Schema;
+import dev.frostlake.metastore.model.Sequence;
 import dev.frostlake.metastore.model.Stream;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.TableColumn;
@@ -352,7 +354,43 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
                 break;
         }
 
+        // Snowflake sequence pseudo-columns: <sequence>.NEXTVAL / <sequence>.CURRVAL. Resolved as a
+        // last resort (after column resolution) so a real column of that name still wins; this is what
+        // lets a column DEFAULT of seq.NEXTVAL work at INSERT and MERGE time.
+        if (expr.isQualified()) {
+            final String op = columnName.toUpperCase();
+            if ("NEXTVAL".equals(op) || "CURRVAL".equals(op)) {
+                final Sequence sequence = resolveSequence(expr.getTableName());
+                if (sequence != null) {
+                    return "NEXTVAL".equals(op) ? sequence.nextVal() : sequence.currVal();
+                }
+            }
+        }
+
         throw new RuntimeException("Column not found: " + expr);
+    }
+
+    /**
+     * Resolve a (possibly schema/database-qualified) sequence name for the {@code seq.NEXTVAL} /
+     * {@code seq.CURRVAL} pseudo-column syntax. Returns null when it does not name a sequence, so the
+     * caller falls back to the ordinary "column not found" error.
+     */
+    private Sequence resolveSequence(final String name) {
+        final Catalog cat = catalog != null ? catalog : (queryExecutor != null ? queryExecutor.getCatalog() : null);
+        if (cat == null || cat.getCurrentDatabase() == null) {
+            return null;
+        }
+        try {
+            final String[] parts = QualifiedName.parse(name).parts();
+            if (parts.length == 1) {
+                return cat.getDatabase(cat.getCurrentDatabase()).getSchema(cat.getCurrentSchema()).getSequence(parts[0]);
+            } else if (parts.length == 2) {
+                return cat.getDatabase(cat.getCurrentDatabase()).getSchema(parts[0]).getSequence(parts[1]);
+            }
+            return cat.getDatabase(parts[0]).getSchema(parts[1]).getSequence(parts[2]);
+        } catch (final RuntimeException e) {
+            return null;
+        }
     }
 
     @Override
@@ -753,9 +791,8 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
             if (!first) {
                 json.append(", ");
             }
-            Object value = entry.getValue().accept(this);
             json.append("\"").append(entry.getKey()).append("\": ");
-            json.append(formatJsonValue(value));
+            json.append(jsonElementText(entry.getValue(), entry.getValue().accept(this)));
             first = false;
         }
 
@@ -771,8 +808,8 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
             if (i > 0) {
                 json.append(", ");
             }
-            Object value = expr.getElements().get(i).accept(this);
-            json.append(formatJsonValue(value));
+            final Expression element = expr.getElements().get(i);
+            json.append(jsonElementText(element, element.accept(this)));
         }
 
         json.append("]");
@@ -994,6 +1031,21 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
 
     private String formatJsonValue(final Object value) {
         return JsonPathExtractor.formatJsonValue(value);
+    }
+
+    /**
+     * Render a value as it should appear inside a JSON object/array literal. A nested object or array
+     * literal ({@code {...}} / {@code [...]}) has already been evaluated to a JSON string, so it is
+     * embedded raw; every other value is formatted as a JSON scalar (strings quoted, numbers bare).
+     * Without this, a nested literal would be re-quoted as a string, e.g. {@code [{'b':1}]} would store
+     * the malformed {@code ["{"b": 1}"]} and later {@code c[0]} would fail to parse.
+     */
+    private String jsonElementText(final Expression element, final Object value) {
+        if (value instanceof String
+                && (element instanceof JsonObjectExpression || element instanceof JsonArrayExpression)) {
+            return (String) value;
+        }
+        return formatJsonValue(value);
     }
 
     private Object evaluateExists(final String subquery) {
