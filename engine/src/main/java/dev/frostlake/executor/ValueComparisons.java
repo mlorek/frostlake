@@ -50,6 +50,36 @@ public final class ValueComparisons {
         return value;
     }
 
+    /**
+     * Canonicalize one grouping-key value so equal numbers with different runtime types land in the
+     * same bucket: Integer 1, Long 1, Double 1.0 and BigDecimal 1.00 must form one group (mixed
+     * representations arise from VARIANT casts, set-operation branches and literal folding). Unlike
+     * the join-key normalizer this must not over-group — the bucket IS the grouping decision, with no
+     * downstream re-confirmation — so only exact-value numeric canonicalization is applied; strings,
+     * temporals and booleans pass through unchanged. Integral values become {@code Long}, everything
+     * else a trailing-zero-stripped {@code BigDecimal}, both of which honor equals/hashCode.
+     */
+    public static Object canonicalGroupKeyValue(final Object value) {
+        if (!(value instanceof Number)) {
+            return value;
+        }
+        if (value instanceof Double && (((Double) value).isNaN() || ((Double) value).isInfinite())) {
+            return value;
+        }
+        if (value instanceof Float && (((Float) value).isNaN() || ((Float) value).isInfinite())) {
+            return value;
+        }
+        final BigDecimal exact = new BigDecimal(value.toString()).stripTrailingZeros();
+        if (exact.scale() <= 0) {
+            try {
+                return Long.valueOf(exact.longValueExact());
+            } catch (final ArithmeticException beyondLongRange) {
+                return exact;
+            }
+        }
+        return exact;
+    }
+
     @SuppressWarnings("unchecked")
     public static int compareValues(final Object v1, final Object v2) {
         // NULLs sort as greater than any non-NULL value (Snowflake default). With the ASC/DESC sign

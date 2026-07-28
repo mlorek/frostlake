@@ -84,6 +84,7 @@ public class FunctionRegistry {
         register(new RTrim());
         register(new Left());
         register(new Right());
+        register(new Insert());
         register(new Char());
         register(new Reverse());
         register(new InitCap());
@@ -105,6 +106,9 @@ public class FunctionRegistry {
         register(new Translate());
         register(new RegexpReplace());
         register(new RegexpLike());
+        functions.put("RLIKE", new RegexpLike());   // RLIKE(subject, pattern) is a synonym for REGEXP_LIKE
+        register(new Like());                        // LIKE(subject, pattern) — function-call form of the LIKE operator
+        register(new Ilike());                       // ILIKE(subject, pattern) — function-call form of the ILIKE operator
         register(new RegexpSubstr());
         register(new RegexpSubstrAll());
         functions.put("REGEXP_EXTRACT_ALL", new RegexpSubstrAll()); // REGEXP_EXTRACT_ALL == REGEXP_SUBSTR_ALL
@@ -230,6 +234,7 @@ public class FunctionRegistry {
         if (sessionContext != null) {
             register(new CurrentUser(sessionContext));
             register(new CurrentRole(sessionContext));
+            register(new CurrentAvailableRoles(catalog, sessionContext));
         }
 
         // Conditional functions
@@ -240,7 +245,9 @@ public class FunctionRegistry {
         register(new NullIf());
         register(new Iff());
         register(new Greatest());
+        register(new GreatestIgnoreNulls());
         register(new Least());
+        register(new LeastIgnoreNulls());
         register(new EqualNull());
         register(new Decode());
         register(new BoolAnd());
@@ -258,6 +265,8 @@ public class FunctionRegistry {
         functions.put("TO_DECIMAL", new ToNumber()); // TO_DECIMAL / TO_NUMERIC are synonyms of TO_NUMBER
         functions.put("TO_NUMERIC", new ToNumber());
         register(new TryToNumber());
+        functions.put("TRY_TO_DECIMAL", new TryToNumber()); // TRY_TO_DECIMAL / TRY_TO_NUMERIC are synonyms of TRY_TO_NUMBER
+        functions.put("TRY_TO_NUMERIC", new TryToNumber());
         register(new ToDouble());
         register(new TryToDouble());
         register(new ToInteger());
@@ -332,6 +341,7 @@ public class FunctionRegistry {
         register(new AsObject());
         register(new AsArray());
         register(new ArrayConstruct());
+        register(new ArrayConstructCompact());
         register(new ArrayAppend());
         register(new ArrayToString());
         register(new ArraySize());
@@ -357,6 +367,7 @@ public class FunctionRegistry {
         register(new ObjectConstruct());
         register(new ObjectConstructKeepNull());
         register(new ObjectInsert());
+        register(new MapCat());   // MAP_CAT — merge two MAPs (MAP is OBJECT-backed)
         register(new ObjectDelete());
         register(new ObjectPick());
         register(new ObjectKeys());

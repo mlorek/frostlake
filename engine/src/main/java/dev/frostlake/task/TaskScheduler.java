@@ -193,6 +193,26 @@ public class TaskScheduler {
     }
 
     private void runTaskOnce(final String qualifiedTaskName, final Task task, final Set<String> visited) {
+        // Run the whole task (WHEN condition, body, DAG cascade) with its HOME database/schema bound to
+        // this thread only. The scheduler fires on its own thread against the shared engine: resolving
+        // and save/restoring context through the global fields raced the interactive thread — a slow
+        // task's unwind restored a stale (possibly meanwhile-dropped) database over whatever that
+        // thread had switched to, and the task body itself resolved unqualified names against the
+        // interactive session's database instead of its own. Nested scopes (DAG children) restore the
+        // parent's scope on exit.
+        final String[] nameParts = QualifiedName.parse(qualifiedTaskName).parts();
+        final String taskDatabase = nameParts.length == 3 ? nameParts[0] : catalog.getCurrentDatabase();
+        final String taskSchema = nameParts.length >= 2 ? nameParts[nameParts.length - 2] : catalog.getCurrentSchema();
+        final String[] priorScope = catalog.currentSessionScope();
+        catalog.beginSessionScope(taskDatabase, taskSchema);
+        try {
+            runTaskOnceInScope(qualifiedTaskName, task, visited);
+        } finally {
+            catalog.restoreSessionScope(priorScope);
+        }
+    }
+
+    private void runTaskOnceInScope(final String qualifiedTaskName, final Task task, final Set<String> visited) {
         final LocalDateTime scheduledTime = LocalDateTime.now();
         logger.info("Executing task: {}", qualifiedTaskName);
         // (Predecessor gating is implemented by the cascade itself: a child runs only via

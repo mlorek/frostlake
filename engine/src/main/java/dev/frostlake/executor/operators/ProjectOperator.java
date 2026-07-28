@@ -18,6 +18,7 @@ package dev.frostlake.executor.operators;
 
 import dev.frostlake.executor.ExpressionEvaluator;
 import dev.frostlake.executor.expressions.Expression;
+import dev.frostlake.metastore.model.Table;
 import dev.frostlake.storage.Row;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -40,6 +41,7 @@ public class ProjectOperator implements Operator {
     private final List<String> projectionExpressions;
     private final List<String> columnAliases;
     private final RowExpressionEvaluator expressionEvaluator;
+    private final Map<String, Object> lateralAliasSink;
 
     /**
      * Create a PROJECT operator.
@@ -51,9 +53,26 @@ public class ProjectOperator implements Operator {
     public ProjectOperator(final List<String> projectionExpressions,
                           final List<String> columnAliases,
                           final RowExpressionEvaluator expressionEvaluator) {
+        this(projectionExpressions, columnAliases, expressionEvaluator, null);
+    }
+
+    /**
+     * Create a PROJECT operator with lateral column-alias support.
+     *
+     * @param lateralAliasSink a map SHARED with {@code expressionEvaluator}'s lateral context: as each aliased
+     *     SELECT item is evaluated left-to-right, its (uppercased) alias → value is written here so a LATER item
+     *     in the same SELECT list can reference it (Snowflake lateral column aliases). Cleared per input row.
+     *     When null, no lateral-alias values are exposed to later items (only the exact-whole-item-is-an-alias
+     *     shortcut applies).
+     */
+    public ProjectOperator(final List<String> projectionExpressions,
+                          final List<String> columnAliases,
+                          final RowExpressionEvaluator expressionEvaluator,
+                          final Map<String, Object> lateralAliasSink) {
         this.projectionExpressions = projectionExpressions;
         this.columnAliases = columnAliases;
         this.expressionEvaluator = expressionEvaluator;
+        this.lateralAliasSink = lateralAliasSink;
 
         if (columnAliases != null && projectionExpressions.size() != columnAliases.size()) {
             throw new IllegalArgumentException(
@@ -81,13 +100,21 @@ public class ProjectOperator implements Operator {
 
         for (final Row row : input) {
             List<Object> projectedValues = new ArrayList<>();
-            Map<String, Object> rowAliasValues = new HashMap<>();
+            // The running map of this row's already-computed aliases. When a shared sink was provided it IS
+            // that map (the evaluator reads it as its lateral context, so a later item's expression can
+            // reference an earlier alias, e.g. `x + 1 AS y` after `... AS x`); otherwise a private map that
+            // still powers the exact-whole-item-is-an-alias shortcut. Reset per row so aliases don't leak.
+            final Map<String, Object> rowAliasValues = lateralAliasSink != null ? lateralAliasSink : new HashMap<>();
+            rowAliasValues.clear();
 
             for (int i = 0; i < projectionExpressions.size(); i++) {
                 String expr = projectionExpressions.get(i).trim();
                 Object value;
-                // If the expression is exactly a previously-defined alias, reuse that value
-                if (rowAliasValues.containsKey(expr.toUpperCase())) {
+                // If the expression is exactly a previously-defined alias, reuse that value — but only
+                // when no FROM-source column has that name: the real column takes precedence over a
+                // same-named sibling alias (what makes a swap projection `SELECT t AS s, s AS t` read
+                // both values from the input row instead of collapsing to t, t).
+                if (rowAliasValues.containsKey(expr.toUpperCase()) && !isInputColumn(expr, context)) {
                     value = rowAliasValues.get(expr.toUpperCase());
                 } else {
                     value = evaluateExpression(parsedExpressions.get(i), row);
@@ -113,6 +140,27 @@ public class ProjectOperator implements Operator {
             return String.format("PROJECT[%s]", String.join(", ", projectionExpressions));
         }
         return String.format("PROJECT[%d columns]", projectionExpressions.size());
+    }
+
+    /**
+     * Whether {@code name} is a real column of the FROM sources feeding this projection (the single/combined
+     * input table, or any joined table in scope).
+     */
+    private boolean isInputColumn(final String name, final OperatorContext context) {
+        if (context == null) {
+            return false;
+        }
+        if (context.getTable() != null && context.getTable().hasColumn(name)) {
+            return true;
+        }
+        if (context.getAllTables() != null) {
+            for (final Table joined : context.getAllTables()) {
+                if (joined != null && joined.hasColumn(name)) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     /**

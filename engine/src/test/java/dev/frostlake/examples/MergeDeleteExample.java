@@ -194,7 +194,7 @@ public class MergeDeleteExample {
             engine.execute("INSERT INTO user_accounts VALUES (3, 'charlie', 'inactive', '2025-12-01')");
             engine.execute("INSERT INTO user_accounts VALUES (4, 'diana', 'active', '2026-03-01')");
 
-            logger.info("Current user accounts:");
+            logger.info("Current user records:");
             ResultSet rs = engine.executeQuery("SELECT * FROM user_accounts ORDER BY user_id");
             for (int i = 0; i < rs.getRows().size(); i++) {
                 logger.info("  User: id={}, username={}, status={}, last_login={}",

@@ -27,6 +27,12 @@ public class TimeFromParts extends BuiltInFunction {
 
     @Override
     public Object evaluate(final List<Object> args) {
+        // Snowflake: NULL in, NULL out — any NULL part yields NULL (an NPE escaped before)
+        for (int i = 0; i < args.size(); i++) {
+            if (i < args.size() && args.get(i) == null) {
+                return null;
+            }
+        }
         int hour   = ((Number) args.get(0)).intValue();
         int minute = ((Number) args.get(1)).intValue();
         int second = ((Number) args.get(2)).intValue();

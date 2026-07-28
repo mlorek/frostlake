@@ -642,12 +642,17 @@ public class Schema extends SqlObject {
                 );
                 clonedCol.setComment(col.getComment());
                 clonedCol.setCollation(col.getCollation());
+                clonedCol.setMaskingPolicyName(col.getMaskingPolicyName());
                 clonedColumns.add(clonedCol);
             }
 
             Table clonedTable = new Table(table.getName(), clonedColumns, table.isTemporary(), table.isTransient());
             clonedTable.setComment(table.getComment());
             clonedTable.setClusterKeys(table.getClusterKeys());
+            if (table.hasRowAccessPolicy()) {
+                clonedTable.setRowAccessPolicyName(table.getRowAccessPolicyName());
+                clonedTable.setRowAccessPolicyColumns(table.getRowAccessPolicyColumns());
+            }
             clonedSchema.tables.put(table.getName().toUpperCase(), clonedTable);
         }
 
@@ -655,13 +660,13 @@ public class Schema extends SqlObject {
         for (final View view : views.values()) {
             // Skip system views
             if (!isSystemView(view.getName().toUpperCase())) {
-                View clonedView = new View(view.getName(), view.getDefinition());
-                clonedView.setComment(view.getComment());
-                clonedSchema.views.put(view.getName().toUpperCase(), clonedView);
+                clonedSchema.views.put(view.getName().toUpperCase(), view.copy());
             }
         }
 
-        // Clone procedures
+        // Clone procedures — preserve LANGUAGE/handler/runtime/packages (and EXECUTE AS/imports). The short
+        // constructor defaults the language to SQL, which turned a cloned JavaScript/Python/Java procedure
+        // into a SQL one whose body then failed to parse at CALL time.
         for (final Map.Entry<String, List<Procedure>> entry : procedures.entrySet()) {
             List<Procedure> clonedOverloads = new ArrayList<>();
             for (final Procedure proc : entry.getValue()) {
@@ -669,15 +674,23 @@ public class Schema extends SqlObject {
                     proc.getName(),
                     proc.getParameters(),
                     proc.getReturnType(),
-                    proc.getBody()
+                    proc.getBody(),
+                    proc.getLanguage(),
+                    proc.getHandler(),
+                    proc.getRuntimeVersion(),
+                    proc.getPackages()
                 );
                 clonedProc.setComment(proc.getComment());
+                clonedProc.setImports(proc.getImports());
+                clonedProc.setExecuteAs(proc.getExecuteAs());
                 clonedOverloads.add(clonedProc);
             }
             clonedSchema.procedures.put(entry.getKey(), clonedOverloads);
         }
 
-        // Clone functions
+        // Clone functions — same story: keep LANGUAGE/handler/runtime plus the RETURNS TABLE columns and the
+        // null-handling / volatility / secure / imports attributes, else a cloned Java (or JS/Python) UDF is
+        // treated as a SQL UDF and its body fails to evaluate when called.
         for (final Map.Entry<String, List<Function>> entry : functions.entrySet()) {
             List<Function> clonedOverloads = new ArrayList<>();
             for (final Function func : entry.getValue()) {
@@ -685,22 +698,37 @@ public class Schema extends SqlObject {
                     func.getName(),
                     func.getParameters(),
                     func.getReturnType(),
+                    func.getReturnColumns(),
                     func.getBody(),
-                    func.isTableFunction()
+                    func.isTableFunction(),
+                    func.getLanguage(),
+                    func.getHandler(),
+                    func.getRuntimeVersion()
                 );
                 clonedFunc.setComment(func.getComment());
+                clonedFunc.setNullHandling(func.getNullHandling());
+                clonedFunc.setVolatility(func.getVolatility());
+                clonedFunc.setSecure(func.isSecure());
+                clonedFunc.setImports(func.getImports());
                 clonedOverloads.add(clonedFunc);
             }
             clonedSchema.functions.put(entry.getKey(), clonedOverloads);
         }
 
-        // Clone streams
+        // Clone streams — preserve the source TYPE (TABLE vs VIEW), showInitialRows, the resolved base
+        // tables (for a stream ON VIEW), owner and comment. The old 3-arg constructor dropped all of these
+        // and defaulted sourceType to TABLE, so a cloned stream ON a VIEW failed to read in the clone
+        // ("Table does not exist: <view>") because the read path resolved its source as a table.
         for (final Stream stream : streams.values()) {
             Stream clonedStream = new Stream(
                 stream.getName(),
                 stream.getSourceTableName(),
-                stream.getStreamType()
+                stream.getSourceType(),
+                stream.getStreamType(),
+                stream.isShowInitialRows()
             );
+            clonedStream.setBaseTableNames(stream.getBaseTableNames());
+            clonedStream.setOwner(stream.getOwner());
             clonedStream.setComment(stream.getComment());
             clonedSchema.streams.put(stream.getName().toUpperCase(), clonedStream);
         }
@@ -754,6 +782,36 @@ public class Schema extends SqlObject {
             // Preserve current value (use raw to avoid CURRVAL check)
             clonedSequence.setCurrentValue(sequence.getCurrentValueRaw());
             clonedSchema.sequences.put(sequence.getName().toUpperCase(), clonedSequence);
+        }
+
+        // Clone the policy OBJECTS too — a policy attached to a cloned table/view must still resolve
+        // inside the clone (fresh instances: a later rename of the original must not affect the clone).
+        for (final MaskingPolicy policy : maskingPolicies.values()) {
+            clonedSchema.maskingPolicies.put(policy.getName().toUpperCase(),
+                new MaskingPolicy(policy.getName(), policy.getParameters(), policy.getReturnType(), policy.getBody()));
+        }
+        for (final RowAccessPolicy policy : rowAccessPolicies.values()) {
+            clonedSchema.rowAccessPolicies.put(policy.getName().toUpperCase(),
+                new RowAccessPolicy(policy.getName(), policy.getParameters(), policy.getBody()));
+        }
+
+        // Clone stages — the DEFINITION carries over (Snowflake's CLONE keeps stage definitions);
+        // the constructor recomputes the local directory from the URL. Dropping them silently broke
+        // every jar-backed UDF in a cloned database ("Stage does not exist" at first invocation).
+        for (final Stage stage : stages.values()) {
+            final Stage clonedStage = new Stage(stage.getName(), stage.getType(), stage.getUrl(),
+                stage.getFileFormat(), stage.isEncryption(), stage.getComment(), stage.getS3Resolver());
+            clonedSchema.stages.put(stage.getName().toUpperCase(), clonedStage);
+        }
+
+        // Clone file formats
+        for (final FileFormat fileFormat : fileFormats.values()) {
+            final FileFormat clonedFormat = new FileFormat(fileFormat.getName(), fileFormat.getType());
+            for (final Map.Entry<String, String> option : fileFormat.getOptions().entrySet()) {
+                clonedFormat.setOption(option.getKey(), option.getValue());
+            }
+            clonedFormat.setComment(fileFormat.getComment());
+            clonedSchema.fileFormats.put(fileFormat.getName().toUpperCase(), clonedFormat);
         }
 
         return clonedSchema;

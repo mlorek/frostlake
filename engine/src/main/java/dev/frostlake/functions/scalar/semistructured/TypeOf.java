@@ -30,8 +30,9 @@ public class TypeOf extends BuiltInFunction {
 
     @Override
     public Object evaluate(final List<Object> args) {
-        // A SQL NULL variant reports "NULL"; a JSON null value (below) reports "NULL_VALUE".
-        if (args.get(0) == null) return "NULL";
+        // Snowflake: a SQL NULL input yields NULL (NULL in, NULL out); only a JSON null VALUE
+        // (below) reports "NULL_VALUE".
+        if (args.get(0) == null) return null;
         Object v = args.get(0);
         if (v instanceof Boolean) return "BOOLEAN";
         if (v instanceof Long || v instanceof Integer) return "INTEGER";

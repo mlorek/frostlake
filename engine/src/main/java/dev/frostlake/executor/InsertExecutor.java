@@ -17,6 +17,7 @@
 package dev.frostlake.executor;
 
 import dev.frostlake.metastore.model.Privilege;
+import dev.frostlake.executor.expressions.SqlTruth;
 import dev.frostlake.metastore.model.SecurableObjectType;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.TableColumn;
@@ -80,14 +81,11 @@ final class InsertExecutor {
                 executor.getSecurityManager().checkPermission(Privilege.INSERT, SecurableObjectType.TABLE, tableName);
             }
 
-            // Handle OVERWRITE - truncate table before inserting
+            // OVERWRITE replaces the table's contents, but the truncate must happen only AFTER the source
+            // rows have been produced: a self-referencing INSERT OVERWRITE INTO t … SELECT … FROM t reads the
+            // table it overwrites, so truncating first made the source SELECT see an empty table and the
+            // statement silently wiped the data (0 rows in, 0 rows out).
             boolean isOverwrite = ctx.OVERWRITE() != null;
-            if (isOverwrite) {
-                String fullyQualifiedName = executor.getFullyQualifiedTableName(tableName);
-                executor.getStorageEngine().truncateTable(fullyQualifiedName);
-                table.setRowCount(0);
-                logger.trace("Truncated table {} due to INSERT OVERWRITE", tableName);
-            }
 
             // Get column names if specified
             List<String> columnNames = null;
@@ -121,7 +119,7 @@ final class InsertExecutor {
                 }
             } else if (ctx.selectStatement() != null) {
                 // INSERT ... SELECT. A stream read in this subquery is consumed when the txn commits (the DML
-                // window is marked centrally in execute()); pass CTE results to the SELECT execution.
+                // window is marked centrally in SQLCommandVisitor.visitDmlStatement); pass CTE results along.
                 ResultSet selectResult = executor.executeSelectFromContextWithCTEs(ctx.selectStatement(), null, cteResults);
                 for (final Row row : selectResult.getRows()) {
                     valuesList.add(row.getValues());
@@ -132,6 +130,15 @@ final class InsertExecutor {
             int rowsInserted = 0;
             // Use fully qualified name for storage access
             String fullyQualifiedName = executor.getFullyQualifiedTableName(tableName);
+
+            // The source rows are now materialized, so it is safe to replace the table's contents. Route through
+            // the same transaction-aware path as TRUNCATE: clearing the base store directly left rows this
+            // transaction had inserted earlier in place, so the OVERWRITE appended to them.
+            if (isOverwrite) {
+                executor.emptyTableContents(fullyQualifiedName);
+                table.setRowCount(0);
+                logger.trace("Truncated table {} due to INSERT OVERWRITE", tableName);
+            }
 
             for (final List<Object> values : valuesList) {
                 final Row row = buildInsertRow(table, fullyQualifiedName, columnNames, values);
@@ -166,12 +173,26 @@ final class InsertExecutor {
                 valueMap.put(columnNames.get(i).toUpperCase(), values.get(i));
             }
             for (final TableColumn col : table.getColumns()) {
-                rowValues.add(executor.insertColumnValue(col, fullyQualifiedName, valueMap.get(col.getName().toUpperCase())));
+                final String key = col.getName().toUpperCase();
+                // Snowflake applies DEFAULT / AUTOINCREMENT only to columns OMITTED from the insert's
+                // column list. A listed column keeps its explicit value — including an explicit NULL
+                // (which must NOT be silently replaced by the column default).
+                if (valueMap.containsKey(key)) {
+                    rowValues.add(valueMap.get(key));
+                } else {
+                    rowValues.add(executor.insertColumnValue(col, fullyQualifiedName, null));
+                }
             }
         } else {
             for (int i = 0; i < table.getColumns().size(); i++) {
                 final TableColumn col = table.getColumns().get(i);
-                rowValues.add(executor.insertColumnValue(col, fullyQualifiedName, i < values.size() ? values.get(i) : null));
+                // Positionally covered columns are explicit (even NULL); only the missing trailing
+                // columns are omitted and take DEFAULT / AUTOINCREMENT.
+                if (i < values.size()) {
+                    rowValues.add(values.get(i));
+                } else {
+                    rowValues.add(executor.insertColumnValue(col, fullyQualifiedName, null));
+                }
             }
         }
         return new Row(rowValues);
@@ -223,7 +244,7 @@ final class InsertExecutor {
                     final String tableName = executor.getQualifiedName(into.qualifiedName());
                     final String fqn = executor.getFullyQualifiedTableName(tableName);
                     if (truncated.add(fqn)) {
-                        executor.getStorageEngine().truncateTable(fqn);
+                        executor.emptyTableContents(fqn);
                         executor.getCatalog().resolveTable(tableName).setRowCount(0);
                     }
                 }
@@ -305,8 +326,8 @@ final class InsertExecutor {
 
     private boolean evaluateRowCondition(final FrostlakeParser.BooleanExprContext condCtx, final Table sourceTable, final Row srcRow) {
         final Object result = evaluateRowExpression(condCtx, sourceTable, srcRow);
-        return result instanceof Boolean ? (Boolean) result
-            : result != null && Boolean.parseBoolean(String.valueOf(result));
+        return SqlTruth.isTrue(result)
+            ? true : result != null && Boolean.parseBoolean(String.valueOf(result));
     }
 
     private void validateDeferredInsertPrimaryKey(final Table table, final StorageEngine.TableStorage base,

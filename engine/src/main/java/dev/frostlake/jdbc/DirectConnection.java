@@ -17,6 +17,9 @@
 package dev.frostlake.jdbc;
 
 import dev.frostlake.DatabaseEngine;
+import dev.frostlake.ExecutionResult;
+import dev.frostlake.metastore.Catalog;
+import dev.frostlake.transaction.TransactionManager;
 
 import java.sql.*;
 import java.util.Map;
@@ -33,9 +36,48 @@ public class DirectConnection implements Connection {
     private boolean closed = false;
     private boolean autoCommit = true;
     private int savepointIdCounter = 0;
+    // This connection's own session context over the SHARED per-name engine, mirroring what a real
+    // Snowflake connection carries. Every statement runs inside a per-thread scope built from these,
+    // so a USE on one connection (possibly on another thread — the test harness runs bulk checks on
+    // pool threads) can never leak into another connection's name resolution mid-statement.
+    private String sessionDatabase;
+    private String sessionSchema;
+    private boolean sessionAutoCommit;
 
     public DirectConnection(final DatabaseEngine engine) {
         this.engine = engine;
+        this.sessionDatabase = engine.getCurrentDatabase();
+        this.sessionSchema = engine.getCurrentSchema();
+        this.sessionAutoCommit = engine.isAutoCommit();
+    }
+
+    /**
+     * Execute one statement under THIS connection's session context: the context is bound to the
+     * current thread for the statement's duration (so concurrent connections stay isolated on the
+     * shared engine) and the post-statement context — a USE, an ALTER of autocommit — is captured
+     * back into the connection.
+     */
+    ExecutionResult executeScoped(final String sql) {
+        // One statement at a time on the shared engine: the embedded engine's procedural state
+        // (variable scopes, handler stacks) is not safe under concurrent execution, and direct
+        // connections can be driven from many threads (the test harness's pooled bulk checks).
+        // The HTTP front-end serializes through its own lock; direct connections serialize here.
+        synchronized (engine) {
+            final Catalog catalog = engine.getCatalog();
+            final TransactionManager transactions = engine.getTransactionManager();
+            catalog.beginSessionScope(sessionDatabase, sessionSchema);
+            transactions.beginSessionAutoCommit(sessionAutoCommit);
+            try {
+                final ExecutionResult result = engine.execute(sql);
+                sessionDatabase = catalog.getCurrentDatabase();
+                sessionSchema = catalog.getCurrentSchema();
+                sessionAutoCommit = transactions.isAutoCommit();
+                return result;
+            } finally {
+                catalog.clearSessionScope();
+                transactions.clearSessionAutoCommit();
+            }
+        }
     }
 
     @Override
@@ -68,9 +110,9 @@ public class DirectConnection implements Connection {
     @Override
     public void setAutoCommit(final boolean autoCommit) throws SQLException {
         this.autoCommit = autoCommit;
-        // IMPORTANT: Also update the engine's autoCommit setting
-        // Otherwise the engine will auto-commit after every statement
-        engine.setAutoCommit(autoCommit);
+        // The connection's session context supplies the mode to every statement via executeScoped —
+        // writing the engine's global flag here would leak the mode into other connections.
+        this.sessionAutoCommit = autoCommit;
     }
 
     @Override
@@ -81,13 +123,13 @@ public class DirectConnection implements Connection {
     @Override
     public void commit() throws SQLException {
         checkClosed();
-        engine.execute("COMMIT");
+        executeScoped("COMMIT");
     }
 
     @Override
     public void rollback() throws SQLException {
         checkClosed();
-        engine.execute("ROLLBACK");
+        executeScoped("ROLLBACK");
     }
 
     private void checkClosed() throws SQLException {
@@ -127,12 +169,12 @@ public class DirectConnection implements Connection {
 
     @Override
     public void setCatalog(final String catalog) throws SQLException {
-        engine.execute("USE DATABASE " + catalog);
+        executeScoped("USE DATABASE " + catalog);
     }
 
     @Override
     public String getCatalog() throws SQLException {
-        return null;
+        return sessionDatabase;
     }
 
     @Override
@@ -295,12 +337,12 @@ public class DirectConnection implements Connection {
 
     @Override
     public void setSchema(final String schema) throws SQLException {
-        engine.execute("USE SCHEMA " + schema);
+        executeScoped("USE SCHEMA " + schema);
     }
 
     @Override
     public String getSchema() throws SQLException {
-        return null;
+        return sessionSchema;
     }
 
     @Override

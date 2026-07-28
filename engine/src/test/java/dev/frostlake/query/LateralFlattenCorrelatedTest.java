@@ -32,12 +32,12 @@ public class LateralFlattenCorrelatedTest extends BaseDatabaseTest {
 
     @Test
     public void flattenOverParseJsonOfCorrelatedColumn() {
-        engine.execute("CREATE TABLE devices (name VARCHAR, tags VARCHAR)");
-        engine.execute("INSERT INTO devices VALUES ('d1', '[\"a\",\"b\"]'), ('d2', '[\"c\"]')");
+        engine.execute("CREATE TABLE machines (name VARCHAR, tags VARCHAR)");
+        engine.execute("INSERT INTO machines VALUES ('d1', '[\"a\",\"b\"]'), ('d2', '[\"c\"]')");
 
         final ResultSet rs = engine.executeQuery("""
             SELECT name, f.value::VARCHAR AS tag
-            FROM devices, LATERAL FLATTEN(input => parse_json(tags)) f
+            FROM machines, LATERAL FLATTEN(input => parse_json(tags)) f
             ORDER BY name, tag
             """);
 
@@ -88,5 +88,41 @@ public class LateralFlattenCorrelatedTest extends BaseDatabaseTest {
         assertEquals(orderId, rs.getRows().get(r).getValue(1), "order_id row " + r);
         assertEquals(tag, rs.getRows().get(r).getValue(2), "tag row " + r);
         assertEquals(score, ((Number) rs.getRows().get(r).getValue(3)).longValue(), "score row " + r);
+    }
+
+    // ---- empty left input ----
+    // A LATERAL join whose LEFT side has zero rows must return an empty result, not crash. The right side's
+    // schema was only captured inside the per-left-row loop, so an empty left left the right table null and
+    // NPE'd downstream in mergeTableMetadata ("... getColumns() because right is null").
+
+    @Test
+    public void commaLateralFlattenOverEmptyLeftIsEmpty() {
+        engine.execute("CREATE TABLE empty_dev (id INT, installs ARRAY)");
+        final ResultSet rs = engine.executeQuery(
+            "SELECT b.value FROM empty_dev r, LATERAL FLATTEN(input => r.installs) AS b");
+        assertEquals(0, rs.getRowCount());
+    }
+
+    @Test
+    public void leftJoinLateralFlattenOverEmptyLeftIsEmpty() {
+        engine.execute("CREATE TABLE empty_dev2 (id INT, installs ARRAY)");
+        final ResultSet rs = engine.executeQuery(
+            "SELECT b.value FROM empty_dev2 r LEFT JOIN LATERAL FLATTEN(input => r.installs) AS b");
+        assertEquals(0, rs.getRowCount());
+    }
+
+    @Test
+    public void emptyLateralThenOuterJoinIsEmpty() {
+        // The real loader shape: an empty LATERAL FLATTEN subquery feeding an outer LEFT JOIN.
+        engine.execute("CREATE TABLE dim_sw (software_key VARCHAR, name VARCHAR)");
+        engine.execute("INSERT INTO dim_sw VALUES ('k1', 'n1')");
+        engine.execute("CREATE TABLE empty_src (id INT, installs ARRAY)");
+        final ResultSet rs = engine.executeQuery("""
+            SELECT dest.name
+            FROM (SELECT b.value::VARCHAR AS software_key
+                  FROM empty_src r, LATERAL FLATTEN(input => r.installs) AS b) source_data
+            LEFT JOIN dim_sw AS dest ON dest.software_key = source_data.software_key
+            """);
+        assertEquals(0, rs.getRowCount());
     }
 }

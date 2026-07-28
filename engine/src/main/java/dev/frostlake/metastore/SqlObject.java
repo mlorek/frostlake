@@ -142,6 +142,15 @@ public abstract class SqlObject implements Taggable {
      */
     public abstract String getObjectType();
 
+    /**
+     * A stored SQL text without its trailing semicolon, for embedding into a reconstructed
+     * {@code CREATE OR REPLACE} statement (GET_DDL, VIEW_DEFINITION, SHOW ... text).
+     */
+    public static String withoutTrailingSemicolon(final String sql) {
+        final String trimmed = sql == null ? "" : sql.trim();
+        return trimmed.endsWith(";") ? trimmed.substring(0, trimmed.length() - 1).trim() : trimmed;
+    }
+
     @Override
     public String toString() {
         return getObjectType() + " " + name;

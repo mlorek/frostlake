@@ -23,6 +23,9 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.fail;
 
@@ -66,6 +69,10 @@ public class TypeCoercionTest {
         return engine.executeQuery("SELECT * FROM t").getRowCount();
     }
 
+    private Object scalar(final String sql) {
+        return engine.executeQuery(sql).getRows().get(0).getValue(0);
+    }
+
     @Test
     public void varcharLengthIsEnforced() {
         engine.execute("CREATE TABLE t (v VARCHAR(3))");
@@ -94,5 +101,75 @@ public class TypeCoercionTest {
         engine.execute("INSERT INTO t VALUES (1, 'hello')");
         engine.execute("INSERT INTO t VALUES (2, 'world')");
         assertEquals(2, rowCount());
+    }
+
+    // ---- temporal coercion: a string written into a DATE/TIME/TIMESTAMP column becomes a real temporal
+    //      value (the same one TO_DATE/TO_TIMESTAMP yields), so it compares equal to a computed value ----
+
+    @Test
+    public void stringIntoTimestampColumnBecomesTemporalValue() {
+        engine.execute("CREATE TABLE t (ts TIMESTAMP_NTZ)");
+        engine.execute("INSERT INTO t VALUES ('2024-02-09 12:24:12.000')");
+        final Object v = scalar("SELECT ts FROM t");
+        assertEquals(LocalDateTime.class, v.getClass());
+        assertEquals("2024-02-09T12:24:12", v.toString());
+    }
+
+    @Test
+    public void stringIntoDateColumnBecomesLocalDate() {
+        engine.execute("CREATE TABLE t (d DATE)");
+        engine.execute("INSERT INTO t VALUES ('2024-02-09')");
+        final Object v = scalar("SELECT d FROM t");
+        assertEquals(LocalDate.class, v.getClass());
+        assertEquals("2024-02-09", v.toString());
+    }
+
+    @Test
+    public void stringInsertedTimestampEqualsComputedTimestamp() {
+        // The shape a snapshot-loader test relies on: a string-inserted timestamp must compare equal (under
+        // '=' and EXCEPT) to a TO_TIMESTAMP_NTZ-computed one, or an expected-vs-actual diff wrongly mismatches.
+        engine.execute("CREATE TABLE expected (ts TIMESTAMP_NTZ)");
+        engine.execute("CREATE TABLE actual (ts TIMESTAMP_NTZ)");
+        engine.execute("INSERT INTO expected VALUES ('2024-02-09 12:24:12.000')");
+        engine.execute("INSERT INTO actual SELECT TO_TIMESTAMP_NTZ('2024-02-09 12:24:12.000')");
+        assertEquals(0, engine.executeQuery(
+            "SELECT ts FROM expected EXCEPT SELECT ts FROM actual").getRowCount());
+        assertEquals(Boolean.TRUE, scalar(
+            "SELECT (SELECT ts FROM expected) = (SELECT ts FROM actual)"));
+    }
+
+    @Test
+    public void stringCastToTimestampEqualsToTimestampNtz() {
+        assertEquals(Boolean.TRUE, scalar(
+            "SELECT '2024-02-09 12:24:12.000'::TIMESTAMP_NTZ = TO_TIMESTAMP_NTZ('2024-02-09 12:24:12.000')"));
+    }
+
+    // ---- fixed-point scale: a value written into a NUMBER(p,s) column is padded to exactly s fractional
+    //      digits, so it equals()/EXCEPTs identically to the same value arriving via a ::NUMBER(p,s) cast ----
+
+    @Test
+    public void integerIntoScaledNumberColumnIsPaddedToScale() {
+        engine.execute("CREATE TABLE t (n NUMBER(8,4))");
+        engine.execute("INSERT INTO t VALUES (0)");                 // scale 0 → must become 0.0000
+        assertEquals("0.0000", scalar("SELECT n FROM t").toString());
+    }
+
+    @Test
+    public void insertedScaledNumberEqualsCastScaledNumber() {
+        // Under EXCEPT (scale-sensitive BigDecimal equality) a column-coerced value must match a cast value.
+        engine.execute("CREATE TABLE viaCol (n NUMBER(8,4))");
+        engine.execute("CREATE TABLE viaCast (n NUMBER(8,4))");
+        engine.execute("INSERT INTO viaCol VALUES (0), (1), (0.1)");
+        engine.execute("INSERT INTO viaCast SELECT 0::NUMBER(8,4) UNION ALL "
+            + "SELECT 1::NUMBER(8,4) UNION ALL SELECT 0.1::NUMBER(8,4)");
+        assertEquals(0, engine.executeQuery(
+            "SELECT n FROM viaCol EXCEPT SELECT n FROM viaCast").getRowCount());
+    }
+
+    @Test
+    public void tooManyFractionalDigitsStillRoundToScale() {
+        engine.execute("CREATE TABLE t (n NUMBER(8,2))");
+        engine.execute("INSERT INTO t VALUES (1.239)");             // scale 3 → rounds HALF_UP to 1.24
+        assertEquals("1.24", scalar("SELECT n FROM t").toString());
     }
 }

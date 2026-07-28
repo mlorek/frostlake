@@ -67,6 +67,34 @@ public class ScalarSubqueryInSelectTest extends BaseDatabaseTest {
     }
 
     @Test
+    public void correlatedRefWithSameNamedColumnInInnerTableBindsToOuter() {
+        // The loader shape: outer alias IDENT and the inner table BOTH have grp_id/item_key.
+        // IDENT.item_key must bind to the OUTER row — mis-binding it to the inner table's own row
+        // made the correlation compare the inner row with itself, so every EXISTS/COUNT came up 0.
+        engine.execute("CREATE TABLE idents (grp_id VARCHAR, item_key VARCHAR, label VARCHAR)");
+        engine.execute("INSERT INTO idents VALUES ('c1', 'ik-1', 'first'), ('c1', 'ik-2', 'second')");
+        engine.execute("CREATE TABLE profiles (grp_id VARCHAR, item_key VARCHAR, ident_ref VARCHAR, status VARCHAR)");
+        engine.execute("INSERT INTO profiles VALUES ('c1', 'ak-9', 'ik-1', 'ACTIVE')");
+        final ResultSet rs = engine.executeQuery("""
+            SELECT ident.label,
+                   (SELECT COUNT(*) FROM profiles acc
+                     WHERE acc.grp_id = ident.grp_id
+                       AND acc.ident_ref = ident.item_key
+                       AND acc.status = 'ACTIVE') AS n,
+                   CASE WHEN EXISTS (SELECT 1 FROM profiles acc
+                                      WHERE acc.grp_id = ident.grp_id
+                                        AND acc.ident_ref = ident.item_key
+                                        AND acc.status = 'ACTIVE')
+                        THEN 'ACTIVE' END AS st
+            FROM idents ident ORDER BY ident.label""");
+        assertEquals(2, rs.getRowCount());
+        assertEquals(1L, ((Number) rs.getRows().get(0).getValue(1)).longValue(), "ik-1 has one profile");
+        assertEquals("ACTIVE", rs.getRows().get(0).getValue(2));
+        assertEquals(0L, ((Number) rs.getRows().get(1).getValue(1)).longValue(), "ik-2 has none");
+        assertNull(rs.getRows().get(1).getValue(2));
+    }
+
+    @Test
     public void testMultipleCorrelatedScalarSubqueries() {
         ResultSet result = engine.executeQuery("""
             SELECT

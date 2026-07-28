@@ -41,7 +41,9 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import org.antlr.v4.runtime.ParserRuleContext;
 import org.antlr.v4.runtime.misc.Interval;
 import org.antlr.v4.runtime.tree.TerminalNode;
@@ -567,7 +569,9 @@ public class DDLCommandHandler implements CommandHandler {
             if (dropped == null || dropped.getObject() == null) {
                 throw new RuntimeException("Cannot UNDROP: no recently dropped schema named " + name);
             }
-            catalog.getDatabase(databaseName).addSchema((Schema) dropped.getObject());
+            final Schema restoredSchema = (Schema) dropped.getObject();
+            catalog.getDatabase(databaseName).addSchema(restoredSchema);
+            restoreTableStorage(databaseName, Collections.singletonList(restoredSchema), dropped.getTableRows());
             logger.trace("Undropped schema: {}", name);
         } else if (ctx.DATABASE() != null) {
             final String name = getText(ctx.identifier());
@@ -575,10 +579,41 @@ public class DDLCommandHandler implements CommandHandler {
             if (dropped == null || dropped.getObject() == null) {
                 throw new RuntimeException("Cannot UNDROP: no recently dropped database named " + name);
             }
-            catalog.restoreDatabase((Database) dropped.getObject());
+            final Database restoredDb = (Database) dropped.getObject();
+            catalog.restoreDatabase(restoredDb);
+            restoreTableStorage(name, restoredDb.getAllSchemas(), dropped.getTableRows());
             logger.trace("Undropped database: {}", name);
         }
         return null;
+    }
+
+    /**
+     * Re-create the storage of every table in an UNDROPped schema/database and refill it from the rows
+     * snapshotted at drop time (the drop releases storage so the names can be reused). A table whose storage
+     * already exists is left alone — the name was re-created after the drop and owns it now.
+     */
+    private void restoreTableStorage(final String databaseName, final List<Schema> schemas,
+                                     final Map<String, List<Row>> tableRows) {
+        if (tableRows == null) {
+            return;
+        }
+        final StorageEngine storage = queryExecutor.getStorageEngine();
+        for (final Schema schema : schemas) {
+            for (final Table table : schema.getTables()) {
+                final String fqn = databaseName.toUpperCase() + "." + schema.getName().toUpperCase()
+                    + "." + table.getName().toUpperCase();
+                if (storage.hasTable(fqn)) {
+                    continue;
+                }
+                storage.createTable(fqn, table);
+                final List<Row> rows = tableRows.get(fqn);
+                if (rows != null) {
+                    for (final Row row : rows) {
+                        storage.getTableStorage(fqn).insert(row);
+                    }
+                }
+            }
+        }
     }
 
     /**

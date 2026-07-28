@@ -16,6 +16,8 @@
 
 package dev.frostlake.transaction;
 
+import dev.frostlake.metastore.model.ChangeType;
+import dev.frostlake.metastore.model.StreamRecord;
 import dev.frostlake.stream.StreamManager;
 import dev.frostlake.storage.Row;
 import dev.frostlake.storage.StorageEngine;
@@ -97,6 +99,31 @@ public class TransactionWriteSet {
         set.add(rowId);
     }
 
+    /**
+     * Record a TRUNCATE of {@code table} within this transaction: every committed base row (given by
+     * {@code committedRowIds}) becomes a pending delete and any not-yet-committed inserts/updates for the
+     * table are dropped. The transaction then sees the table as empty, while a rollback still restores the
+     * committed rows — the base store is cleared only when these deletes are applied at commit. Clearing
+     * the base store directly instead would let this transaction's buffered inserts reappear on next read.
+     */
+    public void recordTruncate(final String table, final List<Long> committedRowIds) {
+        inserts.remove(table);
+        updates.remove(table);
+        deletes.put(table, new HashSet<>(committedRowIds));
+    }
+
+    /**
+     * Discard every pending change (inserts, updates, deletes) for {@code table} — used when the table is
+     * dropped or replaced within this transaction. The table (and its rows) will not exist after commit, so
+     * flushing these buffered writes would fail against missing storage; dropping them here also stops a
+     * drop-then-recreate of the same name in one transaction from resurrecting the pre-drop rows.
+     */
+    public void forgetTable(final String table) {
+        inserts.remove(table);
+        updates.remove(table);
+        deletes.remove(table);
+    }
+
     /** True if this transaction has deleted the base row with the given stable id. */
     public boolean isDeleted(final String table, final long rowId) {
         final Set<Long> del = deletes.get(table);
@@ -159,6 +186,65 @@ public class TransactionWriteSet {
         return result;
     }
 
+    /**
+     * Synthesize the stream change records for {@code table}'s buffered (not-yet-committed) changes, exactly
+     * as {@link #applyTo} would track them at commit — an update as a DELETE(old)+INSERT(new) pair, a delete
+     * as a DELETE(old), an insert as an INSERT(new) — but WITHOUT mutating storage or any stream. Old images
+     * are read from {@code base} by stable id; every record is tagged with {@code captureName} (the bare
+     * source-table name, to match committed records) and carries a negative, per-record id that cannot
+     * collide with a real (positive) committed record id. Lets a stream read inside a transaction fold this
+     * transaction's own uncommitted DML into its net delta; empty when nothing is buffered for {@code table}.
+     */
+    public List<StreamRecord> bufferedChangeRecords(final String table, final TableStorage base,
+                                                    final String captureName) {
+        final List<Row> ins = inserts.get(table);
+        final Map<Long, Row> upd = updates.get(table);
+        final Set<Long> del = deletes.get(table);
+        final boolean hasUpd = upd != null && !upd.isEmpty();
+        final boolean hasDel = del != null && !del.isEmpty();
+        final boolean hasIns = ins != null && !ins.isEmpty();
+        if (!hasUpd && !hasDel && !hasIns) {
+            return Collections.emptyList();
+        }
+        final List<StreamRecord> out = new ArrayList<>();
+        long transientId = -1L;   // negative ids never collide with committed (positive) record ids
+
+        Map<Long, Integer> idToIndex = null;
+        if (hasUpd || hasDel) {
+            final List<Long> ids = base.getRowIds();
+            idToIndex = new HashMap<>(ids.size() * 2);
+            for (int i = 0; i < ids.size(); i++) {
+                idToIndex.put(ids.get(i), i);
+            }
+        }
+        // Match applyTo's order (updates, deletes, inserts) so consolidation with committed records agrees.
+        if (hasUpd) {
+            for (final Map.Entry<Long, Row> entry : upd.entrySet()) {
+                final Integer idx = idToIndex.get(entry.getKey());
+                if (idx == null) {
+                    continue;
+                }
+                final long pairId = transientId--;
+                out.add(new StreamRecord(base.getRow(idx).getValues(), ChangeType.DELETE, true, pairId, captureName));
+                out.add(new StreamRecord(entry.getValue().getValues(), ChangeType.INSERT, true, pairId, captureName));
+            }
+        }
+        if (hasDel) {
+            for (final Long id : del) {
+                final Integer idx = idToIndex.get(id);
+                if (idx != null) {
+                    out.add(new StreamRecord(base.getRow(idx).getValues(), ChangeType.DELETE, false, transientId--, captureName));
+                }
+            }
+        }
+        if (hasIns) {
+            for (final Row row : ins) {
+                out.add(new StreamRecord(row.getValues(), ChangeType.INSERT, false, transientId--, captureName));
+            }
+        }
+        return out;
+    }
+
     /** Flush this write set to the base store (the COMMIT step). */
     public void applyTo(final StorageEngine storage) {
         applyTo(storage, null);
@@ -177,6 +263,12 @@ public class TransactionWriteSet {
         tables.addAll(inserts.keySet());
 
         for (final String table : tables) {
+            // A table dropped (or replaced) after these writes were buffered has no storage to flush to —
+            // its buffered changes are void. forgetTable() normally purges them at drop time; this is the
+            // safety net so a commit can never crash with "Table storage does not exist".
+            if (!storage.hasTable(table)) {
+                continue;
+            }
             final TableStorage base = storage.getTableStorage(table);
 
             // Resolve stable ids to positions in ONE pass (O(n)) instead of an O(n) scan per changed row,
@@ -240,6 +332,15 @@ public class TransactionWriteSet {
                 }
             }
         }
+    }
+
+    /** The fully-qualified names of every table this write set holds a buffered insert, update, or delete for. */
+    public Set<String> changedTables() {
+        final Set<String> out = new LinkedHashSet<>();
+        out.addAll(inserts.keySet());
+        out.addAll(updates.keySet());
+        out.addAll(deletes.keySet());
+        return out;
     }
 
     public boolean isEmpty() {

@@ -157,4 +157,99 @@ public class UpdateFromDeleteUsingTest extends BaseDatabaseTest {
 
         assertEquals(2, count("tgt"));
     }
+
+    // ── target ALIAS + columns whose names collide with the source ─────────────────────────────────────
+    // Regression: the target alias must be registered so the predicate can tell it apart from the source.
+    // Previously wcs.cid = d.cid resolved both sides to the target's column, matching every row and
+    // deleting/updating them all.
+
+    @Test
+    public void deleteUsingTargetAliasWithCollidingColumnNames() {
+        engine.execute("CREATE TABLE t (cid INTEGER, ak INTEGER)");
+        engine.execute("INSERT INTO t VALUES (1, 10), (2, 20), (3, 30)");
+        engine.execute("CREATE TABLE src (cid INTEGER, ak INTEGER)");
+        engine.execute("INSERT INTO src VALUES (2, 20), (3, 30)");
+
+        engine.execute("DELETE FROM t wcs USING src d WHERE wcs.cid = d.cid AND wcs.ak = d.ak");
+
+        // Only rows present in src (by cid,ak) are removed; row (1,10) survives.
+        assertEquals(1, count("t"));
+        assertEquals(1, longAt("SELECT cid FROM t"));
+    }
+
+    @Test
+    public void deleteUsingTargetAliasDoesNotMatchOnNonMatchingKey() {
+        engine.execute("CREATE TABLE t (cid INTEGER, ak INTEGER)");
+        engine.execute("INSERT INTO t VALUES (1, 10), (2, 20)");
+        engine.execute("CREATE TABLE src (cid INTEGER, ak INTEGER)");
+        engine.execute("INSERT INTO src VALUES (2, 999)");   // same cid, different ak → no full-key match
+
+        engine.execute("DELETE FROM t wcs USING src d WHERE wcs.cid = d.cid AND wcs.ak = d.ak");
+
+        assertEquals(2, count("t"), "no row matches the full (cid,ak) key, so nothing is deleted");
+    }
+
+    // ── a JOIN in the FROM / USING source ──────────────────────────────────────────────────────────────
+
+    @Test
+    public void updateFromInnerJoinInSource() {
+        engine.execute("CREATE TABLE t (id INTEGER, label VARCHAR)");
+        engine.execute("INSERT INTO t VALUES (1, '?'), (2, '?'), (3, '?')");
+        engine.execute("CREATE TABLE amap (id INTEGER, code INTEGER)");
+        engine.execute("INSERT INTO amap VALUES (1, 10), (2, 20)");
+        engine.execute("CREATE TABLE bname (code INTEGER, nm VARCHAR)");
+        engine.execute("INSERT INTO bname VALUES (10, 'TEN'), (20, 'TWENTY')");
+
+        engine.execute("UPDATE t SET label = b.nm FROM amap a JOIN bname b ON a.code = b.code WHERE t.id = a.id");
+
+        assertEquals("TEN", stringAt("SELECT label FROM t WHERE id = 1"));
+        assertEquals("TWENTY", stringAt("SELECT label FROM t WHERE id = 2"));
+        assertEquals("?", stringAt("SELECT label FROM t WHERE id = 3"));   // no join row → unchanged
+    }
+
+    @Test
+    public void updateFromLeftJoinKeepsUnmatchedOuterRows() {
+        engine.execute("CREATE TABLE t (id INTEGER, nm VARCHAR)");
+        engine.execute("INSERT INTO t VALUES (1, 'x'), (2, 'x'), (3, 'x')");
+        engine.execute("CREATE TABLE l (id INTEGER, k INTEGER)");
+        engine.execute("INSERT INTO l VALUES (1, 100), (2, 200), (3, 300)");
+        engine.execute("CREATE TABLE rmap (k INTEGER, nm VARCHAR)");
+        engine.execute("INSERT INTO rmap VALUES (100, 'A')");   // only k=100 has a name
+
+        engine.execute("UPDATE t SET nm = COALESCE(r.nm, 'NONE') FROM l LEFT JOIN rmap r ON l.k = r.k WHERE t.id = l.id");
+
+        // The LEFT join keeps the unmatched l rows (r.nm NULL) → COALESCE gives 'NONE'.
+        assertEquals("A", stringAt("SELECT nm FROM t WHERE id = 1"));
+        assertEquals("NONE", stringAt("SELECT nm FROM t WHERE id = 2"));
+        assertEquals("NONE", stringAt("SELECT nm FROM t WHERE id = 3"));
+    }
+
+    @Test
+    public void deleteUsingJoinInSource() {
+        engine.execute("CREATE TABLE d1 (id INTEGER)");
+        engine.execute("INSERT INTO d1 VALUES (1), (2), (3), (4)");
+        engine.execute("CREATE TABLE j1 (id INTEGER, gid INTEGER)");
+        engine.execute("INSERT INTO j1 VALUES (1, 7), (2, 8), (3, 9)");
+        engine.execute("CREATE TABLE j2 (gid INTEGER)");
+        engine.execute("INSERT INTO j2 VALUES (7), (9)");   // groups 7,9 → j1 ids 1,3
+
+        engine.execute("DELETE FROM d1 USING j1 JOIN j2 ON j1.gid = j2.gid WHERE d1.id = j1.id");
+
+        assertEquals(2, count("d1"));
+        assertEquals(2, longAt("SELECT id FROM d1 ORDER BY id"));   // 2 and 4 remain
+    }
+
+    @Test
+    public void updateFromTargetAliasWithCollidingColumnNames() {
+        engine.execute("CREATE TABLE t (cid INTEGER, ak INTEGER)");
+        engine.execute("INSERT INTO t VALUES (1, 10), (2, 20), (3, 30)");
+        engine.execute("CREATE TABLE src (cid INTEGER, ak INTEGER)");
+        engine.execute("INSERT INTO src VALUES (2, 999), (3, 888)");
+
+        engine.execute("UPDATE t tgt SET tgt.ak = src.ak FROM src WHERE tgt.cid = src.cid");
+
+        assertEquals(10, longAt("SELECT ak FROM t WHERE cid = 1"));    // no source match → unchanged
+        assertEquals(999, longAt("SELECT ak FROM t WHERE cid = 2"));
+        assertEquals(888, longAt("SELECT ak FROM t WHERE cid = 3"));
+    }
 }

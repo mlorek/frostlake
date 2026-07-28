@@ -377,9 +377,9 @@ public class ClusterByTest {
     public void testClusterByWithConcatExpression() {
         logger.info("Testing CLUSTER BY with concatenation expression");
 
-        engine.execute("CREATE TABLE accounts (id INTEGER, first_name VARCHAR, last_name VARCHAR) CLUSTER BY (first_name || ' ' || last_name)");
+        engine.execute("CREATE TABLE people (id INTEGER, first_name VARCHAR, last_name VARCHAR) CLUSTER BY (first_name || ' ' || last_name)");
 
-        Table table = engine.getCatalog().resolveTable("accounts");
+        Table table = engine.getCatalog().resolveTable("people");
         assertNotNull(table);
 
         List<String> clusterKeys = table.getClusterKeys();

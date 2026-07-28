@@ -220,16 +220,17 @@ public class AlterCommandHandler implements CommandHandler {
                             queryExecutor.moveTableStorage(tableName, targetDb, targetSchema, newName);
                             logger.trace("Moved table {} to {}.{}.{}", tableName, targetDb, targetSchema, newName);
                         }
-                    } else if (ctx.tableAction().ADD() != null && ctx.tableAction().columnDef() != null) {
-                        // ADD COLUMN — build the full column (data type + DEFAULT / NOT NULL / …) via the
-                        // shared parser, then backfill existing rows so their width matches the new schema.
-                        FrostlakeParser.ColumnDefContext colDef = ctx.tableAction().columnDef();
-                        String colName = visitor.getText(colDef.identifier());
-                        boolean ifNotExists = ctx.tableAction().if_not_exists() != null;
-
-                        if (ifNotExists && table.hasColumn(colName)) {
-                            logger.debug("Column already exists (IF NOT EXISTS): {}", colName);
-                        } else {
+                    } else if (ctx.tableAction().ADD() != null && !ctx.tableAction().columnDef().isEmpty()) {
+                        // ADD COLUMN — one or more comma-separated columns (Snowflake: ADD col1 t1, col2 t2).
+                        // Build each column (data type + DEFAULT / NOT NULL / …) via the shared parser, then
+                        // backfill existing rows so their width matches the new schema.
+                        final boolean ifNotExists = ctx.tableAction().if_not_exists() != null;
+                        for (final FrostlakeParser.ColumnDefContext colDef : ctx.tableAction().columnDef()) {
+                            final String colName = visitor.getText(colDef.identifier());
+                            if (ifNotExists && table.hasColumn(colName)) {
+                                logger.debug("Column already exists (IF NOT EXISTS): {}", colName);
+                                continue;
+                            }
                             final TableColumn newColumn = ddlHandler.getColumnParser().parseSingleColumnDef(colDef);
                             table.addColumn(newColumn);
                             queryExecutor.backfillColumn(tableName, newColumn);
@@ -299,10 +300,13 @@ public class AlterCommandHandler implements CommandHandler {
                         table.getColumn(colName).setNullable(ctx.tableAction().DROP() != null);
                         logger.trace("Set nullability on column {}.{}", tableName, colName);
                     } else if (ctx.tableAction().ALTER() != null && ctx.tableAction().DEFAULT() != null) {
-                        // ALTER COLUMN col SET/DROP DEFAULT
+                        // ALTER COLUMN col SET/DROP DEFAULT — route SET through the same default-expression
+                        // parser CREATE TABLE uses: raw getText() stored the literal WITH its quotes, so an
+                        // insert that omitted the column got the text 'X' (quotes included) instead of X.
                         String colName = visitor.getText(ctx.tableAction().identifier(0));
-                        table.getColumn(colName).setDefaultValue(
-                            ctx.tableAction().SET() != null ? ctx.tableAction().defaultExpression().getText() : null);
+                        table.getColumn(colName).setDefaultValue(ctx.tableAction().SET() != null
+                            ? ddlHandler.getColumnParser().parseDefaultExpression(ctx.tableAction().defaultExpression())
+                            : null);
                         logger.trace("Set/drop default on column {}.{}", tableName, colName);
                     } else if (ctx.tableAction().ALTER() != null) {
                         // ALTER COLUMN data type
@@ -445,6 +449,20 @@ public class AlterCommandHandler implements CommandHandler {
                     String comment = visitor.extractStringLiteral(ctx.viewAction().STRING_LITERAL());
                     view.setComment(comment);
                     logger.trace("Set comment on view: {}", viewName);
+                } else if (ctx.viewAction().ROW() != null && ctx.viewAction().ADD() != null) {
+                    // ADD ROW ACCESS POLICY policyName ON (col1, col2)
+                    final String policyName = visitor.getText(ctx.viewAction().qualifiedName());
+                    final List<String> cols = new ArrayList<>();
+                    for (final FrostlakeParser.IdentifierContext id : ctx.viewAction().identifierList().identifier()) {
+                        cols.add(visitor.getText(id));
+                    }
+                    view.setRowAccessPolicyName(policyName.toUpperCase());
+                    view.setRowAccessPolicyColumns(cols);
+                    logger.trace("Added row access policy {} to view {}", policyName, viewName);
+                } else if (ctx.viewAction().ROW() != null && ctx.viewAction().DROP() != null) {
+                    view.setRowAccessPolicyName(null);
+                    view.setRowAccessPolicyColumns(new ArrayList<>());
+                    logger.trace("Dropped row access policy from view {}", viewName);
                 } else if (ctx.viewAction().tagSet() != null) {
                     applyTagSet(view, ctx.viewAction().tagSet());
                 } else if (ctx.viewAction().tagUnset() != null) {
@@ -665,10 +683,10 @@ public class AlterCommandHandler implements CommandHandler {
             } else if (ctx.SESSION() != null) {
                 if (ctx.sessionAction().SET() != null) {
                     String paramName;
-                    if (ctx.sessionAction().sessionParameter().MULTI_STATEMENT_COUNT() != null) {
+                    if (ctx.sessionAction().sessionParameter(0).MULTI_STATEMENT_COUNT() != null) {
                         paramName = "MULTI_STATEMENT_COUNT";
                     } else {
-                        paramName = visitor.getText(ctx.sessionAction().sessionParameter().identifier());
+                        paramName = visitor.getText(ctx.sessionAction().sessionParameter(0).identifier());
                     }
 
                     Object value = visitor.parseLiteral(ctx.sessionAction().literal());
@@ -676,6 +694,17 @@ public class AlterCommandHandler implements CommandHandler {
                     if (queryExecutor.getDatabaseEngine() != null) {
                         queryExecutor.getDatabaseEngine().getSessionContext().setSessionParameter(paramName, value);
                         logger.trace("Set session parameter {} = {}", paramName, value);
+                    }
+                } else if (ctx.sessionAction().UNSET() != null) {
+                    // ALTER SESSION UNSET <param> [, <param> ...] — clear each named session parameter.
+                    if (queryExecutor.getDatabaseEngine() != null) {
+                        for (final FrostlakeParser.SessionParameterContext param : ctx.sessionAction().sessionParameter()) {
+                            final String paramName = param.MULTI_STATEMENT_COUNT() != null
+                                ? "MULTI_STATEMENT_COUNT"
+                                : visitor.getText(param.identifier());
+                            queryExecutor.getDatabaseEngine().getSessionContext().unsetSessionParameter(paramName);
+                            logger.trace("Unset session parameter {}", paramName);
+                        }
                     }
                 }
 

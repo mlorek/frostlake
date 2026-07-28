@@ -17,30 +17,50 @@
 package dev.frostlake.executor.udf;
 
 import dev.frostlake.DatabaseEngine;
+import dev.frostlake.ExecutionResult;
 import dev.frostlake.metastore.model.Parameter;
 import dev.frostlake.metastore.model.Procedure;
 import dev.frostlake.metastore.model.UdfLanguage;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.Row;
-import org.python.core.PyObject;
-import org.python.util.PythonInterpreter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.IOException;
+import java.io.InputStream;
+import java.math.BigDecimal;
+import java.math.BigInteger;
+import java.nio.charset.StandardCharsets;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.LocalTime;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import org.python.core.PyBoolean;
-import org.python.core.PyDictionary;
-import org.python.core.PyFloat;
-import org.python.core.PyInteger;
-import org.python.core.PyLong;
-import org.python.core.PyString;
 
 public class PythonProcedureExecutor {
 
     private static final Logger logger = LoggerFactory.getLogger(PythonProcedureExecutor.class);
+
+    /**
+     * The pure-Python {@code snowflake.snowpark} emulation, evaluated into each context before a
+     * procedure body so the body's snowpark imports resolve locally. Idempotent (guarded on
+     * {@code sys.modules}), and the per-thread {@link PythonRuntime} source cache makes re-evaluation
+     * per call cheap.
+     */
+    private static final String SNOWPARK_SHIM = loadSnowparkShim();
+
+    private static String loadSnowparkShim() {
+        try (final InputStream in = PythonProcedureExecutor.class.getResourceAsStream("snowpark_shim.py")) {
+            if (in == null) {
+                throw new IllegalStateException("snowpark_shim.py resource not found");
+            }
+            return new String(in.readAllBytes(), StandardCharsets.UTF_8);
+        } catch (final IOException e) {
+            throw new IllegalStateException("Failed to load snowpark_shim.py", e);
+        }
+    }
 
     public static Object executePythonProcedure(final Procedure procedure, final List<Object> arguments, final DatabaseEngine engine) {
         if (procedure.getUdfLanguage() != UdfLanguage.PYTHON) {
@@ -53,16 +73,19 @@ public class PythonProcedureExecutor {
                 parameters.size() + " arguments but got " + arguments.size());
         }
 
-        try (PythonInterpreter interp = new PythonInterpreter()) {
-
+        try {
             for (int i = 0; i < parameters.size(); i++) {
-                String paramName = parameters.get(i).getName();
-                Object value = arguments.get(i);
-                interp.set(paramName, value);
+                PythonRuntime.bind(parameters.get(i).getName(), arguments.get(i));
             }
 
             SnowparkSession session = new SnowparkSession(engine);
-            interp.set("session", session);
+            // Handlers receive a PYTHON Session (the snowpark emulation) wrapping the Java facade, so
+            // snowpark DataFrame code (session.table(...).select(...), df.write, udtf) works; plain
+            // session.sql(...).collect()/count() callers see the same surface snowpark itself has.
+            PythonRuntime.bind("__frostlake_java_session", session);
+            PythonRuntime.eval(SNOWPARK_SHIM);
+            PythonRuntime.eval("import snowflake.snowpark as __frostlake_sp\n"
+                + "session = __frostlake_sp.Session(__frostlake_java_session)\n");
 
             String body = procedure.getBody();
             body = dedent(body);
@@ -94,44 +117,22 @@ public class PythonProcedureExecutor {
                 pythonCode += "__result = __temp_func()";
             }
 
-            interp.exec(pythonCode);
+            PythonRuntime.eval(pythonCode);
 
-            PyObject result = interp.get("__result");
+            final Object javaResult = PythonRuntime.toJava(PythonRuntime.global("__result"));
 
             logger.debug("Python procedure {} executed successfully", procedure.getName());
 
-            if (result == null) {
+            if (javaResult == null) {
                 return null;
             }
 
-            Object javaResult = result.__tojava__(Object.class);
-
-            if (javaResult instanceof PyInteger) {
-                return ((PyInteger) javaResult).getValue();
-            }
-            if (javaResult instanceof PyLong) {
-                return ((PyLong) javaResult).getValue().longValue();
-            }
-            if (javaResult instanceof PyFloat) {
-                return ((PyFloat) javaResult).getValue();
-            }
-            if (javaResult instanceof PyString) {
-                return javaResult.toString();
-            }
-            if (javaResult instanceof PyBoolean) {
-                return ((PyBoolean) javaResult).getBooleanValue();
-            }
-            if (javaResult instanceof PyDictionary) {
-                Map<String, Object> map = new HashMap<>();
-                PyDictionary dict = (PyDictionary) javaResult;
-                for (final Object key : dict.keys()) {
-                    String keyStr = key.toString();
-                    Object value = dict.get(key);
-                    if (value != null) {
-                        map.put(keyStr, value.toString());
-                    } else {
-                        map.put(keyStr, null);
-                    }
+            if (javaResult instanceof Map) {
+                // Parity with the previous behaviour: a returned dict becomes a Map of stringified values.
+                final Map<String, Object> map = new HashMap<>();
+                for (final Map.Entry<?, ?> entry : ((Map<?, ?>) javaResult).entrySet()) {
+                    final Object value = entry.getValue();
+                    map.put(String.valueOf(entry.getKey()), value == null ? null : value.toString());
                 }
                 return map;
             }
@@ -139,8 +140,10 @@ public class PythonProcedureExecutor {
             return javaResult;
 
         } catch (final Exception e) {
+            PythonRuntime.discardContext();
             logger.error("Error executing Python procedure: {}", procedure.getName(), e);
-            throw new RuntimeException("Error executing Python procedure " + procedure.getName() + ": " + e.getMessage(), e);
+            throw new RuntimeException(PythonRuntimeDiagnostics.describeFailure(
+                "procedure", procedure.getName(), procedure.getRuntimeVersion(), procedure.getBody(), e), e);
         }
     }
 
@@ -199,7 +202,16 @@ public class PythonProcedureExecutor {
 
         public PythonResultSet sql(final String sqlText) {
             try {
-                ResultSet rs = engine.executeQuery(sqlText);
+                // General execute, not executeQuery: handler code runs DDL and DML (CREATE OR REPLACE
+                // TABLE, TRUNCATE, MERGE, DELETE, ...) through session.sql exactly as it does queries.
+                final ExecutionResult result = engine.execute(sqlText);
+                if (!result.isSuccess()) {
+                    throw new RuntimeException(result.getErrorMessage());
+                }
+                final List<ResultSet> resultSets = result.getResultSets();
+                final ResultSet rs = resultSets == null || resultSets.isEmpty()
+                    ? new ResultSet(new ArrayList<>(), new ArrayList<>())
+                    : resultSets.get(resultSets.size() - 1);
                 return new PythonResultSet(rs);
             } catch (final Exception e) {
                 throw new RuntimeException("Error executing SQL: " + e.getMessage(), e);
@@ -268,6 +280,74 @@ public class PythonProcedureExecutor {
 
         public int count() {
             return rows.size();
+        }
+
+        /** Column names in result order, for the Python snowpark emulation. */
+        public List<String> columnNames() {
+            final List<String> names = new ArrayList<>();
+            for (int i = 0; i < resultSet.getColumns().size(); i++) {
+                names.add(resultSet.getColumns().get(i).getName());
+            }
+            return names;
+        }
+
+        /** SQL type names ({@code VARCHAR}, {@code VARIANT}, ...) per column, aligned with {@link #columnNames()}. */
+        public List<String> columnTypes() {
+            final List<String> types = new ArrayList<>();
+            for (int i = 0; i < resultSet.getColumns().size(); i++) {
+                types.add(resultSet.getColumns().get(i).getDataType() == null
+                    ? "VARCHAR"
+                    : resultSet.getColumns().get(i).getDataType().getName());
+            }
+            return types;
+        }
+
+        /**
+         * All row values, normalized to types GraalPy maps onto native Python values (str, int, float,
+         * bool, None). Temporals cross as ISO strings and BigDecimal as long/double — the Python side
+         * re-types them from {@link #columnTypes()}; host objects would otherwise surface as opaque
+         * foreign values that break {@code json.dumps} and pandas.
+         */
+        public List<List<Object>> data() {
+            final List<List<Object>> out = new ArrayList<>();
+            for (final Row row : rows) {
+                final List<Object> values = new ArrayList<>();
+                for (int i = 0; i < row.size(); i++) {
+                    values.add(toPythonFriendly(row.getValue(i)));
+                }
+                out.add(values);
+            }
+            return out;
+        }
+
+        private Object toPythonFriendly(final Object value) {
+            if (value == null || value instanceof String || value instanceof Boolean
+                || value instanceof Long || value instanceof Integer || value instanceof Short
+                || value instanceof Byte || value instanceof Double || value instanceof Float) {
+                return value;
+            }
+            if (value instanceof BigDecimal) {
+                final BigDecimal decimal = ((BigDecimal) value).stripTrailingZeros();
+                if (decimal.scale() <= 0) {
+                    try {
+                        return decimal.longValueExact();
+                    } catch (final ArithmeticException tooBig) {
+                        return decimal.doubleValue();
+                    }
+                }
+                return decimal.doubleValue();
+            }
+            if (value instanceof BigInteger) {
+                try {
+                    return ((BigInteger) value).longValueExact();
+                } catch (final ArithmeticException tooBig) {
+                    return ((BigInteger) value).doubleValue();
+                }
+            }
+            if (value instanceof LocalDateTime || value instanceof LocalDate || value instanceof LocalTime) {
+                return value.toString();
+            }
+            return value;
         }
     }
 }

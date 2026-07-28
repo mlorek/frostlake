@@ -182,7 +182,8 @@ public class CastExpressionsTest extends BaseDatabaseTest {
             SELECT CAST('123.45' AS NUMBER) as num_val FROM cast_test WHERE id = 1
             """);
         assertEquals(1, result.getRowCount());
-        assertEquals(123.45, ((Number) result.getRows().get(0).getValue(result.getColumnIndex("num_val"))).doubleValue(), 0.001);
+        // Bare NUMBER is NUMBER(38,0): CAST('123.45' AS NUMBER) rounds to a whole number (Snowflake).
+        assertEquals(123.0, ((Number) result.getRows().get(0).getValue(result.getColumnIndex("num_val"))).doubleValue(), 0.001);
     }
 
     @Test

@@ -360,9 +360,9 @@ public class AlterTableConstraintsTest {
     public void testAlterTableAddForeignKeyWithRestrict() {
         logger.info("Testing ALTER TABLE ADD FOREIGN KEY with ON DELETE RESTRICT");
 
-        engine.execute("CREATE TABLE accounts (account_id INTEGER PRIMARY KEY)");
-        engine.execute("CREATE TABLE transactions (txn_id INTEGER, account_id INTEGER)");
-        engine.execute("ALTER TABLE transactions ADD FOREIGN KEY (account_id) REFERENCES accounts (account_id) ON DELETE RESTRICT");
+        engine.execute("CREATE TABLE wallets (wallet_id INTEGER PRIMARY KEY)");
+        engine.execute("CREATE TABLE transactions (txn_id INTEGER, wallet_id INTEGER)");
+        engine.execute("ALTER TABLE transactions ADD FOREIGN KEY (wallet_id) REFERENCES wallets (wallet_id) ON DELETE RESTRICT");
 
         Table table = engine.getCatalog().resolveTable("transactions");
         List<ForeignKeyConstraint> foreignKeys = table.getForeignKeys();

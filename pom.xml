@@ -47,7 +47,7 @@
              inherits it via <parent><version>${revision}</version>; bump here (or pass -Drevision=X). The
              flatten-maven-plugin below rewrites ${revision} to a literal in the installed/deployed poms so
              consumers never see the placeholder. -->
-        <revision>0.0.2-SNAPSHOT</revision>
+        <revision>0.0.3-SNAPSHOT</revision>
         <maven.compiler.source>17</maven.compiler.source>
         <maven.compiler.target>17</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>

@@ -93,4 +93,24 @@ public class WindowAggregateTest {
         final ResultSet rs = engine.executeQuery("SELECT id, SUM(salary) OVER () AS s FROM emp");
         assertEquals(400.0, valueForId(rs, 1, "s"), "no PARTITION BY -> sum over all rows");
     }
+
+    @Test
+    public void starPlusWindowKeepsTheStarColumns() {
+        // SELECT *, <window> AS x — the star's columns must survive into the projected rows: they were
+        // dropped entirely (rows held only the window value while the metadata kept every column), so a
+        // named-column outer SELECT over such a CTE crashed with an index-out-of-bounds positional read.
+        engine.execute("CREATE TABLE sw (ts TIMESTAMP_NTZ, name VARCHAR)");
+        engine.execute("INSERT INTO sw VALUES ('2024-01-01 12:00:00', 'diff-a'), ('2024-01-02 12:00:00', 'all-b')");
+        final dev.frostlake.storage.ResultSet direct = engine.executeQuery(
+            "SELECT *, ROW_NUMBER() OVER (ORDER BY ts) AS grp FROM sw ORDER BY ts");
+        org.junit.jupiter.api.Assertions.assertEquals(3, direct.getColumns().size());
+        org.junit.jupiter.api.Assertions.assertEquals("diff-a", String.valueOf(direct.getRows().get(0).getValue(1)));
+        org.junit.jupiter.api.Assertions.assertEquals(1L, ((Number) direct.getRows().get(0).getValue(2)).longValue());
+
+        final dev.frostlake.storage.ResultSet outer = engine.executeQuery("""
+            WITH g AS (SELECT *, ROW_NUMBER() OVER (ORDER BY ts) AS grp FROM sw)
+            SELECT name, grp FROM g ORDER BY grp""");
+        org.junit.jupiter.api.Assertions.assertEquals("diff-a", String.valueOf(outer.getRows().get(0).getValue(0)));
+        org.junit.jupiter.api.Assertions.assertEquals("all-b", String.valueOf(outer.getRows().get(1).getValue(0)));
+    }
 }

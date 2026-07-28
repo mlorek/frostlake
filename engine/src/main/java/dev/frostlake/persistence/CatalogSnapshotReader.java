@@ -320,6 +320,11 @@ final class CatalogSnapshotReader {
                         : new View(viewSnapshot.name, viewSnapshot.query);
                     view.setComment(viewSnapshot.comment);
                     view.setSecure(viewSnapshot.secure);
+                    if (viewSnapshot.rowAccessPolicyName != null) {
+                        view.setRowAccessPolicyName(viewSnapshot.rowAccessPolicyName);
+                        view.setRowAccessPolicyColumns(viewSnapshot.rowAccessPolicyColumns != null
+                            ? viewSnapshot.rowAccessPolicyColumns : new ArrayList<>());
+                    }
                     schema.addView(view);
                 }
             }

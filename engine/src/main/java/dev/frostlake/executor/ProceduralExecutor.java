@@ -16,12 +16,14 @@
 
 package dev.frostlake.executor;
 
+import dev.frostlake.parser.FrostlakeLexer;
 import dev.frostlake.executor.expressions.BinaryOperationExpression;
 import dev.frostlake.executor.expressions.BinaryOperator;
 import dev.frostlake.executor.expressions.ExpressionEvaluatorVisitor;
 import dev.frostlake.executor.expressions.UnaryOperationExpression;
 import dev.frostlake.executor.expressions.UnaryOperator;
 import dev.frostlake.executor.procedural.BinaryExpression;
+import dev.frostlake.functions.scalar.ArrayFunctionHelper;
 import dev.frostlake.executor.procedural.CallStatement;
 import dev.frostlake.executor.procedural.CaseStatement;
 import dev.frostlake.executor.procedural.CloseStatement;
@@ -67,9 +69,14 @@ import dev.frostlake.types.BooleanType;
 import dev.frostlake.types.DataType;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.types.StringType;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.node.ArrayNode;
+
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.util.*;
+import org.antlr.v4.runtime.CommonTokenStream;
+import org.antlr.v4.runtime.CharStreams;
 
 public class ProceduralExecutor {
 
@@ -97,6 +104,10 @@ public class ProceduralExecutor {
     private boolean returnFlag;
     private boolean returnTableFlag;
     private Object returnValue;
+    // Depth of currently-active BEGIN…END block handlers. A nested block (depth > 1) that RETURNs must
+    // leave the return state set so the ENCLOSING block propagates it; only the outermost block (depth 1)
+    // consumes the return into a result. Without this a RETURN inside a nested BEGIN…END was swallowed.
+    private int blockDepth;
     private QueryExecutor queryExecutor;
     private final BindVariableSubstitutor bindSubstitutor;
     private static final Row EMPTY_ROW = new Row(new ArrayList<>());
@@ -253,7 +264,11 @@ public class ProceduralExecutor {
         setVariable(stmt.getVariableName(), value);
     }
 
-    /** Whether the raw RHS text is a parenthesized query — {@code (SELECT …)} or {@code (WITH …)}. */
+    /**
+     * Whether the raw RHS text is a parenthesized query — {@code (SELECT …)} or {@code (WITH …)}. Decided by
+     * the FIRST LEXER TOKEN inside the parentheses, so leading comments ({@code res := ( -- note … SELECT}),
+     * common in real bodies, don't hide the query from the RESULTSET-assignment path.
+     */
     private static boolean isParenthesizedQuery(final String rawText) {
         if (rawText == null) {
             return false;
@@ -262,8 +277,11 @@ public class ProceduralExecutor {
         if (!t.startsWith("(") || !t.endsWith(")")) {
             return false;
         }
-        final String inner = t.substring(1, t.length() - 1).trim().toUpperCase();
-        return inner.startsWith("SELECT") || inner.startsWith("WITH");
+        final FrostlakeLexer lexer = new FrostlakeLexer(CharStreams.fromString(t.substring(1, t.length() - 1)));
+        lexer.removeErrorListeners();
+        final CommonTokenStream tokens = new CommonTokenStream(lexer);
+        final int firstTokenType = tokens.LT(1).getType();
+        return firstTokenType == FrostlakeLexer.SELECT || firstTokenType == FrostlakeLexer.WITH;
     }
 
     /** Strip one layer of outer parentheses from a parenthesized query. */
@@ -414,6 +432,22 @@ public class ProceduralExecutor {
             final List<Object> values = (List<Object>) iterableValue;
             for (final Object value : values) {
                 setVariable(stmt.getVariableName(), value);
+                executeLoopBody(stmt.getBlock());
+                if (!loopProceeds(stmt.getLabel())) {
+                    break;
+                }
+            }
+            return;
+        }
+
+        // An ARRAY value in this engine is canonical JSON text — FOR x IN [a, b] DO evaluates its
+        // iterable to "[false,true]", which matched no branch above and silently ran ZERO iterations
+        // (a loader's dual-pass FOR over [False, True] never executed either pass). Iterate the
+        // array's elements, binding the loop variable to each element's Java value.
+        final ArrayNode arrayIterable = ArrayFunctionHelper.parseArray(iterableValue);
+        if (arrayIterable != null) {
+            for (final JsonNode element : arrayIterable) {
+                setVariable(stmt.getVariableName(), ArrayFunctionHelper.fromNode(element));
                 executeLoopBody(stmt.getBlock());
                 if (!loopProceeds(stmt.getLabel())) {
                     break;
@@ -599,6 +633,9 @@ public class ProceduralExecutor {
             for (final ResultSet result : queryExecutor.execute(substituteBindVariables(stmt.getSql()))) {
                 recordSqlRowCount(result);
             }
+            // Snowflake runs each statement of a stored procedure in its own autocommit transaction
+            // (unless an explicit BEGIN is open) — commit here exactly as the top-level entry does.
+            queryExecutor.getTransactionManager().autocommitStatementEnd();
         }
     }
 
@@ -639,15 +676,23 @@ public class ProceduralExecutor {
         // dispatch (SQL / JavaScript / Python / Java / Scala). The re-entrant execute() runs at
         // depth > 0, so this block's live cursors are preserved. A bare CALL statement discards the
         // procedure's return value (Snowflake scripting semantics).
+        final List<String> argNames = stmt.getArgumentNames();
         final StringBuilder call = new StringBuilder("CALL ").append(stmt.getProcedureName()).append('(');
         for (int i = 0; i < stmt.getArguments().size(); i++) {
             if (i > 0) {
                 call.append(", ");
             }
+            final String argName = argNames != null ? argNames.get(i) : null;
+            if (argName != null) {
+                // Preserve named-argument binding when re-issuing the CALL as SQL.
+                call.append(argName).append(" => ");
+            }
             call.append(toSqlLiteral(evaluateExpression(stmt.getArguments().get(i))));
         }
         call.append(')');
         queryExecutor.execute(call.toString());
+        // A CALL is a statement too — commit its implicit transaction like any other (Snowflake).
+        queryExecutor.getTransactionManager().autocommitStatementEnd();
     }
 
     /** Render an evaluated CALL argument as a SQL literal: NULL and numeric/boolean values unquoted,
@@ -659,7 +704,7 @@ public class ProceduralExecutor {
         if (value instanceof Number || value instanceof Boolean) {
             return value.toString();
         }
-        return "'" + value.toString().replace("'", "''") + "'";
+        return SqlStringLiterals.encode(value.toString());
     }
 
     /** Mark {@code e} as the exception now being handled (so a bare RAISE; inside the handler can re-raise it). */
@@ -773,12 +818,38 @@ public class ProceduralExecutor {
                     }
                     // Delegate to QueryExecutor expression evaluation via re-building the SQL
                     StringBuilder callExpr = new StringBuilder(funcExpr.getFunctionName()).append("(");
+                    final List<BaseExpression> argExprs = funcExpr.getArguments();
                     for (int i = 0; i < argValues.size(); i++) {
                         if (i > 0) callExpr.append(", ");
                         Object av = argValues.get(i);
-                        if (av == null) callExpr.append("NULL");
-                        else if (av instanceof String) callExpr.append("'").append(av.toString().replace("'", "''")).append("'");
-                        else callExpr.append(av);
+                        // A bare name that is NOT a declared variable is a KEYWORD ARGUMENT, not a value: the
+                        // idiomatic DATEADD(MINUTE, 30, …) / DATE_TRUNC(MONTH, …) / DATE_PART(WEEK, …) parse
+                        // their date part as an identifier, which evaluates to null. Emitting NULL for it made
+                        // the rebuilt call fail inside the function (an NPE for DATEADD), so re-emit the name.
+                        if (i < argExprs.size() && argExprs.get(i) instanceof VariableExpression) {
+                            final String argName = ((VariableExpression) argExprs.get(i)).getName();
+                            if (!hasVariable(argName)) {
+                                callExpr.append(argName);
+                                continue;
+                            }
+                        }
+                        if (av == null) {
+                            callExpr.append("NULL");
+                        } else if (av instanceof Number || av instanceof Boolean) {
+                            // Numeric / boolean values are valid unquoted SQL literals.
+                            callExpr.append(av);
+                        } else {
+                            // Everything else — strings, and crucially timestamp/date/time/object/array
+                            // values whose toString() is NOT valid unquoted SQL (e.g. a LocalDateTime prints
+                            // 2026-07-24T08:49:12) — is emitted as a quoted string literal so the rebuilt
+                            // SELECT parses. (A bare non-numeric value used to append raw and produce a
+                            // "SQL syntax error", e.g. OBJECT_CONSTRUCT_KEEP_NULL('t', CURRENT_TIMESTAMP()).)
+                            // Escape backslashes BEFORE quotes: frostlake's string lexer treats '\' as an
+                            // escape, so a value containing '\' (e.g. a nested error message ending in a
+                            // backslash, or a "\'" sequence) would otherwise escape the following char and
+                            // derail the whole re-parse.
+                            callExpr.append(SqlStringLiterals.encode(av.toString()));
+                        }
                     }
                     callExpr.append(")");
                     // Execute as SELECT expression
@@ -943,6 +1014,33 @@ public class ProceduralExecutor {
     public void clearReturnState() {
         this.returnFlag = false;
         this.returnValue = null;
+    }
+
+    /** Mark that a BEGIN…END block handler has started (nesting depth++). */
+    public void enterBlock() {
+        blockDepth++;
+    }
+
+    /** Mark that a BEGIN…END block handler has finished (nesting depth--). */
+    public void exitBlock() {
+        blockDepth--;
+    }
+
+    /**
+     * Whether the currently-executing BEGIN…END block is nested inside another one. A nested block's RETURN
+     * must be left in the return state (not consumed) so the enclosing block sees it and propagates it up.
+     */
+    public boolean isNestedBlock() {
+        return blockDepth > 1;
+    }
+
+    /**
+     * Whether a BEGIN…END block is currently executing. Transient procedural state (cursors, user-defined
+     * exceptions, declared variable types) belongs to that running block, so it must NOT be cleared while
+     * one is live — see {@link #clearCursorsAndExceptions()}.
+     */
+    public boolean isExecutingBlock() {
+        return blockDepth > 0;
     }
 
     // Cursor operations

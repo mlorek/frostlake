@@ -17,6 +17,7 @@
 package dev.frostlake.functions.scalar.conversion;
 
 import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.functions.scalar.SnowflakeDateFormat;
 import dev.frostlake.functions.scalar.SnowflakeNumberFormat;
 import dev.frostlake.types.StringType;
@@ -54,7 +55,8 @@ public class ToChar extends BuiltInFunction {
                 }
             }
         }
-        return value.toString();
+        // No format: temporals render in Snowflake's default output forms (space + FF3), not java.time's.
+        return SharedFunctionHelpers.textOf(value);
     }
 
     @Override public int getMinArgCount() { return 1; }

@@ -81,6 +81,24 @@ public class MaterializedView extends SqlObject {
     }
 
     public boolean isSecure() { return secure; }
+
+    /**
+     * The materialized view's full {@code CREATE OR REPLACE} statement rendered against
+     * {@code displayName} — the executable DDL Snowflake surfaces in SHOW MATERIALIZED VIEWS'
+     * {@code text} column and GET_DDL.
+     */
+    public String ddl(final String displayName) {
+        final StringBuilder sb = new StringBuilder();
+        sb.append("create or replace ");
+        if (secure) {
+            sb.append("secure ");
+        }
+        sb.append("materialized view ").append(displayName);
+        if (hasExplicitColumnNames()) {
+            sb.append(" (").append(String.join(", ", columnNames)).append(")");
+        }
+        return sb.append(" as ").append(SqlObject.withoutTrailingSemicolon(definition)).append(";").toString();
+    }
     public void setSecure(final boolean secure) { this.secure = secure; }
 
     @Override

@@ -31,7 +31,11 @@ public class Greatest extends BuiltInFunction {
 
         Object max = null;
         for (final Object arg : args) {
-            if (arg == null) continue;
+            // Snowflake: LEAST/GREATEST return NULL when ANY argument is NULL (skipping them turned
+            // LEAST(NULL, 100) into 100 — use LEAST_IGNORE_NULLS for the skipping behavior).
+            if (arg == null) {
+                return null;
+            }
             if (max == null) {
                 max = arg;
             } else if (arg instanceof Comparable && max instanceof Comparable) {

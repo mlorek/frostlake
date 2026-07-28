@@ -155,42 +155,58 @@ public class SelectIntoTest {
     }
 
     @Test
-    public void testSelectIntoNoRowsAssignsNull() {
-        // A SELECT INTO whose query matches nothing is not an error — the target becomes NULL and the
-        // block continues, so the lookup simply returns NULL.
+    public void testSelectIntoZeroRowsAssignsNull() {
+        // Snowflake Scripting (verified against live Snowflake): SELECT INTO over ZERO rows assigns
+        // NULL to the targets and continues — it does NOT raise. Only more than one row errors.
         ResultSet rs = engine.executeQuery("""
             DECLARE
                 col_type STRING;
             BEGIN
                 CREATE OR REPLACE TABLE cols(name STRING, data_type STRING);
                 SELECT data_type INTO :col_type FROM cols WHERE name = 'missing' LIMIT 1;
-                RETURN :col_type;
+                RETURN COALESCE(:col_type, 'was-null');
             END
             """);
         assertNotNull(rs);
-        assertEquals(1, rs.getRowCount());
-        assertNull(rs.getRows().get(0).getValue(0));
+        assertEquals("was-null", String.valueOf(rs.getRows().get(0).getValue(0)));
     }
 
     @Test
-    public void testSelectIntoFromInformationSchemaNoMatchReturnsNull() {
-        // The reported repro: a metadata lookup that matches no column yields NULL, not an error.
+    public void testSelectIntoZeroRowsLetsAProbeBlockComplete() {
+        // The vendor stream-reset idiom: probe SHOW output via RESULT_SCAN; on a fresh database the
+        // probe finds nothing, the flag stays NULL, the IF is skipped and the block returns normally.
         ResultSet rs = engine.executeQuery("""
             DECLARE
-                col_type STRING;
+                stale_flag BOOLEAN DEFAULT FALSE;
             BEGIN
-                SELECT data_type
-                INTO :col_type
-                FROM information_schema.columns
-                WHERE table_name = 'dummy'
-                  AND table_schema = 'dummy'
-                  AND column_name = 'dummy'
-                LIMIT 1;
-                RETURN :col_type;
+                SHOW STREAMS LIKE 'NO_SUCH_STREAM';
+                SELECT "stale" INTO :stale_flag FROM TABLE(RESULT_SCAN(LAST_QUERY_ID(-1)));
+                IF (:stale_flag) THEN
+                    RETURN 'dropped stale';
+                END IF;
+                RETURN 'not stale';
             END
             """);
         assertNotNull(rs);
-        assertEquals(1, rs.getRowCount());
-        assertNull(rs.getRows().get(0).getValue(0));
+        assertEquals("not stale", String.valueOf(rs.getRows().get(0).getValue(0)));
+    }
+
+    @Test
+    public void testSelectIntoMoreThanOneRowStillErrors() {
+        assertThrows(RuntimeException.class, new org.junit.jupiter.api.function.Executable() {
+            @Override
+            public void execute() {
+                engine.executeQuery("""
+                    DECLARE
+                        v STRING;
+                    BEGIN
+                        CREATE OR REPLACE TABLE two_rows(x STRING);
+                        INSERT INTO two_rows VALUES ('a'), ('b');
+                        SELECT x INTO :v FROM two_rows;
+                        RETURN :v;
+                    END
+                    """);
+            }
+        });
     }
 }

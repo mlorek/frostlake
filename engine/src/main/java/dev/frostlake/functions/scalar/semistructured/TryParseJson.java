@@ -31,6 +31,15 @@ public class TryParseJson extends BuiltInFunction {
     public Object evaluate(final List<Object> args) {
         if (args.get(0) == null) return null;
         String input = args.get(0).toString().trim();
+        // A variant STRING in quoted JSON form (the path-extraction marker for structural-looking
+        // content) coerces to its raw inner text first, as Snowflake's VARIANT→VARCHAR cast does.
+        final String quotedVariantString = JsonTypeHelper.quotedJsonStringText(input);
+        if (quotedVariantString != null) {
+            final String inner = quotedVariantString.trim();
+            if (inner.startsWith("{") || inner.startsWith("[")) {
+                input = inner;
+            }
+        }
         if (input.equalsIgnoreCase("null")) return null;
         // Parse leniently (Snowflake tolerates \' and invalid backslash escapes such as a regex \d);
         // TRY_ variant returns NULL when it still cannot be parsed.

@@ -26,6 +26,12 @@ public class EndsWith extends BuiltInFunction {
 
     @Override
     public Object evaluate(final List<Object> args) {
+        // Snowflake: NULL in, NULL out — a NULL haystack or needle yields NULL, not 0/false
+        for (int i = 0; i < Math.min(args.size(), 2); i++) {
+            if (i < args.size() && args.get(i) == null) {
+                return null;
+            }
+        }
         if (args.get(0) == null || args.get(1) == null) return false;
         return args.get(0).toString().endsWith(args.get(1).toString());
     }

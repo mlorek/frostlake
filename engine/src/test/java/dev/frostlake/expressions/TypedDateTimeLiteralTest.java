@@ -40,12 +40,15 @@ public class TypedDateTimeLiteralTest extends BaseDatabaseTest {
 
     @Test
     public void timestampLiteral() {
-        assertEquals("2020-01-15 10:30:00", scalar("SELECT TIMESTAMP '2020-01-15 10:30:00'").toString());
+        // A typed TIMESTAMP literal is a real LocalDateTime (equal to TO_TIMESTAMP_NTZ of the same string),
+        // so its toString() is ISO-8601 ('T' separator, and LocalDateTime omits a :00 seconds field) rather
+        // than the raw source string.
+        assertEquals("2020-01-15T10:30", scalar("SELECT TIMESTAMP '2020-01-15 10:30:00'").toString());
     }
 
     @Test
     public void timestampNtzLiteral() {
-        assertEquals("2020-01-15 10:30:00", scalar("SELECT TIMESTAMP_NTZ '2020-01-15 10:30:00'").toString());
+        assertEquals("2020-01-15T10:30", scalar("SELECT TIMESTAMP_NTZ '2020-01-15 10:30:00'").toString());
     }
 
     @Test

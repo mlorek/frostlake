@@ -87,7 +87,7 @@ public class ParseJsonLenientTest extends BaseDatabaseTest {
         final ResultSet rs = engine.executeQuery(
             "SELECT $1, PARSE_JSON($2), PARSE_JSON($2)\n"
             + "FROM VALUES\n"
-            + "  ('alpha', '[\"device one\",\"node (a|p|m|q|f|fa|v)\\d+\",\"node \\d+\"]'),\n"
+            + "  ('alpha', '[\"widget one\",\"node (a|p|m|q|f|fa|v)\\d+\",\"node \\d+\"]'),\n"
             + "  ('beta',  '[\"product two\",\"(?<!skip )target\"]'),\n"
             + "  ('gamma', '[\"foo\\s*bar( baz)?\",\"^alpha\",\"^(?!.*x.*)(.*y.*)\"]'),\n"
             + "  ('delta', '[\"first entry\",\"second entry\"]')");
@@ -96,5 +96,18 @@ public class ParseJsonLenientTest extends BaseDatabaseTest {
         for (int r = 0; r < 4; r++) {
             assertNotNull(rs.getRows().get(r).getValue(1), "PARSE_JSON of row " + r + " should parse");
         }
+    }
+
+    @Test
+    public void undefinedTokenParsesAsSnowflakeTolerates() {
+        // Snowflake's PARSE_JSON accepts the non-standard JavaScript `undefined` token (loaders guard
+        // against ingested artifacts with `= PARSE_JSON('[undefined]')`); a strict parser rejected it and
+        // killed the whole statement. Bare tokens normalize to the string "undefined"; the word inside a
+        // string value stays untouched.
+        assertEquals("[\"undefined\"]", String.valueOf(one("SELECT PARSE_JSON('[undefined]')")));
+        assertEquals("{\"a\":\"undefined\",\"b\":1}",
+            String.valueOf(one("SELECT PARSE_JSON('{\"a\":undefined,\"b\":1}')")));
+        assertEquals("is undefined here",
+            String.valueOf(one("SELECT PARSE_JSON('{\"m\":\"is undefined here\"}'):m::VARCHAR")));
     }
 }

@@ -27,6 +27,12 @@ public class DateFromParts extends BuiltInFunction {
 
     @Override
     public Object evaluate(final List<Object> args) {
+        // Snowflake: NULL in, NULL out — any NULL part yields NULL (an NPE escaped before)
+        for (int i = 0; i < args.size(); i++) {
+            if (i < args.size() && args.get(i) == null) {
+                return null;
+            }
+        }
         int year  = ((Number) args.get(0)).intValue();
         int month = ((Number) args.get(1)).intValue();
         int day   = ((Number) args.get(2)).intValue();

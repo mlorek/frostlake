@@ -21,6 +21,7 @@ import dev.frostlake.types.StringType;
 import tools.jackson.databind.ObjectMapper;
 
 import java.util.List;
+import java.util.Map;
 
 public class ToJson extends BuiltInFunction {
 
@@ -30,11 +31,39 @@ public class ToJson extends BuiltInFunction {
 
     @Override
     public Object evaluate(final List<Object> args) {
-        if (args.get(0) == null) return null;
+        final Object value = args.get(0);
+        if (value == null) return null;
+        if (value instanceof String) {
+            final String text = ((String) value).trim();
+            if (!text.isEmpty()) {
+                try {
+                    // VARIANT/ARRAY/OBJECT values are carried by the engine as JSON text; TO_JSON of
+                    // such a value is that JSON re-serialized compactly — Snowflake returns ["a"] for
+                    // an ARRAY, never a re-encoded "[\"a\"]" string.
+                    return MAPPER.writeValueAsString(MAPPER.readTree(text));
+                } catch (final RuntimeException notJson) {
+                    // A plain VARCHAR: serialize below as a JSON string.
+                }
+            }
+            try {
+                return MAPPER.writeValueAsString(value);
+            } catch (final Exception e) {
+                return value.toString();
+            }
+        }
+        if (value instanceof Number || value instanceof Boolean
+                || value instanceof List || value instanceof Map) {
+            try {
+                return MAPPER.writeValueAsString(value);
+            } catch (final Exception e) {
+                return value.toString();
+            }
+        }
+        // Temporals and any other scalar: a variant STRING of the value's text form.
         try {
-            return MAPPER.writeValueAsString(args.get(0));
+            return MAPPER.writeValueAsString(value.toString());
         } catch (final Exception e) {
-            return args.get(0).toString();
+            return value.toString();
         }
     }
 

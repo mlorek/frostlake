@@ -17,11 +17,13 @@
 package dev.frostlake.executor;
 
 import dev.frostlake.functions.AggregateFunction;
+import dev.frostlake.functions.aggregate.AggregateNumerics;
 import dev.frostlake.functions.aggregate.PercentileCont;
 import dev.frostlake.functions.aggregate.PercentileDisc;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.storage.Row;
+import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -63,8 +65,10 @@ public final class AggregateFunctions {
         }
         final double percentile;
         try {
-            final String pArg = funcCtx.functionArgList() != null && !funcCtx.functionArgList().booleanExpr().isEmpty()
-                ? ParseTreeText.getOriginalText(funcCtx.functionArgList().booleanExpr(0)).trim() : "";
+            final List<FrostlakeParser.BooleanExprContext> aggArgs =
+                ParseTreeText.functionBooleanArgs(funcCtx.functionArgList());
+            final String pArg = !aggArgs.isEmpty()
+                ? ParseTreeText.getOriginalText(aggArgs.get(0)).trim() : "";
             percentile = Double.parseDouble(pArg);
         } catch (final NumberFormatException e) {
             throw new RuntimeException("PERCENTILE argument must be a numeric literal in [0, 1]");
@@ -88,14 +92,16 @@ public final class AggregateFunctions {
         switch (funcName) {
             case "COUNT":
                 return (long) values.size();
-            case "SUM":
-                double sum = 0;
+            case "SUM": {
+                final List<Object> numbers = new ArrayList<>();
                 for (final Object val : values) {
                     if (val instanceof Number) {
-                        sum += ((Number) val).doubleValue();
+                        numbers.add(val);
                     }
                 }
-                return sum;
+                // SUM preserves integer-ness (SUM of INTs is a whole number, not X.0); empty -> NULL.
+                return AggregateNumerics.sum(numbers);
+            }
             case "AVG":
                 double avg = 0;
                 for (final Object val : values) {

@@ -34,6 +34,12 @@ public class RegexpInstr extends BuiltInFunction {
 
     @Override
     public Object evaluate(final List<Object> args) {
+        // Snowflake: NULL in, NULL out — a NULL haystack or needle yields NULL, not 0/false
+        for (int i = 0; i < args.size(); i++) {
+            if (i < args.size() && args.get(i) == null) {
+                return null;
+            }
+        }
         if (args.get(0) == null || args.get(1) == null) {
             return 0L;
         }

@@ -48,6 +48,22 @@ public class UuidStringTest {
     }
 
     @Test
+    public void namedFormIsAnExactRfc4122Version5Uuid() {
+        // Snowflake's UUID_STRING(uuid_namespace, name) is a version-5 (SHA-1) named UUID; this
+        // input/output pair is the documented Snowflake example, so the named form is bit-exact.
+        assertEquals("dc0b6f65-fca6-5b4b-9d37-ccc3fde1f3e2",
+            engine.executeQuery("SELECT UUID_STRING('fe971b24-9572-4005-b22f-351e9c09274d', 'foo')")
+                .getRows().get(0).getValue(0).toString());
+        // Deterministic: same inputs, same UUID — and a numeric name is used as its text.
+        assertEquals(
+            engine.executeQuery("SELECT UUID_STRING('fe971b24-9572-4005-b22f-351e9c09274d', 42)")
+                .getRows().get(0).getValue(0).toString(),
+            engine.executeQuery("SELECT UUID_STRING('fe971b24-9572-4005-b22f-351e9c09274d', '42')")
+                .getRows().get(0).getValue(0).toString());
+        assertNull(engine.executeQuery("SELECT UUID_STRING(NULL, 'foo')").getRows().get(0).getValue(0));
+    }
+
+    @Test
     public void testUuidStringFunction() {
         ResultSet rs = engine.executeQuery("SELECT UUID_STRING()");
         assertNotNull(rs);

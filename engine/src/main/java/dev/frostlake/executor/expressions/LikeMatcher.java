@@ -25,7 +25,7 @@ import java.util.regex.Pattern;
  * Pure SQL LIKE/ILIKE evaluation extracted from {@link ExpressionEvaluatorVisitor}: translate a LIKE
  * pattern (with an explicit ESCAPE char) to a regex and match against it, caching the compiled Pattern.
  */
-final class LikeMatcher {
+public final class LikeMatcher {
 
     // SQL LIKE/ILIKE compiles to a regex. String.matches() recompiles the regex on every call, so for a
     // constant pattern over a 500k-row scan that meant 500k pattern translations + 500k Pattern.compile
@@ -38,10 +38,12 @@ final class LikeMatcher {
     private LikeMatcher() {
     }
 
-    static Object evaluateLike(final Object value, final Object pattern,
+    public static Object evaluateLike(final Object value, final Object pattern,
                                 final BinaryOperator op, final char escapeChar) {
+        // Three-valued logic: a NULL subject or NULL pattern makes the predicate UNKNOWN, not FALSE —
+        // so NULL NOT LIKE 'x%' is NULL too (a WHERE still drops the row, but NOT no longer flips it to TRUE).
         if (value == null || pattern == null) {
-            return false;
+            return null;
         }
 
         String valueStr = value.toString();
@@ -69,7 +71,9 @@ final class LikeMatcher {
         if (existing != null) {
             return existing;
         }
-        final Pattern compiled = Pattern.compile(likeToRegex(patternStr, escapeChar));
+        // DOTALL: Snowflake's % and _ match ANY character including newlines — multi-line subjects
+        // (multi-line payloads, log text) must match '%needle%' even when the needle sits between newlines.
+        final Pattern compiled = Pattern.compile(likeToRegex(patternStr, escapeChar), Pattern.DOTALL);
         if (LIKE_PATTERN_CACHE.size() >= LIKE_PATTERN_CACHE_CAPACITY) {
             final Iterator<String> it = LIKE_PATTERN_CACHE.keySet().iterator();
             if (it.hasNext()) {

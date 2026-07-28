@@ -20,6 +20,7 @@ import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.types.VariantType;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.util.List;
 
 public class TryCast extends BuiltInFunction {
@@ -34,11 +35,29 @@ public class TryCast extends BuiltInFunction {
             switch (targetType.replaceAll("\\(.*", "").trim()) {
                 case "INTEGER": case "INT": case "BIGINT": return Long.parseLong(args.get(0).toString().trim());
                 case "FLOAT": case "DOUBLE": return Double.parseDouble(args.get(0).toString().trim());
-                case "NUMBER": case "DECIMAL": return new BigDecimal(args.get(0).toString().trim());
+                case "NUMBER": case "DECIMAL": case "NUMERIC":
+                    // Bare NUMBER is NUMBER(38,0); a declared (precision, scale) rounds to that scale.
+                    return new BigDecimal(args.get(0).toString().trim())
+                        .setScale(numberScale(targetType), RoundingMode.HALF_UP);
                 case "BOOLEAN": { String v = args.get(0).toString().trim().toUpperCase(); return v.equals("TRUE") || v.equals("1"); }
                 default: return args.get(0).toString();
             }
         } catch (final Exception e) { return null; }
+    }
+
+    /** Scale declared in a NUMBER/DECIMAL/NUMERIC type string, defaulting to 0 (bare NUMBER is NUMBER(38,0)). */
+    private static int numberScale(final String targetType) {
+        final int open = targetType.indexOf('(');
+        final int close = targetType.indexOf(')');
+        if (open < 0 || close <= open) {
+            return 0;
+        }
+        final String[] parts = targetType.substring(open + 1, close).split(",");
+        try {
+            return parts.length > 1 ? Integer.parseInt(parts[1].trim()) : 0;
+        } catch (final NumberFormatException nfe) {
+            return 0;
+        }
     }
 
     @Override public int getMinArgCount() { return 1; }

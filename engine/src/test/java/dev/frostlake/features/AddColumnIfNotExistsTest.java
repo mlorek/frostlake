@@ -303,19 +303,19 @@ public class AddColumnIfNotExistsTest {
         logger.info("Testing real-world example from user");
 
         engine.execute("CREATE SCHEMA BASE");
-        engine.execute("CREATE TABLE BASE.DIM_ASSET (ASSET_ID INTEGER, ASSET_NAME VARCHAR)");
+        engine.execute("CREATE TABLE BASE.DIM_PRODUCT (PRODUCT_ID INTEGER, PRODUCT_NAME VARCHAR)");
 
-        engine.execute("ALTER TABLE IF EXISTS BASE.DIM_ASSET ADD COLUMN IF NOT EXISTS ASSET_URL VARCHAR(16777216)");
+        engine.execute("ALTER TABLE IF EXISTS BASE.DIM_PRODUCT ADD COLUMN IF NOT EXISTS PRODUCT_URL VARCHAR(16777216)");
 
-        Table table = engine.getCatalog().resolveTable("BASE.DIM_ASSET");
+        Table table = engine.getCatalog().resolveTable("BASE.DIM_PRODUCT");
         assertNotNull(table);
         assertEquals(3, table.getColumns().size());
-        assertTrue(table.hasColumn("ASSET_URL"));
-        assertEquals("VARCHAR", table.getColumn("ASSET_URL").getDataType().getName());
+        assertTrue(table.hasColumn("PRODUCT_URL"));
+        assertEquals("VARCHAR", table.getColumn("PRODUCT_URL").getDataType().getName());
 
-        engine.execute("ALTER TABLE IF EXISTS BASE.DIM_ASSET ADD COLUMN IF NOT EXISTS ASSET_URL VARCHAR(16777216)");
+        engine.execute("ALTER TABLE IF EXISTS BASE.DIM_PRODUCT ADD COLUMN IF NOT EXISTS PRODUCT_URL VARCHAR(16777216)");
 
-        table = engine.getCatalog().resolveTable("BASE.DIM_ASSET");
+        table = engine.getCatalog().resolveTable("BASE.DIM_PRODUCT");
         assertEquals(3, table.getColumns().size());
 
         logger.info("Real-world example works correctly");

@@ -18,6 +18,8 @@ package dev.frostlake.functions.scalar;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -26,10 +28,13 @@ import java.time.DayOfWeek;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.LocalTime;
 import java.time.ZoneOffset;
+import java.time.format.DateTimeFormatter;
 import java.time.temporal.IsoFields;
 import java.time.temporal.TemporalAccessor;
 import java.util.Base64;
+import java.util.Locale;
 import java.util.zip.Deflater;
 import java.util.zip.DeflaterOutputStream;
 import java.util.zip.GZIPInputStream;
@@ -40,6 +45,19 @@ import java.util.zip.InflaterInputStream;
 public final class SharedFunctionHelpers {
 
     private SharedFunctionHelpers() {}
+
+    /**
+     * Divide with Snowflake's result scale: {@code max(S1, min(S1 + 6, 12))} where S1 is the dividend's
+     * scale (docs: "Arithmetic operators — division"), rounding half away from zero. Integer / integer
+     * therefore yields six fractional digits — {@code 1/3 = 0.333333} — matching Snowflake output.
+     * Runtime values carry no declared column scale, so S1 is read off the value with trailing zeros
+     * stripped (a whole-number {@code Double} like {@code SUM} output renders as 1.0 but is scale 0).
+     */
+    public static BigDecimal divideWithSnowflakeScale(final BigDecimal dividend, final BigDecimal divisor) {
+        final int dividendScale = Math.max(dividend.stripTrailingZeros().scale(), 0);
+        final int resultScale = Math.max(dividendScale, Math.min(dividendScale + 6, 12));
+        return dividend.divide(divisor, resultScale, RoundingMode.HALF_UP);
+    }
 
     public static byte[] digest(final String algo, final byte[] input) {
         try {
@@ -160,14 +178,81 @@ public final class SharedFunctionHelpers {
         }
     }
 
+    /**
+     * Snowflake's default TIMESTAMP output text — {@code YYYY-MM-DD HH24:MI:SS.FF3}: a SPACE separator and
+     * EXACTLY three fractional digits ({@code …:38.604}, {@code …:28.000}). {@code LocalDateTime.toString}
+     * instead used a {@code T} and dropped trailing zeros, so every text rendering of a timestamp (::VARCHAR,
+     * TO_VARCHAR, ||, a value embedded in a VARIANT) differed from Snowflake's.
+     */
+    public static String timestampText(final LocalDateTime dt) {
+        return String.format("%04d-%02d-%02d %02d:%02d:%02d.%03d",
+            dt.getYear(), dt.getMonthValue(), dt.getDayOfMonth(),
+            dt.getHour(), dt.getMinute(), dt.getSecond(), dt.getNano() / 1_000_000);
+    }
+
+    /** Snowflake's default TIME output text — {@code HH24:MI:SS}, no fractional part. */
+    public static String timeText(final LocalTime t) {
+        return String.format("%02d:%02d:%02d", t.getHour(), t.getMinute(), t.getSecond());
+    }
+
+    /**
+     * A value rendered for a STRING context (::VARCHAR, TO_VARCHAR/TO_CHAR without a format, {@code ||},
+     * embedding into a VARIANT): temporals use Snowflake's default output forms above, everything else its
+     * ordinary text. A DATE's own text is already {@code YYYY-MM-DD}.
+     */
+    public static String textOf(final Object value) {
+        if (value instanceof LocalDateTime) {
+            return timestampText((LocalDateTime) value);
+        }
+        if (value instanceof LocalTime) {
+            return timeText((LocalTime) value);
+        }
+        if (value instanceof Double || value instanceof Float) {
+            return floatText(((Number) value).doubleValue());
+        }
+        return String.valueOf(value);
+    }
+
+    /**
+     * Snowflake's FLOAT-to-VARCHAR rendering: C-style {@code %.10g} — 10 significant digits, fixed or
+     * scientific per the %g exponent rule, trailing fractional zeros stripped. Java's shortest-round-trip
+     * {@code Double.toString} printed {@code 0.8999999761581421} where Snowflake prints
+     * {@code 0.8999999762}, so every SHA2/checksum over a stringified float diverged.
+     */
+    public static String floatText(final double d) {
+        if (Double.isNaN(d)) {
+            return "NaN";
+        }
+        if (Double.isInfinite(d)) {
+            return d > 0 ? "inf" : "-inf";
+        }
+        final String formatted = String.format(Locale.ROOT, "%.10g", d);
+        final int expAt = formatted.indexOf('e');
+        String mantissa = expAt < 0 ? formatted : formatted.substring(0, expAt);
+        final String exponent = expAt < 0 ? "" : formatted.substring(expAt);
+        if (mantissa.indexOf('.') >= 0) {
+            int end = mantissa.length();
+            while (end > 0 && mantissa.charAt(end - 1) == '0') {
+                end--;
+            }
+            if (end > 0 && mantissa.charAt(end - 1) == '.') {
+                end--;
+            }
+            mantissa = mantissa.substring(0, end);
+        }
+        return mantissa + exponent;
+    }
+
     // --- shared date/datetime parsing helpers ---
     public static LocalDate toLocalDate(final Object v) {
         if (v == null) return null;
         if (v instanceof LocalDate) return (LocalDate) v;
         if (v instanceof LocalDateTime) return ((LocalDateTime) v).toLocalDate();
         String s = v.toString().trim();
-        try { return LocalDateTime.parse(s.replace(' ', 'T')).toLocalDate(); } catch (final Exception ignored) {}
-        return LocalDate.parse(s);
+        try { return LocalDate.parse(s); } catch (final Exception ignored) {}
+        final LocalDate scanned = AutoTemporalParser.parseDate(s);
+        if (scanned != null) return scanned;
+        return LocalDate.parse(s);   // not a recognised form: surface java.time's own message
     }
 
     public static LocalDateTime toLocalDateTime(final Object v) {
@@ -175,9 +260,59 @@ public final class SharedFunctionHelpers {
         if (v instanceof LocalDateTime) return (LocalDateTime) v;
         if (v instanceof LocalDate) return ((LocalDate) v).atStartOfDay();
         String s = v.toString().trim();
-        try { return LocalDateTime.parse(s.replace(' ', 'T')); } catch (final Exception ignored) {}
+        try { return LocalDateTime.parse(s); } catch (final Exception ignored) {}
+        // Snowflake's AUTO input detection covers far more than ISO-8601: a zone designator, MM/DD/YYYY,
+        // DD-MON-YYYY, whitespace variation and non-canonical digit counts (see AutoTemporalParser).
+        final LocalDateTime scanned = AutoTemporalParser.parseDateTime(s);
+        if (scanned != null) return scanned;
         try { return LocalDate.parse(s).atStartOfDay(); } catch (final Exception ignored) {}
         throw new RuntimeException("Cannot parse date/time: " + s);
+    }
+
+    public static LocalTime toLocalTime(final Object v) {
+        if (v == null) return null;
+        if (v instanceof LocalTime) return (LocalTime) v;
+        if (v instanceof LocalDateTime) return ((LocalDateTime) v).toLocalTime();
+        final String s = v.toString().trim();
+        try { return LocalTime.parse(s); } catch (final Exception ignored) {}
+        return LocalTime.parse(s, DateTimeFormatter.ofPattern("HH:mm"));
+    }
+
+    /**
+     * Coerce a value to the temporal Java representation backing a Snowflake DATE / TIME / TIMESTAMP* type —
+     * the same {@link LocalDate} / {@link LocalTime} / {@link LocalDateTime} that TO_DATE / TO_TIME /
+     * TO_TIMESTAMP would produce — so a string (e.g. {@code '2024-02-09 12:24:12.000'}) written into or cast
+     * to a temporal type compares equal to a computed temporal value instead of lingering as its original
+     * String. Only strings and already-temporal values are converted; anything else (numbers, bytes, …) and
+     * any unrecognized {@code baseTypeUpper} passes through unchanged. An unparseable string throws, so
+     * TRY_CAST sees the failure (and yields NULL).
+     */
+    public static Object toTemporalValue(final String baseTypeUpper, final Object value) {
+        if (value == null) {
+            return null;
+        }
+        if (!(value instanceof String || value instanceof LocalDate
+                || value instanceof LocalDateTime || value instanceof LocalTime)) {
+            return value;
+        }
+        switch (baseTypeUpper) {
+            case "DATE":
+                return toLocalDate(value);
+            case "TIME":
+                return toLocalTime(value);
+            case "TIMESTAMP":
+            case "TIMESTAMP_NTZ":
+            case "TIMESTAMP_LTZ":
+            case "TIMESTAMP_TZ":
+            // Snowflake's no-underscore spellings are full aliases of the TIMESTAMP_* variations.
+            case "TIMESTAMPNTZ":
+            case "TIMESTAMPLTZ":
+            case "TIMESTAMPTZ":
+            case "DATETIME":
+                return toLocalDateTime(value);
+            default:
+                return value;
+        }
     }
 
     /**

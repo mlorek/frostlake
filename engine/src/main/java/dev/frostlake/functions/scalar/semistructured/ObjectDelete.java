@@ -45,7 +45,7 @@ public class ObjectDelete extends BuiltInFunction {
         for(final Map.Entry<String, JsonNode> e:  fields) {
             if (!toRemove.contains(e.getKey())) result.set(e.getKey(), e.getValue());
         }
-        return result.toString();
+        return ArrayFunctionHelper.toCanonicalJson(result);
     }
 
     @Override public int getMinArgCount() { return 2; }

@@ -19,7 +19,6 @@ package dev.frostlake.functions.aggregate;
 import dev.frostlake.functions.AggregateFunction;
 import dev.frostlake.types.ArrayType;
 
-import java.util.ArrayList;
 import java.util.List;
 
 public class ArrayAgg extends AggregateFunction {
@@ -37,22 +36,4 @@ public class ArrayAgg extends AggregateFunction {
 
     @Override public int getMinArgCount() { return 1; }
     @Override public int getMaxArgCount() { return 1; }
-
-    private static class ArrayAggAccumulator implements Accumulator {
-        private final List<Object> values = new ArrayList<>();
-
-        @Override
-        public void accumulate(final Object value) { values.add(value); }
-
-        @Override
-        public Object getResult() { return new ArrayList<>(values); }
-
-        @Override
-        public void reset() { values.clear(); }
-
-        @Override
-        public void merge(final Accumulator other) {
-            values.addAll(((ArrayAggAccumulator) other).values);
-        }
-    }
 }

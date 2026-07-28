@@ -44,6 +44,29 @@ public class JsonLiteralsTest extends BaseJdbcTest {
     }
 
     @Test
+    public void controlCharactersInLiteralStringsAreJsonEscaped() throws SQLException {
+        // A data value with an embedded newline (or quote/backslash) must be ESCAPED in the literal's
+        // JSON text; emitting it raw made the stored VARIANT invalid JSON, and every later path access
+        // over it silently returned NULL — an ingest row whose file path contained a newline vanished
+        // from a loader's output entirely.
+        ResultSet rs = statement.executeQuery(
+            "SELECT {'a': 'x\ny'}:a AS v, {'q': 'he said \"hi\"'}:q AS w, {'deep': {'p': 'l1\nl2'}}:deep:p AS d");
+        assertTrue(rs.next());
+        assertEquals("x\ny", rs.getString("v"));
+        assertEquals("he said \"hi\"", rs.getString("w"));
+        assertEquals("l1\nl2", rs.getString("d"));
+        rs.close();
+    }
+
+    @Test
+    public void arrayLiteralElementsAreJsonEscapedToo() throws SQLException {
+        ResultSet rs = statement.executeQuery("SELECT ['a\nb', 'c']::VARIANT AS arr, ['a\nb'][0] AS el");
+        assertTrue(rs.next());
+        assertEquals("a\nb", rs.getString("el"));
+        rs.close();
+    }
+
+    @Test
     public void testSelectJsonArrayLiteral() throws SQLException {
         // Simple JSON array literal
         ResultSet rs = statement.executeQuery("SELECT [1, 2, 3, 4, 5] as numbers");
@@ -231,6 +254,41 @@ public class JsonLiteralsTest extends BaseJdbcTest {
         assertTrue(data.contains("Alice"));
         assertTrue(data.contains("Engineer"));
         assertTrue(data.contains("metadata"));
+        rs.close();
+    }
+
+    @Test
+    public void objectLiteralDropsSqlNullPairsLikeObjectConstruct() throws SQLException {
+        // Snowflake object constants are equivalent to OBJECT_CONSTRUCT: a pair whose value is SQL
+        // NULL is omitted, while a JSON null (PARSE_JSON('null')) is kept as a real null member.
+        ResultSet rs = statement.executeQuery("SELECT {'a': 1, 'gone': NULL} AS o");
+        assertTrue(rs.next());
+        assertEquals("{\"a\":1}", rs.getString("o"));
+        rs.close();
+
+        rs = statement.executeQuery("SELECT {'a': 1, 'kept': PARSE_JSON('null')} AS o");
+        assertTrue(rs.next());
+        assertEquals("{\"a\":1,\"kept\":null}", rs.getString("o"));
+        rs.close();
+    }
+
+    @Test
+    public void bracketLiteralsCanonicalizeLikeParseJson() throws SQLException {
+        // An array/object literal must store the same canonical text a VARIANT extraction produces —
+        // keys sorted, compact separators — or EXCEPT sees a phantom diff between them.
+        ResultSet rs = statement.executeQuery("SELECT [{'edition': 'pro*'}] AS c");
+        assertTrue(rs.next());
+        assertEquals("[{\"edition\":\"pro*\"}]", rs.getString("c"));
+        rs.close();
+
+        rs = statement.executeQuery("SELECT {'b': 2, 'a': 1} AS o");
+        assertTrue(rs.next());
+        assertEquals("{\"a\":1,\"b\":2}", rs.getString("o"));
+        rs.close();
+
+        rs = statement.executeQuery(
+            "SELECT [{'max_version': '9.1','min_version': '9.0'}] EXCEPT SELECT PARSE_JSON('[{\"min_version\":\"9.0\",\"max_version\":\"9.1\"}]')");
+        assertFalse(rs.next());
         rs.close();
     }
 }

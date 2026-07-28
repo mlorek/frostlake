@@ -247,18 +247,18 @@ public class BeginEndReturnTest {
     @Test
     public void testBeginEndDeleteWithRollback() {
         engine.execute("USE SCHEMA public");
-        engine.execute("CREATE TABLE accounts (id INTEGER, name VARCHAR)");
-        engine.execute("INSERT INTO accounts VALUES (1, 'Alice'), (2, 'Bob')");
+        engine.execute("CREATE TABLE customers (id INTEGER, name VARCHAR)");
+        engine.execute("INSERT INTO customers VALUES (1, 'Alice'), (2, 'Bob')");
 
         engine.execute("""
             BEGIN
                 BEGIN TRANSACTION;
-                DELETE FROM accounts WHERE id = 1;
+                DELETE FROM customers WHERE id = 1;
                 ROLLBACK;
             END;
             """);
 
-        ResultSet rs = engine.executeQuery("SELECT COUNT(*) FROM accounts");
+        ResultSet rs = engine.executeQuery("SELECT COUNT(*) FROM customers");
         assertEquals(2L, ((Number) rs.getRows().get(0).getValue(0)).longValue(),
             "Both rows should remain after rollback");
     }

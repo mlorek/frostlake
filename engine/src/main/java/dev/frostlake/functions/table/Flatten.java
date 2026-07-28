@@ -62,11 +62,12 @@ public class Flatten extends TableFunction {
     public ResultSet execute(final Map<String, Object> namedArgs) {
         validateArgs(namedArgs);
 
-        // Get INPUT parameter (required)
+        // Get INPUT parameter (required). A present-but-NULL input is NOT an error in Snowflake: NULL is
+        // simply not expandable, so the row contributes no output (OUTER => FALSE, the default) or a single
+        // all-NULL row (OUTER => TRUE). Only an ABSENT INPUT argument is an error, which validateArgs()
+        // above already rejects. Throwing here aborted the WHOLE statement — the table function is expanded
+        // for every left row before WHERE can filter, so one NULL in a scanned column killed the query.
         Object input = namedArgs.get("INPUT");
-        if (input == null) {
-            throw new RuntimeException("FLATTEN requires INPUT parameter");
-        }
 
         // Get optional parameters
         String path = namedArgs.containsKey("PATH") ? namedArgs.get("PATH").toString() : null;
@@ -90,7 +91,7 @@ public class Flatten extends TableFunction {
 
         // Parse input as JSON
         JsonNode jsonInput = parseInput(input);
-        String inputStr = input.toString();
+        String inputStr = input == null ? null : input.toString();
 
         // Apply path filter if specified
         if (path != null && !path.isEmpty()) {
@@ -192,8 +193,7 @@ public class Flatten extends TableFunction {
                     String newPath = currentPath.isEmpty() ? key : currentPath + "." + key;
 
                     if (mode == FlattenMode.OBJECT || mode == FlattenMode.BOTH) {
-                        String valueStr = nodeToString(value);
-                        addRow(rows, seq++, key, newPath, null, valueStr, thisValue);
+                        addRow(rows, seq++, key, newPath, null, nodeToValue(value), thisValue);
                     }
 
                     // Recursive flattening
@@ -212,8 +212,7 @@ public class Flatten extends TableFunction {
                     String newPath = currentPath + "[" + i + "]";
 
                     if (mode == FlattenMode.ARRAY || mode == FlattenMode.BOTH) {
-                        String valueStr = nodeToString(value);
-                        addRow(rows, seq++, null, newPath, (long) i, valueStr, thisValue);
+                        addRow(rows, seq++, null, newPath, (long) i, nodeToValue(value), thisValue);
                     }
 
                     // Recursive flattening
@@ -224,15 +223,14 @@ public class Flatten extends TableFunction {
             }
         } else {
             // Primitive value
-            String valueStr = nodeToString(element);
-            addRow(rows, seq++, null, currentPath, null, valueStr, thisValue);
+            addRow(rows, seq++, null, currentPath, null, nodeToValue(element), thisValue);
         }
 
         return seq;
     }
 
     private void addRow(final List<Row> rows, final int seq, final String key, final String path, final Long index,
-                       final String value, final String thisValue) {
+                       final Object value, final String thisValue) {
         List<Object> values = new ArrayList<>();
         values.add((long) seq);
         values.add(key);
@@ -243,14 +241,39 @@ public class Flatten extends TableFunction {
         rows.add(new Row(values));
     }
 
-    private String nodeToString(final JsonNode node) {
+    /**
+     * The VALUE column keeps a scalar node's TYPE — a JSON boolean/number element stays a Boolean/Number
+     * (Snowflake's FLATTEN value is a typed VARIANT), so re-aggregating it (OBJECT_AGG, ARRAY_AGG,
+     * OBJECT_CONSTRUCT) does not turn {@code true} into the string {@code "true"}. Textual nodes unwrap to
+     * their text; objects/arrays stay JSON text for path access.
+     */
+    private Object nodeToValue(final JsonNode node) {
         if (node == null || node.isNull()) {
             return null;
-        } else if (node.isTextual()) {
-            return node.asText();
-        } else {
-            return node.toString();
         }
+        if (node.isTextual()) {
+            // Same disambiguation as path extraction: a string element whose content looks like JSON
+            // structure keeps its quoted form so it is not mistaken for a real array/object downstream.
+            final String text = node.asText();
+            final String trimmedText = text.trim();
+            if (trimmedText.startsWith("[") || trimmedText.startsWith("{")) {
+                return node.toString();
+            }
+            return text;
+        }
+        if (node.isBoolean()) {
+            return node.asBoolean();
+        }
+        if (node.isLong() || node.isInt()) {
+            return node.asLong();
+        }
+        if (node.isBigInteger() || node.isBigDecimal()) {
+            return node.decimalValue();
+        }
+        if (node.isNumber()) {
+            return node.asDouble();
+        }
+        return node.toString();
     }
 
     @Override

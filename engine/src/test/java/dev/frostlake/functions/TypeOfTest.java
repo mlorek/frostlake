@@ -20,6 +20,7 @@ import dev.frostlake.BaseDatabaseTest;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 
 /**
  * TYPEOF reports Snowflake's variant type names: strings are VARCHAR (not "TEXT"), floating-point is
@@ -61,7 +62,10 @@ public class TypeOfTest extends BaseDatabaseTest {
 
     @Test
     public void sqlNullIsNull() {
-        assertEquals("NULL", typeOf("SELECT TYPEOF(NULL)"));
+        // Snowflake: a SQL NULL input yields NULL (NULL in, NULL out); "NULL_VALUE" is reserved
+        // for a JSON null VALUE inside a variant.
+        assertNull(engine.executeQuery("SELECT TYPEOF(NULL)").getRows().get(0).getValue(0));
+        assertEquals("NULL_VALUE", typeOf("SELECT TYPEOF(PARSE_JSON('null'))"));
     }
 
     @Test

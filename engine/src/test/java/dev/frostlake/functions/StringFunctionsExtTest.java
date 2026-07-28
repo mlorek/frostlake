@@ -171,8 +171,16 @@ public class StringFunctionsExtTest {
     @Test public void testConcatWs() {
         assertEquals("a,b,c", q("SELECT CONCAT_WS(',', 'a', 'b', 'c')"));
     }
-    @Test public void testConcatWsSkipsNulls() {
-        assertEquals("a,c", q("SELECT CONCAT_WS(',', 'a', NULL, 'c')"));
+    @Test public void testConcatWsNullPropagates() {
+        // Snowflake: CONCAT_WS returns NULL when ANY value is NULL — it does not skip NULLs (MySQL does).
+        assertNull(q("SELECT CONCAT_WS(',', 'a', NULL, 'c')"));
+    }
+    @Test public void testConcatNullPropagates() {
+        // Snowflake: CONCAT returns NULL when any input is NULL — the loader idiom
+        // CONCAT(lookup.prefix, ':', NVL(x, '')) must be NULL on a missed lookup, not ':'.
+        assertNull(q("SELECT CONCAT('a', NULL, 'c')"));
+        assertNull(q("SELECT CONCAT(NULL, ':', '')"));
+        assertEquals("a:b", q("SELECT CONCAT('a', ':', 'b')"));
     }
 
     // LEN / CHAR_LENGTH / OCTET_LENGTH / BIT_LENGTH

@@ -33,8 +33,8 @@ public class MergePrimaryKeyTest {
         engine = new DatabaseEngine();
         engine.execute("CREATE DATABASE IF NOT EXISTS test_db");
         engine.execute("USE DATABASE test_db");
-        engine.execute("CREATE SCHEMA IF NOT EXISTS base_transform");
-        engine.execute("USE SCHEMA base_transform");
+        engine.execute("CREATE SCHEMA IF NOT EXISTS app");
+        engine.execute("USE SCHEMA app");
     }
 
     @AfterEach
@@ -45,7 +45,7 @@ public class MergePrimaryKeyTest {
     @Test
     public void testMergeIntoTableWithPrimaryKeyConstraint() {
         engine.execute(
-            "CREATE OR REPLACE TABLE base_transform.config_remediation_maturity_severity_bound(" +
+            "CREATE OR REPLACE TABLE app.sla_tier_bounds(" +
             "    severity_level   NUMBER(38,0) NOT NULL," +
             "    days_lower_bound NUMBER(38,0)," +
             "    days_upper_bound NUMBER(38,0)," +
@@ -54,7 +54,7 @@ public class MergePrimaryKeyTest {
         );
 
         assertDoesNotThrow(() -> engine.execute(
-            "MERGE INTO base_transform.config_remediation_maturity_severity_bound AS t " +
+            "MERGE INTO app.sla_tier_bounds AS t " +
             "USING (" +
             "    SELECT $1, $2, $3 FROM VALUES" +
             "        (1, 1, 181), (2, 30, 92), (3, 7, 62), (4, 3, 32)" +
@@ -67,13 +67,13 @@ public class MergePrimaryKeyTest {
         ), "First MERGE should insert 4 rows without duplicate key error");
 
         ResultSet rs = engine.executeQuery(
-            "SELECT COUNT(*) FROM base_transform.config_remediation_maturity_severity_bound");
+            "SELECT COUNT(*) FROM app.sla_tier_bounds");
         assertEquals(4L, ((Number) rs.getRows().get(0).getValue(0)).longValue(),
             "Table should have 4 rows after first MERGE");
 
         // Second MERGE — no changes, should not throw
         assertDoesNotThrow(() -> engine.execute(
-            "MERGE INTO base_transform.config_remediation_maturity_severity_bound AS t " +
+            "MERGE INTO app.sla_tier_bounds AS t " +
             "USING (" +
             "    SELECT $1, $2, $3 FROM VALUES" +
             "        (1, 1, 181), (2, 30, 92), (3, 7, 62), (4, 3, 32)" +
@@ -86,7 +86,7 @@ public class MergePrimaryKeyTest {
         ), "Second MERGE with same data should not throw or insert duplicates");
 
         ResultSet rs2 = engine.executeQuery(
-            "SELECT COUNT(*) FROM base_transform.config_remediation_maturity_severity_bound");
+            "SELECT COUNT(*) FROM app.sla_tier_bounds");
         assertEquals(4L, ((Number) rs2.getRows().get(0).getValue(0)).longValue(),
             "Table should still have 4 rows after second MERGE (no changes)");
     }

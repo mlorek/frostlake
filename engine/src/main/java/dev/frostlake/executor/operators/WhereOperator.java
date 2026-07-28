@@ -17,6 +17,7 @@
 package dev.frostlake.executor.operators;
 
 import dev.frostlake.executor.ExpressionEvaluator;
+import dev.frostlake.executor.expressions.SqlTruth;
 import dev.frostlake.executor.expressions.Expression;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.storage.Row;
@@ -111,13 +112,21 @@ public class WhereOperator implements Operator {
         if (context.getLateralContext() != null) {
             evaluator.setOuterLateralContext(context.getLateralContext());
         }
+        // Give the evaluator the FROM alias too (single table, so one entry): a correlated subquery in this
+        // WHERE references the outer row by that alias (WHERE t.id = s.id), and the subquery's outer-row
+        // context is assembled from the evaluator's alias map. Without it the context held only
+        // TABLENAME.col keys, the alias-qualified reference missed, and the strip-qualifier fallback bound
+        // it to the INNER table's same-named column — turning the correlation into t.id = t.id (always true).
+        if (context.getAliasToTable() != null && !context.getAliasToTable().isEmpty()) {
+            evaluator.setMultiTableContext(context.getAliasToTable(), context.getAllTables());
+        }
         // Parse the predicate once, then evaluate the AST per row.
         final Expression parsed = ExpressionEvaluator.parse(whereExpression);
         List<Row> filtered = new ArrayList<>();
 
         for (final Row row : rows) {
             Object result = evaluator.evaluate(parsed, row);
-            if (result instanceof Boolean && (Boolean) result) {
+            if (SqlTruth.isTrue(result)) {
                 filtered.add(row);
             }
         }
@@ -138,7 +147,7 @@ public class WhereOperator implements Operator {
             try {
                 // Try to evaluate with alias support
                 Object result = evaluateWithAliases(parsed, row, context);
-                if (result instanceof Boolean && (Boolean) result) {
+                if (SqlTruth.isTrue(result)) {
                     filtered.add(row);
                 }
             } catch (final Exception e) {
@@ -153,7 +162,7 @@ public class WhereOperator implements Operator {
                         context.getQueryExecutor()
                     );
                     Object result = evaluator.evaluate(parsed, row);
-                    if (result instanceof Boolean && (Boolean) result) {
+                    if (SqlTruth.isTrue(result)) {
                         filtered.add(row);
                     }
                 } catch (final Exception e2) {
@@ -184,7 +193,7 @@ public class WhereOperator implements Operator {
                 // For lateral context, we need to evaluate with outer row values
                 // This is a placeholder - full implementation would require QueryExecutor integration
                 Object result = evaluateWithAliases(parsed, row, context);
-                if (result instanceof Boolean && (Boolean) result) {
+                if (SqlTruth.isTrue(result)) {
                     filtered.add(row);
                 }
             } catch (final Exception e) {

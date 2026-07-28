@@ -79,7 +79,7 @@ public class StreamsAndTasksDemo extends AbstractDemo {
             System.out.println("Updating Bob's balance and status...");
             engine.execute("UPDATE customers SET balance = 1800, status = 'premium' WHERE customer_id = 2");
 
-            System.out.println("Deleting Charlie's account...");
+            System.out.println("Deleting Charlie's row...");
             engine.execute("DELETE FROM customers WHERE customer_id = 3");
 
             System.out.println("\nStream now contains:");

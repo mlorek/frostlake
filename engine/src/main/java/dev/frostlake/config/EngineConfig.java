@@ -68,6 +68,7 @@ public class EngineConfig {
     public static final String PROP_STAGE_S3_LOCAL_ROOT = "stage.s3.localRoot";
     public static final String PROP_STAGE_S3_LOCAL_MAPPINGS = "stage.s3.localMappings";
     public static final String PROP_STAGE_INTERNAL_LOCAL_ROOT = "stage.internal.localRoot";
+    public static final String PROP_PYTHON_VENV = "python.venv";
 
     // Default values
     private static final int DEFAULT_HTTP_PORT = 8080;
@@ -338,6 +339,16 @@ public class EngineConfig {
      */
     public String getStageS3LocalMappings() {
         return getProperty(PROP_STAGE_S3_LOCAL_MAPPINGS, "");
+    }
+
+    /**
+     * A GraalPy virtual environment whose installed packages (numpy, pandas, ...) become importable from
+     * Python UDF/procedure handlers — the local stand-in for Snowflake's {@code PACKAGES=(...)} clause.
+     * Points at the venv directory produced by the graalpy-maven-plugin ({@code <externalDirectory>/venv});
+     * empty (the default) leaves the embedded interpreter on its standard library only.
+     */
+    public String getPythonVenv() {
+        return getProperty(PROP_PYTHON_VENV, "");
     }
 
     public String getProperty(final String key, final String defaultValue) {

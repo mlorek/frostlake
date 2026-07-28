@@ -16,6 +16,7 @@
 
 package dev.frostlake.executor.expressions;
 
+import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -29,6 +30,8 @@ public class FunctionCallExpression implements Expression {
     // Parallel to arguments: the caller-supplied name for each argument (f(x => 1)), or null for a
     // positional argument. The whole list is null when the call uses only positional arguments.
     private final List<String> argumentNames;
+    // Uppercase column names to omit when a `*` argument is expanded — e.g. OBJECT_CONSTRUCT(* EXCLUDE src).
+    private List<String> starExcludes = new ArrayList<>();
 
     public FunctionCallExpression(final String functionName, final List<Expression> arguments) {
         this(functionName, arguments, false, false);
@@ -70,6 +73,15 @@ public class FunctionCallExpression implements Expression {
 
     public boolean isStar() {
         return star;
+    }
+
+    /** Uppercase column names to omit when expanding a {@code *} argument (OBJECT_CONSTRUCT(* EXCLUDE …)). */
+    public List<String> getStarExcludes() {
+        return starExcludes;
+    }
+
+    public void setStarExcludes(final List<String> starExcludes) {
+        this.starExcludes = starExcludes;
     }
 
     @Override

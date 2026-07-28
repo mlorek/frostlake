@@ -163,6 +163,37 @@ final class SubqueryEvaluator {
                 Object value = row.getValue(i);
                 context.put(table.getName() + "." + colName, value);
                 context.put(table.getName().toUpperCase() + "." + colName.toUpperCase(), value);
+                // BARE names too: a correlated subquery may reference an outer column unqualified —
+                // notably FLATTEN outputs (WHERE EXISTS (... WHERE k = VALUE:field)), which have no
+                // natural alias. The subquery's own columns still win: this context is only consulted
+                // after resolution against the inner tables has failed.
+                context.put(colName, value);
+                context.put(colName.toUpperCase(), value);
+            }
+        }
+
+        // ALIAS-qualified keys: a correlated subquery references the outer row by its FROM alias
+        // (WHERE t.id = s.id), which is not the table's name. Only TABLENAME.col keys were assembled, so the
+        // alias-qualified lookup missed and the strip-qualifier fallback bound the reference to the INNER
+        // table's same-named column — turning the correlation into t.id = t.id (always true): EXISTS matched
+        // every outer row and NOT EXISTS none. Values are read positionally; the combined row lays the
+        // tables out in allTables order, exactly as the executor's lateral join assembles it.
+        final Map<String, Table> aliasToTable = visitor.getMultiTableAliasToTable();
+        final List<Table> allTables = visitor.getMultiTableAllTables();
+        if (aliasToTable != null && allTables != null && row != null) {
+            for (final Map.Entry<String, Table> entry : aliasToTable.entrySet()) {
+                int offset = 0;
+                for (final Table t : allTables) {
+                    if (t == entry.getValue()) {
+                        break;
+                    }
+                    offset += t.getColumns().size();
+                }
+                final Table aliased = entry.getValue();
+                for (int i = 0; i < aliased.getColumns().size() && offset + i < row.getValues().size(); i++) {
+                    context.put((entry.getKey() + "." + aliased.getColumns().get(i).getName()).toUpperCase(),
+                        row.getValue(offset + i));
+                }
             }
         }
 

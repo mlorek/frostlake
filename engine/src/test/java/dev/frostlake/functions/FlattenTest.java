@@ -247,4 +247,16 @@ public class FlattenTest {
         assertNotNull(result);
         assertEquals(2, result.getRowCount());
     }
+
+    @Test
+    public void scalarValuesKeepTheirTypes() {
+        // Snowflake's FLATTEN VALUE is a typed VARIANT: a JSON boolean/number element must stay
+        // Boolean/Number, not become the string "true"/"5" (which re-quotes on re-aggregation).
+        final dev.frostlake.storage.ResultSet rs = engine.executeQuery("""
+            SELECT f.value FROM (SELECT 1 AS i),
+            LATERAL FLATTEN(input => PARSE_JSON('[true, 5, "s"]')) f ORDER BY f.index""");
+        org.junit.jupiter.api.Assertions.assertEquals(Boolean.TRUE, rs.getRows().get(0).getValue(0));
+        org.junit.jupiter.api.Assertions.assertEquals(5L, ((Number) rs.getRows().get(1).getValue(0)).longValue());
+        org.junit.jupiter.api.Assertions.assertEquals("s", rs.getRows().get(2).getValue(0));
+    }
 }

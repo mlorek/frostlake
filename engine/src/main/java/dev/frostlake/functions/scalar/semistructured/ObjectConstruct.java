@@ -46,7 +46,7 @@ public class ObjectConstruct extends BuiltInFunction {
             String key = args.get(i).toString();
             obj.set(key, ArrayFunctionHelper.toNode(ArrayFunctionHelper.MAPPER, value));
         }
-        return obj.toString();
+        return ArrayFunctionHelper.toCanonicalJson(obj);
     }
 
     @Override public int getMinArgCount() { return 0; }

@@ -34,4 +34,7 @@ public class ViewSnapshot implements Serializable {
     public boolean secure;
     // Explicit column list (CREATE VIEW v (a, b) AS …), or null when the view has none. Null on old snapshots.
     public List<String> columnNames;
+    // Attached row access policy (ALTER VIEW ... ADD ROW ACCESS POLICY p ON (cols)). Null on old snapshots.
+    public String rowAccessPolicyName;
+    public List<String> rowAccessPolicyColumns;
 }

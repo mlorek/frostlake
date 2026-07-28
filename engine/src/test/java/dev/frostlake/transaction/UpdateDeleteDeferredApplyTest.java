@@ -68,6 +68,32 @@ public class UpdateDeleteDeferredApplyTest {
     }
 
     @Test
+    public void updateFromReachesRowsBufferedInTheSameTransaction() {
+        // The staging idiom: insert into a work table and immediately join-update it in the SAME
+        // transaction (a dim loader restoring a tombstone's prior values). The UPDATE…FROM path
+        // iterated only committed base rows, so the buffered rows were silently never updated.
+        engine.execute("CREATE TABLE src (id INTEGER, v VARCHAR)");
+        engine.execute("INSERT INTO src VALUES (7, 'joined')");
+        engine.execute("BEGIN");
+        engine.execute("INSERT INTO t VALUES (7, NULL)");
+        engine.execute("UPDATE t tt SET v = s.v FROM src s WHERE tt.id = s.id");
+        engine.execute("COMMIT");
+        assertEquals("joined", vWhereId(7));
+    }
+
+    @Test
+    public void deleteUsingReachesRowsBufferedInTheSameTransaction() {
+        engine.execute("CREATE TABLE src (id INTEGER, v VARCHAR)");
+        engine.execute("INSERT INTO src VALUES (7, 'x')");
+        engine.execute("BEGIN");
+        engine.execute("INSERT INTO t VALUES (7, 'doomed'), (8, 'stays')");
+        engine.execute("DELETE FROM t AS tt USING (SELECT id FROM src) AS s WHERE tt.id = s.id");
+        engine.execute("COMMIT");
+        assertEquals(0, count("WHERE id = 7"));
+        assertEquals(1, count("WHERE id = 8"));
+    }
+
+    @Test
     public void updateRollbackRestoresOriginal() {
         engine.setAutoCommit(false);
         engine.execute("UPDATE t SET v = 'X' WHERE id = 1");
@@ -125,5 +151,22 @@ public class UpdateDeleteDeferredApplyTest {
         engine.setAutoCommit(true);
         assertEquals(0, count("WHERE id = 6"));
         assertEquals(2, count(""));   // back to the two seed rows
+    }
+
+    @Test
+    public void mergeSourceSeesRowsBufferedInTheSameTransaction() {
+        // The stage-then-merge loader idiom: a stage table is populated and MERGEd from within ONE
+        // transaction. The merge's source read was a raw storage scan, blind to the buffered stage
+        // rows, so the merge silently did nothing.
+        engine.execute("CREATE TABLE stage (id INTEGER, v VARCHAR)");
+        engine.execute("CREATE TABLE dim (id INTEGER, v VARCHAR)");
+        engine.execute("BEGIN");
+        engine.execute("INSERT INTO stage VALUES (1, 'a'), (2, 'b')");
+        engine.execute("""
+            MERGE INTO dim d USING stage s ON d.id = s.id
+            WHEN MATCHED THEN UPDATE SET d.v = s.v
+            WHEN NOT MATCHED THEN INSERT (id, v) VALUES (s.id, s.v)""");
+        engine.execute("COMMIT");
+        assertEquals(2, engine.executeQuery("SELECT id FROM dim").getRowCount());
     }
 }

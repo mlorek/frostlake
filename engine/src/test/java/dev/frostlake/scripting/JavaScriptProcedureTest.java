@@ -21,6 +21,7 @@ import dev.frostlake.executor.udf.JavaScriptProcedureExecutor;
 import dev.frostlake.metastore.model.Parameter;
 import dev.frostlake.metastore.model.Procedure;
 import dev.frostlake.metastore.model.Schema;
+import dev.frostlake.storage.ResultSet;
 import dev.frostlake.types.ObjectType;
 import dev.frostlake.types.StringType;
 import org.junit.jupiter.api.AfterEach;
@@ -107,6 +108,80 @@ public class JavaScriptProcedureTest {
         assertNotNull(result, "Result should not be null");
         logger.info("Result: {}", result);
         assertEquals(42L, ((Number) result).longValue());
+    }
+
+    @Test
+    public void testSnowflakeCreateStatementExecute() {
+        logger.info("Testing the standard snowflake.createStatement().execute() API");
+
+        final List<Parameter> parameters = new ArrayList<>();
+        parameters.add(new Parameter("dummy", StringType.VARCHAR));
+
+        // The two-step form real Snowflake JS procedures use: createStatement -> execute; the statement
+        // also exposes column metadata (count/name), as ADD_DML reads it.
+        final String body = """
+            var stmt = snowflake.createStatement({sqlText: "SELECT 7 AS num"});
+            var rs = stmt.execute();
+            rs.next();
+            return "" + rs.getColumnValue(1) + "|" + stmt.getColumnCount() + "|" + stmt.getColumnName(1);
+            """;
+
+        final Procedure proc = new Procedure("cs_proc", parameters, ObjectType.OBJECT, body, "JAVASCRIPT");
+        final Object result = JavaScriptProcedureExecutor.executeJavaScriptProcedure(
+            proc, Arrays.asList("x"), engine);
+
+        assertEquals("7|1|NUM", String.valueOf(result));
+    }
+
+    @Test
+    public void testSnowflakeCreateStatementWithBinds() {
+        logger.info("Testing snowflake.createStatement with positional ? binds");
+
+        final List<Parameter> parameters = new ArrayList<>();
+        parameters.add(new Parameter("dummy", StringType.VARCHAR));
+
+        final String body = """
+            var stmt = snowflake.createStatement({sqlText: "SELECT ? + ? AS total", binds: [40, 2]});
+            var rs = stmt.execute();
+            rs.next();
+            return rs.getColumnValue(1);
+            """;
+
+        final Procedure proc = new Procedure("bind_proc", parameters, ObjectType.OBJECT, body, "JAVASCRIPT");
+        final Object result = JavaScriptProcedureExecutor.executeJavaScriptProcedure(
+            proc, Arrays.asList("x"), engine);
+
+        assertEquals(42L, ((Number) result).longValue());
+    }
+
+    @Test
+    public void testObjectParamSurvivesNestedCreateStatement() {
+        logger.info("An OBJECT param stays live across a nested createStatement().execute() (the ADD_DML shape)");
+
+        final List<Parameter> parameters = new ArrayList<>();
+        parameters.add(new Parameter("so", ObjectType.OBJECT));
+
+        // Mirrors ADD_DML: a nested query runs, then the OBJECT param is mutated — it must not be clobbered.
+        final String body = """
+            try {
+                var stmt = snowflake.createStatement({sqlText: "SELECT 1 AS a"});
+                var rs = stmt.execute();
+                rs.next();
+                so.dml_stats.copy.push({rows: rs.getColumnValue(1)});
+                return so;
+            } catch (ex) {
+                so.dml_error = {err: ex.toString()};
+                return so;
+            }
+            """;
+
+        final Procedure proc = new Procedure("add_dml_like", parameters, ObjectType.OBJECT, body, "JAVASCRIPT");
+        final Object result = JavaScriptProcedureExecutor.executeJavaScriptProcedure(
+            proc, Arrays.asList("{\"dml_stats\": {\"copy\": []}}"), engine);
+
+        final String json = String.valueOf(result);
+        assertTrue(json.contains("\"rows\"") && !json.contains("dml_error"),
+            "the nested query result should be pushed onto the live object, with no error: " + json);
     }
 
     @Test
@@ -364,5 +439,68 @@ public class JavaScriptProcedureTest {
 
         assertEquals("SQL", sqlProc.getLanguage());
         assertEquals("JAVASCRIPT", jsProc.getLanguage());
+    }
+
+    @Test
+    public void testObjectParameterIsNativeJsObject() {
+        // Snowflake exposes an OBJECT argument as a native JS object, so the body can set/read properties.
+        // (Regression: Frostlake used to bind it as a JSON string, so `so.x = 1` threw / was lost.)
+        engine.execute("""
+            CREATE OR REPLACE PROCEDURE js_obj_prop("SO" OBJECT)
+            RETURNS VARCHAR
+            LANGUAGE JAVASCRIPT
+            AS $$
+                SO.added = 9;
+                return (typeof SO) + ':' + SO.a + ':' + SO.added;
+            $$
+            """);
+        final ResultSet rs = engine.executeQuery("CALL js_obj_prop(OBJECT_CONSTRUCT('a', 1))");
+        assertEquals("object:1:9", String.valueOf(rs.getRows().get(0).getValue(0)));
+    }
+
+    @Test
+    public void testObjectReturnRoundTripsAsJson() {
+        // A JS object returned from a procedure must come back as a Frostlake OBJECT (valid JSON), so a
+        // caller can read its fields with the variant-path operator.
+        engine.execute("""
+            CREATE OR REPLACE PROCEDURE js_ret_obj("SO" OBJECT)
+            RETURNS OBJECT
+            LANGUAGE JAVASCRIPT
+            AS $$
+                SO.extra = 5;
+                return SO;
+            $$
+            """);
+        engine.execute("""
+            CREATE OR REPLACE PROCEDURE js_ret_caller()
+            RETURNS VARCHAR
+            LANGUAGE SQL
+            AS $$
+            DECLARE res OBJECT;
+            BEGIN
+                res := (CALL js_ret_obj(OBJECT_CONSTRUCT('a', 1)));
+                RETURN res:extra::VARCHAR || '/' || res:a::VARCHAR;
+            END
+            $$
+            """);
+        final ResultSet rs = engine.executeQuery("CALL js_ret_caller()");
+        assertEquals("5/1", String.valueOf(rs.getRows().get(0).getValue(0)));
+    }
+
+    @Test
+    public void testArrayParameterSupportsPush() {
+        // An ARRAY argument is a native JS array (so .push works); the returned array round-trips as JSON.
+        engine.execute("""
+            CREATE OR REPLACE PROCEDURE js_arr_push("A" ARRAY)
+            RETURNS ARRAY
+            LANGUAGE JAVASCRIPT
+            AS $$
+                A.push(99);
+                return A;
+            $$
+            """);
+        final ResultSet rs = engine.executeQuery("CALL js_arr_push(ARRAY_CONSTRUCT(1, 2))");
+        final String out = String.valueOf(rs.getRows().get(0).getValue(0)).replaceAll("\\s", "");
+        assertEquals("[1,2,99]", out);
     }
 }

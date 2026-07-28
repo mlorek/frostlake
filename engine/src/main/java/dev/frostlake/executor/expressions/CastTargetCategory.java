@@ -22,7 +22,7 @@ package dev.frostlake.executor.expressions;
  * the raw type (e.g. {@code NUMBER(10,2)}) is applied separately, so this is only the dispatch category.
  */
 enum CastTargetCategory {
-    INTEGER, FLOAT, DECIMAL, STRING, BOOLEAN, BINARY;
+    INTEGER, FLOAT, DECIMAL, STRING, BOOLEAN, BINARY, ARRAY, OBJECT;
 
     /** Classify a cast target's base type name (uppercased, without any precision/scale); null if unhandled. */
     static CastTargetCategory fromTypeName(final String baseType) {
@@ -33,6 +33,8 @@ enum CastTargetCategory {
             case "VARCHAR": case "STRING": case "TEXT": return STRING;
             case "BOOLEAN": return BOOLEAN;
             case "BINARY": case "VARBINARY": return BINARY;
+            case "ARRAY": return ARRAY;
+            case "OBJECT": return OBJECT;
             default: return null;
         }
     }

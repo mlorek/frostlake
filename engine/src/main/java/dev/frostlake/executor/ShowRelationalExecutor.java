@@ -245,7 +245,8 @@ final class ShowRelationalExecutor {
                     dbName, scName,
                     view.getOwner(),
                     view.getComment(),
-                    view.getDefinition(),
+                    // Snowflake's text column carries the view's full CREATE statement.
+                    view.ddl(scName + "." + view.getName()),
                     view.isSecure() ? "Y" : "N", "N"
                 )));
             }
@@ -284,7 +285,8 @@ final class ShowRelationalExecutor {
                     dbName, scName,
                     mv.getOwner(),
                     mv.getComment(),
-                    mv.getDefinition(),
+                    // Snowflake's text column carries the materialized view's full CREATE statement.
+                    mv.ddl(scName + "." + mv.getName()),
                     mv.isSecure() ? "Y" : "N"
                 )));
             }

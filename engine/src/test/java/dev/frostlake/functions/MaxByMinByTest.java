@@ -68,4 +68,25 @@ public class MaxByMinByTest extends BaseDatabaseTest {
         assertNull(engine.executeQuery("SELECT MAX_BY(name, score) FROM nk").getRows().get(0).getValue(0));
         assertNull(engine.executeQuery("SELECT MIN_BY(name, score) FROM nk").getRows().get(0).getValue(0));
     }
+
+    @Test
+    public void boundedThreeArgumentFormReturnsOrderedArray() {
+        // MIN_BY(v, k, N) → ARRAY of up to N values by ascending key; MAX_BY descending.
+        engine.execute("CREATE TABLE cp (g INTEGER, ref VARCHAR)");
+        engine.execute("INSERT INTO cp VALUES (1,'ref:2.0:b'),(1,'ref:1.0:a'),(1,'ref:3.0:c')");
+        final ResultSet rs = engine.executeQuery(
+            "SELECT MIN_BY(ref, ref, 2), MAX_BY(ref, ref, 100) FROM cp GROUP BY g");
+        assertEquals("[\"ref:1.0:a\",\"ref:2.0:b\"]", String.valueOf(cell(rs, 0, 0)));
+        assertEquals("[\"ref:3.0:c\",\"ref:2.0:b\",\"ref:1.0:a\"]", String.valueOf(cell(rs, 0, 1)));
+    }
+
+    @Test
+    public void boundedFormWithDistinctDedupsValues() {
+        // The software-aggregation idiom: MIN_BY(DISTINCT ref, ref, 100) over duplicated rows.
+        engine.execute("CREATE TABLE cpd (g INTEGER, ref VARCHAR)");
+        engine.execute("INSERT INTO cpd VALUES (1,'ref:1.0:a'),(1,'ref:1.0:a'),(1,'ref:2.0:b')");
+        final ResultSet rs = engine.executeQuery(
+            "SELECT MIN_BY(DISTINCT ref, ref, 100) FROM cpd GROUP BY g");
+        assertEquals("[\"ref:1.0:a\",\"ref:2.0:b\"]", String.valueOf(cell(rs, 0, 0)));
+    }
 }

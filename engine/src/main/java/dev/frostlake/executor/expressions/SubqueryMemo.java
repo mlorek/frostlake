@@ -29,7 +29,7 @@ import java.util.Set;
  * <em>uncorrelated</em> if its execution reads no outer (lateral) value — in which case its result is
  * identical for every outer row, so it can be executed once and reused instead of re-executed per row.
  *
- * <p>Correlation is classified by observation: {@link ExpressionEvaluatorVisitor} counts actual
+ * <p>Correlation is classified empirically: {@link ExpressionEvaluatorVisitor} counts actual
  * lateral-value reads, and a subquery whose first execution reads zero is provably row-independent
  * (any branch decision that depended on an outer value would itself have read one). The classification
  * is therefore exact and conservative — anything that touches the outer context is treated as

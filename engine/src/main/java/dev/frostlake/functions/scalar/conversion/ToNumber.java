@@ -32,9 +32,9 @@ public class ToNumber extends BuiltInFunction {
         if (args.get(0) == null) return null;
         BigDecimal value = parseNumeric(args.get(0));
         final Integer scale = targetScale(args);
-        if (scale != null) {
-            value = value.setScale(scale, RoundingMode.HALF_UP);
-        }
+        // Snowflake TO_NUMBER / TO_DECIMAL / TO_NUMERIC default to NUMBER(38,0): with no explicit scale the
+        // result is a whole number (e.g. TO_NUMBER(405.958) -> 406), rounded HALF_UP.
+        value = value.setScale(scale != null ? scale : 0, RoundingMode.HALF_UP);
         return value;
     }
 
@@ -50,12 +50,14 @@ public class ToNumber extends BuiltInFunction {
     }
 
     /**
-     * The target scale of a TO_NUMBER(expr [, format] [, precision, scale]) call: when the trailing
-     * arguments include two integers (precision, scale), the second is the scale and the value is
-     * rounded to it. Precision itself is not enforced; a lone format string / precision has no scale.
+     * The target scale of a TO_NUMBER(expr [, format] [, precision, scale]) call, or {@code null} when the
+     * call carries no scale information (caller then defaults to 0, matching NUMBER(38,0)): when the trailing
+     * arguments include two integers (precision, scale), the second is the scale; otherwise a format string
+     * (e.g. '9,999.99') implies a scale equal to its fractional digit count. Precision itself is not enforced.
      */
     private Integer targetScale(final List<Object> args) {
         final List<Integer> integerArgs = new ArrayList<>();
+        String format = null;
         for (int i = 1; i < args.size(); i++) {
             final Object a = args.get(i);
             if (a instanceof Number) {
@@ -63,9 +65,32 @@ public class ToNumber extends BuiltInFunction {
                 if (!Double.isInfinite(d) && d == Math.floor(d)) {
                     integerArgs.add((int) d);
                 }
+            } else if (a != null && format == null) {
+                format = a.toString();
             }
         }
-        return integerArgs.size() >= 2 ? integerArgs.get(integerArgs.size() - 1) : null;
+        if (integerArgs.size() >= 2) {
+            return integerArgs.get(integerArgs.size() - 1);
+        }
+        if (format != null) {
+            return scaleFromFormat(format);
+        }
+        return null;
+    }
+
+    /** Scale implied by a numeric format model: the count of digit placeholders after its decimal point. */
+    private Integer scaleFromFormat(final String format) {
+        final int dot = format.indexOf('.');
+        if (dot < 0) {
+            return 0;
+        }
+        int count = 0;
+        for (final char ch : format.substring(dot + 1).toCharArray()) {
+            if (ch == '0' || ch == '9') {
+                count++;
+            }
+        }
+        return count;
     }
 
     @Override public int getMinArgCount() { return 1; }

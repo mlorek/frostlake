@@ -273,4 +273,90 @@ public class NestedBeginEndBlockTest {
         assertEquals(3, ((Number) rs.getRows().get(3).getValue(0)).intValue());
         assertEquals(3L, ((Number) rs.getRows().get(3).getValue(1)).longValue());
     }
+
+    // ---- RETURN from inside a nested BEGIN...END block ----
+    // A RETURN in a nested block used to be swallowed (the nested block handler consumed the return and
+    // wrapped it into a result the enclosing block discarded), so the procedure returned nothing and the
+    // CALL result had 0 rows ("Index 0 out of bounds for length 0").
+
+    private String callScalar(final String sql) {
+        return String.valueOf(engine.executeQuery(sql).getRows().get(0).getValue(0));
+    }
+
+    @Test
+    public void testReturnFromNestedBlock() {
+        logger.info("Testing RETURN from a nested BEGIN...END block");
+        engine.execute("""
+            CREATE OR REPLACE PROCEDURE p_nested_ret() RETURNS STRING LANGUAGE SQL AS $$
+            BEGIN
+                BEGIN
+                    RETURN 'inner';
+                END;
+            END $$""");
+        assertEquals("inner", callScalar("CALL p_nested_ret()"));
+    }
+
+    @Test
+    public void testReturnFromNestedBlockWithDeclare() {
+        logger.info("Testing RETURN of a computed value from a nested block with its own DECLARE");
+        engine.execute("""
+            CREATE OR REPLACE PROCEDURE p_nested_decl_ret() RETURNS STRING LANGUAGE SQL AS $$
+            BEGIN
+                DECLARE a STRING := 'x';
+                BEGIN
+                    a := a || 'y';
+                    RETURN :a;
+                END;
+            END $$""");
+        assertEquals("xy", callScalar("CALL p_nested_decl_ret()"));
+    }
+
+    @Test
+    public void testReturnFromExceptionHandlerNestedBlock() {
+        logger.info("Testing RETURN from a nested block inside an exception handler");
+        engine.execute("""
+            CREATE OR REPLACE PROCEDURE p_handler_ret() RETURNS STRING LANGUAGE SQL AS $$
+            DECLARE ex EXCEPTION (-20002, 'boom');
+            BEGIN
+                RAISE ex;
+            EXCEPTION WHEN OTHER THEN
+                DECLARE msg STRING := 'caught';
+                BEGIN
+                    RETURN :msg;
+                END;
+            END $$""");
+        assertEquals("caught", callScalar("CALL p_handler_ret()"));
+    }
+
+    @Test
+    public void testReturnFromDeeplyNestedBlock() {
+        logger.info("Testing RETURN from a 3-level-deep nested block");
+        engine.execute("""
+            CREATE OR REPLACE PROCEDURE p_deep_ret() RETURNS INTEGER LANGUAGE SQL AS $$
+            BEGIN
+                BEGIN
+                    BEGIN
+                        RETURN 42;
+                    END;
+                END;
+            END $$""");
+        assertEquals(42, ((Number) engine.executeQuery("CALL p_deep_ret()").getRows().get(0).getValue(0)).intValue());
+    }
+
+    @Test
+    public void testStatementsAfterNestedReturnedBlockDoNotRun() {
+        logger.info("Testing that a RETURN in a nested block stops the enclosing block");
+        engine.execute("CREATE TABLE after_ret (v INTEGER)");
+        engine.execute("""
+            CREATE OR REPLACE PROCEDURE p_stop() RETURNS STRING LANGUAGE SQL AS $$
+            BEGIN
+                BEGIN
+                    RETURN 'done';
+                END;
+                INSERT INTO after_ret VALUES (1);
+            END $$""");
+        assertEquals("done", callScalar("CALL p_stop()"));
+        // The INSERT after the nested block must NOT have run — the RETURN stopped the enclosing block.
+        assertEquals(0L, ((Number) engine.executeQuery("SELECT COUNT(*) FROM after_ret").getRows().get(0).getValue(0)).longValue());
+    }
 }

@@ -16,6 +16,7 @@
 
 package dev.frostlake.jdbc;
 
+import dev.frostlake.executor.SqlStringLiterals;
 import dev.frostlake.executor.SqlTokens;
 import dev.frostlake.parser.FrostlakeLexer;
 import java.io.IOException;
@@ -341,8 +342,7 @@ public final class JdbcMarshaling {
         if (value instanceof Object[]) {
             return formatLiteral(java.util.Arrays.asList((Object[]) value));
         }
-        final String s = value.toString();
-        return "'" + s.replace("\\", "\\\\").replace("'", "''") + "'";
+        return SqlStringLiterals.encode(value.toString());
     }
 
     /** Count the {@code ?} placeholders in {@code sql}, skipping any inside single-quoted string literals. */

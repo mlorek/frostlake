@@ -17,6 +17,7 @@
 package dev.frostlake.functions.scalar.string;
 
 import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.types.StringType;
 
 import java.util.List;
@@ -27,15 +28,23 @@ public class ConcatWs extends BuiltInFunction {
     @Override
     public Object evaluate(final List<Object> args) {
         if (args.isEmpty()) return "";
-        String sep = args.get(0) == null ? "" : args.get(0).toString();
-        StringBuilder result = new StringBuilder();
+        // Snowflake: CONCAT_WS returns NULL if the separator or ANY value is NULL (it does not skip
+        // NULLs the way MySQL does).
+        if (args.get(0) == null) {
+            return null;
+        }
+        final String sep = args.get(0).toString();
+        final StringBuilder result = new StringBuilder();
         boolean first = true;
         for (int i = 1; i < args.size(); i++) {
-            if (args.get(i) != null) {
-                if (!first) result.append(sep);
-                result.append(args.get(i).toString());
-                first = false;
+            if (args.get(i) == null) {
+                return null;
             }
+            if (!first) {
+                result.append(sep);
+            }
+            result.append(SharedFunctionHelpers.textOf(args.get(i)));
+            first = false;
         }
         return result.toString();
     }

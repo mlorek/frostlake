@@ -16,6 +16,8 @@
 
 package dev.frostlake.executor.expressions;
 
+import dev.frostlake.functions.scalar.SharedFunctionHelpers;
+import java.time.LocalTime;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -31,12 +33,64 @@ final class ExpressionArithmetic {
     private ExpressionArithmetic() {
     }
 
+    /**
+     * A value as a number for an arithmetic context, coercing a numeric VARCHAR the way Snowflake does
+     * ({@code '3' + 1} is 4, {@code -'3'} is -3 — string concatenation is {@code ||}, never {@code +}).
+     * Returns null when the value is neither a number nor a numeric string, so the caller can report its own
+     * type error; a non-numeric string is therefore still an error rather than silently zero.
+     */
+    static Number asNumber(final Object value) {
+        if (value instanceof Number) {
+            return (Number) value;
+        }
+        if (value instanceof CharSequence) {
+            final String text = value.toString().trim();
+            if (!text.isEmpty()) {
+                try {
+                    return new BigDecimal(text);
+                } catch (final NumberFormatException notNumeric) {
+                    return null;
+                }
+            }
+        }
+        return null;
+    }
+
+    /**
+     * The two operands as numbers when at least one of them is a numeric STRING that needed coercion (so an
+     * arithmetic operator can retry), else null. Restricting it to a text operand keeps every other type
+     * combination — temporal, interval, variant — on its existing path.
+     */
+    private static Number[] coerceTextOperands(final Object left, final Object right) {
+        if (!(left instanceof CharSequence) && !(right instanceof CharSequence)) {
+            return null;
+        }
+        final Number leftNumber = asNumber(left);
+        final Number rightNumber = asNumber(right);
+        if (leftNumber == null || rightNumber == null) {
+            return null;
+        }
+        return new Number[] {leftNumber, rightNumber};
+    }
+
     static boolean isTrue(final Object value) {
         if (value == null) {
             return false;
         }
         if (value instanceof Boolean) {
             return (Boolean) value;
+        }
+        // Snowflake implicitly coerces in boolean position: a VARCHAR via TO_BOOLEAN's text forms
+        // (a bare `WHERE is_direct` over a VARCHAR column holding 'true' filters as a predicate —
+        // the relationship-loader idiom), a number as zero/non-zero. An unrecognized string is
+        // FALSE here (Snowflake raises; the engine stays lenient as elsewhere).
+        if (value instanceof String) {
+            final String text = ((String) value).trim().toLowerCase();
+            return text.equals("true") || text.equals("t") || text.equals("yes")
+                || text.equals("y") || text.equals("on") || text.equals("1");
+        }
+        if (value instanceof Number) {
+            return new BigDecimal(value.toString()).compareTo(BigDecimal.ZERO) != 0;
         }
         return false;
     }
@@ -70,6 +124,11 @@ final class ExpressionArithmetic {
             if (other instanceof Number) {
                 return addDays(temporal, ((Number) other).longValue());
             }
+        }
+        // Retry with a numeric VARCHAR coerced to a number (Snowflake's implicit conversion).
+        final Number[] addCoerced = coerceTextOperands(left, right);
+        if (addCoerced != null) {
+            return add(addCoerced[0], addCoerced[1]);
         }
         throw new RuntimeException("Cannot add: " + left + " + " + right);
     }
@@ -105,6 +164,11 @@ final class ExpressionArithmetic {
                 }
                 return ChronoUnit.DAYS.between(rightTemporal, leftTemporal);
             }
+        }
+        // Retry with a numeric VARCHAR coerced to a number (Snowflake's implicit conversion).
+        final Number[] subtractCoerced = coerceTextOperands(left, right);
+        if (subtractCoerced != null) {
+            return subtract(subtractCoerced[0], subtractCoerced[1]);
         }
         throw new RuntimeException("Cannot subtract: " + left + " - " + right);
     }
@@ -212,6 +276,11 @@ final class ExpressionArithmetic {
             // Otherwise, use BigDecimal for precision
             return new BigDecimal(left.toString()).multiply(new BigDecimal(right.toString()));
         }
+        // Retry with a numeric VARCHAR coerced to a number (Snowflake's implicit conversion).
+        final Number[] multiplyCoerced = coerceTextOperands(left, right);
+        if (multiplyCoerced != null) {
+            return multiply(multiplyCoerced[0], multiplyCoerced[1]);
+        }
         throw new RuntimeException("Cannot multiply: " + left + " * " + right);
     }
 
@@ -224,15 +293,39 @@ final class ExpressionArithmetic {
             if (divisor == 0.0) {
                 throw new RuntimeException("Division by zero");
             }
-            // Use double division for integer operands, BigDecimal for others
+            final BigDecimal quotient = SharedFunctionHelpers.divideWithSnowflakeScale(new BigDecimal(left.toString()), new BigDecimal(right.toString()));
+            // Integer operands historically produced a double; keep the runtime type, now at Snowflake's
+            // six-digit division scale (0.333333, not 0.3333333333333333).
             if (isIntegerType(left) && isIntegerType(right)) {
-                return ((Number) left).doubleValue() / divisor;
+                return quotient.doubleValue();
             }
-            // For BigDecimal operands, use BigDecimal division for precision
-            BigDecimal bdDivisor = new BigDecimal(right.toString());
-            return new BigDecimal(left.toString()).divide(bdDivisor, 10, BigDecimal.ROUND_HALF_UP);
+            return quotient;
+        }
+        // Retry with a numeric VARCHAR coerced to a number (Snowflake's implicit conversion).
+        final Number[] divideCoerced = coerceTextOperands(left, right);
+        if (divideCoerced != null) {
+            return divide(divideCoerced[0], divideCoerced[1]);
         }
         throw new RuntimeException("Cannot divide: " + left + " / " + right);
+    }
+
+    static Object modulo(final Object left, final Object right) {
+        if (left == null || right == null) {
+            return null;
+        }
+        if (left instanceof Number && right instanceof Number) {
+            if (((Number) right).doubleValue() == 0.0) {
+                throw new RuntimeException("Division by zero");
+            }
+            // Integer operands → an exact integer remainder. Snowflake's % / MOD take the sign of the
+            // dividend (like Java's %), so no adjustment is needed.
+            if (isIntegerType(left) && isIntegerType(right)) {
+                return ((Number) left).longValue() % ((Number) right).longValue();
+            }
+            // Otherwise use BigDecimal.remainder (also dividend-signed) for precision.
+            return new BigDecimal(left.toString()).remainder(new BigDecimal(right.toString()));
+        }
+        throw new RuntimeException("Cannot compute modulo: " + left + " % " + right);
     }
 
     private static boolean isIntegerType(final Object value) {
@@ -249,6 +342,18 @@ final class ExpressionArithmetic {
         if (left instanceof Number && right instanceof Number) {
             return new BigDecimal(left.toString()).compareTo(new BigDecimal(right.toString())) == 0;
         }
+        final Integer booleanNumeric = booleanVsNumber(left, right);
+        if (booleanNumeric != null) {
+            return booleanNumeric == 0;
+        }
+        final Integer temporal = temporalVsString(left, right);
+        if (temporal != null) {
+            return temporal == 0;
+        }
+        final Integer numeric = numberVsString(left, right);
+        if (numeric != null) {
+            return numeric == 0;
+        }
         return left.toString().equals(right.toString());
     }
 
@@ -259,7 +364,87 @@ final class ExpressionArithmetic {
         if (left instanceof Number && right instanceof Number) {
             return new BigDecimal(left.toString()).compareTo(new BigDecimal(right.toString()));
         }
+        final Integer booleanNumeric = booleanVsNumber(left, right);
+        if (booleanNumeric != null) {
+            return booleanNumeric;
+        }
+        final Integer temporal = temporalVsString(left, right);
+        if (temporal != null) {
+            return temporal;
+        }
+        final Integer numeric = numberVsString(left, right);
+        if (numeric != null) {
+            return numeric;
+        }
         return left.toString().compareTo(right.toString());
+    }
+
+    /**
+     * A BOOLEAN compared against a NUMBER, per Snowflake's implicit numeric-to-boolean coercion (0 is FALSE,
+     * any non-zero number is TRUE) — {@code 1 = TRUE} is TRUE. Returns the comparison result with FALSE
+     * ordering before TRUE, or null when the pair is not a boolean-number combination.
+     */
+    private static Integer booleanVsNumber(final Object left, final Object right) {
+        if (left instanceof Boolean && right instanceof Number) {
+            return Boolean.compare((Boolean) left, new BigDecimal(right.toString()).signum() != 0);
+        }
+        if (left instanceof Number && right instanceof Boolean) {
+            return Boolean.compare(new BigDecimal(left.toString()).signum() != 0, (Boolean) right);
+        }
+        return null;
+    }
+
+    /**
+     * A temporal compared against a string: parse the string to the temporal's own kind and compare by TIME
+     * VALUE, as Snowflake's implicit coercion does — {@code ts = '2024-11-26 04:43:38.604'} is TRUE. Comparing
+     * the toString texts instead made every such predicate false (T separator, dropped fraction zeros).
+     * Returns null when the shapes don't match or the string doesn't parse, so callers keep the text path.
+     */
+    private static Integer temporalVsString(final Object left, final Object right) {
+        try {
+            if (left instanceof LocalDateTime && right instanceof CharSequence) {
+                return ((LocalDateTime) left).compareTo(SharedFunctionHelpers.toLocalDateTime(right.toString()));
+            }
+            if (right instanceof LocalDateTime && left instanceof CharSequence) {
+                return SharedFunctionHelpers.toLocalDateTime(left.toString()).compareTo((LocalDateTime) right);
+            }
+            if (left instanceof LocalDate && right instanceof CharSequence) {
+                return ((LocalDate) left).compareTo(SharedFunctionHelpers.toLocalDate(right.toString()));
+            }
+            if (right instanceof LocalDate && left instanceof CharSequence) {
+                return SharedFunctionHelpers.toLocalDate(left.toString()).compareTo((LocalDate) right);
+            }
+            if (left instanceof LocalTime && right instanceof CharSequence) {
+                return ((LocalTime) left).compareTo(SharedFunctionHelpers.toLocalTime(right.toString()));
+            }
+            if (right instanceof LocalTime && left instanceof CharSequence) {
+                return SharedFunctionHelpers.toLocalTime(left.toString()).compareTo((LocalTime) right);
+            }
+        } catch (final RuntimeException notATemporalString) {
+            return null;
+        }
+        return null;
+    }
+
+    /**
+     * A number compared against a string: Snowflake implicitly coerces the VARCHAR side to a number —
+     * {@code 999001 = '999001'} is TRUE (the idiom appears in loaders whose staging tables re-declare a
+     * NUMBER key as VARCHAR and then join back to the numeric original). Two strings never coerce
+     * ({@code '01' = '1'} stays a text comparison). Returns null when the string is not numeric, keeping
+     * the caller's text path — Snowflake would raise there; the engine stays lenient as before.
+     */
+    private static Integer numberVsString(final Object left, final Object right) {
+        try {
+            if (left instanceof Number && right instanceof CharSequence) {
+                return new BigDecimal(left.toString()).compareTo(new BigDecimal(right.toString().trim()));
+            }
+            if (right instanceof Number && left instanceof CharSequence) {
+                return new BigDecimal(left.toString().trim()).compareTo(new BigDecimal(right.toString()));
+            }
+        } catch (final NumberFormatException notANumericString) {
+            return null;
+        }
+        return null;
     }
 
     static Object negate(final Number value) {

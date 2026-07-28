@@ -49,6 +49,21 @@ public class DirectResultSet implements java.sql.ResultSet {
     private final Map<String, Object> insertRowValues;
     private boolean onInsertRow = false;
 
+    /**
+     * Run one of this result set's write-back statements (updateRow/insertRow/deleteRow) under the
+     * owning connection's session scope, so its unqualified table name resolves exactly as the query
+     * that produced these rows did; falls back to the raw engine when the owner is not a direct
+     * connection (embedded callers).
+     */
+    private void executeWriteback(final String sql) throws SQLException {
+        final java.sql.Connection owner = statement != null ? statement.getConnection() : null;
+        if (owner instanceof DirectConnection) {
+            ((DirectConnection) owner).executeScoped(sql);
+            return;
+        }
+        engine.execute(sql);
+    }
+
     public DirectResultSet(final Statement statement, final ResultSet engineResultSet) {
         this(statement, engineResultSet, null, null, null);
     }
@@ -896,7 +911,7 @@ public class DirectResultSet implements java.sql.ResultSet {
         sql.append(values);
 
         // Execute INSERT
-        engine.execute(sql.toString());
+        executeWriteback(sql.toString());
 
         // Clear insert row values
         insertRowValues.clear();
@@ -940,7 +955,7 @@ public class DirectResultSet implements java.sql.ResultSet {
         }
 
         // Execute UPDATE
-        engine.execute(sql.toString());
+        executeWriteback(sql.toString());
 
         // Update current row values with updated values
         currentRowValues.putAll(updatedValues);
@@ -974,7 +989,7 @@ public class DirectResultSet implements java.sql.ResultSet {
         }
 
         // Execute DELETE
-        engine.execute(sql.toString());
+        executeWriteback(sql.toString());
     }
 
     @Override

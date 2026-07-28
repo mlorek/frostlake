@@ -16,23 +16,29 @@
 
 package dev.frostlake.executor;
 
+import dev.frostlake.executor.expressions.AstPrinterVisitor;
+import dev.frostlake.executor.expressions.ColumnReferenceExpression;
 import dev.frostlake.executor.expressions.Expression;
 import dev.frostlake.executor.operators.AggregateEvaluator;
 import dev.frostlake.executor.operators.GroupByOperator;
 import dev.frostlake.executor.operators.OperatorContext;
 import dev.frostlake.executor.operators.RowExpressionEvaluator;
 import dev.frostlake.functions.AggregateFunction;
+import dev.frostlake.functions.aggregate.AggregateNumerics;
 import dev.frostlake.functions.aggregate.ApproxPercentileAccumulator;
 import dev.frostlake.functions.aggregate.Corr;
 import dev.frostlake.functions.aggregate.CovarAccumulator;
 import dev.frostlake.functions.aggregate.ListAggAccumulator;
 import dev.frostlake.functions.aggregate.MaxByMinByAccumulator;
+import dev.frostlake.functions.aggregate.ObjectAggAccumulator;
 import dev.frostlake.functions.aggregate.RegrAccumulator;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.storage.Row;
+import org.antlr.v4.runtime.tree.ParseTree;
 import java.math.BigDecimal;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -57,49 +63,87 @@ final class GroupByAggregateEvaluator {
         this.executor = executor;
     }
 
+    /**
+     * The item's column alias — its lateral-alias name, the one a LATER item of the same SELECT list may
+     * reference — or null when it has none. Star-shaped items never carry one.
+     */
+    private static String selectItemAlias(final FrostlakeParser.SelectItemContext item) {
+        final FrostlakeParser.IdentifierContext alias = SelectItemAccessors.isExprItem(item)
+            ? SelectItemAccessors.getItemAlias(item) : null;
+        return alias == null ? null : ParseTreeText.getIdentifier(alias);
+    }
+
     List<Row> applyGroupBy(final List<Row> rows, final Table table,
                                    final FrostlakeParser.SelectClauseContext ctx,
                                    final Map<String, Table> aliasToTable,
-                                   final List<Table> allTables) {
+                                   final List<Table> allTables,
+                                   final List<List<Row>> groupRowsSink) {
         if (ctx.groupByClause() == null) {
             return rows;
         }
 
-        // GROUP BY ALL — group by all non-aggregate SELECT expressions
+        // GROUP BY ALL — group by all non-aggregate SELECT expressions. "Non-aggregate" includes
+        // seeing an aggregate THROUGH a sibling alias (count(*) AS n, CASE WHEN n = 1 ... END: the
+        // CASE is aggregate-derived and NOT a group key, exactly as Snowflake classifies it). Keys
+        // keep sibling aliases substituted so their evaluation never sees an unknown alias name.
         if (ctx.groupByClause().ALL() != null) {
+            final List<FrostlakeParser.SelectItemContext> allItems = ctx.selectList().selectItem();
+            final List<String> itemAliases = new ArrayList<>();
+            for (final FrostlakeParser.SelectItemContext item : allItems) {
+                itemAliases.add(selectItemAlias(item));
+            }
+            final List<String> substNames = new ArrayList<>();
+            final List<String> substExprs = new ArrayList<>();
+            collectSubstitutableAliases(ctx, itemAliases, table, allTables, substNames, substExprs);
+            final Set<String> aggregateAliases = new HashSet<>();
             List<String> groupKeys = new ArrayList<>();
-            for (final FrostlakeParser.SelectItemContext item : ctx.selectList().selectItem()) {
+            for (int i = 0; i < allItems.size(); i++) {
+                final FrostlakeParser.SelectItemContext item = allItems.get(i);
                 if (!SelectItemAccessors.isExprItem(item)) continue;
                 FrostlakeParser.ExpressionContext expr = SelectItemAccessors.getItemValueExpr(item);
                 if (expr == null) continue;
-                if (!executor.hasAggregateFunctionInExpression(expr)) {
-                    groupKeys.add(ParseTreeText.getOriginalText(expr));
+                final String text = ParseTreeText.getOriginalText(expr);
+                final boolean aggregateDerived = executor.hasAggregateFunctionInExpression(expr)
+                    || executor.hasWindowFunctionInExpression(expr)
+                    || referencesAnyIdentifier(text, aggregateAliases);
+                if (aggregateDerived) {
+                    if (itemAliases.get(i) != null) {
+                        aggregateAliases.add(itemAliases.get(i));
+                    }
+                    continue;
                 }
+                groupKeys.add(substituteNestedAliases(text, substNames, substExprs));
             }
             if (groupKeys.isEmpty()) return rows;
             // Build a synthetic groupByClause via the existing applyGroupBy machinery:
             // collect select expressions and reuse the same evaluators
             List<String> selectExprs = new ArrayList<>();
+            final List<String> allAliasNames = new ArrayList<>();
             for (final FrostlakeParser.SelectItemContext item : ctx.selectList().selectItem()) {
                 if (SelectItemAccessors.isStarItem(item)) selectExprs.add("*");
                 else if (SelectItemAccessors.isQualifiedStarItem(item) || SelectItemAccessors.isSpreadItem(item)) selectExprs.add(SelectItemAccessors.getItemQualifier(item) + ".*");
                 else if (SelectItemAccessors.isExprItem(item)) selectExprs.add(ParseTreeText.getOriginalText(SelectItemAccessors.getItemExpression(item)));
+                else continue;
+                allAliasNames.add(selectItemAlias(item));   // stays 1:1 with selectExprs
             }
             final ExpressionEvaluator colEvalEv = new ExpressionEvaluator(table, executor.getFunctionRegistry(), executor.getCatalog(), executor);
             colEvalEv.setMultiTableContext(aliasToTable, allTables);
             RowExpressionEvaluator colEval = (final var expr, final var row) -> colEvalEv.evaluate(expr, row);
             final List<Table> fAllTables = allTables;
+            final Map<String, Object> allLateralAliases = new HashMap<>();
             AggregateEvaluator aggEval = (final var index, final var groupRows) -> {
                 FrostlakeParser.SelectItemContext item = ctx.selectList().selectItem().get(index);
                 if (SelectItemAccessors.isStarItem(item)) return groupRows.get(0).getValues();
-                if (SelectItemAccessors.isExprItem(item)) return evaluateGroupItem(item, groupRows, table, aliasToTable, fAllTables);
+                if (SelectItemAccessors.isExprItem(item)) return evaluateGroupItem(item, groupRows, table, aliasToTable, fAllTables, allLateralAliases);
                 throw new RuntimeException("Unsupported GROUP BY select item at index " + index);
             };
             OperatorContext opCtx = OperatorContext.builder()
                 .table(table).functionRegistry(executor.getFunctionRegistry()).queryExecutor(executor)
                 .aliasToTable(aliasToTable).allTables(allTables).build();
-            return new GroupByOperator(groupKeys, selectExprs, colEval, aggEval)
-                .execute(rows, opCtx);
+            final GroupByOperator allGroupByOp = new GroupByOperator(groupKeys, selectExprs, colEval, aggEval);
+            allGroupByOp.captureGroupRows(groupRowsSink);
+            allGroupByOp.captureLateralAliases(allAliasNames, allLateralAliases);
+            return allGroupByOp.execute(rows, opCtx);
         }
 
         // Check if this is a super-group (ROLLUP / CUBE / GROUPING SETS)
@@ -114,8 +158,9 @@ final class GroupByAggregateEvaluator {
             return applySuperGroupBy(rows, table, ctx, aliasToTable, allTables, allGroupingSets);
         }
 
-        // Extract SELECT expressions
+        // Extract SELECT expressions, and alongside them each item's lateral-alias name (1:1)
         List<String> selectExpressions = new ArrayList<>();
+        final List<String> aliasNames = new ArrayList<>();
         for (final FrostlakeParser.SelectItemContext item : ctx.selectList().selectItem()) {
             if (SelectItemAccessors.isStarItem(item)) {
                 selectExpressions.add("*");
@@ -124,14 +169,26 @@ final class GroupByAggregateEvaluator {
             } else {
                 selectExpressions.add(ParseTreeText.getOriginalText(SelectItemAccessors.getItemExpression(item)));
             }
+            aliasNames.add(selectItemAlias(item));
         }
 
         // Plain GROUP BY — extract expressions from groupByElement, resolving a 1-based ordinal
-        // (GROUP BY 1) to the corresponding SELECT expression.
+        // (GROUP BY 1) and a SELECT-list ALIAS to the corresponding SELECT expression. Aliases may
+        // also appear NESTED inside a group expression (GROUP BY CASE WHEN n_members = 1 ...) —
+        // substitute those with the aliased expression too, or the key evaluator sees an unknown
+        // column, every such row lands in one error-key group, and the aggregation silently corrupts.
+        final List<String> nestedAliasNames = new ArrayList<>();
+        final List<String> nestedAliasExprs = new ArrayList<>();
+        collectSubstitutableAliases(ctx, aliasNames, table, allTables, nestedAliasNames, nestedAliasExprs);
         List<String> groupByExpressions = new ArrayList<>();
         for (final FrostlakeParser.GroupByElementContext elem : ctx.groupByClause().groupByElement()) {
             if (elem.expression() != null) {
-                groupByExpressions.add(resolveSelectOrdinal(ParseTreeText.getOriginalText(elem.expression()), selectExpressions));
+                final String ordinalResolved =
+                    resolveSelectOrdinal(ParseTreeText.getOriginalText(elem.expression()), selectExpressions);
+                final String aliasResolved =
+                    resolveSelectAlias(ordinalResolved, aliasNames, selectExpressions, table, allTables);
+                groupByExpressions.add(
+                    substituteNestedAliases(aliasResolved, nestedAliasNames, nestedAliasExprs));
             }
         }
 
@@ -152,6 +209,7 @@ final class GroupByAggregateEvaluator {
         final List<FrostlakeParser.SelectItemContext> aggItems = ctx.selectList().selectItem();
         final AggregatePlan[] aggPlans = new AggregatePlan[aggItems.size()];
         final boolean[] aggPlanResolved = new boolean[aggItems.size()];
+        final Map<String, Object> lateralAliases = new HashMap<>();
         AggregateEvaluator aggregateEvaluator = new AggregateEvaluator() {
             @Override
             public Object evaluate(final int index, final List<Row> groupRows) {
@@ -167,7 +225,7 @@ final class GroupByAggregateEvaluator {
                     if (aggPlans[index] != null) {
                         return applyAggregatePlan(aggPlans[index], groupRows);
                     }
-                    return evaluateGroupItem(item, groupRows, table, aliasToTable, allTables);
+                    return evaluateGroupItem(item, groupRows, table, aliasToTable, allTables, lateralAliases);
                 }
                 throw new RuntimeException("Unsupported GROUP BY select item at index " + index);
             }
@@ -184,6 +242,8 @@ final class GroupByAggregateEvaluator {
         // Create and execute GROUP BY operator
         GroupByOperator groupByOp = new GroupByOperator(groupByExpressions, selectExpressions,
             columnEvaluator, aggregateEvaluator);
+        groupByOp.captureGroupRows(groupRowsSink);
+        groupByOp.captureLateralAliases(aliasNames, lateralAliases);
         return groupByOp.execute(rows, context);
     }
 
@@ -286,12 +346,14 @@ final class GroupByAggregateEvaluator {
                                          final Map<String, Table> aliasToTable,
                                          final List<Table> allTables,
                                          final List<List<String>> allGroupingSets) {
-        // All SELECT expressions
+        // All SELECT expressions, and each item's lateral-alias name (1:1)
         List<String> selectExprs = new ArrayList<>();
+        final List<String> aliasNames = new ArrayList<>();
         for (final FrostlakeParser.SelectItemContext item : ctx.selectList().selectItem()) {
             if (SelectItemAccessors.isStarItem(item)) selectExprs.add("*");
             else if (SelectItemAccessors.isQualifiedStarItem(item) || SelectItemAccessors.isSpreadItem(item)) selectExprs.add(SelectItemAccessors.getItemQualifier(item) + ".*");
             else selectExprs.add(ParseTreeText.getOriginalText(SelectItemAccessors.getItemExpression(item)));
+            aliasNames.add(selectItemAlias(item));
         }
 
         // All dimension columns across all grouping sets (for NULL-out logic)
@@ -310,10 +372,11 @@ final class GroupByAggregateEvaluator {
                 catch (final Exception e) { return null; }
             };
 
+            final Map<String, Object> lateralAliases = new HashMap<>();
             AggregateEvaluator aggregateEvaluator = (final var index, final var groupRows) -> {
                 FrostlakeParser.SelectItemContext item = ctx.selectList().selectItem().get(index);
                 if (SelectItemAccessors.isStarItem(item)) return groupRows.get(0).getValues();
-                if (SelectItemAccessors.isExprItem(item)) return evaluateGroupItem(item, groupRows, table, aliasToTable, allTables);
+                if (SelectItemAccessors.isExprItem(item)) return evaluateGroupItem(item, groupRows, table, aliasToTable, allTables, lateralAliases);
                 throw new RuntimeException("Unsupported GROUP BY select item at index " + index);
             };
 
@@ -323,6 +386,18 @@ final class GroupByAggregateEvaluator {
 
             GroupByOperator op = new GroupByOperator(
                 new ArrayList<>(groupingSet), selectExprs, columnEvaluator, aggregateEvaluator);
+            // A dimension that this grouping set aggregates over is NULLed out below, so it must not be
+            // offered to later items either — otherwise LOWER(n) on a ROLLUP subtotal row would still see the
+            // representative row's value while N itself prints NULL. Withholding the alias leaves it
+            // unresolved, which is the NULL the subtotal row should carry.
+            final List<String> setAliasNames = new ArrayList<>(aliasNames);
+            for (int i = 0; i < setAliasNames.size(); i++) {
+                final String expr = selectExprs.get(i);
+                if (allDimCols.contains(expr) && !activeKeys.contains(expr)) {
+                    setAliasNames.set(i, null);
+                }
+            }
+            op.captureLateralAliases(setAliasNames, lateralAliases);
 
             List<Row> groupResult = op.execute(rows, operatorCtx);
 
@@ -379,7 +454,7 @@ final class GroupByAggregateEvaluator {
         final List<FrostlakeParser.BooleanExprContext> args =
             groupingCall instanceof FrostlakeParser.FunctionCallExprContext
                 && ((FrostlakeParser.FunctionCallExprContext) groupingCall).functionArgList() != null
-            ? ((FrostlakeParser.FunctionCallExprContext) groupingCall).functionArgList().booleanExpr()
+            ? ParseTreeText.functionBooleanArgs(((FrostlakeParser.FunctionCallExprContext) groupingCall).functionArgList())
             : List.of();
         long mask = 0L;
         for (int a = 0; a < args.size(); a++) {
@@ -392,17 +467,21 @@ final class GroupByAggregateEvaluator {
 
     List<Row> applyImplicitGroupBy(final List<Row> rows, final Table table,
                                            final FrostlakeParser.SelectClauseContext ctx,
-                                           final Map<String, Table> aliasToTable, final List<Table> allTables) {
-        // Extract SELECT expressions
+                                           final Map<String, Table> aliasToTable, final List<Table> allTables,
+                                           final List<List<Row>> groupRowsSink) {
+        // Extract SELECT expressions, and each one's lateral-alias name (1:1 — expr items only here)
         List<String> selectExpressions = new ArrayList<>();
+        final List<String> aliasNames = new ArrayList<>();
         for (final FrostlakeParser.SelectItemContext item : ctx.selectList().selectItem()) {
             if (!SelectItemAccessors.isExprItem(item)) continue;
             selectExpressions.add(ParseTreeText.getOriginalText(SelectItemAccessors.getItemExpression(item)));
+            aliasNames.add(selectItemAlias(item));
         }
 
         // Create aggregate evaluator. Thread the alias/table context through so an aggregate over a
         // table-qualified column (SUM(s.qty)) or an expression (SUM(a*b)) resolves it instead of
         // silently yielding NULL.
+        final Map<String, Object> lateralAliases = new HashMap<>();
         AggregateEvaluator aggregateEvaluator = new AggregateEvaluator() {
             @Override
             public Object evaluate(final int index, final List<Row> allRows) {
@@ -411,7 +490,7 @@ final class GroupByAggregateEvaluator {
                 for (final FrostlakeParser.SelectItemContext item : ctx.selectList().selectItem()) {
                     if (!SelectItemAccessors.isExprItem(item)) continue;
                     if (k == index) {
-                        return evaluateGroupItem(item, allRows, table, aliasToTable, allTables);
+                        return evaluateGroupItem(item, allRows, table, aliasToTable, allTables, lateralAliases);
                     }
                     k++;
                 }
@@ -427,6 +506,8 @@ final class GroupByAggregateEvaluator {
 
         // Create and execute implicit GROUP BY operator
         GroupByOperator groupByOp = GroupByOperator.createImplicit(selectExpressions, aggregateEvaluator);
+        groupByOp.captureGroupRows(groupRowsSink);
+        groupByOp.captureLateralAliases(aliasNames, lateralAliases);
         return groupByOp.execute(rows, context);
     }
 
@@ -436,26 +517,91 @@ final class GroupByAggregateEvaluator {
      * function of the group keys, …) — including a boolean AND/OR/NOT item whose value expression
      * is null — is evaluated on a representative group row via the AST evaluator, since the group
      * keys it references are constant within a group.
+     *
+     * <p>{@code lateralAliases} carries the values of EARLIER items of the same SELECT list, keyed by
+     * uppercased alias (see {@link GroupByOperator#captureLateralAliases}), so a derived item can reference a
+     * sibling alias — {@code SELECT x AS n, LOWER(n) AS lo, COUNT(1) FROM t GROUP BY x}. It may be null.
      */
     private Object evaluateGroupItem(final FrostlakeParser.SelectItemContext item, final List<Row> groupRows,
-                                     final Table table) {
-        return evaluateGroupItem(item, groupRows, table, null, null);
-    }
-
-    private Object evaluateGroupItem(final FrostlakeParser.SelectItemContext item, final List<Row> groupRows,
                                      final Table table, final Map<String, Table> aliasToTable,
-                                     final List<Table> allTables) {
+                                     final List<Table> allTables,
+                                     final Map<String, Object> lateralAliases) {
         final FrostlakeParser.ExpressionContext valueExpr = SelectItemAccessors.getItemValueExpr(item);
+        // A window item's value is computed by the WINDOW stage over the grouped rows; the per-group
+        // value here is only a placeholder that stage overwrites. Evaluating the item anyway sent
+        // ROW_NUMBER() OVER (...) to the scalar evaluator, which threw and WARNed once per group
+        // ("Window function not available in this context") — hundreds of noise lines per loader run.
+        if (valueExpr != null && executor.hasWindowFunctionInExpression(valueExpr)) {
+            return null;
+        }
+        final String itemText = ParseTreeText.getOriginalText(SelectItemAccessors.getItemExpression(item));
+        // An item that IS just an earlier item's alias reuses that value rather than recomputing it: the
+        // defining item may be an aggregate (SELECT COUNT(1) AS c, c AS again), which no single group row can
+        // produce. A real column of the same name still wins, matching the WHERE-clause alias rule.
+        if (lateralAliases != null && !lateralAliases.isEmpty()) {
+            final String bare = itemText.trim().toUpperCase();
+            if (lateralAliases.containsKey(bare) && (table == null || !table.hasColumn(bare))) {
+                return lateralAliases.get(bare);
+            }
+        }
         if (valueExpr != null
                 && (valueExpr instanceof FrostlakeParser.QualifiedNameExprContext
                     || executor.hasAggregateFunctionInExpression(valueExpr))) {
-            return evaluateSelectItem(valueExpr, groupRows, table, aliasToTable, allTables);
-        }
-        if (groupRows.isEmpty()) {
-            return null;
+            return evaluateSelectItem(valueExpr, groupRows, table, aliasToTable, allTables, lateralAliases);
         }
         final ExpressionEvaluator ev = new ExpressionEvaluator(table, executor.getFunctionRegistry(), executor.getCatalog(), executor);
-        return ev.evaluate(ParseTreeText.getOriginalText(SelectItemAccessors.getItemExpression(item)), groupRows.get(0));
+        // JOIN-aware resolution for qualified refs (s.col, o.col) in the item: without the multi-table
+        // context, a representative row of a LEFT-JOIN group (null-padded on the miss side) resolves its
+        // columns positionally against the wrong layout and the whole item silently evaluates to NULL.
+        ev.setMultiTableContext(aliasToTable, allTables);
+        // Sibling aliases resolve only AFTER the real columns (the evaluator checks the table first), so a
+        // column of the same name keeps precedence over an alias that shadows it.
+        ev.setOuterLateralContext(lateralAliases);
+        if (groupRows.isEmpty()) {
+            // An EMPTY implicit group still emits one row (SELECT 'X', COUNT(*) FROM t WHERE FALSE yields
+            // 'X', 0 in Snowflake), so an item that needs no input row — a literal, or an expression over
+            // literals — must still be evaluated. Only something that reads a column has no value to read
+            // and stays NULL. This idiom is how a script asserts a row count:
+            // (SELECT 'MISSING' FROM t WHERE … HAVING COUNT(*) <> 1).
+            try {
+                return ev.evaluate(itemText, new Row(new ArrayList<>()));
+            } catch (final RuntimeException needsARow) {
+                return null;
+            }
+        }
+        return ev.evaluate(itemText, groupRows.get(0));
+    }
+
+
+    /**
+     * {@code COUNT(DISTINCT a, b, …)} — the number of distinct COMBINATIONS of the arguments, ignoring any row
+     * in which ANY of them is NULL, as Snowflake does. Only the first argument used to be evaluated, so the
+     * result was just that column's distinct count (and NULL tuples were not dropped).
+     */
+    private long countDistinctTuples(final List<String> args, final List<Row> groupRows, final Table table,
+                                     final Map<String, Table> aliasToTable, final List<Table> allTables) {
+        final List<List<Object>> perArgValues = new ArrayList<>();
+        for (final String arg : args) {
+            perArgValues.add(aggArgValues(arg, groupRows, table, aliasToTable, allTables));
+        }
+        final Set<List<Object>> seen = new HashSet<>();
+        final int rowCount = perArgValues.isEmpty() ? 0 : perArgValues.get(0).size();
+        for (int r = 0; r < rowCount; r++) {
+            final List<Object> tuple = new ArrayList<>(perArgValues.size());
+            boolean anyNull = false;
+            for (final List<Object> values : perArgValues) {
+                final Object value = r < values.size() ? values.get(r) : null;
+                if (value == null) {
+                    anyNull = true;
+                    break;
+                }
+                tuple.add(ValueComparisons.normalizeValueForDistinct(value));
+            }
+            if (!anyNull) {
+                seen.add(tuple);
+            }
+        }
+        return seen.size();
     }
 
     /**
@@ -482,6 +628,11 @@ final class GroupByAggregateEvaluator {
             final String funcName = funcCtx.functionName().getText().toUpperCase();
             final boolean distinct = funcCtx.DISTINCT() != null;
             final List<String> args = aggArgTexts(funcCtx);
+            if (args.size() > 1) {
+                // A multi-argument aggregate — COUNT(DISTINCT a, b) counts distinct COMBINATIONS — cannot be
+                // modelled by a single column index, so it must take the general per-group path below.
+                return null;
+            }
             final int idx = args.isEmpty() ? -1 : safeColumnIndex(table, args.get(0));
             switch (funcName) {
                 case "COUNT":
@@ -513,7 +664,7 @@ final class GroupByAggregateEvaluator {
     private static List<String> aggArgTexts(final FrostlakeParser.FunctionCallExprContext funcCtx) {
         final List<String> args = new ArrayList<>();
         if (funcCtx.functionArgList() != null) {
-            for (final FrostlakeParser.BooleanExprContext arg : funcCtx.functionArgList().booleanExpr()) {
+            for (final FrostlakeParser.BooleanExprContext arg : ParseTreeText.functionBooleanArgs(funcCtx.functionArgList())) {
                 args.add(ParseTreeText.getOriginalText(arg));
             }
         }
@@ -548,14 +699,14 @@ final class GroupByAggregateEvaluator {
             }
             case SUM: {
                 final Set<Object> seen = plan.distinct ? new HashSet<>() : null;
-                double sum = 0.0;
+                final List<Object> values = new ArrayList<>();
                 for (final Row r : groupRows) {
                     final Object v = r.getValue(plan.colIndex);
                     if (v != null && (seen == null || seen.add(ValueComparisons.normalizeValueForDistinct(v)))) {
-                        sum += ((Number) v).doubleValue();
+                        values.add(v);
                     }
                 }
-                return sum;
+                return AggregateNumerics.sum(values);
             }
             case AVG: {
                 final Set<Object> seen = plan.distinct ? new HashSet<>() : null;
@@ -595,12 +746,18 @@ final class GroupByAggregateEvaluator {
         }
     }
 
-    private Object evaluateSelectItem(final FrostlakeParser.ExpressionContext expr, final List<Row> groupRows, final Table table) {
-        return evaluateSelectItem(expr, groupRows, table, null, null);
+    /**
+     * Evaluate an expression (a grouped column, an aggregate, or an expression over them) over a single
+     * group's source rows — used to resolve an ORDER BY key that is not one of the SELECT columns.
+     */
+    Object evaluateOverGroup(final FrostlakeParser.ExpressionContext expr, final List<Row> groupRows,
+                            final Table table, final Map<String, Table> aliasToTable, final List<Table> allTables) {
+        return evaluateSelectItem(expr, groupRows, table, aliasToTable, allTables, null);
     }
 
     private Object evaluateSelectItem(final FrostlakeParser.ExpressionContext expr, final List<Row> groupRows, final Table table,
-                                     final Map<String, Table> aliasToTable, final List<Table> allTables) {
+                                     final Map<String, Table> aliasToTable, final List<Table> allTables,
+                                     final Map<String, Object> lateralAliases) {
         // A null value expression means a boolean (AND/OR/NOT) projection. This grouped-evaluation
         // path is column/aggregate-oriented and does not evaluate general expressions (the same
         // limitation applies to e.g. an arithmetic projection in a grouped query), so there is no
@@ -625,6 +782,9 @@ final class GroupByAggregateEvaluator {
             final String arg0 = args.isEmpty() ? "" : args.get(0);
             switch (funcName) {
                 case "COUNT": {
+                    if (distinct && args.size() > 1) {
+                        return countDistinctTuples(args, groupRows, table, aliasToTable, allTables);
+                    }
                     final List<Object> vals = aggArgValues(arg0, groupRows, table, aliasToTable, allTables);
                     if (distinct) {
                         final Set<Object> seen = new HashSet<>();
@@ -643,16 +803,14 @@ final class GroupByAggregateEvaluator {
                 }
                 case "SUM": {
                     final Set<Object> seen = distinct ? new HashSet<>() : null;
-                    double sum = 0.0;
-                    boolean sawValue = false;
+                    final List<Object> values = new ArrayList<>();
                     for (final Object v : aggArgValues(arg0, groupRows, table, aliasToTable, allTables)) {
                         if (v != null && (seen == null || seen.add(ValueComparisons.normalizeValueForDistinct(v)))) {
-                            sum += aggNumeric(v);
-                            sawValue = true;
+                            values.add(v);
                         }
                     }
-                    // SUM over no non-null rows is NULL in Snowflake, not zero.
-                    return sawValue ? Double.valueOf(sum) : null;
+                    // SUM over no non-null rows is NULL in Snowflake, not zero (AggregateNumerics returns null).
+                    return AggregateNumerics.sum(values);
                 }
                 case "AVG": {
                     final Set<Object> seen = distinct ? new HashSet<>() : null;
@@ -696,6 +854,37 @@ final class GroupByAggregateEvaluator {
             }
         }
 
+        // An expression that CONTAINS an aggregate but is not itself a bare aggregate call — e.g.
+        // COUNT(*)::VARCHAR, 'total=' || SUM(v), MAX(v) + 1. Compute each nested aggregate over the group,
+        // then evaluate the surrounding expression with those results substituted in (mirrors the nested
+        // window-function path). Without this the whole expression fell through to the column-reference
+        // branch below, whose text is not a column name, and resolved to NULL.
+        if (executor.hasAggregateFunctionInExpression(expr)) {
+            final List<FrostlakeParser.ExpressionContext> aggCalls = new ArrayList<>();
+            collectAggregateCalls(expr, aggCalls);
+            final Map<String, Object> aggregateValues = new HashMap<>();
+            for (final FrostlakeParser.ExpressionContext aggCall : aggCalls) {
+                // Key by the aggregate's canonical AST print — the same key visitFunctionCall looks it up by
+                // when the surrounding expression is evaluated below. No sibling aliases inside the aggregate:
+                // its arguments are evaluated PER ROW, where a per-group alias value has no meaning.
+                aggregateValues.put(
+                    AstPrinterVisitor.print(ExpressionEvaluator.parse(ParseTreeText.getOriginalText(aggCall))),
+                    evaluateSelectItem(aggCall, groupRows, table, aliasToTable, allTables, null));
+            }
+            final ExpressionEvaluator ev = new ExpressionEvaluator(
+                table, executor.getFunctionRegistry(), executor.getCatalog(), executor);
+            if (aliasToTable != null && allTables != null && allTables.size() > 1) {
+                ev.setMultiTableContext(aliasToTable, allTables);
+            }
+            ev.setResultContext(aggregateValues);
+            // The parts of this expression OUTSIDE the aggregate calls are evaluated once for the group, so an
+            // earlier item's alias is a plain per-group scalar here and may be referenced — the shape
+            // `SUM(…) AS n, IFF(n > 0, ARRAY_UNIQUE_AGG(a), ARRAY_UNIQUE_AGG(b))`. Table columns still win.
+            ev.setOuterLateralContext(lateralAliases);
+            final Row groupRow = groupRows.isEmpty() ? new Row(new ArrayList<>()) : groupRows.get(0);
+            return ev.evaluate(ParseTreeText.getOriginalText(expr), groupRow);
+        }
+
         // Not an aggregate: a regular (possibly qualified) column reference — constant within the group,
         // so read it from the first row.
         final String columnRef = ParseTreeText.getOriginalText(expr);
@@ -707,6 +896,51 @@ final class GroupByAggregateEvaluator {
             }
         }
         return groupRows.get(0).getValue(ValueComparisons.getColumnIndex(table, columnRef));
+    }
+
+    /** Collect the aggregate function calls — COUNT(*) and any registered aggregate without an OVER clause —
+     *  nested anywhere in {@code node}. A matched call is not descended into (aggregates do not nest), so its
+     *  own arguments are left alone. */
+    private void collectAggregateCalls(final ParseTree node, final List<FrostlakeParser.ExpressionContext> out) {
+        if (node instanceof FrostlakeParser.FunctionCallStarExprContext) {
+            final String name = ((FrostlakeParser.FunctionCallStarExprContext) node).functionName().getText().toUpperCase();
+            if (executor.getFunctionRegistry().hasAggregateFunction(name)) {
+                out.add((FrostlakeParser.ExpressionContext) node);
+                return;
+            }
+        }
+        if (node instanceof FrostlakeParser.FunctionCallExprContext) {
+            final FrostlakeParser.FunctionCallExprContext fc = (FrostlakeParser.FunctionCallExprContext) node;
+            if (fc.overClause() == null
+                    && executor.getFunctionRegistry().hasAggregateFunction(fc.functionName().getText().toUpperCase())) {
+                out.add(fc);
+                return;
+            }
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            collectAggregateCalls(node.getChild(i), out);
+        }
+    }
+
+    /**
+     * Compute every aggregate call in a HAVING predicate over one group's rows, keyed by the aggregate's
+     * canonical AST print — the key {@code visitFunctionCall} looks it up by when the HAVING condition is
+     * evaluated. This lets HAVING reference an aggregate that is NOT a SELECT item (e.g.
+     * {@code SELECT grp, COUNT(*)::VARCHAR … HAVING COUNT(*) > 1}): it is computed fresh over the group
+     * rather than read back from the already-projected output row.
+     */
+    Map<String, Object> havingAggregateContext(final FrostlakeParser.BooleanExprContext havingBool,
+                                               final List<Row> groupRows, final Table table,
+                                               final Map<String, Table> aliasToTable, final List<Table> allTables) {
+        final List<FrostlakeParser.ExpressionContext> aggCalls = new ArrayList<>();
+        collectAggregateCalls(havingBool, aggCalls);
+        final Map<String, Object> context = new HashMap<>();
+        for (final FrostlakeParser.ExpressionContext aggCall : aggCalls) {
+            context.put(
+                AstPrinterVisitor.print(ExpressionEvaluator.parse(ParseTreeText.getOriginalText(aggCall))),
+                evaluateSelectItem(aggCall, groupRows, table, aliasToTable, allTables, null));
+        }
+        return context;
     }
 
     /** Generic accumulator-based aggregate dispatch (COUNT_IF, MEDIAN, ARRAY_AGG, LISTAGG, CORR, MAX_BY, …).
@@ -734,11 +968,26 @@ final class GroupByAggregateEvaluator {
                 acc.accumulate(v);
             }
         } else if (hasTwoArgs && acc instanceof MaxByMinByAccumulator) {
-            // MAX_BY / MIN_BY(<value>, <sort_key>): both arguments are columns whose RAW values matter.
+            // MAX_BY / MIN_BY(<value>, <sort_key> [, <N>]): both arguments are columns whose RAW values
+            // matter. The bounded third-argument form returns an ARRAY of up to N values ordered by key
+            // (MIN ascending / MAX descending); DISTINCT dedups the values (the aggregation-loader idiom
+            // MIN_BY(DISTINCT ref, ref, 100) — the scalar form silently returned ONE bare value where
+            // Snowflake returns the array).
+            if (args.size() >= 3) {
+                ((MaxByMinByAccumulator) acc).setLimit(
+                    new BigDecimal(args.get(2).trim()).intValue(), funcCtx.DISTINCT() != null);
+            }
             final List<Object> values = aggArgValues(args.get(0), aggRows, table, aliasToTable, allTables);
             final List<Object> keys = aggArgValues(args.get(1), aggRows, table, aliasToTable, allTables);
             for (int i = 0; i < values.size(); i++) {
                 ((MaxByMinByAccumulator) acc).accumulate(values.get(i), keys.get(i));
+            }
+        } else if (hasTwoArgs && acc instanceof ObjectAggAccumulator) {
+            // OBJECT_AGG(<key>, <value>): key/value pairs into one OBJECT (NULL key or value drops the pair).
+            final List<Object> keys = aggArgValues(args.get(0), aggRows, table, aliasToTable, allTables);
+            final List<Object> values = aggArgValues(args.get(1), aggRows, table, aliasToTable, allTables);
+            for (int i = 0; i < keys.size(); i++) {
+                ((ObjectAggAccumulator) acc).accumulate(keys.get(i), values.get(i));
             }
         } else if (hasTwoArgs) {
             // CORR / COVAR_* / REGR_*(y, x): two numeric columns.
@@ -762,9 +1011,15 @@ final class GroupByAggregateEvaluator {
                 }
             }
         } else {
-            // Single-argument generic accumulator (COUNT_IF, MEDIAN, ARRAY_AGG, …).
+            // Single-argument generic accumulator (COUNT_IF, MEDIAN, ARRAY_AGG, …). DISTINCT — e.g.
+            // ARRAY_AGG(DISTINCT tag) WITHIN GROUP (ORDER BY tag) — drops repeated values; the flag was
+            // ignored on this path, so duplicates survived into the aggregate.
             final String singleArg = args.isEmpty() ? "" : args.get(0);
+            final Set<Object> seen = funcCtx.DISTINCT() != null ? new HashSet<>() : null;
             for (final Object v : aggArgValues(singleArg, aggRows, table, aliasToTable, allTables)) {
+                if (seen != null && v != null && !seen.add(ValueComparisons.normalizeValueForDistinct(v))) {
+                    continue;
+                }
                 acc.accumulate(v);
             }
         }
@@ -839,6 +1094,115 @@ final class GroupByAggregateEvaluator {
             }
         }
         return text;
+    }
+
+    /**
+     * {@code GROUP BY <alias>}: a bare identifier that names a SELECT-list alias — and no real column
+     * of the FROM relation(s); in Snowflake a column always wins over a same-named alias — groups by
+     * that item's EXPRESSION. Evaluating the bare alias name against the tables failed on every row,
+     * and the error-sentinel key silently collapsed all rows into a single group.
+     */
+    /**
+     * The SELECT-list aliases a GROUP BY expression may legally reference from WITHIN a larger
+     * expression: non-aggregate, non-window items whose alias does not shadow a real column (a real
+     * column keeps precedence, mirroring {@link #resolveSelectAlias}). Fills the two parallel lists
+     * with the alias and its parenthesized defining expression.
+     */
+    private void collectSubstitutableAliases(final FrostlakeParser.SelectClauseContext ctx,
+                                             final List<String> aliasNames, final Table table,
+                                             final List<Table> allTables,
+                                             final List<String> outNames, final List<String> outExprs) {
+        final List<FrostlakeParser.SelectItemContext> items = ctx.selectList().selectItem();
+        for (int i = 0; i < items.size() && i < aliasNames.size(); i++) {
+            final String alias = aliasNames.get(i);
+            if (alias == null || namesAColumn(alias, table, allTables)) {
+                continue;
+            }
+            final FrostlakeParser.SelectItemContext item = items.get(i);
+            if (!SelectItemAccessors.isExprItem(item)) {
+                continue;
+            }
+            final FrostlakeParser.ExpressionContext valueExpr = SelectItemAccessors.getItemValueExpr(item);
+            if (valueExpr == null
+                    || executor.hasAggregateFunctionInExpression(valueExpr)
+                    || executor.hasWindowFunctionInExpression(valueExpr)) {
+                continue;
+            }
+            outNames.add(alias);
+            outExprs.add("(" + ParseTreeText.getOriginalText(valueExpr) + ")");
+        }
+    }
+
+    /**
+     * Replace each substitutable alias referenced inside {@code text} with its defining expression,
+     * expanding chained aliases (an alias defined over another alias) with bounded passes.
+     */
+    private String substituteNestedAliases(final String text, final List<String> names,
+                                           final List<String> exprs) {
+        String result = text;
+        for (int pass = 0; pass < 5; pass++) {
+            String next = result;
+            for (int i = 0; i < names.size(); i++) {
+                next = SqlIdentifierSubstitution.substitute(next, names.get(i), exprs.get(i));
+            }
+            if (next.equals(result)) {
+                break;
+            }
+            result = next;
+        }
+        return result;
+    }
+
+    /** True when {@code text} references any of {@code names} as a standalone identifier token. */
+    private boolean referencesAnyIdentifier(final String text, final Set<String> names) {
+        for (final String name : names) {
+            if (!SqlIdentifierSubstitution.substitute(text, name, "__frostlake_ref_probe__").equals(text)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private String resolveSelectAlias(final String text, final List<String> aliasNames,
+                                      final List<String> selectExpressions, final Table table,
+                                      final List<Table> allTables) {
+        final Expression parsed;
+        try {
+            parsed = ExpressionEvaluator.parse(text);
+        } catch (final RuntimeException notAnExpression) {
+            return text;
+        }
+        if (!(parsed instanceof ColumnReferenceExpression)) {
+            return text;
+        }
+        final ColumnReferenceExpression ref = (ColumnReferenceExpression) parsed;
+        if (ref.getTableName() != null) {
+            return text;
+        }
+        if (namesAColumn(ref.getColumnName(), table, allTables)) {
+            return text;
+        }
+        for (int i = 0; i < aliasNames.size(); i++) {
+            if (aliasNames.get(i) != null && aliasNames.get(i).equalsIgnoreCase(ref.getColumnName())) {
+                return selectExpressions.get(i);
+            }
+        }
+        return text;
+    }
+
+    /** True when {@code name} is a column of the grouped table or of any table in the multi-table scope. */
+    private boolean namesAColumn(final String name, final Table table, final List<Table> allTables) {
+        if (table != null && table.hasColumn(name)) {
+            return true;
+        }
+        if (allTables != null) {
+            for (final Table t : allTables) {
+                if (t != null && t.hasColumn(name)) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     /**
