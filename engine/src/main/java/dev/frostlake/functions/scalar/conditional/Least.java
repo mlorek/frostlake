@@ -31,7 +31,11 @@ public class Least extends BuiltInFunction {
 
         Object min = null;
         for (final Object arg : args) {
-            if (arg == null) continue;
+            // Snowflake: LEAST/GREATEST return NULL when ANY argument is NULL (skipping them turned
+            // LEAST(NULL, 100) into 100 — use LEAST_IGNORE_NULLS for the skipping behavior).
+            if (arg == null) {
+                return null;
+            }
             if (min == null) {
                 min = arg;
             } else if (arg instanceof Comparable && min instanceof Comparable) {

@@ -19,10 +19,12 @@ package dev.frostlake.functions.aggregate;
 import dev.frostlake.functions.AggregateFunction;
 import dev.frostlake.types.ObjectType;
 
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
 
+/**
+ * OBJECT_AGG(key, value) — aggregates key/value pairs into a single OBJECT. Pairs with a NULL key or
+ * NULL value are omitted; the result is canonical JSON text (keys sorted), the engine's OBJECT form.
+ */
 public class ObjectAgg extends AggregateFunction {
     public ObjectAgg() { super("OBJECT_AGG", ObjectType.OBJECT); }
 
@@ -34,24 +36,4 @@ public class ObjectAgg extends AggregateFunction {
 
     @Override public int getMinArgCount() { return 2; }
     @Override public int getMaxArgCount() { return 2; }
-
-    public static class ObjectAggAccumulator implements Accumulator {
-        public final Map<String, Object> map = new HashMap<>();
-
-        @Override
-        public void accumulate(final Object v) {}
-
-        public void accumulate(final Object key, final Object value) {
-            if (key != null) map.put(key.toString(), value);
-        }
-
-        @Override
-        public Object getResult() { return new HashMap<>(map); }
-
-        @Override
-        public void reset() { map.clear(); }
-
-        @Override
-        public void merge(final Accumulator other) { map.putAll(((ObjectAggAccumulator) other).map); }
-    }
 }

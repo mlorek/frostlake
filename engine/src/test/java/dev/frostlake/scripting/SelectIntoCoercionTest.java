@@ -121,12 +121,14 @@ public class SelectIntoCoercionTest extends BaseDatabaseTest {
 
     // ── SELECT INTO row-count and column-count enforcement ────────────────────────────────────────
 
-    // Zero rows is NOT an error: the target is set to NULL and the block continues (Snowflake semantics).
+    // Zero rows is NOT an error (verified against live Snowflake): the targets are assigned NULL
+    // and the block continues — probe idioms and walk-past-the-end fetch loops rely on it.
     @Test
     public void selectIntoZeroRowsAssignsNull() {
         seedNums();
-        assertNull(ret(
-            "DECLARE t INTEGER; BEGIN SELECT n INTO t FROM nums WHERE n > 100; RETURN t; END"));
+        final ResultSet rs = engine.executeQuery(
+            "DECLARE t INTEGER; BEGIN SELECT n INTO t FROM nums WHERE n > 100; RETURN COALESCE(:t, -1); END");
+        assertEquals("-1", String.valueOf(rs.getRows().get(0).getValue(0)));
     }
 
     @Test

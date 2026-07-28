@@ -34,7 +34,8 @@ public class ToNumberTest extends BaseDatabaseTest {
 
     @Test
     public void plainValue() {
-        assertEquals(3.9, num("SELECT TO_NUMBER(3.9)"), 1e-9);
+        // Bare TO_NUMBER defaults to NUMBER(38,0): the value is rounded to a whole number (Snowflake).
+        assertEquals(4.0, num("SELECT TO_NUMBER(3.9)"), 1e-9);
     }
 
     @Test
@@ -45,7 +46,8 @@ public class ToNumberTest extends BaseDatabaseTest {
 
     @Test
     public void stripsGroupSeparators() {
-        assertEquals(1234.56, num("SELECT TO_NUMBER('1,234.56')"), 1e-9);
+        // The comma group separator is stripped; the bare call then rounds to NUMBER(38,0): 1,234.56 -> 1235.
+        assertEquals(1235.0, num("SELECT TO_NUMBER('1,234.56')"), 1e-9);
     }
 
     @Test

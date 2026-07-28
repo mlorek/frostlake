@@ -154,13 +154,34 @@ public class ProceduralBlockBuilder {
         if (ctx.callStatement() != null) {
             String procName = visitor.getText(ctx.callStatement().qualifiedName());
             List<BaseExpression> arguments = new ArrayList<>();
-            if (ctx.callStatement().expressionList() != null) {
-                for (final FrostlakeParser.ExpressionContext exprCtx :
-                     ctx.callStatement().expressionList().expression()) {
-                    arguments.add(visitor.buildExpression(exprCtx));
+            List<String> argumentNames = new ArrayList<>();
+            if (ctx.callStatement().callArguments() != null) {
+                for (final FrostlakeParser.CallArgumentContext argCtx :
+                     ctx.callStatement().callArguments().callArgument()) {
+                    if (argCtx.namedArgument() != null) {
+                        arguments.add(visitor.buildExpression(argCtx.namedArgument().expression()));
+                        argumentNames.add(visitor.getText(argCtx.namedArgument().identifier()));
+                    } else {
+                        arguments.add(visitor.buildExpression(argCtx.expression()));
+                        argumentNames.add(null);
+                    }
                 }
             }
-            return new CallStatement(procName, arguments);
+            return new CallStatement(procName, arguments, argumentNames);
+        }
+
+        if (ctx.asyncStatement() != null) {
+            // ASYNC (<stmt>) — the engine is single-threaded, so run the wrapped statement synchronously.
+            final FrostlakeParser.AsyncStatementContext async = ctx.asyncStatement();
+            final String innerSql = async.dmlStatement() != null
+                ? visitor.getOriginalText(async.dmlStatement())
+                : visitor.getOriginalText(async.callStatement());
+            return new SqlStatement(innerSql);
+        }
+
+        if (ctx.awaitStatement() != null) {
+            // AWAIT [ALL | <name>] — the ASYNC statements already ran synchronously, so this is a no-op.
+            return null;
         }
 
         if (ctx.assignmentStatement() != null) {

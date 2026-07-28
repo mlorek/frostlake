@@ -17,6 +17,7 @@
 package dev.frostlake.executor;
 
 import dev.frostlake.parser.FrostlakeParser;
+import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.List;
 import org.antlr.v4.runtime.ParserRuleContext;
@@ -82,6 +83,23 @@ public final class ParseTreeText {
         return parts;
     }
 
+    /**
+     * The plain (non-lambda) boolean-expression arguments of a function call. {@code functionArgList} now
+     * admits lambda arguments (for TRANSFORM/FILTER/REDUCE); aggregate/window/grouping call sites only ever
+     * have boolean-expression arguments, so this unwraps each {@code functionArg} to its {@code booleanExpr}.
+     */
+    public static List<FrostlakeParser.BooleanExprContext> functionBooleanArgs(final FrostlakeParser.FunctionArgListContext list) {
+        final List<FrostlakeParser.BooleanExprContext> out = new ArrayList<>();
+        if (list != null) {
+            for (final FrostlakeParser.FunctionArgContext arg : list.functionArg()) {
+                if (arg.booleanExpr() != null) {
+                    out.add(arg.booleanExpr());
+                }
+            }
+        }
+        return out;
+    }
+
     public static String getOriginalText(final ParserRuleContext ctx) {
         // Get original text with whitespace preserved
         if (ctx.start == null || ctx.stop == null || ctx.start.getInputStream() == null) {
@@ -106,7 +124,12 @@ public final class ParseTreeText {
 
     public static Object parseLiteral(final FrostlakeParser.LiteralContext ctx) {
         if (ctx.INTEGER_LITERAL() != null) {
-            return Long.parseLong(ctx.INTEGER_LITERAL().getText());
+            final String intText = ctx.INTEGER_LITERAL().getText();
+            try {
+                return Long.parseLong(intText);
+            } catch (final NumberFormatException tooWide) {
+                return new BigDecimal(intText);   // wider than a long — keep it exact (NUMBER(38,0))
+            }
         } else if (ctx.FLOAT_LITERAL() != null) {
             return Double.parseDouble(ctx.FLOAT_LITERAL().getText());
         } else if (ctx.STRING_LITERAL() != null) {

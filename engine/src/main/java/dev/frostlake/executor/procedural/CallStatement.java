@@ -21,11 +21,20 @@ import java.util.List;
 public class CallStatement extends Statement {
     private final String procedureName;
     private final List<BaseExpression> arguments;
+    // Parallel to arguments: the argument name for a {@code name => value} named argument, or null for a
+    // positional one. Null overall means every argument is positional.
+    private final List<String> argumentNames;
 
     public CallStatement(final String procedureName, final List<BaseExpression> arguments) {
+        this(procedureName, arguments, null);
+    }
+
+    public CallStatement(final String procedureName, final List<BaseExpression> arguments,
+                         final List<String> argumentNames) {
         super(StatementType.CALL);
         this.procedureName = procedureName;
         this.arguments = arguments;
+        this.argumentNames = argumentNames;
     }
 
     public String getProcedureName() {
@@ -34,5 +43,10 @@ public class CallStatement extends Statement {
 
     public List<BaseExpression> getArguments() {
         return arguments;
+    }
+
+    /** Argument names parallel to {@link #getArguments()} (null entry = positional), or null if all positional. */
+    public List<String> getArgumentNames() {
+        return argumentNames;
     }
 }

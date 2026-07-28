@@ -22,23 +22,13 @@ import dev.frostlake.metastore.model.UdfLanguage;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
+import org.graalvm.polyglot.Value;
 import dev.frostlake.types.StringType;
-import org.python.core.PyGenerator;
-import org.python.core.PyObject;
-import org.python.core.PyTuple;
-import org.python.util.PythonInterpreter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.List;
-import org.python.core.Py;
-import org.python.core.PyBoolean;
-import org.python.core.PyException;
-import org.python.core.PyFloat;
-import org.python.core.PyInteger;
-import org.python.core.PyLong;
-import org.python.core.PyString;
 
 /**
  * Executes Snowflake-style Python UDTF (User-Defined Table Functions).
@@ -79,33 +69,30 @@ public class PythonTableFunctionExecutor {
         List<ResultSetColumn> outputColumns = buildOutputColumns(function);
         List<Row> outputRows = new ArrayList<>();
 
-        try (PythonInterpreter interp = new PythonInterpreter()) {
-            String body = dedent(function.getBody());
-            interp.exec(body);
+        try {
+            PythonRuntime.eval(dedent(function.getBody()));
 
             // Instantiate the handler class
-            interp.exec("__handler_instance = " + handlerClassName + "()");
-            PyObject instance = interp.get("__handler_instance");
+            PythonRuntime.eval("__handler_instance = " + handlerClassName + "()");
 
             // Call process() for each input row
             List<Parameter> params = function.getParameters();
             for (final List<Object> rowArgs : rows) {
                 String callCode = buildProcessCall(params, rowArgs);
-                interp.exec("__process_result = __handler_instance.process(" + callCode + ")");
-                PyObject processResult = interp.get("__process_result");
-                collectRows(processResult, outputColumns.size(), outputRows);
+                PythonRuntime.eval("__process_result = __handler_instance.process(" + callCode + ")");
+                collectRows(PythonRuntime.global("__process_result"), outputColumns.size(), outputRows);
             }
 
             // Call end_partition() if it exists
-            interp.exec("__has_end_partition = hasattr(__handler_instance, 'end_partition')");
-            PyObject hasEnd = interp.get("__has_end_partition");
-            if (hasEnd != null && !hasEnd.equals(Py.False)) {
-                interp.exec("__end_result = __handler_instance.end_partition()");
-                PyObject endResult = interp.get("__end_result");
-                collectRows(endResult, outputColumns.size(), outputRows);
+            PythonRuntime.eval("__has_end_partition = hasattr(__handler_instance, 'end_partition')");
+            final Value hasEnd = PythonRuntime.global("__has_end_partition");
+            if (hasEnd != null && hasEnd.isBoolean() && hasEnd.asBoolean()) {
+                PythonRuntime.eval("__end_result = __handler_instance.end_partition()");
+                collectRows(PythonRuntime.global("__end_result"), outputColumns.size(), outputRows);
             }
 
         } catch (final Exception e) {
+            PythonRuntime.discardContext();
             logger.error("Error executing Python table function {}: {}", function.getName(), e.getMessage(), e);
             throw new RuntimeException("Error executing Python table function " + function.getName()
                 + ": " + e.getMessage(), e);
@@ -131,67 +118,49 @@ public class PythonTableFunctionExecutor {
         return sb.toString();
     }
 
-    private static void collectRows(final PyObject result, final int expectedCols,
-                                     final List<Row> outputRows) {
-        if (result == null) return;
-
-        // Handle generator / iterable
-        if (result instanceof PyGenerator || isIterable(result)) {
-            try {
-                PyObject iter = result.__iter__();
-                PyObject item;
-                while ((item = iter.__iternext__()) != null) {
-                    outputRows.add(pyTupleToRow(item, expectedCols));
+    /**
+     * Append the rows a handler call produced. A generator or any iterable yields one row per element;
+     * anything else is a single row. A row is a tuple/list of column values, or a bare scalar for a
+     * single-column output.
+     */
+    private static void collectRows(final Value result, final int expectedCols, final List<Row> outputRows) {
+        if (result == null || result.isNull()) {
+            return;
+        }
+        // A str is iterable in Python but represents ONE value, so it must not be exploded per character.
+        if (!result.isString() && (result.hasIterator() || result.hasArrayElements())) {
+            final Value iterator = result.hasIterator() ? result.getIterator() : result;
+            if (result.hasIterator()) {
+                while (iterator.hasIteratorNextElement()) {
+                    outputRows.add(tupleToRow(iterator.getIteratorNextElement(), expectedCols));
                 }
-            } catch (final PyException ignored) {
-                // StopIteration — normal end of generator
+                return;
             }
-        } else {
-            // Single tuple/value returned directly
-            outputRows.add(pyTupleToRow(result, expectedCols));
+            for (long i = 0; i < result.getArraySize(); i++) {
+                outputRows.add(tupleToRow(result.getArrayElement(i), expectedCols));
+            }
+            return;
         }
+        outputRows.add(tupleToRow(result, expectedCols));
     }
 
-    private static boolean isIterable(final PyObject obj) {
-        try {
-            obj.__iter__();
-            return true;
-        } catch (final Exception e) {
-            return false;
-        }
-    }
-
-    private static Row pyTupleToRow(final PyObject item, final int expectedCols) {
+    /** One yielded item as a Row, padded or trimmed to the declared column count. */
+    private static Row tupleToRow(final Value item, final int expectedCols) {
         List<Object> values = new ArrayList<>();
-        if (item instanceof PyTuple) {
-            PyTuple tuple = (PyTuple) item;
-            for (int i = 0; i < tuple.__len__(); i++) {
-                values.add(pyToJava(tuple.__getitem__(i)));
+        if (item != null && !item.isNull() && !item.isString() && item.hasArrayElements()) {
+            for (long i = 0; i < item.getArraySize(); i++) {
+                values.add(PythonRuntime.toJava(item.getArrayElement(i)));
             }
         } else {
-            // Single-column output
-            values.add(pyToJava(item));
+            values.add(PythonRuntime.toJava(item));
         }
-        // Pad or trim to expected column count
-        while (values.size() < expectedCols) values.add(null);
-        if (values.size() > expectedCols) values = values.subList(0, expectedCols);
+        while (values.size() < expectedCols) {
+            values.add(null);
+        }
+        if (values.size() > expectedCols) {
+            values = values.subList(0, expectedCols);
+        }
         return new Row(values);
-    }
-
-    private static Object pyToJava(final PyObject obj) {
-        if (obj == null || obj == Py.None) return null;
-        try {
-            Object j = obj.__tojava__(Object.class);
-            if (j instanceof PyInteger) return ((PyInteger) j).getValue();
-            if (j instanceof PyLong)    return ((PyLong) j).getValue().longValue();
-            if (j instanceof PyFloat)   return ((PyFloat) j).getValue();
-            if (j instanceof PyBoolean) return ((PyBoolean) j).getBooleanValue();
-            if (j instanceof PyString)  return j.toString();
-            if (j instanceof Number || j instanceof String || j instanceof Boolean) return j;
-            return obj.toString();
-        } catch (final Exception e) {
-            return obj.toString();
-        }
     }
 
     private static List<ResultSetColumn> buildOutputColumns(final Function function) {

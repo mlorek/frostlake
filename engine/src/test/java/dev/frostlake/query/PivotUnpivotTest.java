@@ -24,6 +24,129 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 
 public class PivotUnpivotTest extends BaseDatabaseTest {
 
+    /** {@code empid → (Q1, Q2)} = {@code 1 → (10, 20)}, {@code 2 → (50, 5)}. */
+    private void seedQuarterlySales() {
+        engine.execute("CREATE TABLE qs (empid INTEGER, amount INTEGER, quarter VARCHAR)");
+        engine.execute("INSERT INTO qs VALUES (1, 10, 'Q1'), (1, 20, 'Q2'), (2, 50, 'Q1'), (2, 5, 'Q2')");
+    }
+
+    private static final String PIVOTED =
+        "qs PIVOT(SUM(amount) FOR quarter IN ('Q1','Q2')) AS p (eid, q1, q2)";
+
+    // ── the pivot output is the query's source relation ──────────────────────
+    // Every stage below used to be silently DISCARDED: the pivoted ResultSet was returned straight from the
+    // pivot, so the SELECT list, GROUP BY, ORDER BY, DISTINCT and LIMIT never ran, and `SELECT <anything>`
+    // handed back the whole pivoted relation.
+
+    @Test
+    public void theSelectListAppliesToThePivotOutput() {
+        seedQuarterlySales();
+        final ResultSet rs = engine.executeQuery("SELECT eid, q2 FROM " + PIVOTED + " ORDER BY eid");
+        assertEquals(2, rs.getColumns().size());
+        assertEquals("EID", rs.getColumns().get(0).getName());
+        assertEquals("Q2", rs.getColumns().get(1).getName());
+        assertEquals(20L, rs.getRows().get(0).getValue(1));
+    }
+
+    @Test
+    public void anExpressionOverAPivotedColumnIsProjected() {
+        seedQuarterlySales();
+        final ResultSet rs = engine.executeQuery("SELECT q1 + q2 AS total FROM " + PIVOTED + " ORDER BY total");
+        assertEquals(1, rs.getColumns().size());
+        assertEquals(30L, rs.getRows().get(0).getValue(0));
+        assertEquals(55L, rs.getRows().get(1).getValue(0));
+    }
+
+    @Test
+    public void orderByAppliesToThePivotOutput() {
+        seedQuarterlySales();
+        final ResultSet rs = engine.executeQuery("SELECT eid, q1 FROM " + PIVOTED + " ORDER BY q1 DESC");
+        assertEquals(2L, rs.getRows().get(0).getValue(0));
+        assertEquals(1L, rs.getRows().get(1).getValue(0));
+    }
+
+    @Test
+    public void anAggregateOverAPivotedColumnIsComputed() {
+        seedQuarterlySales();
+        assertEquals(60L, engine.executeQuery("SELECT SUM(q1) AS tot FROM " + PIVOTED)
+            .getRows().get(0).getValue(0));
+    }
+
+    @Test
+    public void limitAppliesToThePivotOutput() {
+        seedQuarterlySales();
+        assertEquals(1, engine.executeQuery("SELECT eid FROM " + PIVOTED + " ORDER BY eid LIMIT 1").getRowCount());
+    }
+
+    @Test
+    public void aPivotedColumnResolvesThroughThePivotAlias() {
+        seedQuarterlySales();
+        assertEquals(2, engine.executeQuery("SELECT p.eid FROM " + PIVOTED + " ORDER BY 1").getRowCount());
+    }
+
+    @Test
+    public void anInlineWhereFiltersThePivotOutput() {
+        // Snowflake applies WHERE to the pivoted relation, so it may reference the pivoted columns. Frostlake
+        // filtered the pivot's INPUT, which made this shape impossible — only the subquery form worked.
+        seedQuarterlySales();
+        final ResultSet rs = engine.executeQuery("SELECT eid, q1, q2 FROM " + PIVOTED + " WHERE q2 > q1");
+        assertEquals(1, rs.getRowCount());
+        assertEquals(1L, rs.getRows().get(0).getValue(0));
+        assertEquals(20L, rs.getRows().get(0).getValue(2));
+    }
+
+    // ── pivot output column naming ───────────────────────────────────────────
+
+    @Test
+    public void aPivotedColumnIsNamedAfterTheLiteralAsWritten() {
+        // Snowflake keeps the quotes inside the identifier, so 'Q1' becomes a column called 'Q1' that is
+        // referenced as "'Q1'" — which is how real queries write it, e.g. MAX("'Q1'").
+        seedQuarterlySales();
+        final ResultSet rs = engine.executeQuery(
+            "SELECT * FROM qs PIVOT(SUM(amount) FOR quarter IN ('Q1','Q2'))");
+        assertEquals("'Q1'", rs.getColumns().get(1).getName());
+        assertEquals("'Q2'", rs.getColumns().get(2).getName());
+    }
+
+    @Test
+    public void aPivotedColumnIsReferencedWithItsQuotesDoubleQuoted() {
+        seedQuarterlySales();
+        final ResultSet rs = engine.executeQuery("SELECT \"'Q2'\" FROM ("
+            + "SELECT * FROM qs PIVOT(SUM(amount) FOR quarter IN ('Q1','Q2'))) ORDER BY 1");
+        assertEquals(5L, ((Number) rs.getRows().get(0).getValue(0)).longValue());
+        assertEquals(20L, ((Number) rs.getRows().get(1).getValue(0)).longValue());
+    }
+
+    @Test
+    public void anAggregateOverAQuotedPivotedColumnReadsTheColumn() {
+        // The name-resolution helper treated any text wrapped in single quotes as a string literal, so
+        // MAX("'Q1'") silently returned the STRING Q1 instead of reading the column. Every other path
+        // (projection, WHERE, ORDER BY, scalar functions) already read it correctly.
+        seedQuarterlySales();
+        assertEquals(50L, ((Number) engine.executeQuery("SELECT MAX(\"'Q1'\") AS m FROM ("
+            + "SELECT * FROM qs PIVOT(SUM(amount) FOR quarter IN ('Q1','Q2')))")
+            .getRows().get(0).getValue(0)).longValue());
+    }
+
+    @Test
+    public void anExplicitPivotValueAliasStillWins() {
+        seedQuarterlySales();
+        final ResultSet rs = engine.executeQuery(
+            "SELECT * FROM qs PIVOT(SUM(amount) FOR quarter IN ('Q1','Q2')) AS p (eid, first_q, second_q)");
+        assertEquals("EID", rs.getColumns().get(0).getName());
+        assertEquals("FIRST_Q", rs.getColumns().get(1).getName());
+        assertEquals("SECOND_Q", rs.getColumns().get(2).getName());
+    }
+
+    @Test
+    public void theSelectListAppliesToAnUnpivotOutput() {
+        final ResultSet rs = engine.executeQuery("SELECT quarter FROM (SELECT 1 AS empid, 10 AS q1, 20 AS q2) "
+            + "UNPIVOT(amount FOR quarter IN (q1, q2)) ORDER BY quarter");
+        assertEquals(1, rs.getColumns().size());
+        assertEquals("Q1", rs.getRows().get(0).getValue(0).toString().toUpperCase());
+        assertEquals("Q2", rs.getRows().get(1).getValue(0).toString().toUpperCase());
+    }
+
     @Test
     public void testBasicPivot() {
         // Create sales table
@@ -39,24 +162,27 @@ public class PivotUnpivotTest extends BaseDatabaseTest {
         // Should have 2 rows (products A and B)
         assertEquals(2, result.getRowCount());
 
-        // Should have 4 columns: product, Q1, Q2, Q3
+        // Should have 4 columns: product plus one per pivot value. Snowflake names a pivoted column after
+        // the literal AS WRITTEN, so a string pivot value keeps its single quotes INSIDE the identifier and
+        // is referenced as "'Q1'". This assertion previously expected the stripped name, which is not what
+        // Snowflake produces — and the stripped form made "'Q1'" unresolvable.
         assertEquals(4, result.getColumns().size());
         assertEquals("product", result.getColumns().get(0).getName().toLowerCase());
-        assertEquals("Q1", result.getColumns().get(1).getName());
-        assertEquals("Q2", result.getColumns().get(2).getName());
-        assertEquals("Q3", result.getColumns().get(3).getName());
+        assertEquals("'Q1'", result.getColumns().get(1).getName());
+        assertEquals("'Q2'", result.getColumns().get(2).getName());
+        assertEquals("'Q3'", result.getColumns().get(3).getName());
 
-        // Check first row (product A)
+        // Check first row (product A). amount is INTEGER, so SUM is a whole number (100, not 100.0).
         assertEquals("A", result.getRows().get(0).getValue(0));
-        assertEquals(100.0, result.getRows().get(0).getValue(1));
-        assertEquals(150.0, result.getRows().get(0).getValue(2));
-        assertEquals(200.0, result.getRows().get(0).getValue(3));
+        assertEquals(100L, result.getRows().get(0).getValue(1));
+        assertEquals(150L, result.getRows().get(0).getValue(2));
+        assertEquals(200L, result.getRows().get(0).getValue(3));
 
         // Check second row (product B)
         assertEquals("B", result.getRows().get(1).getValue(0));
-        assertEquals(200.0, result.getRows().get(1).getValue(1));
-        assertEquals(250.0, result.getRows().get(1).getValue(2));
-        assertEquals(300.0, result.getRows().get(1).getValue(3));
+        assertEquals(200L, result.getRows().get(1).getValue(1));
+        assertEquals(250L, result.getRows().get(1).getValue(2));
+        assertEquals(300L, result.getRows().get(1).getValue(3));
     }
 
     @Test
@@ -264,5 +390,39 @@ public class PivotUnpivotTest extends BaseDatabaseTest {
         // NYC should have min summer temp of 80 (from the two summer temps: 85 and 80)
         assertEquals("NYC", minResult.getRows().get(0).getValue(0));
         assertEquals(80.0, minResult.getRows().get(0).getValue(1));
+    }
+
+    @Test
+    public void pivotAfterSourceAliasWithPivotAlias() {
+        // FROM (subquery) src PIVOT(...) p — the source carries an alias and the PIVOT carries its own
+        // trailing alias. Both aliases sit between/after the source and the PIVOT, not glued to the source.
+        engine.execute("CREATE TABLE sales (region VARCHAR, q VARCHAR, amt INTEGER)");
+        engine.execute("INSERT INTO sales VALUES ('E','Q1',10), ('E','Q2',20), ('W','Q1',30), ('W','Q2',40)");
+
+        final ResultSet rs = engine.executeQuery(
+            "SELECT * FROM (SELECT region, q, amt FROM sales) m PIVOT(SUM(amt) FOR q IN ('Q1','Q2')) p");
+
+        assertEquals(2, rs.getRowCount());
+        assertEquals(3, rs.getColumns().size());   // region, Q1, Q2
+        assertEquals("E", rs.getRows().get(0).getValue(0));
+        assertEquals(10L, rs.getRows().get(0).getValue(1));
+        assertEquals(20L, rs.getRows().get(0).getValue(2));
+        assertEquals("W", rs.getRows().get(1).getValue(0));
+        assertEquals(30L, rs.getRows().get(1).getValue(1));
+        assertEquals(40L, rs.getRows().get(1).getValue(2));
+    }
+
+    @Test
+    public void pivotAfterBaseTableAlias() {
+        // FROM table alias PIVOT(...) — a base table with an alias, then PIVOT.
+        engine.execute("CREATE TABLE t2 (region VARCHAR, q VARCHAR, amt INTEGER)");
+        engine.execute("INSERT INTO t2 VALUES ('E','Q1',5), ('E','Q2',7)");
+
+        final ResultSet rs = engine.executeQuery(
+            "SELECT * FROM t2 s PIVOT(SUM(amt) FOR q IN ('Q1','Q2'))");
+
+        assertEquals(1, rs.getRowCount());
+        assertEquals(5L, rs.getRows().get(0).getValue(1));
+        assertEquals(7L, rs.getRows().get(0).getValue(2));
     }
 }

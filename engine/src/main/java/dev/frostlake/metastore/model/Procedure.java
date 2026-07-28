@@ -33,6 +33,8 @@ public class Procedure extends SqlObject {
     private final List<String> packages;
     private ExecuteAs executeAs = ExecuteAs.OWNER;
     private List<String> imports = new ArrayList<>();
+    // Declared RETURNS TABLE(col TYPE, ...) columns — name the result of a CALL / TABLE(proc()) source.
+    private List<Parameter> returnColumns = new ArrayList<>();
 
     public Procedure(final String name, final List<Parameter> parameters,
                     final DataType returnType, final String body) {
@@ -55,6 +57,14 @@ public class Procedure extends SqlObject {
         this.handler = handler;
         this.runtimeVersion = runtimeVersion;
         this.packages = packages != null ? new ArrayList<>(packages) : new ArrayList<>();
+    }
+
+    public List<Parameter> getReturnColumns() {
+        return new ArrayList<>(returnColumns);
+    }
+
+    public void setReturnColumns(final List<Parameter> returnColumns) {
+        this.returnColumns = returnColumns != null ? new ArrayList<>(returnColumns) : new ArrayList<>();
     }
 
     public List<Parameter> getParameters() {

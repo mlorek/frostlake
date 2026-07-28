@@ -293,4 +293,46 @@ public class CreateTableCommentPositionTest {
 
         logger.info("COMMENT with DEFAULT values works correctly");
     }
+
+    @Test
+    public void testClusterByThenCommentBeforeColumns() {
+        logger.info("Testing CLUSTER BY then COMMENT, both before the column list");
+
+        // Snowflake accepts the table-level property clauses in either order before the column list;
+        // this CLUSTER-BY-then-COMMENT order is emitted by some production DDL.
+        engine.execute("CREATE TABLE test17 CLUSTER BY (date) COMMENT = 'Cluster then comment' (id INTEGER, date DATE)");
+
+        Table table = engine.getCatalog().resolveTable("test17");
+        assertNotNull(table);
+        assertEquals("Cluster then comment", table.getComment());
+        assertEquals(1, table.getClusterKeys().size());
+        assertEquals("date", table.getClusterKeys().get(0));
+
+        logger.info("CLUSTER BY then COMMENT before columns works correctly");
+    }
+
+    @Test
+    public void testClusterByThenJsonCommentBeforeColumnsMultiKey() {
+        logger.info("Testing multi-key CLUSTER BY then JSON COMMENT before columns");
+
+        engine.execute("""
+            CREATE TABLE IF NOT EXISTS test18
+                CLUSTER BY (EFFECTIVE_DATE, GROUP_TYPE, RECORD_ID)
+                COMMENT = '{"ver": "1.00.00", "doc": "derived KPI metric benchmarks."}'
+            (
+                METRIC_NAME    VARCHAR NOT NULL,
+                EFFECTIVE_DATE DATE    NOT NULL,
+                GROUP_TYPE     VARCHAR NOT NULL,
+                RECORD_ID      VARCHAR NOT NULL
+            )
+            """);
+
+        Table table = engine.getCatalog().resolveTable("test18");
+        assertNotNull(table);
+        assertEquals("{\"ver\": \"1.00.00\", \"doc\": \"derived KPI metric benchmarks.\"}", table.getComment());
+        assertEquals(3, table.getClusterKeys().size());
+        assertEquals(4, table.getColumns().size());
+
+        logger.info("Multi-key CLUSTER BY then JSON COMMENT before columns works correctly");
+    }
 }

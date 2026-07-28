@@ -32,7 +32,8 @@ import java.util.Locale;
  * emitted as a quoted literal, so separators (-, /, :, spaces) pass through unchanged and unsupported
  * elements degrade to literal text rather than throwing. Month/day names use the English (US) locale
  * in title case (e.g. "Jan", "January", "Wed"); the format element's own case is not propagated to the
- * output. Not modeled: HH is treated as 24-hour, and timezone (TZH/TZM) / era / quarter / week elements.
+ * output. TZH/TZM render the NTZ zero offset ("Z" for the pair). Not modeled: HH is treated as 24-hour,
+ * and era / quarter / week elements.
  */
 public final class SnowflakeDateFormat {
 
@@ -41,6 +42,11 @@ public final class SnowflakeDateFormat {
 
     // Ordered longest-first so the greedy scan matches MONTH before MON before MM, HH24 before HH, etc.
     private static final String[][] TOKENS = {
+        // The engine's timestamps are all NTZ (a UTC wall clock, offset zero), and Snowflake renders the
+        // zero offset of the TZH:TZM pair as the ISO "Z" (captured: TO_VARCHAR(ntz,
+        // 'YYYY-MM-DDTHH24:MI:SS.FFTZH:TZM') → …589000000Z). As pattern literals these also PARSE the
+        // matching text, so an explicit-format TO_TIMESTAMP over an ISO string with Z works too.
+        {"TZH:TZM", "'Z'"}, {"TZH", "'+00'"}, {"TZM", "'00'"},
         {"MONTH", "MMMM"},
         {"YYYY", "yyyy"}, {"HH24", "HH"}, {"HH12", "hh"}, {"MMMM", "MMMM"},
         {"FF9", "SSSSSSSSS"}, {"FF8", "SSSSSSSS"}, {"FF7", "SSSSSSS"}, {"FF6", "SSSSSS"},

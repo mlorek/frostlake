@@ -109,6 +109,10 @@ public class Stage extends SqlObject {
         this.fileFormat = fileFormat;
     }
 
+    S3PathResolver getS3Resolver() {
+        return s3Resolver;
+    }
+
     public StageType getType() {
         return type;
     }

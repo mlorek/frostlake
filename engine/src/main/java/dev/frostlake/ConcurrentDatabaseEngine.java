@@ -87,12 +87,17 @@ public class ConcurrentDatabaseEngine {
                     logger.debug("Executed SQL in session {} ({}ms): {}",
                         session.getSessionId(), duration, sql.substring(0, Math.min(50, sql.length())));
 
-                    // Update session context after execution
+                    // Update session context after execution (reads this thread's scope, so it must run
+                    // before the finally block clears it)
                     captureSessionContext(session);
 
                     return result;
 
                 } finally {
+                    // Always drop this thread's per-session scopes (idempotent) — a failed statement must
+                    // not leak its session's context into whatever runs on this pooled thread next.
+                    engine.getCatalog().clearSessionScope();
+                    engine.getTransactionManager().clearSessionAutoCommit();
                     if (isReadOnlyQuery(sql)) {
                         engineLock.readLock().unlock();
                     } else {
@@ -138,14 +143,14 @@ public class ConcurrentDatabaseEngine {
      */
     private void applySessionContext(final SessionContext session) {
         try {
-            // Set current database/schema from session
-            if (session.getCurrentDatabase() != null) {
-                engine.useDatabase(session.getCurrentDatabase());
-            }
-            if (session.getCurrentSchema() != null) {
-                engine.useSchema(session.getCurrentSchema());
-            }
-            engine.setAutoCommit(session.isAutoCommit());
+            // Bind this session's context to the CURRENT THREAD instead of mutating the shared engine
+            // state: statements from different sessions run concurrently under the read lock, and the
+            // old useDatabase/setAutoCommit calls clobbered one shared field — a USE in one session
+            // leaked into another, and captureSessionContext then wrote the WRONG database back into
+            // the session (which is how a session ended up pointed at another test's dropped clone).
+            // The scopes are cleared in execute()'s finally.
+            engine.getCatalog().beginSessionScope(session.getCurrentDatabase(), session.getCurrentSchema());
+            engine.getTransactionManager().beginSessionAutoCommit(session.isAutoCommit());
 
             // ALWAYS restore (or clear, when null) this session's transaction. The shared engine uses a
             // thread-local "current transaction", so if we skipped this when the session has none, the

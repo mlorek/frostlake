@@ -35,10 +35,20 @@ public class SyntaxErrorListener extends BaseErrorListener {
 
     private final List<String> errors;
     private final String sql;
+    // Speculative parses (is this UDF body a query or a bare expression?) EXPECT to fail on one of
+    // the alternatives; logging their syntax errors at ERROR flooded the log with noise for every
+    // perfectly working expression-body UDF. Quiet mode demotes the logging to DEBUG — the collected
+    // errors and throwIfErrors() behave identically.
+    private final boolean quiet;
 
     public SyntaxErrorListener(final String sql) {
+        this(sql, false);
+    }
+
+    public SyntaxErrorListener(final String sql, final boolean quiet) {
         this.errors = new ArrayList<>();
         this.sql = sql;
+        this.quiet = quiet;
     }
 
     @Override
@@ -50,7 +60,11 @@ public class SyntaxErrorListener extends BaseErrorListener {
                            final RecognitionException e) {
         String error = String.format("Syntax error at line %d:%d - %s", line, charPositionInLine, msg);
         errors.add(error);
-        logger.error("=> SQL syntax error: {}", error);
+        if (quiet) {
+            logger.debug("=> SQL syntax error (speculative parse): {}", error);
+        } else {
+            logger.error("=> SQL syntax error: {}", error);
+        }
     }
 
     public boolean hasErrors() {
@@ -70,7 +84,11 @@ public class SyntaxErrorListener extends BaseErrorListener {
             }
             sb.append("\n-Failed query:\n").append(sql);
 
-            logger.error("=> Failed to parse SQL query:\n{}", sql);
+            if (quiet) {
+                logger.debug("=> Failed speculative parse:\n{}", sql);
+            } else {
+                logger.error("=> Failed to parse SQL query:\n{}", sql);
+            }
             throw new SqlSyntaxException(sb.toString(), errors, sql);
         }
     }

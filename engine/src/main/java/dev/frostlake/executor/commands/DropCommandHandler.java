@@ -30,7 +30,9 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Handles DROP statements (DROP TABLE/VIEW/DATABASE/SCHEMA/STREAM/TASK/SEQUENCE/...), extracted from
@@ -76,6 +78,29 @@ public class DropCommandHandler implements CommandHandler {
         }
     }
 
+    /**
+     * Detach one schema's tables from storage as part of a DROP SCHEMA / DROP DATABASE: snapshot each
+     * table's rows into {@code out} (keyed by fully-qualified name) and release its storage, exactly as
+     * DROP TABLE does. Without this the storage entries outlive the drop, so re-creating the same
+     * database/schema fails with "Table storage already exists" and a CLONE into the reused name appends to
+     * the stale rows instead of replacing them. Buffered writes are discarded so an uncommitted change from
+     * this transaction isn't flushed to now-missing storage at commit.
+     */
+    private void snapshotAndReleaseStorage(final String databaseName, final Schema schema,
+                                           final Map<String, List<Row>> out) {
+        final StorageEngine storage = queryExecutor.getStorageEngine();
+        for (final Table table : schema.getTables()) {
+            final String fqn = databaseName.toUpperCase() + "." + schema.getName().toUpperCase()
+                + "." + table.getName().toUpperCase();
+            if (!storage.hasTable(fqn)) {
+                continue;
+            }
+            out.put(fqn, new ArrayList<>(storage.getTableStorage(fqn).scan()));
+            storage.dropTable(fqn);
+            queryExecutor.getTransactionManager().discardBufferedWritesFor(fqn);
+        }
+    }
+
     public Object handleDropStatement(final FrostlakeParser.DropStatementContext ctx) {
         boolean ifExists = ctx.if_exists() != null;
 
@@ -86,7 +111,15 @@ public class DropCommandHandler implements CommandHandler {
                     checkDrop(SecurableObjectType.DATABASE, dbName);
                     final Database droppedDb = catalog.getDatabase(dbName);
                     if (droppedDb != null) {
-                        catalog.recordDropped("DATABASE:" + dbName, new DroppedObject(droppedDb, null));
+                        // Snapshot every table's rows and RELEASE its storage (as DROP TABLE does), so the
+                        // database name can be created again without colliding with — or inheriting — the
+                        // dropped tables' storage. UNDROP DATABASE restores both metadata and rows.
+                        final Map<String, List<Row>> tableRows = new LinkedHashMap<>();
+                        for (final Schema droppedSchema : droppedDb.getAllSchemas()) {
+                            snapshotAndReleaseStorage(dbName, droppedSchema, tableRows);
+                        }
+                        catalog.recordDropped("DATABASE:" + dbName.toUpperCase(),
+                            new DroppedObject(droppedDb, tableRows));
                     }
                     catalog.dropDatabase(dbName, false);
                     if (streamManager != null) {
@@ -109,16 +142,21 @@ public class DropCommandHandler implements CommandHandler {
                     final Database snapDb = catalog.getDatabase(snapDbName);
                     final Schema snapSchema = snapDb != null ? snapDb.getSchema(snapSchemaName) : null;
                     if (snapSchema != null) {
+                        final Map<String, List<Row>> tableRows = new LinkedHashMap<>();
+                        snapshotAndReleaseStorage(snapDbName, snapSchema, tableRows);
                         catalog.recordDropped("SCHEMA:" + snapDbName.toUpperCase() + "." + snapSchemaName.toUpperCase(),
-                            new DroppedObject(snapSchema, null));
+                            new DroppedObject(snapSchema, tableRows));
                     }
+                    // DROP SCHEMA … CASCADE also drops the objects the schema still contains; without it
+                    // (RESTRICT, the default) a non-empty schema is refused.
+                    final boolean cascade = ctx.dropBehavior() != null && ctx.dropBehavior().CASCADE() != null;
                     if (parts.length == 1) {
-                        catalog.getDatabase(catalog.getCurrentDatabase()).dropSchema(parts[0], false);
+                        catalog.getDatabase(catalog.getCurrentDatabase()).dropSchema(parts[0], cascade);
                         if (streamManager != null) {
                             streamManager.onSchemaDropped(catalog.getCurrentDatabase(), parts[0]);
                         }
                     } else {
-                        catalog.getDatabase(parts[0]).dropSchema(parts[1], false);
+                        catalog.getDatabase(parts[0]).dropSchema(parts[1], cascade);
                         if (streamManager != null) {
                             streamManager.onSchemaDropped(parts[0], parts[1]);
                         }
@@ -179,6 +217,10 @@ public class DropCommandHandler implements CommandHandler {
 
                     schema.dropTable(table.getName());
                     queryExecutor.getStorageEngine().dropTable(fullyQualifiedName);
+                    // Drop any buffered writes for this table so an uncommitted INSERT/UPDATE/DELETE earlier
+                    // in the same transaction (e.g. a proc that seeds then drops a temp table) isn't flushed
+                    // to now-missing storage at commit.
+                    queryExecutor.getTransactionManager().discardBufferedWritesFor(fullyQualifiedName);
                     if (streamManager != null) {
                         streamManager.onTableDropped(fullyQualifiedName);
                     }

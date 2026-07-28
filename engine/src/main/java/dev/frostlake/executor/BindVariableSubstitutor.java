@@ -21,8 +21,10 @@ import org.antlr.v4.runtime.CharStreams;
 import org.antlr.v4.runtime.CommonTokenStream;
 import org.antlr.v4.runtime.Token;
 
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Substitutes procedural scripting variables into raw SQL text before it is parsed/executed:
@@ -58,6 +60,9 @@ public class BindVariableSubstitutor {
         stream.fill();
         final List<Token> toks = stream.getTokens();   // structural tokens only (WS / comments are skipped)
 
+        // The variables named in a SELECT … INTO target list are ASSIGNMENT TARGETS, not values.
+        final Set<Integer> intoTargets = intoTargetColonIndices(toks);
+
         final StringBuilder out = new StringBuilder(sql.length());
         int cursor = 0;
         for (int i = 0; i < toks.size(); i++) {
@@ -68,7 +73,8 @@ public class BindVariableSubstitutor {
 
             // :name — a COLON immediately followed by an identifier is a bind variable. An unknown name
             // resolves to NULL, matching the historical behavior of the character-scanning version.
-            if (t.getType() == FrostlakeLexer.COLON && i + 1 < toks.size()) {
+            if (t.getType() == FrostlakeLexer.COLON && i + 1 < toks.size()
+                    && !isVariantPathColon(toks, i) && !intoTargets.contains(i)) {
                 final Token nameTok = toks.get(i + 1);
                 if (SqlTokens.isWord(nameTok)
                         && nameTok.getStartIndex() == t.getStopIndex() + 1) {
@@ -107,11 +113,69 @@ public class BindVariableSubstitutor {
     }
 
     /** Render a variable value as a SQL literal: NULL, or a single-quoted string with quotes escaped. */
+
+    /**
+     * The token indices of the COLONs that introduce a {@code SELECT … INTO :v1, :v2} TARGET. Those names are
+     * assignment targets, not values: substituting them produced {@code INTO '1', '2'} — a syntax error at the
+     * literal ("mismatched input ''1''"). Only a {@code :name} run that directly follows the INTO keyword,
+     * separated by commas, is a target list; {@code INSERT INTO t} is unaffected because the token after INTO
+     * is an identifier rather than a colon.
+     */
+    private static Set<Integer> intoTargetColonIndices(final List<Token> toks) {
+        final Set<Integer> targets = new HashSet<>();
+        for (int i = 0; i < toks.size(); i++) {
+            if (toks.get(i).getType() != FrostlakeLexer.INTO) {
+                continue;
+            }
+            int j = i + 1;
+            while (j + 1 < toks.size()
+                    && toks.get(j).getType() == FrostlakeLexer.COLON
+                    && SqlTokens.isWord(toks.get(j + 1))) {
+                targets.add(j);
+                j += 2;
+                if (j < toks.size() && toks.get(j).getType() == FrostlakeLexer.COMMA) {
+                    j++;
+                } else {
+                    break;
+                }
+            }
+        }
+        return targets;
+    }
+
+    /**
+     * Whether the COLON at {@code colonIndex} is the semi-structured PATH operator ({@code src:key},
+     * {@code src:a:b}) rather than a Scripting bind reference ({@code :var}). It is a path when it directly
+     * follows something that can END a value expression — an identifier, a quoted identifier, {@code )},
+     * {@code ]} or a string literal — with no space between. A bind reference never appears in that position
+     * (it follows an operator, a comma, an opening bracket or a keyword). Without this test every path key was
+     * substituted as an unknown bind variable, so {@code s.src:a:b} became the single identifier
+     * {@code s.srcNULLNULL} — reported later as "Column not found: S.SRCNULLNULL".
+     */
+    private static boolean isVariantPathColon(final List<Token> toks, final int colonIndex) {
+        if (colonIndex == 0) {
+            return false;
+        }
+        final Token prev = toks.get(colonIndex - 1);
+        final int type = prev.getType();
+        final boolean endsAValue = type == FrostlakeLexer.IDENTIFIER
+            || type == FrostlakeLexer.QUOTED_IDENTIFIER
+            || type == FrostlakeLexer.RPAREN
+            || type == FrostlakeLexer.RBRACKET
+            || type == FrostlakeLexer.STRING_LITERAL;
+        return endsAValue && prev.getStopIndex() + 1 == toks.get(colonIndex).getStartIndex();
+    }
+
     private static String toLiteral(final Object value) {
         if (value == null) {
             return "NULL";
         }
-        return "'" + value.toString().replace("'", "''") + "'";
+        // A BOOLEAN variable binds as a BOOLEAN literal — quoting it handed boolean positions a
+        // non-empty STRING ('false'), so a FALSE flag behind IFF(:flag, …) took the TRUE branch.
+        if (value instanceof Boolean) {
+            return ((Boolean) value) ? "TRUE" : "FALSE";
+        }
+        return SqlStringLiterals.encode(value.toString());
     }
 
     /** Strip the surrounding double quotes from a QUOTED_IDENTIFIER token, unescaping "" to ". */

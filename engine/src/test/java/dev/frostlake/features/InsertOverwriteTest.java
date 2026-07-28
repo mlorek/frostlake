@@ -50,6 +50,57 @@ public class InsertOverwriteTest {
     }
 
     @Test
+    public void insideATransactionOverwriteReplacesRowsInsertedByThatTransaction() {
+        // The stage/rebuild pattern: fill a scratch table, then rebuild it in place from itself. The truncate
+        // used to clear only the BASE store, while an explicit transaction's inserts are buffered in its write
+        // set — so those rows survived and the OVERWRITE appended to them instead of replacing them.
+        engine.execute("CREATE TABLE staged (id INTEGER, tag VARCHAR)");
+        engine.execute("BEGIN TRANSACTION");
+        engine.execute("INSERT INTO staged VALUES (1, 'a'), (2, 'b'), (3, 'c')");
+        engine.execute("INSERT OVERWRITE INTO staged (id, tag) SELECT id, tag FROM staged WHERE id = 3");
+
+        final ResultSet inTxn = engine.executeQuery("SELECT id, tag FROM staged");
+        assertEquals(1, inTxn.getRowCount());
+        assertEquals("c", inTxn.getRows().get(0).getValue(1));
+
+        engine.execute("COMMIT");
+        final ResultSet committed = engine.executeQuery("SELECT id, tag FROM staged");
+        assertEquals(1, committed.getRowCount());
+        assertEquals("c", committed.getRows().get(0).getValue(1));
+        logger.info("INSERT OVERWRITE replaces same-transaction rows");
+    }
+
+    @Test
+    public void insideATransactionAnEmptySourceStillEmptiesTheTable() {
+        // The staging-loader shape: when the rebuild SELECT filters everything out, the table must end up
+        // EMPTY. It used to keep the transaction's staged rows, which then flowed on to the next statement.
+        engine.execute("CREATE TABLE staged (id INTEGER, tag VARCHAR)");
+        engine.execute("BEGIN TRANSACTION");
+        engine.execute("INSERT INTO staged VALUES (1, 'a'), (2, 'b')");
+        engine.execute("INSERT OVERWRITE INTO staged (id, tag) SELECT id, tag FROM staged WHERE 1 = 0");
+
+        assertEquals(0, engine.executeQuery("SELECT id, tag FROM staged").getRowCount());
+        engine.execute("COMMIT");
+        assertEquals(0, engine.executeQuery("SELECT id, tag FROM staged").getRowCount());
+        logger.info("INSERT OVERWRITE with an empty source empties the table inside a transaction");
+    }
+
+    @Test
+    public void insideATransactionOverwriteIsUndoneByRollback() {
+        engine.execute("CREATE TABLE staged (id INTEGER, tag VARCHAR)");
+        engine.execute("INSERT INTO staged VALUES (1, 'committed')");
+        engine.execute("BEGIN TRANSACTION");
+        engine.execute("INSERT OVERWRITE INTO staged (id, tag) SELECT 9, 'replaced'");
+        assertEquals("replaced", engine.executeQuery("SELECT tag FROM staged").getRows().get(0).getValue(0));
+        engine.execute("ROLLBACK");
+
+        final ResultSet afterRollback = engine.executeQuery("SELECT id, tag FROM staged");
+        assertEquals(1, afterRollback.getRowCount());
+        assertEquals("committed", afterRollback.getRows().get(0).getValue(1));
+        logger.info("INSERT OVERWRITE is rolled back with its transaction");
+    }
+
+    @Test
     public void testInsertOverwriteWithValues() {
         logger.info("Testing INSERT OVERWRITE with VALUES");
 

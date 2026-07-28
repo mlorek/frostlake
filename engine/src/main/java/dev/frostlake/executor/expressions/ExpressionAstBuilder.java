@@ -78,7 +78,15 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
     public Expression visitLiteralExpr(final FrostlakeParser.LiteralExprContext ctx) {
         final FrostlakeParser.LiteralContext lit = ctx.literal();
         if (lit.INTEGER_LITERAL() != null) {
-            return new LiteralExpression(Long.parseLong(lit.getText()), LiteralType.INTEGER);
+            final String intText = lit.getText();
+            try {
+                return new LiteralExpression(Long.parseLong(intText), LiteralType.INTEGER);
+            } catch (final NumberFormatException tooWide) {
+                // Integer literal wider than a Java long — Snowflake NUMBER(38,0) allows up to 38 digits,
+                // so represent it exactly as a BigDecimal (e.g. 20+ digit synthetic row IDs) rather than
+                // overflowing with "For input string".
+                return new LiteralExpression(new BigDecimal(intText), LiteralType.DECIMAL);
+            }
         }
         if (lit.FLOAT_LITERAL() != null) {
             return new LiteralExpression(new BigDecimal(lit.getText()), LiteralType.DECIMAL);
@@ -100,7 +108,19 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
 
     @Override
     public Expression visitQualifiedNameExpr(final FrostlakeParser.QualifiedNameExprContext ctx) {
-        final List<FrostlakeParser.IdentifierContext> parts = ctx.qualifiedName().identifier();
+        return buildColumnReference(ctx.qualifiedName());
+    }
+
+    /** {@code column(+)} — the Oracle legacy outer-join marker. The {@code (+)} is a JOIN directive handled
+     *  by the executor (which detects it at the parse-tree level and rewrites the comma-join into an outer
+     *  join); as an expression the marked reference is just its plain column, so evaluation drops the marker. */
+    @Override
+    public Expression visitOuterJoinColumnExpr(final FrostlakeParser.OuterJoinColumnExprContext ctx) {
+        return buildColumnReference(ctx.qualifiedName());
+    }
+
+    private Expression buildColumnReference(final FrostlakeParser.QualifiedNameContext qn) {
+        final List<FrostlakeParser.IdentifierContext> parts = qn.identifier();
         if (parts.size() == 1) {
             return new ColumnReferenceExpression(SqlIdentifiers.canonical(parts.get(0)));
         }
@@ -215,6 +235,17 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
     }
 
     @Override
+    public Expression visitIsDistinctExpr(final FrostlakeParser.IsDistinctExprContext ctx) {
+        // a IS [NOT] DISTINCT FROM b — NULL-safe (in)equality, expressed via EQUAL_NULL(a, b):
+        //   IS NOT DISTINCT FROM => EQUAL_NULL(a, b);  IS DISTINCT FROM => NOT EQUAL_NULL(a, b).
+        final List<Expression> args = new ArrayList<>();
+        args.add(visit(ctx.expression(0)));
+        args.add(visit(ctx.expression(1)));
+        final Expression equalNull = new FunctionCallExpression("EQUAL_NULL", args);
+        return ctx.NOT() != null ? equalNull : new UnaryOperationExpression(UnaryOperator.NOT, equalNull);
+    }
+
+    @Override
     public Expression visitLikeExpr(final FrostlakeParser.LikeExprContext ctx) {
         final boolean not = ctx.NOT() != null;
         final BinaryOperator op;
@@ -229,6 +260,23 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
         // escape character rather than always assuming the default backslash.
         final Expression escape = ctx.expression(2) != null ? visit(ctx.expression(2)) : null;
         return new BinaryOperationExpression(visit(ctx.expression(0)), op, visit(ctx.expression(1)), escape);
+    }
+
+    @Override
+    public Expression visitLikeAnyAllExpr(final FrostlakeParser.LikeAnyAllExprContext ctx) {
+        // Snowflake's multi-pattern matching — `x [NOT] LIKE/ILIKE ANY|ALL (p1, p2, …)` — is defined as the
+        // OR (ANY) / AND (ALL) expansion of the single-pattern predicate, so build exactly that tree and
+        // inherit the existing LIKE evaluation and its three-valued NULL semantics.
+        final BinaryOperator op = ctx.ILIKE() != null ? BinaryOperator.ILIKE : BinaryOperator.LIKE;
+        final BinaryOperator combiner = ctx.q.getType() == FrostlakeParser.ALL ? BinaryOperator.AND : BinaryOperator.OR;
+        final Expression subject = visit(ctx.expression(0));
+        final Expression escape = ctx.esc != null ? visit(ctx.esc) : null;
+        Expression combined = null;
+        for (final FrostlakeParser.ExpressionContext patternCtx : ctx.patterns) {
+            final Expression one = new BinaryOperationExpression(subject, op, visit(patternCtx), escape);
+            combined = combined == null ? one : new BinaryOperationExpression(combined, combiner, one);
+        }
+        return ctx.NOT() != null ? new UnaryOperationExpression(UnaryOperator.NOT, combined) : combined;
     }
 
     @Override
@@ -268,15 +316,15 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
 
     @Override
     public Expression visitSimpleCaseExpr(final FrostlakeParser.SimpleCaseExprContext ctx) {
-        final Expression operand = visit(ctx.expression(0));
+        final Expression operand = visit(ctx.expression());
         final List<CaseExpression.WhenClause> whens = new ArrayList<>();
         for (final FrostlakeParser.WhenClauseContext when : ctx.whenClause()) {
-            // CASE x WHEN v THEN r  ==>  condition (x = v)
+            // CASE x WHEN v THEN r  ==>  condition (x = v); booleanExpr(0)=WHEN value, booleanExpr(1)=THEN result
             final Expression condition = new BinaryOperationExpression(
-                operand, BinaryOperator.EQUAL, visit(when.booleanExpr()));
-            whens.add(new CaseExpression.WhenClause(condition, visit(when.expression())));
+                operand, BinaryOperator.EQUAL, visit(when.booleanExpr(0)));
+            whens.add(new CaseExpression.WhenClause(condition, visit(when.booleanExpr(1))));
         }
-        final Expression elseExpr = ctx.expression().size() > 1 ? visit(ctx.expression(1)) : null;
+        final Expression elseExpr = ctx.booleanExpr() != null ? visit(ctx.booleanExpr()) : null;
         return new CaseExpression(whens, elseExpr);
     }
 
@@ -284,16 +332,22 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
     public Expression visitSearchedCaseExpr(final FrostlakeParser.SearchedCaseExprContext ctx) {
         final List<CaseExpression.WhenClause> whens = new ArrayList<>();
         for (final FrostlakeParser.WhenClauseContext when : ctx.whenClause()) {
-            whens.add(new CaseExpression.WhenClause(visit(when.booleanExpr()), visit(when.expression())));
+            whens.add(new CaseExpression.WhenClause(visit(when.booleanExpr(0)), visit(when.booleanExpr(1))));
         }
-        // SearchedCase has a single (optional) ELSE expression directly under the rule.
-        final Expression elseExpr = ctx.expression() != null ? visit(ctx.expression()) : null;
+        // SearchedCase has a single (optional) ELSE booleanExpr directly under the rule.
+        final Expression elseExpr = ctx.booleanExpr() != null ? visit(ctx.booleanExpr()) : null;
         return new CaseExpression(whens, elseExpr);
     }
 
     @Override
     public Expression visitCastExpr(final FrostlakeParser.CastExprContext ctx) {
         return new CastExpression(visit(ctx.expression()), typeText(ctx.dataTypeName(), ctx.typeParameters()));
+    }
+
+    @Override
+    public Expression visitTryCastExpr(final FrostlakeParser.TryCastExprContext ctx) {
+        // TRY_CAST(expr AS type): same as CAST but a failed conversion yields NULL instead of erroring.
+        return new CastExpression(visit(ctx.expression()), typeText(ctx.dataTypeName(), ctx.typeParameters()), true);
     }
 
     @Override
@@ -335,12 +389,25 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
             new SubqueryExpression(originalText(ctx.selectStatement())));
     }
 
+    /**
+     * The JSON key a variant path segment names. A QUOTED segment ({@code x:"source".y}) sheds its
+     * surrounding quotes (with {@code ""} un-doubled) — keeping them made the lookup search for a key
+     * that literally contains quote characters, so the whole path silently resolved to NULL.
+     */
+    private static String variantPathKeyText(final FrostlakeParser.VariantPathKeyContext key) {
+        final String text = key.getText();
+        if (text.length() >= 2 && text.charAt(0) == '"' && text.charAt(text.length() - 1) == '"') {
+            return text.substring(1, text.length() - 1).replace("\"\"", "\"");
+        }
+        return text;
+    }
+
     @Override
     public Expression visitObjectAccessExpr(final FrostlakeParser.ObjectAccessExprContext ctx) {
-        // Keep the path as its ordered identifier segments from the parse tree; no flatten-then-re-split.
+        // Keep the path as its ordered key segments from the parse tree; no flatten-then-re-split.
         final List<String> pathParts = new ArrayList<>();
-        for (final FrostlakeParser.IdentifierContext id : ctx.identifier()) {
-            pathParts.add(id.getText());
+        for (final FrostlakeParser.VariantPathKeyContext key : ctx.variantPathKey()) {
+            pathParts.add(variantPathKeyText(key));
         }
         return new ObjectAccessExpression(visit(ctx.expression()), pathParts);
     }
@@ -357,7 +424,7 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
         // powers colon paths applies. A bare column reference a.b stays a QualifiedNameExpr (the
         // greedy qualifiedName rule consumes it), so this only fires after a subscript/paren/etc.
         final List<String> pathParts = new ArrayList<>();
-        pathParts.add(ctx.identifier().getText());
+        pathParts.add(variantPathKeyText(ctx.variantPathKey()));
         return new ObjectAccessExpression(visit(ctx.expression()), pathParts);
     }
 
@@ -430,11 +497,22 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
 
     @Override
     public Expression visitFunctionCallStarExpr(final FrostlakeParser.FunctionCallStarExprContext ctx) {
-        return new FunctionCallExpression(
+        final FunctionCallExpression call = new FunctionCallExpression(
             ctx.functionName().getText().toUpperCase(),
             new ArrayList<>(),
             ctx.DISTINCT() != null,
             true);
+        // Column-list modifiers on a `*` argument — currently EXCLUDE (e.g. OBJECT_CONSTRUCT(* EXCLUDE src)).
+        final List<String> excludes = new ArrayList<>();
+        for (final FrostlakeParser.StarModifierContext mod : ctx.starModifier()) {
+            if (mod.EXCLUDE() != null) {
+                for (final FrostlakeParser.IdentifierContext id : mod.identifier()) {
+                    excludes.add(id.getText().toUpperCase());
+                }
+            }
+        }
+        call.setStarExcludes(excludes);
+        return call;
     }
 
     @Override
@@ -545,15 +623,27 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
         return args;
     }
 
-    /** Function-call arguments (a {@code booleanExpr} list, so a bare AND/OR argument is accepted). */
+    /** Function-call arguments — each a lambda (for higher-order functions) or a {@code booleanExpr}. */
     private List<Expression> argList(final FrostlakeParser.FunctionArgListContext list) {
         final List<Expression> args = new ArrayList<>();
         if (list != null) {
-            for (final FrostlakeParser.BooleanExprContext arg : list.booleanExpr()) {
-                args.add(visit(arg));
+            for (final FrostlakeParser.FunctionArgContext arg : list.functionArg()) {
+                if (arg.lambdaFunction() != null) {
+                    args.add(buildLambda(arg.lambdaFunction()));
+                } else {
+                    args.add(visit(arg.booleanExpr()));
+                }
             }
         }
         return args;
+    }
+
+    private Expression buildLambda(final FrostlakeParser.LambdaFunctionContext ctx) {
+        final List<String> params = new ArrayList<>();
+        for (final FrostlakeParser.LambdaParamContext p : ctx.lambdaParams().lambdaParam()) {
+            params.add(p.identifier().getText().toUpperCase());
+        }
+        return new LambdaExpression(params, visit(ctx.booleanExpr()));
     }
 
     private String typeText(final FrostlakeParser.DataTypeNameContext type, final FrostlakeParser.TypeParametersContext params) {

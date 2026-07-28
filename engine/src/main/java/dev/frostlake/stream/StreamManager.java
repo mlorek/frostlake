@@ -18,13 +18,16 @@ package dev.frostlake.stream;
 
 import dev.frostlake.metastore.*;
 import dev.frostlake.metastore.model.ChangeType;
+import dev.frostlake.metastore.model.Database;
 import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.metastore.model.Stream;
 import dev.frostlake.metastore.model.StreamRecord;
+import dev.frostlake.metastore.model.StreamSourceType;
 import dev.frostlake.storage.Row;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
@@ -58,27 +61,68 @@ public class StreamManager {
         String tableName = parts[2];
 
         try {
-            Schema schema = catalog.getDatabase(dbName).getSchema(schemaName);
-            List<Stream> streams = schema.getStreams();
+            List<Stream> streams = streamsCapturing(dbName, schemaName, tableName);
 
             long rowId = getNextRowId(qualifiedTableName);
 
             for (final Stream stream : streams) {
-                if (capturesTable(stream, tableName)) {
-                    StreamRecord record = new StreamRecord(
-                        row.getValues(),
-                        ChangeType.INSERT,
-                        false,
-                        rowId,
-                        tableName.toUpperCase()
-                    );
-                    stream.addRecord(record);
-                    logger.debug("Tracked INSERT to stream: {}", stream.getName());
-                }
+                StreamRecord record = new StreamRecord(
+                    row.getValues(),
+                    ChangeType.INSERT,
+                    false,
+                    rowId,
+                    tableName.toUpperCase()
+                );
+                stream.addRecord(record);
+                logger.debug("Tracked INSERT to stream: {}", stream.getName());
             }
         } catch (final Exception e) {
             logger.warn("Failed to track INSERT for streams: {}", e.getMessage());
         }
+    }
+
+    /**
+     * Every stream in the database that captures changes to {@code db.schema.table}, searched across ALL of
+     * the database's schemas — a stream commonly lives in a different schema from the table it reads (e.g. a
+     * {@code BASE_TRANSFORM} stream ON a {@code INGEST} table), and looking only in the mutated table's own
+     * schema meant such a stream never saw a committed change at all. A TABLE stream is matched on the FULL
+     * name (its source resolved against the STREAM's own database/schema for any part it omits) so two
+     * same-named tables in different schemas cannot cross-capture; a VIEW stream keeps the bare-name match on
+     * its recorded base tables, which a view may draw from any schema.
+     */
+    private List<Stream> streamsCapturing(final String dbName, final String schemaName, final String tableName) {
+        final List<Stream> out = new ArrayList<>();
+        final Database database = catalog.getDatabase(dbName);
+        if (database == null) {
+            return out;
+        }
+        for (final Schema schema : database.getAllSchemas()) {
+            for (final Stream stream : schema.getStreams()) {
+                if (stream.getSourceType() == StreamSourceType.VIEW || !stream.getBaseTableNames().isEmpty()) {
+                    if (capturesTable(stream, tableName)) {
+                        out.add(stream);
+                    }
+                } else if (matchesSourceTable(stream, dbName, schema.getName(), schemaName, tableName)) {
+                    out.add(stream);
+                }
+            }
+        }
+        return out;
+    }
+
+    /**
+     * Whether a TABLE stream's source names exactly the mutated table. The source may be written unqualified
+     * or schema-qualified, so the missing parts are filled from the schema the STREAM itself lives in.
+     */
+    private boolean matchesSourceTable(final Stream stream, final String dbName, final String streamSchemaName,
+                                       final String mutatedSchemaName, final String mutatedTableName) {
+        final String[] parts = QualifiedName.parse(stream.getSourceTableName()).parts();
+        final String sourceTable = parts[parts.length - 1];
+        final String sourceSchema = parts.length >= 2 ? parts[parts.length - 2] : streamSchemaName;
+        final String sourceDb = parts.length >= 3 ? parts[parts.length - 3] : dbName;
+        return sourceTable.equalsIgnoreCase(mutatedTableName)
+            && sourceSchema.equalsIgnoreCase(mutatedSchemaName)
+            && sourceDb.equalsIgnoreCase(dbName);
     }
 
     /**
@@ -93,34 +137,31 @@ public class StreamManager {
         String tableName = parts[2];
 
         try {
-            Schema schema = catalog.getDatabase(dbName).getSchema(schemaName);
-            List<Stream> streams = schema.getStreams();
+            List<Stream> streams = streamsCapturing(dbName, schemaName, tableName);
 
             long rowId = getNextRowId(qualifiedTableName);
 
             for (final Stream stream : streams) {
-                if (capturesTable(stream, tableName)) {
-                    // For updates, streams track both DELETE and INSERT
-                    StreamRecord deleteRecord = new StreamRecord(
-                        oldRow.getValues(),
-                        ChangeType.DELETE,
-                        true,
-                        rowId,
-                        tableName.toUpperCase()
-                    );
-                    stream.addRecord(deleteRecord);
+                // For updates, streams track both DELETE and INSERT
+                StreamRecord deleteRecord = new StreamRecord(
+                    oldRow.getValues(),
+                    ChangeType.DELETE,
+                    true,
+                    rowId,
+                    tableName.toUpperCase()
+                );
+                stream.addRecord(deleteRecord);
 
-                    StreamRecord insertRecord = new StreamRecord(
-                        newRow.getValues(),
-                        ChangeType.INSERT,
-                        true,
-                        rowId,
-                        tableName.toUpperCase()
-                    );
-                    stream.addRecord(insertRecord);
+                StreamRecord insertRecord = new StreamRecord(
+                    newRow.getValues(),
+                    ChangeType.INSERT,
+                    true,
+                    rowId,
+                    tableName.toUpperCase()
+                );
+                stream.addRecord(insertRecord);
 
-                    logger.debug("Tracked UPDATE to stream: {}", stream.getName());
-                }
+                logger.debug("Tracked UPDATE to stream: {}", stream.getName());
             }
         } catch (final Exception e) {
             logger.warn("Failed to track UPDATE for streams: {}", e.getMessage());
@@ -139,23 +180,20 @@ public class StreamManager {
         String tableName = parts[2];
 
         try {
-            Schema schema = catalog.getDatabase(dbName).getSchema(schemaName);
-            List<Stream> streams = schema.getStreams();
+            List<Stream> streams = streamsCapturing(dbName, schemaName, tableName);
 
             long rowId = getNextRowId(qualifiedTableName);
 
             for (final Stream stream : streams) {
-                if (capturesTable(stream, tableName)) {
-                    StreamRecord record = new StreamRecord(
-                        row.getValues(),
-                        ChangeType.DELETE,
-                        false,
-                        rowId,
-                        tableName.toUpperCase()
-                    );
-                    stream.addRecord(record);
-                    logger.debug("Tracked DELETE to stream: {}", stream.getName());
-                }
+                StreamRecord record = new StreamRecord(
+                    row.getValues(),
+                    ChangeType.DELETE,
+                    false,
+                    rowId,
+                    tableName.toUpperCase()
+                );
+                stream.addRecord(record);
+                logger.debug("Tracked DELETE to stream: {}", stream.getName());
             }
         } catch (final Exception e) {
             logger.warn("Failed to track DELETE for streams: {}", e.getMessage());

@@ -16,6 +16,7 @@
 
 package dev.frostlake.functions.scalar.conditional;
 
+import dev.frostlake.executor.expressions.SqlTruth;
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.types.VariantType;
 
@@ -30,14 +31,9 @@ public class Iff extends BuiltInFunction {
         Object trueValue = args.get(1);
         Object falseValue = args.get(2);
 
-        boolean conditionResult = false;
-        if (condition instanceof Boolean) {
-            conditionResult = (Boolean) condition;
-        } else if (condition != null) {
-            conditionResult = true;
-        }
-
-        return conditionResult ? trueValue : falseValue;
+        // Snowflake coerces the condition like any boolean position ('false' text is FALSE, numbers
+        // by zero/non-zero) — treating every non-null value as TRUE sent IFF('false', a, b) to a.
+        return SqlTruth.isTrue(condition) ? trueValue : falseValue;
     }
 
     @Override public int getMinArgCount() { return 3; }

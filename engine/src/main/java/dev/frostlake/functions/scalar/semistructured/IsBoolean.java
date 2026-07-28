@@ -27,6 +27,12 @@ public class IsBoolean extends BuiltInFunction {
 
     @Override
     public Object evaluate(final List<Object> args) {
+        // Snowflake: NULL in, NULL out — a SQL NULL input yields NULL, not FALSE
+        for (int i = 0; i < 1; i++) {
+            if (i < args.size() && args.get(i) == null) {
+                return null;
+            }
+        }
         if (args.get(0) == null) return false;
         Object v = args.get(0);
         if (v instanceof Boolean) return true;

@@ -21,23 +21,36 @@ import dev.frostlake.types.VariantType;
 
 import java.util.List;
 
+/**
+ * GREATEST_IGNORE_NULLS — the largest non-NULL argument, IGNORING NULLs (Snowflake's explicit skipping variant; plain
+ * LEAST/GREATEST return NULL when any argument is NULL). NULL only when every argument is NULL.
+ */
 public class GreatestIgnoreNulls extends BuiltInFunction {
+
     public GreatestIgnoreNulls() { super("GREATEST_IGNORE_NULLS", VariantType.VARIANT); }
 
     @Override
+    @SuppressWarnings("unchecked")
     public Object evaluate(final List<Object> args) {
+        if (args.isEmpty()) {
+            return null;
+        }
         Object max = null;
-        for (final Object a : args) {
-            if (a == null) continue;
-            if (max == null || compareObj(a, max) > 0) max = a;
+        for (final Object arg : args) {
+            if (arg == null) {
+                continue;
+            }
+            if (max == null) {
+                max = arg;
+            } else if (arg instanceof Comparable && max instanceof Comparable) {
+                final Comparable comparableArg = (Comparable) arg;
+                final Comparable comparableBest = (Comparable) max;
+                if (comparableArg.compareTo(comparableBest) > 0) {
+                    max = arg;
+                }
+            }
         }
         return max;
-    }
-
-    @SuppressWarnings("unchecked")
-    private int compareObj(final Object a, final Object b) {
-        if (a instanceof Number && b instanceof Number) return Double.compare(((Number) a).doubleValue(), ((Number) b).doubleValue());
-        return a.toString().compareTo(b.toString());
     }
 
     @Override public int getMinArgCount() { return 1; }

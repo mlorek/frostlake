@@ -33,7 +33,10 @@ public class UpdatableResultSetTest extends BaseJdbcTest {
 
     private DirectResultSet createUpdatableResultSet(final String sql, final String tableName, final String... keyColumns) throws SQLException {
         statement.execute(sql);
-        ResultSet engineResultSet = sharedEngine.execute("SELECT * FROM " + tableName).getResultSets().get(0);
+        // Read through the connection's session scope: a raw sharedEngine call resolves against the
+        // engine's GLOBAL context, and the connection's USE test_db no longer leaks into it.
+        ResultSet engineResultSet = ((DirectConnection) connection)
+            .executeScoped("SELECT * FROM " + tableName).getResultSets().get(0);
         return new DirectResultSet(statement, engineResultSet, sharedEngine, tableName, Arrays.asList(keyColumns));
     }
 
@@ -362,7 +365,8 @@ public class UpdatableResultSetTest extends BaseJdbcTest {
         statement.execute("INSERT INTO upd_test18 VALUES (1, 'Test')");
 
         // Create non-updatable ResultSet (without engine/tableName)
-        ResultSet engineResultSet = sharedEngine.execute("SELECT * FROM upd_test18").getResultSets().get(0);
+        ResultSet engineResultSet = ((DirectConnection) connection)
+            .executeScoped("SELECT * FROM upd_test18").getResultSets().get(0);
         DirectResultSet rs = new DirectResultSet(statement, engineResultSet);
 
         assertTrue(rs.next());

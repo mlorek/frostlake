@@ -65,8 +65,18 @@ public class JavaScriptExecutor {
                 // Expose each argument under its canonical (upper-cased) name and its lower-cased form, so a
                 // body may reference the parameter in either case (Snowflake folds arg names to upper-case).
                 final String paramName = parameters.get(i).getName();
-                engine.put(paramName, arguments.get(i));
-                engine.put(paramName.toLowerCase(), arguments.get(i));
+                final Object argVal = arguments.get(i);
+                if (logger.isDebugEnabled()) {
+                    final String preview = argVal == null ? "null" : argVal.toString();
+                    logger.debug("JS arg {}={} ({})", paramName,
+                        preview.length() > 150 ? preview.substring(0, 150) + "..." : preview,
+                        argVal == null ? "-" : argVal.getClass().getName());
+                }
+                engine.put(paramName, argVal);
+                engine.put(paramName.toLowerCase(), argVal);
+                // OBJECT / VARIANT / ARRAY args arrive as JSON text; expose them as native JS values.
+                JavaScriptProcedureExecutor.reparseSemiStructured(engine, parameters.get(i), paramName, argVal);
+                JavaScriptProcedureExecutor.reparseSemiStructured(engine, parameters.get(i), paramName.toLowerCase(), argVal);
             }
             final String wrappedCode = wrap(function.getBody().trim());
             final Object result = engine instanceof Compilable
@@ -112,14 +122,19 @@ public class JavaScriptExecutor {
     }
 
     private static String wrap(final String body) {
+        final String invoked;
         if (body.startsWith("function")) {
             // The body IS a function expression — invoke it. (Must START with `function`; a body that merely
             // CONTAINS `function(` in an inner callback is a normal statement body, wrapped below.)
-            return "(" + body + ")()";
+            invoked = "(" + body + ")()";
+        } else if (body.startsWith("return ") && !body.contains(";") && !body.contains("\n")) {
+            invoked = "(function() { " + body + "; })()";
+        } else {
+            invoked = "(function() {\n" + body + "\n})()";
         }
-        if (body.startsWith("return ") && !body.contains(";") && !body.contains("\n")) {
-            return "(function() { " + body + "; })()";
-        }
-        return "(function() {\n" + body + "\n})()";
+        // A JS object/array return must come back as JSON text so it round-trips as a Frostlake OBJECT/ARRAY
+        // (a raw JS Value stringifies to "{a: 1}", not valid JSON). Scalars and null pass through unchanged.
+        return "(function() { var __r = (" + invoked + ");\n"
+            + "  return (__r !== null && __r !== undefined && typeof __r === 'object') ? JSON.stringify(__r) : __r; })()";
     }
 }

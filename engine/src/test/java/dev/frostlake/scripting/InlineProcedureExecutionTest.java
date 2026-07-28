@@ -109,6 +109,60 @@ public class InlineProcedureExecutionTest extends BaseDatabaseTest {
         assertEquals("scala-proc", callScalar("CALL scala_proc()"));
     }
 
+    @Test
+    public void procReturningFunctionCallWithTimestampArg() {
+        // A scripting proc evaluates a function call by re-building "SELECT fn(arg,...)" from the evaluated
+        // argument VALUES. A non-numeric, non-boolean value (a timestamp) used to be appended RAW —
+        // OBJECT_CONSTRUCT_KEEP_NULL('t', CURRENT_TIMESTAMP()) became SELECT ...('t', 2026-07-24T08:..) →
+        // "SQL syntax error". Such values must be emitted as quoted string literals.
+        logger.info("procedural function call with a timestamp (non-numeric) argument");
+        engine.execute("""
+            CREATE OR REPLACE PROCEDURE p_ts() RETURNS OBJECT LANGUAGE SQL AS $$
+            BEGIN
+                RETURN OBJECT_CONSTRUCT_KEEP_NULL('rule_id', 'EXT-002', 'seen_at', CURRENT_TIMESTAMP());
+            END $$""");
+        final String result = callScalar("CALL p_ts()");
+        assertEquals(true, result.contains("\"rule_id\":\"EXT-002\""), result);
+        assertEquals(true, result.contains("\"seen_at\":"), result);
+    }
+
+    @Test
+    public void procReturningFunctionCallWithDateColumnValue() {
+        // The real loader shape: a timestamp/date COLUMN value threaded into OBJECT_CONSTRUCT_KEEP_NULL
+        // inside a procedure.
+        logger.info("procedural function call with a date column value");
+        engine.execute("CREATE TABLE ts_src (d DATE)");
+        engine.execute("INSERT INTO ts_src VALUES ('2023-08-24')");
+        engine.execute("""
+            CREATE OR REPLACE PROCEDURE p_dcol() RETURNS OBJECT LANGUAGE SQL AS $$
+            DECLARE v DATE;
+            BEGIN
+                SELECT d INTO :v FROM ts_src;
+                RETURN OBJECT_CONSTRUCT_KEEP_NULL('license_expires_at', :v, 'license_days', -1);
+            END $$""");
+        final String result = callScalar("CALL p_dcol()");
+        assertEquals(true, result.contains("\"license_expires_at\":\"2023-08-24\""), result);
+        assertEquals(true, result.contains("\"license_days\":-1"), result);
+    }
+
+    @Test
+    public void procFunctionCallWithBackslashStringValue() {
+        // A string value containing a backslash (e.g. a nested error message ending in '\', or a "\'"
+        // sequence) must round-trip through the procedural re-build. frostlake's lexer treats '\' as an
+        // escape, so an un-escaped backslash used to derail the rebuilt SELECT ("no viable alternative").
+        logger.info("procedural function call with a backslash-bearing string value");
+        engine.execute("""
+            CREATE OR REPLACE PROCEDURE p_bs() RETURNS OBJECT LANGUAGE SQL AS $$
+            DECLARE msg VARCHAR;
+            BEGIN
+                msg := 'path' || CHR(92);
+                RETURN OBJECT_CONSTRUCT_KEEP_NULL('m', :msg, 'k', 1);
+            END $$""");
+        final String result = callScalar("CALL p_bs()");
+        assertEquals(true, result.contains("\"k\":1"), result);
+        assertEquals(true, result.contains("path"), result);
+    }
+
     /** Execute a CALL and return its single scalar result as a String. */
     private String callScalar(final String sql) {
         final ResultSet rs = engine.executeQuery(sql);

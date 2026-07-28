@@ -26,7 +26,7 @@ import dev.frostlake.stream.StreamManager;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
-import java.util.LinkedHashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -89,6 +89,92 @@ public class TransactionManager {
     public boolean isExplicitTransaction() {
         final Transaction txn = currentTransaction.get();
         return txn != null && txn.isExplicit();
+    }
+
+    // Session AUTOCOMMIT setting. Lives here (not on the engine facade) so statement-end autocommit can
+    // run at EVERY statement chokepoint — top-level execute() and each statement inside a stored
+    // procedure, which Snowflake commits individually unless an explicit BEGIN is open.
+    private volatile boolean autoCommit = true;
+    // Per-thread session override, mirroring Catalog's session scope: the concurrent front-end applies
+    // each session's autocommit mode around its statement so parallel read-locked statements from
+    // different sessions cannot see (or capture back) each other's mode. No entry → the shared field.
+    private final ThreadLocal<Boolean> sessionAutoCommit = new ThreadLocal<>();
+
+    /** Begin a per-thread autocommit scope; end it with {@link #clearSessionAutoCommit()}. */
+    public void beginSessionAutoCommit(final boolean value) {
+        sessionAutoCommit.set(Boolean.valueOf(value));
+    }
+
+    /** End this thread's autocommit scope (idempotent). Read the final value via {@link #isAutoCommit()} first. */
+    public void clearSessionAutoCommit() {
+        sessionAutoCommit.remove();
+    }
+
+    public void setAutoCommit(final boolean autoCommit) {
+        if (sessionAutoCommit.get() != null) {
+            sessionAutoCommit.set(Boolean.valueOf(autoCommit));
+            return;
+        }
+        this.autoCommit = autoCommit;
+    }
+
+    public boolean isAutoCommit() {
+        final Boolean scoped = sessionAutoCommit.get();
+        return scoped != null ? scoped.booleanValue() : autoCommit;
+    }
+
+    /**
+     * Statement-end autocommit: commit the current implicit transaction, if any. No-op when autocommit
+     * is off or an explicit BEGIN suspended it (Snowflake semantics). Call after each completed
+     * statement — the top-level engine entry point does, and so does the procedural executor for each
+     * statement inside a BEGIN…END body (a stored procedure does NOT wrap its statements in one
+     * transaction; leaving the implicit transaction open let a later same-row DELETE consolidate away a
+     * buffered INSERT, so append-only streams missed changes that Snowflake captures).
+     */
+    public void autocommitStatementEnd() {
+        if (atomicSectionDepth.get() > 0) {
+            // A procedure running as part of an ENCLOSING statement (TABLE(proc()) in a FROM clause):
+            // its statements execute inside that statement's transaction, so the per-statement
+            // autocommit must not commit — the enclosing INSERT/MERGE still owns the write set.
+            return;
+        }
+        if (autoCommit && hasActiveTransaction() && !isExplicitTransaction()) {
+            commit();
+        }
+    }
+
+    // Depth of nested atomic sections (per thread): while > 0, autocommitStatementEnd() is a no-op.
+    private final ThreadLocal<Integer> atomicSectionDepth = new ThreadLocal<Integer>() {
+        @Override
+        protected Integer initialValue() {
+            return 0;
+        }
+    };
+
+    /** Enter a section whose statements must not autocommit the enclosing statement's transaction. */
+    public void beginAtomicSection() {
+        atomicSectionDepth.set(atomicSectionDepth.get() + 1);
+    }
+
+    public void endAtomicSection() {
+        final int depth = atomicSectionDepth.get();
+        if (depth > 0) {
+            atomicSectionDepth.set(depth - 1);
+        }
+    }
+
+    /**
+     * Discard any buffered (uncommitted) writes for a table being dropped or replaced, so a later COMMIT
+     * doesn't try to flush them to storage that no longer exists — and so a drop-then-recreate of the same
+     * name within one transaction doesn't resurrect the pre-drop rows. No-op when there is no active
+     * transaction or the immediate-apply path left the write set empty. Called from the DROP/CREATE-OR-REPLACE
+     * handlers, which remove the storage in the same step.
+     */
+    public void discardBufferedWritesFor(final String fullyQualifiedTableName) {
+        final Transaction txn = currentTransaction.get();
+        if (txn != null) {
+            txn.getWriteSet().forgetTable(fullyQualifiedTableName);
+        }
     }
 
     public void commit() {
@@ -188,7 +274,9 @@ public class TransactionManager {
         private final List<TransactionLog> logs;
         private final TransactionWriteSet writeSet = new TransactionWriteSet();   // deferred-apply buffer (Phase 1)
         private final List<String> walStatements = new ArrayList<>();   // mutating SQL to log on commit (WAL)
-        private final Set<Stream> streamsToConsume = new LinkedHashSet<>();   // CDC streams read by this txn's DML
+        // CDC streams read by this txn's DML, each with the scope of what the read SAW (committed cut +
+        // this txn's then-buffered changes) so commit advances past exactly that. Latest read governs.
+        private final Map<Stream, StreamReadScope> streamsToConsume = new LinkedHashMap<>();
         private final long startTime;
         private final Map<String, Integer> savepoints;
         private final Catalog catalog;
@@ -235,9 +323,13 @@ public class TransactionManager {
             return walStatements;
         }
 
-        /** Register a stream read by a consuming DML in this txn; consumed on commit, discarded on rollback. */
-        public void registerStreamConsumption(final Stream stream) {
-            streamsToConsume.add(stream);
+        /**
+         * Register a stream read by a consuming DML in this txn; consumed on commit (scoped to what the
+         * read saw — see {@link StreamReadScope}), discarded on rollback. A re-read replaces the scope:
+         * the latest read saw the most, and both parts of the scope only ever grow within a transaction.
+         */
+        public void registerStreamConsumption(final Stream stream, final StreamReadScope scope) {
+            streamsToConsume.put(stream, scope);
         }
 
         /** True if started by an explicit BEGIN — statement-end autocommit is suspended until COMMIT/ROLLBACK. */
@@ -269,9 +361,11 @@ public class TransactionManager {
                 writeSet.applyTo(storageEngine, streamManager);
                 storageEngine.snapshotDirtyTables();
             }
-            // Snowflake: a stream used as a source in a committed DML advances its offset on commit.
-            for (final Stream stream : streamsToConsume) {
-                stream.consume();
+            // Snowflake: a stream used as a source in a committed DML advances its offset on commit —
+            // but only past what the consuming read actually saw (the write set just re-emitted the
+            // txn's buffered changes as real records; changes buffered AFTER the read stay unconsumed).
+            for (final Map.Entry<Stream, StreamReadScope> entry : streamsToConsume.entrySet()) {
+                entry.getKey().consumeSeen(entry.getValue().getCommittedCut(), entry.getValue().getSeenTransient());
             }
             streamsToConsume.clear();
             logs.clear();

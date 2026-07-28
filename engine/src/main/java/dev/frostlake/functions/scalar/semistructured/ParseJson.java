@@ -17,6 +17,7 @@
 package dev.frostlake.functions.scalar.semistructured;
 
 import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.functions.scalar.ArrayFunctionHelper;
 import dev.frostlake.functions.scalar.JsonTypeHelper;
 import dev.frostlake.types.VariantType;
 import tools.jackson.databind.JsonNode;
@@ -31,6 +32,16 @@ public class ParseJson extends BuiltInFunction {
     public Object evaluate(final List<Object> args) {
         if (args.get(0) == null) return null;
         String input = args.get(0).toString().trim();
+        // A variant STRING whose content looks like JSON arrives in quoted JSON form (the path-extraction
+        // marker). Snowflake's implicit VARIANT→VARCHAR coercion hands PARSE_JSON the raw inner text, so
+        // a metadata field holding embedded JSON parses to its object — not to a string of it.
+        final String quotedVariantString = JsonTypeHelper.quotedJsonStringText(input);
+        if (quotedVariantString != null) {
+            final String inner = quotedVariantString.trim();
+            if (inner.startsWith("{") || inner.startsWith("[")) {
+                input = inner;
+            }
+        }
         // A literal JSON null parses to a JSON null VARIANT — represented as the text "null" so it stays
         // DISTINCT from a SQL NULL (Snowflake: "The JSON null value is distinct from the SQL NULL value").
         if (input.equalsIgnoreCase("null")) return "null";
@@ -39,7 +50,7 @@ public class ParseJson extends BuiltInFunction {
         if (node == null) {
             throw new RuntimeException("Invalid JSON: " + args.get(0));
         }
-        return node.toString();
+        return ArrayFunctionHelper.toCanonicalJson(node);
     }
 
     @Override public int getMinArgCount() { return 1; }

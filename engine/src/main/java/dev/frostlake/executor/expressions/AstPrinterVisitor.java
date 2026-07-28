@@ -80,6 +80,11 @@ public class AstPrinterVisitor implements ExpressionVisitor<String> {
     }
 
     @Override
+    public String visitLambda(final LambdaExpression expr) {
+        return "(" + String.join(", ", expr.getParameters()) + ") -> " + expr.getBody().accept(this);
+    }
+
+    @Override
     public String visitFunctionCall(final FunctionCallExpression expr) {
         final StringBuilder sb = new StringBuilder();
         sb.append(expr.getFunctionName()).append("(");

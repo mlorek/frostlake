@@ -20,6 +20,11 @@
     <!-- frostlake-db IS published to Central; override the parent's default deploy skip. -->
     <properties>
         <maven.deploy.skip>false</maven.deploy.skip>
+        <!-- One Truffle line for every polyglot language. 25.0.2 keeps Java 17 base classes AND is the
+             version downstream builds (e.g. the vendor test harness) already put on the classpath — a
+             consumer resolving "newest wins" must not end up with our Python on a different Truffle
+             than its JS, which breaks Truffle library initialization at context startup. -->
+        <graalvm.version>25.0.2</graalvm.version>
     </properties>
 
     <dependencies>
@@ -57,23 +62,31 @@
             <version>3.30.9</version>
         </dependency>
 
-        <!-- GraalVM JavaScript for UDF support -->
+        <!-- GraalVM polyglot: JavaScript AND Python UDF support, both on ${graalvm.version} (see the
+             property above for why the versions must match). Python here is GraalPy, a Python 3
+             implementation; Snowflake UDFs declare RUNTIME_VERSION 3.x, so the previous Python 2
+             interpreter (Jython) could not parse annotations, f-strings or walrus at all. -->
         <dependency>
-            <groupId>org.graalvm.js</groupId>
+            <groupId>org.graalvm.polyglot</groupId>
+            <artifactId>polyglot</artifactId>
+            <version>${graalvm.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.graalvm.polyglot</groupId>
             <artifactId>js</artifactId>
-            <version>23.0.11</version>
+            <version>${graalvm.version}</version>
+            <type>pom</type>
         </dependency>
         <dependency>
             <groupId>org.graalvm.js</groupId>
             <artifactId>js-scriptengine</artifactId>
-            <version>25.0.2</version>
+            <version>${graalvm.version}</version>
         </dependency>
-
-        <!-- Jython for Python UDF support -->
         <dependency>
-            <groupId>org.python</groupId>
-            <artifactId>jython-standalone</artifactId>
-            <version>2.7.4</version>
+            <groupId>org.graalvm.polyglot</groupId>
+            <artifactId>python</artifactId>
+            <version>${graalvm.version}</version>
+            <type>pom</type>
         </dependency>
 
         <!-- Scala compiler for in-process Scala UDF/procedure compilation (no external scalac) -->

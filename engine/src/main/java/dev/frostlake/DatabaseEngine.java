@@ -20,6 +20,7 @@ import dev.frostlake.config.EngineConfig;
 import dev.frostlake.config.S3PathResolver;
 import dev.frostlake.executor.ProceduralExecutor;
 import dev.frostlake.executor.QueryExecutor;
+import dev.frostlake.executor.udf.PythonRuntime;
 import dev.frostlake.functions.FunctionRegistry;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.model.Database;
@@ -73,7 +74,6 @@ public class DatabaseEngine {
     private final SessionContext sessionContext;
     private final SecurityManager securityManager;
     private final PersistenceManager persistenceManager;
-    private boolean autoCommit;
     private WriteAheadLog wal;            // durability.walEnabled: append committed transactions, replay on startup
     private boolean replaying = false;    // true while replaying the WAL on startup (suppresses re-logging)
     private int txnsSinceCheckpoint = 0;  // committed transactions appended since the last WAL checkpoint
@@ -87,6 +87,9 @@ public class DatabaseEngine {
         logger.info("Initializing Frostlake SQL Engine");
 
         this.config = config;
+        // JVM-wide by nature (the polyglot contexts are per-thread, not per-engine); a no-op unless the
+        // property points at a real venv, so engines without one are unaffected.
+        PythonRuntime.configureVenv(config.getPythonVenv());
         this.catalog = new Catalog();
         this.storageEngine = new StorageEngine();
         this.storageEngine.setEnforcePrimaryKey(config.isEnforcePrimaryKey());
@@ -108,24 +111,36 @@ public class DatabaseEngine {
         // Let the catalog stamp the session's current role as owner on newly-created objects.
         this.catalog.setSessionContext(sessionContext);
 
-        // Create TaskExecutor that delegates to QueryExecutor
+        // Create TaskExecutor that delegates to QueryExecutor. Each task statement passes through the
+        // same statement-end autocommit chokepoint as top-level execute(): the scheduler thread has
+        // its own thread-local implicit transaction, and without the commit here a task's DML stayed
+        // uncommitted forever — invisible to every other thread.
         TaskExecutor taskExecutor = new TaskExecutor() {
             @Override
             public int execute(final String sql) {
-                final List<ResultSet> results = queryExecutor.execute(sql);
-                // DML statements report their affected-row count as a Snowflake-style result set.
-                return (int) new ExecutionResult(true, results, null).getRowsAffected();
+                // Serialize with direct-connection statements (same monitor): the scheduler thread
+                // must not interleave with an interactive statement inside the engine's procedural
+                // state.
+                synchronized (DatabaseEngine.this) {
+                    final List<ResultSet> results = queryExecutor.execute(sql);
+                    transactionManager.autocommitStatementEnd();
+                    // DML statements report their affected-row count as a Snowflake-style result set.
+                    return (int) new ExecutionResult(true, results, null).getRowsAffected();
+                }
             }
 
             @Override
             public List<ResultSet> executeQuery(final String sql) {
-                return queryExecutor.execute(sql);
+                synchronized (DatabaseEngine.this) {
+                    final List<ResultSet> results = queryExecutor.execute(sql);
+                    transactionManager.autocommitStatementEnd();
+                    return results;
+                }
             }
         };
 
         this.taskScheduler = new TaskScheduler(catalog, taskExecutor);
         this.proceduralExecutor = new ProceduralExecutor();
-        this.autoCommit = true;
 
         // Wire up dependencies
         queryExecutor.setStreamManager(streamManager);
@@ -457,10 +472,7 @@ public class DatabaseEngine {
 
             // Autocommit commits at statement end — UNLESS an explicit BEGIN is in effect, which suspends
             // autocommit until COMMIT/ROLLBACK (Snowflake semantics).
-            if (autoCommit && transactionManager.hasActiveTransaction()
-                    && !transactionManager.isExplicitTransaction()) {
-                transactionManager.commit();
-            }
+            transactionManager.autocommitStatementEnd();
 
             // Bound the WAL by checkpointing once enough transactions accumulate (no-op unless configured).
             maybeAutoCheckpoint();
@@ -553,11 +565,11 @@ public class DatabaseEngine {
     }
 
     public void setAutoCommit(final boolean autoCommit) {
-        this.autoCommit = autoCommit;
+        transactionManager.setAutoCommit(autoCommit);
     }
 
     public boolean isAutoCommit() {
-        return autoCommit;
+        return transactionManager.isAutoCommit();
     }
 
     // Database Operations

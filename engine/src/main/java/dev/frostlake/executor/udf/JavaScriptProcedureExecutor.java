@@ -17,11 +17,16 @@
 package dev.frostlake.executor.udf;
 
 import dev.frostlake.DatabaseEngine;
+import dev.frostlake.functions.scalar.ArrayFunctionHelper;
+import dev.frostlake.jdbc.JdbcMarshaling;
 import dev.frostlake.metastore.model.Parameter;
 import dev.frostlake.metastore.model.Procedure;
 import dev.frostlake.metastore.model.UdfLanguage;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.Row;
+import dev.frostlake.types.ArrayType;
+import dev.frostlake.types.DataType;
+import dev.frostlake.types.TypeCategory;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -30,10 +35,22 @@ import javax.script.ScriptContext;
 import javax.script.ScriptEngine;
 import javax.script.ScriptEngineManager;
 import javax.script.ScriptException;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
 public class JavaScriptProcedureExecutor {
+
+    static {
+        // GraalVM's polyglot and Truffle artifacts can resolve to mismatched patch versions on a downstream
+        // classpath (a host application that also depends on GraalVM), which trips the strict engine version
+        // check and fails all JavaScript execution. Patch-level differences are compatible, so disable the
+        // check before the polyglot engine first initializes (this static block runs before the
+        // ScriptEngineManager below, and well before graal.js is requested).
+        if (System.getProperty("polyglotimpl.DisableVersionChecks") == null) {
+            System.setProperty("polyglotimpl.DisableVersionChecks", "true");
+        }
+    }
 
     private static final Logger logger = LoggerFactory.getLogger(JavaScriptProcedureExecutor.class);
     private static final ScriptEngineManager scriptEngineManager = new ScriptEngineManager();
@@ -77,13 +94,21 @@ public class JavaScriptProcedureExecutor {
                 String paramName = parameters.get(i).getName();
                 Object value = arguments.get(i);
                 scriptEngine.put(paramName, value);
+                reparseSemiStructured(scriptEngine, parameters.get(i), paramName, value);
             }
 
             SnowflakeAPIWrapper apiWrapper = new SnowflakeAPIWrapper(engine);
             scriptEngine.put("snowflake", apiWrapper);
 
             String body = procedure.getBody().trim();
-            String wrappedCode = "(function() {\n" + body + "\n})()";
+            // A JS object/array return value must come back as JSON text so it round-trips as a Frostlake
+            // OBJECT/ARRAY (a raw JS Value stringifies to "{a: 1}", which isn't valid JSON and breaks
+            // downstream variant-path access). Scalars (string/number/boolean) and null pass through.
+            String wrappedCode = "(function() {\n"
+                + "  var __result = (function() {\n" + body + "\n  })();\n"
+                + "  return (__result !== null && __result !== undefined && typeof __result === 'object')\n"
+                + "      ? JSON.stringify(__result) : __result;\n"
+                + "})()";
 
             Object result = scriptEngine.eval(wrappedCode);
 
@@ -92,6 +117,50 @@ public class JavaScriptProcedureExecutor {
         } catch (final ScriptException e) {
             logger.error("Error executing JavaScript procedure: {}", procedure.getName(), e);
             throw new RuntimeException("Error executing JavaScript procedure " + procedure.getName() + ": " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Snowflake exposes OBJECT / VARIANT / ARRAY arguments to JavaScript as native JS values, not JSON text.
+     * Frostlake carries them as JSON strings, so when a semi-structured parameter was bound as a string,
+     * reparse it in place into a JS object/array — so a body can do {@code so.prop = x}, {@code arr.push(…)},
+     * read {@code so.field}, etc. Non-JSON strings (or non-string values) are left untouched.
+     */
+    static void reparseSemiStructured(final ScriptEngine engine, final Parameter param, final String name, final Object value) {
+        final DataType dt = param.getDataType();
+        if (dt == null || dt.getCategory() != TypeCategory.SEMI_STRUCTURED) {
+            return;
+        }
+        if (value instanceof String) {
+            try {
+                engine.eval(name + " = JSON.parse(" + name + ");");
+            } catch (final ScriptException nonJson) {
+                logger.debug("semi-structured JS parameter {} was not valid JSON; left as string", name);
+            }
+        } else if (value != null) {
+            // A host container (List/Map/JsonNode/...) has no JS Array/Object protocol (no forEach,
+            // Array.isArray false), so a body like `SRC.forEach(...)` threw TypeError when a variant path
+            // handed the argument over as a Java value instead of JSON text. Round-trip anything non-null
+            // through JSON for native JS values; numbers and booleans survive the trip unchanged.
+            final String holder = "__frostlake_json_" + name;
+            try {
+                engine.put(holder, ArrayFunctionHelper.MAPPER.writeValueAsString(value));
+                engine.eval(name + " = JSON.parse(" + holder + "); " + holder + " = undefined;");
+            } catch (final ScriptException | RuntimeException e) {
+                logger.debug("semi-structured JS parameter {} of type {} could not be converted to JSON; left as host object",
+                    name, value.getClass().getName());
+            }
+        }
+        // Snowflake's implicit conversion for an ARRAY-declared parameter follows TO_ARRAY: a non-array
+        // value arrives wrapped as a one-element array (vendor code passes an OBJECT to `SRC ARRAY` and
+        // indexes the result with ::array[0]). NULL stays NULL.
+        if (value != null && dt instanceof ArrayType) {
+            try {
+                engine.eval("if (" + name + " !== null && " + name + " !== undefined && !Array.isArray(" + name + ")) { "
+                    + name + " = [" + name + "]; }");
+            } catch (final ScriptException ignored) {
+                logger.debug("semi-structured JS parameter {} could not be array-wrapped", name);
+            }
         }
     }
 
@@ -126,6 +195,79 @@ public class JavaScriptProcedureExecutor {
             } catch (final Exception e) {
                 throw new RuntimeException("Error executing SQL: " + e.getMessage(), e);
             }
+        }
+
+        /**
+         * The standard Snowflake stored-procedure API: {@code snowflake.createStatement({sqlText, binds})}
+         * returns a Statement whose {@code execute()} runs the SQL. Real Snowflake JS procedures use this
+         * two-step form (createStatement → execute), not the one-step {@code snowflake.execute(...)} above.
+         */
+        public SnowflakeStatement createStatement(final Object options) {
+            String sqlText = null;
+            final List<Object> binds = new ArrayList<>();
+
+            if (options instanceof Map) {
+                final Map<?, ?> optMap = (Map<?, ?>) options;
+                Object sqlObj = optMap.get("sqlText");
+                if (sqlObj == null) {
+                    sqlObj = optMap.get("sql");
+                }
+                if (sqlObj != null) {
+                    sqlText = String.valueOf(sqlObj);
+                }
+                final Object bindsObj = optMap.get("binds");
+                if (bindsObj instanceof List) {
+                    binds.addAll((List<?>) bindsObj);
+                }
+            }
+
+            if (sqlText == null) {
+                throw new RuntimeException("sqlText is required in snowflake.createStatement() options");
+            }
+
+            return new SnowflakeStatement(engine, sqlText, binds);
+        }
+    }
+
+    /**
+     * A prepared statement created by {@code snowflake.createStatement}. Its {@code execute()} substitutes any
+     * positional {@code ?} binds and runs the SQL; column metadata (count/name) reflects the last execution,
+     * as the Snowflake API exposes it on the statement.
+     */
+    public static class SnowflakeStatement {
+        private final DatabaseEngine engine;
+        private final String sqlText;
+        private final List<Object> binds;
+        private ResultSet lastResult;
+
+        SnowflakeStatement(final DatabaseEngine engine, final String sqlText, final List<Object> binds) {
+            this.engine = engine;
+            this.sqlText = sqlText;
+            this.binds = binds;
+        }
+
+        public JavaScriptResultSet execute() {
+            final String sql = (binds == null || binds.isEmpty())
+                ? sqlText : JdbcMarshaling.substitutePlaceholders(sqlText, binds);
+            try {
+                final ResultSet rs = engine.executeQuery(sql);
+                this.lastResult = rs;
+                return new JavaScriptResultSet(rs);
+            } catch (final Exception e) {
+                throw new RuntimeException("Error executing SQL: " + e.getMessage(), e);
+            }
+        }
+
+        public int getColumnCount() {
+            return lastResult == null ? 0 : lastResult.getColumnCount();
+        }
+
+        public String getColumnName(final int columnIndex) {
+            return lastResult == null ? null : lastResult.getColumns().get(columnIndex - 1).getName();
+        }
+
+        public int getRowCount() {
+            return lastResult == null ? 0 : lastResult.getRowCount();
         }
     }
 

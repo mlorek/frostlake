@@ -59,3 +59,9 @@ logging.level=INFO
 # stage.s3.localRoot=/var/frostlake_stages/s3
 # Explicit prefix overrides: ';'-separated 's3prefix=localdir' pairs, longest matching prefix wins:
 # stage.s3.localMappings=s3://prod-bucket/lib/=/opt/jars; s3://data/=/srv/data
+
+# GraalPy virtual environment whose installed packages (numpy, pandas, ...) become importable from
+# Python UDF/procedure handlers — the local stand-in for Snowflake's PACKAGES=(...) clause. Point it
+# at the venv produced by the graalpy-maven-plugin (<externalDirectory>/venv), matching the engine's
+# GraalPy version. Optional; a missing directory leaves the standard library only.
+# python.venv=/opt/graalpy-packages/venv

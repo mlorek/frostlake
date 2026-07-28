@@ -73,6 +73,33 @@ public class SystemStreamHasDataTest {
     }
 
     @Test
+    public void schemaQualifiedStreamNameResolves() {
+        // Loaders gate on SYSTEM$STREAM_HAS_DATA('SCHEMA.STREAM_NAME') — the qualified text was looked
+        // up as a bare name in the current schema, so the gate always said FALSE and whole loader
+        // branches silently never ran.
+        engine.execute("INSERT INTO events VALUES (1, 'click')");
+        assertTrue((Boolean) one("SELECT SYSTEM$STREAM_HAS_DATA('public.events_stream')"),
+            "schema-qualified name must resolve");
+        assertTrue((Boolean) one("SELECT SYSTEM$STREAM_HAS_DATA('test_db.public.events_stream')"),
+            "db.schema-qualified name must resolve");
+    }
+
+    @Test
+    public void qualifiedStreamInAnotherSchemaResolves() {
+        engine.execute("CREATE SCHEMA other_schema");
+        engine.execute("CREATE TABLE other_schema.t2 (id INTEGER)");
+        engine.execute("CREATE STREAM other_schema.s2 ON TABLE other_schema.t2");
+        engine.execute("INSERT INTO other_schema.t2 VALUES (1)");
+        assertTrue((Boolean) one("SELECT SYSTEM$STREAM_HAS_DATA('other_schema.s2')"),
+            "stream in a non-current schema must be reachable by qualified name");
+        assertFalse((Boolean) one("SELECT SYSTEM$STREAM_HAS_DATA('other_schema.no_such')"));
+    }
+
+    private Object one(final String sql) {
+        return engine.executeQuery(sql).getRows().get(0).getValue(0);
+    }
+
+    @Test
     public void testNonExistentStreamReturnsFalse() {
         ResultSet rs = engine.executeQuery("SELECT SYSTEM$STREAM_HAS_DATA('no_such_stream')");
         assertNotNull(rs);

@@ -21,6 +21,8 @@ import org.antlr.v4.runtime.CharStreams;
 import org.antlr.v4.runtime.CommonTokenStream;
 import org.antlr.v4.runtime.Token;
 
+import java.util.List;
+
 /**
  * Binds a named parameter into a SQL body by substituting each occurrence of the parameter's bare name
  * with a replacement string — for UDF / stored-procedure bodies and masking-policy bodies, where the
@@ -43,7 +45,12 @@ public final class SqlIdentifierSubstitution {
     /**
      * Returns {@code body} with every bare-identifier occurrence of {@code identifier} replaced by
      * {@code replacement}. All other text — whitespace, punctuation, string literals, quoted identifiers,
-     * and comments — is preserved byte-for-byte.
+     * and comments — is preserved byte-for-byte. Two positions are structural NAMES, not bindable
+     * references, and are never replaced: an identifier ADJACENT TO A DOT (a qualified-name segment —
+     * {@code TOOLS.STATS.SITE}, {@code alias.col}; a parameter named {@code stats} must not rewrite the
+     * schema qualifier) and an identifier immediately PRECEDED BY A COLON (a semi-structured path
+     * segment — in {@code so:child_stats} the field name stays even when a parameter is also called
+     * {@code child_stats}; {@code so} itself, colon AFTER it, still binds).
      */
     public static String substitute(final String body, final String identifier, final String replacement) {
         final FrostlakeLexer lexer = new FrostlakeLexer(CharStreams.fromString(body));
@@ -51,13 +58,16 @@ public final class SqlIdentifierSubstitution {
         final CommonTokenStream tokens = new CommonTokenStream(lexer);
         tokens.fill();
 
+        final List<Token> all = tokens.getTokens();
         final StringBuilder result = new StringBuilder(body.length());
         int cursor = 0;
-        for (final Token token : tokens.getTokens()) {
+        for (int i = 0; i < all.size(); i++) {
+            final Token token = all.get(i);
             if (token.getType() == Token.EOF) {
                 break;
             }
-            if (isBareIdentifier(token) && token.getText().equalsIgnoreCase(identifier)) {
+            if (isBareIdentifier(token) && token.getText().equalsIgnoreCase(identifier)
+                    && !structuralNamePosition(all, i)) {
                 result.append(body, cursor, token.getStartIndex());
                 result.append(replacement);
                 cursor = token.getStopIndex() + 1;
@@ -65,6 +75,36 @@ public final class SqlIdentifierSubstitution {
         }
         result.append(body, cursor, body.length());
         return result.toString();
+    }
+
+    /** True when the token at index {@code i} sits in a structural-name position: nearest default-channel
+     *  neighbour before or after is a {@code .} (qualified-name segment), or the one before is a {@code :}
+     *  (semi-structured path segment / bind-variable name — neither binds a parameter). */
+    private static boolean structuralNamePosition(final List<Token> all, final int i) {
+        for (int p = i - 1; p >= 0; p--) {
+            final Token t = all.get(p);
+            if (t.getChannel() != Token.DEFAULT_CHANNEL) {
+                continue;
+            }
+            if (t.getType() == FrostlakeLexer.DOT || t.getType() == FrostlakeLexer.COLON) {
+                return true;
+            }
+            break;
+        }
+        for (int n = i + 1; n < all.size(); n++) {
+            final Token t = all.get(n);
+            if (t.getType() == Token.EOF) {
+                break;
+            }
+            if (t.getChannel() != Token.DEFAULT_CHANNEL) {
+                continue;
+            }
+            if (t.getType() == FrostlakeLexer.DOT) {
+                return true;
+            }
+            break;
+        }
+        return false;
     }
 
     private static boolean isBareIdentifier(final Token token) {

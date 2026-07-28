@@ -16,44 +16,28 @@
 
 package dev.frostlake.executor.udf;
 
+import dev.frostlake.functions.scalar.ArrayFunctionHelper;
 import dev.frostlake.metastore.model.Function;
 import dev.frostlake.metastore.model.Parameter;
 import dev.frostlake.metastore.model.UdfLanguage;
-import org.python.core.PyBoolean;
-import org.python.core.PyCode;
-import org.python.core.PyFloat;
-import org.python.core.PyInteger;
-import org.python.core.PyLong;
-import org.python.core.PyObject;
-import org.python.core.PyString;
-import org.python.util.PythonInterpreter;
+import dev.frostlake.types.TypeCategory;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.node.ArrayNode;
+import tools.jackson.databind.node.ObjectNode;
+import org.graalvm.polyglot.Value;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.util.HashMap;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.LocalTime;
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 
 public class PythonExecutor {
 
     private static final Logger logger = LoggerFactory.getLogger(PythonExecutor.class);
-
-    // Reuse one Jython interpreter PER THREAD plus a per-thread cache of compiled code, so a Python UDF body
-    // compiles ONCE instead of spinning up a new PythonInterpreter and re-parsing on every row (per-row
-    // interpreter creation made Python UDFs ~1000x a built-in — see UdfQueryPerformanceTest). The interpreter
-    // is thread-confined, so no cross-thread sharing.
-    private static final ThreadLocal<PythonInterpreter> INTERP = new ThreadLocal<PythonInterpreter>() {
-        @Override
-        protected PythonInterpreter initialValue() {
-            return new PythonInterpreter();
-        }
-    };
-    private static final ThreadLocal<Map<String, PyCode>> CODE = new ThreadLocal<Map<String, PyCode>>() {
-        @Override
-        protected Map<String, PyCode> initialValue() {
-            return new HashMap<>();
-        }
-    };
 
     public static Object executePythonFunction(final Function function, final List<Object> arguments) {
         if (function.getUdfLanguage() != UdfLanguage.PYTHON) {
@@ -67,51 +51,40 @@ public class PythonExecutor {
         }
 
         try {
-            final PythonInterpreter interp = INTERP.get();
             for (int i = 0; i < parameters.size(); i++) {
                 // Bind each argument under both its canonical (upper-cased) name and its lower-cased form:
                 // the generated def uses the canonical name, a lower-case body reference finds the global.
-                final String pName = parameters.get(i).getName();
-                interp.set(pName, arguments.get(i));
-                interp.set(pName.toLowerCase(), arguments.get(i));
+                final Parameter parameter = parameters.get(i);
+                final String pName = parameter.getName();
+                bindArgument(parameter, pName, arguments.get(i));
+                bindArgument(parameter, pName.toLowerCase(), arguments.get(i));
             }
 
-            final String pythonCode = buildCode(function, parameters);
-            final Map<String, PyCode> cache = CODE.get();
-            PyCode code = cache.get(pythonCode);
-            if (code == null) {
-                code = interp.compile(pythonCode);
-                cache.put(pythonCode, code);
-            }
-            interp.exec(code);
+            PythonRuntime.eval(buildCode(function, parameters));
 
-            final PyObject result = interp.get("__result");
+            final Object javaResult = PythonRuntime.toJava(PythonRuntime.global("__result"));
             logger.debug("Python function {} executed successfully", function.getName());
-            if (result == null) {
+            if (javaResult == null) {
                 return null;
             }
-
-            final Object javaResult = result.__tojava__(Object.class);
-            if (javaResult instanceof PyInteger) {
-                return ((PyInteger) javaResult).getValue();
-            }
-            if (javaResult instanceof PyLong) {
-                return ((PyLong) javaResult).getValue().longValue();
-            }
-            if (javaResult instanceof PyFloat) {
-                return ((PyFloat) javaResult).getValue();
-            }
-            if (javaResult instanceof PyString) {
-                return javaResult.toString();
-            }
-            if (javaResult instanceof PyBoolean) {
-                return ((PyBoolean) javaResult).getBooleanValue();
+            // A dict / list return becomes a VARIANT, rendered as JSON like every other semi-structured
+            // value in the engine.
+            final JsonNode semiStructured = toJsonNode(javaResult);
+            if (semiStructured != null) {
+                // Canonical form (sorted object keys, whole-valued decimals descaled) — the same
+                // normalization PARSE_JSON and OBJECT_CONSTRUCT apply. The engine compares VARIANTs by
+                // their JSON TEXT, so a dict emitted in insertion order compared unequal to a structurally
+                // identical PARSE_JSON'd object even when the data was the same.
+                return ArrayFunctionHelper.toCanonicalJson(semiStructured);
             }
             return javaResult;
         } catch (final Exception e) {
+            // A failed execution may have left a Python-level lock acquired (see discardContext); never
+            // reuse the context afterwards, or the NEXT call on this thread blocks forever.
+            PythonRuntime.discardContext();
             logger.error("Error executing Python function: {}", function.getName(), e);
-            throw new RuntimeException("Error executing Python function "
-                + function.getName() + ": " + e.getMessage(), e);
+            throw new RuntimeException(PythonRuntimeDiagnostics.describeFailure(
+                "function", function.getName(), function.getRuntimeVersion(), function.getBody(), e), e);
         }
     }
 
@@ -202,4 +175,64 @@ public class PythonExecutor {
         }
         return result.toString().trim();
     }
+
+    /**
+     * Bind one argument. A parameter DECLARED as semi-structured (ARRAY / OBJECT / VARIANT) has its JSON
+     * text turned into native Python dict/list values so the handler can index/iterate it; everything else is
+     * bound as-is, so a VARCHAR that merely looks like JSON still arrives as a string.
+     */
+    private static void bindArgument(final Parameter parameter, final String name, final Object value) {
+        if (parameter.getDataType() != null
+                && parameter.getDataType().getCategory() == TypeCategory.SEMI_STRUCTURED
+                && PythonRuntime.bindJson(name, value)) {
+            return;
+        }
+        PythonRuntime.bind(name, value);
+    }
+
+    /**
+     * A Python {@code dict} / {@code list} (or tuple) return value as a Jackson node, so it can be rendered as
+     * the JSON text the engine uses for VARIANT. Returns null for anything that is not a container, letting the
+     * caller keep its existing scalar handling. Nested values recurse, and a temporal member is rendered
+     * the way Python's {@code str()} would, which is what Snowflake stores inside a VARIANT.
+     */
+    private static JsonNode toJsonNode(final Object value) {
+        if (value instanceof Map) {
+            final ObjectNode object = ArrayFunctionHelper.MAPPER.createObjectNode();
+            for (final Map.Entry<?, ?> entry : ((Map<?, ?>) value).entrySet()) {
+                object.set(String.valueOf(unwrapScalar(entry.getKey())), toNode(entry.getValue()));
+            }
+            return object;
+        }
+        if (value instanceof Collection) {
+            final ArrayNode array = ArrayFunctionHelper.MAPPER.createArrayNode();
+            for (final Object element : (Collection<?>) value) {
+                array.add(toNode(element));
+            }
+            return array;
+        }
+        if (value instanceof Object[]) {
+            final ArrayNode array = ArrayFunctionHelper.MAPPER.createArrayNode();
+            for (final Object element : (Object[]) value) {
+                array.add(toNode(element));
+            }
+            return array;
+        }
+        return null;
+    }
+
+    /** One value inside a returned dict/list, as a node: nested dicts/lists recurse, scalars are unwrapped. */
+    private static JsonNode toNode(final Object value) {
+        final JsonNode container = toJsonNode(value);
+        if (container != null) {
+            return container;
+        }
+        return ArrayFunctionHelper.toNode(ArrayFunctionHelper.MAPPER, unwrapScalar(value));
+    }
+
+    /** A value inside a returned container: temporals stringify like Python str(), others pass through. */
+    private static Object unwrapScalar(final Object value) {
+        return PythonRuntime.temporalInContainer(value);
+    }
+
 }

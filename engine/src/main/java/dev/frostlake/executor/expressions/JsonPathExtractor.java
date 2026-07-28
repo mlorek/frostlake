@@ -18,6 +18,7 @@ package dev.frostlake.executor.expressions;
 
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.node.JsonNodeFactory;
 
 import java.util.Map;
 import java.util.Set;
@@ -78,9 +79,23 @@ final class JsonPathExtractor {
         // ("null"), distinct from SQL NULL (Snowflake), so IS_NULL_VALUE(col:field) is TRUE and IS NULL is FALSE.
         if (node == null) return null;
         if (node.isNull()) return "null";
-        if (node.isTextual()) return node.asText();
+        if (node.isTextual()) {
+            // A STRING whose content itself looks like JSON structure ('["ROLE"]', '{"a":1}') keeps its
+            // QUOTED JSON form — unquoting it made a string value indistinguishable from a real
+            // array/object's JSON text, so ::ARRAY wrongly PARSED it (Snowflake's ::ARRAY, which is
+            // TO_ARRAY, wraps a string into a one-element array instead). Plain strings unwrap as before.
+            final String text = node.asText();
+            final String trimmedText = text.trim();
+            if (trimmedText.startsWith("[") || trimmedText.startsWith("{")) {
+                return node.toString();
+            }
+            return text;
+        }
         if (node.isBoolean()) return node.asBoolean();
         if (node.isLong() || node.isInt()) return node.asLong();
+        // NUMBER(38,0)-scale values live in BigInteger/BigDecimal nodes; asDouble() would round
+        // 21000000006420544706 to 21000000006420546000.
+        if (node.isBigInteger() || node.isBigDecimal()) return node.decimalValue();
         if (node.isDouble() || node.isFloat() || node.isNumber()) return node.asDouble();
         // Object or Array: return as compact JSON string for further traversal
         return node.toString();
@@ -90,15 +105,15 @@ final class JsonPathExtractor {
         if (value == null) {
             return "null";
         }
-        if (value instanceof String) {
-            return "\"" + value + "\"";
-        }
         if (value instanceof Boolean) {
             return value.toString();
         }
         if (value instanceof Number) {
             return value.toString();
         }
-        return "\"" + value + "\"";
+        // String (and anything else rendered as text): JSON-escape the content — a raw quote, backslash
+        // or control character (a data value with an embedded newline is real-world common) would make
+        // the enclosing object/array literal invalid JSON, and every later path access over it null.
+        return JsonNodeFactory.instance.textNode(value.toString()).toString();
     }
 }

@@ -17,6 +17,7 @@
 package dev.frostlake.functions.scalar.string;
 
 import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.types.StringType;
 
 import java.util.List;
@@ -28,11 +29,14 @@ public class Concat extends BuiltInFunction {
 
     @Override
     public Object evaluate(final List<Object> args) {
-        StringBuilder result = new StringBuilder();
+        // Snowflake: CONCAT returns NULL if ANY input is NULL (skipping them silently turned a missed
+        // lookup's NULL prefix into ':' and the value survived where Snowflake yields NULL).
+        final StringBuilder result = new StringBuilder();
         for (final Object arg : args) {
-            if (arg != null) {
-                result.append(arg.toString());
+            if (arg == null) {
+                return null;
             }
+            result.append(SharedFunctionHelpers.textOf(arg));
         }
         return result.toString();
     }

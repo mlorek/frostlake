@@ -35,6 +35,12 @@ public class Catalog {
     private String currentDatabase;
     private String currentSchema;
     private String currentWarehouse;
+    // Per-thread session scope for the concurrent front-end: {database, schema} applied around each
+    // statement so parallel read-locked statements from DIFFERENT sessions resolve unqualified names
+    // against their own context instead of clobbering the one shared pair above (a USE in one session
+    // must never leak into another). No scope on the thread → the global fields; embedded use never
+    // begins a scope and behaves exactly as before.
+    private final ThreadLocal<String[]> sessionScope = new ThreadLocal<>();
     // Resolves s3:// stage URLs to local paths (stage.s3.localMappings / .localRoot); set by the engine
     // so LIST/GET/PUT/REMOVE on S3 stages and IMPORTS JAR loading share one S3 -> local mapping.
     private S3PathResolver s3PathResolver;
@@ -110,26 +116,93 @@ public class Catalog {
         return new ArrayList<>(databases.values());
     }
 
+    /**
+     * Begin a per-thread session scope: until {@link #clearSessionScope()} runs on this thread, the
+     * current database/schema are read from and written to this scope only. The concurrent front-end
+     * brackets every statement with begin/clear so sessions cannot see each other's context.
+     */
+    public void beginSessionScope(final String database, final String schema) {
+        sessionScope.set(new String[] {
+            database == null ? null : database.toUpperCase(),
+            schema == null ? null : schema.toUpperCase()
+        });
+    }
+
+    /** End this thread's session scope (idempotent). Read the final values via the getters first. */
+    public void clearSessionScope() {
+        sessionScope.remove();
+    }
+
+    /** This thread's active scope (or null) — capture before nesting another scope on the same thread. */
+    public String[] currentSessionScope() {
+        return sessionScope.get();
+    }
+
+    /** Reinstate a scope captured by {@link #currentSessionScope()} (null clears), unwinding a nested scope. */
+    public void restoreSessionScope(final String[] scope) {
+        if (scope != null) {
+            sessionScope.set(scope);
+        } else {
+            sessionScope.remove();
+        }
+    }
+
+    private void setCurrentDatabaseName(final String name) {
+        final String[] scope = sessionScope.get();
+        if (scope != null) {
+            scope[0] = name;
+        } else {
+            this.currentDatabase = name;
+        }
+    }
+
+    private void setCurrentSchemaName(final String name) {
+        final String[] scope = sessionScope.get();
+        if (scope != null) {
+            scope[1] = name;
+        } else {
+            this.currentSchema = name;
+        }
+    }
+
     public void useDatabase(final String name) {
-        getDatabase(name); // Validates existence
-        this.currentDatabase = name.toUpperCase();
+        final Database database = getDatabase(name); // Validates existence
+        setCurrentDatabaseName(name.toUpperCase());
+        // Switching database also moves the current schema, as Snowflake does: leaving a schema of the OLD
+        // database current produces an impossible (database, schema) pair that then fails whenever anything
+        // resolves an unqualified name. PUBLIC when the new database has one, otherwise unset.
+        setCurrentSchemaName(database.getSchema("PUBLIC") != null ? "PUBLIC" : null);
+    }
+
+    /**
+     * Restore a previously-saved (database, schema) pair WITHOUT re-validating it — for unwinding a CALL or a
+     * task back to the caller's context. Re-running {@link #useDatabase}/{@link #useSchema} there can throw
+     * (the objects may have been dropped meanwhile, or the saved pair may no longer be valid), and an
+     * exception raised while unwinding replaces the statement's real result and escapes the procedure's own
+     * EXCEPTION handler.
+     */
+    public void restoreContext(final String databaseName, final String schemaName) {
+        setCurrentDatabaseName(databaseName == null ? null : databaseName.toUpperCase());
+        setCurrentSchemaName(schemaName == null ? null : schemaName.toUpperCase());
     }
 
     public void useSchema(final String name) {
-        if (currentDatabase == null) {
+        if (getCurrentDatabase() == null) {
             throw new RuntimeException("No database selected");
         }
-        Database db = getDatabase(currentDatabase);
+        Database db = getDatabase(getCurrentDatabase());
         db.getSchema(name); // Validates existence
-        this.currentSchema = name.toUpperCase();
+        setCurrentSchemaName(name.toUpperCase());
     }
 
     public String getCurrentDatabase() {
-        return currentDatabase;
+        final String[] scope = sessionScope.get();
+        return scope != null ? scope[0] : currentDatabase;
     }
 
     public String getCurrentSchema() {
-        return currentSchema;
+        final String[] scope = sessionScope.get();
+        return scope != null ? scope[1] : currentSchema;
     }
 
     public Table resolveTable(final String qualifiedName) {
@@ -139,18 +212,18 @@ public class Catalog {
     public Table resolveTable(final QualifiedName qn) {
         if (qn.size() == 1) {
             // table name only
-            if (currentDatabase == null || currentSchema == null) {
+            if (getCurrentDatabase() == null || getCurrentSchema() == null) {
                 throw new RuntimeException("No database or schema selected");
             }
-            return getDatabase(currentDatabase)
-                    .getSchema(currentSchema)
+            return getDatabase(getCurrentDatabase())
+                    .getSchema(getCurrentSchema())
                     .getTable(qn.part(0));
         } else if (qn.size() == 2) {
             // schema.table
-            if (currentDatabase == null) {
+            if (getCurrentDatabase() == null) {
                 throw new RuntimeException("No database selected");
             }
-            return getDatabase(currentDatabase)
+            return getDatabase(getCurrentDatabase())
                     .getSchema(qn.part(0))
                     .getTable(qn.part(1));
         } else if (qn.size() == 3) {
@@ -170,18 +243,18 @@ public class Catalog {
     public View resolveView(final QualifiedName qn) {
         if (qn.size() == 1) {
             // view name only
-            if (currentDatabase == null || currentSchema == null) {
+            if (getCurrentDatabase() == null || getCurrentSchema() == null) {
                 throw new RuntimeException("No database or schema selected");
             }
-            return getDatabase(currentDatabase)
-                    .getSchema(currentSchema)
+            return getDatabase(getCurrentDatabase())
+                    .getSchema(getCurrentSchema())
                     .getView(qn.part(0));
         } else if (qn.size() == 2) {
             // schema.view
-            if (currentDatabase == null) {
+            if (getCurrentDatabase() == null) {
                 throw new RuntimeException("No database selected");
             }
-            return getDatabase(currentDatabase)
+            return getDatabase(getCurrentDatabase())
                     .getSchema(qn.part(0))
                     .getView(qn.part(1));
         } else if (qn.size() == 3) {
@@ -200,10 +273,10 @@ public class Catalog {
 
     public Schema resolveSchema(final QualifiedName qn) {
         if (qn.size() == 1) {
-            if (currentDatabase == null) {
+            if (getCurrentDatabase() == null) {
                 throw new RuntimeException("No database selected");
             }
-            return getDatabase(currentDatabase).getSchema(qn.part(0));
+            return getDatabase(getCurrentDatabase()).getSchema(qn.part(0));
         } else if (qn.size() == 2) {
             return getDatabase(qn.part(0)).getSchema(qn.part(1));
         } else {
@@ -263,12 +336,12 @@ public class Catalog {
     // Stage Management — stages now live in Schema
     private Schema resolveSchemaForObject(final String qualifiedName) {
         String[] parts = QualifiedName.parse(qualifiedName).parts();
-        String dbName = currentDatabase;
+        String dbName = getCurrentDatabase();
         if (dbName == null) throw new RuntimeException("No database selected");
         Database db = getDatabase(dbName);
         if (parts.length == 3) return db.getSchema(parts[1]);
         if (parts.length == 2) return db.getSchema(parts[0]);
-        String scName = currentSchema;
+        String scName = getCurrentSchema();
         if (scName == null) throw new RuntimeException("No schema selected");
         return db.getSchema(scName);
     }
@@ -440,6 +513,19 @@ public class Catalog {
         return resolveSchemaForObject(name).getStage(objectName(name));
     }
 
+    /**
+     * Resolve a stream by its (optionally schema- or db-qualified) name against the current context —
+     * {@code SYSTEM$STREAM_HAS_DATA('SCHEMA.STREAM')} passes the qualified text at runtime. Returns
+     * null when the schema or stream does not exist.
+     */
+    public Stream resolveStream(final String qualifiedName) {
+        final Schema schema = resolveSchemaForObject(qualifiedName);
+        if (schema == null) {
+            return null;
+        }
+        return schema.getStream(objectName(qualifiedName));
+    }
+
     public void addFileFormat(final String qualifiedName, final FileFormat fileFormat) {
         resolveSchemaForObject(qualifiedName).addFileFormat(fileFormat);
     }
@@ -462,8 +548,8 @@ public class Catalog {
 
     public List<Stage> getAllStages() {
         try {
-            if (currentDatabase == null || currentSchema == null) return new ArrayList<>();
-            return getDatabase(currentDatabase).getSchema(currentSchema).getStages();
+            if (getCurrentDatabase() == null || getCurrentSchema() == null) return new ArrayList<>();
+            return getDatabase(getCurrentDatabase()).getSchema(getCurrentSchema()).getStages();
         } catch (final Exception e) { return new ArrayList<>(); }
     }
 
@@ -502,8 +588,8 @@ public class Catalog {
 
     public List<Tag> getAllTags() {
         try {
-            if (currentDatabase == null || currentSchema == null) return new ArrayList<>();
-            return getDatabase(currentDatabase).getSchema(currentSchema).getTags();
+            if (getCurrentDatabase() == null || getCurrentSchema() == null) return new ArrayList<>();
+            return getDatabase(getCurrentDatabase()).getSchema(getCurrentSchema()).getTags();
         } catch (final Exception e) { return new ArrayList<>(); }
     }
 

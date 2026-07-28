@@ -25,6 +25,7 @@ public interface ExpressionVisitor<T> {
     T visitBinaryOperation(final BinaryOperationExpression expr);
     T visitUnaryOperation(final UnaryOperationExpression expr);
     T visitFunctionCall(final FunctionCallExpression expr);
+    T visitLambda(final LambdaExpression expr);
     T visitCaseExpression(final CaseExpression expr);
     T visitCast(final CastExpression expr);
     T visitObjectAccess(final ObjectAccessExpression expr);

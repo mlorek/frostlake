@@ -103,6 +103,73 @@ public class JarHandlerTest {
         assertEquals("scproc", rs.getRows().get(0).getValue(0).toString());
     }
 
+    @Test
+    public void stageImportPutsSiblingJarsOnTheClasspath() throws Exception {
+        // Real handler JARs are thin — on Snowflake their dependencies arrive via the PACKAGES
+        // transitive closure. The stage directory doubles as the dependency set: the handler jar names
+        // a class from a SEPARATE dep jar sitting beside it, and only the handler jar is IMPORTed.
+        final Path stageDir = Files.createDirectories(workDir.resolve("stage_jars"));
+        final Path depOut = Files.createDirectories(workDir.resolve("depOut"));
+        writeSource(depOut, "DepHelper.java",
+            "public class DepHelper { public static String tag() { return \"from-dep\"; } }");
+        compileAll(depOut, System.getProperty("java.class.path"), "DepHelper.java");
+        jarClassesIn(depOut, stageDir.resolve("dep-helper.jar"));
+
+        final Path handlerOut = Files.createDirectories(workDir.resolve("handlerOut"));
+        writeSource(handlerOut, "SibUdf.java",
+            "public class SibUdf { public static String tagOf(String n) { return DepHelper.tag() + \":\" + n; } }");
+        compileAll(handlerOut, System.getProperty("java.class.path")
+            + File.pathSeparator + depOut, "SibUdf.java");
+        jarClassesIn(handlerOut, stageDir.resolve("sib-handler.jar"));
+
+        engine.execute("CREATE STAGE dep_stage URL='file://" + stageDir + "'");
+        engine.execute("CREATE FUNCTION sib_tag(n VARCHAR) RETURNS VARCHAR LANGUAGE JAVA "
+            + "IMPORTS = ('@dep_stage/sib-handler.jar') HANDLER = 'SibUdf.tagOf'");
+        final ResultSet rs = engine.executeQuery("SELECT sib_tag('x')");
+        assertEquals("from-dep:x", rs.getRows().get(0).getValue(0).toString());
+    }
+
+    @Test
+    public void arrayParameterMarshalsToStringArrayAndDefaultsApply() throws Exception {
+        // Snowflake's Java UDF type mapping passes an ARRAY as String[]; a trailing DEFAULT NULL
+        // parameter may be omitted and must arrive as a null reference (not fail method resolution).
+        final Path out = Files.createDirectories(workDir.resolve("arrOut"));
+        writeSource(out, "ArrUdf.java",
+            "public class ArrUdf { public static String join(String sep, String[] parts) { "
+            + "if (parts == null) return \"none\"; "
+            + "StringBuilder b = new StringBuilder(); "
+            + "for (int i = 0; i < parts.length; i++) { if (i > 0) b.append(sep); b.append(parts[i]); } "
+            + "return b.toString(); } }");
+        compileAll(out, System.getProperty("java.class.path"), "ArrUdf.java");
+        final Path jar = jarClassesIn(out, workDir.resolve("arr-handler.jar"));
+
+        engine.execute("CREATE FUNCTION arr_join(sep VARCHAR, parts ARRAY DEFAULT NULL) "
+            + "RETURNS VARCHAR LANGUAGE JAVA "
+            + "IMPORTS = ('" + jar + "') HANDLER = 'ArrUdf.join'");
+        assertEquals("a-b",
+            engine.executeQuery("SELECT arr_join('-', ARRAY_CONSTRUCT('a', 'b'))").getRows().get(0).getValue(0).toString());
+        assertEquals("none",
+            engine.executeQuery("SELECT arr_join('-')").getRows().get(0).getValue(0).toString());
+    }
+
+    private static void compileAll(final Path srcDir, final String classpath, final String... files) throws IOException {
+        final JavaCompiler compiler = ToolProvider.getSystemJavaCompiler();
+        if (compiler == null) {
+            throw new IllegalStateException("No system Java compiler (run on a JDK)");
+        }
+        final StandardJavaFileManager fm = compiler.getStandardFileManager(null, null, null);
+        final File[] sources = new File[files.length];
+        for (int i = 0; i < files.length; i++) {
+            sources[i] = srcDir.resolve(files[i]).toFile();
+        }
+        final List<String> opts = Arrays.asList("-classpath", classpath, "-d", srcDir.toString());
+        final boolean ok = compiler.getTask(null, fm, null, opts, null, fm.getJavaFileObjects(sources)).call();
+        fm.close();
+        if (!ok) {
+            throw new IllegalStateException("javac failed for " + Arrays.toString(files));
+        }
+    }
+
     // ── JAR building ────────────────────────────────────────────────────────
 
     /** javac a UDF (static) + a procedure (instance, takes a Snowpark Session) class, then jar them. */

@@ -27,7 +27,12 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-/** OBJECT_INSERT(object, key, value [, update_flag]) — inserts/updates a key in an object. */
+/**
+ * OBJECT_INSERT(object, key, value [, update_flag]) — inserts/updates a key in an object.
+ * Snowflake null semantics: a SQL NULL key or value OMITS the pair from the returned object (an
+ * already-present key is removed), while a JSON null ({@code PARSE_JSON('null')}) is stored as a
+ * real null member. Without the update flag, inserting a key that already exists is an error.
+ */
 public class ObjectInsert extends BuiltInFunction {
     public ObjectInsert() { super("OBJECT_INSERT", VariantType.VARIANT); }
 
@@ -35,16 +40,32 @@ public class ObjectInsert extends BuiltInFunction {
     public Object evaluate(final List<Object> args) {
         JsonNode src = ArrayFunctionHelper.parseNode(args.get(0));
         if (src == null || !src.isObject()) return null;
-        if (args.get(1) == null) return src.toString();
+        if (args.get(1) == null) return ArrayFunctionHelper.toCanonicalJson(src);
         String key = args.get(1).toString();
-        // Copy existing object
+        final Object value = args.size() > 2 ? args.get(2) : null;
+        final boolean update = args.size() > 3 && args.get(3) != null
+            && Boolean.parseBoolean(args.get(3).toString());
+
         ObjectNode result = ArrayFunctionHelper.MAPPER.createObjectNode();
+        boolean existed = false;
         Set<Map.Entry<String, JsonNode>> fields = src.properties();
         for (final Map.Entry<String, JsonNode> e :  fields) {
+            if (e.getKey().equals(key)) {
+                existed = true;
+                continue;
+            }
             result.set(e.getKey(), e.getValue());
         }
-        result.set(key, ArrayFunctionHelper.toNode(ArrayFunctionHelper.MAPPER, args.size() > 2 ? args.get(2) : null));
-        return result.toString();
+        if (existed && !update && value != null) {
+            throw new RuntimeException(
+                "OBJECT_INSERT: key '" + key + "' already exists; pass the update flag to overwrite it");
+        }
+        // A SQL NULL value omits the pair entirely — the key is neither added nor kept. A VARIANT
+        // JSON null (the text "null") is a real value and toNode restores it as a null member.
+        if (value != null) {
+            result.set(key, ArrayFunctionHelper.toNode(ArrayFunctionHelper.MAPPER, value));
+        }
+        return ArrayFunctionHelper.toCanonicalJson(result);
     }
 
     @Override public int getMinArgCount() { return 3; }

@@ -141,6 +141,9 @@ final class CatalogSnapshotWriter {
                     viewSnapshot.secure = view.isSecure();
                     viewSnapshot.columnNames = view.getColumnNames() != null && !view.getColumnNames().isEmpty()
                         ? new ArrayList<>(view.getColumnNames()) : null;
+                    viewSnapshot.rowAccessPolicyName = view.getRowAccessPolicyName();
+                    viewSnapshot.rowAccessPolicyColumns = view.hasRowAccessPolicy()
+                        ? new ArrayList<>(view.getRowAccessPolicyColumns()) : null;
                     schemaSnapshot.views.add(viewSnapshot);
                 }
 

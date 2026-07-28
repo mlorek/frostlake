@@ -116,7 +116,9 @@ final class MergeExecutor {
                     sourceTable = streamSource.table;
                 } else {
                     String fullyQualifiedSourceName = executor.getFullyQualifiedTableName(sourceTableName);
-                    sourceRows = executor.getStorageEngine().getTableStorage(fullyQualifiedSourceName).scan();
+                    // Overlay-aware: a stage table populated by THIS transaction must be visible as the
+                    // merge source (a raw scan saw only the committed base — empty for a fresh stage).
+                    sourceRows = executor.readTableRowsForTransaction(fullyQualifiedSourceName);
                     sourceTable = executor.getCatalog().resolveTable(sourceTableName);
                 }
             } else if (mergeSource instanceof FrostlakeParser.MergeSourceSubqueryContext) {
@@ -151,12 +153,40 @@ final class MergeExecutor {
             // Get target table rows - use fully qualified name
             String fullyQualifiedTargetName = executor.getFullyQualifiedTableName(targetTableName);
             List<Row> targetRows = executor.getStorageEngine().getTableStorage(fullyQualifiedTargetName).scan();
-            // Deferred mode: stable ids aligned with targetRows so MERGE can record changes by id (not
-            // position), and the write set to record into. Both null on the immediate path.
-            List<Long> targetRowIds = executor.isDeferredApply()
-                ? executor.getStorageEngine().getTableStorage(fullyQualifiedTargetName).getRowIds() : null;
             TransactionWriteSet mergeWriteSet = executor.isDeferredApply()
                 ? executor.getTransactionManager().getCurrentTransaction().getWriteSet() : null;
+            // Deferred mode: the MERGE must see its TARGET through the transaction overlay — pending
+            // updates applied, pending deletes removed, and this transaction's own pending INSERTS
+            // matchable — otherwise a row inserted earlier in the same explicit transaction silently
+            // never matches (its counts/updates are lost). Base rows keep their stable id (changes are
+            // recorded by id); a pending insert has no id yet, so it carries its index in the write
+            // set's insert list instead and is updated/removed in place there. Both lists stay null on
+            // the immediate path.
+            List<Long> targetRowIds = null;          // aligned with targetRows; null entry = pending insert
+            List<Integer> targetPendingIdx = null;   // aligned with targetRows; -1 = base row
+            if (executor.isDeferredApply()) {
+                final List<Row> baseRows = targetRows;
+                final List<Long> baseIds = executor.getStorageEngine().getTableStorage(fullyQualifiedTargetName).getRowIds();
+                targetRows = new ArrayList<>();
+                targetRowIds = new ArrayList<>();
+                targetPendingIdx = new ArrayList<>();
+                for (int i = 0; i < baseRows.size(); i++) {
+                    final long id = baseIds.get(i);
+                    if (mergeWriteSet.isDeleted(fullyQualifiedTargetName, id)) {
+                        continue;
+                    }
+                    final Row pending = mergeWriteSet.pendingUpdate(fullyQualifiedTargetName, id);
+                    targetRows.add(pending != null ? pending : baseRows.get(i));
+                    targetRowIds.add(id);
+                    targetPendingIdx.add(-1);
+                }
+                final List<Row> pendingInsertRows = mergeWriteSet.pendingInserts(fullyQualifiedTargetName);
+                for (int i = 0; i < pendingInsertRows.size(); i++) {
+                    targetRows.add(pendingInsertRows.get(i));
+                    targetRowIds.add(null);
+                    targetPendingIdx.add(i);
+                }
+            }
 
             // Track which source rows matched
             Set<Integer> matchedSourceIndices = new HashSet<>();
@@ -232,7 +262,13 @@ final class MergeExecutor {
                                         executor.enforceColumnConstraints(targetTable, updatedRow);
 
                                         if (executor.isDeferredApply()) {
-                                            mergeWriteSet.recordUpdate(fullyQualifiedTargetName, targetRowIds.get(targetIdx), updatedRow);
+                                            final Long targetRowId = targetRowIds.get(targetIdx);
+                                            if (targetRowId != null) {
+                                                mergeWriteSet.recordUpdate(fullyQualifiedTargetName, targetRowId, updatedRow);
+                                            } else {
+                                                // Matched one of this transaction's own pending inserts.
+                                                mergeWriteSet.setPendingInsert(fullyQualifiedTargetName, targetPendingIdx.get(targetIdx), updatedRow);
+                                            }
                                         } else {
                                             executor.getStorageEngine().getTableStorage(fullyQualifiedTargetName).update(targetIdx, updatedRow);
                                         }
@@ -261,7 +297,14 @@ final class MergeExecutor {
                 int rowIdx = rowsToDelete.get(i);
                 Row deletedRow = targetRows.get(rowIdx);
                 if (executor.isDeferredApply()) {
-                    mergeWriteSet.recordDelete(fullyQualifiedTargetName, targetRowIds.get(rowIdx));
+                    final Long targetRowId = targetRowIds.get(rowIdx);
+                    if (targetRowId != null) {
+                        mergeWriteSet.recordDelete(fullyQualifiedTargetName, targetRowId);
+                    } else {
+                        // Deleting one of this transaction's own pending inserts: drop it from the write
+                        // set (reverse iteration keeps the remaining pending indices valid).
+                        mergeWriteSet.removePendingInsert(fullyQualifiedTargetName, targetPendingIdx.get(rowIdx));
+                    }
                 } else {
                     executor.getStorageEngine().getTableStorage(fullyQualifiedTargetName).delete(rowIdx);
 
@@ -296,7 +339,7 @@ final class MergeExecutor {
                             final Row emptyTargetRow = new Row(new ArrayList<>());
                             for (final FrostlakeParser.ExpressionContext expr : notMatchedClause.valueTuple().valueList().expression()) {
                                 values.add(evaluateMergeValue(executor.getOriginalText(expr), emptyTargetRow, sourceRow,
-                                    targetTable, sourceTable, targetAlias, sourceAlias));
+                                    targetTable, sourceTable, targetAlias, sourceAlias, true));
                             }
                         } else {
                             values = new ArrayList<>(sourceRow.getValues());
@@ -305,9 +348,12 @@ final class MergeExecutor {
                         // Value-by-column-name (explicit list, else positional), then build the row applying
                         // DEFAULT / AUTOINCREMENT to omitted columns via the shared insertColumnValue.
                         final List<String> columnNames = new ArrayList<>();
-                        if (notMatchedClause.columnListOptional() != null) {
-                            for (final FrostlakeParser.IdentifierContext id : notMatchedClause.columnListOptional().identifierList().identifier()) {
-                                columnNames.add(executor.getIdentifier(id).toUpperCase());
+                        if (notMatchedClause.mergeInsertColumnList() != null) {
+                            for (final FrostlakeParser.MergeInsertColumnContext mic : notMatchedClause.mergeInsertColumnList().mergeInsertColumn()) {
+                                // An optional target-alias qualifier (t.col) may precede the column; the
+                                // last identifier is the column name.
+                                final List<FrostlakeParser.IdentifierContext> parts = mic.identifier();
+                                columnNames.add(executor.getIdentifier(parts.get(parts.size() - 1)).toUpperCase());
                             }
                         } else {
                             for (final TableColumn col : targetTable.getColumns()) {
@@ -320,8 +366,14 @@ final class MergeExecutor {
                         }
                         final List<Object> orderedValues = new ArrayList<>();
                         for (final TableColumn col : targetTable.getColumns()) {
-                            orderedValues.add(executor.insertColumnValue(col, fullyQualifiedTargetName,
-                                valueMap.get(col.getName().toUpperCase())));
+                            final String key = col.getName().toUpperCase();
+                            // A column covered by the INSERT clause keeps its explicit value — even NULL;
+                            // DEFAULT / AUTOINCREMENT apply only to columns omitted from it (Snowflake).
+                            if (valueMap.containsKey(key)) {
+                                orderedValues.add(valueMap.get(key));
+                            } else {
+                                orderedValues.add(executor.insertColumnValue(col, fullyQualifiedTargetName, null));
+                            }
                         }
 
                         final Row newRow = new Row(orderedValues);
@@ -498,6 +550,14 @@ final class MergeExecutor {
     private Object evaluateMergeValue(final String expr, final Row targetRow, final Row sourceRow,
                                       final Table targetTable, final Table sourceTable,
                                       final String targetAlias, final String sourceAlias) {
+        return evaluateMergeValue(expr, targetRow, sourceRow, targetTable, sourceTable,
+            targetAlias, sourceAlias, false);
+    }
+
+    private Object evaluateMergeValue(final String expr, final Row targetRow, final Row sourceRow,
+                                      final Table targetTable, final Table sourceTable,
+                                      final String targetAlias, final String sourceAlias,
+                                      final boolean unqualifiedFromSource) {
         // Build same merged table as evaluateMergeCondition
         List<TableColumn> mergedCols = new ArrayList<>();
         List<Object> mergedVals = new ArrayList<>();
@@ -539,6 +599,19 @@ final class MergeExecutor {
             mergedCols.add(new TableColumn(col.getName().toUpperCase(),
                 col.getDataType(), true, null, false, false, false));
             mergedVals.add(val);
+        }
+
+        // In a WHEN NOT MATCHED insert there is no target row, so Snowflake resolves an UNQUALIFIED
+        // column name to the SOURCE (e.g. a seed MERGE writing `VALUES (s.A, B, C)` with B, C bare).
+        // Table's name index is last-wins, so appending bare source keys here lets them take
+        // precedence over the (empty) target's bare keys for this evaluation only.
+        if (unqualifiedFromSource && sourceTable != null) {
+            for (int i = 0; i < sourceTable.getColumns().size(); i++) {
+                final TableColumn col = sourceTable.getColumns().get(i);
+                mergedCols.add(new TableColumn(col.getName().toUpperCase(),
+                    col.getDataType(), true, null, false, false, false));
+                mergedVals.add(i < sourceRow.getValues().size() ? sourceRow.getValue(i) : null);
+            }
         }
 
         Table mergedTable = new Table("__MERGE__", mergedCols, false);

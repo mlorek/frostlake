@@ -20,6 +20,8 @@ import dev.frostlake.executor.ProceduralExecutor;
 import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.FunctionRegistry;
+import dev.frostlake.functions.scalar.ArrayFunctionHelper;
+import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.model.Function;
@@ -35,6 +37,9 @@ import dev.frostlake.security.SecurityManager;
 import dev.frostlake.jdbc.JdbcMarshaling;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.Row;
+
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.node.ArrayNode;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -58,6 +63,11 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
     private SubqueryMemo subqueryMemo;
     private final UdfInvoker udfInvoker;
     private final SubqueryEvaluator subqueryEvaluator;
+
+    // Lambda variable scopes for higher-order functions (TRANSFORM/FILTER/REDUCE): a scope is pushed while
+    // evaluating a lambda body, mapping the upper-cased lambda parameter name to the current element (and
+    // accumulator). Checked first in visitColumnReference so the body's references resolve to them.
+    private final Deque<Map<String, Object>> lambdaScopes = new ArrayDeque<>();
 
     // Monotonic per-thread counter of lateral (outer) value reads. Subquery evaluation snapshots it
     // around a probe execution: a zero delta proves the subquery read no outer value, so its result is
@@ -105,6 +115,16 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
 
     Map<String, Object> getLateralContext() {
         return lateralContext;
+    }
+
+    /** The FROM alias map (alias → table), when a multi-table/alias context was provided. Package-private. */
+    Map<String, Table> getMultiTableAliasToTable() {
+        return multiTableAliasToTable;
+    }
+
+    /** The FROM tables in combined-row order, when a multi-table/alias context was provided. Package-private. */
+    List<Table> getMultiTableAllTables() {
+        return multiTableAllTables;
     }
 
     SubqueryMemo getSubqueryMemo() {
@@ -157,12 +177,10 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
         String streamName = nameVal.toString().toUpperCase().replaceAll("^'|'$", "");
         if (queryExecutor == null) return false;
         try {
-            Catalog catalog2 = queryExecutor.getCatalog();
-            String dbName = catalog2.getCurrentDatabase();
-            String scName = catalog2.getCurrentSchema();
-            if (dbName == null || scName == null) return false;
-            Stream stream =
-                catalog2.getDatabase(dbName).getSchema(scName).getStream(streamName);
+            // The name may be schema- or db-qualified ('BASE_TRANSFORM.STREAM_X') — resolving the whole
+            // dotted text as a bare name in the current schema silently returned FALSE, so every loader
+            // gated on SYSTEM$STREAM_HAS_DATA skipped its branch.
+            final Stream stream = queryExecutor.getCatalog().resolveStream(streamName);
             if (stream == null) return false;
             // A stream "has data" when it has unconsumed change records — NOT when a same-named table has
             // rows (streams aren't stored as tables). Mirrors Snowflake SYSTEM$STREAM_HAS_DATA.
@@ -226,6 +244,29 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
         // Strip double-quote delimiters from quoted identifiers
         if (columnName.startsWith("\"") && columnName.endsWith("\"") && columnName.length() > 1) {
             columnName = columnName.substring(1, columnName.length() - 1);
+        }
+
+        // Lambda variable (TRANSFORM/FILTER/REDUCE): an unqualified reference matching a bound lambda
+        // parameter resolves to the current element/accumulator, shadowing table columns.
+        if (!lambdaScopes.isEmpty() && !expr.isQualified()) {
+            final String key = columnName.toUpperCase();
+            for (final Map<String, Object> scope : lambdaScopes) {
+                if (scope.containsKey(key)) {
+                    return scope.get(key);
+                }
+            }
+        }
+
+        // Snowflake Scripting exposes SQLERRM / SQLCODE / SQLSTATE as bare identifiers (no colon) inside an
+        // exception handler; resolve them to the procedural variable the handler bound.
+        if (!expr.isQualified() && queryExecutor != null) {
+            final String upper = columnName.toUpperCase();
+            if ("SQLERRM".equals(upper) || "SQLCODE".equals(upper) || "SQLSTATE".equals(upper)) {
+                final ProceduralExecutor proceduralExecutor = queryExecutor.getProceduralExecutor();
+                if (proceduralExecutor != null && proceduralExecutor.hasVariable(upper)) {
+                    return proceduralExecutor.getVariable(upper);
+                }
+            }
         }
 
         // Translate positional parameters ($1, $2, etc.) to COLUMN1, COLUMN2, etc.
@@ -407,6 +448,8 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
                 return multiply(left, right);
             case DIVIDE:
                 return divide(left, right);
+            case MODULO:
+                return modulo(left, right);
             case EQUAL:
                 // NULL = anything is UNKNOWN (three-valued logic), represented as a null Boolean.
                 if (left == null || right == null) return null;
@@ -469,7 +512,8 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
                 if (left == null || right == null) {
                     return null;
                 }
-                return String.valueOf(left) + String.valueOf(right);
+                // Temporal operands render in Snowflake's default output forms (space + FF3).
+                return SharedFunctionHelpers.textOf(left) + SharedFunctionHelpers.textOf(right);
             case LIKE:
             case NOT_LIKE:
             case ILIKE:
@@ -490,8 +534,14 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
                 return !isTrue(operand);
             case NEGATE:
                 Object negOperand = expr.getOperand().accept(this);
-                if (negOperand instanceof Number) {
-                    return negate((Number) negOperand);
+                // -NULL is NULL; a numeric VARCHAR is coerced, as Snowflake does in any arithmetic context
+                // (a VARCHAR column such as SPLIT_TO_TABLE's VALUE is routinely negated).
+                if (negOperand == null) {
+                    return null;
+                }
+                final Number negNumber = ExpressionArithmetic.asNumber(negOperand);
+                if (negNumber != null) {
+                    return negate(negNumber);
                 }
                 throw new RuntimeException("Cannot negate non-number: " + negOperand);
             case EXISTS:
@@ -508,6 +558,119 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
     }
 
     @Override
+    public Object visitLambda(final LambdaExpression expr) {
+        // A lambda is never evaluated on its own — TRANSFORM/FILTER/REDUCE apply its body per element.
+        throw new RuntimeException("Lambda expression is only valid as an argument to a higher-order function");
+    }
+
+    /** Returned by {@link #evaluateConditionalFunction} for a function that is NOT short-circuiting.
+     *  A private singleton, so it can never collide with a real (possibly null) function result. */
+    private static final Object NOT_CONDITIONAL = new Object();
+
+    /**
+     * Evaluate a short-circuiting conditional function, or return {@link #NOT_CONDITIONAL} when
+     * {@code funcName} is not one. These are the Snowflake functions defined in terms of CASE, so only
+     * the branch actually selected may be evaluated: a guard like {@code IFF(c, udf(x), NULL)} must not
+     * call the UDF when {@code c} is false, and {@code NVL(a, expensive(b))} must not compute the
+     * fallback when {@code a} is non-NULL. Arity mismatches fall through to the normal (eager) path so
+     * the function's own argument-count validation still reports the error.
+     */
+    private Object evaluateConditionalFunction(final String funcName, final List<Expression> args) {
+        switch (funcName) {
+            case "IFF":
+                if (args.size() != 3) {
+                    return NOT_CONDITIONAL;
+                }
+                return isTrue(args.get(0).accept(this)) ? args.get(1).accept(this) : args.get(2).accept(this);
+            case "COALESCE":
+                if (args.isEmpty()) {
+                    return NOT_CONDITIONAL;
+                }
+                for (final Expression arg : args) {
+                    final Object value = arg.accept(this);
+                    if (value != null) {
+                        return value;
+                    }
+                }
+                return null;
+            case "NVL":
+            case "IFNULL":
+                if (args.size() != 2) {
+                    return NOT_CONDITIONAL;
+                }
+                final Object nvlValue = args.get(0).accept(this);
+                return nvlValue != null ? nvlValue : args.get(1).accept(this);
+            case "NVL2":
+                if (args.size() != 3) {
+                    return NOT_CONDITIONAL;
+                }
+                return args.get(0).accept(this) != null ? args.get(1).accept(this) : args.get(2).accept(this);
+            default:
+                return NOT_CONDITIONAL;
+        }
+    }
+
+    private boolean hasLambdaArgument(final FunctionCallExpression expr) {
+        for (final Expression arg : expr.getArguments()) {
+            if (arg instanceof LambdaExpression) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Evaluate a higher-order function whose last argument is a lambda: {@code TRANSFORM(<array>, <lambda>)},
+     * {@code FILTER(<array>, <lambda>)}, {@code REDUCE(<array>, <initial>, <lambda>)}. The array is evaluated
+     * once; the lambda body is then applied per element with its parameter(s) bound (element [, index] — or
+     * accumulator, element for REDUCE). A NULL/non-array input yields NULL.
+     */
+    private Object evaluateHigherOrderFunction(final String funcName, final List<Expression> args) {
+        final LambdaExpression lambda = (LambdaExpression) args.get(args.size() - 1);
+        final ArrayNode array = ArrayFunctionHelper.parseArray(args.get(0).accept(this));
+        if (array == null) {
+            return null;
+        }
+
+        if ("REDUCE".equals(funcName)) {
+            Object acc = args.size() >= 3 ? args.get(1).accept(this) : null;
+            for (int i = 0; i < array.size(); i++) {
+                acc = applyLambda(lambda, acc, ArrayFunctionHelper.fromNode(array.get(i)));
+            }
+            return acc;
+        }
+
+        final ArrayNode result = ArrayFunctionHelper.MAPPER.createArrayNode();
+        for (int i = 0; i < array.size(); i++) {
+            final Object applied = applyLambda(lambda, ArrayFunctionHelper.fromNode(array.get(i)), (long) i);
+            if ("FILTER".equals(funcName)) {
+                if (Boolean.TRUE.equals(applied)) {
+                    result.add(array.get(i));
+                }
+            } else { // TRANSFORM
+                result.add(applied instanceof JsonNode ? (JsonNode) applied
+                    : ArrayFunctionHelper.toNode(ArrayFunctionHelper.MAPPER, applied));
+            }
+        }
+        return result;
+    }
+
+    /** Bind the lambda's parameters to {@code values} (in order), evaluate its body, then unbind. */
+    private Object applyLambda(final LambdaExpression lambda, final Object... values) {
+        final Map<String, Object> scope = new HashMap<>();
+        final List<String> params = lambda.getParameters();
+        for (int i = 0; i < params.size() && i < values.length; i++) {
+            scope.put(params.get(i).toUpperCase(), values[i]);
+        }
+        lambdaScopes.push(scope);
+        try {
+            return lambda.getBody().accept(this);
+        } finally {
+            lambdaScopes.pop();
+        }
+    }
+
+    @Override
     public Object visitFunctionCall(final FunctionCallExpression expr) {
         String funcName = expr.getFunctionName().toUpperCase();
 
@@ -520,13 +683,49 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
             }
         }
 
+        // Higher-order functions (TRANSFORM / FILTER / REDUCE): the lambda argument must NOT be
+        // pre-evaluated — it is applied per array element with the element bound to the lambda variable.
+        if (("TRANSFORM".equals(funcName) || "FILTER".equals(funcName) || "REDUCE".equals(funcName))
+                && hasLambdaArgument(expr)) {
+            return evaluateHigherOrderFunction(funcName, expr.getArguments());
+        }
+
         // Handle special functions
         if (expr.isStar()) {
+            // OBJECT_CONSTRUCT(*) / OBJECT_CONSTRUCT_KEEP_NULL(*) [EXCLUDE cols]: expand the star to the
+            // current row's columns as alternating key/value arguments, dropping any EXCLUDEd columns.
+            if (("OBJECT_CONSTRUCT".equals(funcName) || "OBJECT_CONSTRUCT_KEEP_NULL".equals(funcName))
+                    && table != null && row != null) {
+                BuiltInFunction objFunc = functionRegistry.getFunction(funcName);
+                if (objFunc != null) {
+                    List<Object> kv = new ArrayList<>();
+                    List<String> excludes = expr.getStarExcludes();
+                    List<TableColumn> cols = table.getColumns();
+                    for (int i = 0; i < cols.size(); i++) {
+                        String colName = cols.get(i).getName();
+                        if (excludes.contains(colName.toUpperCase())) {
+                            continue;
+                        }
+                        kv.add(colName);
+                        kv.add(row.getValue(i));
+                    }
+                    return objFunc.evaluate(kv);
+                }
+            }
             // COUNT(*) - handled by function implementation
             BuiltInFunction func = functionRegistry.getFunction(funcName);
             if (func != null) {
                 return func.evaluate(new ArrayList<>());
             }
+        }
+
+        // Conditional functions SHORT-CIRCUIT, like CASE (whose IFF is Snowflake's shorthand): only the
+        // selected branch is evaluated. Evaluating every argument first breaks the standard guard idiom
+        // `IFF(x IS NOT NULL, f(x), NULL)` / `NVL(x, g(y))`, where the unselected branch would error or
+        // is merely expensive — a UDF that rejects NULL then failed on rows the guard excluded.
+        final Object shortCircuited = evaluateConditionalFunction(funcName, expr.getArguments());
+        if (shortCircuited != NOT_CONDITIONAL) {
+            return shortCircuited;
         }
 
         // Evaluate arguments
@@ -644,6 +843,17 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
     @Override
     public Object visitCast(final CastExpression expr) {
         Object value = expr.getExpression().accept(this);
+        if (isVariantJsonNullCast(expr, value)) {
+            return null;
+        }
+        if (expr.isTryMode()) {
+            // TRY_CAST: a conversion that would fail (e.g. a non-numeric string to NUMBER) yields NULL.
+            try {
+                return castValue(value, expr.getTargetType());
+            } catch (final RuntimeException e) {
+                return null;
+            }
+        }
         return castValue(value, expr.getTargetType());
     }
 
@@ -788,16 +998,24 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
         boolean first = true;
 
         for (final Map.Entry<String, Expression> entry : expr.getProperties().entrySet()) {
+            final Object value = entry.getValue().accept(this);
+            // Snowflake object constants follow OBJECT_CONSTRUCT semantics: a pair whose value is
+            // SQL NULL is omitted from the object (a VARIANT JSON null — the text "null" — stays a
+            // null member). The vendor stats pattern depends on this: {'k': null, ...} followed by
+            // OBJECT_INSERT(obj, 'k', v) without the update flag only works when 'k' was dropped.
+            if (value == null) {
+                continue;
+            }
             if (!first) {
                 json.append(", ");
             }
             json.append("\"").append(entry.getKey()).append("\": ");
-            json.append(jsonElementText(entry.getValue(), entry.getValue().accept(this)));
+            json.append(jsonElementText(entry.getValue(), value));
             first = false;
         }
 
         json.append("}");
-        return json.toString();
+        return canonicalJsonOrText(json.toString());
     }
 
     @Override
@@ -813,7 +1031,17 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
         }
 
         json.append("]");
-        return json.toString();
+        return canonicalJsonOrText(json.toString());
+    }
+
+    /**
+     * Canonical form of an assembled object/array literal — keys sorted, compact separators — so a
+     * {@code [{'edition': 'pro*'}]} literal compares equal to the same value extracted from a VARIANT
+     * (Snowflake stores both canonically; keeping the literal's source spacing made EXCEPT see a diff).
+     */
+    private String canonicalJsonOrText(final String jsonText) {
+        final JsonNode node = ArrayFunctionHelper.parseNode(jsonText);
+        return node != null ? ArrayFunctionHelper.toCanonicalJson(node) : jsonText;
     }
 
     @Override
@@ -956,6 +1184,10 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
         return ExpressionArithmetic.divide(left, right);
     }
 
+    private Object modulo(final Object left, final Object right) {
+        return ExpressionArithmetic.modulo(left, right);
+    }
+
     private boolean equals(final Object left, final Object right) {
         return ExpressionArithmetic.equals(left, right);
     }
@@ -969,11 +1201,37 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
 
     /** Whether {@code expr} references a column whose collation is case-insensitive (a "ci" specifier). */
     private boolean isCaseInsensitiveCollated(final Expression expr) {
-        if (table == null || !(expr instanceof ColumnReferenceExpression)) {
+        if (!(expr instanceof ColumnReferenceExpression)) {
             return false;
         }
-        final String colName = ((ColumnReferenceExpression) expr).getColumnName();
-        for (final TableColumn col : table.getColumns()) {
+        final ColumnReferenceExpression colRef = (ColumnReferenceExpression) expr;
+        final String colName = colRef.getColumnName();
+        // Qualified reference in a join: the collation lives on the qualifier's table, not on the
+        // single-table context (a JOIN ON over an 'en-ci' column silently compared case-sensitively).
+        if (colRef.getTableName() != null && multiTableAliasToTable != null) {
+            for (final Map.Entry<String, Table> aliased : multiTableAliasToTable.entrySet()) {
+                if (aliased.getKey().equalsIgnoreCase(colRef.getTableName())) {
+                    return columnIsCaseInsensitive(aliased.getValue(), colName);
+                }
+            }
+        }
+        if (table != null && table.hasColumn(colName)) {
+            return columnIsCaseInsensitive(table, colName);
+        }
+        // Unqualified reference in a join: the first in-scope table owning the column decides,
+        // matching the value-resolution order.
+        if (multiTableAllTables != null) {
+            for (final Table joined : multiTableAllTables) {
+                if (joined != null && joined.hasColumn(colName)) {
+                    return columnIsCaseInsensitive(joined, colName);
+                }
+            }
+        }
+        return false;
+    }
+
+    private static boolean columnIsCaseInsensitive(final Table owner, final String colName) {
+        for (final TableColumn col : owner.getColumns()) {
             if (col.getName().equalsIgnoreCase(colName)) {
                 return isCaseInsensitiveCollation(col.getCollation());
             }
@@ -1021,6 +1279,34 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
         return ValueCaster.castValue(value, targetType);
     }
 
+    /**
+     * Whether this cast is a VARIANT JSON null being converted to an ordinary SQL type, which Snowflake
+     * resolves to SQL NULL: {@code v:missing::VARCHAR IS NULL} is TRUE, while the uncast {@code v:missing} is a
+     * JSON null and {@code IS NULL} on it is FALSE. A JSON null is carried as the four-character text
+     * {@code null}, so it is only recognisable as such when the operand is a VARIANT PATH (a {@code :} field
+     * access or a {@code [i]} element access) — a plain
+     * {@code 'null'} string keeps its text, and {@code TO_DATE('null')} still errors.
+     *
+     * <p>Casting to a semi-structured type is excluded: {@code v:missing::VARIANT} is still a JSON null.
+     * Without this every consumer of such a path saw the literal text: TO_TIMESTAMP / TO_DATE / TO_TIME /
+     * DATEADD all failed with "Cannot parse date/time: null" instead of returning NULL.
+     */
+    private static boolean isVariantJsonNullCast(final CastExpression expr, final Object value) {
+        if (!(expr.getExpression() instanceof ObjectAccessExpression)
+                && !(expr.getExpression() instanceof ArrayAccessExpression)) {
+            return false;
+        }
+        if (!(value instanceof CharSequence) || !"null".equals(value.toString())) {
+            return false;
+        }
+        String baseType = expr.getTargetType().toUpperCase();
+        final int parenIndex = baseType.indexOf('(');
+        if (parenIndex > 0) {
+            baseType = baseType.substring(0, parenIndex).trim();
+        }
+        return !"VARIANT".equals(baseType) && !"ARRAY".equals(baseType) && !"OBJECT".equals(baseType);
+    }
+
     private Object extractJsonProperty(final String jsonString, final String property) {
         return JsonPathExtractor.extractJsonProperty(jsonString, property);
     }
@@ -1041,11 +1327,54 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
      * the malformed {@code ["{"b": 1}"]} and later {@code c[0]} would fail to parse.
      */
     private String jsonElementText(final Expression element, final Object value) {
+        // A nested object/array LITERAL ({...}/[...]) evaluates to its own valid JSON text — embed as-is.
         if (value instanceof String
                 && (element instanceof JsonObjectExpression || element instanceof JsonArrayExpression)) {
             return (String) value;
         }
+        // A value that IS a JSON object/array — a JsonNode, or the JSON text produced by OBJECT_CONSTRUCT /
+        // PARSE_JSON / a UDF returning OBJECT — must be embedded as a NESTED node, not a quoted string.
+        // Otherwise the enclosing JSON is malformed ({"k": "{"a":1}"}, unescaped) and any downstream
+        // OBJECT_* / variant path over it returns null — the root cause of the loader stats object going NULL.
+        if (value instanceof JsonNode) {
+            return value.toString();
+        }
+        if (value instanceof String) {
+            // A VARIANT JSON null IS the text "null" in this engine's value model (PARSE_JSON('null'));
+            // embed it as a real JSON null member, not as the quoted string "null".
+            if ("null".equals(value)) {
+                return "null";
+            }
+            final String nested = jsonStructureOrNull((String) value);
+            if (nested != null) {
+                return nested;
+            }
+        }
         return formatJsonValue(value);
+    }
+
+    /**
+     * If {@code s} is JSON text for an object or array, returns it (trimmed) so it can be embedded as a
+     * nested node inside an enclosing object/array literal; otherwise returns null (the value is a scalar).
+     */
+    private static String jsonStructureOrNull(final String s) {
+        final String trimmed = s.trim();
+        if (trimmed.length() < 2) {
+            return null;
+        }
+        final char c = trimmed.charAt(0);
+        if (c != '{' && c != '[') {
+            return null;
+        }
+        try {
+            final JsonNode node = ArrayFunctionHelper.MAPPER.readTree(trimmed);
+            if (node != null && (node.isObject() || node.isArray())) {
+                return trimmed;
+            }
+        } catch (final Exception notJson) {
+            // Not valid JSON — treat as an ordinary scalar string.
+        }
+        return null;
     }
 
     private Object evaluateExists(final String subquery) {

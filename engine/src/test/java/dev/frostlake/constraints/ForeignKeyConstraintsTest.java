@@ -166,12 +166,12 @@ public class ForeignKeyConstraintsTest extends BaseDatabaseTest {
     public void testForeignKeyOnDeleteSetNull() {
         logger.info("Testing FOREIGN KEY with ON DELETE SET NULL");
 
-        engine.execute("CREATE TABLE accounts (account_id INTEGER PRIMARY KEY)");
+        engine.execute("CREATE TABLE wallets (wallet_id INTEGER PRIMARY KEY)");
         engine.execute("""
             CREATE TABLE transactions (
                 txn_id INTEGER,
-                account_id INTEGER,
-                FOREIGN KEY (account_id) REFERENCES accounts(account_id) ON DELETE SET NULL
+                wallet_id INTEGER,
+                FOREIGN KEY (wallet_id) REFERENCES wallets(wallet_id) ON DELETE SET NULL
             )
             """);
 
@@ -572,8 +572,8 @@ public class ForeignKeyConstraintsTest extends BaseDatabaseTest {
         engine.execute("""
             CREATE TABLE transactions_tbl (
                 id INTEGER,
-                account_id INTEGER,
-                CONSTRAINT fk_account FOREIGN KEY (account_id) REFERENCES accounts_tbl(id) ON DELETE CASCADE NORELY
+                wallet_id INTEGER,
+                CONSTRAINT fk_account FOREIGN KEY (wallet_id) REFERENCES accounts_tbl(id) ON DELETE CASCADE NORELY
             )
             """);
 

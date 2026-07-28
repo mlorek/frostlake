@@ -53,7 +53,12 @@ final class OrderByExecutor {
             // Resolve the ORDER BY key to text we can evaluate per row: a positional ordinal → the N-th
             // SELECT expression; a SELECT alias → that item's expression; otherwise the key as written (a
             // column name, or an arbitrary expression that resolveOrderValue evaluates against the row).
-            String colName = resolveOrderOrdinal(item.expression().getText(), ctx);
+            // The key text must come from getOriginalText, NOT getText: the latter concatenates tokens
+            // with no whitespace, so a key needing separators — `x IS NOT NULL` → `xISNOTNULL`,
+            // `CAST(x AS NUMBER)` → `CAST(xASNUMBER)` — collapsed into an unparseable identifier and
+            // failed to resolve. (Only the ordinal DETECTION needs the bare text, and digits are
+            // unaffected by spacing.)
+            String colName = resolveOrderOrdinal(ParseTreeText.getOriginalText(item.expression()), ctx);
             colName = resolveOrderAlias(colName, ctx);
             orderColumns.add(colName);
             ascending.add(item.DESC() == null); // Default is ASC
@@ -163,98 +168,173 @@ final class OrderByExecutor {
         if (n >= 1 && n <= items.size()) {
             final ParserRuleContext e = SelectItemAccessors.getItemExpression(items.get(n - 1));
             if (e != null) {
-                return e.getText();
+                // Original text (spacing preserved), as the alias path does — getText() would collapse
+                // `x IS NOT NULL` to `xISNOTNULL` and the key would then resolve to nothing.
+                return ParseTreeText.getOriginalText(e);
             }
         }
         return text;
     }
 
     List<Row> orderByAfterGroupBy(final List<Row> rows, final FrostlakeParser.SelectStatementContext ctx) {
-        // After GROUP BY, we need to match ORDER BY expressions to result column positions
-        List<Integer> orderColumnIndices = new ArrayList<>();
-        List<Boolean> ascending = new ArrayList<>();
-        final List<Boolean> nullsFirst = new ArrayList<>();
+        return orderByAfterGroupBy(rows, ctx, null);
+    }
 
-        // Get the first selectClause to access the select list structure
-        // (all UNION parts must have compatible select lists)
-        FrostlakeParser.SelectOperandContext firstOp = ctx.selectOperand(0);
-        FrostlakeParser.SelectClauseContext firstClause = firstOp.selectClause() != null
+    /**
+     * ORDER BY over rows already reshaped to the SELECT list (after GROUP BY / aggregation / window). Each
+     * ORDER BY item is matched to a SELECT column by position, alias, or expression text; an item that
+     * matches NONE is resolved by {@code resolver} over the row's group — a grouped column or aggregate not
+     * in the SELECT is a valid Snowflake ORDER BY ({@code GROUP BY a, b ORDER BY b} / {@code ORDER BY MAX(c)}).
+     * With no resolver an unmatched item is an error, as before.
+     */
+    List<Row> orderByAfterGroupBy(final List<Row> rows, final FrostlakeParser.SelectStatementContext ctx,
+                                  final GroupOrderKeyResolver resolver) {
+        // The first selectClause carries the SELECT-list structure (UNION parts must be compatible).
+        final FrostlakeParser.SelectOperandContext firstOp = ctx.selectOperand(0);
+        final FrostlakeParser.SelectClauseContext firstClause = firstOp.selectClause() != null
             ? firstOp.selectClause()
             : firstOp.selectStatement().selectOperand(0).selectClause();
+        final List<FrostlakeParser.SelectItemContext> selectItems = firstClause.selectList().selectItem();
 
-        for (final FrostlakeParser.OrderItemContext item : ctx.orderByClause().orderItem()) {
-            String orderExpr = item.expression().getText();
-            ascending.add(item.DESC() == null);
-            nullsFirst.add(ValueComparisons.nullsFirstFlag(item));
-
-            // Try to match the ORDER BY expression to a SELECT item
-            int colIndex = -1;
-            List<FrostlakeParser.SelectItemContext> selectItems = firstClause.selectList().selectItem();
-
-            // ORDER BY <n> positional reference → the N-th SELECT column.
-            if (orderExpr.matches("\\d+")) {
-                final int ord = Integer.parseInt(orderExpr);
-                if (ord >= 1 && ord <= selectItems.size()) {
-                    colIndex = ord - 1;
-                }
+        final List<FrostlakeParser.OrderItemContext> items = ctx.orderByClause().orderItem();
+        final int nKeys = items.size();
+        final int[] colIndex = new int[nKeys];       // matched SELECT column, or -1 when resolved per-group
+        final boolean[] ascending = new boolean[nKeys];
+        final Boolean[] nullsFirst = new Boolean[nKeys];   // nullable — nullsFirstFlag returns null when unspecified
+        for (int k = 0; k < nKeys; k++) {
+            final FrostlakeParser.OrderItemContext item = items.get(k);
+            ascending[k] = item.DESC() == null;
+            nullsFirst[k] = ValueComparisons.nullsFirstFlag(item);
+            colIndex[k] = matchOrderItem(item.expression().getText(), selectItems, ctx.selectOperand().size() > 1);
+            if (colIndex[k] == -1 && resolver == null) {
+                throw new RuntimeException(
+                    "ORDER BY expression not found in SELECT list: " + item.expression().getText());
             }
-
-            // First try to match by alias
-            for (int i = 0; i < selectItems.size(); i++) {
-                if (SelectItemAccessors.getItemAlias(selectItems.get(i)) != null) {
-                    String alias = ParseTreeText.getIdentifier(SelectItemAccessors.getItemAlias(selectItems.get(i)));
-                    if (alias.equalsIgnoreCase(orderExpr)) {
-                        colIndex = i;
-                        break;
-                    }
-                }
-            }
-
-            // If no alias match, try by expression
-            if (colIndex == -1) {
-                for (int i = 0; i < selectItems.size(); i++) {
-                    ParserRuleContext e = SelectItemAccessors.getItemExpression(selectItems.get(i));
-                    if (e != null && e.getText().equals(orderExpr)) {
-                        colIndex = i;
-                        break;
-                    }
-                }
-            }
-
-            // Try case-insensitive expression match
-            if (colIndex == -1) {
-                for (int i = 0; i < selectItems.size(); i++) {
-                    ParserRuleContext e = SelectItemAccessors.getItemExpression(selectItems.get(i));
-                    if (e != null && e.getText().equalsIgnoreCase(orderExpr)) {
-                        colIndex = i;
-                        break;
-                    }
-                }
-            }
-
-            if (colIndex == -1) {
-                throw new RuntimeException("ORDER BY expression not found in SELECT list: " + orderExpr);
-            }
-
-            orderColumnIndices.add(colIndex);
         }
 
-        // Sort rows by the matched columns
-        rows.sort((final var r1, final var r2) -> {
-            for (int i = 0; i < orderColumnIndices.size(); i++) {
-                int colIndex = orderColumnIndices.get(i);
-
-                Object v1 = r1.getValue(colIndex);
-                Object v2 = r2.getValue(colIndex);
-
-                int cmp = ValueComparisons.compareOrderKey(v1, v2, ascending.get(i), nullsFirst.get(i));
-                if (cmp != 0) {
-                    return cmp;
-                }
+        // Precompute each row's sort keys BEFORE sorting: sorting reorders rows, but a resolver keys off the
+        // row's ORIGINAL index. A matched key is the projected column value; an unmatched key is computed
+        // over that row's group.
+        final List<Object[]> keys = new ArrayList<>(rows.size());
+        for (int r = 0; r < rows.size(); r++) {
+            final Object[] rowKeys = new Object[nKeys];
+            for (int k = 0; k < nKeys; k++) {
+                rowKeys[k] = colIndex[k] >= 0 ? rows.get(r).getValue(colIndex[k]) : resolver.resolve(r, items.get(k));
             }
-            return 0;
+            keys.add(rowKeys);
+        }
+
+        final Integer[] order = new Integer[rows.size()];
+        for (int i = 0; i < order.length; i++) {
+            order[i] = i;
+        }
+        Arrays.sort(order, new Comparator<Integer>() {
+            @Override
+            public int compare(final Integer a, final Integer b) {
+                final Object[] ka = keys.get(a);
+                final Object[] kb = keys.get(b);
+                for (int k = 0; k < nKeys; k++) {
+                    final int cmp = ValueComparisons.compareOrderKey(ka[k], kb[k], ascending[k], nullsFirst[k]);
+                    if (cmp != 0) {
+                        return cmp;
+                    }
+                }
+                return 0;
+            }
         });
 
-        return rows;
+        final List<Row> sorted = new ArrayList<>(rows.size());
+        for (final int i : order) {
+            sorted.add(rows.get(i));
+        }
+        return sorted;
+    }
+
+    /** The SELECT column index an ORDER BY expression matches (position, alias, or expression text), or -1. */
+    private int matchOrderItem(final String orderExpr, final List<FrostlakeParser.SelectItemContext> selectItems,
+                               final boolean setOperation) {
+        // ORDER BY <n> positional reference → the N-th SELECT column.
+        if (orderExpr.matches("\\d+")) {
+            final int ord = Integer.parseInt(orderExpr);
+            if (ord >= 1 && ord <= selectItems.size()) {
+                return ord - 1;
+            }
+        }
+        // Match by alias.
+        for (int i = 0; i < selectItems.size(); i++) {
+            if (SelectItemAccessors.getItemAlias(selectItems.get(i)) != null) {
+                final String alias = ParseTreeText.getIdentifier(SelectItemAccessors.getItemAlias(selectItems.get(i)));
+                if (alias.equalsIgnoreCase(orderExpr)) {
+                    return i;
+                }
+            }
+        }
+        // Match by expression text (case-sensitive, then insensitive).
+        for (int i = 0; i < selectItems.size(); i++) {
+            final ParserRuleContext e = SelectItemAccessors.getItemExpression(selectItems.get(i));
+            if (e != null && e.getText().equals(orderExpr)) {
+                return i;
+            }
+        }
+        for (int i = 0; i < selectItems.size(); i++) {
+            final ParserRuleContext e = SelectItemAccessors.getItemExpression(selectItems.get(i));
+            if (e != null && e.getText().equalsIgnoreCase(orderExpr)) {
+                return i;
+            }
+        }
+        // Match by the RESULT column NAME the item produces — ONLY for a set operation, whose output
+        // columns take their names from the first branch and are the only thing its ORDER BY can name
+        // (`… UNION ALL … ORDER BY region_id`, which matches neither an alias nor the item's
+        // expression text `a.region_id`). A single SELECT keeps its existing resolution: there an
+        // unmatched key is handed to the group resolver, which computes it over the row's group, and
+        // hijacking that to a projected column changes the sort key of working queries.
+        for (int i = 0; setOperation && i < selectItems.size(); i++) {
+            final String produced = producedColumnName(selectItems.get(i));
+            if (produced != null && produced.equalsIgnoreCase(orderExpr)) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    /**
+     * The result-column name an un-aliased select item produces, taken from the parse tree: the last part of
+     * a (possibly qualified) column reference. Null for anything else — an expression has no natural name, and
+     * {@code SELECT *} has no single one.
+     */
+    private String producedColumnName(final FrostlakeParser.SelectItemContext item) {
+        if (!SelectItemAccessors.isExprItem(item)) {
+            return null;
+        }
+        final FrostlakeParser.ExpressionContext valueExpr = SelectItemAccessors.getItemValueExpr(item);
+        if (!(valueExpr instanceof FrostlakeParser.QualifiedNameExprContext)) {
+            return null;
+        }
+        final String[] parts = ParseTreeText.qualifiedNameParts(
+            ((FrostlakeParser.QualifiedNameExprContext) valueExpr).qualifiedName());
+        return parts.length == 0 ? null : parts[parts.length - 1];
+    }
+
+    /**
+     * The ORDER BY items that do NOT match any SELECT column (by position, alias, or expression text). For a
+     * window-function query these must be computed from the FROM columns before projection drops them — the
+     * caller precomputes their values during the window projection (see the resolver in QueryExecutor).
+     */
+    List<FrostlakeParser.OrderItemContext> unmatchedOrderItems(final FrostlakeParser.SelectStatementContext ctx) {
+        final List<FrostlakeParser.OrderItemContext> unmatched = new ArrayList<>();
+        if (ctx.orderByClause() == null) {
+            return unmatched;
+        }
+        final FrostlakeParser.SelectOperandContext firstOp = ctx.selectOperand(0);
+        final FrostlakeParser.SelectClauseContext firstClause = firstOp.selectClause() != null
+            ? firstOp.selectClause()
+            : firstOp.selectStatement().selectOperand(0).selectClause();
+        final List<FrostlakeParser.SelectItemContext> selectItems = firstClause.selectList().selectItem();
+        for (final FrostlakeParser.OrderItemContext item : ctx.orderByClause().orderItem()) {
+            if (matchOrderItem(item.expression().getText(), selectItems, ctx.selectOperand().size() > 1) == -1) {
+                unmatched.add(item);
+            }
+        }
+        return unmatched;
     }
 }

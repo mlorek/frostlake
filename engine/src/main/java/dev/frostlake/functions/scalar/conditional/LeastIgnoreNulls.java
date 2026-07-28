@@ -21,23 +21,36 @@ import dev.frostlake.types.VariantType;
 
 import java.util.List;
 
+/**
+ * LEAST_IGNORE_NULLS — the smallest non-NULL argument, IGNORING NULLs (Snowflake's explicit skipping variant; plain
+ * LEAST/GREATEST return NULL when any argument is NULL). NULL only when every argument is NULL.
+ */
 public class LeastIgnoreNulls extends BuiltInFunction {
+
     public LeastIgnoreNulls() { super("LEAST_IGNORE_NULLS", VariantType.VARIANT); }
 
     @Override
+    @SuppressWarnings("unchecked")
     public Object evaluate(final List<Object> args) {
+        if (args.isEmpty()) {
+            return null;
+        }
         Object min = null;
-        for (final Object a : args) {
-            if (a == null) continue;
-            if (min == null || compareObj(a, min) < 0) min = a;
+        for (final Object arg : args) {
+            if (arg == null) {
+                continue;
+            }
+            if (min == null) {
+                min = arg;
+            } else if (arg instanceof Comparable && min instanceof Comparable) {
+                final Comparable comparableArg = (Comparable) arg;
+                final Comparable comparableBest = (Comparable) min;
+                if (comparableArg.compareTo(comparableBest) < 0) {
+                    min = arg;
+                }
+            }
         }
         return min;
-    }
-
-    @SuppressWarnings("unchecked")
-    private int compareObj(final Object a, final Object b) {
-        if (a instanceof Number && b instanceof Number) return Double.compare(((Number) a).doubleValue(), ((Number) b).doubleValue());
-        return a.toString().compareTo(b.toString());
     }
 
     @Override public int getMinArgCount() { return 1; }

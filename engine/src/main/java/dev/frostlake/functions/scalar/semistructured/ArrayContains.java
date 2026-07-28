@@ -30,6 +30,12 @@ public class ArrayContains extends BuiltInFunction {
 
     @Override
     public Object evaluate(final List<Object> args) {
+        // Snowflake: NULL in, NULL out — a NULL value or NULL array yields NULL, not FALSE
+        for (int i = 0; i < args.size(); i++) {
+            if (i < args.size() && args.get(i) == null) {
+                return null;
+            }
+        }
         Object value = args.get(0);
         ArrayNode arr = ArrayFunctionHelper.parseArray(args.get(1));
         if (arr == null) return false;

@@ -450,4 +450,61 @@ public class CloneTest {
         ResultSet r2 = engine.executeQuery("SELECT COUNT(*) FROM t2");
         assertEquals(3L, ((Number) r2.getRows().get(0).getValue(0)).longValue());
     }
+
+    /**
+     * A cloned UDF must keep its LANGUAGE (and handler/runtime). The clone used the short Function
+     * constructor, which defaults the language to SQL, so a cloned Java/JS/Python UDF was evaluated as a SQL
+     * function and failed at call time with "Error in SQL function body" on its Java source.
+     */
+    @Test
+    public void testCloneKeepsNonSqlFunctionLanguage() {
+        engine.execute("CREATE DATABASE fn_src");
+        engine.execute("USE DATABASE fn_src");
+        engine.execute("CREATE SCHEMA utils");
+        engine.execute("CREATE OR REPLACE FUNCTION fn_src.utils.java_id() RETURNS VARCHAR LANGUAGE JAVA "
+            + "HANDLER='Tools.id' AS 'class Tools{ public static String id(){ return \"java-ok\"; } }'");
+        engine.execute("CREATE OR REPLACE FUNCTION fn_src.utils.sql_id() RETURNS VARCHAR AS 'UPPER(''sql-ok'')'");
+
+        engine.execute("CREATE DATABASE fn_tgt CLONE fn_src");
+
+        assertEquals("java-ok", engine.executeQuery("SELECT fn_tgt.utils.java_id()")
+            .getRows().get(0).getValue(0).toString());
+        assertEquals("SQL-OK", engine.executeQuery("SELECT fn_tgt.utils.sql_id()")
+            .getRows().get(0).getValue(0).toString());
+    }
+
+    /** The same for procedures: a cloned non-SQL procedure must keep its LANGUAGE, not default to SQL. */
+    @Test
+    public void testCloneKeepsNonSqlProcedureLanguage() {
+        engine.execute("CREATE DATABASE pr_src");
+        engine.execute("USE DATABASE pr_src");
+        engine.execute("CREATE SCHEMA utils");
+        engine.execute("CREATE OR REPLACE PROCEDURE pr_src.utils.js_proc() RETURNS VARCHAR "
+            + "LANGUAGE JAVASCRIPT AS $$ return 'js-ok'; $$");
+
+        engine.execute("CREATE DATABASE pr_tgt CLONE pr_src");
+
+        assertEquals("js-ok", engine.executeQuery("CALL pr_tgt.utils.js_proc()")
+            .getRows().get(0).getValue(0).toString());
+    }
+
+    @Test
+    public void testCloneDatabaseKeepsStagesAndFileFormats() {
+        // Snowflake's CLONE keeps stage and file-format definitions. Dropping stages silently broke
+        // every jar-backed UDF in a cloned database — the IMPORTS reference fell back to a relative
+        // local path and failed with "class not found" at first invocation.
+        engine.execute("CREATE DATABASE st_src");
+        engine.execute("USE DATABASE st_src");
+        engine.execute("CREATE SCHEMA depot");
+        engine.execute("CREATE STAGE depot.jar_stage URL='file:///tmp/frostlake_clone_stage_test'");
+        engine.execute("CREATE FILE FORMAT depot.csv_fmt TYPE = 'CSV'");
+
+        engine.execute("CREATE DATABASE st_tgt CLONE st_src");
+        engine.execute("USE DATABASE st_tgt");
+        engine.execute("USE SCHEMA depot");
+
+        assertEquals("file:///tmp/frostlake_clone_stage_test",
+            engine.getCatalog().getStage("DEPOT.JAR_STAGE").getUrl());
+        assertEquals("CSV", engine.getCatalog().getFileFormat("DEPOT.CSV_FMT").getType());
+    }
 }

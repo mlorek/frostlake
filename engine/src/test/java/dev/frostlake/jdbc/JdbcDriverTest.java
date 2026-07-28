@@ -199,18 +199,18 @@ public class JdbcDriverTest {
             try (Statement stmt = conn.createStatement()) {
                 stmt.execute("CREATE DATABASE trans_test_db");
                 stmt.execute("USE DATABASE trans_test_db");
-                stmt.execute("CREATE TABLE accounts (id INT, balance INT)");
-                stmt.execute("INSERT INTO accounts VALUES (1, 1000)");
+                stmt.execute("CREATE TABLE wallets (id INT, balance INT)");
+                stmt.execute("INSERT INTO wallets VALUES (1, 1000)");
             }
 
             // Disable auto-commit
             conn.setAutoCommit(false);
 
             try (Statement stmt = conn.createStatement()) {
-                stmt.executeUpdate("UPDATE accounts SET balance = 500 WHERE id = 1");
+                stmt.executeUpdate("UPDATE wallets SET balance = 500 WHERE id = 1");
                 conn.commit();
 
-                ResultSet rs = stmt.executeQuery("SELECT balance FROM accounts WHERE id = 1");
+                ResultSet rs = stmt.executeQuery("SELECT balance FROM wallets WHERE id = 1");
                 assertTrue(rs.next());
                 assertEquals(500, rs.getInt(1));
             }

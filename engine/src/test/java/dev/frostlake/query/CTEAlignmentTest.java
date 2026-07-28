@@ -105,6 +105,49 @@ public class CTEAlignmentTest {
     // ── Recursive CTEs ────────────────────────────────────────────────────────
 
     @Test
+    public void recursiveKeywordIsOptional() {
+        // Snowflake: a CTE that references its own name as a table source recurses with or without
+        // the RECURSIVE keyword. Requiring the keyword made a keywordless closure fail with
+        // "Table does not exist" — the shape production transitive-relationship loaders use.
+        ResultSet rs = q("""
+            WITH counter AS (
+                SELECT 1 AS n
+                UNION ALL
+                SELECT n + 1 FROM counter WHERE n < 5
+            )
+            SELECT n FROM counter ORDER BY n
+            """);
+        assertEquals(5, rs.getRowCount());
+    }
+
+    @Test
+    public void keywordlessClosureWithCycleGuardAndSecondCte() {
+        engine.execute("CREATE TABLE edges (src VARCHAR, tgt VARCHAR)");
+        engine.execute("INSERT INTO edges VALUES ('a1','a2'),('a2','a3'),('a3','a4')");
+        ResultSet rs = q("""
+            WITH walk AS (
+                SELECT src AS parent, tgt AS child, ARRAY_CONSTRUCT(src, tgt) AS vec FROM edges
+                UNION ALL
+                SELECT w.parent, e.tgt, ARRAY_APPEND(w.vec, e.tgt::VARIANT)
+                FROM walk w JOIN edges e ON w.child = e.src
+                WHERE NOT ARRAY_CONTAINS(e.tgt::VARIANT, w.vec)
+            ), dedup AS (SELECT DISTINCT parent, child FROM walk)
+            SELECT parent, child FROM dedup ORDER BY parent, child
+            """);
+        assertEquals(6, rs.getRowCount());   // full transitive closure of the 3-edge chain
+    }
+
+    @Test
+    public void aCteWhoseNameMerelyAppearsInTextIsNotRecursive() {
+        // Self-reference detection is by the PARSE TREE (a FROM-item named like the CTE) — a CTE
+        // named like a column, function, or substring of other text must stay non-recursive.
+        engine.execute("CREATE TABLE vals (r INTEGER, rr INTEGER)");
+        engine.execute("INSERT INTO vals VALUES (1, 10), (2, 20)");
+        ResultSet rs = q("WITH r AS (SELECT r, rr, UPPER('rush') AS s FROM vals) SELECT COUNT(*) FROM r");
+        assertEquals(2L, ((Number) rs.getRows().get(0).getValue(0)).longValue());
+    }
+
+    @Test
     public void testRecursiveCteSimpleCounter() {
         ResultSet rs = q("""
             WITH RECURSIVE counter(n) AS (

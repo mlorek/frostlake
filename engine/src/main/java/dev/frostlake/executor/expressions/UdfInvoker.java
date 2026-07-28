@@ -19,6 +19,7 @@ package dev.frostlake.executor.expressions;
 import dev.frostlake.executor.ExpressionEvaluator;
 import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.executor.SqlIdentifierSubstitution;
+import dev.frostlake.executor.SqlStringLiterals;
 import dev.frostlake.executor.udf.JarHandlerLoader;
 import dev.frostlake.executor.udf.JavaFunctionCompiler;
 import dev.frostlake.executor.udf.JavaScriptExecutor;
@@ -27,6 +28,7 @@ import dev.frostlake.executor.udf.ScalaFunctionExecutor;
 import dev.frostlake.functions.FunctionRegistry;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.model.Function;
+import dev.frostlake.metastore.model.NullHandling;
 import dev.frostlake.metastore.model.Parameter;
 import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.metastore.model.Table;
@@ -34,7 +36,12 @@ import dev.frostlake.metastore.model.TableColumn;
 import dev.frostlake.metastore.model.UdfLanguage;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.Row;
+import dev.frostlake.functions.scalar.SharedFunctionHelpers;
+import dev.frostlake.types.ArrayType;
 import dev.frostlake.types.DataType;
+import dev.frostlake.types.DateTimeType;
+import dev.frostlake.types.ObjectType;
+import dev.frostlake.types.TypeCategory;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -66,6 +73,101 @@ final class UdfInvoker {
         this.visitor = visitor;
     }
 
+    /**
+     * Whether {@code func} can be called with {@code argCount} positional arguments. A parameter declared with a
+     * DEFAULT may be omitted (Snowflake requires the defaulted ones to be trailing), so the acceptable count is
+     * a RANGE, not one number: everything from the last non-defaulted parameter up to the full list. Requiring an
+     * exact match made a call that relied on defaults resolve to no function at all, and because the caller
+     * swallows the resulting exception it surfaced as the misleading "Unknown function".
+     */
+    private static boolean acceptsArgumentCount(final Function func, final int argCount) {
+        final List<Parameter> params = func.getParameters();
+        return argCount >= requiredParameterCount(params) && argCount <= params.size();
+    }
+
+    /** The number of leading parameters that must be supplied — the index after the last one with no DEFAULT. */
+    private static int requiredParameterCount(final List<Parameter> params) {
+        int required = 0;
+        for (int i = 0; i < params.size(); i++) {
+            if (!params.get(i).hasDefault()) {
+                required = i + 1;
+            }
+        }
+        return required;
+    }
+
+    /**
+     * Coerce argument values to the function's DECLARED parameter types, as Snowflake does when binding a
+     * call: a date-flavored value passed to a TIMESTAMP_NTZ parameter becomes a timestamp BEFORE the body
+     * runs, so date arithmetic inside the body stays in the timestamp domain and OBJECT/VARIANT output
+     * renders it in full timestamp form rather than date-only.
+     */
+    private List<Object> coerceArgsToParameterTypes(final Function function, final List<Object> args) {
+        final List<Parameter> params = function.getParameters();
+        List<Object> coerced = null;
+        for (int i = 0; i < args.size() && i < params.size(); i++) {
+            final Object value = args.get(i);
+            if (value == null) {
+                continue;
+            }
+            final DataType paramType = params.get(i).getDataType();
+            // Snowflake: casting a variant JSON null to OBJECT or ARRAY yields SQL NULL (only a VARIANT
+            // target keeps the JSON null). The engine carries JSON null as the text "null", which passed
+            // the RETURNS NULL ON NULL INPUT check as a non-null argument — so a strict handler was
+            // invoked with Python None (path leaf like source_type.CloudGroup = null) and crashed.
+            if (paramType instanceof ObjectType || paramType instanceof ArrayType) {
+                if ("null".equals(value instanceof String ? ((String) value).trim() : null)) {
+                    if (coerced == null) {
+                        coerced = new ArrayList<>(args);
+                    }
+                    coerced.set(i, null);
+                }
+                continue;
+            }
+            if (!(paramType instanceof DateTimeType)) {
+                continue;
+            }
+            final Object converted = SharedFunctionHelpers.toTemporalValue(
+                paramType.getName().toUpperCase(), value);
+            if (converted != value) {
+                if (coerced == null) {
+                    coerced = new ArrayList<>(args);
+                }
+                coerced.set(i, converted);
+            }
+        }
+        return coerced != null ? coerced : args;
+    }
+
+    /**
+     * Extend {@code args} to the function's full parameter list by evaluating the DEFAULT expression of each
+     * trailing parameter the caller omitted, as a stored-procedure CALL already does for procedures. Returns
+     * {@code args} untouched when nothing is missing.
+     */
+    private List<Object> withParameterDefaults(final Function function, final List<Object> args) {
+        final List<Parameter> params = function.getParameters();
+        if (args.size() >= params.size()) {
+            return args;
+        }
+        final List<Object> full = new ArrayList<>(args);
+        for (int i = args.size(); i < params.size(); i++) {
+            final Parameter param = params.get(i);
+            if (!param.hasDefault()) {
+                throw new RuntimeException("Missing required argument for parameter: " + param.getName());
+            }
+            full.add(evaluateParameterDefault(param));
+        }
+        return full;
+    }
+
+    /** Evaluate a parameter's DEFAULT expression text (it is stored as source, e.g. {@code 'str'} or TRUE). */
+    private Object evaluateParameterDefault(final Parameter param) {
+        final QueryExecutor queryExecutor = visitor.getQueryExecutor();
+        final ExpressionEvaluator eval = new ExpressionEvaluator(
+            null, queryExecutor.getFunctionRegistry(), queryExecutor.getCatalog(), queryExecutor);
+        return eval.evaluate(param.getDefaultValue(), null);
+    }
+
     Function resolveOverloadedFunction(final Schema schema, final String funcName, final List<Object> argValues) {
         List<Function> overloads = schema.getFunctionOverloads(funcName);
         if (overloads.isEmpty()) {
@@ -75,7 +177,7 @@ final class UdfInvoker {
         // If only one overload, use it
         if (overloads.size() == 1) {
             Function func = overloads.get(0);
-            if (func.getParameters().size() == argValues.size()) {
+            if (acceptsArgumentCount(func, argValues.size())) {
                 return func;
             }
             throw new RuntimeException("Function " + funcName + " expects " + func.getParameters().size() +
@@ -85,7 +187,7 @@ final class UdfInvoker {
         // Multiple overloads - match by argument count and types
         List<Function> candidatesByCount = new ArrayList<>();
         for (final Function func : overloads) {
-            if (func.getParameters().size() == argValues.size()) {
+            if (acceptsArgumentCount(func, argValues.size())) {
                 candidatesByCount.add(func);
             }
         }
@@ -170,12 +272,14 @@ final class UdfInvoker {
     List<Object> reorderNamedArgs(final List<String> names, final List<Object> argValues,
             final List<Parameter> params, final String funcName) {
         final Object[] out = new Object[params.size()];
+        final boolean[] supplied = new boolean[params.size()];
         int positional = 0;
         while (positional < names.size() && names.get(positional) == null) {
             if (positional >= params.size()) {
                 throw new RuntimeException("Too many arguments for function " + funcName);
             }
             out[positional] = argValues.get(positional);
+            supplied[positional] = true;
             positional++;
         }
         for (int j = positional; j < names.size(); j++) {
@@ -191,12 +295,33 @@ final class UdfInvoker {
                 throw new RuntimeException("Unknown argument name '" + argName + "' for function " + funcName);
             }
             out[target] = argValues.get(j);
+            supplied[target] = true;
+        }
+        // A slot no argument named keeps its DEFAULT rather than NULL. This array is already full length, so the
+        // positional padding in evaluateUserDefinedFunction cannot see the gap — it has to be filled here.
+        for (int p = 0; p < params.size(); p++) {
+            if (!supplied[p] && params.get(p).hasDefault()) {
+                out[p] = evaluateParameterDefault(params.get(p));
+            }
         }
         return Arrays.asList(out);
     }
 
-    Object evaluateUserDefinedFunction(final Function function, final List<Object> args) {
+    Object evaluateUserDefinedFunction(final Function function, final List<Object> rawArgs) {
         final QueryExecutor queryExecutor = visitor.getQueryExecutor();
+        final List<Object> args = coerceArgsToParameterTypes(function, withParameterDefaults(function, rawArgs));
+        // RETURNS NULL ON NULL INPUT (a.k.a. STRICT): a NULL in ANY argument short-circuits to NULL and the
+        // body is NEVER entered. The clause was parsed and stored but not enforced, so a handler written on
+        // that guarantee ran anyway and blew up on the null — e.g. `for k, v in OBJ.items()` raised
+        // "AttributeError: 'NoneType' object has no attribute 'items'". Checked AFTER defaults are applied, so
+        // an omitted parameter uses its default rather than counting as a NULL argument.
+        if (NullHandling.RETURNS_NULL_ON_NULL_INPUT == NullHandling.fromString(function.getNullHandling())) {
+            for (final Object arg : args) {
+                if (arg == null) {
+                    return null;
+                }
+            }
+        }
         final UdfLanguage language = function.getUdfLanguage();
 
         if (language == UdfLanguage.JAVA) {
@@ -228,15 +353,7 @@ final class UdfInvoker {
         String trimmedBody = body.trim();
         if (queryExecutor != null && queryExecutor.isQueryStatement(trimmedBody)) {
             // Substitute parameter placeholders
-            String sql = trimmedBody;
-            for (int i = 0; i < params.size() && i < args.size(); i++) {
-                String paramName = params.get(i).getName();
-                Object argVal = args.get(i);
-                String argStr = argVal == null ? "NULL"
-                    : argVal instanceof String ? "'" + argVal.toString().replace("'", "''") + "'"
-                    : argVal.toString();
-                sql = SqlIdentifierSubstitution.substitute(sql, paramName, argStr);
-            }
+            final String sql = substituteParams(trimmedBody, params, args);
             try {
                 List<ResultSet> results = queryExecutor.execute(sql);
                 if (!results.isEmpty() && results.get(0).getRowCount() > 0) {
@@ -244,21 +361,22 @@ final class UdfInvoker {
                 }
                 return null;
             } catch (final Exception e) {
-                throw new RuntimeException("Error executing SQL function: " + e.getMessage(), e);
+                throw new RuntimeException("Error executing SQL function: " + describe(e), e);
             }
         }
 
-        // Otherwise evaluate body as an expression with param substitution
-        String exprBody = trimmedBody;
-        // Strip surrounding quotes if it's a string literal body
-        if ((exprBody.startsWith("'") && exprBody.endsWith("'")) ||
-            (exprBody.startsWith("$$") && exprBody.endsWith("$$"))) {
-            if (exprBody.startsWith("$$")) {
-                exprBody = exprBody.substring(2, exprBody.length() - 2).trim();
-            } else {
-                exprBody = exprBody.substring(1, exprBody.length() - 1);
-            }
-        }
+        // Otherwise evaluate the body as an expression with param substitution. The body arrives ALREADY
+        // unquoted — extractBodyDefinition removed the $$…$$ or '…' delimiters when the routine was created —
+        // so it must not be unquoted again here. Stripping a second time corrupted every body that IS an
+        // expression containing a string literal: `AS $$ 'plain' $$` became the column reference `plain`
+        // ("Column not found: PLAIN") and `AS $$ 'x' || 'y' $$` became `x' || 'y`.
+        //
+        // Params are substituted into the TEXT here too (not only bound via the __UDF__ table below):
+        // an expression body may contain a scalar SUBQUERY — even over nested derived tables — and the
+        // subquery executes through the query engine, where the parameter table's bindings are not
+        // visible. Substituting first (lexer-driven, quote-safe) makes the body self-contained; the
+        // table binding then covers nothing but is kept as a harmless fallback.
+        final String exprBody = substituteParams(trimmedBody, params, args);
 
         // Bind all parameters into a single multi-column table row
         if (!params.isEmpty() && queryExecutor != null) {
@@ -278,7 +396,7 @@ final class UdfInvoker {
             try {
                 return eval.evaluate(exprBody, paramRow);
             } catch (final Exception e) {
-                throw new RuntimeException("Error in SQL function body: " + e.getMessage(), e);
+                throw new RuntimeException("Error in SQL function body: " + describe(e), e);
             }
         }
 
@@ -294,10 +412,50 @@ final class UdfInvoker {
             try {
                 return eval.evaluate(exprBody, emptyRow);
             } catch (final Exception e) {
-                throw new RuntimeException("Error in SQL function body: " + e.getMessage(), e);
+                throw new RuntimeException("Error in SQL function body: " + describe(e), e);
             }
         }
         return null;
+    }
+
+    /** The exception's message, or its class name when the message is null (an NPE's message usually is) —
+     *  so a wrapped failure never surfaces as the bare text "null". */
+    private String describe(final Exception e) {
+        return e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
+    }
+
+    /** Substitute each parameter NAME in {@code body} with its argument rendered as a SQL literal
+     *  (NULL / numbers and booleans raw / anything else as a quoted, escaped string), via the
+     *  lexer-driven identifier substitution — quote- and comment-safe by construction. A parameter
+     *  DECLARED semi-structured (OBJECT / VARIANT / ARRAY) is wrapped as {@code PARSE_JSON('…')}
+     *  instead of a bare string: bodies apply path access to such parameters ({@code p:field}),
+     *  which must stay parseable and yield the structure, not text. */
+    private String substituteParams(final String body, final List<Parameter> params, final List<Object> args) {
+        String sql = body;
+        for (int i = 0; i < params.size() && i < args.size(); i++) {
+            final Parameter param = params.get(i);
+            final Object argVal = args.get(i);
+            final String argStr;
+            if (argVal == null) {
+                argStr = "NULL";
+            } else if (argVal instanceof Number || argVal instanceof Boolean) {
+                argStr = argVal.toString();
+            } else if (argVal instanceof LocalDateTime || argVal instanceof LocalDate || argVal instanceof LocalTime) {
+                // A temporal substitutes as a typed literal in Snowflake's output text form, not
+                // java.time's T-separated toString — so the body keeps a real temporal (date arithmetic
+                // works) and VARIANT/OBJECT output renders it as '2026-01-03 00:00:00.000'.
+                final String cast = argVal instanceof LocalDate ? "DATE"
+                    : argVal instanceof LocalTime ? "TIME" : "TIMESTAMP_NTZ";
+                argStr = "'" + SharedFunctionHelpers.textOf(argVal) + "'::" + cast;
+            } else if (param.getDataType() != null
+                    && param.getDataType().getCategory() == TypeCategory.SEMI_STRUCTURED) {
+                argStr = "PARSE_JSON(" + SqlStringLiterals.encode(argVal.toString()) + ")";
+            } else {
+                argStr = SqlStringLiterals.encode(argVal.toString());
+            }
+            sql = SqlIdentifierSubstitution.substitute(sql, param.getName(), argStr);
+        }
+        return sql;
     }
 
     private Object evaluateJavaFunction(final Function function, final List<Object> args) {

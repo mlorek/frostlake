@@ -65,7 +65,7 @@ public class DirectDatabaseMetaData implements java.sql.DatabaseMetaData {
             sql.append(")");
         }
 
-        dev.frostlake.storage.ResultSet engineResultSet = engine.execute(sql.toString()).getResultSets().get(0);
+        dev.frostlake.storage.ResultSet engineResultSet = (connection instanceof DirectConnection ? ((DirectConnection) connection).executeScoped(sql.toString()) : engine.execute(sql.toString())).getResultSets().get(0);
         return new DirectResultSet(connection.createStatement(), engineResultSet);
     }
 
@@ -93,7 +93,7 @@ public class DirectDatabaseMetaData implements java.sql.DatabaseMetaData {
 
         sql.append(" ORDER BY TABLE_CATALOG, TABLE_SCHEMA, TABLE_NAME, ORDINAL_POSITION");
 
-        dev.frostlake.storage.ResultSet engineResultSet = engine.execute(sql.toString()).getResultSets().get(0);
+        dev.frostlake.storage.ResultSet engineResultSet = (connection instanceof DirectConnection ? ((DirectConnection) connection).executeScoped(sql.toString()) : engine.execute(sql.toString())).getResultSets().get(0);
         return new DirectResultSet(connection.createStatement(), engineResultSet);
     }
 
@@ -145,7 +145,7 @@ public class DirectDatabaseMetaData implements java.sql.DatabaseMetaData {
         sql.append(" ORDER BY ORDINAL_POSITION");
 
         try {
-            dev.frostlake.storage.ResultSet engineResultSet = engine.execute(sql.toString()).getResultSets().get(0);
+            dev.frostlake.storage.ResultSet engineResultSet = (connection instanceof DirectConnection ? ((DirectConnection) connection).executeScoped(sql.toString()) : engine.execute(sql.toString())).getResultSets().get(0);
             return new DirectResultSet(connection.createStatement(), engineResultSet);
         } catch (final Exception e) {
             // Return empty result set if query fails

@@ -91,4 +91,22 @@ public class NaturalJoinTest extends BaseDatabaseTest {
         // No shared column ⇒ a cross join (2 × 2 = 4 rows), per standard SQL.
         assertEquals(4, count("SELECT COUNT(*) FROM x NATURAL JOIN y"));
     }
+
+    // ---- DIRECTED join modifier (INNER DIRECTED JOIN etc.) — a no-op annotation, same result as the plain join ----
+
+    @Test
+    public void directedIsANoOpJoinModifier() {
+        engine.execute("CREATE TABLE aa (id INTEGER, x VARCHAR)");
+        engine.execute("INSERT INTO aa VALUES (1, 'A'), (2, 'B'), (3, 'C')");
+        engine.execute("CREATE TABLE bb (id INTEGER, y VARCHAR)");
+        engine.execute("INSERT INTO bb VALUES (1, 'P'), (2, 'Q')");
+
+        // INNER DIRECTED JOIN (with USING, the loader's exact form) == plain INNER JOIN.
+        assertEquals(2, count("SELECT COUNT(*) FROM aa INNER DIRECTED JOIN bb USING (id)"));
+        assertEquals(2, count("SELECT COUNT(*) FROM aa INNER DIRECTED JOIN bb ON aa.id = bb.id"));
+        // The modifier doesn't disturb the join type: LEFT DIRECTED JOIN still keeps the unmatched left row.
+        assertEquals(3, count("SELECT COUNT(*) FROM aa LEFT DIRECTED JOIN bb ON aa.id = bb.id"));
+        // And DIRECTED remains usable as an ordinary identifier.
+        assertEquals(1, count("SELECT COUNT(*) FROM (SELECT 1 AS directed) z WHERE z.directed = 1"));
+    }
 }

@@ -20,6 +20,7 @@ import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.metastore.*;
 import dev.frostlake.metastore.model.*;
 import dev.frostlake.parser.FrostlakeParser;
+import dev.frostlake.storage.StorageEngine;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -54,10 +55,34 @@ public class CreateNamespaceHandler implements CommandHandler {
         return queryExecutor;
     }
 
+    /**
+     * Release the storage of every table in a schema being discarded by CREATE OR REPLACE. The metadata is
+     * dropped outright (no UNDROP record is kept), so its rows go with it: leaving the storage behind would
+     * make the replacement inherit the old rows — a CLONE appends into them — or fail with "Table storage
+     * already exists" when a table of the same name is created again.
+     */
+    private void releaseSchemaStorage(final String databaseName, final Schema schema) {
+        final StorageEngine storage = queryExecutor.getStorageEngine();
+        for (final Table table : schema.getTables()) {
+            final String fqn = databaseName.toUpperCase() + "." + schema.getName().toUpperCase()
+                + "." + table.getName().toUpperCase();
+            if (storage.hasTable(fqn)) {
+                storage.dropTable(fqn);
+                queryExecutor.getTransactionManager().discardBufferedWritesFor(fqn);
+            }
+        }
+    }
+
     public Object handleCreateDatabase(final FrostlakeParser.CreateStatementContext ctx, final boolean ifNotExists) {
         String dbName = getText(ctx.identifier(0));
         if (ctx.or_replace() != null) {
             try {
+                final Database replaced = catalog.getDatabase(dbName);
+                if (replaced != null) {
+                    for (final Schema replacedSchema : replaced.getAllSchemas()) {
+                        releaseSchemaStorage(dbName, replacedSchema);
+                    }
+                }
                 catalog.dropDatabase(dbName, true);
                 if (ddl.getStreamManager() != null) {
                     ddl.getStreamManager().onDatabaseDropped(dbName);
@@ -98,6 +123,10 @@ public class CreateNamespaceHandler implements CommandHandler {
                 String dbN = parts.length == 2 ? parts[0] : catalog.getCurrentDatabase();
                 String scN = parts.length == 2 ? parts[1] : parts[0];
                 if (dbN != null) {
+                    final Schema replacedSchema = catalog.getDatabase(dbN).getSchema(scN);
+                    if (replacedSchema != null) {
+                        releaseSchemaStorage(dbN, replacedSchema);
+                    }
                     catalog.getDatabase(dbN).dropSchema(scN, true);
                     if (ddl.getStreamManager() != null) {
                         ddl.getStreamManager().onSchemaDropped(dbN, scN);

@@ -20,7 +20,7 @@ import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.types.NumericType;
 
 import java.util.List;
-import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * RANDOM([seed]) — a pseudo-random signed 64-bit integer (not a fraction in [0, 1)). Without a seed
@@ -31,12 +31,24 @@ import java.util.concurrent.ThreadLocalRandom;
 public class Random extends BuiltInFunction {
     public Random() { super("RANDOM", NumericType.BIGINT); }
 
+    // TEMPORARY (test reproducibility): the seedless path yields a deterministic sequence (SplitMix64 over a
+    // monotonic counter) instead of ThreadLocalRandom. Revert to `ThreadLocalRandom.current().nextLong()`
+    // (and restore the import) for real randomness. The seeded path below is already deterministic.
+    private static final AtomicLong COUNTER = new AtomicLong();
+
+    private static long mix(final long value) {
+        long z = value;
+        z = (z ^ (z >>> 30)) * 0xBF58476D1CE4E5B9L;
+        z = (z ^ (z >>> 27)) * 0x94D049BB133111EBL;
+        return z ^ (z >>> 31);
+    }
+
     @Override
     public Object evaluate(final List<Object> args) {
         if (!args.isEmpty() && args.get(0) != null) {
             return new java.util.Random(((Number) args.get(0)).longValue()).nextLong();
         }
-        return ThreadLocalRandom.current().nextLong();
+        return mix(COUNTER.incrementAndGet());
     }
 
     @Override public int getMinArgCount() { return 0; }

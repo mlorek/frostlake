@@ -17,6 +17,7 @@
 package dev.frostlake.executor;
 
 import dev.frostlake.executor.expressions.Expression;
+import dev.frostlake.executor.expressions.SqlTruth;
 import dev.frostlake.metastore.model.Privilege;
 import dev.frostlake.metastore.model.SecurableObjectType;
 import dev.frostlake.metastore.model.Table;
@@ -98,19 +99,25 @@ final class UpdateDeleteExecutor {
 
             // UPDATE … FROM <source(s)>: join the target with the source rows on the WHERE predicate.
             if (ctx.tableReference() != null && !ctx.tableReference().isEmpty()) {
-                final int updatedFromSources = executeUpdateFromSources(table, fullyQualifiedName, assignments,
+                // An Oracle (+) on a source column makes it a target LEFT JOIN source (all target rows updated,
+                // source columns NULL when unmatched) rather than the default inner match.
+                final boolean outerJoin = ctx.whereClause() != null
+                    && executor.containsOuterJoinMarker(ctx.whereClause().booleanExpr());
+                final int updatedFromSources = executeUpdateFromSources(table, fullyQualifiedName,
+                    ctx.identifier() != null ? ctx.identifier().getText() : null, assignments,
                     ctx.whereClause() != null ? executor.getOriginalText(ctx.whereClause().booleanExpr()) : null,
-                    ctx.tableReference(), cteResults);
+                    ctx.tableReference(), ctx.joinClause(), outerJoin, cteResults);
                 logger.trace("Updated {} rows (UPDATE…FROM) in table: {}", updatedFromSources, tableName);
-                return executor.dmlCountResult("number of rows updated", updatedFromSources);
+                return executor.updateCountResult(updatedFromSources);
             }
 
+            final String updateTargetAlias = ctx.identifier() != null ? executor.getIdentifier(ctx.identifier()) : null;
             if (executor.isDeferredApply()) {
-                int n = executeUpdateDeferred(table, fullyQualifiedName, assignments,
+                int n = executeUpdateDeferred(table, fullyQualifiedName, updateTargetAlias, assignments,
                     ctx.whereClause() != null ? executor.getOriginalText(ctx.whereClause().booleanExpr()) : null,
                     cteResults);
                 logger.trace("Updated {} rows (deferred) in table: {}", n, tableName);
-                return executor.dmlCountResult("number of rows updated", n);
+                return executor.updateCountResult(n);
             }
 
             List<Row> rows = executor.getStorageEngine().getTableStorage(fullyQualifiedName).scan();
@@ -120,8 +127,8 @@ final class UpdateDeleteExecutor {
             if (ctx.whereClause() != null) {
                 String whereExpr = executor.getOriginalText(ctx.whereClause().booleanExpr());
                 matchingRows = cteResults != null
-                    ? executor.filterRowsWithCTEs(rows, table, whereExpr, cteResults)
-                    : executor.filterRows(rows, table, whereExpr);
+                    ? executor.filterRowsWithCTEs(rows, table, updateTargetAlias, whereExpr, cteResults)
+                    : executor.filterRows(rows, table, updateTargetAlias, whereExpr);
             }
 
             // Update matching rows. Expose any WITH-clause CTEs so a SET-clause subquery can resolve them.
@@ -162,7 +169,7 @@ final class UpdateDeleteExecutor {
             }
 
             logger.trace("Updated {} rows in table: {}", rowsUpdated, tableName);
-            return executor.dmlCountResult("number of rows updated", rowsUpdated);
+            return executor.updateCountResult(rowsUpdated);
 
         } catch (final SecurityException e) {
             throw e; // Let security exceptions propagate
@@ -202,14 +209,16 @@ final class UpdateDeleteExecutor {
             // DELETE … USING <source(s)>: join the target with the source rows on the WHERE predicate.
             if (ctx.tableReference() != null && !ctx.tableReference().isEmpty()) {
                 final int deletedUsingSources = executeDeleteUsingSources(table, fullyQualifiedName,
+                    ctx.identifier() != null ? ctx.identifier().getText() : null,
                     ctx.whereClause() != null ? executor.getOriginalText(ctx.whereClause().booleanExpr()) : null,
-                    ctx.tableReference(), cteResults);
+                    ctx.tableReference(), ctx.joinClause(), cteResults);
                 logger.trace("Deleted {} rows (DELETE…USING) from table: {}", deletedUsingSources, tableName);
                 return executor.dmlCountResult("number of rows deleted", deletedUsingSources);
             }
 
+            final String deleteTargetAlias = ctx.identifier() != null ? executor.getIdentifier(ctx.identifier()) : null;
             if (executor.isDeferredApply()) {
-                int n = executeDeleteDeferred(table, fullyQualifiedName,
+                int n = executeDeleteDeferred(table, fullyQualifiedName, deleteTargetAlias,
                     ctx.whereClause() != null ? executor.getOriginalText(ctx.whereClause().booleanExpr()) : null,
                     cteResults);
                 logger.trace("Deleted {} rows (deferred) from table: {}", n, tableName);
@@ -223,8 +232,8 @@ final class UpdateDeleteExecutor {
             if (ctx.whereClause() != null) {
                 String whereExpr = executor.getOriginalText(ctx.whereClause().booleanExpr());
                 rowsToDelete = cteResults != null
-                    ? executor.filterRowsWithCTEs(rows, table, whereExpr, cteResults)
-                    : executor.filterRows(rows, table, whereExpr);
+                    ? executor.filterRowsWithCTEs(rows, table, deleteTargetAlias, whereExpr, cteResults)
+                    : executor.filterRows(rows, table, deleteTargetAlias, whereExpr);
             }
 
             // Collect indices to delete (in reverse order to avoid shifting)
@@ -274,6 +283,7 @@ final class UpdateDeleteExecutor {
      * hasn't committed. See docs/acid-snowflake-plan.md.
      */
     private int executeUpdateDeferred(final Table table, final String fullyQualifiedName,
+            final String targetAlias,
             final Map<String, String> assignments, final String whereExpr,
             final Map<String, ResultSet> cteResults) {
         final TransactionWriteSet writeSet = executor.getTransactionManager().getCurrentTransaction().getWriteSet();
@@ -300,8 +310,8 @@ final class UpdateDeleteExecutor {
         List<Row> matching = effective;
         if (whereExpr != null) {
             matching = cteResults != null
-                ? executor.filterRowsWithCTEs(effective, table, whereExpr, cteResults)
-                : executor.filterRows(effective, table, whereExpr);
+                ? executor.filterRowsWithCTEs(effective, table, targetAlias, whereExpr, cteResults)
+                : executor.filterRows(effective, table, targetAlias, whereExpr);
         }
 
         // Rows this transaction inserted but hasn't committed yet: modify the pending insert directly.
@@ -309,8 +319,8 @@ final class UpdateDeleteExecutor {
         List<Row> matchingPending = pendingInserts;
         if (whereExpr != null) {
             matchingPending = cteResults != null
-                ? executor.filterRowsWithCTEs(pendingInserts, table, whereExpr, cteResults)
-                : executor.filterRows(pendingInserts, table, whereExpr);
+                ? executor.filterRowsWithCTEs(pendingInserts, table, targetAlias, whereExpr, cteResults)
+                : executor.filterRows(pendingInserts, table, targetAlias, whereExpr);
         }
 
         // Expose WITH-clause CTEs while building the new rows, so a subquery in the SET clause
@@ -348,6 +358,7 @@ final class UpdateDeleteExecutor {
      * live storage.
      */
     private int executeDeleteDeferred(final Table table, final String fullyQualifiedName,
+            final String targetAlias,
             final String whereExpr, final Map<String, ResultSet> cteResults) {
         final TransactionWriteSet writeSet = executor.getTransactionManager().getCurrentTransaction().getWriteSet();
         final StorageEngine.TableStorage tableStorage = executor.getStorageEngine().getTableStorage(fullyQualifiedName);
@@ -371,8 +382,8 @@ final class UpdateDeleteExecutor {
         List<Row> matching = effective;
         if (whereExpr != null) {
             matching = cteResults != null
-                ? executor.filterRowsWithCTEs(effective, table, whereExpr, cteResults)
-                : executor.filterRows(effective, table, whereExpr);
+                ? executor.filterRowsWithCTEs(effective, table, targetAlias, whereExpr, cteResults)
+                : executor.filterRows(effective, table, targetAlias, whereExpr);
         }
         for (final Row row : matching) {
             final int idx = effective.indexOf(row);
@@ -387,8 +398,8 @@ final class UpdateDeleteExecutor {
         List<Row> matchingPending = pendingInserts;
         if (whereExpr != null) {
             matchingPending = cteResults != null
-                ? executor.filterRowsWithCTEs(pendingInserts, table, whereExpr, cteResults)
-                : executor.filterRows(pendingInserts, table, whereExpr);
+                ? executor.filterRowsWithCTEs(pendingInserts, table, targetAlias, whereExpr, cteResults)
+                : executor.filterRows(pendingInserts, table, targetAlias, whereExpr);
         }
         final List<Integer> pendingIndices = new ArrayList<>();
         for (final Row row : matchingPending) {
@@ -425,23 +436,26 @@ final class UpdateDeleteExecutor {
     // references (target.col / source.col) resolve. When a target row joins more than one source row the
     // first match wins (Snowflake leaves multi-match updates non-deterministic by default).
 
-    private int executeUpdateFromSources(final Table target, final String targetFqn,
+    private int executeUpdateFromSources(final Table target, final String targetFqn, final String targetAlias,
             final Map<String, String> assignments, final String whereExpr,
-            final List<FrostlakeParser.TableReferenceContext> sourceRefs, final Map<String, ResultSet> cteResults) {
+            final List<FrostlakeParser.TableReferenceContext> sourceRefs,
+            final List<FrostlakeParser.JoinClauseContext> joinClauses, final boolean outerJoin,
+            final Map<String, ResultSet> cteResults) {
         final List<Table> allTables = new ArrayList<>();
         allTables.add(target);
         final Map<String, Table> aliasToTable = new HashMap<>();
         aliasToTable.put(target.getName().toUpperCase(), target);
-        Table combined = target;
-        final List<List<Row>> sourceRowLists = new ArrayList<>();
-        for (final FrostlakeParser.TableReferenceContext srcRef : sourceRefs) {
-            final TableData sd = executor.executeTableReference(srcRef, null, cteResults);
-            allTables.add(sd.table);
-            aliasToTable.put((sd.alias != null ? sd.alias : sd.table.getName()).toUpperCase(), sd.table);
-            sourceRowLists.add(sd.rows);
-            combined = executor.mergeTableMetadata(combined, sd.table);
+        // Register the target's alias too (UPDATE t tgt … FROM s …): without it a WHERE like
+        // tgt.col = s.col can't disambiguate tgt from the source when both share a column name.
+        if (targetAlias != null) {
+            aliasToTable.put(targetAlias.toUpperCase(), target);
         }
-        final List<List<Object>> sourceCombos = cartesianRowValues(sourceRowLists);
+        final List<List<Object>> sourceCombos = buildSourceCombos(sourceRefs, joinClauses, cteResults, allTables, aliasToTable);
+        Table combined = allTables.get(0);
+        for (int i = 1; i < allTables.size(); i++) {
+            combined = executor.mergeTableMetadata(combined, allTables.get(i));
+        }
+        final int sourceWidth = combined.getColumns().size() - target.getColumns().size();
 
         final ExpressionEvaluator ev = new ExpressionEvaluator(combined, executor.getFunctionRegistry(), executor.getCatalog(), executor);
         ev.setMultiTableContext(aliasToTable, allTables);
@@ -466,7 +480,7 @@ final class UpdateDeleteExecutor {
             }
             final Row pending = executor.isDeferredApply() ? writeSet.pendingUpdate(targetFqn, id) : null;
             final Row targetRow = pending != null ? pending : baseRows.get(i);
-            final Row updatedRow = joinUpdatedRow(targetRow, target, sourceCombos, ev, wherePred, setByColumn);
+            final Row updatedRow = joinUpdatedRow(targetRow, target, sourceCombos, ev, wherePred, setByColumn, outerJoin, sourceWidth);
             if (updatedRow == null) {
                 continue;   // no source row joined this target row → leave it unchanged
             }
@@ -484,26 +498,41 @@ final class UpdateDeleteExecutor {
             }
             updated++;
         }
+        // Rows this transaction has INSERTED but not yet committed live only in the write set — the
+        // loader idiom stages rows into a table and immediately joins-updates them in the same
+        // transaction. Skipping them made the UPDATE…FROM silently touch nothing.
+        if (executor.isDeferredApply()) {
+            final List<Row> pendingInserts = writeSet.pendingInserts(targetFqn);
+            for (int p = 0; p < pendingInserts.size(); p++) {
+                final Row updatedRow = joinUpdatedRow(pendingInserts.get(p), target, sourceCombos, ev,
+                    wherePred, setByColumn, outerJoin, sourceWidth);
+                if (updatedRow == null) {
+                    continue;
+                }
+                writeSet.setPendingInsert(targetFqn, p, updatedRow);
+                updated++;
+            }
+        }
         return updated;
     }
 
-    private int executeDeleteUsingSources(final Table target, final String targetFqn,
+    private int executeDeleteUsingSources(final Table target, final String targetFqn, final String targetAlias,
             final String whereExpr, final List<FrostlakeParser.TableReferenceContext> sourceRefs,
-            final Map<String, ResultSet> cteResults) {
+            final List<FrostlakeParser.JoinClauseContext> joinClauses, final Map<String, ResultSet> cteResults) {
         final List<Table> allTables = new ArrayList<>();
         allTables.add(target);
         final Map<String, Table> aliasToTable = new HashMap<>();
         aliasToTable.put(target.getName().toUpperCase(), target);
-        Table combined = target;
-        final List<List<Row>> sourceRowLists = new ArrayList<>();
-        for (final FrostlakeParser.TableReferenceContext srcRef : sourceRefs) {
-            final TableData sd = executor.executeTableReference(srcRef, null, cteResults);
-            allTables.add(sd.table);
-            aliasToTable.put((sd.alias != null ? sd.alias : sd.table.getName()).toUpperCase(), sd.table);
-            sourceRowLists.add(sd.rows);
-            combined = executor.mergeTableMetadata(combined, sd.table);
+        // Register the target's alias too (DELETE FROM t wcs USING …): without it a WHERE like
+        // wcs.col = d.col can't disambiguate wcs from the source when both share a column name.
+        if (targetAlias != null) {
+            aliasToTable.put(targetAlias.toUpperCase(), target);
         }
-        final List<List<Object>> sourceCombos = cartesianRowValues(sourceRowLists);
+        final List<List<Object>> sourceCombos = buildSourceCombos(sourceRefs, joinClauses, cteResults, allTables, aliasToTable);
+        Table combined = allTables.get(0);
+        for (int i = 1; i < allTables.size(); i++) {
+            combined = executor.mergeTableMetadata(combined, allTables.get(i));
+        }
 
         final ExpressionEvaluator ev = new ExpressionEvaluator(combined, executor.getFunctionRegistry(), executor.getCatalog(), executor);
         ev.setMultiTableContext(aliasToTable, allTables);
@@ -548,47 +577,114 @@ final class UpdateDeleteExecutor {
                 deleted++;
             }
         }
+        // Rows this transaction has INSERTED but not yet committed live only in the write set —
+        // walk them backwards so removal keeps earlier indices valid.
+        if (executor.isDeferredApply()) {
+            final List<Row> pendingInserts = writeSet.pendingInserts(targetFqn);
+            for (int p = pendingInserts.size() - 1; p >= 0; p--) {
+                if (joinMatches(pendingInserts.get(p), sourceCombos, ev, wherePred)) {
+                    writeSet.removePendingInsert(targetFqn, p);
+                    deleted++;
+                }
+            }
+        }
         return deleted;
     }
 
-    /** The cartesian product of the source tables' rows, each combination flattened to its column values in
-     *  source order. A single source yields one combination per row; an empty source yields no combinations
-     *  (so the inner join produces nothing). */
-    private List<List<Object>> cartesianRowValues(final List<List<Row>> sourceRowLists) {
-        List<List<Object>> combos = new ArrayList<>();
-        combos.add(new ArrayList<>());
-        for (final List<Row> rows : sourceRowLists) {
-            final List<List<Object>> next = new ArrayList<>();
-            for (final List<Object> prefix : combos) {
-                for (final Row row : rows) {
-                    final List<Object> merged = new ArrayList<>(prefix);
-                    merged.addAll(row.getValues());
-                    next.add(merged);
-                }
+    /**
+     * Build the SOURCE side of an UPDATE…FROM / DELETE…USING: the first reference, any comma-separated
+     * references (cross-joined), then any explicit JOINs (LEFT/RIGHT/FULL/INNER/CROSS/NATURAL, honoring
+     * ON/USING). Returns each resulting source row's values, to be concatenated after the target row when
+     * evaluating the WHERE predicate and SET expressions. APPENDS the source tables/aliases to
+     * {@code allTables}/{@code aliasToTable} (the caller has already added the target) so those references
+     * resolve there; a separate source-only alias context is used to resolve the JOIN ON conditions, since
+     * the joined source rows carry no target columns. A LEFT/RIGHT/FULL join keeps its unmatched (null-padded)
+     * rows, so a target row can match a source row whose outer side is NULL.
+     */
+    private List<List<Object>> buildSourceCombos(
+            final List<FrostlakeParser.TableReferenceContext> sourceRefs,
+            final List<FrostlakeParser.JoinClauseContext> joinClauses,
+            final Map<String, ResultSet> cteResults,
+            final List<Table> allTables, final Map<String, Table> aliasToTable) {
+
+        // Source-only alias context for JOIN ON resolution (the joined rows have no target columns).
+        final Map<String, Table> srcAliasToTable = new HashMap<>();
+        final List<Table> srcAllTables = new ArrayList<>();
+
+        final TableData first = executor.executeTableReference(sourceRefs.get(0), null, cteResults);
+        List<Row> srcRows = first.rows;
+        Table srcTable = first.table;
+        registerSource(first, allTables, aliasToTable, srcAllTables, srcAliasToTable);
+
+        // Additional comma-separated sources → cross join.
+        for (int i = 1; i < sourceRefs.size(); i++) {
+            final TableData r = executor.executeTableReference(sourceRefs.get(i), null, cteResults);
+            srcRows = executor.crossJoinRows(srcRows, srcTable, r.rows, r.table);
+            srcTable = executor.mergeTableMetadata(srcTable, r.table);
+            registerSource(r, allTables, aliasToTable, srcAllTables, srcAliasToTable);
+        }
+
+        // Explicit JOINs. Register the right side BEFORE applyJoin so its ON condition can resolve.
+        if (joinClauses != null) {
+            for (final FrostlakeParser.JoinClauseContext jc : joinClauses) {
+                final TableData r = executor.executeTableReference(jc.tableReference(), null, cteResults);
+                registerSource(r, allTables, aliasToTable, srcAllTables, srcAliasToTable);
+                srcRows = executor.applyJoin(srcRows, srcTable, r.rows, r.table, jc, srcAliasToTable, srcAllTables, null);
+                srcTable = executor.mergeTableMetadata(srcTable, r.table);
             }
-            combos = next;
+        }
+
+        final List<List<Object>> combos = new ArrayList<>(srcRows.size());
+        for (final Row r : srcRows) {
+            combos.add(new ArrayList<>(r.getValues()));
         }
         return combos;
     }
 
+    /** Register one source into both the combined alias context (target + sources) and the source-only one. */
+    private void registerSource(final TableData sd, final List<Table> allTables, final Map<String, Table> aliasToTable,
+            final List<Table> srcAllTables, final Map<String, Table> srcAliasToTable) {
+        final String key = (sd.alias != null ? sd.alias : sd.table.getName()).toUpperCase();
+        allTables.add(sd.table);
+        aliasToTable.put(key, sd.table);
+        srcAllTables.add(sd.table);
+        srcAliasToTable.put(key, sd.table);
+    }
+
     /** First source combination satisfying the predicate yields the SET-applied target row (first match
-     *  wins); null when no source row joins this target row. */
+     *  wins); null when no source row joins this target row — UNLESS {@code outerJoin} (an Oracle {@code (+)}
+     *  on the source), in which case the target row is still updated with the source columns bound to NULL
+     *  ({@code sourceWidth} NULLs), matching a target LEFT JOIN source. */
     private Row joinUpdatedRow(final Row targetRow, final Table target, final List<List<Object>> sourceCombos,
-            final ExpressionEvaluator ev, final Expression wherePred, final Map<Integer, Expression> setByColumn) {
+            final ExpressionEvaluator ev, final Expression wherePred, final Map<Integer, Expression> setByColumn,
+            final boolean outerJoin, final int sourceWidth) {
         for (final List<Object> combo : sourceCombos) {
             final List<Object> values = new ArrayList<>(targetRow.getValues());
             values.addAll(combo);
             final Row combinedRow = Row.of(values);
             if (wherePred == null || isTrueResult(ev.evaluate(wherePred, combinedRow))) {
-                final Row newRow = targetRow.copy();
-                for (final Map.Entry<Integer, Expression> s : setByColumn.entrySet()) {
-                    newRow.setValue(s.getKey(), ev.evaluate(s.getValue(), combinedRow));
-                }
-                executor.enforceColumnConstraints(target, newRow);
-                return newRow;
+                return applySet(targetRow, target, combinedRow, ev, setByColumn);
             }
         }
+        if (outerJoin) {
+            final List<Object> values = new ArrayList<>(targetRow.getValues());
+            for (int i = 0; i < sourceWidth; i++) {
+                values.add(null);
+            }
+            return applySet(targetRow, target, Row.of(values), ev, setByColumn);
+        }
         return null;
+    }
+
+    /** Apply the SET assignments (evaluated over the combined target+source row) to a copy of the target. */
+    private Row applySet(final Row targetRow, final Table target, final Row combinedRow,
+            final ExpressionEvaluator ev, final Map<Integer, Expression> setByColumn) {
+        final Row newRow = targetRow.copy();
+        for (final Map.Entry<Integer, Expression> s : setByColumn.entrySet()) {
+            newRow.setValue(s.getKey(), ev.evaluate(s.getValue(), combinedRow));
+        }
+        executor.enforceColumnConstraints(target, newRow);
+        return newRow;
     }
 
     /** True if any source combination satisfies the predicate (the target row joins at least one source). */
@@ -605,6 +701,6 @@ final class UpdateDeleteExecutor {
     }
 
     private boolean isTrueResult(final Object result) {
-        return result instanceof Boolean && (Boolean) result;
+        return SqlTruth.isTrue(result);
     }
 }

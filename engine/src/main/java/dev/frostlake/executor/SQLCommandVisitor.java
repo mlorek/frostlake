@@ -267,9 +267,9 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
 
     @Override
     public Object visitTransactionStatement(final FrostlakeParser.TransactionStatementContext ctx) {
-        if (ctx.BEGIN() != null) {
-            // Explicit BEGIN starts (or promotes the current auto-started) transaction to an explicit one,
-            // which suspends statement-end autocommit until COMMIT/ROLLBACK (Snowflake semantics).
+        if (ctx.BEGIN() != null || ctx.START() != null) {
+            // Explicit BEGIN / START TRANSACTION starts (or promotes the current auto-started) transaction to
+            // an explicit one, which suspends statement-end autocommit until COMMIT/ROLLBACK (Snowflake).
             queryExecutor.getTransactionManager().beginExplicitTransaction();
         } else if (ctx.COMMIT() != null) {
             if (queryExecutor.getTransactionManager().hasActiveTransaction()) {
@@ -379,7 +379,38 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
         return queryExecutor.executeRemoveFromContext(ctx);
     }
 
+    @Override
+    public Object visitDdlStatement(final FrostlakeParser.DdlStatementContext ctx) {
+        // Snowflake: a DDL statement implicitly commits the current transaction (DDL runs as its own
+        // transaction). Done at the shared dispatch point so a DDL inside a procedural BEGIN…END body —
+        // e.g. the CREATE TEMP TABLE … AS SELECT * FROM <stream> flush idiom — ends the open
+        // transaction exactly as it does at top level. EXCEPTION: ALTER SESSION only changes session
+        // parameters and does NOT commit (loaders set QUERY_TAG between statements INSIDE their explicit
+        // transaction — committing there split the transaction and a second stream read saw an
+        // already-consumed, empty window).
+        final boolean alterSession =
+            ctx.alterStatement() != null && ctx.alterStatement().SESSION() != null;
+        if (!alterSession && queryExecutor.getTransactionManager().hasActiveTransaction()) {
+            queryExecutor.getTransactionManager().commit();
+        }
+        return visitChildren(ctx);
+    }
+
     // ==================== DML STATEMENTS ====================
+
+    @Override
+    public Object visitDmlStatement(final FrostlakeParser.DmlStatementContext ctx) {
+        // A DML statement consumes any stream it reads (the offset advances when its transaction
+        // commits). Open the consuming window here — the one dispatch point every execution path
+        // shares (top-level execute(), procedural BEGIN…END bodies, task bodies) — so a stream read
+        // by DML inside a stored procedure registers too. A plain SELECT must NOT consume.
+        final boolean prev = queryExecutor.enterDmlStreamWindow();
+        try {
+            return visitChildren(ctx);
+        } finally {
+            queryExecutor.restoreDmlStreamWindow(prev);
+        }
+    }
 
     @Override
     public Object visitInsertStatement(final FrostlakeParser.InsertStatementContext ctx) {
@@ -518,6 +549,17 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
 
             logger.trace("Declared variable: {}", varName);
         }
+        return null;
+    }
+
+    @Override
+    public Object visitUntypedDeclarationItem(final FrostlakeParser.UntypedDeclarationItemContext ctx) {
+        // A DECLARE-section item with the type omitted (`v := expr;`); the type is inferred from the value.
+        String varName = getText(ctx.identifier());
+        Object defaultValue = evaluateExpression(ctx.expression());
+        DeclareStatement stmt = new DeclareStatement(varName, defaultValue, null);
+        proceduralExecutor.executeStatement(stmt);
+        logger.trace("Declared variable (untyped): {}", varName);
         return null;
     }
 
@@ -797,8 +839,10 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
     @Override
     public Object visitSelectIntoStatement(final FrostlakeParser.SelectIntoStatementContext ctx) {
         // Reconstruct SELECT without INTO clause, execute, assign to variables
-        // Rebuild as: SELECT <selectList> FROM <tableExpression> [WHERE ...]
-        StringBuilder selectSql = new StringBuilder("SELECT ");
+        // Rebuild as: [WITH <cte>] SELECT <selectList> FROM <tableExpression> [WHERE ...]
+        StringBuilder selectSql = new StringBuilder();
+        if (ctx.withClause() != null) selectSql.append(getOriginalText(ctx.withClause())).append(" ");
+        selectSql.append("SELECT ");
         if (ctx.DISTINCT() != null) selectSql.append("DISTINCT ");
         selectSql.append(getOriginalText(ctx.selectList()));
         if (ctx.FROM() != null && ctx.tableExpression() != null) {
@@ -817,19 +861,20 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
         final int rowCount = rs == null ? 0 : rs.getRowCount();
         List<FrostlakeParser.IntoTargetContext> targets = ctx.intoTargetList().intoTarget();
 
-        // Snowflake: a SELECT ... INTO that matches no rows is not an error — every target is set to
-        // NULL and the block continues, so an absent lookup value simply yields NULL.
+        // Snowflake Scripting (verified against live Snowflake): a SELECT ... INTO over ZERO rows
+        // assigns NULL to every target and continues — deployment scripts depend on it (probe idioms
+        // like SELECT "stale" INTO :flag FROM RESULT_SCAN(SHOW ...) on a fresh database, and
+        // walk-past-the-end fetch loops that terminate on the NULL). Only MORE than one row errors.
+        if (rowCount > 1) {
+            throw new RuntimeException(
+                "Select statement in SELECT INTO returned wrong number of rows: " + rowCount);
+        }
         if (rowCount == 0) {
             for (final FrostlakeParser.IntoTargetContext target : targets) {
                 assignSelectIntoTarget(getText(target.identifier()), null);
             }
-            logger.trace("SELECT INTO: no rows matched; assigned NULL to {} target(s)", targets.size());
+            logger.trace("SELECT INTO: zero rows — assigned NULL to {} variable(s)", targets.size());
             return null;
-        }
-        // More than one row remains an error — narrow the query (e.g. with LIMIT) to a single row.
-        if (rowCount > 1) {
-            throw new RuntimeException(
-                "Select statement in SELECT INTO returned wrong number of rows: " + rowCount);
         }
         Row firstRow = rs.getRows().get(0);
         if (targets.size() != firstRow.getValues().size()) {
@@ -984,6 +1029,16 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
         return null;
     }
 
+    /** Index of the parameter named {@code name} (case-insensitive), or -1 if the procedure has no such parameter. */
+    private int indexOfParameter(final List<Parameter> params, final String name) {
+        for (int i = 0; i < params.size(); i++) {
+            if (params.get(i).getName().equalsIgnoreCase(name)) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
     @Override
     public Object visitCallStatement(final FrostlakeParser.CallStatementContext ctx) {
         String qualifiedName = getText(ctx.qualifiedName());
@@ -1007,17 +1062,44 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
             throw new RuntimeException("Procedure not found: " + qualifiedName);
         }
 
-        // Evaluate call arguments
-        List<Object> arguments = new ArrayList<>();
-        if (ctx.expressionList() != null) {
-            for (final FrostlakeParser.ExpressionContext exprCtx : ctx.expressionList().expression()) {
-                arguments.add(evaluateExpression(exprCtx));
+        // Evaluate call arguments — positional and/or named (name => value). Positional args bind to
+        // parameters left-to-right; a named arg binds to the parameter whose name it matches; any
+        // parameter left unbound falls back to its DEFAULT (Snowflake semantics), so a named arg may
+        // legitimately skip an earlier defaulted parameter.
+        List<Parameter> params = procedure.getParameters();
+        final Object[] boundValues = new Object[params.size()];
+        final boolean[] boundFlags = new boolean[params.size()];
+        int positionalIndex = 0;
+        if (ctx.callArguments() != null) {
+            for (final FrostlakeParser.CallArgumentContext argCtx : ctx.callArguments().callArgument()) {
+                if (argCtx.namedArgument() != null) {
+                    final String argName = getText(argCtx.namedArgument().identifier());
+                    final int idx = indexOfParameter(params, argName);
+                    if (idx < 0) {
+                        throw new RuntimeException("Unknown argument '" + argName + "' for procedure: " + qualifiedName);
+                    }
+                    if (boundFlags[idx]) {
+                        throw new RuntimeException("Argument '" + argName + "' specified more than once for procedure: " + qualifiedName);
+                    }
+                    boundValues[idx] = evaluateExpression(argCtx.namedArgument().expression());
+                    boundFlags[idx] = true;
+                } else {
+                    if (positionalIndex >= params.size()) {
+                        throw new RuntimeException("Too many arguments for procedure: " + qualifiedName);
+                    }
+                    boundValues[positionalIndex] = evaluateExpression(argCtx.expression());
+                    boundFlags[positionalIndex] = true;
+                    positionalIndex++;
+                }
             }
         }
 
-        // Fill in default values for omitted trailing parameters
-        List<Parameter> params = procedure.getParameters();
-        for (int i = arguments.size(); i < params.size(); i++) {
+        List<Object> arguments = new ArrayList<>();
+        for (int i = 0; i < params.size(); i++) {
+            if (boundFlags[i]) {
+                arguments.add(boundValues[i]);
+                continue;
+            }
             Parameter param = params.get(i);
             if (!param.hasDefault()) {
                 throw new RuntimeException("Missing required argument for parameter: " + param.getName());
@@ -1085,6 +1167,9 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
                 Object bodyResult = null;
                 for (final FrostlakeParser.StatementContext stmtCtx : tree.statement()) {
                     bodyResult = visit(stmtCtx);
+                    // Per-statement autocommit, as inside BEGIN…END bodies (Snowflake procedures do
+                    // not wrap their statements in one transaction).
+                    queryExecutor.getTransactionManager().autocommitStatementEnd();
                     if (proceduralExecutor.hasReturned()) {
                         break; // a bare (non-BEGIN…END) RETURN statement stops the body
                     }
@@ -1093,18 +1178,42 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
                 // return state already cleared by visitBeginEndBlock); a bare-statement body leaves the
                 // value in the return state. Handle both, and clear the state so it can't leak.
                 if (bodyResult instanceof ResultSet) {
-                    return (ResultSet) bodyResult;
+                    // Snowflake names a CALL's result column after the procedure; the BEGIN…END block that
+                    // produced this ResultSet used a generic name, so rename its single result column.
+                    final ResultSet bodyRs = (ResultSet) bodyResult;
+                    if (bodyRs.getColumns().size() == 1) {
+                        final List<ResultSetColumn> renamed = new ArrayList<>();
+                        renamed.add(new ResultSetColumn(procName, StringType.VARCHAR, null));
+                        return new ResultSet(renamed, bodyRs.getRows());
+                    }
+                    return bodyRs;
                 }
                 if (proceduralExecutor.hasReturned()) {
                     final Object rv = proceduralExecutor.getReturnValue();
                     proceduralExecutor.clearReturnState();
+                    if (rv instanceof ResultSet) {
+                        // RETURN TABLE(…): the returned table IS the CALL's result. Reached when the
+                        // callee runs NESTED inside another procedure — the block handler then leaves
+                        // the return state set (blockDepth > 1) instead of converting it, and wrapping
+                        // the ResultSet as a single scalar cell would collapse the table.
+                        return rv;
+                    }
                     final List<ResultSetColumn> resultColumns = new ArrayList<>();
-                    resultColumns.add(new ResultSetColumn("RESULT", StringType.VARCHAR, null));
+                    // Snowflake names a CALL's result column after the procedure (e.g. CALL foo() → "FOO").
+                    resultColumns.add(new ResultSetColumn(procName, StringType.VARCHAR, null));
                     final List<Row> resultRows = new ArrayList<>();
                     resultRows.add(new Row(rv));
                     return new ResultSet(resultColumns, resultRows);
                 }
-                return null;
+                // A body that completes WITHOUT a RETURN implicitly returns NULL — and CALL still
+                // yields its one-row result set (column named after the procedure), never an empty
+                // result: JDBC executeQuery("CALL p()") must see a result set even for
+                // `BEGIN <dml>; END` bodies whose only RETURN sits in the EXCEPTION handler.
+                final List<ResultSetColumn> implicitNullColumns = new ArrayList<>();
+                implicitNullColumns.add(new ResultSetColumn(procName, StringType.VARCHAR, null));
+                final List<Row> implicitNullRows = new ArrayList<>();
+                implicitNullRows.add(new Row((Object) null));
+                return new ResultSet(implicitNullColumns, implicitNullRows);
             } catch (final ProceduralException e) {
                 throw e;
             } catch (final Exception e) {
@@ -1112,10 +1221,10 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
             } finally {
                 proceduralExecutor.exitScope();
                 if (savedDb != null) {
-                    catalog.useDatabase(savedDb);
-                    if (savedSchema != null) {
-                        catalog.useSchema(savedSchema);
-                    }
+                    // Restore the caller's context WITHOUT re-validating it: this runs while unwinding, so a
+                    // throw here would replace the CALL's real result (or its real error) with a spurious one
+                    // that the procedure's own EXCEPTION handler never sees.
+                    catalog.restoreContext(savedDb, savedSchema);
                 }
             }
         }
@@ -1124,7 +1233,8 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
 
         if (returnValue != null) {
             List<ResultSetColumn> columns = new ArrayList<>();
-            columns.add(new ResultSetColumn("RESULT", StringType.VARCHAR, null));
+            // Snowflake names a CALL's result column after the procedure (e.g. CALL foo() → "FOO").
+            columns.add(new ResultSetColumn(procName, StringType.VARCHAR, null));
             List<Row> rows = new ArrayList<>();
             rows.add(new Row(returnValue));
             return new ResultSet(columns, rows);
@@ -1187,7 +1297,12 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
                     break;
                 }
             }
-            if (isProcedural) {
+            // Only when this EXECUTE IMMEDIATE is NOT itself running inside a BEGIN…END block: the clear
+            // exists so a dynamic script can re-declare a cursor/exception left over from a PREVIOUS
+            // top-level statement, but a nested one would wipe the ENCLOSING block's live state — a
+            // procedure that declares an exception, calls a loader that EXECUTE IMMEDIATEs a procedural
+            // body, and then raises that exception failed with "Undefined exception: <name>".
+            if (isProcedural && !proceduralExecutor.isExecutingBlock()) {
                 proceduralExecutor.clearCursorsAndExceptions();
             }
 

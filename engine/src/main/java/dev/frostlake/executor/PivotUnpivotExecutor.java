@@ -49,8 +49,7 @@ final class PivotUnpivotExecutor {
     /**
      * Execute PIVOT operation to transform rows into columns
      */
-    ResultSet executePivot(final FrostlakeParser.SelectClauseContext ctx, final Table table, final List<Row> rows, final FrostlakeParser.TableSourceContext tableSource) {
-        FrostlakeParser.PivotClauseContext pivotCtx = tableSource.pivotClause();
+    ResultSet executePivot(final FrostlakeParser.SelectClauseContext ctx, final Table table, final List<Row> rows, final FrostlakeParser.PivotClauseContext pivotCtx) {
 
         // Extract PIVOT components
         String aggFuncName = pivotCtx.aggregateFunction().functionName().getText().toUpperCase();
@@ -61,10 +60,15 @@ final class PivotUnpivotExecutor {
         List<String> pivotValues = new ArrayList<>();
         Map<String, String> pivotAliases = new HashMap<>();
         for (final FrostlakeParser.PivotValueContext pvCtx : pivotCtx.pivotValueList().pivotValue()) {
-            String value = pvCtx.literal().getText().replace("'", "");
+            // The value used to MATCH rows is the literal's value (q1), but the output column is NAMED after
+            // the literal AS WRITTEN — Snowflake keeps the quotes inside the identifier, so a string pivot
+            // value 'q1' produces a column called 'q1' that is referenced as "'q1'" (which is exactly how
+            // real queries write it, e.g. MAX("'q1'")). Naming it `q1` instead made "'q1'" unresolvable and,
+            // worse, made MAX("'q1'") silently return the STRING q1. An explicit alias still wins.
+            final String value = pvCtx.literal().getText().replace("'", "");
             pivotValues.add(value);
 
-            String alias = value;
+            String alias = pvCtx.literal().getText();
             if (pvCtx.identifier() != null) {
                 alias = ParseTreeText.getIdentifier(pvCtx.identifier());
             }
@@ -83,13 +87,18 @@ final class PivotUnpivotExecutor {
             }
         }
 
-        // Group rows by the non-pivot columns
+        // Group rows by the non-pivot columns. Buckets use canonicalized keys (so equal numbers with
+        // different runtime types group together); output rows keep the first row's raw values.
         Map<List<Object>, Map<String, List<Object>>> groups = new LinkedHashMap<>();
+        Map<List<Object>, List<Object>> groupKeyDisplayValues = new HashMap<>();
         for (final Row row : rows) {
             // Build group key from non-pivot columns
+            List<Object> rawKey = new ArrayList<>();
             List<Object> groupKey = new ArrayList<>();
             for (final int idx : groupByColIndices) {
-                groupKey.add(row.getValue(idx));
+                final Object value = row.getValue(idx);
+                rawKey.add(value);
+                groupKey.add(ValueComparisons.canonicalGroupKeyValue(value));
             }
 
             // Get pivot column value
@@ -98,8 +107,18 @@ final class PivotUnpivotExecutor {
             // Get aggregate column value
             Object aggValue = row.getValue(aggColIndex);
 
-            groups.computeIfAbsent(groupKey, (final var k) -> new HashMap<>());
-            groups.get(groupKey).computeIfAbsent(pivotValue, (final var k) -> new ArrayList<>()).add(aggValue);
+            Map<String, List<Object>> groupBuckets = groups.get(groupKey);
+            if (groupBuckets == null) {
+                groupBuckets = new HashMap<>();
+                groups.put(groupKey, groupBuckets);
+                groupKeyDisplayValues.put(groupKey, rawKey);
+            }
+            List<Object> pivotBucket = groupBuckets.get(pivotValue);
+            if (pivotBucket == null) {
+                pivotBucket = new ArrayList<>();
+                groupBuckets.put(pivotValue, pivotBucket);
+            }
+            pivotBucket.add(aggValue);
         }
 
         // Build result columns
@@ -116,7 +135,7 @@ final class PivotUnpivotExecutor {
         // Build result rows
         List<Row> resultRows = new ArrayList<>();
         for (final Map.Entry<List<Object>, Map<String, List<Object>>> entry : groups.entrySet()) {
-            List<Object> rowValues = new ArrayList<>(entry.getKey());
+            List<Object> rowValues = new ArrayList<>(groupKeyDisplayValues.get(entry.getKey()));
 
             for (final String pivotValue : pivotValues) {
                 List<Object> values = entry.getValue().getOrDefault(pivotValue, new ArrayList<>());
@@ -133,8 +152,7 @@ final class PivotUnpivotExecutor {
     /**
      * Execute UNPIVOT operation to transform columns into rows
      */
-    ResultSet executeUnpivot(final FrostlakeParser.SelectClauseContext ctx, final Table table, final List<Row> rows, final FrostlakeParser.TableSourceContext tableSource) {
-        FrostlakeParser.UnpivotClauseContext unpivotCtx = tableSource.unpivotClause();
+    ResultSet executeUnpivot(final FrostlakeParser.SelectClauseContext ctx, final Table table, final List<Row> rows, final FrostlakeParser.UnpivotClauseContext unpivotCtx) {
 
         // Extract UNPIVOT components
         String valueColumn = ParseTreeText.getIdentifier(unpivotCtx.identifier(0)); // value_column

@@ -43,6 +43,17 @@ public final class SqlStringLiterals {
     }
 
     /**
+     * Render text as a single-quoted SQL string literal that decodes back to exactly {@code text} —
+     * the inverse of {@link #decode}. In this dialect a backslash always escapes (see the lexer), so
+     * every backslash must be doubled BEFORE quote-doubling; escaping quotes alone corrupted any
+     * substituted value that itself contained escape sequences (a VARIANT whose JSON held
+     * {@code "{\"k\":1}"} reached PARSE_JSON with bare inner quotes — "Invalid JSON").
+     */
+    public static String encode(final String text) {
+        return "'" + text.replace("\\", "\\\\").replace("'", "''") + "'";
+    }
+
+    /**
      * Decode the inner text of a string literal (surrounding quotes already stripped by the caller).
      */
     public static String decodeContent(final String content) {
@@ -52,10 +63,18 @@ public final class SqlStringLiterals {
             if (c == '\\' && i + 1 < content.length()) {
                 final char next = content.charAt(i + 1);
                 if (next == '\'') { sb.append('\''); i++; }
+                else if (next == '"') { sb.append('"'); i++; }
                 else if (next == '\\') { sb.append('\\'); i++; }
                 else if (next == 'n') { sb.append('\n'); i++; }
                 else if (next == 't') { sb.append('\t'); i++; }
                 else if (next == 'r') { sb.append('\r'); i++; }
+                else if (next == 'b') { sb.append('\b'); i++; }
+                else if (next == 'f') { sb.append('\f'); i++; }
+                else if (next == 'x' || next == 'X') { i = appendHexEscape(sb, content, i, 2); }
+                else if (next == 'u' || next == 'U') { i = appendHexEscape(sb, content, i, 4); }
+                // A DIGIT after the backslash is deliberately NOT decoded (no octal escapes): a backslash
+                // followed by a digit is a regular-expression back-reference, which REGEXP_REPLACE's
+                // replacement string relies on — '[\2][\1]' must reach the regex engine intact.
                 else { sb.append(c); }
             } else if (c == '\'' && i + 1 < content.length() && content.charAt(i + 1) == '\'') {
                 sb.append('\''); i++;
@@ -64,5 +83,30 @@ public final class SqlStringLiterals {
             }
         }
         return sb.toString();
+    }
+
+    /**
+     * Append the character denoted by a hex escape (2 digits after {@code \x}, 4 after {@code \}u) starting at {@code backslashAt},
+     * returning the index of its last consumed character. An escape not followed by exactly {@code digits}
+     * hexadecimal digits is not an escape: the backslash is kept verbatim (Snowflake's own decoder is
+     * similarly forgiving rather than erroring on a stray backslash).
+     */
+    private static int appendHexEscape(final StringBuilder sb, final String content,
+                                       final int backslashAt, final int digits) {
+        final int start = backslashAt + 2;
+        int end = start;
+        while (end < content.length() && end < start + digits && isHexDigit(content.charAt(end))) {
+            end++;
+        }
+        if (end != start + digits) {
+            sb.append(content.charAt(backslashAt));
+            return backslashAt;
+        }
+        sb.append((char) Integer.parseInt(content.substring(start, end), 16));
+        return end - 1;
+    }
+
+    private static boolean isHexDigit(final char c) {
+        return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
     }
 }

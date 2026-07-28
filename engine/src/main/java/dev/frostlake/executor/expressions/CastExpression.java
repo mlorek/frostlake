@@ -17,15 +17,22 @@
 package dev.frostlake.executor.expressions;
 
 /**
- * Represents a type cast (e.g., CAST(x AS INTEGER), x::VARCHAR)
+ * Represents a type cast (e.g., CAST(x AS INTEGER), x::VARCHAR). When {@code tryMode} is set (TRY_CAST),
+ * a failed conversion yields NULL instead of raising an error.
  */
 public class CastExpression implements Expression {
     private final Expression expression;
     private final String targetType;
+    private final boolean tryMode;
 
     public CastExpression(final Expression expression, final String targetType) {
+        this(expression, targetType, false);
+    }
+
+    public CastExpression(final Expression expression, final String targetType, final boolean tryMode) {
         this.expression = expression;
         this.targetType = targetType;
+        this.tryMode = tryMode;
     }
 
     public Expression getExpression() {
@@ -34,6 +41,10 @@ public class CastExpression implements Expression {
 
     public String getTargetType() {
         return targetType;
+    }
+
+    public boolean isTryMode() {
+        return tryMode;
     }
 
     @Override

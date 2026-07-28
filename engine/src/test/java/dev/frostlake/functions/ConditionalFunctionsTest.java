@@ -167,12 +167,13 @@ public class ConditionalFunctionsTest extends BaseDatabaseTest {
 
     @Test
     public void testGreatestWithNull() {
+        // Snowflake: GREATEST returns NULL when ANY argument is NULL; GREATEST_IGNORE_NULLS skips.
         ResultSet result = engine.executeQuery(
-            "SELECT GREATEST(100, NULL, 200) as max_val FROM test_data WHERE id = 1"
+            "SELECT GREATEST(100, NULL, 200) as max_val, GREATEST_IGNORE_NULLS(100, NULL, 200) as max_skip FROM test_data WHERE id = 1"
         );
         assertEquals(1, result.getRowCount());
-        // NULL is skipped, returns 200
-        assertEquals(200, ((Number) result.getRows().get(0).getValue(result.getColumnIndex("max_val"))).intValue());
+        assertNull(result.getRows().get(0).getValue(result.getColumnIndex("max_val")));
+        assertEquals(200, ((Number) result.getRows().get(0).getValue(result.getColumnIndex("max_skip"))).intValue());
     }
 
     @Test
@@ -219,12 +220,14 @@ public class ConditionalFunctionsTest extends BaseDatabaseTest {
 
     @Test
     public void testLeastWithNull() {
+        // Snowflake: LEAST returns NULL when ANY argument is NULL — the loader idiom
+        // LEAST(MAX(conf), 100) must stay NULL for an all-NULL group; LEAST_IGNORE_NULLS skips.
         ResultSet result = engine.executeQuery(
-            "SELECT LEAST(100, NULL, 200) as min_val FROM test_data WHERE id = 1"
+            "SELECT LEAST(100, NULL, 200) as min_val, LEAST_IGNORE_NULLS(100, NULL, 200) as min_skip FROM test_data WHERE id = 1"
         );
         assertEquals(1, result.getRowCount());
-        // NULL is skipped, returns 100
-        assertEquals(100, ((Number) result.getRows().get(0).getValue(result.getColumnIndex("min_val"))).intValue());
+        assertNull(result.getRows().get(0).getValue(result.getColumnIndex("min_val")));
+        assertEquals(100, ((Number) result.getRows().get(0).getValue(result.getColumnIndex("min_skip"))).intValue());
     }
 
     @Test

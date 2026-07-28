@@ -367,6 +367,25 @@ public class AlterStatementTest {
     }
 
     @Test
+    public void testAlterColumnSetDefaultDecodesTheLiteral() {
+        // ALTER COLUMN ... SET DEFAULT must store the default like CREATE TABLE does: an insert that
+        // omits the column gets the decoded value X, not the literal text 'X' with its quotes.
+        engine.execute("CREATE TABLE def_tbl (id INT, region VARCHAR(50) NOT NULL)");
+        engine.execute("ALTER TABLE def_tbl ALTER COLUMN region SET DEFAULT 'EU'");
+        engine.execute("INSERT INTO def_tbl(id) VALUES (1)");
+        ResultSet rs = engine.executeQuery("SELECT region FROM def_tbl");
+        assertEquals("EU", rs.getRows().get(0).getValue(0));
+
+        engine.execute("ALTER TABLE def_tbl ALTER COLUMN region DROP DEFAULT");
+        assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.execute("INSERT INTO def_tbl(id) VALUES (2)");
+            }
+        });
+    }
+
+    @Test
     public void testShowRolesIsCurrentReflectsSession() {
         // is_current must track the session's current role, not a hard-coded SYSADMIN.
         engine.execute("CREATE ROLE my_show_role");

@@ -17,6 +17,7 @@
 package dev.frostlake.executor.operators;
 
 import dev.frostlake.executor.ExpressionEvaluator;
+import dev.frostlake.executor.ValueComparisons;
 import dev.frostlake.executor.expressions.Expression;
 import dev.frostlake.storage.Row;
 import org.slf4j.Logger;
@@ -42,6 +43,13 @@ public class GroupByOperator implements Operator {
     private final boolean implicitGrouping;
     private final RowExpressionEvaluator columnEvaluator;
     private final AggregateEvaluator aggregateEvaluator;
+    // When set, receives each output row's source group rows (parallel to the returned list). Lets a caller
+    // (HAVING) evaluate aggregates that are not SELECT items over the original group.
+    private List<List<Row>> groupRowsSink;
+    // Lateral column aliases: names is 1:1 with selectExpressions (null where an item has no alias) and sink
+    // is the map SHARED with the aggregate evaluator's lateral context. See captureLateralAliases.
+    private List<String> lateralAliasNames;
+    private Map<String, Object> lateralAliasSink;
 
     /**
      * Create an explicit GROUP BY operator.
@@ -92,6 +100,47 @@ public class GroupByOperator implements Operator {
             aggregateEvaluator, true);
     }
 
+    /** Capture each output row's source group rows into {@code sink} (parallel to the returned list), so a
+     *  caller can apply HAVING aggregates that are not SELECT items over the original group. */
+    public void captureGroupRows(final List<List<Row>> sink) {
+        this.groupRowsSink = sink;
+    }
+
+    /**
+     * Expose Snowflake lateral column aliases to later SELECT items of the same list, the grouped counterpart
+     * of {@link ProjectOperator}'s alias sink: as each item of a group is evaluated left to right, its
+     * {@code aliasNames} entry (when non-null) is written to {@code sink} with the value just computed, so a
+     * later item can reference it (e.g. {@code SELECT x AS n, LOWER(n) AS lo, COUNT(1) FROM t GROUP BY x}).
+     * {@code sink} must be the same map the aggregate evaluator reads as its lateral context. It is cleared at
+     * the start of every group, so aliases never leak between groups, and only earlier items are ever visible —
+     * a forward reference stays unresolved, exactly as in the ungrouped projection path.
+     *
+     * @param aliasNames one entry per select expression, the item's alias or null when it has none
+     * @param sink the shared alias-value map, written as each group's items are evaluated
+     */
+    public void captureLateralAliases(final List<String> aliasNames, final Map<String, Object> sink) {
+        this.lateralAliasNames = aliasNames;
+        this.lateralAliasSink = sink;
+    }
+
+    /** Reset the shared lateral-alias map at the start of a group so no values leak in from the previous one. */
+    private void beginGroupAliases() {
+        if (lateralAliasSink != null) {
+            lateralAliasSink.clear();
+        }
+    }
+
+    /** Publish select item {@code index}'s value under its alias, for later items of the same group to read. */
+    private void publishGroupAlias(final int index, final Object value) {
+        if (lateralAliasSink == null || lateralAliasNames == null || index >= lateralAliasNames.size()) {
+            return;
+        }
+        final String alias = lateralAliasNames.get(index);
+        if (alias != null) {
+            lateralAliasSink.put(alias.toUpperCase(), value);
+        }
+    }
+
     @Override
     public List<Row> execute(final List<Row> input, final OperatorContext context) {
         if (implicitGrouping) {
@@ -120,14 +169,19 @@ public class GroupByOperator implements Operator {
 
         List<Object> resultValues = new ArrayList<>();
 
+        beginGroupAliases();
         for (int i = 0; i < selectExpressions.size(); i++) {
             Object value = evaluateAggregate(i, input);
             resultValues.add(value);
+            publishGroupAlias(i, value);
         }
 
         logger.debug("Implicit grouping: {} rows -> 1 row with {} values",
             input.size(), resultValues.size());
 
+        if (groupRowsSink != null) {
+            groupRowsSink.add(input);
+        }
         return List.of(new Row(resultValues));
     }
 
@@ -164,12 +218,17 @@ public class GroupByOperator implements Operator {
             List<Row> groupRows = entry.getValue();
             List<Object> resultValues = new ArrayList<>();
 
+            beginGroupAliases();
             for (int i = 0; i < selectExpressions.size(); i++) {
                 Object value = evaluateAggregate(i, groupRows);
                 resultValues.add(value);
+                publishGroupAlias(i, value);
             }
 
             result.add(new Row(resultValues));
+            if (groupRowsSink != null) {
+                groupRowsSink.add(groupRows);
+            }
         }
 
         logger.debug("GROUP BY: {} rows -> {} groups with {} columns each",
@@ -197,7 +256,7 @@ public class GroupByOperator implements Operator {
 
         for (int i = 0; i < parsedGroupBy.size(); i++) {
             try {
-                key.add(columnEvaluator.evaluate(parsedGroupBy.get(i), row));
+                key.add(ValueComparisons.canonicalGroupKeyValue(columnEvaluator.evaluate(parsedGroupBy.get(i), row)));
             } catch (final Exception e) {
                 logger.warn("Failed to evaluate GROUP BY expression '{}': {}", groupByExpressions.get(i), e.getMessage());
                 key.add(GROUP_KEY_ERROR);

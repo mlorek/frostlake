@@ -80,4 +80,23 @@ public class IdentifierFunctionTest {
         assertEquals(1, rs.getRowCount());
         assertEquals(2L, ((Number) rs.getRows().get(0).getValue(0)).longValue());
     }
+
+    @Test
+    public void testIdentifierResolvesView() {
+        // FROM IDENTIFIER('<view>') must resolve a view, not only a base table — e.g. a backfill source
+        // that is a view is read this way.
+        engine.execute("CREATE VIEW hi_earners AS SELECT id, name FROM employees WHERE salary >= 85000");
+        ResultSet rs = engine.executeQuery("SELECT COUNT(*) FROM IDENTIFIER('hi_earners')");
+        assertEquals(1L, ((Number) rs.getRows().get(0).getValue(0)).longValue());
+    }
+
+    @Test
+    public void testIdentifierResolvesStream() {
+        // FROM IDENTIFIER('<stream>') must resolve a stream — the loaders read their incremental source
+        // (a stream) this way, toggling with the backfill view above via a variable.
+        engine.execute("CREATE STREAM emp_stream ON TABLE employees");
+        engine.execute("INSERT INTO employees VALUES (3, 'Carol', 70000)");
+        ResultSet rs = engine.executeQuery("SELECT COUNT(*) FROM IDENTIFIER('emp_stream')");
+        assertEquals(1L, ((Number) rs.getRows().get(0).getValue(0)).longValue());
+    }
 }

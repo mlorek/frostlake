@@ -289,4 +289,51 @@ public class QueryOperatorsTest {
         assertTrue(result.getRowCount() <= 2, "Should return at most 2 rows");
         assertTrue(result.getColumnCount() == 3, "Should have 3 columns");
     }
+
+    // ---- the % (MODULO) binary operator ----
+    // The operator was parsed to BinaryOperator.MODULO but not handled in the evaluator's binary-op switch,
+    // so `a % b` threw "Unsupported binary operator: MODULO" (while the MOD(a,b) function worked).
+
+    private Object scalar(final String sql) {
+        return engine.executeQuery(sql).getRows().get(0).getValue(0);
+    }
+
+    @Test
+    public void moduloOperatorInteger() {
+        assertEquals(1L, ((Number) scalar("SELECT 10 % 3")).longValue());
+    }
+
+    @Test
+    public void moduloOperatorMatchesModFunction() {
+        assertEquals(Boolean.TRUE, scalar("SELECT (17 % 5) = MOD(17, 5)"));
+    }
+
+    @Test
+    public void moduloOperatorTakesDividendSign() {
+        // Snowflake's % (like MOD) yields the sign of the dividend.
+        assertEquals(-1L, ((Number) scalar("SELECT -10 % 3")).longValue());
+    }
+
+    @Test
+    public void moduloOperatorDecimal() {
+        assertEquals(0, new java.math.BigDecimal("1.5")
+            .compareTo(new java.math.BigDecimal(scalar("SELECT 10.5 % 3").toString())));
+    }
+
+    @Test
+    public void moduloOperatorInColumnExpression() {
+        engine.execute("CREATE TABLE mod_t (n INTEGER)");
+        engine.execute("INSERT INTO mod_t VALUES (10), (7), (6)");
+        final ResultSet rs = engine.executeQuery("SELECT n FROM mod_t WHERE n % 2 = 0 ORDER BY n");
+        assertEquals(2, rs.getRowCount());
+        assertEquals(6, ((Number) rs.getRows().get(0).getValue(0)).intValue());
+        assertEquals(10, ((Number) rs.getRows().get(1).getValue(0)).intValue());
+    }
+
+    @Test
+    public void moduloOperatorInProcedure() {
+        engine.execute("CREATE OR REPLACE PROCEDURE p_mod() RETURNS INTEGER LANGUAGE SQL AS $$"
+            + " DECLARE x INTEGER := 17 % 5; BEGIN RETURN :x; END $$");
+        assertEquals(2L, ((Number) scalar("CALL p_mod()")).longValue());
+    }
 }

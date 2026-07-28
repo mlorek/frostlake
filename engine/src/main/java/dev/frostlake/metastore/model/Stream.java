@@ -87,7 +87,31 @@ public class Stream {
      * ids. APPEND_ONLY streams record only true INSERTs, so they are returned as-is.
      */
     public List<StreamRecord> getUnconsumedNetRecords() {
-        final List<StreamRecord> raw = getUnconsumedRecords();
+        return netRecordsOf(getUnconsumedRecords());
+    }
+
+    /**
+     * The net unconsumed records as {@link #getUnconsumedNetRecords}, but with {@code extraRaw} transient
+     * change records (e.g. the current transaction's not-yet-committed base-table changes) folded in AFTER
+     * the committed unconsumed ones, so a stream read inside a transaction reflects that transaction's own
+     * uncommitted DML — the deferred-apply equivalent of read-your-writes for streams. The extras are never
+     * added to the stream, so a rollback (which just discards the write set) needs no undo here. Extras that
+     * an {@link #addRecord} would drop (an APPEND_ONLY stream keeps only true INSERTs) are filtered the same
+     * way before consolidation.
+     */
+    public List<StreamRecord> getUnconsumedNetRecordsWith(final List<StreamRecord> extraRaw) {
+        final List<StreamRecord> combined = getUnconsumedRecords();
+        for (final StreamRecord record : extraRaw) {
+            if (streamType == StreamType.APPEND_ONLY
+                    && (record.getChangeType() != ChangeType.INSERT || record.isUpdate())) {
+                continue;
+            }
+            combined.add(record);
+        }
+        return netRecordsOf(combined);
+    }
+
+    private List<StreamRecord> netRecordsOf(final List<StreamRecord> raw) {
         if (streamType == StreamType.APPEND_ONLY) {
             return raw;
         }
@@ -163,6 +187,41 @@ public class Stream {
     public void consume() {
         // Consuming a stream advances the offset
         currentOffset = records.size();
+    }
+
+    /** Total records ever captured (consumed + unconsumed) — the read-time cut for scoped consumption. */
+    public long recordCount() {
+        return records.size();
+    }
+
+    /**
+     * Consume exactly what a reader SAW, not everything present at commit: advance past the committed
+     * prefix visible at read time ({@code committedCut} records) and remove the records this
+     * transaction's commit re-emitted for changes that were already buffered when the read happened
+     * ({@code seenTransient} — matched by change kind, values and capture tag, at or after the cut).
+     * Records appended after the read — by another transaction, or by this transaction's own LATER
+     * DML — stay unconsumed. This mirrors Snowflake, where the common flush-then-load procedure
+     * pattern runs each statement in its own autocommit transaction: a mid-procedure stream flush
+     * must not consume rows the procedure inserts after it.
+     */
+    public void consumeSeen(final long committedCut, final List<StreamRecord> seenTransient) {
+        for (final StreamRecord seen : seenTransient) {
+            // Only records at/after the cut can be this transaction's own re-emitted changes; matching
+            // below it would eat an identical-valued committed record and then over-advance the offset.
+            for (int i = (int) Math.max(currentOffset, committedCut); i < records.size(); i++) {
+                final StreamRecord candidate = records.get(i);
+                if (candidate.getChangeType() == seen.getChangeType()
+                        && candidate.isUpdate() == seen.isUpdate()
+                        && Objects.equals(candidate.getValues(), seen.getValues())
+                        && Objects.equals(candidate.getSourceTable(), seen.getSourceTable())) {
+                    records.remove(i);
+                    break;
+                }
+            }
+        }
+        if (committedCut > currentOffset) {
+            currentOffset = Math.min(committedCut, records.size());
+        }
     }
 
     public void reset() {

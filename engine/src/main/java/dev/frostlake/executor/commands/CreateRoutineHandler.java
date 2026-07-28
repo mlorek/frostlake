@@ -241,10 +241,22 @@ public class CreateRoutineHandler implements CommandHandler {
             }
 
             DataType returnType;
+            List<Parameter> procReturnColumns = new ArrayList<>();
             if (ctx.returnType() == null) {
                 throw new RuntimeException("RETURNS clause is required for CREATE PROCEDURE");
             } else if (ctx.returnType().TABLE() != null) {
                 returnType = StringType.VARCHAR;
+                // RETURNS TABLE(col TYPE, ...): keep the declared columns — they name the result of a
+                // CALL and of a TABLE(proc(...)) FROM source, exactly as Snowflake names them.
+                if (ctx.returnType().columnList() != null) {
+                    for (final FrostlakeParser.ColumnOrConstraintContext colCtx : ctx.returnType().columnList().columnOrConstraint()) {
+                        if (colCtx.columnDef() != null) {
+                            String colName = getText(colCtx.columnDef().identifier()).toUpperCase();
+                            DataType colType = columnParser.parseDataType(colCtx.columnDef().dataTypeName(), colCtx.columnDef().typeParameters());
+                            procReturnColumns.add(new Parameter(colName, colType));
+                        }
+                    }
+                }
             } else if (ctx.returnType().dataTypeName() != null) {
                 returnType = columnParser.parseDataType(ctx.returnType().dataTypeName(), ctx.returnType().typeParameters());
             } else {
@@ -287,6 +299,9 @@ public class CreateRoutineHandler implements CommandHandler {
             }
 
             Procedure procedure = new Procedure(procedureName, parameters, returnType, body, language, handler, runtimeVersion, packages);
+            if (!procReturnColumns.isEmpty()) {
+                procedure.setReturnColumns(procReturnColumns);
+            }
 
             if (ctx.importsClause() != null) {
                 List<String> importList = new ArrayList<>();

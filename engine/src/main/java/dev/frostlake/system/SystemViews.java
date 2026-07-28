@@ -169,9 +169,11 @@ public class SystemViews {
         for (final Database db : databases(databaseName)) {
             for (final Schema schema : schemas(db, schemaName)) {
                 for (final View view : schema.getViews()) {
+                    // Snowflake's VIEW_DEFINITION is the view's full executable DDL, not just its
+                    // query: deployment tooling recreates views via EXECUTE IMMEDIATE of this text.
                     result.addRow(new Row(
                         db.getName(), schema.getName(), view.getName(), view.getOwner(),
-                        view.getDefinition(), "NONE", "NO", "NO",
+                        view.ddl(schema.getName() + "." + view.getName()), "NONE", "NO", "NO",
                         view.getCreatedTime(), view.getCreatedTime(), view.getComment()
                     ));
                 }

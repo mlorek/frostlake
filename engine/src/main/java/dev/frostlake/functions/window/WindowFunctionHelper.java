@@ -16,6 +16,7 @@
 
 package dev.frostlake.functions.window;
 
+import dev.frostlake.functions.aggregate.AggregateNumerics;
 import dev.frostlake.storage.Row;
 
 import java.util.ArrayList;
@@ -173,15 +174,9 @@ public class WindowFunctionHelper {
 
     /** SUM over the frame, ignoring nulls; null when the frame has no non-null values (SQL SUM semantics). */
     public static Object sum(final List<Object> values) {
-        double total = 0;
-        boolean any = false;
-        for (final Object v : values) {
-            if (v != null) {
-                total += toDouble(v);
-                any = true;
-            }
-        }
-        return any ? (Double) total : null;
+        // SUM preserves integer-ness: a window SUM over INT / NUMBER(p,0) values is a whole number, not X.0
+        // (empty / all-null -> NULL). Decimal / float inputs keep the prior double result.
+        return AggregateNumerics.sum(values);
     }
 
     /** AVG over the frame, ignoring nulls; null when there are no non-null values. */

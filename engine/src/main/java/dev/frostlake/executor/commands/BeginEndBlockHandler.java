@@ -25,6 +25,7 @@ import dev.frostlake.metastore.Catalog;
 import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.parser.SqlSyntaxException;
 import dev.frostlake.storage.ResultSet;
+import dev.frostlake.transaction.TransactionManager;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
 import dev.frostlake.types.StringType;
@@ -77,6 +78,7 @@ public class BeginEndBlockHandler implements CommandHandler {
         // Enter a new scope for this block; also snapshot cursors so inner-declared
         // cursors are cleaned up when the block exits.
         proceduralExecutor.enterScope();
+        proceduralExecutor.enterBlock();
         Set<String> savedCursorNames = proceduralExecutor.saveCursorNames();
 
         try {
@@ -113,7 +115,13 @@ public class BeginEndBlockHandler implements CommandHandler {
                                 queryExecutor.getResultCache().cacheResult(
                                     visitor.getOriginalText(stmtCtx), (ResultSet) stmtResult);
                             }
+                            // Snowflake: each statement of a stored procedure runs in its own autocommit
+                            // transaction (unless an explicit BEGIN is open). Leaving one implicit
+                            // transaction spanning the body let a later same-row DELETE consolidate away a
+                            // buffered INSERT, so append-only streams missed changes Snowflake captures.
+                            queryExecutor.getTransactionManager().autocommitStatementEnd();
                         } catch (final Exception e) {
+                            rollbackFailedStatement();
                             final FrostlakeParser.ExceptionHandlerContext handlerCtx =
                                 findMatchingHandler(ctx.exceptionSection(), e);
                             if (handlerCtx == null) {
@@ -143,6 +151,8 @@ public class BeginEndBlockHandler implements CommandHandler {
                         queryExecutor.getResultCache().cacheResult(
                             visitor.getOriginalText(stmtCtx), (ResultSet) stmtResult);
                     }
+                    // Per-statement autocommit, as at top level (see the handler-path loop above).
+                    queryExecutor.getTransactionManager().autocommitStatementEnd();
                     // Check if a RETURN, BREAK, or CONTINUE was executed
                     if (proceduralExecutor.hasReturned() || proceduralExecutor.hasBreak() || proceduralExecutor.hasContinue()) {
                         break;
@@ -154,6 +164,13 @@ public class BeginEndBlockHandler implements CommandHandler {
 
             // Check if the block returned a value
             if (proceduralExecutor.hasReturned()) {
+                // A NESTED block must NOT consume the RETURN: leave the return state set so the enclosing
+                // BEGIN…END block sees hasReturned() and propagates it (only the outermost block wraps the
+                // value into a result, below). Without this a RETURN inside a nested block was swallowed and
+                // the procedure returned nothing (an empty result set → "Index 0 out of bounds").
+                if (proceduralExecutor.isNestedBlock()) {
+                    return null;
+                }
                 Object returnValue = proceduralExecutor.getReturnValue();
                 boolean isReturnTable = proceduralExecutor.isReturnTable();
 
@@ -180,6 +197,7 @@ public class BeginEndBlockHandler implements CommandHandler {
             // Exit the scope and clean up cursors declared inside this block
             proceduralExecutor.exitScope();
             proceduralExecutor.restoreCursors(savedCursorNames);
+            proceduralExecutor.exitBlock();
         }
 
         return null;
@@ -210,12 +228,26 @@ public class BeginEndBlockHandler implements CommandHandler {
         try {
             for (final FrostlakeParser.StatementContext stmtCtx : handlerCtx.statementList().statement()) {
                 visitor.visit(stmtCtx);
+                queryExecutor.getTransactionManager().autocommitStatementEnd();
             }
         } finally {
             proceduralExecutor.popHandledException();
             proceduralExecutor.setVariable("SQLCODE", prevSqlCode);
             proceduralExecutor.setVariable("SQLERRM", prevSqlErrm);
             proceduralExecutor.setVariable("SQLSTATE", prevSqlState);
+        }
+    }
+
+    /**
+     * Undo a FAILED statement's buffered writes before its exception handler runs. With per-statement
+     * autocommit, a non-explicit active transaction holds at most the failed statement's own changes —
+     * rolling it back is Snowflake's statement-level rollback. An EXPLICIT (BEGIN-started) transaction
+     * is left open untouched, matching the top-level engine behavior.
+     */
+    private void rollbackFailedStatement() {
+        final TransactionManager transactions = queryExecutor.getTransactionManager();
+        if (transactions.hasActiveTransaction() && !transactions.isExplicitTransaction()) {
+            transactions.rollback();
         }
     }
 

@@ -108,6 +108,9 @@ public class CreateTableHandler implements CommandHandler {
                         schema.dropTable(tableName);
                         String fullyQualifiedName = databaseName.toUpperCase() + "." + schema.getName().toUpperCase() + "." + tableName.toUpperCase();
                         queryExecutor.getStorageEngine().dropTable(fullyQualifiedName);
+                        // Discard buffered writes for the replaced table so pre-replace rows from this same
+                        // transaction aren't flushed to (or resurrected in) the new table's storage at commit.
+                        queryExecutor.getTransactionManager().discardBufferedWritesFor(fullyQualifiedName);
                         if (ddl.getStreamManager() != null) {
                             ddl.getStreamManager().onTableDropped(fullyQualifiedName);
                         }
@@ -174,28 +177,81 @@ public class CreateTableHandler implements CommandHandler {
                 queryExecutor.getStorageEngine().cloneTableData(sourceQualifiedName, fullyQualifiedName);
 
                 logger.trace("Cloned table: {} from {}", qualifiedName, sourceTableName);
+            } else if (ctx.LIKE() != null) {
+                // CREATE TABLE … LIKE <source> — copy the source's column structure into a new empty
+                // table (structure only, no data — unlike CLONE).
+                String sourceTableName = getText(ctx.qualifiedName(0));
+                Table sourceTable = catalog.resolveTable(sourceTableName);
+
+                List<TableColumn> likeColumns = new ArrayList<>();
+                for (final TableColumn col : sourceTable.getColumns()) {
+                    TableColumn likeCol = new TableColumn(
+                        col.getName(),
+                        col.getDataType(),
+                        col.isNullable(),
+                        col.getDefaultValue(),
+                        col.isPrimaryKey(),
+                        col.isUnique(),
+                        col.isAutoIncrement()
+                    );
+                    likeCol.setComment(col.getComment());
+                    likeCol.setCollation(col.getCollation());
+                    likeColumns.add(likeCol);
+                }
+
+                boolean tableIsTemporary = isTemporary ? isTemporary : sourceTable.isTemporary();
+                boolean tableIsTransient = isTransient ? isTransient : sourceTable.isTransient();
+                table = new Table(tableName, likeColumns, tableIsTemporary, tableIsTransient);
+
+                String comment = null;
+                if (ctx.commentClause().size() > 0) {
+                    comment = ddl.extractComment(ctx.commentClause(0));
+                }
+                if (comment == null && ctx.commentClause().size() > 1) {
+                    comment = ddl.extractComment(ctx.commentClause(1));
+                }
+                if (comment != null) {
+                    table.setComment(comment);
+                }
+
+                table.setClusterKeys(sourceTable.getClusterKeys());
+                table.setOwner(catalog.currentRoleForOwner());
+                table.setHybrid(isHybrid);
+                schema.addTable(table);
+
+                String fullyQualifiedName = databaseName.toUpperCase() + "." + schema.getName().toUpperCase() + "." + tableName.toUpperCase();
+                queryExecutor.getStorageEngine().createTable(fullyQualifiedName, table);
+
+                logger.trace("Created table: {} LIKE {}", qualifiedName, sourceTableName);
             } else if (ctx.AS() != null && ctx.selectStatement() != null) {
                 // CREATE TABLE AS SELECT (CTAS). A stream read by the source is consumed once the table is
                 // created + populated (consumeCtasStreams below), like a consuming DML.
                 ResultSet resultSet = queryExecutor.executeCtasSourceSelect(ctx.selectStatement());
 
-                // CTAS may rename the result columns via an explicit (col1, col2, …) list before AS —
-                // CREATE TABLE t (name, total) AS SELECT …; the names override the SELECT's output names.
-                final List<String> providedNames = new ArrayList<>();
-                if (ctx.columnListOptional() != null) {
-                    for (final FrostlakeParser.IdentifierContext id : ctx.columnListOptional().identifierList().identifier()) {
-                        providedNames.add(getText(id));
+                // Columns come from an explicit list before AS, in two forms:
+                //   • a fully typed column list — CREATE TABLE t (id NUMBER, name VARCHAR) AS SELECT … —
+                //     the declared names AND types define the table; the SELECT only supplies rows.
+                //   • a names-only list — CREATE TABLE t (name, total) AS SELECT … — the names override
+                //     the SELECT's output names and the types are taken from the result columns.
+                // With neither, the SELECT's result columns define both names and types.
+                List<TableColumn> columns;
+                if (ctx.columnList() != null) {
+                    columns = columnParser.parseColumnList(ctx.columnList());
+                } else {
+                    final List<String> providedNames = new ArrayList<>();
+                    if (ctx.columnListOptional() != null) {
+                        for (final FrostlakeParser.IdentifierContext id : ctx.columnListOptional().identifierList().identifier()) {
+                            providedNames.add(getText(id));
+                        }
                     }
-                }
-
-                // Create columns based on result set structure (names overridden by the explicit list).
-                List<TableColumn> columns = new ArrayList<>();
-                int ctasColIdx = 0;
-                for (final ResultSetColumn rsCol : resultSet.getColumns()) {
-                    final String colName = ctasColIdx < providedNames.size()
-                        ? providedNames.get(ctasColIdx) : rsCol.getName();
-                    columns.add(new TableColumn(colName, rsCol.getDataType(), true, null, false, false, false));
-                    ctasColIdx++;
+                    columns = new ArrayList<>();
+                    int ctasColIdx = 0;
+                    for (final ResultSetColumn rsCol : resultSet.getColumns()) {
+                        final String colName = ctasColIdx < providedNames.size()
+                            ? providedNames.get(ctasColIdx) : rsCol.getName();
+                        columns.add(new TableColumn(colName, ctasColumnType(rsCol, resultSet, ctasColIdx), true, null, false, false, false));
+                        ctasColIdx++;
+                    }
                 }
 
                 // Determine if table should be temporary/transient
@@ -227,9 +283,16 @@ public class CreateTableHandler implements CommandHandler {
                 String fullyQualifiedName = databaseName.toUpperCase() + "." + schema.getName().toUpperCase() + "." + tableName.toUpperCase();
                 queryExecutor.getStorageEngine().createTable(fullyQualifiedName, table);
 
-                // Insert data from SELECT into the new table
+                // Insert data from SELECT into the new table, coercing each row to the declared column
+                // types like a plain INSERT: a UNION of literal branches can carry STRINGS in a
+                // TIMESTAMP-typed result column, and storing them raw made the values compare unequal to
+                // real timestamps under EXCEPT / EQUAL_NULL despite rendering identically. LENIENTLY —
+                // the SELECT's reported column types are best-effort, so a value that does not fit its
+                // reported type is stored as produced rather than rejected.
                 for (final Row resultRow : resultSet.getRows()) {
-                    queryExecutor.getStorageEngine().getTableStorage(fullyQualifiedName).insert(resultRow);
+                    final Row typedRow = new Row(new ArrayList<>(resultRow.getValues()));
+                    queryExecutor.coerceRowTypesLenient(table, typedRow);
+                    queryExecutor.getStorageEngine().getTableStorage(fullyQualifiedName).insert(typedRow);
                 }
 
                 // Table created + populated: now consume any stream the source SELECT read.
@@ -285,6 +348,42 @@ public class CreateTableHandler implements CommandHandler {
      * grammar allows {@code clusterByClause} in both positions, so this reads whichever one was supplied.
      * Returns an empty list when no clustering key was given.
      */
+    /**
+     * The column type for a CTAS result column: the result's own type when it is specific; when it is
+     * the generic VARCHAR many computed/aggregate columns default to, the type inferred from the first
+     * non-null value in that column — MAX(ts) must create a TIMESTAMP column (as Snowflake types it),
+     * not a VARCHAR that stringifies every value on write and then never joins back to the source.
+     */
+    private DataType ctasColumnType(final ResultSetColumn rsCol, final ResultSet resultSet, final int colIdx) {
+        final DataType declared = rsCol.getDataType();
+        if (!(declared instanceof StringType)) {
+            return declared;
+        }
+        for (final Row row : resultSet.getRows()) {
+            final Object value = colIdx < row.getValues().size() ? row.getValue(colIdx) : null;
+            if (value == null) {
+                continue;
+            }
+            if (value instanceof java.time.LocalDateTime) {
+                return DateTimeType.TIMESTAMP_NTZ;
+            }
+            if (value instanceof java.time.LocalDate) {
+                return DateTimeType.DATE;
+            }
+            if (value instanceof java.time.LocalTime) {
+                return DateTimeType.TIME;
+            }
+            if (value instanceof Boolean) {
+                return BooleanType.BOOLEAN;
+            }
+            if (value instanceof Number) {
+                return NumericType.NUMBER;
+            }
+            return declared;
+        }
+        return declared;
+    }
+
     private static List<String> extractClusterKeys(final FrostlakeParser.CreateStatementContext ctx) {
         List<String> clusterKeys = new ArrayList<>();
         List<FrostlakeParser.ClusterByClauseContext> clauses = ctx.clusterByClause();

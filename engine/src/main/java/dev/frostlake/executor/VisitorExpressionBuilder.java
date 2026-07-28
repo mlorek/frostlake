@@ -125,7 +125,7 @@ public class VisitorExpressionBuilder {
             List<BaseExpression> args = new ArrayList<>();
 
             if (funcCtx.functionArgList() != null) {
-                for (final FrostlakeParser.BooleanExprContext argCtx : funcCtx.functionArgList().booleanExpr()) {
+                for (final FrostlakeParser.BooleanExprContext argCtx : ParseTreeText.functionBooleanArgs(funcCtx.functionArgList())) {
                     args.add(buildExpression(argCtx));
                 }
             }
@@ -335,7 +335,16 @@ public class VisitorExpressionBuilder {
                 return visitor.getProceduralExecutor().evaluateExpression(expr);
             }
         }
-        // For any other expression: evaluate via SELECT <expr> at runtime
+        // For any other construct (CAST / CASE / a variant path o:a:b / array access / IN / BETWEEN / …):
+        // when a procedural context is active, build it into the procedural AST and evaluate through the
+        // ProceduralExecutor, which supplies the current scripting variables as a resolution context (the
+        // same path buildExpression's own fallback uses). A bare "SELECT <text>" cannot see procedural
+        // variables, so e.g. a DECLARE initializer that is a variant path over a script variable
+        // (v := o:result:code) silently returned its own literal text "o:result:code".
+        if (visitor.getProceduralExecutor() != null) {
+            return visitor.getProceduralExecutor().evaluateExpression(buildExpression(ctx));
+        }
+        // No procedural context (e.g. DDL-time constant evaluation): evaluate via SELECT <expr> at runtime.
         String exprText = visitor.getOriginalText(ctx);
         if (exprText != null && !exprText.isBlank() && queryExecutor != null) {
             try {

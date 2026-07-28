@@ -136,9 +136,7 @@ public class Database extends SqlObject {
 
                 // Clone views from source PUBLIC to target PUBLIC
                 for (final View view : sourcePublic.getViews()) {
-                    View clonedView = new View(view.getName(), view.getDefinition());
-                    clonedView.setComment(view.getComment());
-                    targetPublic.addView(clonedView);
+                    targetPublic.addView(view.copy());
                 }
             } else {
                 // Clone user-created schemas

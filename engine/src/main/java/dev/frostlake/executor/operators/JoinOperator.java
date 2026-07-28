@@ -254,12 +254,29 @@ public class JoinOperator implements Operator {
             return NULL_KEY;
         }
         if (value instanceof String) {
+            // A numeric-looking string buckets like the number it denotes: Snowflake implicitly
+            // coerces VARCHAR vs NUMBER equality, so 999001 and '999001' must meet in one bucket.
+            // Over-grouping is safe — every candidate pair is re-confirmed by the real condition
+            // evaluator — while under-grouping silently loses matches.
+            final Double numeric = parseAsDouble((String) value);
+            if (numeric != null) {
+                return numeric;
+            }
             return ((String) value).toUpperCase();
         }
         if (value instanceof Number) {
             return ((Number) value).doubleValue();
         }
         return value;
+    }
+
+    /** The string's numeric value, or null when it does not parse as a number. */
+    private static Double parseAsDouble(final String value) {
+        try {
+            return Double.parseDouble(value.trim());
+        } catch (final NumberFormatException notNumeric) {
+            return null;
+        }
     }
 
     /**

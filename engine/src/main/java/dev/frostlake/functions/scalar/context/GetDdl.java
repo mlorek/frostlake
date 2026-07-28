@@ -160,21 +160,11 @@ public class GetDdl extends BuiltInFunction {
     // ─────────────────────────── VIEW ───────────────────────────
 
     private String viewDdl(final View view) {
-        final StringBuilder sb = new StringBuilder();
-        sb.append("create or replace ");
-        if (view.isSecure()) {
-            sb.append("secure ");
-        }
-        sb.append("view ").append(view.getName());
-        if (view.hasExplicitColumnNames()) {
-            sb.append(" (").append(String.join(", ", view.getColumnNames())).append(")");
-        }
-        return sb.append(" as ").append(stripTrailingSemicolon(view.getDefinition())).append(";").toString();
+        return view.ddl(view.getName());
     }
 
     private String materializedViewDdl(final MaterializedView view) {
-        return "create or replace materialized view " + view.getName()
-            + " as " + stripTrailingSemicolon(view.getDefinition()) + ";";
+        return view.ddl(view.getName());
     }
 
     // ─────────────────────────── SEQUENCE ───────────────────────────
@@ -208,11 +198,6 @@ public class GetDdl extends BuiltInFunction {
     private String simpleName(final String qualifiedName) {
         final String[] parts = QualifiedName.parse(qualifiedName).parts();
         return parts[parts.length - 1];
-    }
-
-    private static String stripTrailingSemicolon(final String sql) {
-        final String trimmed = sql == null ? "" : sql.trim();
-        return trimmed.endsWith(";") ? trimmed.substring(0, trimmed.length() - 1).trim() : trimmed;
     }
 
     @Override public int getMinArgCount() { return 2; }

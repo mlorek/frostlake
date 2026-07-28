@@ -38,8 +38,8 @@ public class NextVal extends BuiltInFunction {
 
     @Override
     public Object evaluate(final List<Object> args) {
-        if (args == null || args.isEmpty()) {
-            throw new RuntimeException("NEXTVAL requires a sequence name argument");
+        if (args == null || args.isEmpty() || args.get(0) == null) {
+            throw new RuntimeException("NEXTVAL requires a non-null sequence name argument");
         }
 
         String sequenceName = args.get(0).toString();

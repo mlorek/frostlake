@@ -17,6 +17,7 @@
 package dev.frostlake.functions.scalar.semistructured;
 
 import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.functions.scalar.ArrayFunctionHelper;
 import dev.frostlake.types.VariantType;
 import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.node.ArrayNode;
@@ -38,25 +39,7 @@ public class ArrayConstruct extends BuiltInFunction {
     public Object evaluate(final List<Object> args) {
         ArrayNode array = MAPPER.createArrayNode();
         for (final Object arg : args) {
-            if (arg == null) {
-                array.addNull();
-            } else if (arg instanceof Boolean) {
-                array.add((Boolean) arg);
-            } else if (arg instanceof Long || arg instanceof Integer) {
-                array.add(((Number) arg).longValue());
-            } else if (arg instanceof Number) {
-                array.add(((Number) arg).doubleValue());
-            } else {
-                String s = arg.toString().trim();
-                // If it's already a JSON array or object, embed it as raw JSON
-                if ((s.startsWith("[") || s.startsWith("{")) && !s.isEmpty()) {
-                    try {
-                        array.add(MAPPER.readTree(s));
-                        continue;
-                    } catch (final Exception ignored) {}
-                }
-                array.add(s);
-            }
+            array.add(ArrayFunctionHelper.toNode(MAPPER, arg));
         }
         return array.toString();
     }

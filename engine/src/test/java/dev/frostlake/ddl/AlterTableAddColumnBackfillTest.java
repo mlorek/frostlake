@@ -103,4 +103,45 @@ public class AlterTableAddColumnBackfillTest extends BaseDatabaseTest {
         assertEquals(1L, ((Number) row.getValue(0)).longValue());
         assertEquals(2L, ((Number) row.getValue(1)).longValue());
     }
+
+    @Test
+    public void addMultipleColumnsInOneStatement() {
+        // Snowflake allows a comma-separated column list in one ADD (with or without the COLUMN keyword).
+        engine.execute("CREATE TABLE t (a1 NUMBER)");
+        engine.execute("INSERT INTO t VALUES (5)");
+        engine.execute("ALTER TABLE t ADD b VARCHAR, c NUMBER");
+
+        final ResultSet rs = engine.executeQuery("SELECT a1, b, c FROM t");
+        assertEquals(3, rs.getColumns().size());
+        final Row row = rs.getRows().get(0);
+        assertEquals(5L, ((Number) row.getValue(0)).longValue());
+        assertNull(row.getValue(1));  // pre-existing row backfilled to NULL
+        assertNull(row.getValue(2));
+    }
+
+    @Test
+    public void addMultipleColumnsWithDefaultsBackfillsEach() {
+        engine.execute("CREATE TABLE t (a1 NUMBER)");
+        engine.execute("INSERT INTO t VALUES (5)");
+        engine.execute("ALTER TABLE t ADD COLUMN d NUMBER DEFAULT 9, e VARCHAR DEFAULT 'z'");
+
+        final ResultSet rs = engine.executeQuery("SELECT d, e FROM t");
+        final Row row = rs.getRows().get(0);
+        assertEquals(9L, ((Number) row.getValue(0)).longValue());
+        assertEquals("z", row.getValue(1));
+    }
+
+    @Test
+    public void addMultipleColumnsIfNotExistsSkipsExistingOnly() {
+        engine.execute("CREATE TABLE t (a1 NUMBER, b NUMBER)");
+        engine.execute("INSERT INTO t VALUES (1, 2)");
+        // b already exists; c is new — IF NOT EXISTS should add c and leave b untouched.
+        engine.execute("ALTER TABLE t ADD COLUMN IF NOT EXISTS b NUMBER, c NUMBER DEFAULT 7");
+
+        final ResultSet rs = engine.executeQuery("SELECT a1, b, c FROM t");
+        assertEquals(3, rs.getColumns().size());
+        final Row row = rs.getRows().get(0);
+        assertEquals(2L, ((Number) row.getValue(1)).longValue());  // b unchanged
+        assertEquals(7L, ((Number) row.getValue(2)).longValue());  // c added with default
+    }
 }

@@ -17,10 +17,10 @@
 package dev.frostlake.functions.scalar.math;
 
 import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.types.NumericType;
 
 import java.math.BigDecimal;
-import java.math.RoundingMode;
 import java.util.List;
 
 /**
@@ -54,7 +54,7 @@ public class Div0 extends BuiltInFunction {
             return null;
         }
         final BigDecimal dividend = new BigDecimal(dividendArg.toString());
-        return dividend.divide(divisor, 18, RoundingMode.HALF_UP).stripTrailingZeros();
+        return SharedFunctionHelpers.divideWithSnowflakeScale(dividend, divisor);
     }
 
     @Override public int getMinArgCount() { return 2; }
