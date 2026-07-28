@@ -32,6 +32,7 @@ import dev.frostlake.storage.Row;
 import java.math.BigDecimal;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.Deque;
 import java.util.HashMap;
@@ -84,6 +85,9 @@ final class WindowFunctionEvaluator {
                                             final List<FrostlakeParser.FunctionCallExprContext> out) {
         if (node instanceof FrostlakeParser.FunctionCallExprContext
                 && ((FrostlakeParser.FunctionCallExprContext) node).overClause() != null) {
+            if (((FrostlakeParser.FunctionCallExprContext) node).filterClause() != null) {
+                throw new RuntimeException("FILTER (WHERE ...) combined with OVER (...) is not supported");
+            }
             out.add((FrostlakeParser.FunctionCallExprContext) node);
             return;
         }
@@ -933,9 +937,16 @@ final class WindowFunctionEvaluator {
         return WindowFunctionHelper.lastValue(values, ignoreNulls(funcCtx));
     }
 
-    /** Whether a window value function carries an explicit {@code IGNORE NULLS} clause (default RESPECT). */
+    /** Whether a window value function carries an explicit {@code IGNORE NULLS} clause (default RESPECT).
+     *  The clause may sit inside the argument parens or between the call and OVER — both grammar
+     *  positions land in the same list (at most one is present in a valid call). */
     private boolean ignoreNulls(final FrostlakeParser.FunctionCallExprContext funcCtx) {
-        return funcCtx.nullHandling() != null && funcCtx.nullHandling().IGNORE() != null;
+        for (final FrostlakeParser.NullHandlingContext nullHandling : funcCtx.nullHandling()) {
+            if (nullHandling.IGNORE() != null) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private Object computeNthValue(final FrostlakeParser.FunctionCallExprContext funcCtx,
@@ -947,6 +958,19 @@ final class WindowFunctionEvaluator {
         catch (final NumberFormatException ignored) {}
         List<Object> vals = new ArrayList<>();
         for (final Row r : sortedPartition) vals.add(extractColumnValue(r, colExpr, table));
+        if (ignoreNulls(funcCtx)) {
+            final List<Object> nonNull = new ArrayList<>();
+            for (final Object v : vals) {
+                if (v != null) {
+                    nonNull.add(v);
+                }
+            }
+            vals = nonNull;
+        }
+        if (funcCtx.LAST() != null) {
+            // NTH_VALUE(x, n) FROM LAST: the n-th value counting backwards from the partition end.
+            Collections.reverse(vals);
+        }
         return WindowFunctionHelper.nthValue(vals, n);
     }
 

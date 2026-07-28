@@ -58,7 +58,7 @@ public class AlterRoutineTest extends BaseDatabaseTest {
 
     @Test
     public void alterProcedureRename() {
-        engine.execute("CREATE PROCEDURE pr() RETURNS STRING LANGUAGE JAVASCRIPT AS $$ return 'x'; $$");
+        engine.execute("CREATE PROCEDURE pr() RETURNS STRING LANGUAGE SQL AS $$ BEGIN RETURN 'x'; END $$");
         engine.execute("ALTER PROCEDURE pr() RENAME TO qr");
 
         // The new name describes; the old name no longer exists.

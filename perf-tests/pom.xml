@@ -94,12 +94,19 @@
             <plugin>
                 <groupId>org.apache.rat</groupId>
                 <artifactId>apache-rat-plugin</artifactId>
-                <version>0.16.1</version>
+                <version>${apache-rat-plugin.version}</version>
                 <configuration>
                     <consoleOutput>true</consoleOutput>
-                    <includes>
-                        <include>src/test/java/dev/frostlake/**/*.java</include>
-                    </includes>
+                    <!-- RAT 0.17+ scans every file not excluded (see the engine pom for the full story);
+                         exclude the non-audited categories so everything left is the owned Java source. -->
+                    <inputExcludes>
+                        <inputExclude>/pom.xml</inputExclude>
+                        <inputExclude>/.flattened-pom.xml</inputExclude>
+                        <inputExclude>/src/main/resources/**</inputExclude>
+                        <inputExclude>/src/test/resources/**</inputExclude>
+                        <inputExclude>**/*.md</inputExclude>
+                        <inputExclude>**/*.log</inputExclude>
+                    </inputExcludes>
                 </configuration>
                 <executions>
                     <execution>

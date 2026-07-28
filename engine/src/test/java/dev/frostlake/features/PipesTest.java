@@ -109,7 +109,7 @@ public class PipesTest extends BaseDatabaseTest {
 
     @Test
     public void testAlterPipePause() {
-        logger.info("Testing ALTER PIPE ... PAUSE");
+        logger.info("Testing ALTER PIPE ... SET PIPE_EXECUTION_PAUSED = TRUE");
 
         engine.execute("CREATE TABLE target (id INTEGER)");
         engine.execute("""
@@ -118,7 +118,7 @@ public class PipesTest extends BaseDatabaseTest {
             FROM @stage
             """);
 
-        engine.execute("ALTER PIPE test_pipe PAUSE");
+        engine.execute("ALTER PIPE test_pipe SET PIPE_EXECUTION_PAUSED = TRUE");
 
         Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
         Pipe pipe = schema.getPipe("test_pipe");
@@ -129,7 +129,7 @@ public class PipesTest extends BaseDatabaseTest {
 
     @Test
     public void testAlterPipeResume() {
-        logger.info("Testing ALTER PIPE ... RESUME");
+        logger.info("Testing ALTER PIPE ... SET PIPE_EXECUTION_PAUSED = FALSE");
 
         engine.execute("CREATE TABLE target (id INTEGER)");
         engine.execute("""
@@ -138,8 +138,8 @@ public class PipesTest extends BaseDatabaseTest {
             FROM @stage
             """);
 
-        engine.execute("ALTER PIPE test_pipe PAUSE");
-        engine.execute("ALTER PIPE test_pipe RESUME");
+        engine.execute("ALTER PIPE test_pipe SET PIPE_EXECUTION_PAUSED = TRUE");
+        engine.execute("ALTER PIPE test_pipe SET PIPE_EXECUTION_PAUSED = FALSE");
 
         Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
         Pipe pipe = schema.getPipe("test_pipe");
@@ -162,19 +162,19 @@ public class PipesTest extends BaseDatabaseTest {
         Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
 
         // Pause
-        engine.execute("ALTER PIPE cycle_pipe PAUSE");
+        engine.execute("ALTER PIPE cycle_pipe SET PIPE_EXECUTION_PAUSED = TRUE");
         assertTrue(schema.getPipe("cycle_pipe").isPaused());
 
         // Resume
-        engine.execute("ALTER PIPE cycle_pipe RESUME");
+        engine.execute("ALTER PIPE cycle_pipe SET PIPE_EXECUTION_PAUSED = FALSE");
         assertFalse(schema.getPipe("cycle_pipe").isPaused());
 
         // Pause again
-        engine.execute("ALTER PIPE cycle_pipe PAUSE");
+        engine.execute("ALTER PIPE cycle_pipe SET PIPE_EXECUTION_PAUSED = TRUE");
         assertTrue(schema.getPipe("cycle_pipe").isPaused());
 
         // Resume again
-        engine.execute("ALTER PIPE cycle_pipe RESUME");
+        engine.execute("ALTER PIPE cycle_pipe SET PIPE_EXECUTION_PAUSED = FALSE");
         assertFalse(schema.getPipe("cycle_pipe").isPaused());
     }
 
@@ -371,11 +371,11 @@ public class PipesTest extends BaseDatabaseTest {
         logger.info("Testing ALTER PIPE on non-existent pipe");
 
         assertThrows(RuntimeException.class, () -> {
-            engine.execute("ALTER PIPE non_existent_pipe PAUSE");
+            engine.execute("ALTER PIPE non_existent_pipe SET PIPE_EXECUTION_PAUSED = TRUE");
         });
 
         assertThrows(RuntimeException.class, () -> {
-            engine.execute("ALTER PIPE non_existent_pipe RESUME");
+            engine.execute("ALTER PIPE non_existent_pipe SET PIPE_EXECUTION_PAUSED = FALSE");
         });
     }
 
@@ -398,13 +398,13 @@ public class PipesTest extends BaseDatabaseTest {
         assertFalse(pipe.isPaused());
 
         // After pause
-        engine.execute("ALTER PIPE status_pipe PAUSE");
+        engine.execute("ALTER PIPE status_pipe SET PIPE_EXECUTION_PAUSED = TRUE");
         pipe = schema.getPipe("status_pipe");
         assertEquals("PAUSED", pipe.getStatus());
         assertTrue(pipe.isPaused());
 
         // After resume
-        engine.execute("ALTER PIPE status_pipe RESUME");
+        engine.execute("ALTER PIPE status_pipe SET PIPE_EXECUTION_PAUSED = FALSE");
         pipe = schema.getPipe("status_pipe");
         assertEquals("RUNNING", pipe.getStatus());
         assertFalse(pipe.isPaused());
@@ -432,7 +432,7 @@ public class PipesTest extends BaseDatabaseTest {
         Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
 
         // Pause pipe1
-        engine.execute("ALTER PIPE pipe1 PAUSE");
+        engine.execute("ALTER PIPE pipe1 SET PIPE_EXECUTION_PAUSED = TRUE");
 
         Pipe pipe1 = schema.getPipe("pipe1");
         Pipe pipe2 = schema.getPipe("pipe2");
@@ -441,8 +441,8 @@ public class PipesTest extends BaseDatabaseTest {
         assertFalse(pipe2.isPaused());
 
         // Resume pipe1 and pause pipe2
-        engine.execute("ALTER PIPE pipe1 RESUME");
-        engine.execute("ALTER PIPE pipe2 PAUSE");
+        engine.execute("ALTER PIPE pipe1 SET PIPE_EXECUTION_PAUSED = FALSE");
+        engine.execute("ALTER PIPE pipe2 SET PIPE_EXECUTION_PAUSED = TRUE");
 
         pipe1 = schema.getPipe("pipe1");
         pipe2 = schema.getPipe("pipe2");
@@ -520,7 +520,7 @@ public class PipesTest extends BaseDatabaseTest {
         ResultSet running = engine.executeQuery("SELECT SYSTEM$PIPE_STATUS('status_json_pipe')");
         assertTrue(running.getRows().get(0).getValue(0).toString().contains("RUNNING"));
 
-        engine.execute("ALTER PIPE status_json_pipe PAUSE");
+        engine.execute("ALTER PIPE status_json_pipe SET PIPE_EXECUTION_PAUSED = TRUE");
         ResultSet paused = engine.executeQuery("SELECT SYSTEM$PIPE_STATUS('status_json_pipe')");
         assertTrue(paused.getRows().get(0).getValue(0).toString().contains("PAUSED"));
     }

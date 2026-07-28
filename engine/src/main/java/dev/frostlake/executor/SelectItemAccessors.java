@@ -41,6 +41,10 @@ public final class SelectItemAccessors {
         return item instanceof FrostlakeParser.SpreadItemContext || item instanceof FrostlakeParser.SpreadPrefixItemContext;
     }
 
+    public static boolean isSpreadExprItem(final FrostlakeParser.SelectItemContext item) {
+        return item instanceof FrostlakeParser.SpreadExprItemContext;
+    }
+
     public static boolean isExprItem(final FrostlakeParser.SelectItemContext item) {
         return item instanceof FrostlakeParser.ExprItemContext;
     }

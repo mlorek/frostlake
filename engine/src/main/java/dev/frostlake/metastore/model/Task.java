@@ -75,7 +75,7 @@ public class Task {
         executionHistory.add(execution);
         lastRunTime = execution.getStartTime();
 
-        if (execution.getState().equals("SUCCESS")) {
+        if (execution.getState().equals("SUCCEEDED")) {
             successCount++;
             failureCount = 0; // SUSPEND_TASK_AFTER_NUM_FAILURES counts CONSECUTIVE failures
         } else if (execution.getState().equals("FAILED")) {

@@ -16,6 +16,7 @@
 
 package dev.frostlake.persistence;
 
+import dev.frostlake.config.S3PathResolver;
 import dev.frostlake.metastore.*;
 import dev.frostlake.metastore.model.*;
 import dev.frostlake.metastore.model.Privilege;
@@ -46,7 +47,7 @@ final class CatalogSnapshotReader {
      * independent of the {@code persistence.enabled} flag. Shared by {@link #loadCatalog} and by WAL
      * recovery ({@link #restoreFrom}). A missing snapshot file is treated as "nothing to load".
      */
-    static void readCatalogFrom(final Path catalogPath, final Path tablesDir,
+    static void readCatalogFrom(final Path catalogPath, final Path tablesDir, final S3PathResolver s3Resolver,
                                  final Catalog catalog, final StorageEngine storageEngine)
             throws IOException, ClassNotFoundException {
         if (!Files.exists(catalogPath)) {
@@ -61,13 +62,24 @@ final class CatalogSnapshotReader {
                 new BufferedInputStream(Files.newInputStream(catalogPath)))) {
             snapshot = (CatalogSnapshot) ois.readObject();
         }
+        applySnapshot(snapshot, new DiskTableDataStore(tablesDir), s3Resolver, catalog, storageEngine);
+    }
 
+    /**
+     * Rebuild engine state from a snapshot, pulling each table's rows from {@code tableData}. With a
+     * {@link MemoryTableDataStore} this is the apply half of an in-memory engine clone; with a
+     * {@link DiskTableDataStore} it is the apply half of an on-disk checkpoint restore.
+     */
+    static void applySnapshot(final CatalogSnapshot snapshot, final TableDataStore tableData,
+                              final S3PathResolver s3Resolver,
+                              final Catalog catalog, final StorageEngine storageEngine)
+            throws IOException, ClassNotFoundException {
         // Load databases and schemas
         for (final DatabaseSnapshot dbSnapshot : snapshot.databases) {
             // Skip system database (will be created automatically)
             if ("SNOWFLAKE".equals(dbSnapshot.name)) {
                 Database db = catalog.getDatabase("SNOWFLAKE");
-                loadDatabaseContent(tablesDir, catalog, db, dbSnapshot, storageEngine);
+                loadDatabaseContent(tableData, catalog, db, dbSnapshot, s3Resolver, storageEngine);
                 continue;
             }
 
@@ -77,7 +89,7 @@ final class CatalogSnapshotReader {
             db.setReadOnly(dbSnapshot.readOnly);
             // Note: createdAt cannot be set (final field in SqlObject)
 
-            loadDatabaseContent(tablesDir, catalog, db, dbSnapshot, storageEngine);
+            loadDatabaseContent(tableData, catalog, db, dbSnapshot, s3Resolver, storageEngine);
         }
 
         // Load warehouses
@@ -112,14 +124,6 @@ final class CatalogSnapshotReader {
             }
             wh.setResourceMonitor(whSnapshot.resourceMonitor);
             // Note: createdAt cannot be set (final field)
-        }
-
-        // Load stages
-        for (final StageSnapshot stageSnapshot : snapshot.stages) {
-            catalog.createStage(stageSnapshot.name, StageType.valueOf(stageSnapshot.type),
-                              stageSnapshot.url, stageSnapshot.fileFormat,
-                              stageSnapshot.encryption, stageSnapshot.comment);
-            // Note: createdAt cannot be set (final field in SqlObject)
         }
 
         // Load users
@@ -229,8 +233,8 @@ final class CatalogSnapshotReader {
         logger.info("Catalog loaded successfully");
     }
 
-    static void loadDatabaseContent(final Path tablesDir, final Catalog catalog, final Database db,
-                                     final DatabaseSnapshot dbSnapshot,
+    static void loadDatabaseContent(final TableDataStore tableData, final Catalog catalog, final Database db,
+                                     final DatabaseSnapshot dbSnapshot, final S3PathResolver s3Resolver,
                                      final StorageEngine storageEngine) throws IOException, ClassNotFoundException {
         for (final SchemaSnapshot schemaSnapshot : dbSnapshot.schemas) {
             Schema schema;
@@ -259,7 +263,7 @@ final class CatalogSnapshotReader {
                         ? new DefaultValueExpression(colSnapshot.defaultValue) : colSnapshot.defaultValue;
                     TableColumn col = new TableColumn(
                         colSnapshot.name,
-                        parseDataType(colSnapshot.dataType),
+                        parseDataType(colSnapshot.dataType, colSnapshot.precision, colSnapshot.scale, colSnapshot.maxLength),
                         colSnapshot.nullable,
                         columnDefault,
                         colSnapshot.primaryKey,
@@ -309,7 +313,7 @@ final class CatalogSnapshotReader {
                 storageEngine.createTable(qualifiedName, table);
 
                 // Load table data
-                loadTableData(tablesDir, db.getName(), schema.getName(), table, storageEngine);
+                loadTableData(tableData, db.getName(), schema.getName(), table, storageEngine);
             }
 
             // Load views (skip INFORMATION_SCHEMA views as they're system-generated)
@@ -340,6 +344,16 @@ final class CatalogSnapshotReader {
                         seq.setOwner(seqSnapshot.owner);
                     }
                     schema.addSequence(seq);
+                }
+            }
+
+            // Load stages: recreate from the definition, recomputing the local backing directory
+            // through the engine's resolver exactly as CREATE STAGE does. Null on older snapshots.
+            if (schemaSnapshot.stages != null) {
+                for (final StageSnapshot stageSnapshot : schemaSnapshot.stages) {
+                    schema.addStage(new Stage(stageSnapshot.name, StageType.valueOf(stageSnapshot.type),
+                        stageSnapshot.url, stageSnapshot.fileFormat, stageSnapshot.encryption,
+                        stageSnapshot.comment, s3Resolver));
                 }
             }
 
@@ -559,45 +573,48 @@ final class CatalogSnapshotReader {
     /**
      * Load table data from disk
      */
-    static void loadTableData(final Path tablesDir, final String database, final String schema, final Table table,
-                               final StorageEngine storageEngine) throws IOException, ClassNotFoundException {
-        Path tableFile = tablesDir.resolve(
-            String.format("%s_%s_%s.dat", database, schema, table.getName())
-        );
-
-        if (!Files.exists(tableFile)) {
-            logger.debug("No data file found for table: {}.{}.{}", database, schema, table.getName());
+    static void loadTableData(final TableDataStore tableData, final String database, final String schema,
+                               final Table table, final StorageEngine storageEngine)
+            throws IOException, ClassNotFoundException {
+        TableDataSnapshot dataSnapshot = tableData.load(database, schema, table.getName());
+        if (dataSnapshot == null) {
+            logger.debug("No data recorded for table: {}.{}.{}", database, schema, table.getName());
             return;
         }
 
         String qualifiedName = database.toUpperCase() + "." + schema.toUpperCase() + "." + table.getName().toUpperCase();
         StorageEngine.TableStorage storage = storageEngine.getTableStorage(qualifiedName);
 
-        try (ObjectInputStream ois = new ObjectInputStream(
-                new BufferedInputStream(Files.newInputStream(tableFile)))) {
-
-            TableDataSnapshot dataSnapshot = (TableDataSnapshot) ois.readObject();
-
-            // Insert all rows
-            for (final List<Object> rowValues : dataSnapshot.rows) {
-                Row row = new Row(rowValues);
-                storage.insert(row);
-            }
-
-            logger.debug("Loaded table data: {}.{}.{} ({} rows)",
-                        database, schema, table.getName(), dataSnapshot.rows.size());
+        // Insert all rows — each row's values defensively copied, so a snapshot applied from memory
+        // never shares mutable lists with the engine it builds.
+        for (final List<Object> rowValues : dataSnapshot.rows) {
+            storage.insert(new Row(new ArrayList<>(rowValues)));
         }
+        logger.debug("Loaded table data: {}.{}.{} ({} rows)",
+                    database, schema, table.getName(), dataSnapshot.rows.size());
     }
 
     /**
      * Convert string type name to DataType instance
      */
     static DataType parseDataType(final String typeName) {
+        return parseDataType(typeName, null, null, null);
+    }
+
+    /**
+     * Rebuild a column type from its snapshot name plus the persisted parameters. The parameters are
+     * null on pre-parameter snapshots — those fall back to the name's defaults, matching the old
+     * behavior — but when present they restore the exact NUMBER(p,s) / VARCHAR(n), so a checkpointed
+     * engine computes with the same scales as the one that wrote the checkpoint.
+     */
+    static DataType parseDataType(final String typeName, final Integer precision, final Integer scale,
+                                  final Integer maxLength) {
         if (typeName == null) {
             return StringType.VARCHAR; // default
         }
 
-        switch (typeName.toUpperCase()) {
+        final String upper = typeName.toUpperCase();
+        switch (upper) {
             case "INTEGER":
             case "INT":
                 return NumericType.INTEGER;
@@ -605,26 +622,44 @@ final class CatalogSnapshotReader {
                 return NumericType.BIGINT;
             case "SMALLINT":
                 return NumericType.SMALLINT;
+            case "TINYINT":
+                return NumericType.TINYINT;
             case "NUMBER":
             case "DECIMAL":
-                return NumericType.NUMBER;
+            case "NUMERIC":
+                return precision != null && scale != null
+                    ? new NumericType(upper, precision, scale)
+                    : NumericType.NUMBER;
             case "FLOAT":
                 return NumericType.FLOAT;
+            case "REAL":
             case "DOUBLE":
                 return NumericType.DOUBLE;
             case "VARCHAR":
             case "STRING":
             case "TEXT":
-                return StringType.VARCHAR;
+                return maxLength != null && maxLength > 0
+                    ? new StringType(upper, maxLength)
+                    : StringType.VARCHAR;
             case "CHAR":
-                return StringType.CHAR;
+                return maxLength != null && maxLength > 0
+                    ? new StringType(upper, maxLength)
+                    : StringType.CHAR;
             case "BOOLEAN":
                 return BooleanType.BOOLEAN;
             case "DATE":
                 return DateTimeType.DATE;
+            case "TIME":
+                return DateTimeType.TIME;
+            case "DATETIME":
+                return DateTimeType.DATETIME;
             case "TIMESTAMP":
             case "TIMESTAMP_NTZ":
                 return DateTimeType.TIMESTAMP_NTZ;
+            case "TIMESTAMP_TZ":
+                return DateTimeType.TIMESTAMP_TZ;
+            case "TIMESTAMP_LTZ":
+                return DateTimeType.TIMESTAMP_LTZ;
             case "VARIANT":
                 return VariantType.VARIANT;
             case "ARRAY":

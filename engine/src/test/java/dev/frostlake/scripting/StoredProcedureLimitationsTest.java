@@ -27,7 +27,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Verifies the Java/Scala stored-procedure limitations enforced by the Snowpark {@link Session} stub (which
- * both {@code JavaProcedureExecutor} and {@code ScalaProcedureExecutor} inject into handlers): no cross-thread
+ * {@code JavaProcedureExecutor} and the rt-scala module's {@code ScalaProcedureExecutor} inject into
+ * handlers): no cross-thread
  * query submission (concurrency), no named temporary objects under owner's rights, and the standing bans on
  * creating a new session / obtaining the JDBC connection. Mirrors
  * <a href="https://docs.snowflake.com/en/developer-guide/stored-procedure/java/procedure-java-limitations">the

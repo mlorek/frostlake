@@ -78,11 +78,11 @@ public class NullStatementTest {
     public void testNullStatementWithOtherStatements() {
         // Mix NULL statements with other statements
         engine.execute("CREATE TABLE test (id INTEGER)");
-        engine.execute("NULL");
+        engine.execute("NULL;");
         engine.execute("INSERT INTO test VALUES (1)");
-        engine.execute("NULL");
+        engine.execute("NULL;");
         engine.execute("INSERT INTO test VALUES (2)");
-        engine.execute("NULL");
+        engine.execute("NULL;");
 
         ResultSet rs = engine.executeQuery("SELECT COUNT(*) as cnt FROM test");
         assertEquals(2, ((Number) rs.getRows().get(0).getValue(0)).intValue());
@@ -116,7 +116,7 @@ public class NullStatementTest {
 
         // NULL with other statements
         engine.execute("INSERT INTO test VALUES (1)");
-        engine.execute("NULL");
+        engine.execute("NULL;");
         engine.execute("INSERT INTO test VALUES (2)");
 
         ResultSet rs = engine.executeQuery("SELECT COUNT(*) as cnt FROM test");
@@ -131,7 +131,7 @@ public class NullStatementTest {
             public void execute() {
                 engine.execute("""
                     BEGIN
-                        NULL
+                        NULL;
                     END;
                     """);
             }
@@ -144,7 +144,7 @@ public class NullStatementTest {
         assertDoesNotThrow(new Executable() {
             @Override
             public void execute() {
-                engine.execute("NULL");
+                engine.execute("NULL;");
             }
         });
     }
@@ -155,12 +155,12 @@ public class NullStatementTest {
         engine.execute("CREATE TABLE test (id INTEGER)");
 
         // Execute a sequence with NULL statements interspersed
-        engine.execute("NULL");
+        engine.execute("NULL;");
         engine.execute("INSERT INTO test VALUES (1)");
-        engine.execute("NULL");
-        engine.execute("NULL");
+        engine.execute("NULL;");
+        engine.execute("NULL;");
         engine.execute("INSERT INTO test VALUES (2)");
-        engine.execute("NULL");
+        engine.execute("NULL;");
 
         ResultSet rs = engine.executeQuery("SELECT COUNT(*) as cnt FROM test");
         assertEquals(2, ((Number) rs.getRows().get(0).getValue(0)).intValue());

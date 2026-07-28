@@ -84,9 +84,12 @@ final class JsonPathExtractor {
             // QUOTED JSON form — unquoting it made a string value indistinguishable from a real
             // array/object's JSON text, so ::ARRAY wrongly PARSED it (Snowflake's ::ARRAY, which is
             // TO_ARRAY, wraps a string into a one-element array instead). Plain strings unwrap as before.
+            // The literal string "null" keeps the quoted form for the same reason: bare "null" IS this
+            // engine's JSON-null marker, and unquoting turned a real string value into a null member
+            // when re-embedded (OBJECT_AGG over {"v": "null"} must keep the STRING, as Snowflake does).
             final String text = node.asText();
             final String trimmedText = text.trim();
-            if (trimmedText.startsWith("[") || trimmedText.startsWith("{")) {
+            if (trimmedText.startsWith("[") || trimmedText.startsWith("{") || "null".equals(text)) {
                 return node.toString();
             }
             return text;

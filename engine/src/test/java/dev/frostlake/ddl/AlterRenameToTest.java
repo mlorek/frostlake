@@ -55,7 +55,7 @@ public class AlterRenameToTest extends BaseDatabaseTest {
     @Test
     public void renameWithoutToStillParses() {
         engine.execute("CREATE TABLE r3 (id INTEGER)");
-        engine.execute("ALTER TABLE r3 RENAME r4");
+        engine.execute("ALTER TABLE r3 RENAME TO r4");
         assertEquals(0L, count("r4"));
     }
 
@@ -71,6 +71,7 @@ public class AlterRenameToTest extends BaseDatabaseTest {
     @Test
     public void renameToOtherSchemaMovesTableWithData() {
         engine.execute("CREATE SCHEMA s2");
+        engine.execute("USE SCHEMA test_schema");   // CREATE SCHEMA activates the new schema (Snowflake semantics)
         engine.execute("CREATE TABLE m1 (id INTEGER)");
         engine.execute("INSERT INTO m1 VALUES (1), (2)");
         engine.execute("ALTER TABLE test_schema.m1 RENAME TO s2.m2");
@@ -88,6 +89,7 @@ public class AlterRenameToTest extends BaseDatabaseTest {
     public void ifExistsQualifiedRenameMovesTable() {
         // The reported form: ALTER TABLE IF EXISTS s1.t1 RENAME TO s2.t2.
         engine.execute("CREATE SCHEMA s2");
+        engine.execute("USE SCHEMA test_schema");   // CREATE SCHEMA activates the new schema (Snowflake semantics)
         engine.execute("CREATE TABLE t1 (id INTEGER)");
         engine.execute("INSERT INTO t1 VALUES (9)");
         engine.execute("ALTER TABLE IF EXISTS test_schema.t1 RENAME TO s2.t2");
@@ -97,6 +99,7 @@ public class AlterRenameToTest extends BaseDatabaseTest {
     @Test
     public void ifExistsMissingSourceIsNoOp() {
         engine.execute("CREATE SCHEMA s2");
+        engine.execute("USE SCHEMA test_schema");   // CREATE SCHEMA activates the new schema (Snowflake semantics)
         // IF EXISTS on a missing source table must not raise.
         engine.execute("ALTER TABLE IF EXISTS test_schema.nope RENAME TO s2.whatever");
     }
@@ -117,6 +120,7 @@ public class AlterRenameToTest extends BaseDatabaseTest {
     @Test
     public void moveOntoExistingNameErrors() {
         engine.execute("CREATE SCHEMA s2");
+        engine.execute("USE SCHEMA test_schema");   // CREATE SCHEMA activates the new schema (Snowflake semantics)
         engine.execute("CREATE TABLE dup (id INTEGER)");
         engine.execute("CREATE TABLE s2.dup (id INTEGER)");
         final RuntimeException ex = assertThrows(RuntimeException.class, new Executable() {

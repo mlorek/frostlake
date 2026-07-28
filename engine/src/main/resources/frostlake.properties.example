@@ -32,6 +32,9 @@ persistence.saveIntervalSeconds=60
 # Durability (write-ahead log) — off by default; durability matters least for the in-memory local/CI use.
 # When enabled, each committed transaction (autocommit statement or explicit BEGIN...COMMIT block) is
 # appended to the WAL and fsync'd before COMMIT returns, and replayed on startup to recover committed work.
+# NOTE: the WAL and snapshot persistence are alternative restore paths, not additive — while
+# durability.walEnabled=true, persistence.enabled is ignored (WAL checkpoint + replay is authoritative);
+# restoring an autosave snapshot AND replaying the log would double-apply transactions.
 durability.walEnabled=false
 # WAL file location. Defaults to <persisted-data directory>/wal.log (see persistence.directory above).
 # Uncomment to override explicitly:

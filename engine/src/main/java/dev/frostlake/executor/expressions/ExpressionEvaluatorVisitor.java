@@ -37,6 +37,11 @@ import dev.frostlake.security.SecurityManager;
 import dev.frostlake.jdbc.JdbcMarshaling;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.Row;
+import dev.frostlake.types.StringType;
+import dev.frostlake.types.ArrayType;
+import dev.frostlake.types.DataType;
+import dev.frostlake.types.ObjectType;
+import dev.frostlake.types.VariantType;
 
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.node.ArrayNode;
@@ -576,6 +581,13 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
      * the function's own argument-count validation still reports the error.
      */
     private Object evaluateConditionalFunction(final String funcName, final List<Expression> args) {
+        for (final Expression arg : args) {
+            if (arg instanceof SpreadExpression) {
+                // A ** spread changes the effective argument list; skip the lazy short-circuit and
+                // let the generic path splice the arguments before dispatch.
+                return NOT_CONDITIONAL;
+            }
+        }
         switch (funcName) {
             case "IFF":
                 if (args.size() != 3) {
@@ -673,6 +685,15 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
     @Override
     public Object visitFunctionCall(final FunctionCallExpression expr) {
         String funcName = expr.getFunctionName().toUpperCase();
+        if (expr.getNameExpression() != null) {
+            // IDENTIFIER('fn')/IDENTIFIER($var): the actual function name comes from the inner
+            // expression, resolved NOW so cached ASTs stay correct across sessions/values.
+            final Object resolved = expr.getNameExpression().accept(this);
+            if (resolved == null) {
+                throw new RuntimeException("IDENTIFIER(...) function name resolved to NULL");
+            }
+            funcName = resolved.toString().toUpperCase();
+        }
 
         // HAVING/QUALIFY: an aggregate/window function that matches a precomputed SELECT-list
         // output resolves to that value rather than being re-evaluated.
@@ -728,11 +749,17 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
             return shortCircuited;
         }
 
-        // Evaluate arguments
+        // Evaluate arguments; a ** spread argument splices its ARRAY elements (or OBJECT pairs,
+        // for the key/value-shaped constructors) into the positional argument list.
         List<Object> argValues = new ArrayList<>();
         for (final Expression arg : expr.getArguments()) {
-            argValues.add(arg.accept(this));
+            if (arg instanceof SpreadExpression) {
+                spliceSpreadValue(((SpreadExpression) arg).getInner().accept(this), argValues);
+            } else {
+                argValues.add(arg.accept(this));
+            }
         }
+        rejectVarcharColumnInTemporalFunction(funcName, expr.getArguments(), argValues);
 
         // IDENTIFIER(string) — resolves a string as a column name in the current row
         if ("IDENTIFIER".equals(funcName) && argValues.size() == 1 && argValues.get(0) != null) {
@@ -909,7 +936,158 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
     }
 
     @Override
-    public Object visitWindowFunction(final WindowFunctionExpression expr) {
+    public Object visitSpread(final SpreadExpression expr) {
+        throw new RuntimeException(
+            "The spread operator (**) is only valid inside an array/object constructor, "
+            + "a function argument list, or the SELECT list");
+    }
+
+    /** Snowflake coerces string CONSTANTS to dates/timestamps in temporal functions but rejects
+     *  VARCHAR columns and expressions ("Function DATE_TRUNC does not support VARCHAR argument
+     *  type" — live-verified). The temporal argument positions per function are listed below; a
+     *  string value in one of them is allowed only when its expression is a literal (or a session
+     *  variable, which Snowflake also treats as a constant). */
+    private static final Map<String, int[]> TEMPORAL_STRICT_ARGS = new HashMap<>();
+    static {
+        TEMPORAL_STRICT_ARGS.put("DATE_TRUNC", new int[]{1});
+        TEMPORAL_STRICT_ARGS.put("EXTRACT", new int[]{1});
+        TEMPORAL_STRICT_ARGS.put("DATE_PART", new int[]{1});
+        TEMPORAL_STRICT_ARGS.put("LAST_DAY", new int[]{0});
+        TEMPORAL_STRICT_ARGS.put("DATEADD", new int[]{2});
+        TEMPORAL_STRICT_ARGS.put("TIMEADD", new int[]{2});
+        TEMPORAL_STRICT_ARGS.put("TIMESTAMPADD", new int[]{2});
+        TEMPORAL_STRICT_ARGS.put("DATEDIFF", new int[]{1, 2});
+        TEMPORAL_STRICT_ARGS.put("TIMEDIFF", new int[]{1, 2});
+        TEMPORAL_STRICT_ARGS.put("TIMESTAMPDIFF", new int[]{1, 2});
+        TEMPORAL_STRICT_ARGS.put("DAYNAME", new int[]{0});
+        TEMPORAL_STRICT_ARGS.put("MONTHNAME", new int[]{0});
+        TEMPORAL_STRICT_ARGS.put("ADD_MONTHS", new int[]{0});
+        TEMPORAL_STRICT_ARGS.put("MONTHS_BETWEEN", new int[]{0, 1});
+        TEMPORAL_STRICT_ARGS.put("NEXT_DAY", new int[]{0});
+        TEMPORAL_STRICT_ARGS.put("PREVIOUS_DAY", new int[]{0});
+        TEMPORAL_STRICT_ARGS.put("YEAR", new int[]{0});
+        TEMPORAL_STRICT_ARGS.put("QUARTER", new int[]{0});
+        TEMPORAL_STRICT_ARGS.put("MONTH", new int[]{0});
+        TEMPORAL_STRICT_ARGS.put("WEEK", new int[]{0});
+        TEMPORAL_STRICT_ARGS.put("WEEKOFYEAR", new int[]{0});
+        TEMPORAL_STRICT_ARGS.put("WEEKISO", new int[]{0});
+        TEMPORAL_STRICT_ARGS.put("DAY", new int[]{0});
+        TEMPORAL_STRICT_ARGS.put("DAYOFMONTH", new int[]{0});
+        TEMPORAL_STRICT_ARGS.put("DAYOFWEEK", new int[]{0});
+        TEMPORAL_STRICT_ARGS.put("DAYOFWEEKISO", new int[]{0});
+        TEMPORAL_STRICT_ARGS.put("DAYOFYEAR", new int[]{0});
+        TEMPORAL_STRICT_ARGS.put("HOUR", new int[]{0});
+        TEMPORAL_STRICT_ARGS.put("MINUTE", new int[]{0});
+        TEMPORAL_STRICT_ARGS.put("SECOND", new int[]{0});
+        TEMPORAL_STRICT_ARGS.put("YEAROFWEEK", new int[]{0});
+        TEMPORAL_STRICT_ARGS.put("YEAROFWEEKISO", new int[]{0});
+    }
+
+    private void rejectVarcharColumnInTemporalFunction(final String funcName, final List<Expression> args,
+                                                       final List<Object> argValues) {
+        final int[] positions = TEMPORAL_STRICT_ARGS.get(funcName);
+        if (positions == null || args.size() != argValues.size()) {
+            return;   // size mismatch = a spread was spliced; positions no longer line up — skip
+        }
+        for (final int position : positions) {
+            if (position >= args.size() || !(args.get(position) instanceof ColumnReferenceExpression)) {
+                // Only DECLARED-VARCHAR column references are rejected. The engine represents
+                // dates/timestamps as strings internally, so a runtime value check would wrongly
+                // flag genuine temporal columns and expression results.
+                continue;
+            }
+            final ColumnReferenceExpression ref = (ColumnReferenceExpression) args.get(position);
+            final TableColumn resolved = resolveDeclaredColumn(ref);
+            if (resolved != null && resolved.getDataType() instanceof StringType) {
+                throw new RuntimeException(
+                    "Function " + funcName + " does not support VARCHAR argument type");
+            }
+        }
+    }
+
+    /** The declared table column a reference points at, or null when it cannot be resolved (an
+     *  alias, a UDF parameter, a lateral value, ...) or when it belongs to a DERIVED table (CTE,
+     *  subquery, joined view) — derived tables declare most columns as VARCHAR regardless of the
+     *  value's real type, so only BASE catalog tables carry trustworthy declared types. */
+    private TableColumn resolveDeclaredColumn(final ColumnReferenceExpression ref) {
+        final String columnName = ref.getColumnName();
+        if (ref.getTableName() != null) {
+            if (multiTableAliasToTable != null) {
+                final Table qualified = multiTableAliasToTable.get(ref.getTableName().toUpperCase());
+                if (qualified != null && qualified.hasColumn(columnName) && isBaseCatalogTable(qualified)) {
+                    return qualified.getColumn(columnName);
+                }
+            }
+            if (table != null && table.getName().equalsIgnoreCase(ref.getTableName())
+                    && table.hasColumn(columnName) && isBaseCatalogTable(table)) {
+                return table.getColumn(columnName);
+            }
+            return null;
+        }
+        if (table != null && table.hasColumn(columnName)) {
+            return isBaseCatalogTable(table) ? table.getColumn(columnName) : null;
+        }
+        if (multiTableAllTables != null) {
+            for (final Table candidate : multiTableAllTables) {
+                if (candidate.hasColumn(columnName)) {
+                    return isBaseCatalogTable(candidate) ? candidate.getColumn(columnName) : null;
+                }
+            }
+        }
+        return null;
+    }
+
+    /** True when this Table instance is the catalog's own object for its name (a base table) — a
+     *  derived/virtual table (CTE, VALUES, joined view, self-join copy) either isn't in the catalog
+     *  or is a different instance. */
+    private boolean isBaseCatalogTable(final Table candidate) {
+        if (catalog == null) {
+            return false;
+        }
+        try {
+            return catalog.resolveTable(candidate.getName()) == candidate;
+        } catch (final RuntimeException notFound) {
+            return false;
+        }
+    }
+
+    /** Splice a spread value into a positional list: an ARRAY contributes its elements, an OBJECT
+     *  contributes alternating key/value entries (the constructor shape), NULL contributes nothing.
+     *  The engine's ARRAY/OBJECT values are canonical JSON text, so that form is parsed here. */
+    private void spliceSpreadValue(final Object value, final List<Object> into) {
+        if (value == null) {
+            return;
+        }
+        if (value instanceof List) {
+            into.addAll((List<?>) value);
+            return;
+        }
+        if (value instanceof Map) {
+            for (final Map.Entry<?, ?> entry : ((Map<?, ?>) value).entrySet()) {
+                into.add(entry.getKey());
+                into.add(entry.getValue());
+            }
+            return;
+        }
+        final JsonNode node = ArrayFunctionHelper.parseNode(value);
+        if (node != null && node.isArray()) {
+            for (final JsonNode element : node) {
+                into.add(ArrayFunctionHelper.fromNode(element));
+            }
+            return;
+        }
+        if (node != null && node.isObject()) {
+            for (final Map.Entry<String, JsonNode> field : node.properties()) {
+                into.add(field.getKey());
+                into.add(ArrayFunctionHelper.fromNode(field.getValue()));
+            }
+            return;
+        }
+        throw new RuntimeException("The spread operator (**) requires an ARRAY or OBJECT value, got: " + value);
+    }
+
+@Override
+        public Object visitWindowFunction(final WindowFunctionExpression expr) {
         // A window function nested in an expression is precomputed per row by the window stage and supplied
         // through the result context, keyed by the call's exact source text. Resolve it here rather than
         // evaluating row-wise — a window function spans a whole partition, not a single row.
@@ -1291,12 +1469,11 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
      * Without this every consumer of such a path saw the literal text: TO_TIMESTAMP / TO_DATE / TO_TIME /
      * DATEADD all failed with "Cannot parse date/time: null" instead of returning NULL.
      */
-    private static boolean isVariantJsonNullCast(final CastExpression expr, final Object value) {
-        if (!(expr.getExpression() instanceof ObjectAccessExpression)
-                && !(expr.getExpression() instanceof ArrayAccessExpression)) {
+    private boolean isVariantJsonNullCast(final CastExpression expr, final Object value) {
+        if (!(value instanceof CharSequence) || !"null".equals(value.toString())) {
             return false;
         }
-        if (!(value instanceof CharSequence) || !"null".equals(value.toString())) {
+        if (!hasVariantValuedOperand(expr.getExpression())) {
             return false;
         }
         String baseType = expr.getTargetType().toUpperCase();
@@ -1305,6 +1482,32 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
             baseType = baseType.substring(0, parenIndex).trim();
         }
         return !"VARIANT".equals(baseType) && !"ARRAY".equals(baseType) && !"OBJECT".equals(baseType);
+    }
+
+    /**
+     * Whether the cast operand is VARIANT-valued, so its bare {@code null} text means a JSON null
+     * (a plain {@code 'null'} VARCHAR must keep its text): a variant path access, a
+     * variant-producing function (PARSE_JSON / GET / …), or a column declared with a
+     * semi-structured type in the evaluation table.
+     */
+    private boolean hasVariantValuedOperand(final Expression operand) {
+        if (operand instanceof ObjectAccessExpression || operand instanceof ArrayAccessExpression) {
+            return true;
+        }
+        if (operand instanceof FunctionCallExpression) {
+            final String fn = ((FunctionCallExpression) operand).getFunctionName().toUpperCase();
+            return "PARSE_JSON".equals(fn) || "TRY_PARSE_JSON".equals(fn)
+                || "GET".equals(fn) || "GET_PATH".equals(fn);
+        }
+        if (operand instanceof ColumnReferenceExpression && table != null) {
+            final TableColumn column = table.getColumn(((ColumnReferenceExpression) operand).getColumnName());
+            if (column == null || column.getDataType() == null) {
+                return false;
+            }
+            final DataType type = column.getDataType();
+            return type instanceof VariantType || type instanceof ObjectType || type instanceof ArrayType;
+        }
+        return false;
     }
 
     private Object extractJsonProperty(final String jsonString, final String property) {
@@ -1349,8 +1552,39 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
             if (nested != null) {
                 return nested;
             }
+            // The QUOTED carrier for a string whose content looks structural (path access over
+            // {"v": "[]"} yields "\"[]\"" — see JsonPathExtractor) is already a valid JSON string
+            // literal: embed it raw. Re-quoting it via formatJsonValue double-encoded the member.
+            final String carrier = quotedStructuralStringOrNull((String) value);
+            if (carrier != null) {
+                return carrier;
+            }
         }
         return formatJsonValue(value);
+    }
+
+    /**
+     * If {@code s} is the engine's quoted carrier for a STRING value that must stay distinguishable
+     * from real JSON — a JSON string literal whose decoded content starts with '{' or '[', or is the
+     * JSON-null marker text "null" — returns it (trimmed) so it can be embedded as-is; otherwise null.
+     */
+    private static String quotedStructuralStringOrNull(final String s) {
+        final String trimmed = s.trim();
+        if (trimmed.length() < 2 || trimmed.charAt(0) != '"') {
+            return null;
+        }
+        try {
+            final JsonNode node = ArrayFunctionHelper.MAPPER.readTree(trimmed);
+            if (node != null && node.isTextual()) {
+                final String content = node.asText().trim();
+                if (content.startsWith("{") || content.startsWith("[") || "null".equals(content)) {
+                    return trimmed;
+                }
+            }
+        } catch (final Exception notJson) {
+            // Not valid JSON — treat as an ordinary scalar string.
+        }
+        return null;
     }
 
     /**

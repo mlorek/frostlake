@@ -44,7 +44,7 @@ public class NestedObjectAccessTest {
     @Test
     public void testDeepNestedObjectColonDotAccess() {
         engine.execute("CREATE TABLE obj3 (d VARIANT)");
-        engine.execute("INSERT INTO obj3 VALUES ('{\"a\": {\"b\": {\"c\": 1}}}')");
+        engine.execute("INSERT INTO obj3 SELECT PARSE_JSON('{\"a\": {\"b\": {\"c\": 1}}}')");
         ResultSet rs = engine.executeQuery("SELECT d:a.b.c AS e FROM obj3");
         assertNotNull(rs);
         assertEquals(1, rs.getRowCount());
@@ -65,7 +65,7 @@ public class NestedObjectAccessTest {
     @Test
     public void testMixedColonDotPaths() {
         engine.execute("CREATE TABLE obj_mixed (d VARIANT)");
-        engine.execute("INSERT INTO obj_mixed VALUES ('{\"a\": {\"b\": {\"c\": 1}}}')");
+        engine.execute("INSERT INTO obj_mixed SELECT PARSE_JSON('{\"a\": {\"b\": {\"c\": 1}}}')");
         // d:a.b.c, d:a:b:c, d:a.b:c should all return 1
         ResultSet rs = engine.executeQuery("SELECT d:a.b.c AS e1, d:a:b:c AS e2, d:a.b:c AS e3 FROM obj_mixed");
         assertNotNull(rs);
@@ -78,7 +78,7 @@ public class NestedObjectAccessTest {
     @Test
     public void testSingleColonAccessFromTable() {
         engine.execute("CREATE TABLE jt (d VARIANT)");
-        engine.execute("INSERT INTO jt VALUES ('{\"x\": 42}')");
+        engine.execute("INSERT INTO jt SELECT PARSE_JSON('{\"x\": 42}')");
         ResultSet rs = engine.executeQuery("SELECT d:x AS v FROM jt");
         assertNotNull(rs);
         assertEquals(1, rs.getRowCount());
@@ -88,7 +88,7 @@ public class NestedObjectAccessTest {
     @Test
     public void testDotChainFromTable() {
         engine.execute("CREATE TABLE jt2 (d VARIANT)");
-        engine.execute("INSERT INTO jt2 VALUES ('{\"a\": {\"b\": \"hello\"}}')");
+        engine.execute("INSERT INTO jt2 SELECT PARSE_JSON('{\"a\": {\"b\": \"hello\"}}')");
         ResultSet rs = engine.executeQuery("SELECT d:a.b AS v FROM jt2");
         assertNotNull(rs);
         assertEquals(1, rs.getRowCount());
@@ -108,7 +108,7 @@ public class NestedObjectAccessTest {
     public void testTwoLevelDotAccess() {
         // Use a real table instead of CTE to avoid CTE projection issues
         engine.execute("CREATE TABLE obj2 (d VARIANT)");
-        engine.execute("INSERT INTO obj2 VALUES ('{\"a\": {\"b\": \"hello\"}}')");
+        engine.execute("INSERT INTO obj2 SELECT PARSE_JSON('{\"a\": {\"b\": \"hello\"}}')");
         ResultSet rs = engine.executeQuery("SELECT d:a.b AS v FROM obj2");
         assertNotNull(rs);
         assertEquals(1, rs.getRowCount());
@@ -165,7 +165,7 @@ public class NestedObjectAccessTest {
     @Test
     public void quotedFirstSegmentEqualsUnquoted() {
         engine.execute("CREATE TABLE qseg (d VARIANT)");
-        engine.execute("INSERT INTO qseg VALUES ('{\"source\": {\"a\": 7}}')");
+        engine.execute("INSERT INTO qseg SELECT PARSE_JSON('{\"source\": {\"a\": 7}}')");
         final ResultSet rs = engine.executeQuery("SELECT d:\"source\".a AS q, d:source.a AS u FROM qseg");
         assertEquals("7", String.valueOf(rs.getRows().get(0).getValue(0)));
         assertEquals("7", String.valueOf(rs.getRows().get(0).getValue(1)));
@@ -175,7 +175,7 @@ public class NestedObjectAccessTest {
     public void quotedMiddleSegmentInColonDotChain() {
         // The loader shape: src:value:"source".ApiInfo.kind::VARCHAR.
         engine.execute("CREATE TABLE qmid (src VARIANT)");
-        engine.execute("INSERT INTO qmid VALUES ('{\"value\": {\"source\": {\"ApiInfo\": {\"kind\": \"AGENT\"}}}}')");
+        engine.execute("INSERT INTO qmid SELECT PARSE_JSON('{\"value\": {\"source\": {\"ApiInfo\": {\"kind\": \"AGENT\"}}}}')");
         assertEquals("AGENT",
             String.valueOf(scalar("SELECT src:value:\"source\".ApiInfo.kind::VARCHAR FROM qmid")));
     }
@@ -184,7 +184,7 @@ public class NestedObjectAccessTest {
     public void quotedSegmentWithEmbeddedDot() {
         // Quoting exists so a key containing a dot is one segment, not a two-level path.
         engine.execute("CREATE TABLE qdot (d VARIANT)");
-        engine.execute("INSERT INTO qdot VALUES ('{\"a.b\": 3, \"a\": {\"b\": 9}}')");
+        engine.execute("INSERT INTO qdot SELECT PARSE_JSON('{\"a.b\": 3, \"a\": {\"b\": 9}}')");
         assertEquals("3", String.valueOf(scalar("SELECT d:\"a.b\" FROM qdot")));
         assertEquals("9", String.valueOf(scalar("SELECT d:a.b FROM qdot")));
     }
@@ -192,7 +192,7 @@ public class NestedObjectAccessTest {
     @Test
     public void quotedSegmentPreservesCase() {
         engine.execute("CREATE TABLE qcase (d VARIANT)");
-        engine.execute("INSERT INTO qcase VALUES ('{\"Key\": 1}')");
+        engine.execute("INSERT INTO qcase SELECT PARSE_JSON('{\"Key\": 1}')");
         assertEquals("1", String.valueOf(scalar("SELECT d:\"Key\" FROM qcase")));
     }
 

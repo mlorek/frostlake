@@ -35,8 +35,8 @@ public class LateralFlattenTest {
         engine.execute("USE DATABASE test_db");
         engine.execute("USE SCHEMA public");
         engine.execute("CREATE TABLE events (id INTEGER, tags VARIANT)");
-        engine.execute("INSERT INTO events VALUES (1, '[\"a\",\"b\",\"c\"]')");
-        engine.execute("INSERT INTO events VALUES (2, '[\"x\",\"y\"]')");
+        engine.execute("INSERT INTO events SELECT 1, PARSE_JSON('[\"a\",\"b\",\"c\"]')");
+        engine.execute("INSERT INTO events SELECT 2, PARSE_JSON('[\"x\",\"y\"]')");
     }
 
     @AfterEach
@@ -55,8 +55,17 @@ public class LateralFlattenTest {
 
     @Test
     public void testLateralFlattenJoinSyntax() {
+        // Live-Snowflake verified: a lateral table FUNCTION with an ON predicate — even ON TRUE —
+        // is "Unsupported feature ...". The comma-lateral form is the supported spelling.
+        try {
+            engine.executeQuery(
+                "SELECT e.id, f.value FROM events e JOIN LATERAL FLATTEN(INPUT => e.tags) f ON TRUE");
+            throw new AssertionError("lateral FLATTEN with ON must be rejected");
+        } catch (final RuntimeException expected) {
+            assertNotNull(expected.getMessage());
+        }
         ResultSet rs = engine.executeQuery(
-            "SELECT e.id, f.value FROM events e JOIN LATERAL FLATTEN(INPUT => e.tags) f ON TRUE ORDER BY e.id, f.value");
+            "SELECT e.id, f.value FROM events e, LATERAL FLATTEN(INPUT => e.tags) f ORDER BY e.id, f.value");
         assertNotNull(rs);
         assertEquals(5, rs.getRowCount());
     }

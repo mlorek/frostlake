@@ -201,13 +201,8 @@ public class ParsingEdgeCasesTest extends BaseDatabaseTest {
     @Test
     public void testSelectWithAllKeyword() {
         logger.info("Testing SELECT with ALL keyword");
-        // ALL is not accepted as a SELECT quantifier by the grammar.
-        assertThrows(RuntimeException.class, new Executable() {
-            @Override
-            public void execute() {
-                engine.executeQuery("SELECT ALL name FROM test");
-            }
-        });
+        // SELECT ALL is the (default) DISTINCT counterpart — live-Snowflake verified.
+        assertEquals(2, engine.executeQuery("SELECT ALL name FROM test").getRowCount());
     }
 
     @Test

@@ -159,6 +159,10 @@ public class ProceduralBlockBuilder {
                 for (final FrostlakeParser.CallArgumentContext argCtx :
                      ctx.callStatement().callArguments().callArgument()) {
                     if (argCtx.namedArgument() != null) {
+                        if (argCtx.namedArgument().expression() == null) {
+                            throw new RuntimeException(
+                                "A bare subquery CALL argument is not supported; parenthesize it: (SELECT ...)");
+                        }
                         arguments.add(visitor.buildExpression(argCtx.namedArgument().expression()));
                         argumentNames.add(visitor.getText(argCtx.namedArgument().identifier()));
                     } else {

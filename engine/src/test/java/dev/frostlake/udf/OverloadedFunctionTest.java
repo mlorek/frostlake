@@ -217,8 +217,9 @@ public class OverloadedFunctionTest extends BaseJdbcTest {
         $$
         """);
 
-        // Drop all overloads
-        statement.execute("DROP FUNCTION sum_val");
+        // Snowflake requires the signature, so each overload is dropped individually.
+        statement.execute("DROP FUNCTION sum_val(INTEGER)");
+        statement.execute("DROP FUNCTION sum_val(INTEGER, INTEGER)");
 
         // Both should fail now
         assertThrows(SQLException.class, () -> {

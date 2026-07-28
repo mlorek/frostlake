@@ -71,7 +71,7 @@ public class AggregateInExpressionTest extends BaseDatabaseTest {
 
     @Test
     public void nestedAggregateInScalarSubquery() {
-        // The exact shape the container-test diagnostic used: an aggregate cast inside a scalar subquery.
+        // A diagnostic shape from external-suite triage: an aggregate cast inside a scalar subquery.
         assertEquals("3", scalar("SELECT (SELECT COUNT(*)::VARCHAR FROM t)"));
         assertEquals("count=3", scalar("SELECT 'count=' || (SELECT COUNT(*)::VARCHAR FROM t)"));
     }

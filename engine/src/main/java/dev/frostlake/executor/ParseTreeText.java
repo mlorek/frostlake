@@ -69,6 +69,9 @@ public final class ParseTreeText {
         for (final FrostlakeParser.IdentifierContext id : ctx.identifier()) {
             parts.add(getIdentifier(id));
         }
+        if (ctx.TABLE() != null) {
+            parts.add("TABLE");   // db.table — a trailing part literally named "table"
+        }
         return String.join(".", parts);
     }
 
@@ -76,9 +79,13 @@ public final class ParseTreeText {
      *  flattened text on '.' — correct even for a quoted identifier containing a dot. */
     public static String[] qualifiedNameParts(final FrostlakeParser.QualifiedNameContext ctx) {
         final List<FrostlakeParser.IdentifierContext> ids = ctx.identifier();
-        final String[] parts = new String[ids.size()];
+        final boolean trailingTable = ctx.TABLE() != null;   // db.table — a part literally named "table"
+        final String[] parts = new String[ids.size() + (trailingTable ? 1 : 0)];
         for (int i = 0; i < ids.size(); i++) {
             parts[i] = getIdentifier(ids.get(i));
+        }
+        if (trailingTable) {
+            parts[parts.length - 1] = "TABLE";
         }
         return parts;
     }

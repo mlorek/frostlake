@@ -40,6 +40,12 @@ public class DirectResultSet implements java.sql.ResultSet {
     private final Statement statement;
     private boolean closed = false;
 
+    // Cursor position for the JDBC location predicates: 0 = before the first row; incremented by
+    // next(); exhausted once next() has returned false after consuming rows.
+    private int positionRow = 0;
+    private boolean exhausted = false;
+    private boolean lastReadWasNull = false;
+
     // Updatable ResultSet support
     private final DatabaseEngine engine;
     private final String tableName;
@@ -85,11 +91,14 @@ public class DirectResultSet implements java.sql.ResultSet {
         checkClosed();
         boolean hasNext = engineResultSet.next();
         if (hasNext) {
+            positionRow++;
             // Clear updated values when moving to new row
             updatedValues.clear();
             onInsertRow = false;
             // Capture current row values for potential updates
             captureCurrentRowValues();
+        } else {
+            exhausted = true;
         }
         return hasNext;
     }
@@ -107,21 +116,21 @@ public class DirectResultSet implements java.sql.ResultSet {
     @Override
     public String getString(final int columnIndex) throws SQLException {
         checkClosed();
-        Object value = engineResultSet.getValue(columnIndex - 1);
+        Object value = readValue(columnIndex);
         return value != null ? value.toString() : null;
     }
 
     @Override
     public String getString(final String columnLabel) throws SQLException {
         checkClosed();
-        Object value = engineResultSet.getValue(columnLabel);
+        Object value = readValue(columnLabel);
         return value != null ? value.toString() : null;
     }
 
     @Override
     public int getInt(final int columnIndex) throws SQLException {
         checkClosed();
-        Object value = engineResultSet.getValue(columnIndex - 1);
+        Object value = readValue(columnIndex);
         if (value == null) return 0;
         if (value instanceof Number) {
             return ((Number) value).intValue();
@@ -132,7 +141,7 @@ public class DirectResultSet implements java.sql.ResultSet {
     @Override
     public int getInt(final String columnLabel) throws SQLException {
         checkClosed();
-        Object value = engineResultSet.getValue(columnLabel);
+        Object value = readValue(columnLabel);
         if (value == null) return 0;
         if (value instanceof Number) {
             return ((Number) value).intValue();
@@ -185,7 +194,8 @@ public class DirectResultSet implements java.sql.ResultSet {
 
     @Override
     public int getRow() throws SQLException {
-        return engineResultSet.getRowCount();
+        // The current row number (1-based), 0 when before the first row or after the last.
+        return exhausted ? 0 : positionRow;
     }
 
     @Override
@@ -197,12 +207,26 @@ public class DirectResultSet implements java.sql.ResultSet {
 
     @Override
     public boolean wasNull() throws SQLException {
-        return false;
+        return lastReadWasNull;
+    }
+
+    /** Read a column by 1-based index, recording its nullness for {@link #wasNull()}. */
+    private Object readValue(final int columnIndex) {
+        final Object value = engineResultSet.getValue(columnIndex - 1);
+        lastReadWasNull = value == null;
+        return value;
+    }
+
+    /** Read a column by label, recording its nullness for {@link #wasNull()}. */
+    private Object readValue(final String columnLabel) {
+        final Object value = engineResultSet.getValue(columnLabel);
+        lastReadWasNull = value == null;
+        return value;
     }
 
     @Override
     public boolean getBoolean(final int columnIndex) throws SQLException {
-        Object value = engineResultSet.getValue(columnIndex - 1);
+        Object value = readValue(columnIndex);
         if (value == null) return false;
         if (value instanceof Boolean) return (Boolean) value;
         return Boolean.parseBoolean(value.toString());
@@ -210,7 +234,7 @@ public class DirectResultSet implements java.sql.ResultSet {
 
     @Override
     public byte getByte(final int columnIndex) throws SQLException {
-        Object value = engineResultSet.getValue(columnIndex - 1);
+        Object value = readValue(columnIndex);
         if (value == null) return 0;
         if (value instanceof Number) return ((Number) value).byteValue();
         return Byte.parseByte(value.toString());
@@ -218,7 +242,7 @@ public class DirectResultSet implements java.sql.ResultSet {
 
     @Override
     public short getShort(final int columnIndex) throws SQLException {
-        Object value = engineResultSet.getValue(columnIndex - 1);
+        Object value = readValue(columnIndex);
         if (value == null) return 0;
         if (value instanceof Number) return ((Number) value).shortValue();
         return Short.parseShort(value.toString());
@@ -226,7 +250,7 @@ public class DirectResultSet implements java.sql.ResultSet {
 
     @Override
     public long getLong(final int columnIndex) throws SQLException {
-        Object value = engineResultSet.getValue(columnIndex - 1);
+        Object value = readValue(columnIndex);
         if (value == null) return 0;
         if (value instanceof Number) return ((Number) value).longValue();
         return Long.parseLong(value.toString());
@@ -234,7 +258,7 @@ public class DirectResultSet implements java.sql.ResultSet {
 
     @Override
     public float getFloat(final int columnIndex) throws SQLException {
-        Object value = engineResultSet.getValue(columnIndex - 1);
+        Object value = readValue(columnIndex);
         if (value == null) return 0;
         if (value instanceof Number) return ((Number) value).floatValue();
         return Float.parseFloat(value.toString());
@@ -242,7 +266,7 @@ public class DirectResultSet implements java.sql.ResultSet {
 
     @Override
     public double getDouble(final int columnIndex) throws SQLException {
-        Object value = engineResultSet.getValue(columnIndex - 1);
+        Object value = readValue(columnIndex);
         if (value == null) return 0;
         if (value instanceof Number) return ((Number) value).doubleValue();
         return Double.parseDouble(value.toString());
@@ -250,7 +274,7 @@ public class DirectResultSet implements java.sql.ResultSet {
 
     @Override
     public BigDecimal getBigDecimal(final int columnIndex, final int scale) throws SQLException {
-        Object value = engineResultSet.getValue(columnIndex - 1);
+        Object value = readValue(columnIndex);
         if (value == null) return null;
         if (value instanceof BigDecimal) return (BigDecimal) value;
         return new BigDecimal(value.toString());
@@ -297,7 +321,7 @@ public class DirectResultSet implements java.sql.ResultSet {
 
     @Override
     public boolean getBoolean(final String columnLabel) throws SQLException {
-        Object value = engineResultSet.getValue(columnLabel);
+        Object value = readValue(columnLabel);
         if (value == null) return false;
         if (value instanceof Boolean) return (Boolean) value;
         return Boolean.parseBoolean(value.toString());
@@ -305,7 +329,7 @@ public class DirectResultSet implements java.sql.ResultSet {
 
     @Override
     public byte getByte(final String columnLabel) throws SQLException {
-        Object value = engineResultSet.getValue(columnLabel);
+        Object value = readValue(columnLabel);
         if (value == null) return 0;
         if (value instanceof Number) return ((Number) value).byteValue();
         return Byte.parseByte(value.toString());
@@ -313,7 +337,7 @@ public class DirectResultSet implements java.sql.ResultSet {
 
     @Override
     public short getShort(final String columnLabel) throws SQLException {
-        Object value = engineResultSet.getValue(columnLabel);
+        Object value = readValue(columnLabel);
         if (value == null) return 0;
         if (value instanceof Number) return ((Number) value).shortValue();
         return Short.parseShort(value.toString());
@@ -321,7 +345,7 @@ public class DirectResultSet implements java.sql.ResultSet {
 
     @Override
     public long getLong(final String columnLabel) throws SQLException {
-        Object value = engineResultSet.getValue(columnLabel);
+        Object value = readValue(columnLabel);
         if (value == null) return 0;
         if (value instanceof Number) return ((Number) value).longValue();
         return Long.parseLong(value.toString());
@@ -329,7 +353,7 @@ public class DirectResultSet implements java.sql.ResultSet {
 
     @Override
     public float getFloat(final String columnLabel) throws SQLException {
-        Object value = engineResultSet.getValue(columnLabel);
+        Object value = readValue(columnLabel);
         if (value == null) return 0;
         if (value instanceof Number) return ((Number) value).floatValue();
         return Float.parseFloat(value.toString());
@@ -337,7 +361,7 @@ public class DirectResultSet implements java.sql.ResultSet {
 
     @Override
     public double getDouble(final String columnLabel) throws SQLException {
-        Object value = engineResultSet.getValue(columnLabel);
+        Object value = readValue(columnLabel);
         if (value == null) return 0;
         if (value instanceof Number) return ((Number) value).doubleValue();
         return Double.parseDouble(value.toString());
@@ -345,7 +369,7 @@ public class DirectResultSet implements java.sql.ResultSet {
 
     @Override
     public BigDecimal getBigDecimal(final String columnLabel, final int scale) throws SQLException {
-        Object value = engineResultSet.getValue(columnLabel);
+        Object value = readValue(columnLabel);
         if (value == null) return null;
         if (value instanceof BigDecimal) return (BigDecimal) value;
         return new BigDecimal(value.toString());
@@ -435,7 +459,7 @@ public class DirectResultSet implements java.sql.ResultSet {
 
     @Override
     public BigDecimal getBigDecimal(final int columnIndex) throws SQLException {
-        Object value = engineResultSet.getValue(columnIndex - 1);
+        Object value = readValue(columnIndex);
         if (value == null) return null;
         if (value instanceof BigDecimal) return (BigDecimal) value;
         return new BigDecimal(value.toString());
@@ -443,7 +467,7 @@ public class DirectResultSet implements java.sql.ResultSet {
 
     @Override
     public BigDecimal getBigDecimal(final String columnLabel) throws SQLException {
-        Object value = engineResultSet.getValue(columnLabel);
+        Object value = readValue(columnLabel);
         if (value == null) return null;
         if (value instanceof BigDecimal) return (BigDecimal) value;
         return new BigDecimal(value.toString());
@@ -451,22 +475,22 @@ public class DirectResultSet implements java.sql.ResultSet {
 
     @Override
     public boolean isBeforeFirst() throws SQLException {
-        return false;
+        return positionRow == 0 && !engineResultSet.getRows().isEmpty();
     }
 
     @Override
     public boolean isAfterLast() throws SQLException {
-        return false;
+        return exhausted && !engineResultSet.getRows().isEmpty();
     }
 
     @Override
     public boolean isFirst() throws SQLException {
-        return false;
+        return positionRow == 1 && !exhausted;
     }
 
     @Override
     public boolean isLast() throws SQLException {
-        return false;
+        return !exhausted && positionRow > 0 && positionRow == engineResultSet.getRows().size();
     }
 
     @Override

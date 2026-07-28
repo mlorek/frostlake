@@ -203,6 +203,10 @@ final class ShowRelationalExecutor {
         if (databaseName != null) {
             return catalog.getDatabase(databaseName).getAllSchemas();
         }
+        if (schemaName != null && schemaName.indexOf('.') >= 0) {
+            // A db.schema scope (SHOW ... IN db1.schema1) — resolve it as a qualified name.
+            return Arrays.asList(catalog.resolveSchema(schemaName));
+        }
         final String db = catalog.getCurrentDatabase();
         final String sc = schemaName != null ? schemaName : catalog.getCurrentSchema();
         if (db == null || sc == null) {
@@ -295,7 +299,18 @@ final class ShowRelationalExecutor {
     }
 
     public ResultSet showColumns(final String tableName) {
-        List<ResultSetColumn> columns = Arrays.asList(
+        return showColumnsScoped(tableName, false);
+    }
+
+    /**
+     * SHOW COLUMNS variants: a named table (or, with {@code view}, a named view), or — with a null
+     * name — every table (or every view) in the current schema. The trailing table_name/schema_name
+     * columns identify the owner in the multi-object listings (appended so the per-table positional
+     * shape stays stable). View columns come from the view's declared column list; a view without one
+     * contributes no rows (deriving them would mean executing the definition).
+     */
+    public ResultSet showColumnsScoped(final String name, final boolean view) {
+        final List<ResultSetColumn> columns = Arrays.asList(
             new ResultSetColumn("column_name", StringType.VARCHAR),
             new ResultSetColumn("data_type", StringType.VARCHAR),
             new ResultSetColumn("kind", StringType.VARCHAR),
@@ -306,25 +321,68 @@ final class ShowRelationalExecutor {
             new ResultSetColumn("check", StringType.VARCHAR),
             new ResultSetColumn("expression", StringType.VARCHAR),
             new ResultSetColumn("comment", StringType.VARCHAR),
-            new ResultSetColumn("policy name", StringType.VARCHAR)
+            new ResultSetColumn("policy name", StringType.VARCHAR),
+            new ResultSetColumn("table_name", StringType.VARCHAR),
+            new ResultSetColumn("schema_name", StringType.VARCHAR)
         );
-        Table table = catalog.resolveTable(tableName);
-        List<Row> rows = new ArrayList<>();
-        for (final TableColumn col : table.getColumns()) {
-            rows.add(new Row(Arrays.asList(
-                col.getName(),
-                col.getDataType().getName(),
-                "COLUMN",
-                col.isNullable() ? "Y" : "N",
-                col.getDefaultValue() != null ? col.getDefaultValue().toString() : null,
-                col.isPrimaryKey() ? "Y" : "N",
-                col.isUnique() ? "Y" : "N",
-                null, null,
-                col.getComment(),
-                null
-            )));
+        final Schema schema = ShowResultHelpers.resolveDescribeSchema(catalog);
+        final List<Row> rows = new ArrayList<>();
+        if (view) {
+            final List<View> views = new ArrayList<>();
+            if (name != null) {
+                views.add(catalog.resolveView(name));
+            } else {
+                views.addAll(schema.getViews());
+            }
+            for (final View v : views) {
+                final List<String> colNames = v.getColumnNames();
+                if (colNames == null) {
+                    continue;
+                }
+                for (final String colName : colNames) {
+                    rows.add(new Row(Arrays.asList(colName, null, "COLUMN", "Y", null, "N", "N",
+                        null, null, null, null, v.getName(), schema.getName())));
+                }
+            }
+            return new ResultSet(columns, rows);
+        }
+        final List<Table> tables = new ArrayList<>();
+        if (name != null) {
+            tables.add(catalog.resolveTable(name));
+        } else {
+            tables.addAll(schema.getTables());
+        }
+        for (final Table table : tables) {
+            for (final TableColumn col : table.getColumns()) {
+                rows.add(new Row(Arrays.asList(
+                    col.getName(),
+                    col.getDataType().getName(),
+                    "COLUMN",
+                    col.isNullable() ? "Y" : "N",
+                    col.getDefaultValue() != null ? col.getDefaultValue().toString() : null,
+                    col.isPrimaryKey() ? "Y" : "N",
+                    col.isUnique() ? "Y" : "N",
+                    null, null,
+                    col.getComment(),
+                    null,
+                    table.getName(),
+                    schema.getName()
+                )));
+            }
         }
         return new ResultSet(columns, rows);
+    }
+
+    /** SHOW VIEWS IN ACCOUNT: the views of every database, in database order. */
+    public ResultSet showViewsInAccount() {
+        List<ResultSetColumn> cols = null;
+        final List<Row> rows = new ArrayList<>();
+        for (final Database db : catalog.getAllDatabases()) {
+            final ResultSet part = showViewsInDatabase(db.getName());
+            cols = part.getColumns();
+            rows.addAll(part.getRows());
+        }
+        return cols != null ? new ResultSet(cols, rows) : showViews(null);
     }
 
     public ResultSet showObjects(final String schemaName) {

@@ -39,8 +39,8 @@ public class DropFunctionProcedureParametersExample {
             engine.execute("CREATE FUNCTION simple_func(x INTEGER) RETURNS INTEGER LANGUAGE SQL AS 'BEGIN RETURN x + 1; END'");
             logger.info("Created function: simple_func(INTEGER)");
 
-            engine.execute("DROP FUNCTION simple_func");
-            logger.info("Dropped function using: DROP FUNCTION simple_func");
+            engine.execute("DROP FUNCTION simple_func(INTEGER)");
+            logger.info("Dropped function using: DROP FUNCTION simple_func(INTEGER)");
 
             // Example 2: Drop function with parameter types
             logger.info("\n2. DROP FUNCTION with parameter types specified:");
@@ -91,8 +91,8 @@ public class DropFunctionProcedureParametersExample {
             engine.execute("CREATE PROCEDURE simple_proc(x INTEGER) RETURNS INTEGER LANGUAGE SQL AS 'BEGIN RETURN x + 1; END'");
             logger.info("Created procedure: simple_proc(INTEGER)");
 
-            engine.execute("DROP PROCEDURE simple_proc");
-            logger.info("Dropped procedure using: DROP PROCEDURE simple_proc");
+            engine.execute("DROP PROCEDURE simple_proc(INTEGER)");
+            logger.info("Dropped procedure using: DROP PROCEDURE simple_proc(INTEGER)");
 
             // Example 8: Drop procedure with parameter types
             logger.info("\n8. DROP PROCEDURE with parameter types specified:");

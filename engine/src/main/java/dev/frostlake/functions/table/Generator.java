@@ -20,7 +20,6 @@ import dev.frostlake.functions.TableFunction;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
-import dev.frostlake.types.NumericType;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -64,32 +63,29 @@ public class Generator extends TableFunction {
             }
         }
 
-        // Create result set with SEQ column
+        // Snowflake's GENERATOR produces ZERO columns (live-verified: SELECT * over it fails with
+        // "SELECT with no columns") — consumers project literals/expressions over the row count.
         List<ResultSetColumn> columns = new ArrayList<>();
-        columns.add(new ResultSetColumn("SEQ", NumericType.INTEGER));
 
         List<Row> rows = new ArrayList<>();
 
         if (rowCount != null) {
             // Generate specified number of rows
             for (int i = 0; i < rowCount; i++) {
-                List<Object> values = new ArrayList<>();
-                values.add((long) i);  // SEQ starts from 0
-                rows.add(new Row(values));
+                rows.add(new Row(new ArrayList<>()));
             }
         } else if (timeLimit != null) {
             // Generate rows for specified time period
             long startTime = System.currentTimeMillis();
             long endTime = startTime + (timeLimit * 1000L);
-            int seq = 0;
+            int generated = 0;
 
             while (System.currentTimeMillis() < endTime) {
-                List<Object> values = new ArrayList<>();
-                values.add((long) seq++);
-                rows.add(new Row(values));
+                rows.add(new Row(new ArrayList<>()));
+                generated++;
 
                 // Add small sleep to prevent infinite loop in very short time limits
-                if (timeLimit > 0 && seq % 1000 == 0) {
+                if (timeLimit > 0 && generated % 1000 == 0) {
                     try {
                         Thread.sleep(1);
                     } catch (final InterruptedException e) {

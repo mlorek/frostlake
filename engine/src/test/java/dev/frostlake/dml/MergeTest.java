@@ -281,4 +281,42 @@ public class MergeTest extends BaseDatabaseTest {
         result = engine.executeQuery("SELECT * FROM sales WHERE date = '2024-01-02'");
         assertEquals(1, result.getRowCount());
     }
+
+    @Test
+    public void testUnaliasedTargetWithAliasedSource() {
+        // The lone alias belongs to the SOURCE; it must not be taken as the target's alias.
+        // (A mis-assigned alias made s.id resolve to the target, so every target row "matched"
+        // and non-matching rows were clobbered with a mis-evaluated value.)
+        engine.execute("CREATE TABLE t (id INTEGER, c VARCHAR)");
+        engine.execute("INSERT INTO t VALUES (1, 'seed1'), (2, 'seed2')");
+        engine.execute("CREATE TABLE src (id INTEGER, x VARCHAR)");
+        engine.execute("INSERT INTO src VALUES (1, 'NEW')");
+
+        engine.execute("""
+            MERGE INTO t USING src s ON t.id = s.id
+            WHEN MATCHED THEN UPDATE SET t.c = s.x
+            """);
+
+        final ResultSet result = engine.executeQuery("SELECT c FROM t ORDER BY id");
+        assertEquals("NEW", result.getRows().get(0).getValue(0));
+        assertEquals("seed2", result.getRows().get(1).getValue(0));
+    }
+
+    @Test
+    public void testUnaliasedTargetMatchedUpdateToNull() {
+        // A NULL-valued source expression must land as SQL NULL on matched rows only.
+        engine.execute("CREATE TABLE t (id INTEGER, c VARCHAR)");
+        engine.execute("INSERT INTO t VALUES (1, 'seed1'), (2, 'seed2')");
+        engine.execute("CREATE TABLE src (id INTEGER, x VARCHAR)");
+        engine.execute("INSERT INTO src SELECT 1, NULL");
+
+        engine.execute("""
+            MERGE INTO t USING src s ON t.id = s.id
+            WHEN MATCHED THEN UPDATE SET t.c = NVL(s.x, s.x)
+            """);
+
+        final ResultSet result = engine.executeQuery("SELECT c FROM t ORDER BY id");
+        assertNull(result.getRows().get(0).getValue(0));
+        assertEquals("seed2", result.getRows().get(1).getValue(0));
+    }
 }

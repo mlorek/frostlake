@@ -17,6 +17,7 @@
 package dev.frostlake.persistence;
 
 import dev.frostlake.config.EngineConfig;
+import dev.frostlake.config.S3PathResolver;
 import dev.frostlake.metastore.*;
 import dev.frostlake.storage.StorageEngine;
 import org.slf4j.Logger;
@@ -127,12 +128,28 @@ public class PersistenceManager {
     }
 
     /**
+     * Build the full engine state entirely in memory — the write half of an in-JVM engine clone.
+     * The catalog snapshot is returned; every table's rows land in {@code tableData}.
+     */
+    public CatalogSnapshot buildState(final Catalog catalog, final StorageEngine storageEngine,
+                                      final MemoryTableDataStore tableData) throws IOException {
+        return CatalogSnapshotWriter.buildSnapshot(catalog, storageEngine, tableData);
+    }
+
+    /** Apply an in-memory engine state (from {@link #buildState}) into a fresh catalog + storage. */
+    public void applyState(final CatalogSnapshot snapshot, final MemoryTableDataStore tableData,
+                           final Catalog catalog, final StorageEngine storageEngine)
+            throws IOException, ClassNotFoundException {
+        CatalogSnapshotReader.applySnapshot(snapshot, tableData, new S3PathResolver(config), catalog, storageEngine);
+    }
+
+    /**
      * Restore a full state snapshot previously written by {@link #checkpointTo} into the live catalog +
      * storage, regardless of the {@code persistence.enabled} flag — used during WAL recovery.
      */
     public void restoreFrom(final Path dir, final Catalog catalog, final StorageEngine storageEngine)
             throws IOException, ClassNotFoundException {
-        CatalogSnapshotReader.readCatalogFrom(dir.resolve("catalog.dat"), dir.resolve("tables"), catalog, storageEngine);
+        CatalogSnapshotReader.readCatalogFrom(dir.resolve("catalog.dat"), dir.resolve("tables"), new S3PathResolver(config), catalog, storageEngine);
     }
 
     /**
@@ -152,7 +169,7 @@ public class PersistenceManager {
         if (!config.isPersistenceEnabled()) {
             return;
         }
-        CatalogSnapshotReader.readCatalogFrom(catalogFile, tablesDirectory, catalog, storageEngine);
+        CatalogSnapshotReader.readCatalogFrom(catalogFile, tablesDirectory, new S3PathResolver(config), catalog, storageEngine);
     }
 
     /**

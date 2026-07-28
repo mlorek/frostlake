@@ -155,16 +155,13 @@ public class DropReleasesStorageTest {
     }
 
     @Test
-    public void dropSchemaRestrictRefusesANonEmptySchema() {
+    public void dropSchemaRestrictDropsANonEmptySchema() {
+        // Live-Snowflake verified: DROP SCHEMA ... RESTRICT drops the schema even when it still
+        // contains objects.
         engine.execute("CREATE SCHEMA seed.s6");
         engine.execute("CREATE TABLE seed.s6.t (id INTEGER)");
-        assertThrows(RuntimeException.class, new Executable() {
-            @Override
-            public void execute() {
-                engine.execute("DROP SCHEMA seed.s6 RESTRICT");
-            }
-        });
-        assertTrue(schemaExists("S6"));
+        engine.execute("DROP SCHEMA seed.s6 RESTRICT");
+        assertFalse(schemaExists("S6"));
     }
 
     /** True when database {@code seed} still has a schema of this name, per SHOW SCHEMAS. */

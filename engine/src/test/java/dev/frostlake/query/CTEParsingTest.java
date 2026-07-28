@@ -108,10 +108,11 @@ public class CTEParsingTest extends BaseDatabaseTest {
             """);
 
         engine.execute("""
+            INSERT INTO target 
             WITH cte AS (
                 SELECT * FROM test_table WHERE id = 1
             )
-            INSERT INTO target SELECT * FROM cte
+            SELECT * FROM cte
             """);
 
         // The CTE keeps only id=1, so one row is inserted into target.
@@ -133,10 +134,11 @@ public class CTEParsingTest extends BaseDatabaseTest {
         // A CTE referenced inside the UPDATE's SET-clause subquery now resolves (including the correlated
         // form). The CTE selects test_table id=1 ('A'), so target's value becomes 'A'.
         engine.execute("""
+            UPDATE target SET value = (
             WITH cte AS (
                 SELECT id, value FROM test_table WHERE id = 1
             )
-            UPDATE target SET value = (SELECT value FROM cte WHERE cte.id = target.id)
+            SELECT value FROM cte WHERE cte.id = target.id)
             """);
 
         final ResultSet rs = engine.executeQuery("SELECT value FROM target WHERE id = 1");
@@ -154,10 +156,11 @@ public class CTEParsingTest extends BaseDatabaseTest {
         engine.execute("INSERT INTO target VALUES (2, 'Y')");
 
         engine.execute("""
+            DELETE FROM target WHERE id IN (
             WITH cte AS (
                 SELECT id FROM test_table WHERE id = 1
             )
-            DELETE FROM target WHERE id IN (SELECT id FROM cte)
+            SELECT id FROM cte)
             """);
 
         // The CTE matches id=1, so that row is deleted, leaving id=2 ('Y').
@@ -165,5 +168,22 @@ public class CTEParsingTest extends BaseDatabaseTest {
         assertEquals(1, result.getRowCount());
         assertEquals(2L, ((Number) result.getRows().get(0).getValue(0)).longValue());
         assertEquals("Y", result.getRows().get(0).getValue(1));
+    }
+
+    @Test
+    public void cteRequiresTheAsKeyword() {
+        // Live-Snowflake verified: AS is REQUIRED in a CTE definition — the AS-less form is a
+        // sqlglot-corpus artifact, not Snowflake syntax.
+        assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.executeQuery("WITH t (SELECT 1 AS c) SELECT c FROM t");
+            }
+        });
+        final ResultSet withAs = engine.executeQuery("WITH t AS (SELECT 1 AS c) SELECT * FROM t");
+        assertEquals(1L, ((Number) withAs.getRows().get(0).getValue(0)).longValue());
+        // The parenthesized form after the name is a COLUMN LIST when AS follows.
+        final ResultSet colList = engine.executeQuery("WITH t (c) AS (SELECT 2) SELECT c FROM t");
+        assertEquals(2L, ((Number) colList.getRows().get(0).getValue(0)).longValue());
     }
 }

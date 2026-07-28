@@ -2,7 +2,14 @@ grammar Frostlake;
 
 // Parser Rules - Simplified for demonstration
 sqlScript
-    : (statement SEMI?)+ EOF
+    : (flowChain SEMI?)+ EOF
+    ;
+
+// The flow operator: stmt ->> stmt ->> stmt. Each stage may read a PRIOR stage's result via a
+// $n table reference, where n counts BACKWARD ($1 = the immediately preceding statement).
+// The chain's result is the LAST statement's result.
+flowChain
+    : statement (FLOW_ARROW statement)*
     ;
 
 statement
@@ -38,22 +45,23 @@ undropStatement
     : UNDROP TABLE qualifiedName SEMI?
     | UNDROP SCHEMA qualifiedName SEMI?
     | UNDROP DATABASE identifier SEMI?
+    | UNDROP TAG qualifiedName SEMI?
     ;
 
 createStatement
-    : CREATE or_replace? DATABASE if_not_exists? identifier (CLONE identifier)? (DATA_RETENTION_TIME_IN_DAYS EQ INTEGER_LITERAL)? commentClause? SEMI?
-    | CREATE or_replace? SCHEMA if_not_exists? qualifiedName (CLONE qualifiedName)? commentClause? SEMI?
-    | CREATE or_replace? (TRANSIENT | TEMPORARY | TEMP | HYBRID)? TABLE if_not_exists? objectName (commentClause | clusterByClause)* (LPAREN columnList RPAREN (AS selectStatement)? | CLONE qualifiedName | LIKE qualifiedName | columnListOptional? AS selectStatement) (commentClause | clusterByClause)* SEMI?
-    | CREATE or_replace? SECURE? VIEW if_not_exists? qualifiedName (LPAREN viewColumnList RPAREN)? commentClause? AS selectStatement commentClause? SEMI?
-    | CREATE or_replace? SECURE? MATERIALIZED VIEW if_not_exists? qualifiedName (LPAREN viewColumnList RPAREN)? commentClause? AS selectStatement commentClause? SEMI?
-    | CREATE or_replace? DYNAMIC TABLE if_not_exists? qualifiedName dynamicTableOptions AS selectStatement commentClause? SEMI?
+    : CREATE or_replace? DATABASE if_not_exists? identifier (CLONE identifier timeTravelClause?)? (DATA_RETENTION_TIME_IN_DAYS EQ INTEGER_LITERAL)? commentClause? SEMI?
+    | CREATE or_replace? SCHEMA if_not_exists? qualifiedName (CLONE qualifiedName timeTravelClause?)? commentClause? SEMI?
+    | CREATE or_replace? (TRANSIENT | TEMPORARY | TEMP | HYBRID)? TABLE if_not_exists? objectName tableTailOption* (LPAREN columnList RPAREN tableTailOption* (AS selectStatement)? | CLONE qualifiedName timeTravelClause? | LIKE qualifiedName | columnListOptional? AS selectStatement)? tableTailOption* SEMI?
+    | CREATE or_replace? SECURE? VIEW if_not_exists? qualifiedName copyGrants? viewProperty* (LPAREN viewColumnList RPAREN)? copyGrants? viewProperty* rowAccessPolicyClause? commentClause? tagList? AS selectStatement commentClause? SEMI?
+    | CREATE or_replace? SECURE? MATERIALIZED VIEW if_not_exists? qualifiedName copyGrants? (LPAREN viewColumnList RPAREN)? copyGrants? commentClause? tagList? AS selectStatement commentClause? SEMI?
+    | CREATE or_replace? DYNAMIC TABLE if_not_exists? qualifiedName (LPAREN identifierList RPAREN)? dynamicTableOptions (LPAREN identifierList RPAREN)? AS selectStatement commentClause? SEMI?
     | CREATE or_replace? STREAM if_not_exists? qualifiedName ON (TABLE | VIEW) qualifiedName streamOptions? commentClause? SEMI?
     | CREATE or_replace? TASK if_not_exists? qualifiedName warehouseClause? taskOptions? afterClause? commentClause? (WHEN booleanExpr)? AS taskBody commentClause? SEMI?
     | CREATE or_replace? PIPE if_not_exists? qualifiedName pipeOptions? AS copyStatement commentClause? SEMI?
-    | CREATE or_replace? SEQUENCE if_not_exists? qualifiedName sequenceOptions? commentClause? SEMI?
+    | CREATE or_replace? SEQUENCE if_not_exists? qualifiedName WITH? sequenceOptions? commentClause? SEMI?
     | CREATE or_replace? WAREHOUSE if_not_exists? identifier warehouseProperties? commentClause? SEMI?
-    | CREATE or_replace? STAGE if_not_exists? qualifiedName stageProperties? commentClause? SEMI?
-    | CREATE or_replace? FILE FORMAT if_not_exists? qualifiedName copyFormatOption* commentClause? SEMI?
+    | CREATE or_replace? (TEMPORARY | TEMP)? STAGE if_not_exists? qualifiedName stageProperties? commentClause? SEMI?
+    | CREATE or_replace? (TEMPORARY | TEMP)? FILE FORMAT if_not_exists? qualifiedName copyFormatOption* commentClause? SEMI?
     | CREATE or_replace? TAG if_not_exists? qualifiedName tagProperties? commentClause? SEMI?
     | CREATE or_replace? SECURE? FUNCTION if_not_exists? qualifiedName LPAREN parameterList? RPAREN RETURNS returnType functionOption* (AS bodyDefinition)? SEMI?
     | CREATE or_replace? PROCEDURE if_not_exists? qualifiedName LPAREN parameterList? RPAREN RETURNS returnType languageClause? runtimeVersionClause? packagesClause? importsClause? handlerClause? commentClause? executeAsClause? (AS bodyDefinition)?  SEMI?
@@ -64,7 +72,7 @@ createStatement
     ;
 
 commentClause
-    : COMMENT EQ? STRING_LITERAL
+    : COMMENT EQ? (STRING_LITERAL | DOLLAR_QUOTED_STRING)
     ;
 
 executeAsClause
@@ -136,8 +144,8 @@ dropStatement
     | DROP STAGE if_exists? qualifiedName SEMI?
     | DROP FILE FORMAT if_exists? qualifiedName SEMI?
     | DROP TAG if_exists? qualifiedName SEMI?
-    | DROP FUNCTION if_exists? qualifiedName (LPAREN dataTypeList? RPAREN)? SEMI?
-    | DROP PROCEDURE if_exists? qualifiedName (LPAREN dataTypeList? RPAREN)? SEMI?
+    | DROP FUNCTION if_exists? qualifiedName LPAREN dataTypeList? RPAREN SEMI?   // the signature is REQUIRED (live-verified)
+    | DROP PROCEDURE if_exists? qualifiedName LPAREN dataTypeList? RPAREN SEMI?   // the signature is REQUIRED (live-verified)
     | DROP USER if_exists? identifier SEMI?
     | DROP ROLE if_exists? identifier SEMI?
     | DROP MASKING POLICY if_exists? qualifiedName SEMI?
@@ -173,7 +181,7 @@ useStatement
     | USE SCHEMA objectName SEMI?
     | USE WAREHOUSE objectName SEMI?
     | USE ROLE objectName SEMI?
-    | USE SECONDARY ROLES (ALL | identifier) SEMI?
+    | USE SECONDARY ROLES (ALL | identifier (COMMA identifier)*) SEMI?
     ;
 
 // An object name that may be given literally or resolved dynamically via IDENTIFIER('<name>') / IDENTIFIER($var).
@@ -449,6 +457,7 @@ copyIntoTableClause
     | PURGE EQ booleanValue
     | FORCE EQ booleanValue
     | MATCH_BY_COLUMN_NAME EQ copyOptionValue
+    | optionKey EQ parenOptionList
     | identifier EQ copyOptionValue
     ;
 
@@ -461,6 +470,7 @@ copyIntoStageClause
     | SINGLE EQ booleanValue
     | MAX_FILE_SIZE EQ INTEGER_LITERAL
     | VALIDATION_MODE EQ copyOptionValue
+    | optionKey EQ parenOptionList
     | identifier EQ copyOptionValue
     ;
 
@@ -483,13 +493,18 @@ copyTransformItem
 // A stage reference: a named stage (@stage), the current user's stage (@~), or a table stage (@%table),
 // each with an optional path beneath it.
 stageRef
-    : AT identifier stagePath?
+    : AT identifier (DOT identifier)* stagePath?
     | AT TILDE stagePath?
-    | AT PERCENT identifier stagePath?
+    | AT (identifier DOT)* PERCENT (identifier | TABLE) stagePath?
     ;
 
+// The optional trailing SLASH matches Snowflake, where unload targets are conventionally written as
+// directories: COPY INTO @stage/some/dir/ FROM (query).
 stagePath
-    : ((SLASH | DOT) (identifier | INTEGER_LITERAL))+
+    // TO joins the segment words because paths like @~/some/path/to/file.csv are routine and `to`
+    // lexes as the keyword token; a full path-aware lexer mode is not worth the complexity.
+    : ((SLASH | DOT) (identifier | INTEGER_LITERAL | TO | SOME | ANY | ALL))+ SLASH?
+    | SLASH                                  // a bare trailing slash: @stage/
     ;
 
 copyTableSource
@@ -526,7 +541,7 @@ copyOptionValue
     | booleanValue
     | CONTINUE
     | AUTO
-    | identifier
+    | qualifiedName
     ;
 
 copyStatement
@@ -562,12 +577,14 @@ warehouseProperty
 
 stageProperties
     : URL EQ STRING_LITERAL stageOption*
+    | stageOption+                       // internal stage declared by its options alone
     ;
 
 stageOption
-    : FILE_FORMAT EQ STRING_LITERAL
-    | ENCRYPTION EQ booleanValue
+    : FILE_FORMAT EQ (STRING_LITERAL | parenOptionList | qualifiedName)
+    | ENCRYPTION EQ (booleanValue | parenOptionList)
     | COMMENT EQ STRING_LITERAL
+    | identifier EQ (parenOptionList | copyOptionValue)   // CREDENTIALS=(...), TEMPORARY-stage props, ...
     ;
 
 taskAction
@@ -588,10 +605,8 @@ taskParamName
     ;
 
 pipeAction
-    : RESUME
-    | PAUSE
-    | REFRESH pipeRefreshOption*
-    | SET pipeSetOption+
+    : REFRESH pipeRefreshOption*
+    | SET pipeSetOption+   // PAUSE/RESUME are NOT Snowflake syntax; use SET PIPE_EXECUTION_PAUSED = TRUE/FALSE
     ;
 
 // Option names are identifiers (e.g. PIPE_EXECUTION_PAUSED, PREFIX, MODIFIED_AFTER) so no new keyword
@@ -605,7 +620,7 @@ pipeRefreshOption
     ;
 
 sequenceOptions
-    : sequenceOption+
+    : sequenceOption (COMMA? sequenceOption)*
     ;
 
 sequenceOption
@@ -613,6 +628,7 @@ sequenceOption
     | INCREMENT (BY | EQ)? MINUS? INTEGER_LITERAL
     | ORDER
     | NOORDER
+    | commentClause
     ;
 
 sequenceAction
@@ -640,14 +656,15 @@ warehouseAction
     : RESUME
     | SUSPEND
     | SET warehouseProperty+
-    | RENAME TO? identifier
+    | RENAME TO identifier
     | tagSet
     | tagUnset
     ;
 
 databaseAction
-    : RENAME TO? identifier
+    : RENAME TO identifier
     | SET COMMENT EQ STRING_LITERAL
+    | SET optionKey EQ (parenOptionList | copyOptionValue)
     | SET READ_ONLY EQ booleanValue
     | UNSET READ_ONLY
     | tagSet
@@ -655,24 +672,25 @@ databaseAction
     ;
 
 schemaAction
-    : RENAME TO? identifier
+    : RENAME TO identifier
     | SET COMMENT EQ STRING_LITERAL
     | tagSet
     | tagUnset
     ;
 
 tableAction
-    : RENAME TO? qualifiedName
+    : RENAME TO qualifiedName
     | SWAP WITH qualifiedName
-    | ADD COLUMN? if_not_exists? columnDef (COMMA columnDef)*
+    | ADD COLUMN? if_not_exists? columnDef (COMMA alterAddColumnItem)*
     | DROP COLUMN if_exists? identifier
-    | RENAME COLUMN identifier TO? identifier
+    | RENAME COLUMN identifier TO identifier
     | ALTER COLUMN identifier ((SET DATA)? TYPE)? dataTypeName typeParameters?
     | ALTER COLUMN identifier SET NOT NULL
     | ALTER COLUMN identifier DROP NOT NULL
     | ALTER COLUMN identifier SET DEFAULT defaultExpression
     | ALTER COLUMN identifier DROP DEFAULT
     | SET COMMENT EQ STRING_LITERAL
+    | SET optionKey EQ (parenOptionList | copyOptionValue)
     | CLUSTER BY LPAREN expressionList RPAREN
     | ADD tableConstraint
     | DROP CONSTRAINT identifier
@@ -686,10 +704,17 @@ tableAction
     | tagSet
     | tagUnset
     | columnTagAction
+    | tableUnsetProperties
+    ;
+
+// ALTER TABLE ... UNSET prop[, prop]* — its own subrule so the masking-policy alternative's UNSET
+// keeps a single-token accessor in tableAction.
+tableUnsetProperties
+    : UNSET optionKey (COMMA optionKey)*
     ;
 
 viewAction
-    : RENAME TO? identifier
+    : RENAME TO identifier
     | SET COMMENT EQ STRING_LITERAL
     | ADD ROW ACCESS POLICY qualifiedName ON LPAREN identifierList RPAREN
     | DROP ROW ACCESS POLICY qualifiedName
@@ -701,7 +726,7 @@ materializedViewAction
     : SUSPEND
     | RESUME
     | REFRESH
-    | RENAME TO? identifier
+    | RENAME TO identifier
     | SET COMMENT EQ STRING_LITERAL
     ;
 
@@ -752,19 +777,19 @@ tagAction
     | UNSET ALLOWED_VALUES
     | SET MASKING EQ booleanValue
     | SET COMMENT EQ STRING_LITERAL
-    | RENAME TO? identifier
+    | RENAME TO identifier
     ;
 
 maskingPolicyAction
-    : RENAME TO? identifier
+    : RENAME TO identifier
     ;
 
 rowAccessPolicyAction
-    : RENAME TO? identifier
+    : RENAME TO identifier
     ;
 
 fileFormatAction
-    : RENAME TO? qualifiedName
+    : RENAME TO qualifiedName
     | SET? copyFormatOption+
     ;
 
@@ -775,20 +800,24 @@ routineAlterAction
     ;
 
 userAction
-    : RENAME TO? identifier
+    : RENAME TO identifier
     | SET PASSWORD EQ STRING_LITERAL
     | SET DEFAULT_ROLE EQ identifier
     | SET COMMENT EQ STRING_LITERAL
     ;
 
 roleAction
-    : RENAME TO? identifier
+    : RENAME TO identifier
     | SET COMMENT EQ STRING_LITERAL
     ;
 
 sessionAction
-    : SET sessionParameter EQ literal
+    : SET sessionAssignment (COMMA sessionAssignment)*
     | UNSET sessionParameter (COMMA sessionParameter)*
+    ;
+
+sessionAssignment
+    : sessionParameter EQ literal
     ;
 
 sessionParameter
@@ -820,7 +849,7 @@ columnDef
     ;
 
 typeParameters
-    : LPAREN INTEGER_LITERAL (COMMA INTEGER_LITERAL)? RPAREN
+    : LPAREN (INTEGER_LITERAL (COMMA INTEGER_LITERAL)?)? RPAREN   // nvarchar() — empty parens allowed
     ;
 
 tableConstraint
@@ -831,6 +860,13 @@ tableConstraint
 
 constraintName
     : CONSTRAINT identifier
+    ;
+
+// One additional column in a multi-column ALTER TABLE ... ADD. Kept as a SUBRULE so the repeated
+// COLUMN / IF NOT EXISTS stay out of tableAction itself: repeating a token inside one alternative
+// turns the whole rule's accessor into a List, silently breaking every existing `X() != null` guard.
+alterAddColumnItem
+    : COLUMN? if_not_exists? columnDef
     ;
 
 referentialActions
@@ -858,14 +894,26 @@ referentialOption
     ;
 
 // Date/time type keywords usable as a typed-literal prefix, e.g. DATE '2020-01-15' or TIMESTAMP '…'.
+structuredFieldList
+    : structuredField (COMMA structuredField)*
+    ;
+
+structuredField
+    : identifier dataTypeName typeParameters? (NOT? NULL)?
+    ;
+
 dateTimeLiteralType
-    : DATE | DATETIME | TIMESTAMP | TIMESTAMP_NTZ | TIMESTAMPNTZ | TIMESTAMP_LTZ | TIMESTAMP_TZ
+    : DATE | DATETIME | TIME | TIMESTAMP | TIMESTAMP_NTZ | TIMESTAMPNTZ | TIMESTAMP_LTZ | TIMESTAMP_TZ
     ;
 
 dataTypeName
-    : INTEGER | INT | BIGINT | SMALLINT | TINYINT | BYTEINT | NUMBER | DECIMAL | NUMERIC | FLOAT | FLOAT4 | FLOAT8 | DOUBLE PRECISION? | REAL
-    | VARCHAR | STRING | TEXT | CHAR | BOOLEAN | DATE | DATETIME | TIMESTAMP | TIMESTAMP_NTZ | TIMESTAMPNTZ | TIMESTAMP_LTZ | TIMESTAMP_TZ | VARIANT
-    | ARRAY | OBJECT | BINARY | VARBINARY
+    : INTEGER | INT | BIGINT | SMALLINT | TINYINT | BYTEINT | NUMBER | DECIMAL | NUMERIC | DECFLOAT | FLOAT | FLOAT4 | FLOAT8 | DOUBLE PRECISION? | REAL
+    | VARCHAR | STRING | TEXT | BOOLEAN | DATE | DATETIME | TIME | TIMESTAMP_NTZ | TIMESTAMPNTZ | TIMESTAMP_LTZ | TIMESTAMP_TZ | VARIANT
+    | TIMESTAMPLTZ | TIMESTAMPTZ | TIMESTAMP WITH LOCAL TIME ZONE | TIMESTAMP     // TIMESTAMP last: the worded form must win the prediction
+    | (CHAR | CHARACTER | NCHAR) VARYING? | NVARCHAR
+    | ARRAY (LPAREN dataTypeName typeParameters? RPAREN)?      // structured ARRAY(INT)
+    | OBJECT (LPAREN structuredFieldList RPAREN)?              // structured OBJECT(a CHAR NOT NULL, ...)
+    | BINARY | VARBINARY
     | UUID
     | VECTOR LPAREN (FLOAT | INT) COMMA INTEGER_LITERAL RPAREN
     | MAP (LPAREN dataTypeName COMMA dataTypeName RPAREN)?   // MAP or MAP(keyType, valueType); backed by OBJECT
@@ -875,6 +923,7 @@ columnConstraint
     : PRIMARY KEY relyOption?
     | NOT? NULL relyOption?
     | UNIQUE relyOption?
+    | tagList
     | AUTOINCREMENT identityProperties?
     | IDENTITY identityProperties?
     | DEFAULT defaultExpression
@@ -883,11 +932,22 @@ columnConstraint
     | collateClause
     ;
 
-// AUTOINCREMENT / IDENTITY seed + step: (start, step) or START <n> INCREMENT <n>, with optional ORDER/NOORDER.
+// AUTOINCREMENT / IDENTITY seed + step: (start, step), or any mix of START <n> / INCREMENT <n> /
+// ORDER / NOORDER word options in any order (each may appear alone); values may be negative.
 identityProperties
-    : LPAREN INTEGER_LITERAL COMMA INTEGER_LITERAL RPAREN (ORDER | NOORDER)?
-    | START INTEGER_LITERAL INCREMENT INTEGER_LITERAL (ORDER | NOORDER)?
-    | (ORDER | NOORDER)
+    : LPAREN signedInteger COMMA signedInteger RPAREN (ORDER | NOORDER)?
+    | identityWordOption+
+    ;
+
+identityWordOption
+    : START signedInteger
+    | INCREMENT signedInteger
+    | ORDER
+    | NOORDER
+    ;
+
+signedInteger
+    : MINUS? INTEGER_LITERAL
     ;
 
 defaultExpression
@@ -897,6 +957,59 @@ defaultExpression
 relyOption
     : RELY
     | NORELY
+    ;
+
+// COPY GRANTS on CREATE [MATERIALIZED] VIEW / TABLE — accepted; grants are not copied (the security
+// model keeps per-object grants, and the emulator has no source-object grant transfer semantics).
+copyGrants
+    : COPY GRANTS
+    ;
+
+// TAG (k1='v1', k2='v2') on tables, columns and views — accepted and ignored (tags do not change
+// query results; only tag-metadata introspection would observe them).
+tagList
+    : TAG LPAREN tagAssignment (COMMA tagAssignment)* RPAREN
+    ;
+
+tagAssignment
+    : qualifiedName EQ STRING_LITERAL
+    ;
+
+// [WITH] ROW ACCESS POLICY p ON (col1, col2) at CREATE time — attached like the ALTER form.
+rowAccessPolicyClause
+    : WITH? ROW ACCESS POLICY qualifiedName ON LPAREN identifierList RPAREN
+    ;
+
+// A parenthesized option group: CREDENTIALS=(AWS_KEY_ID='..' ...), ENCRYPTION=(TYPE='..'),
+// STAGE_FILE_FORMAT=(TYPE=CSV ...), FILE_FORMAT=(FORMAT_NAME=db.s.ff). May be empty.
+parenOptionList
+    : LPAREN parenOption* RPAREN
+    ;
+
+parenOption
+    : optionKey EQ (copyOptionValue | LPAREN stringLiteralList? RPAREN)
+    ;
+
+// Option keys are mostly IDENTIFIER, but several lex as dedicated keyword tokens elsewhere.
+optionKey
+    : identifier
+    | ON_ERROR | SIZE_LIMIT | PURGE | MATCH_BY_COLUMN_NAME | TYPE | FIELD_DELIMITER | RECORD_DELIMITER
+    | COMPRESSION | DATE_FORMAT | ESCAPE | SKIP_HEADER | PATTERN | FORCE | HEADER | OVERWRITE | SINGLE
+    | MAX_FILE_SIZE | VALIDATION_MODE | ENCRYPTION | FILE_FORMAT | DATA_RETENTION_TIME_IN_DAYS
+    ;
+
+// CREATE TABLE tail modifiers, in any order: comments, clustering, tags, a row access policy.
+tableTailOption
+    : commentClause
+    | clusterByClause
+    | tagList
+    | rowAccessPolicyClause
+    | optionKey EQ (parenOptionList | copyOptionValue)   // CHANGE_TRACKING=TRUE etc. — accepted, not modeled
+    ;
+
+// CREATE VIEW key=value properties (CHANGE_TRACKING=TRUE, ...) — accepted, not modeled.
+viewProperty
+    : optionKey EQ copyOptionValue
     ;
 
 dmlStatement
@@ -909,8 +1022,8 @@ dmlStatement
     ;
 
 insertStatement
-    : withClause? INSERT OVERWRITE? INTO objectName columnListOptional? VALUES valueTupleList SEMI?
-    | withClause? INSERT OVERWRITE? INTO objectName columnListOptional? selectStatement SEMI?
+    : INSERT (OVERWRITE TABLE | OVERWRITE? INTO) objectName columnListOptional? VALUES valueTupleList SEMI?
+    | INSERT (OVERWRITE TABLE | OVERWRITE? INTO) objectName columnListOptional? selectStatement SEMI?
     ;
 
 // Snowflake multi-table INSERT: unconditional (INSERT [OVERWRITE] ALL INTO ...) and
@@ -961,15 +1074,15 @@ valueList
     ;
 
 updateStatement
-    : withClause? UPDATE objectName (AS? identifier)? SET assignmentList (FROM tableReference (COMMA tableReference | joinClause)*)? whereClause? SEMI?
-    ;
+    : UPDATE objectName (AS? identifier)? (FROM tableReference (COMMA tableReference | joinClause)*)? SET assignmentList (FROM tableReference (COMMA tableReference | joinClause)*)? whereClause? SEMI?
+    ;   // Snowflake also accepts the FROM clause BEFORE SET (UPDATE t u FROM (...) b SET ... WHERE ...)
 
 deleteStatement
-    : withClause? DELETE FROM objectName (AS? identifier)? (USING tableReference (COMMA tableReference | joinClause)*)? whereClause? SEMI?
+    : DELETE FROM objectName (AS? identifier)? (USING tableReference (COMMA tableReference | joinClause)*)? whereClause? SEMI?
     ;
 
 mergeStatement
-    : withClause? MERGE INTO qualifiedName (AS? identifier)?
+    : MERGE INTO qualifiedName (AS? identifier)?
       USING mergeSource (AS? identifier (LPAREN identifierList RPAREN)?)?
       ON booleanExpr
       mergeClause+
@@ -1030,11 +1143,11 @@ withClause
     ;
 
 cteDefinition
-    : identifier columnListOptional? AS LPAREN selectStatement RPAREN
+    : identifier columnListOptional? AS LPAREN selectStatement RPAREN   // AS is REQUIRED (live-Snowflake verified)
     ;
 
 selectClause
-    : SELECT DISTINCT? topClause? selectList (FROM tableExpression whereClause? groupByClause? havingClause? qualifyClause?)? whereClause?
+    : SELECT (DISTINCT | ALL)? topClause? selectList (FROM tableExpression whereClause? groupByClause? havingClause? qualifyClause?)? whereClause?
     ;
 
 setOperator
@@ -1063,11 +1176,13 @@ pivotAlias
     ;
 
 sampleClause
-    : (SAMPLE | TABLESAMPLE) sampleMethod? LPAREN (INTEGER_LITERAL | FLOAT_LITERAL) ROWS? RPAREN sampleSeed?
+    : (SAMPLE | TABLESAMPLE) sampleMethod? LPAREN (INTEGER_LITERAL | FLOAT_LITERAL | SESSION_VAR_REF) ROWS? RPAREN sampleSeed?
     ;
 
+// BLOCK (and any future method word) arrives via the identifier fallback — the clause is anchored
+// between SAMPLE/TABLESAMPLE and the parenthesized size, so a loose word cannot leak elsewhere.
 sampleMethod
-    : BERNOULLI | ROW | SYSTEM
+    : BERNOULLI | ROW | SYSTEM | identifier
     ;
 
 sampleSeed
@@ -1076,19 +1191,39 @@ sampleSeed
 
 tableSource
     : TABLE LPAREN expression RPAREN    // Table function call
+    | DIRECTORY LPAREN stageRef RPAREN  // Directory table: file-level metadata of a stage
+    | stageRef stageQueryParams?        // Query staged files: $1..$n fields + metadata$ columns
+    // NOTE: a quoted 'FROM <string>' source is deliberately NOT supported — even predicate-gated,
+    // STRING_LITERAL as a tableSource lets ALL(*) re-derive FROM (VALUES (...), (...)) tuple lists
+    // as a parenthesized join and reject them. Verified twice; do not reintroduce.
     | FLATTEN LPAREN flattenArgList RPAREN  // LATERAL FLATTEN(expr [, name => val ...])
     | KW_IDENTIFIER LPAREN expression RPAREN  // IDENTIFIER(expr) — dynamic table name
+    | POSITIONAL_PARAMETER              // $n — a prior flow-chain stage's result (n statements back)
     | qualifiedName timeTravelClause?
     | LPAREN selectStatement RPAREN
     | LPAREN tableReference (COMMA tableReference | joinClause)+ RPAREN  // parenthesized FROM join: FROM (a JOIN b ON c ...) — pure grouping, keeps inner aliases in scope. The '+' (>=1 join/comma) disambiguates from (SELECT ...) and (single_table).
-    | LPAREN VALUES valueTupleList RPAREN  // (VALUES (...), (...)) as subquery
+    | LPAREN VALUES valueTupleList (AS? identifier columnListOptional?)? RPAREN  // (VALUES (...) [AS] v (cols)) as subquery — Snowflake allows the alias inside the parens
     | VALUES valueTupleList                // Inline values
+    ;
+
+// SELECT ... FROM @stage (FILE_FORMAT => 'name', PATTERN => 'regex'): named read parameters.
+stageQueryParams
+    : LPAREN stageQueryParam (COMMA stageQueryParam)* RPAREN
+    ;
+
+stageQueryParam
+    : (FILE_FORMAT | PATTERN | identifier) ARROW (STRING_LITERAL | qualifiedName)
     ;
 
 // FLATTEN argument list: positional INPUT followed by optional named params, or all named
 flattenArgList
     : expression (COMMA namedArgument)*   // positional INPUT [, name => val ...]
     | namedArgumentList                   // all named
+    ;
+
+// USING (c1, t2.c2, ...) — Snowflake tolerates qualified names here; only the column part joins.
+usingColumnList
+    : qualifiedName (COMMA qualifiedName)*
     ;
 
 timeTravelClause
@@ -1101,6 +1236,7 @@ timeTravelPoint
     : TIMESTAMP ARROW expression
     | OFFSET ARROW expression
     | STATEMENT ARROW expression
+    | STREAM ARROW expression
     ;
 
 changesClause
@@ -1112,7 +1248,7 @@ changesClause
 joinClause
     // DIRECTED is an accepted no-op join modifier (e.g. INNER DIRECTED JOIN): a semantic annotation with no
     // effect on the row-level result, so it parses like a plain join of that type.
-    : NATURAL? joinType? DIRECTED? JOIN LATERAL? tableReference (ON booleanExpr | USING LPAREN identifierList RPAREN)?
+    : NATURAL? joinType? DIRECTED? JOIN LATERAL? tableReference (ON booleanExpr | USING LPAREN usingColumnList RPAREN)?
     ;
 
 joinType
@@ -1124,7 +1260,16 @@ joinType
     ;
 
 pivotClause
-    : PIVOT LPAREN aggregateFunction FOR identifier IN LPAREN pivotValueList RPAREN RPAREN
+    : PIVOT LPAREN aggregateFunction FOR identifier IN LPAREN pivotInList RPAREN
+      (DEFAULT ON NULL LPAREN expression RPAREN)? RPAREN
+    ;
+
+// The pivot column set: an explicit value list, ANY (dynamic: the distinct FOR-column values,
+// optionally ordered), or a subquery producing the values.
+pivotInList
+    : pivotValueList
+    | ANY (ORDER BY expression (COMMA expression)*)?
+    | selectStatement
     ;
 
 unpivotClause
@@ -1157,10 +1302,14 @@ selectList
     ;
 
 selectItem
-    : STAR starModifier*                                 # StarItem
-    | qualifiedName DOT STAR starModifier*                # QualifiedStarItem
+    // Braces are Snowflake's wrapped-star form ({*}, {* EXCLUDE (c)}, {t.*}); the tokens are
+    // individually optional so the labels/accessors stay unchanged — an unbalanced brace is
+    // tolerated rather than modeled.
+    : LBRACE? STAR starModifier* RBRACE?                  # StarItem
+    | LBRACE? qualifiedName DOT STAR starModifier* RBRACE?  # QualifiedStarItem
     | qualifiedName DOT DOUBLE_STAR                       # SpreadItem
     | DOUBLE_STAR qualifiedName                           # SpreadPrefixItem
+    | DOUBLE_STAR expression                              # SpreadExprItem
     | booleanExpr (AS? identifier)?                       # ExprItem
     ;
 
@@ -1261,7 +1410,7 @@ topClause
     ;
 
 limitClause
-    : LIMIT INTEGER_LITERAL (OFFSET INTEGER_LITERAL)?
+    : LIMIT (INTEGER_LITERAL | NULL) (OFFSET INTEGER_LITERAL)?
     ;
 
 fetchClause
@@ -1281,11 +1430,11 @@ listStatement
 
 // Stage file operations: PUT (local → stage), GET (stage → local), REMOVE/RM (delete staged files).
 putStatement
-    : PUT STRING_LITERAL stageRef stageFileOption* SEMI?
+    : PUT (STRING_LITERAL | FILE_URL) stageRef stageFileOption* SEMI?
     ;
 
 getStatement
-    : GET stageRef STRING_LITERAL stageFileOption* SEMI?
+    : GET stageRef (STRING_LITERAL | FILE_URL) stageFileOption*
     ;
 
 removeStatement
@@ -1293,29 +1442,30 @@ removeStatement
     ;
 
 stageFileOption
-    : identifier EQ copyOptionValue
+    : optionKey EQ copyOptionValue
     ;
 
 showStatement
-    : SHOW DATABASES (LIKE STRING_LITERAL)? SEMI?
-    | SHOW SCHEMAS (LIKE STRING_LITERAL)? (IN DATABASE identifier)? SEMI?
-    | SHOW TABLES (LIKE STRING_LITERAL)? (IN (DATABASE | SCHEMA)? qualifiedName)? SEMI?
-    | SHOW VIEWS (LIKE STRING_LITERAL)? (IN (DATABASE | SCHEMA)? qualifiedName)? SEMI?
+    : SHOW TERSE? DATABASES HISTORY? (LIKE STRING_LITERAL)? showTail SEMI?
+    | SHOW TERSE? SCHEMAS (LIKE STRING_LITERAL)? (IN DATABASE identifier)? showTail SEMI?
+    | SHOW TERSE? TABLES HISTORY? (LIKE STRING_LITERAL)? (IN (DATABASE | SCHEMA)? qualifiedName)? showTail SEMI?
+    | SHOW TERSE? ICEBERG TABLES (LIKE STRING_LITERAL)? (IN (DATABASE | SCHEMA)? qualifiedName)? showTail SEMI?
+    | SHOW TERSE? VIEWS (LIKE STRING_LITERAL)? (IN (DATABASE | SCHEMA | ACCOUNT)? qualifiedName?)? showTail SEMI?
     | SHOW MATERIALIZED VIEWS (LIKE STRING_LITERAL)? (IN (DATABASE | SCHEMA)? qualifiedName)? SEMI?
     | SHOW DYNAMIC TABLES (LIKE STRING_LITERAL)? (IN (DATABASE | SCHEMA)? qualifiedName)? SEMI?
     | SHOW HYBRID TABLES (LIKE STRING_LITERAL)? (IN (DATABASE | SCHEMA)? qualifiedName)? SEMI?
-    | SHOW COLUMNS (IN | FROM) TABLE? qualifiedName SEMI?
+    | SHOW TERSE? COLUMNS (LIKE STRING_LITERAL)? (IN (TABLE | VIEW)? qualifiedName?)? showTail SEMI?   // FROM is not Snowflake syntax (live-verified)
     | SHOW STREAMS (LIKE STRING_LITERAL)? (IN (DATABASE | SCHEMA | ACCOUNT)? qualifiedName)? SEMI?
     | SHOW TASKS (LIKE STRING_LITERAL)? (IN (DATABASE | SCHEMA | ACCOUNT)? qualifiedName)? SEMI?
     | SHOW PIPES (LIKE STRING_LITERAL)? (IN (DATABASE | SCHEMA | ACCOUNT)? qualifiedName)? SEMI?
-    | SHOW SEQUENCES (LIKE STRING_LITERAL)? (IN (DATABASE | SCHEMA | ACCOUNT)? qualifiedName)? SEMI?
-    | SHOW WAREHOUSES (LIKE STRING_LITERAL)? SEMI?
+    | SHOW TERSE? SEQUENCES (LIKE STRING_LITERAL)? (IN (DATABASE | SCHEMA | ACCOUNT)? qualifiedName?)? showTail SEMI?
+    | SHOW WAREHOUSES (LIKE STRING_LITERAL)? showTail SEMI?
     | SHOW STAGES (LIKE STRING_LITERAL)? (IN (DATABASE | SCHEMA | ACCOUNT)? qualifiedName)? SEMI?
     | SHOW FILE FORMATS (LIKE STRING_LITERAL)? (IN (DATABASE | SCHEMA)? qualifiedName)? SEMI?
     | SHOW TAGS (LIKE STRING_LITERAL)? (IN (DATABASE | SCHEMA | ACCOUNT)? qualifiedName)? SEMI?
-    | SHOW USER? PROCEDURES (LIKE STRING_LITERAL)? (IN (DATABASE | SCHEMA)? qualifiedName)? SEMI?
-    | SHOW USER? FUNCTIONS (LIKE STRING_LITERAL)? (IN (DATABASE | SCHEMA)? qualifiedName)? SEMI?
-    | SHOW USERS (LIKE STRING_LITERAL)? SEMI?
+    | SHOW USER? PROCEDURES (LIKE STRING_LITERAL)? (IN (DATABASE | SCHEMA | APPLICATION PACKAGE?)? qualifiedName)? SEMI?
+    | SHOW USER? FUNCTIONS (LIKE STRING_LITERAL)? (IN (DATABASE | SCHEMA | CLASS)? qualifiedName)? SEMI?
+    | SHOW TERSE? USERS (LIKE STRING_LITERAL)? showTail SEMI?
     | SHOW ROLES (LIKE STRING_LITERAL)? SEMI?
     | SHOW GRANTS ON objectType identifier SEMI?
     | SHOW GRANTS TO (USER | ROLE) identifier SEMI?  // SHOW GRANTS TO USER/ROLE name
@@ -1323,18 +1473,38 @@ showStatement
     | SHOW ROW ACCESS POLICIES (LIKE STRING_LITERAL)? (IN (DATABASE | SCHEMA)? qualifiedName)? SEMI?
     | SHOW PARAMETERS (LIKE STRING_LITERAL)? (IN (SESSION | ACCOUNT | (DATABASE | SCHEMA | TABLE | WAREHOUSE | USER | ROLE) identifier))? SEMI?
     | SHOW SESSIONS (LIKE STRING_LITERAL)? SEMI?
-    | SHOW OBJECTS (LIKE STRING_LITERAL)? (IN (DATABASE | SCHEMA)? qualifiedName)? SEMI?
+    | SHOW TERSE? OBJECTS (LIKE STRING_LITERAL)? (IN (DATABASE | SCHEMA)? qualifiedName)? showTail SEMI?
     | SHOW ORGANIZATION ACCOUNTS SEMI?
     | SHOW ACCOUNTS SEMI?
     | SHOW LOCKS (IN ACCOUNT)? SEMI?
     | SHOW TRANSACTIONS (LIKE STRING_LITERAL)? SEMI?
     | SHOW VARIABLES SEMI?
-    | SHOW PRIMARY KEYS (IN TABLE qualifiedName)? SEMI?
-    | SHOW UNIQUE KEYS (IN TABLE qualifiedName)? SEMI?
+    | SHOW TERSE? (PRIMARY | UNIQUE | IMPORTED) KEYS (IN (ACCOUNT | DATABASE identifier? | SCHEMA qualifiedName? | TABLE qualifiedName? | qualifiedName))? SEMI?
+    ;
+
+// Trailing SHOW modifiers shared by the object listings (all optional; the rule may match empty):
+// STARTS WITH 'prefix' (case-sensitive name-prefix filter), LIMIT n [FROM 'name'] (pagination),
+// and WITH PRIVILEGES p1, p2 (accepted; the listing is not privilege-filtered).
+showTail
+    : (STARTS WITH STRING_LITERAL)? (LIMIT INTEGER_LITERAL (FROM STRING_LITERAL)?)? (WITH PRIVILEGES showPrivilege (COMMA showPrivilege)*)?
+    ;
+
+// A privilege word in SHOW ... WITH PRIVILEGES — most are keyword tokens elsewhere in the grammar.
+showPrivilege
+    : identifier
+    | USAGE
+    | MODIFY
+    | SELECT
+    | INSERT
+    | UPDATE
+    | DELETE
+    | TRUNCATE
+    | REFERENCES
+    | ALL
     ;
 
 describeStatement
-    : (DESCRIBE | DESC) TABLE qualifiedName SEMI?
+    : (DESCRIBE | DESC) TABLE qualifiedName (TYPE EQ (STAGE | COLUMNS | identifier))? SEMI?
     | (DESCRIBE | DESC) VIEW qualifiedName SEMI?
     | (DESCRIBE | DESC) MATERIALIZED VIEW qualifiedName SEMI?
     | (DESCRIBE | DESC) DYNAMIC TABLE qualifiedName SEMI?
@@ -1352,6 +1522,7 @@ describeStatement
     | (DESCRIBE | DESC) ROW ACCESS POLICY qualifiedName SEMI?
     | (DESCRIBE | DESC) FILE FORMAT qualifiedName SEMI?
     | (DESCRIBE | DESC) RESULT (STRING_LITERAL | identifier LPAREN RPAREN) SEMI?
+    | (DESCRIBE | DESC) qualifiedName SEMI?   // bare DESCRIBE <name> — resolved as a table
     ;
 
 // Procedural Language Statements
@@ -1581,7 +1752,7 @@ intoTarget
     ;
 
 nullStatement
-    : NULL SEMI?
+    : NULL SEMI   // the separator is mandatory — BEGIN NULL END is a Snowflake syntax error (live-verified)
     ;
 
 // Snowflake Scripting asynchronous execution. The engine is single-threaded, so ASYNC runs its wrapped
@@ -1615,7 +1786,7 @@ booleanExpr
 expression
     : literal                                                    # LiteralExpr
     | SESSION_VAR_REF                                            # SessionVarExpr
-    | COLON identifier                                           # BindVarExpr
+    | COLON (identifier | INTEGER_LITERAL)                       # BindVarExpr
     | QUESTION                                                   # PositionalBindExpr
     | SYSTEM_STREAM_HAS_DATA LPAREN expression RPAREN            # SystemStreamHasDataExpr
     | SYSTEM_USER_TASK_CANCEL LPAREN expression RPAREN           # SystemUserTaskCancelExpr
@@ -1632,14 +1803,15 @@ expression
     | INTERVAL expression intervalUnit                           # IntervalExpr
     | INTERVAL STRING_LITERAL                                    # IntervalStringExpr
     | dateTimeLiteralType STRING_LITERAL                         # TypedDateTimeLiteralExpr
-    | CAST LPAREN expression AS dataTypeName typeParameters? RPAREN              # CastExpr
-    | TRY_CAST LPAREN expression AS dataTypeName typeParameters? RPAREN          # TryCastExpr
+    | CAST LPAREN expression AS dataTypeName typeParameters? ((RENAME | ADD) FIELDS)? RPAREN  # CastExpr
+    | TRY_CAST LPAREN expression AS dataTypeName typeParameters? ((RENAME | ADD) FIELDS)? RPAREN  # TryCastExpr
     | COLLATE LPAREN expression COMMA STRING_LITERAL RPAREN                      # CollateFuncExpr
-    | functionName LPAREN identifier FROM expression RPAREN                      # ExtractFromExpr
+    | functionName LPAREN (identifier | STRING_LITERAL) FROM expression RPAREN   # ExtractFromExpr
     | functionName LPAREN DISTINCT? STAR starModifier* RPAREN                  # FunctionCallStarExpr
-    | functionName LPAREN expression (COMMA namedArgument)+ RPAREN overClause?  # FunctionCallMixedArgsExpr
+    | functionName LPAREN expression (COMMA expression)* (COMMA namedArgument)+ RPAREN overClause?  # FunctionCallMixedArgsExpr
     | functionName LPAREN namedArgumentList RPAREN overClause?   # FunctionCallNamedArgsExpr
-    | functionName LPAREN DISTINCT? functionArgList? RPAREN withinGroupClause? nullHandling? overClause?     # FunctionCallExpr
+    | functionName LPAREN DISTINCT? functionArgList? nullHandling? RPAREN withinGroupClause? filterClause?
+          (FROM (FIRST | LAST) nullHandling? overClause | nullHandling? overClause?)     # FunctionCallExpr
     | EXECUTE IMMEDIATE expression (USING LPAREN expressionList RPAREN)?  # ExecuteImmediateExpr
     | op=(PLUS | MINUS) expression                               # UnaryExpr
     | EXISTS LPAREN selectStatement RPAREN                       # ExistsExpr
@@ -1655,6 +1827,7 @@ expression
     | expression IS NOT? DISTINCT FROM expression                # IsDistinctExpr
     | expression NOT? (LIKE | ILIKE) q=(ANY | ALL) LPAREN patterns+=expression (COMMA patterns+=expression)* RPAREN (ESCAPE esc=expression)? # LikeAnyAllExpr
     | expression NOT? (LIKE | ILIKE) expression (ESCAPE expression)? # LikeExpr
+    | expression NOT? (RLIKE | REGEXP) expression                # RlikeExpr
     | expression NOT? BETWEEN expression AND expression          # BetweenExpr
     | expression NOT? IN LPAREN selectStatement RPAREN           # InSubqueryExpr
     | expression NOT? IN LPAREN expressionList RPAREN            # InListExpr
@@ -1692,8 +1865,13 @@ intervalUnit
     ;
 
 jsonObjectLiteral
-    : LBRACE jsonKeyValuePair (COMMA jsonKeyValuePair)* RBRACE
+    : LBRACE jsonObjectEntry (COMMA jsonObjectEntry)* RBRACE
     | LBRACE RBRACE
+    ;
+
+jsonObjectEntry
+    : jsonKeyValuePair
+    | DOUBLE_STAR expression   // ** merges the object value's pairs into the surrounding object
     ;
 
 jsonKeyValuePair
@@ -1701,8 +1879,13 @@ jsonKeyValuePair
     ;
 
 jsonArrayLiteral
-    : LBRACKET expression (COMMA expression)* RBRACKET
+    : LBRACKET arrayElement (COMMA arrayElement)* RBRACKET
     | LBRACKET RBRACKET
+    ;
+
+arrayElement
+    : DOUBLE_STAR expression   // ** spreads the array value's elements into the surrounding array
+    | expression
     ;
 
 expressionList
@@ -1716,11 +1899,25 @@ functionArgList
     : functionArg (COMMA functionArg)*
     ;
 
+// FILTER (WHERE cond) on an aggregate call — evaluated as conditional aggregation.
+filterClause
+    : FILTER LPAREN WHERE booleanExpr RPAREN
+    ;
+
 // A function argument is either a lambda (for higher-order functions like TRANSFORM/FILTER/REDUCE) or a
 // normal boolean expression.
 functionArg
     : lambdaFunction
+    | exprTuple
+    | DOUBLE_STAR booleanExpr   // ** spreads an array's elements as positional arguments
     | booleanExpr
+    | STAR          // star argument: MINHASH(5, *), HASH_AGG(*)-style calls
+    ;
+
+// A parenthesized tuple argument (two or more expressions): SEARCH((play, line), 'dream').
+// A single parenthesized expression stays a plain booleanExpr.
+exprTuple
+    : LPAREN expression COMMA expression (COMMA expression)* RPAREN
     ;
 
 lambdaFunction
@@ -1742,17 +1939,18 @@ namedArgumentList
     ;
 
 namedArgument
-    : identifier ARROW expression
+    : identifier ARROW (expression | selectStatement)   // Snowflake allows a bare subquery value: INPUT => SELECT ...
     ;
 
 functionName
-    : identifier (DOT identifier)*
+    : KW_IDENTIFIER LPAREN expression RPAREN   // IDENTIFIER('fn') / IDENTIFIER($var) as the function name
+    | identifier (DOT identifier)*
     | LIKE   // LIKE/ILIKE also have a function-call form: LIKE(subject, pattern), ILIKE(subject, pattern)
     | ILIKE
     ;
 
 qualifiedName
-    : identifier (DOT identifier)*
+    : identifier (DOT identifier)* (DOT TABLE)?   // a trailing part literally named "table"
     ;
 
 identifier
@@ -1779,6 +1977,7 @@ identifier
     | CHAR          // Allow CHAR as identifier (function name)
     | DATE          // Allow DATE as identifier
     | DATETIME      // Allow DATETIME as identifier
+    | TIME          // Allow TIME as identifier (column names; also the TIME data type)
     | DAY           // Allow DAY as identifier (can be column name)
     | DAYS          // Allow DAYS as identifier (can be column name)
     | DELIMITER     // Allow DELIMITER as identifier (SPLIT_TO_TABLE parameter)
@@ -1798,6 +1997,18 @@ identifier
     | GET           // Allow GET as identifier (the GET(array/object, key) semi-structured function; the
                     // GET stage command is a separate statement, disambiguated by context)
     | GRANTS        // Allow GRANTS as identifier
+    | FORMAT        // Allow FORMAT as identifier/function name (FILE FORMAT is anchored by FILE)
+    | DECFLOAT      // Allow DECFLOAT as identifier (the type use is anchored in dataTypeName)
+    | FILTER        // Allow FILTER as identifier (the aggregate FILTER clause is anchored by LPAREN WHERE)
+    | POLICY        // Allow POLICY as identifier (MASKING/ROW ACCESS POLICY uses are anchored by the preceding keyword)
+    | PUT           // Allow PUT as identifier (the PUT stage statement is anchored by its file-URL argument)
+    | SCHEMA        // Allow SCHEMA as a qualified-name part (db.schema.object); CREATE/DROP/USE/IN SCHEMA are anchored
+    | SESSION       // Allow SESSION as identifier (ALTER SESSION / IN SESSION are anchored)
+    | NUMBER        // Allow NUMBER as identifier (the NUMBER type is anchored in dataTypeName)
+    | RENAME        // Allow RENAME as identifier (star-modifier / ALTER ... RENAME are anchored)
+    | REPLACE       // Allow REPLACE as identifier (CREATE OR REPLACE / star-modifier are anchored)
+    | GROUP         // Allow GROUP as identifier in expression positions (GROUP BY is anchored; bare
+                    // aliases deliberately EXCLUDE it via nonJoinKeywordIdentifier)
     | GROUPING      // Allow GROUPING as identifier (function name)
     | HOUR          // Allow HOUR as identifier (can be column name)
     | HOURS         // Allow HOURS as identifier (can be column name)
@@ -1892,7 +2103,19 @@ identifier
     | STRING        // Allow STRING as identifier (data type and parameter)
     | SUSPEND_TASK_AFTER_NUM_FAILURES
     | TABLES        // Allow TABLES as identifier (for INFORMATION_SCHEMA views)
+    | RLIKE         // Allow RLIKE as identifier (also the RLIKE(subject, pattern) function form)
+    | REGEXP        // Allow REGEXP as identifier (function-name style usage)
     | TAG           // Allow TAG as identifier
+    | DIRECTORY     // Allow DIRECTORY as identifier (also the DIRECTORY(@stage) table source)
+    | FIELDS        // Allow FIELDS as identifier (also CAST ... RENAME/ADD FIELDS)
+    | NVARCHAR | NCHAR | CHARACTER | VARYING | TIMESTAMPLTZ | TIMESTAMPTZ | LOCAL | ZONE
+    | TERSE         // Allow TERSE as identifier (also the SHOW TERSE modifier)
+    | STARTS        // Allow STARTS as identifier (also SHOW ... STARTS WITH)
+    | HISTORY       // Allow HISTORY as identifier (also SHOW ... HISTORY)
+    | ICEBERG       // Allow ICEBERG as identifier (also SHOW ICEBERG TABLES)
+    | APPLICATION   // Allow APPLICATION as identifier (also SHOW ... IN APPLICATION)
+    | CLASS         // Allow CLASS as identifier (also SHOW FUNCTIONS IN CLASS)
+    | PACKAGE       // Allow PACKAGE as identifier (also IN APPLICATION PACKAGE)
     | TAGS
     | TARGET_COMPLETION_INTERVAL
     | TASKS         // Allow TASKS as identifier (INFORMATION_SCHEMA view)
@@ -1961,6 +2184,26 @@ nonJoinKeywordIdentifier
     : IDENTIFIER
     | KW_IDENTIFIER
     | APPEND_ONLY
+    | DECFLOAT
+    | FORMAT
+    | FILTER
+    | DIRECTORY     // vendor idiom: LEFT JOIN (...) directory USING (...)
+    | FIELDS
+    | PUT           // a bare alias named put (the PUT statement is anchored at statement start)
+    | SESSION
+    | NUMBER
+    | RENAME
+    | REPLACE
+    | NVARCHAR | NCHAR | CHARACTER | VARYING | TIMESTAMPLTZ | TIMESTAMPTZ | LOCAL | ZONE
+    | TERSE
+    | STARTS
+    | HISTORY
+    | ICEBERG
+    | APPLICATION
+    | CLASS
+    | PACKAGE
+    | RLIKE
+    | REGEXP
     | QUOTED_IDENTIFIER
     | POSITIONAL_PARAMETER
     | DATE
@@ -2061,6 +2304,7 @@ literal
     | FLOAT_LITERAL
     | STRING_LITERAL
     | DOLLAR_QUOTED_STRING
+    | HEX_LITERAL                 // x'A1B2' hex binary
     | TRUE
     | FALSE
     | NULL
@@ -2088,6 +2332,8 @@ BY: B Y;
 BETWEEN: B E T W E E N;
 LIKE: L I K E;
 ILIKE: I L I K E;
+RLIKE: R L I K E;
+REGEXP: R E G E X P;
 ESCAPE: E S C A P E;
 HAVING: H A V I N G;
 QUALIFY: Q U A L I F Y;
@@ -2326,6 +2572,8 @@ ROLE: R O L E;
 USERS: U S E R S;
 ROLES: R O L E S;
 SECONDARY: S E C O N D A R Y;
+FILTER: F I L T E R;
+DECFLOAT: D E C F L O A T;
 GRANT: G R A N T;
 REVOKE: R E V O K E;
 GRANTS: G R A N T S;
@@ -2354,6 +2602,23 @@ RELY: R E L Y;
 NORELY: N O R E L Y;
 APPLY: A P P L Y;
 IMPORTED: I M P O R T E D;
+TERSE: T E R S E;
+STARTS: S T A R T S;
+HISTORY: H I S T O R Y;
+ICEBERG: I C E B E R G;
+APPLICATION: A P P L I C A T I O N;
+CLASS: C L A S S;
+PACKAGE: P A C K A G E;
+NVARCHAR: N V A R C H A R;
+NCHAR: N C H A R;
+CHARACTER: C H A R A C T E R;
+VARYING: V A R Y I N G;
+TIMESTAMPLTZ: T I M E S T A M P L T Z;
+TIMESTAMPTZ: T I M E S T A M P T Z;
+LOCAL: L O C A L;
+ZONE: Z O N E;
+DIRECTORY: D I R E C T O R Y;
+FIELDS: F I E L D S;
 SEQUENCE: S E Q U E N C E;
 PIPE: P I P E;
 PROCEDURE: P R O C E D U R E;
@@ -2436,6 +2701,7 @@ BOOLEAN: B O O L E A N;
 DATE: D A T E;
 DATA: D A T A;
 DATETIME: D A T E T I M E;
+TIME: T I M E;
 TIMESTAMP: T I M E S T A M P;
 TIMESTAMP_NTZ: T I M E S T A M P UNDERSCORE N T Z;
 TIMESTAMPNTZ: T I M E S T A M P N T Z;
@@ -2539,6 +2805,7 @@ COLON: ':';
 COLON_EQ: ':=';
 EQ: '=';
 ARROW: '=>';
+FLOW_ARROW: '->>';
 THIN_ARROW: '->';
 NEQ: '<>' | '!=';
 LT: '<';
@@ -2548,6 +2815,13 @@ GTE: '>=';
 PLUS: '+';
 
 // Comments and whitespace before MINUS so '--' is matched as LINE_COMMENT not MINUS MINUS
+// x'A1B2' — a hex binary literal (the engine's BINARY values are uppercase hex strings).
+HEX_LITERAL: [xX] '\'' [0-9a-fA-F]* '\'';
+
+// An unquoted file/cloud URL in PUT/GET (Snowflake allows the unquoted form): scheme '://' then
+// everything up to whitespace or a statement delimiter.
+FILE_URL: (F I L E | S '3' | A Z U R E | G C S | H T T P S | H T T P) ':' '/' '/' ~[ \t\r\n',;)]*;
+
 LINE_COMMENT: '--' ~[\r\n]* -> skip;
 BLOCK_COMMENT: '/*' .*? '*/' -> skip;
 WS: [ \t\r\n]+ -> skip;

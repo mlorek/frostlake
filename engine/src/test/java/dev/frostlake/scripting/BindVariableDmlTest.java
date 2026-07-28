@@ -116,4 +116,18 @@ public class BindVariableDmlTest extends BaseDatabaseTest {
         assertTrue(ex.getMessage().contains("Bind variable not defined"),
             "unexpected message: " + ex.getMessage());
     }
+
+    @Test
+    public void numericBindParsesAndFailsCleanlyWhenUnbound() {
+        // SELECT :1 is grammar-accepted (numeric binds); without a bound value the engine reports
+        // the missing bind rather than a syntax error.
+        final RuntimeException e = assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.executeQuery("SELECT :1");
+            }
+        });
+        assertTrue(e.getMessage().contains("Bind variable"),
+            "expected a missing-bind error, got: " + e.getMessage());
+    }
 }

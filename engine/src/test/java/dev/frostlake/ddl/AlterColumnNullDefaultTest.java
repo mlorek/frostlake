@@ -53,11 +53,17 @@ public class AlterColumnNullDefaultTest extends BaseDatabaseTest {
     }
 
     @Test
-    public void setDefaultFillsOmittedColumn() {
-        engine.execute("CREATE TABLE def_t (id INTEGER, qty INTEGER)");
-        engine.execute("ALTER TABLE def_t ALTER COLUMN qty SET DEFAULT 5");
+    public void setDefaultLiteralIsRejected() {
+        // Live-Snowflake verified: ALTER COLUMN ... SET DEFAULT <literal> is unsupported (sequence
+        // defaults only); a CREATE-time default still fills the omitted column.
+        engine.execute("CREATE TABLE def_t (id INTEGER, qty INTEGER DEFAULT 5)");
+        assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.execute("ALTER TABLE def_t ALTER COLUMN qty SET DEFAULT 7");
+            }
+        });
 
-        // qty omitted → the set default applies.
         engine.execute("INSERT INTO def_t (id) VALUES (1)");
         final ResultSet rs = engine.executeQuery("SELECT qty FROM def_t WHERE id = 1");
         assertEquals(5, ((Number) rs.getRows().get(0).getValue(0)).intValue());
@@ -81,7 +87,6 @@ public class AlterColumnNullDefaultTest extends BaseDatabaseTest {
         engine.execute("ALTER TABLE keep_t ALTER COLUMN name DROP NOT NULL");
         assertEquals(2, columnCount("keep_t"));
 
-        engine.execute("ALTER TABLE keep_t ALTER COLUMN name SET DEFAULT 'x'");
         engine.execute("ALTER TABLE keep_t ALTER COLUMN name DROP DEFAULT");
         assertEquals(2, columnCount("keep_t"));
 

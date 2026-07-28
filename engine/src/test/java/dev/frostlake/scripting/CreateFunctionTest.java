@@ -157,7 +157,7 @@ public class CreateFunctionTest {
         Schema schema = engine.getCatalog().getDatabase("TEST_DB").getSchema("PUBLIC");
         assertNotNull(schema.getFunction("test_func"), "Function should exist");
 
-        engine.execute("DROP FUNCTION test_func");
+        engine.execute("DROP FUNCTION test_func(INTEGER)");
 
         // Verify function was dropped
         RuntimeException exception = assertThrows(RuntimeException.class, () -> {

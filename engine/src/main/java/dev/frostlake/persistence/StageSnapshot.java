@@ -20,7 +20,10 @@ import java.io.Serializable;
 import java.time.Instant;
 
 /**
- * Serializable snapshot of stage metadata
+ * Serializable snapshot of a stage definition. The DEFINITION is what round-trips (name, type, url,
+ * file format) — the local backing directory is recomputed on restore from the url through the
+ * engine's S3 path resolver, exactly as CREATE STAGE does, so a restored engine resolves
+ * {@code @stage/…} references (COPY, UDF IMPORTS) identically to the one that was checkpointed.
  */
 public class StageSnapshot implements Serializable {
     private static final long serialVersionUID = 1L;

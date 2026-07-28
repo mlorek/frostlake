@@ -228,10 +228,11 @@ public class CTEAlignmentTest {
 
         // Update prices for category A items using a CTE to identify them
         engine.execute("""
+            UPDATE products SET price = price * 0.9 WHERE id IN (
             WITH discounted AS (
                 SELECT id FROM products WHERE category = 'A'
             )
-            UPDATE products SET price = price * 0.9 WHERE id IN (SELECT id FROM discounted)
+            SELECT id FROM discounted)
             """);
 
         ResultSet rs = q("SELECT price FROM products WHERE category = 'A' ORDER BY id");
@@ -247,10 +248,11 @@ public class CTEAlignmentTest {
         engine.execute("INSERT INTO items VALUES (1, true, 10), (2, false, 20), (3, true, 30)");
 
         engine.execute("""
+            UPDATE items SET score = score + 5 WHERE id IN (
             WITH active_items AS (
                 SELECT id FROM items WHERE active = true
             )
-            UPDATE items SET score = score + 5 WHERE id IN (SELECT id FROM active_items)
+            SELECT id FROM active_items)
             """);
 
         ResultSet rs = q("SELECT id, score FROM items ORDER BY id");
@@ -268,10 +270,11 @@ public class CTEAlignmentTest {
         engine.execute("INSERT INTO logs VALUES (1, 'INFO', 'msg1'), (2, 'ERROR', 'msg2'), (3, 'INFO', 'msg3')");
 
         engine.execute("""
+            DELETE FROM logs WHERE id IN (
             WITH to_delete AS (
                 SELECT id FROM logs WHERE level = 'INFO'
             )
-            DELETE FROM logs WHERE id IN (SELECT id FROM to_delete)
+            SELECT id FROM to_delete)
             """);
 
         ResultSet rs = q("SELECT COUNT(*) FROM logs");
@@ -288,10 +291,11 @@ public class CTEAlignmentTest {
 
         // Use CTE to identify high-value orders to KEEP; delete the rest using NOT IN
         engine.execute("""
+            DELETE FROM orders WHERE id NOT IN (
             WITH high_value AS (
                 SELECT id FROM orders WHERE total >= 100.0
             )
-            DELETE FROM orders WHERE id NOT IN (SELECT id FROM high_value)
+            SELECT id FROM high_value)
             """);
 
         ResultSet rs = q("SELECT COUNT(*) FROM orders");
@@ -309,13 +313,14 @@ public class CTEAlignmentTest {
         engine.execute("INSERT INTO target VALUES (1, 'old1'), (2, 'old2')");
 
         engine.execute("""
+            MERGE INTO target t
+            USING (
             WITH new_data AS (
                 SELECT 2 AS id, 'updated2' AS val
                 UNION ALL
                 SELECT 3 AS id, 'new3' AS val
             )
-            MERGE INTO target t
-            USING (SELECT id, val FROM new_data) s ON t.id = s.id
+            SELECT id, val FROM new_data) s ON t.id = s.id
             WHEN MATCHED THEN UPDATE SET val = s.val
             WHEN NOT MATCHED THEN INSERT (id, val) VALUES (s.id, s.val)
             """);
@@ -335,12 +340,13 @@ public class CTEAlignmentTest {
         engine.execute("CREATE TABLE series (n INTEGER)");
 
         engine.execute("""
+            INSERT INTO series 
             WITH RECURSIVE s(n) AS (
                 SELECT 1
                 UNION ALL
                 SELECT n + 1 FROM s WHERE n < 5
             )
-            INSERT INTO series SELECT n FROM s
+            SELECT n FROM s
             """);
 
         ResultSet rs = q("SELECT COUNT(*) FROM series");

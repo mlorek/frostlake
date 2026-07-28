@@ -186,7 +186,7 @@ public class ResultScanTest {
 
         // Join RESULT_SCAN with another table (or GENERATOR)
         ResultSet result = engine.executeQuery(
-            "SELECT r.name, g.SEQ FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) r, TABLE(GENERATOR(ROWCOUNT => 2)) g"
+            "SELECT r.name FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) r, TABLE(GENERATOR(ROWCOUNT => 2)) g"
         );
         assertEquals(4, result.getRowCount()); // 2 customers * 2 generated rows
     }

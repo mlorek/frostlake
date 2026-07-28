@@ -33,6 +33,10 @@ import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.time.temporal.IsoFields;
 import java.time.temporal.TemporalAccessor;
+import io.airlift.compress.snappy.SnappyCompressor;
+import io.airlift.compress.snappy.SnappyDecompressor;
+
+import java.util.Arrays;
 import java.util.Base64;
 import java.util.Locale;
 import java.util.zip.Deflater;
@@ -122,9 +126,16 @@ public final class SharedFunctionHelpers {
                     compressed = bos.toByteArray();
                     break;
                 }
+                case "snappy": {
+                    final SnappyCompressor snappy = new SnappyCompressor();
+                    final byte[] out = new byte[snappy.maxCompressedLength(input.length)];
+                    final int n = snappy.compress(input, 0, input.length, out, 0, out.length);
+                    compressed = Arrays.copyOf(out, n);
+                    break;
+                }
                 default:
                     throw new RuntimeException("Unsupported compression method: " + method
-                        + ". Supported: deflate, raw_deflate, zlib, gzip");
+                        + ". Supported: snappy, deflate, raw_deflate, zlib, gzip");
             }
             return Base64.getEncoder().encodeToString(compressed);
         } catch (final RuntimeException e) {
@@ -167,9 +178,15 @@ public final class SharedFunctionHelpers {
                     }
                     return bos.toByteArray();
                 }
+                case "snappy": {
+                    final int length = SnappyDecompressor.getUncompressedLength(compressed, 0);
+                    final byte[] out = new byte[length];
+                    new SnappyDecompressor().decompress(compressed, 0, compressed.length, out, 0, length);
+                    return out;
+                }
                 default:
                     throw new RuntimeException("Unsupported decompression method: " + method
-                        + ". Supported: deflate, raw_deflate, zlib, gzip");
+                        + ". Supported: snappy, deflate, raw_deflate, zlib, gzip");
             }
         } catch (final RuntimeException e) {
             throw e;

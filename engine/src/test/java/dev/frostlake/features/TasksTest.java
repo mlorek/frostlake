@@ -58,7 +58,7 @@ public class TasksTest extends BaseDatabaseTest {
         engine.execute("""
             CREATE TASK hourly_job
             WAREHOUSE = 'COMPUTE_WH'
-            SCHEDULE = 'USING CRON 0 * * * *'
+            SCHEDULE = 'USING CRON 0 * * * * UTC'
             AS INSERT INTO summary SELECT * FROM staging
             """);
 
@@ -140,7 +140,7 @@ public class TasksTest extends BaseDatabaseTest {
 
         assertEquals(1, task.getExecutionHistory().size());
         TaskExecution execution = task.getExecutionHistory().get(0);
-        assertEquals("SUCCESS", execution.getState());
+        assertEquals("SUCCEEDED", execution.getState());
     }
 
     @Test

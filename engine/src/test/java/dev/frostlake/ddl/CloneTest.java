@@ -479,12 +479,24 @@ public class CloneTest {
         engine.execute("CREATE DATABASE pr_src");
         engine.execute("USE DATABASE pr_src");
         engine.execute("CREATE SCHEMA utils");
-        engine.execute("CREATE OR REPLACE PROCEDURE pr_src.utils.js_proc() RETURNS VARCHAR "
-            + "LANGUAGE JAVASCRIPT AS $$ return 'js-ok'; $$");
+        engine.execute("""
+            CREATE OR REPLACE PROCEDURE pr_src.utils.java_proc()
+            RETURNS VARCHAR
+            LANGUAGE JAVA
+            HANDLER='CloneProc.run'
+            AS
+            $$
+            public class CloneProc {
+              public String run(com.snowflake.snowpark_java.Session session) {
+                return "java-ok";
+              }
+            }
+            $$
+            """);
 
         engine.execute("CREATE DATABASE pr_tgt CLONE pr_src");
 
-        assertEquals("js-ok", engine.executeQuery("CALL pr_tgt.utils.js_proc()")
+        assertEquals("java-ok", engine.executeQuery("CALL pr_tgt.utils.java_proc()")
             .getRows().get(0).getValue(0).toString());
     }
 

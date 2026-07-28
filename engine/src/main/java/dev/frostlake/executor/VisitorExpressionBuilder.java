@@ -248,10 +248,9 @@ public class VisitorExpressionBuilder {
                 if (dbN == null || scN == null) return false;
                 Stream stream = cat.getDatabase(dbN).getSchema(scN).getStream(streamName);
                 if (stream == null) return false;
-                StorageEngine se = queryExecutor.getStorageEngine();
-                String fq = dbN.toUpperCase() + "." + scN.toUpperCase() + "." + streamName;
-                StorageEngine.TableStorage ts = se.getTableStorage(fq);
-                return ts != null && ts.getRowCount() > 0;
+                // Pending changes live as the stream's unconsumed NET records (consolidated deltas),
+                // not in any table storage — the old storage probe always answered false.
+                return !stream.getUnconsumedNetRecords().isEmpty();
             } catch (final Exception e) {
                 return false;
             }

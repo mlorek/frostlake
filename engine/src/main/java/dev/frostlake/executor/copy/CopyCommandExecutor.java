@@ -55,6 +55,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
 
 /**
  * Executes the COPY subsystem — the stage-file load ({@code COPY INTO <table>}) and unload
@@ -67,6 +68,8 @@ import tools.jackson.databind.JsonNode;
 public final class CopyCommandExecutor {
 
     private static final Logger logger = LoggerFactory.getLogger(CopyCommandExecutor.class);
+
+    private static final ObjectMapper MAPPER = new ObjectMapper();
 
     private final QueryExecutor executor;
 
@@ -733,7 +736,9 @@ public final class CopyCommandExecutor {
     }
 
     /** Split a CSV line on {@code delimiter}, honoring an optional enclosing char (with {@code ""} escaping). */
-    private static List<String> parseCsvLine(final String line, final char delimiter, final Character enclosure) {
+    /** Split one CSV line on {@code delimiter}, honoring an optional enclosure character. Public so the
+     *  stage-query path (SELECT ... FROM @stage) reads fields exactly the way COPY INTO does. */
+    public static List<String> parseCsvLine(final String line, final char delimiter, final Character enclosure) {
         final List<String> fields = new ArrayList<>();
         final StringBuilder cur = new StringBuilder();
         boolean inQuotes = false;
@@ -963,9 +968,21 @@ public final class CopyCommandExecutor {
         return s;
     }
 
-    /** Format a result set as newline-delimited JSON objects (one object per row). */
+    /**
+     * Format a result set as newline-delimited JSON (one document per row). A single semi-structured
+     * column — the Snowflake TYPE=JSON unload contract of exactly one VARIANT/OBJECT/ARRAY column — is
+     * written as the raw document itself, not wrapped in an object keyed by the column name. Anything
+     * else keeps the wrapped form as a lenient extension (Snowflake rejects multi-column JSON unloads).
+     */
     private String formatRowsAsJson(final ResultSet data) {
         final StringBuilder sb = new StringBuilder();
+        if (isSingleVariantColumn(data)) {
+            for (final Row row : data.getRows()) {
+                final Object v = row.getValues().isEmpty() ? null : row.getValue(0);
+                sb.append(variantDocumentText(v)).append('\n');
+            }
+            return sb.toString();
+        }
         for (final Row row : data.getRows()) {
             sb.append('{');
             for (int c = 0; c < data.getColumns().size(); c++) {
@@ -983,5 +1000,46 @@ public final class CopyCommandExecutor {
             sb.append("}\n");
         }
         return sb.toString();
+    }
+
+    /** True when the unload result is one column whose first non-null value is a JSON document (Map, List, or JSON text). */
+    private boolean isSingleVariantColumn(final ResultSet data) {
+        if (data.getColumns().size() != 1) {
+            return false;
+        }
+        for (final Row row : data.getRows()) {
+            final Object v = row.getValues().isEmpty() ? null : row.getValue(0);
+            if (v == null) {
+                continue;
+            }
+            if (v instanceof Map || v instanceof List) {
+                return true;
+            }
+            if (v instanceof String) {
+                final String t = ((String) v).trim();
+                if (!t.startsWith("{") && !t.startsWith("[")) {
+                    return false;
+                }
+                try {
+                    MAPPER.readTree(t);
+                    return true;
+                } catch (final RuntimeException e) {
+                    return false;
+                }
+            }
+            return false;
+        }
+        return false;
+    }
+
+    /** Render one variant value as its raw JSON document text. */
+    private String variantDocumentText(final Object v) {
+        if (v == null) {
+            return "null";
+        }
+        if (v instanceof String) {
+            return ((String) v).trim();
+        }
+        return MAPPER.writeValueAsString(v);
     }
 }

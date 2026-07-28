@@ -28,8 +28,8 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
  * {@code GROUP BY <alias>} — Snowflake groups by the aliased SELECT expression when the name is not a
  * real column (a real column always wins). The bare alias name used to fail evaluation on every row,
  * and the error-sentinel group key silently collapsed ALL rows into a single group — including the
- * scoring idiom {@code SELECT …, value::string AS target_id … , TABLE(FLATTEN(ids)) GROUP BY
- * container, target_id} where the per-target dimension vanished entirely.
+ * idiom {@code SELECT …, value::string AS item_id … , TABLE(FLATTEN(ids)) GROUP BY grp, item_id}
+ * where the per-item dimension vanished entirely.
  */
 public class GroupByAliasKeyTest extends BaseDatabaseTest {
 

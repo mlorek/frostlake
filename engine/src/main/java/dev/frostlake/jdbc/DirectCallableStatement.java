@@ -17,6 +17,7 @@
 package dev.frostlake.jdbc;
 
 import dev.frostlake.DatabaseEngine;
+import dev.frostlake.storage.Row;
 
 import java.io.InputStream;
 import java.io.Reader;
@@ -48,6 +49,7 @@ public class DirectCallableStatement extends DirectPreparedStatement implements 
 
     private final Map<Integer, Object> outParameters;
     private final Map<String, Integer> namedParameters;
+    private boolean lastReadWasNull;
 
     public DirectCallableStatement(final Connection connection, final DatabaseEngine engine, final String sql) {
         super(connection, engine, convertNamedParametersToPositional(sql));
@@ -110,7 +112,36 @@ public class DirectCallableStatement extends DirectPreparedStatement implements 
 
     @Override
     public boolean wasNull() throws SQLException {
-        return false;
+        return lastReadWasNull;
+    }
+
+    /** Read an OUT parameter and record its nullness for {@link #wasNull()}. */
+    private Object out(final int parameterIndex) {
+        final Object value = outParameters.get(parameterIndex);
+        lastReadWasNull = value == null;
+        return value;
+    }
+
+    @Override
+    public boolean execute() throws SQLException {
+        final boolean hasResultSet = super.execute();
+        extractOutParameters();
+        return hasResultSet;
+    }
+
+    /**
+     * A CALL's return value arrives as the columns of its (single-row) result; expose them as the
+     * OUT parameters, reading the engine result directly so the user-visible cursor stays untouched.
+     */
+    private void extractOutParameters() {
+        final dev.frostlake.storage.ResultSet rs = currentEngineResultSet();
+        if (rs == null || rs.getRows().isEmpty()) {
+            return;
+        }
+        final Row first = rs.getRows().get(0);
+        for (int i = 0; i < rs.getColumns().size(); i++) {
+            outParameters.put(i + 1, i < first.getValues().size() ? first.getValue(i) : null);
+        }
     }
 
     // Getter methods for OUT parameters
@@ -118,7 +149,7 @@ public class DirectCallableStatement extends DirectPreparedStatement implements 
     @Override
     public String getString(final int parameterIndex) throws SQLException {
         checkClosed();
-        Object value = outParameters.get(parameterIndex);
+        Object value = out(parameterIndex);
         if (value == null) {
             return null;
         }
@@ -128,7 +159,7 @@ public class DirectCallableStatement extends DirectPreparedStatement implements 
     @Override
     public boolean getBoolean(final int parameterIndex) throws SQLException {
         checkClosed();
-        Object value = outParameters.get(parameterIndex);
+        Object value = out(parameterIndex);
         if (value == null) {
             return false;
         }
@@ -141,7 +172,7 @@ public class DirectCallableStatement extends DirectPreparedStatement implements 
     @Override
     public byte getByte(final int parameterIndex) throws SQLException {
         checkClosed();
-        Object value = outParameters.get(parameterIndex);
+        Object value = out(parameterIndex);
         if (value == null) {
             return 0;
         }
@@ -154,7 +185,7 @@ public class DirectCallableStatement extends DirectPreparedStatement implements 
     @Override
     public short getShort(final int parameterIndex) throws SQLException {
         checkClosed();
-        Object value = outParameters.get(parameterIndex);
+        Object value = out(parameterIndex);
         if (value == null) {
             return 0;
         }
@@ -167,7 +198,7 @@ public class DirectCallableStatement extends DirectPreparedStatement implements 
     @Override
     public int getInt(final int parameterIndex) throws SQLException {
         checkClosed();
-        Object value = outParameters.get(parameterIndex);
+        Object value = out(parameterIndex);
         if (value == null) {
             return 0;
         }
@@ -180,7 +211,7 @@ public class DirectCallableStatement extends DirectPreparedStatement implements 
     @Override
     public long getLong(final int parameterIndex) throws SQLException {
         checkClosed();
-        Object value = outParameters.get(parameterIndex);
+        Object value = out(parameterIndex);
         if (value == null) {
             return 0;
         }
@@ -193,7 +224,7 @@ public class DirectCallableStatement extends DirectPreparedStatement implements 
     @Override
     public float getFloat(final int parameterIndex) throws SQLException {
         checkClosed();
-        Object value = outParameters.get(parameterIndex);
+        Object value = out(parameterIndex);
         if (value == null) {
             return 0;
         }
@@ -206,7 +237,7 @@ public class DirectCallableStatement extends DirectPreparedStatement implements 
     @Override
     public double getDouble(final int parameterIndex) throws SQLException {
         checkClosed();
-        Object value = outParameters.get(parameterIndex);
+        Object value = out(parameterIndex);
         if (value == null) {
             return 0;
         }
@@ -224,7 +255,7 @@ public class DirectCallableStatement extends DirectPreparedStatement implements 
     @Override
     public BigDecimal getBigDecimal(final int parameterIndex) throws SQLException {
         checkClosed();
-        Object value = outParameters.get(parameterIndex);
+        Object value = out(parameterIndex);
         if (value == null) {
             return null;
         }
@@ -242,40 +273,57 @@ public class DirectCallableStatement extends DirectPreparedStatement implements 
     @Override
     public Date getDate(final int parameterIndex) throws SQLException {
         checkClosed();
-        Object value = outParameters.get(parameterIndex);
+        Object value = out(parameterIndex);
         if (value == null) {
             return null;
         }
         if (value instanceof Date) {
             return (Date) value;
         }
-        return Date.valueOf(value.toString());
+        // Engine temporal values render as ISO text (possibly a full timestamp with 'T');
+        // a DATE conversion takes the leading date part.
+        final String text = value.toString();
+        return Date.valueOf(text.length() > 10 ? text.substring(0, 10) : text);
     }
 
     @Override
     public Time getTime(final int parameterIndex) throws SQLException {
         checkClosed();
-        Object value = outParameters.get(parameterIndex);
+        Object value = out(parameterIndex);
         if (value == null) {
             return null;
         }
         if (value instanceof Time) {
             return (Time) value;
         }
-        return Time.valueOf(value.toString());
+        // A full timestamp (ISO 'T' or space separated) converts by its time-of-day part; trim
+        // fractional seconds, which Time.valueOf does not accept.
+        String text = value.toString();
+        final int sep = Math.max(text.indexOf('T'), text.indexOf(' '));
+        if (sep >= 0) {
+            text = text.substring(sep + 1);
+        }
+        final int dot = text.indexOf('.');
+        return Time.valueOf(dot >= 0 ? text.substring(0, dot) : text);
     }
 
     @Override
     public Timestamp getTimestamp(final int parameterIndex) throws SQLException {
         checkClosed();
-        Object value = outParameters.get(parameterIndex);
+        Object value = out(parameterIndex);
         if (value == null) {
             return null;
         }
         if (value instanceof Timestamp) {
             return (Timestamp) value;
         }
-        return Timestamp.valueOf(value.toString());
+        // Timestamp.valueOf requires the space-separated form; engine values may render ISO ('T'),
+        // and LocalDateTime.toString drops :00 seconds — restore them when absent.
+        String text = value.toString().replace('T', ' ');
+        if (text.length() == 16) {
+            text = text + ":00";
+        }
+        return Timestamp.valueOf(text);
     }
 
     @Override

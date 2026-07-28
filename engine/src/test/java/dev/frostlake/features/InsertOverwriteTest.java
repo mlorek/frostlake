@@ -290,10 +290,11 @@ public class InsertOverwriteTest {
         assertEquals(2, rs1.getRowCount());
 
         engine.execute("""
+            INSERT OVERWRITE INTO target 
             WITH cte AS (
                 SELECT 100 AS id, 200 AS value
             )
-            INSERT OVERWRITE INTO target SELECT * FROM cte
+            SELECT * FROM cte
             """);
 
         ResultSet rs2 = engine.executeQuery("SELECT * FROM target");

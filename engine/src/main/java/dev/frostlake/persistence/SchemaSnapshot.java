@@ -35,6 +35,8 @@ public class SchemaSnapshot implements Serializable {
     // Added after the initial release. Old catalog.dat files predate these fields, so deserialization
     // leaves them null (field initializers do not run during deserialization) — restore paths null-guard.
     public List<SequenceSnapshot> sequences = new ArrayList<>();
+    // Null on pre-stage snapshots (deserialization bypasses field initializers) — reader null-checks.
+    public List<StageSnapshot> stages = new ArrayList<>();
     public List<StreamSnapshot> streams = new ArrayList<>();
     public List<TaskSnapshot> tasks = new ArrayList<>();
     public List<MaskingPolicySnapshot> maskingPolicies = new ArrayList<>();

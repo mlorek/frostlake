@@ -89,7 +89,7 @@ public class CteDmlCoverageTest {
         engine.execute("INSERT INTO t VALUES (1,0),(2,0)");
         engine.execute("CREATE TABLE s (id INTEGER, nv INTEGER)");
         engine.execute("INSERT INTO s VALUES (1,100),(2,200)");
-        engine.execute("WITH c AS (SELECT id, nv FROM s) UPDATE t SET v = c.nv FROM c WHERE t.id = c.id");
+        engine.execute("UPDATE t SET v = c.nv FROM (WITH c AS (SELECT id, nv FROM s) SELECT * FROM c) c WHERE t.id = c.id");
         assertEquals(100L, scalar("SELECT v FROM t WHERE id = 1"));
         assertEquals(200L, scalar("SELECT v FROM t WHERE id = 2"));
     }
@@ -100,7 +100,7 @@ public class CteDmlCoverageTest {
         engine.execute("INSERT INTO t VALUES (1),(2),(3)");
         engine.execute("CREATE TABLE removals (id INTEGER)");
         engine.execute("INSERT INTO removals VALUES (2)");
-        engine.execute("WITH c AS (SELECT id FROM removals) DELETE FROM t USING c WHERE t.id = c.id");
+        engine.execute("DELETE FROM t USING (WITH c AS (SELECT id FROM removals) SELECT * FROM c) c WHERE t.id = c.id");
         assertEquals(2L, scalar("SELECT COUNT(*) FROM t"));
         assertEquals(0L, scalar("SELECT COUNT(*) FROM t WHERE id = 2"));
     }
@@ -116,7 +116,7 @@ public class CteDmlCoverageTest {
         // A subquery in the UPDATE SET clause can reference a WITH-clause CTE.
         engine.execute("CREATE TABLE t (id INTEGER, v INTEGER)");
         engine.execute("INSERT INTO t VALUES (1, 0)");
-        engine.execute("WITH c AS (SELECT 99 AS x) UPDATE t SET v = (SELECT x FROM c) WHERE id = 1");
+        engine.execute("UPDATE t SET v = (WITH c AS (SELECT 99 AS x) SELECT x FROM c) WHERE id = 1");
         assertEquals(99L, scalar("SELECT v FROM t WHERE id = 1"));
     }
 }

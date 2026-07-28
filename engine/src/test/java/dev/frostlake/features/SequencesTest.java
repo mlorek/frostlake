@@ -138,13 +138,13 @@ public class SequencesTest extends BaseDatabaseTest {
 
         engine.execute("CREATE SEQUENCE seq_nextval START WITH 1 INCREMENT BY 1");
 
-        ResultSet result1 = engine.executeQuery("SELECT NEXTVAL('seq_nextval') as val");
+        ResultSet result1 = engine.executeQuery("SELECT seq_nextval.NEXTVAL as val");
         assertEquals(1L, ((Number) result1.getRows().get(0).getValues().get(0)).longValue());
 
-        ResultSet result2 = engine.executeQuery("SELECT NEXTVAL('seq_nextval') as val");
+        ResultSet result2 = engine.executeQuery("SELECT seq_nextval.NEXTVAL as val");
         assertEquals(2L, ((Number) result2.getRows().get(0).getValues().get(0)).longValue());
 
-        ResultSet result3 = engine.executeQuery("SELECT NEXTVAL('seq_nextval') as val");
+        ResultSet result3 = engine.executeQuery("SELECT seq_nextval.NEXTVAL as val");
         assertEquals(3L, ((Number) result3.getRows().get(0).getValues().get(0)).longValue());
 
         logger.info("NEXTVAL returns correct sequential values");
@@ -156,13 +156,13 @@ public class SequencesTest extends BaseDatabaseTest {
 
         engine.execute("CREATE SEQUENCE seq_inc START WITH 10 INCREMENT BY 10");
 
-        ResultSet result1 = engine.executeQuery("SELECT NEXTVAL('seq_inc') as val");
+        ResultSet result1 = engine.executeQuery("SELECT seq_inc.NEXTVAL as val");
         assertEquals(10L, ((Number) result1.getRows().get(0).getValues().get(0)).longValue());
 
-        ResultSet result2 = engine.executeQuery("SELECT NEXTVAL('seq_inc') as val");
+        ResultSet result2 = engine.executeQuery("SELECT seq_inc.NEXTVAL as val");
         assertEquals(20L, ((Number) result2.getRows().get(0).getValues().get(0)).longValue());
 
-        ResultSet result3 = engine.executeQuery("SELECT NEXTVAL('seq_inc') as val");
+        ResultSet result3 = engine.executeQuery("SELECT seq_inc.NEXTVAL as val");
         assertEquals(30L, ((Number) result3.getRows().get(0).getValues().get(0)).longValue());
 
         logger.info("NEXTVAL respects custom INCREMENT");
@@ -174,13 +174,13 @@ public class SequencesTest extends BaseDatabaseTest {
 
         engine.execute("CREATE SEQUENCE seq_neg START WITH 100 INCREMENT BY -5");
 
-        ResultSet result1 = engine.executeQuery("SELECT NEXTVAL('seq_neg') as val");
+        ResultSet result1 = engine.executeQuery("SELECT seq_neg.NEXTVAL as val");
         assertEquals(100L, ((Number) result1.getRows().get(0).getValues().get(0)).longValue());
 
-        ResultSet result2 = engine.executeQuery("SELECT NEXTVAL('seq_neg') as val");
+        ResultSet result2 = engine.executeQuery("SELECT seq_neg.NEXTVAL as val");
         assertEquals(95L, ((Number) result2.getRows().get(0).getValues().get(0)).longValue());
 
-        ResultSet result3 = engine.executeQuery("SELECT NEXTVAL('seq_neg') as val");
+        ResultSet result3 = engine.executeQuery("SELECT seq_neg.NEXTVAL as val");
         assertEquals(90L, ((Number) result3.getRows().get(0).getValues().get(0)).longValue());
 
         logger.info("NEXTVAL works with negative increment");
@@ -192,11 +192,11 @@ public class SequencesTest extends BaseDatabaseTest {
 
         engine.execute("CREATE SEQUENCE seq_currval START WITH 1 INCREMENT BY 1");
 
-        engine.executeQuery("SELECT NEXTVAL('seq_currval') as val");
+        engine.executeQuery("SELECT seq_currval.NEXTVAL as val");
         ResultSet current1 = engine.executeQuery("SELECT CURRVAL('seq_currval') as val");
         assertEquals(1L, ((Number) current1.getRows().get(0).getValues().get(0)).longValue());
 
-        engine.executeQuery("SELECT NEXTVAL('seq_currval') as val");
+        engine.executeQuery("SELECT seq_currval.NEXTVAL as val");
         ResultSet current2 = engine.executeQuery("SELECT CURRVAL('seq_currval') as val");
         assertEquals(2L, ((Number) current2.getRows().get(0).getValues().get(0)).longValue());
 
@@ -223,9 +223,9 @@ public class SequencesTest extends BaseDatabaseTest {
         engine.execute("CREATE TABLE seq_table (id INTEGER, name VARCHAR)");
         engine.execute("CREATE SEQUENCE seq_insert START WITH 1 INCREMENT BY 1");
 
-        engine.execute("INSERT INTO seq_table VALUES (NEXTVAL('seq_insert'), 'Alice')");
-        engine.execute("INSERT INTO seq_table VALUES (NEXTVAL('seq_insert'), 'Bob')");
-        engine.execute("INSERT INTO seq_table VALUES (NEXTVAL('seq_insert'), 'Charlie')");
+        engine.execute("INSERT INTO seq_table VALUES (seq_insert.NEXTVAL, 'Alice')");
+        engine.execute("INSERT INTO seq_table VALUES (seq_insert.NEXTVAL, 'Bob')");
+        engine.execute("INSERT INTO seq_table VALUES (seq_insert.NEXTVAL, 'Charlie')");
 
         ResultSet result = engine.executeQuery("SELECT id, name FROM seq_table ORDER BY id");
         assertEquals(3, result.getRowCount());
@@ -242,18 +242,18 @@ public class SequencesTest extends BaseDatabaseTest {
 
         engine.execute("CREATE SEQUENCE seq_restart START WITH 1 INCREMENT BY 1");
 
-        ResultSet val1 = engine.executeQuery("SELECT NEXTVAL('seq_restart') as val");
+        ResultSet val1 = engine.executeQuery("SELECT seq_restart.NEXTVAL as val");
         assertEquals(1L, ((Number) val1.getRows().get(0).getValues().get(0)).longValue());
 
-        ResultSet val2 = engine.executeQuery("SELECT NEXTVAL('seq_restart') as val");
+        ResultSet val2 = engine.executeQuery("SELECT seq_restart.NEXTVAL as val");
         assertEquals(2L, ((Number) val2.getRows().get(0).getValues().get(0)).longValue());
 
         engine.execute("ALTER SEQUENCE seq_restart RESTART WITH 10");
 
-        ResultSet val3 = engine.executeQuery("SELECT NEXTVAL('seq_restart') as val");
+        ResultSet val3 = engine.executeQuery("SELECT seq_restart.NEXTVAL as val");
         assertEquals(10L, ((Number) val3.getRows().get(0).getValues().get(0)).longValue());
 
-        ResultSet val4 = engine.executeQuery("SELECT NEXTVAL('seq_restart') as val");
+        ResultSet val4 = engine.executeQuery("SELECT seq_restart.NEXTVAL as val");
         assertEquals(11L, ((Number) val4.getRows().get(0).getValues().get(0)).longValue());
 
         logger.info("ALTER SEQUENCE RESTART works correctly");
@@ -265,13 +265,13 @@ public class SequencesTest extends BaseDatabaseTest {
 
         engine.execute("CREATE SEQUENCE seq_restart_orig START WITH 100 INCREMENT BY 1");
 
-        engine.executeQuery("SELECT NEXTVAL('seq_restart_orig') as val");
-        engine.executeQuery("SELECT NEXTVAL('seq_restart_orig') as val");
-        engine.executeQuery("SELECT NEXTVAL('seq_restart_orig') as val");
+        engine.executeQuery("SELECT seq_restart_orig.NEXTVAL as val");
+        engine.executeQuery("SELECT seq_restart_orig.NEXTVAL as val");
+        engine.executeQuery("SELECT seq_restart_orig.NEXTVAL as val");
 
         engine.execute("ALTER SEQUENCE seq_restart_orig RESTART");
 
-        ResultSet val = engine.executeQuery("SELECT NEXTVAL('seq_restart_orig') as val");
+        ResultSet val = engine.executeQuery("SELECT seq_restart_orig.NEXTVAL as val");
         assertEquals(100L, ((Number) val.getRows().get(0).getValues().get(0)).longValue());
 
         logger.info("ALTER SEQUENCE RESTART resets to original start value");
@@ -324,10 +324,10 @@ public class SequencesTest extends BaseDatabaseTest {
         engine.execute("CREATE SEQUENCE seq_a START WITH 1 INCREMENT BY 1");
         engine.execute("CREATE SEQUENCE seq_b START WITH 1000 INCREMENT BY 100");
 
-        ResultSet valA1 = engine.executeQuery("SELECT NEXTVAL('seq_a') as val");
-        ResultSet valB1 = engine.executeQuery("SELECT NEXTVAL('seq_b') as val");
-        ResultSet valA2 = engine.executeQuery("SELECT NEXTVAL('seq_a') as val");
-        ResultSet valB2 = engine.executeQuery("SELECT NEXTVAL('seq_b') as val");
+        ResultSet valA1 = engine.executeQuery("SELECT seq_a.NEXTVAL as val");
+        ResultSet valB1 = engine.executeQuery("SELECT seq_b.NEXTVAL as val");
+        ResultSet valA2 = engine.executeQuery("SELECT seq_a.NEXTVAL as val");
+        ResultSet valB2 = engine.executeQuery("SELECT seq_b.NEXTVAL as val");
 
         assertEquals(1L, ((Number) valA1.getRows().get(0).getValues().get(0)).longValue());
         assertEquals(1000L, ((Number) valB1.getRows().get(0).getValues().get(0)).longValue());
@@ -343,9 +343,9 @@ public class SequencesTest extends BaseDatabaseTest {
 
         engine.execute("CREATE SEQUENCE SeQ_CaSe START WITH 1");
 
-        ResultSet val1 = engine.executeQuery("SELECT NEXTVAL('seq_case') as val");
-        ResultSet val2 = engine.executeQuery("SELECT NEXTVAL('SEQ_CASE') as val");
-        ResultSet val3 = engine.executeQuery("SELECT NEXTVAL('SeQ_CaSe') as val");
+        ResultSet val1 = engine.executeQuery("SELECT seq_case.NEXTVAL as val");
+        ResultSet val2 = engine.executeQuery("SELECT SEQ_CASE.NEXTVAL as val");
+        ResultSet val3 = engine.executeQuery("SELECT SeQ_CaSe.NEXTVAL as val");
 
         assertEquals(1L, ((Number) val1.getRows().get(0).getValues().get(0)).longValue());
         assertEquals(2L, ((Number) val2.getRows().get(0).getValues().get(0)).longValue());
@@ -362,9 +362,9 @@ public class SequencesTest extends BaseDatabaseTest {
         engine.execute("CREATE TABLE table1 (id INTEGER, data VARCHAR)");
         engine.execute("CREATE TABLE table2 (id INTEGER, info VARCHAR)");
 
-        engine.execute("INSERT INTO table1 VALUES (NEXTVAL('shared_seq'), 'data1')");
-        engine.execute("INSERT INTO table2 VALUES (NEXTVAL('shared_seq'), 'info1')");
-        engine.execute("INSERT INTO table1 VALUES (NEXTVAL('shared_seq'), 'data2')");
+        engine.execute("INSERT INTO table1 VALUES (shared_seq.NEXTVAL, 'data1')");
+        engine.execute("INSERT INTO table2 VALUES (shared_seq.NEXTVAL, 'info1')");
+        engine.execute("INSERT INTO table1 VALUES (shared_seq.NEXTVAL, 'data2')");
 
         ResultSet result1 = engine.executeQuery("SELECT id FROM table1 ORDER BY id");
         ResultSet result2 = engine.executeQuery("SELECT id FROM table2 ORDER BY id");
@@ -382,7 +382,7 @@ public class SequencesTest extends BaseDatabaseTest {
 
         engine.execute("CREATE SEQUENCE seq_select START WITH 42 INCREMENT BY 7");
 
-        ResultSet result = engine.executeQuery("SELECT NEXTVAL('seq_select') as next_value");
+        ResultSet result = engine.executeQuery("SELECT seq_select.NEXTVAL as next_value");
         assertEquals(1, result.getRowCount());
         assertEquals(42L, ((Number) result.getRows().get(0).getValues().get(0)).longValue());
 
@@ -395,8 +395,8 @@ public class SequencesTest extends BaseDatabaseTest {
 
         engine.execute("CREATE SEQUENCE seq_large START WITH 1000000 INCREMENT BY 1000000");
 
-        ResultSet val1 = engine.executeQuery("SELECT NEXTVAL('seq_large') as val");
-        ResultSet val2 = engine.executeQuery("SELECT NEXTVAL('seq_large') as val");
+        ResultSet val1 = engine.executeQuery("SELECT seq_large.NEXTVAL as val");
+        ResultSet val2 = engine.executeQuery("SELECT seq_large.NEXTVAL as val");
 
         assertEquals(1000000L, ((Number) val1.getRows().get(0).getValues().get(0)).longValue());
         assertEquals(2000000L, ((Number) val2.getRows().get(0).getValues().get(0)).longValue());
@@ -415,7 +415,7 @@ public class SequencesTest extends BaseDatabaseTest {
         assertTrue(sequences.getRowCount() >= 1);
 
         // Verify the sequence works
-        ResultSet val1 = engine.executeQuery("SELECT NEXTVAL('seq_order') as val");
+        ResultSet val1 = engine.executeQuery("SELECT seq_order.NEXTVAL as val");
         assertEquals(1L, ((Number) val1.getRows().get(0).getValues().get(0)).longValue());
 
         logger.info("Created sequence with ORDER option");
@@ -432,10 +432,10 @@ public class SequencesTest extends BaseDatabaseTest {
         assertTrue(sequences.getRowCount() >= 1);
 
         // Verify the sequence works
-        ResultSet val1 = engine.executeQuery("SELECT NEXTVAL('seq_noorder') as val");
+        ResultSet val1 = engine.executeQuery("SELECT seq_noorder.NEXTVAL as val");
         assertEquals(10L, ((Number) val1.getRows().get(0).getValues().get(0)).longValue());
 
-        ResultSet val2 = engine.executeQuery("SELECT NEXTVAL('seq_noorder') as val");
+        ResultSet val2 = engine.executeQuery("SELECT seq_noorder.NEXTVAL as val");
         assertEquals(12L, ((Number) val2.getRows().get(0).getValues().get(0)).longValue());
 
         logger.info("Created sequence with NOORDER option");
@@ -448,7 +448,7 @@ public class SequencesTest extends BaseDatabaseTest {
         engine.execute("CREATE SEQUENCE seq_default START WITH 1");
 
         // Default should be NOORDER (order = false)
-        ResultSet val1 = engine.executeQuery("SELECT NEXTVAL('seq_default') as val");
+        ResultSet val1 = engine.executeQuery("SELECT seq_default.NEXTVAL as val");
         assertEquals(1L, ((Number) val1.getRows().get(0).getValues().get(0)).longValue());
 
         logger.info("Default sequence behavior verified");
@@ -464,10 +464,10 @@ public class SequencesTest extends BaseDatabaseTest {
         assertNotNull(sequences);
         assertTrue(sequences.getRowCount() >= 1);
 
-        ResultSet val1 = engine.executeQuery("SELECT NEXTVAL('seq_all_opts') as val");
+        ResultSet val1 = engine.executeQuery("SELECT seq_all_opts.NEXTVAL as val");
         assertEquals(100L, ((Number) val1.getRows().get(0).getValues().get(0)).longValue());
 
-        ResultSet val2 = engine.executeQuery("SELECT NEXTVAL('seq_all_opts') as val");
+        ResultSet val2 = engine.executeQuery("SELECT seq_all_opts.NEXTVAL as val");
         assertEquals(105L, ((Number) val2.getRows().get(0).getValues().get(0)).longValue());
 
         logger.info("Sequence with all options including ORDER works correctly");
@@ -483,7 +483,7 @@ public class SequencesTest extends BaseDatabaseTest {
         assertNotNull(sequences);
         assertTrue(sequences.getRowCount() >= 1);
 
-        ResultSet val1 = engine.executeQuery("SELECT NEXTVAL('seq_no_with') as val");
+        ResultSet val1 = engine.executeQuery("SELECT seq_no_with.NEXTVAL as val");
         assertEquals(200L, ((Number) val1.getRows().get(0).getValues().get(0)).longValue());
 
         logger.info("START without WITH works correctly");
@@ -495,10 +495,10 @@ public class SequencesTest extends BaseDatabaseTest {
 
         engine.execute("CREATE SEQUENCE seq_no_by START 1 INCREMENT 10");
 
-        ResultSet val1 = engine.executeQuery("SELECT NEXTVAL('seq_no_by') as val");
+        ResultSet val1 = engine.executeQuery("SELECT seq_no_by.NEXTVAL as val");
         assertEquals(1L, ((Number) val1.getRows().get(0).getValues().get(0)).longValue());
 
-        ResultSet val2 = engine.executeQuery("SELECT NEXTVAL('seq_no_by') as val");
+        ResultSet val2 = engine.executeQuery("SELECT seq_no_by.NEXTVAL as val");
         assertEquals(11L, ((Number) val2.getRows().get(0).getValues().get(0)).longValue());
 
         logger.info("INCREMENT without BY works correctly");
@@ -510,13 +510,13 @@ public class SequencesTest extends BaseDatabaseTest {
 
         engine.execute("CREATE SEQUENCE seq_no_keywords START 50 INCREMENT 5");
 
-        ResultSet val1 = engine.executeQuery("SELECT NEXTVAL('seq_no_keywords') as val");
+        ResultSet val1 = engine.executeQuery("SELECT seq_no_keywords.NEXTVAL as val");
         assertEquals(50L, ((Number) val1.getRows().get(0).getValues().get(0)).longValue());
 
-        ResultSet val2 = engine.executeQuery("SELECT NEXTVAL('seq_no_keywords') as val");
+        ResultSet val2 = engine.executeQuery("SELECT seq_no_keywords.NEXTVAL as val");
         assertEquals(55L, ((Number) val2.getRows().get(0).getValues().get(0)).longValue());
 
-        ResultSet val3 = engine.executeQuery("SELECT NEXTVAL('seq_no_keywords') as val");
+        ResultSet val3 = engine.executeQuery("SELECT seq_no_keywords.NEXTVAL as val");
         assertEquals(60L, ((Number) val3.getRows().get(0).getValues().get(0)).longValue());
 
         logger.info("START and INCREMENT without WITH/BY works correctly");
@@ -528,10 +528,10 @@ public class SequencesTest extends BaseDatabaseTest {
 
         engine.execute("CREATE SEQUENCE seq_equals START = 1000 INCREMENT = 100");
 
-        ResultSet val1 = engine.executeQuery("SELECT NEXTVAL('seq_equals') as val");
+        ResultSet val1 = engine.executeQuery("SELECT seq_equals.NEXTVAL as val");
         assertEquals(1000L, ((Number) val1.getRows().get(0).getValues().get(0)).longValue());
 
-        ResultSet val2 = engine.executeQuery("SELECT NEXTVAL('seq_equals') as val");
+        ResultSet val2 = engine.executeQuery("SELECT seq_equals.NEXTVAL as val");
         assertEquals(1100L, ((Number) val2.getRows().get(0).getValues().get(0)).longValue());
 
         logger.info("START = and INCREMENT = syntax works correctly");
@@ -543,10 +543,10 @@ public class SequencesTest extends BaseDatabaseTest {
 
         engine.execute("CREATE SEQUENCE seq_mixed START WITH 10 INCREMENT 3");
 
-        ResultSet val1 = engine.executeQuery("SELECT NEXTVAL('seq_mixed') as val");
+        ResultSet val1 = engine.executeQuery("SELECT seq_mixed.NEXTVAL as val");
         assertEquals(10L, ((Number) val1.getRows().get(0).getValues().get(0)).longValue());
 
-        ResultSet val2 = engine.executeQuery("SELECT NEXTVAL('seq_mixed') as val");
+        ResultSet val2 = engine.executeQuery("SELECT seq_mixed.NEXTVAL as val");
         assertEquals(13L, ((Number) val2.getRows().get(0).getValues().get(0)).longValue());
 
         logger.info("Mixed syntax (START WITH, INCREMENT without BY) works correctly");
@@ -557,13 +557,13 @@ public class SequencesTest extends BaseDatabaseTest {
         logger.info("Testing ALTER SEQUENCE SET INCREMENT changes the NEXTVAL step");
         engine.execute("CREATE SEQUENCE seq_inc START WITH 1 INCREMENT BY 1");
 
-        ResultSet v1 = engine.executeQuery("SELECT NEXTVAL('seq_inc') as val");
+        ResultSet v1 = engine.executeQuery("SELECT seq_inc.NEXTVAL as val");
         assertEquals(1L, ((Number) v1.getRows().get(0).getValues().get(0)).longValue());
 
         engine.execute("ALTER SEQUENCE seq_inc SET INCREMENT = 10");
 
         // The next value steps by the new increment: 1 + 10 = 11.
-        ResultSet v2 = engine.executeQuery("SELECT NEXTVAL('seq_inc') as val");
+        ResultSet v2 = engine.executeQuery("SELECT seq_inc.NEXTVAL as val");
         assertEquals(11L, ((Number) v2.getRows().get(0).getValues().get(0)).longValue());
     }
 

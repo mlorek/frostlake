@@ -66,7 +66,7 @@ public class ShowDescribeTest {
     public void testShowColumns() {
         engine.execute("CREATE TABLE test_table (id INTEGER, name VARCHAR, active BOOLEAN)");
 
-        ResultSet result = engine.executeQuery("SHOW COLUMNS FROM test_table");
+        ResultSet result = engine.executeQuery("SHOW COLUMNS IN test_table");
         assertEquals(3, result.getRowCount());
     }
 

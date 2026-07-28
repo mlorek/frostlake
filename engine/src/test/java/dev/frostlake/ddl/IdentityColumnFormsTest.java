@@ -34,6 +34,37 @@ public class IdentityColumnFormsTest extends BaseDatabaseTest {
     }
 
     @Test
+    public void autoincrementWordFormsInAnyOrderAndAlone() {
+        engine.execute("CREATE TABLE w1 (id INT AUTOINCREMENT START 10, n VARCHAR)");
+        engine.execute("INSERT INTO w1 (n) VALUES ('a'), ('b')");
+        assertEquals(10L, id("w1", 0));
+        assertEquals(11L, id("w1", 1));
+
+        engine.execute("CREATE TABLE w2 (id INT AUTOINCREMENT INCREMENT 2, n VARCHAR)");
+        engine.execute("INSERT INTO w2 (n) VALUES ('a'), ('b')");
+        assertEquals(1L, id("w2", 0));
+        assertEquals(3L, id("w2", 1));
+
+        engine.execute("CREATE TABLE w3 (id INT AUTOINCREMENT INCREMENT 2 START 10 NOORDER, n VARCHAR)");
+        engine.execute("INSERT INTO w3 (n) VALUES ('a'), ('b')");
+        assertEquals(10L, id("w3", 0));
+        assertEquals(12L, id("w3", 1));
+
+        engine.execute("CREATE TABLE w4 (id INT AUTOINCREMENT START 10 ORDER, n VARCHAR)");
+        engine.execute("INSERT INTO w4 (n) VALUES ('a')");
+        assertEquals(10L, id("w4", 0));
+    }
+
+    @Test
+    public void autoincrementNegativeIncrementCountsDown() {
+        engine.execute("CREATE TABLE wneg (id BIGINT AUTOINCREMENT INCREMENT -1, n VARCHAR)");
+        engine.execute("INSERT INTO wneg (n) VALUES ('a'), ('b')");
+        final ResultSet rs = engine.executeQuery("SELECT id FROM wneg ORDER BY id DESC");
+        assertEquals(1L, ((Number) rs.getRows().get(0).getValue(0)).longValue());
+        assertEquals(0L, ((Number) rs.getRows().get(1).getValue(0)).longValue());
+    }
+
+    @Test
     public void autoincrementWithParenSeedAndStep() {
         engine.execute("CREATE TABLE i1 (id NUMBER AUTOINCREMENT(100,5), n VARCHAR)");
         engine.execute("INSERT INTO i1 (n) VALUES ('a')");

@@ -18,6 +18,7 @@ package dev.frostlake.functions.table;
 
 import dev.frostlake.functions.TableFunction;
 import dev.frostlake.metastore.Catalog;
+import dev.frostlake.metastore.model.Database;
 import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.metastore.model.Task;
 import dev.frostlake.metastore.model.TaskExecution;
@@ -85,37 +86,42 @@ public class TaskHistoryFunction extends TableFunction {
         }
 
         List<Row> rows = new ArrayList<>();
-        String dbName = catalog.getCurrentDatabase();
-        String scName = catalog.getCurrentSchema();
-        if (dbName == null || scName == null) return new ResultSet(columns, rows);
 
+        // TASK_HISTORY spans the account in Snowflake, not the current schema — callers routinely
+        // filter with database_name/schema_name predicates while sitting in another schema, so scan
+        // every schema and stamp each row with its owning database and schema.
         try {
-            Schema schema = catalog.getDatabase(dbName).getSchema(scName);
-            for (final Task task : schema.getTasks()) {
-                if (filterTaskName != null && !task.getName().toUpperCase().equals(filterTaskName)) continue;
-                for (final TaskExecution exec : task.getExecutionHistory()) {
+            for (final Database database : catalog.getAllDatabases()) {
+                for (final Schema schema : database.getAllSchemas()) {
+                    for (final Task task : schema.getTasks()) {
+                        if (filterTaskName != null && !task.getName().toUpperCase().equals(filterTaskName)) continue;
+                        for (final TaskExecution exec : task.getExecutionHistory()) {
+                            if (rows.size() >= resultLimit) break;
+                            rows.add(new Row(Arrays.asList(
+                                null,
+                                task.getName(),
+                                database.getName(),
+                                schema.getName(),
+                                task.getSqlStatement(),
+                                task.getCondition(),
+                                exec.getState(),
+                                null,
+                                exec.getErrorMessage(),
+                                exec.getScheduledTime() != null ? exec.getScheduledTime().toString() : null,
+                                exec.getStartTime() != null ? exec.getStartTime().toString() : null,
+                                null,
+                                exec.getEndTime() != null ? exec.getEndTime().toString() : null,
+                                null, 1L, 1L, null, "SCHEDULED"
+                            )));
+                        }
+                        if (rows.size() >= resultLimit) break;
+                    }
                     if (rows.size() >= resultLimit) break;
-                    rows.add(new Row(Arrays.asList(
-                        null,
-                        task.getName(),
-                        dbName,
-                        scName,
-                        task.getSqlStatement(),
-                        task.getCondition(),
-                        exec.getState(),
-                        null,
-                        exec.getErrorMessage(),
-                        exec.getScheduledTime() != null ? exec.getScheduledTime().toString() : null,
-                        exec.getStartTime() != null ? exec.getStartTime().toString() : null,
-                        null,
-                        exec.getEndTime() != null ? exec.getEndTime().toString() : null,
-                        null, 1L, 1L, null, "SCHEDULED"
-                    )));
                 }
                 if (rows.size() >= resultLimit) break;
             }
         } catch (final Exception e) {
-            // Return empty if schema/db not found
+            // Return empty on any catalog inconsistency
         }
 
         return new ResultSet(columns, rows);

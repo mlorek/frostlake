@@ -89,17 +89,12 @@ public class ParenthesizedFromJoinTest extends BaseDatabaseTest {
     }
 
     @Test
-    public void parenthesizedJoinAsRightSideOfOuterJoinFailsClearly() {
-        // Not yet supported: a parenthesized join nested on the RIGHT of another join needs the inner
-        // aliases exposed to the outer ON. It must fail with a clear message, not an NPE.
-        final RuntimeException ex = assertThrows(RuntimeException.class, new org.junit.jupiter.api.function.Executable() {
-            @Override
-            public void execute() {
-                engine.executeQuery("""
-                    SELECT COUNT(*) FROM orders o
-                    JOIN ( ship s JOIN orders o2 ON s.order_id = o2.order_id ) ON o.order_id = s.order_id""");
-            }
-        });
-        assertEquals(true, ex.getMessage() != null && ex.getMessage().contains("parenthesized join"));
+    public void parenthesizedJoinAsRightSideOfOuterJoin() {
+        // The inner chain executes first and its aliases join the outer scope, so the outer ON can
+        // reference them (Snowflake-verified shape).
+        final ResultSet rs = engine.executeQuery("""
+            SELECT COUNT(*) FROM orders o
+            JOIN ( ship s JOIN orders o2 ON s.order_id = o2.order_id ) ON o.order_id = s.order_id""");
+        assertEquals(1, rs.getRowCount());
     }
 }

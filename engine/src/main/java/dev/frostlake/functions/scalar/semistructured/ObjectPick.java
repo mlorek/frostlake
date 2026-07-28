@@ -39,7 +39,8 @@ public class ObjectPick extends BuiltInFunction {
             JsonNode val = src.get(key);
             if (val != null) result.set(key, val);
         }
-        return result.toString();
+        // Snowflake serializes OBJECT members key-sorted; raw insertion order leaked argument order.
+        return ArrayFunctionHelper.toCanonicalJson(result);
     }
 
     @Override public int getMinArgCount() { return 2; }

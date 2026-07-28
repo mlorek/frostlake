@@ -67,13 +67,15 @@ public class ConditionalShortCircuitTest extends BaseDatabaseTest {
         engine.execute("""
             CREATE FUNCTION strict_len(s VARCHAR)
             RETURNS NUMBER
-            LANGUAGE PYTHON
-            RUNTIME_VERSION = '2.7'
-            HANDLER = 'go'
+            LANGUAGE JAVA
+            HANDLER = 'StrictLen.go'
             AS
             $$
-            def go(s):
-                return len(s)
+            class StrictLen {
+              public static int go(String s) {
+                return s.length();
+              }
+            }
             $$
             """);
         engine.execute("CREATE TABLE guard_src (s VARCHAR)");

@@ -21,6 +21,8 @@ import dev.frostlake.metastore.model.*;
 import dev.frostlake.metastore.model.Privilege;
 import dev.frostlake.storage.Row;
 import dev.frostlake.storage.StorageEngine;
+import dev.frostlake.types.NumericType;
+import dev.frostlake.types.StringType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -48,7 +50,24 @@ final class CatalogSnapshotWriter {
     static void writeCatalogTo(final Path catalogPath, final Path tablesDir,
                                 final Catalog catalog, final StorageEngine storageEngine) throws IOException {
         logger.debug("Saving catalog to: {}", catalogPath);
+        final CatalogSnapshot snapshot = buildSnapshot(catalog, storageEngine, new DiskTableDataStore(tablesDir));
+        // Write to a temp file then atomically rename in, so a crash can't leave a half-written snapshot.
+        final Path tmp = catalogPath.resolveSibling(catalogPath.getFileName() + ".tmp");
+        try (ObjectOutputStream oos = new ObjectOutputStream(
+                new BufferedOutputStream(Files.newOutputStream(tmp)))) {
+            oos.writeObject(snapshot);
+        }
+        Files.move(tmp, catalogPath, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+        logger.info("Catalog saved successfully");
+    }
 
+    /**
+     * Build the full engine-state snapshot, pushing each table's rows into {@code tableData}. With a
+     * {@link MemoryTableDataStore} this is the write half of an in-memory engine clone; with a
+     * {@link DiskTableDataStore} it is the write half of an on-disk checkpoint.
+     */
+    static CatalogSnapshot buildSnapshot(final Catalog catalog, final StorageEngine storageEngine,
+                                         final TableDataStore tableData) throws IOException {
         CatalogSnapshot snapshot = new CatalogSnapshot();
         snapshot.currentDatabase = catalog.getCurrentDatabase();
         snapshot.currentSchema = catalog.getCurrentSchema();
@@ -85,6 +104,13 @@ final class CatalogSnapshotWriter {
                         ColumnSnapshot colSnapshot = new ColumnSnapshot();
                         colSnapshot.name = col.getName();
                         colSnapshot.dataType = col.getDataType().getName();
+                        if (col.getDataType() instanceof NumericType) {
+                            final NumericType numericType = (NumericType) col.getDataType();
+                            colSnapshot.precision = numericType.getPrecision();
+                            colSnapshot.scale = numericType.getScale();
+                        } else if (col.getDataType() instanceof StringType) {
+                            colSnapshot.maxLength = ((StringType) col.getDataType()).getMaxLength();
+                        }
                         colSnapshot.nullable = col.isNullable();
                         colSnapshot.primaryKey = col.isPrimaryKey();
                         colSnapshot.defaultValue = col.getDefaultValue() != null ? col.getDefaultValue().toString() : null;
@@ -128,7 +154,8 @@ final class CatalogSnapshotWriter {
                     schemaSnapshot.tables.add(tableSnapshot);
 
                     // Save table data
-                    saveTableData(tablesDir, db.getName(), schema.getName(), table, storageEngine);
+                    tableData.save(db.getName(), schema.getName(), table.getName(),
+                        buildTableData(db.getName(), schema.getName(), table, storageEngine));
                 }
 
                 // Save view metadata
@@ -158,6 +185,19 @@ final class CatalogSnapshotWriter {
                     seqSnapshot.comment = seq.getComment();
                     seqSnapshot.owner = seq.getOwner();
                     schemaSnapshot.sequences.add(seqSnapshot);
+                }
+
+                // Save stages (the DEFINITION — the local backing dir is recomputed on restore, like
+                // CREATE STAGE does — so @stage references in COPY / UDF IMPORTS keep resolving)
+                for (final Stage stage : schema.getStages()) {
+                    StageSnapshot stageSnapshot = new StageSnapshot();
+                    stageSnapshot.name = stage.getName();
+                    stageSnapshot.type = stage.getType().name();
+                    stageSnapshot.url = stage.getUrl();
+                    stageSnapshot.fileFormat = stage.getFileFormat();
+                    stageSnapshot.encryption = stage.isEncryption();
+                    stageSnapshot.comment = stage.getComment();
+                    schemaSnapshot.stages.add(stageSnapshot);
                 }
 
                 // Save streams (definition + pending unconsumed change records)
@@ -357,19 +397,6 @@ final class CatalogSnapshotWriter {
             snapshot.warehouses.add(whSnapshot);
         }
 
-        // Save stages
-        for (final Stage stage : catalog.getAllStages()) {
-            StageSnapshot stageSnapshot = new StageSnapshot();
-            stageSnapshot.name = stage.getName();
-            stageSnapshot.type = stage.getType().name();
-            stageSnapshot.url = stage.getUrl();
-            stageSnapshot.fileFormat = stage.getFileFormat();
-            stageSnapshot.encryption = stage.isEncryption();
-            stageSnapshot.comment = stage.getComment();
-            stageSnapshot.createdAt = stage.getCreatedAt();
-            snapshot.stages.add(stageSnapshot);
-        }
-
         // Save users
         for (final User user : catalog.getAllUsers()) {
             UserSnapshot userSnapshot = new UserSnapshot();
@@ -400,15 +427,7 @@ final class CatalogSnapshotWriter {
             snapshot.roles.add(roleSnapshot);
         }
 
-        // Write to a temp file then atomically rename in, so a crash can't leave a half-written snapshot.
-        final Path tmp = catalogPath.resolveSibling(catalogPath.getFileName() + ".tmp");
-        try (ObjectOutputStream oos = new ObjectOutputStream(
-                new BufferedOutputStream(Files.newOutputStream(tmp)))) {
-            oos.writeObject(snapshot);
-        }
-        Files.move(tmp, catalogPath, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
-
-        logger.info("Catalog saved successfully");
+        return snapshot;
     }
 
     /**
@@ -467,32 +486,18 @@ final class CatalogSnapshotWriter {
     /**
      * Save table data to disk
      */
-    static void saveTableData(final Path tablesDir, final String database, final String schema, final Table table,
-                               final StorageEngine storageEngine) throws IOException {
-        Path tableFile = tablesDir.resolve(
-            String.format("%s_%s_%s.dat", database, schema, table.getName())
-        );
-
+    /** A table's rows as a snapshot value (each row's values defensively copied). */
+    static TableDataSnapshot buildTableData(final String database, final String schema, final Table table,
+                                            final StorageEngine storageEngine) {
         String qualifiedName = database.toUpperCase() + "." + schema.toUpperCase() + "." + table.getName().toUpperCase();
         StorageEngine.TableStorage storage = storageEngine.getTableStorage(qualifiedName);
-
-        try (ObjectOutputStream oos = new ObjectOutputStream(
-                new BufferedOutputStream(Files.newOutputStream(tableFile)))) {
-
-            TableDataSnapshot dataSnapshot = new TableDataSnapshot();
-            dataSnapshot.database = database;
-            dataSnapshot.schema = schema;
-            dataSnapshot.table = table.getName();
-
-            // Get all rows from table storage
-            for (final Row row : storage.scan()) {
-                dataSnapshot.rows.add(new ArrayList<>(row.getValues()));
-            }
-
-            oos.writeObject(dataSnapshot);
-
-            logger.debug("Saved table data: {}.{}.{} ({} rows)",
-                        database, schema, table.getName(), dataSnapshot.rows.size());
+        TableDataSnapshot dataSnapshot = new TableDataSnapshot();
+        dataSnapshot.database = database;
+        dataSnapshot.schema = schema;
+        dataSnapshot.table = table.getName();
+        for (final Row row : storage.scan()) {
+            dataSnapshot.rows.add(new ArrayList<>(row.getValues()));
         }
+        return dataSnapshot;
     }
 }

@@ -28,12 +28,14 @@ enum CastTargetCategory {
     static CastTargetCategory fromTypeName(final String baseType) {
         switch (baseType) {
             case "INTEGER": case "INT": case "BIGINT": return INTEGER;
-            case "FLOAT": case "FLOAT4": case "FLOAT8": case "DOUBLE": case "DOUBLEPRECISION": case "REAL": return FLOAT;
+            case "FLOAT": case "FLOAT4": case "FLOAT8": case "DOUBLE": case "DOUBLEPRECISION": case "REAL": case "DECFLOAT": return FLOAT;
             case "NUMBER": case "DECIMAL": case "NUMERIC": return DECIMAL;
             case "VARCHAR": case "STRING": case "TEXT": return STRING;
             case "BOOLEAN": return BOOLEAN;
             case "BINARY": case "VARBINARY": return BINARY;
             case "ARRAY": return ARRAY;
+            // VECTOR(FLOAT|INT, n) casts take the array value as-is; the dimension is declarative here.
+            case "VECTOR": return ARRAY;
             case "OBJECT": return OBJECT;
             default: return null;
         }

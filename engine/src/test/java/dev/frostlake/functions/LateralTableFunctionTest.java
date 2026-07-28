@@ -55,26 +55,19 @@ public class LateralTableFunctionTest {
         engine.execute("INSERT INTO numbers VALUES (3)");
 
         ResultSet result = engine.executeQuery("""
-            SELECT n.n, g.SEQ
+            SELECT n.n
             FROM numbers n, LATERAL TABLE(GENERATOR(ROWCOUNT => n.n)) g
             """);
 
         assertNotNull(result);
         assertEquals(5, result.getRowCount());  // 2 + 3 = 5 rows total
 
-        // First two rows should have n=2, SEQ=0,1
+        // The generator carries no columns (Snowflake shape); each source row repeats n times.
         assertEquals(2L, result.getRows().get(0).getValue(0));
-        assertEquals(0L, result.getRows().get(0).getValue(1));
         assertEquals(2L, result.getRows().get(1).getValue(0));
-        assertEquals(1L, result.getRows().get(1).getValue(1));
-
-        // Next three rows should have n=3, SEQ=0,1,2
         assertEquals(3L, result.getRows().get(2).getValue(0));
-        assertEquals(0L, result.getRows().get(2).getValue(1));
         assertEquals(3L, result.getRows().get(3).getValue(0));
-        assertEquals(1L, result.getRows().get(3).getValue(1));
         assertEquals(3L, result.getRows().get(4).getValue(0));
-        assertEquals(2L, result.getRows().get(4).getValue(1));
     }
 
     @Test
@@ -139,7 +132,7 @@ public class LateralTableFunctionTest {
         engine.execute("INSERT INTO numbers VALUES (2)");
 
         ResultSet result = engine.executeQuery("""
-            SELECT n.n, g.SEQ
+            SELECT n.n
             FROM numbers n
             CROSS JOIN LATERAL TABLE(GENERATOR(ROWCOUNT => n.n)) g
             """);
@@ -155,7 +148,7 @@ public class LateralTableFunctionTest {
         engine.execute("INSERT INTO ranges VALUES (2, 3)");
 
         ResultSet result = engine.executeQuery("""
-            SELECT r.id, g.SEQ
+            SELECT r.id
             FROM ranges r, LATERAL TABLE(GENERATOR(ROWCOUNT => r.count)) g
             WHERE r.id = 1
             """);
@@ -163,10 +156,9 @@ public class LateralTableFunctionTest {
         assertNotNull(result);
         assertEquals(5, result.getRowCount());
 
-        // All rows should have id=1
+        // All rows should have id=1, repeated once per generated row
         for (int i = 0; i < 5; i++) {
             assertEquals(1L, result.getRows().get(i).getValue(0));
-            assertEquals((long) i, result.getRows().get(i).getValue(1));
         }
     }
 
@@ -178,31 +170,21 @@ public class LateralTableFunctionTest {
         engine.execute("INSERT INTO items VALUES (3, 'Cherry', 1)");
 
         ResultSet result = engine.executeQuery("""
-            SELECT i.item_name, g.SEQ
+            SELECT i.item_name
             FROM items i, LATERAL TABLE(GENERATOR(ROWCOUNT => i.count)) g
-            ORDER BY i.item_id, g.SEQ
+            ORDER BY i.item_id
             """);
 
         assertNotNull(result);
         assertEquals(6, result.getRowCount());  // 2 + 3 + 1 = 6
 
-        // Apple (2 rows)
+        // Each item repeats once per generated row.
         assertEquals("Apple", result.getRows().get(0).getValue(0));
-        assertEquals(0L, result.getRows().get(0).getValue(1));
         assertEquals("Apple", result.getRows().get(1).getValue(0));
-        assertEquals(1L, result.getRows().get(1).getValue(1));
-
-        // Banana (3 rows)
         assertEquals("Banana", result.getRows().get(2).getValue(0));
-        assertEquals(0L, result.getRows().get(2).getValue(1));
         assertEquals("Banana", result.getRows().get(3).getValue(0));
-        assertEquals(1L, result.getRows().get(3).getValue(1));
         assertEquals("Banana", result.getRows().get(4).getValue(0));
-        assertEquals(2L, result.getRows().get(4).getValue(1));
-
-        // Cherry (1 row)
         assertEquals("Cherry", result.getRows().get(5).getValue(0));
-        assertEquals(0L, result.getRows().get(5).getValue(1));
     }
 
     @Test
@@ -275,7 +257,7 @@ public class LateralTableFunctionTest {
         engine.execute("INSERT INTO empty_test VALUES (2, 2)");
 
         ResultSet result = engine.executeQuery("""
-            SELECT e.id, g.SEQ
+            SELECT e.id
             FROM empty_test e, LATERAL TABLE(GENERATOR(ROWCOUNT => e.count)) g
             """);
 
@@ -283,8 +265,6 @@ public class LateralTableFunctionTest {
         assertEquals(2, result.getRowCount());  // Only rows from id=2
 
         assertEquals(2L, result.getRows().get(0).getValue(0));
-        assertEquals(0L, result.getRows().get(0).getValue(1));
         assertEquals(2L, result.getRows().get(1).getValue(0));
-        assertEquals(1L, result.getRows().get(1).getValue(1));
     }
 }

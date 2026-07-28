@@ -92,14 +92,14 @@ public class DropIfExistsTest extends BaseJdbcTest {
     @Test
     public void testDropFunctionIfExists() throws SQLException {
         // Drop non-existent function should succeed with IF EXISTS
-        assertDoesNotThrow(() -> statement.execute("DROP FUNCTION IF EXISTS nonexistent_func"));
+        assertDoesNotThrow(() -> statement.execute("DROP FUNCTION IF EXISTS nonexistent_func()"));
 
         // Create and drop function
         statement.execute("CREATE FUNCTION test_drop_func(x INTEGER) RETURNS INTEGER AS 'x + 1'");
-        assertDoesNotThrow(() -> statement.execute("DROP FUNCTION IF EXISTS test_drop_func"));
+        assertDoesNotThrow(() -> statement.execute("DROP FUNCTION IF EXISTS test_drop_func(INTEGER)"));
 
         // Drop again should succeed with IF EXISTS
-        assertDoesNotThrow(() -> statement.execute("DROP FUNCTION IF EXISTS test_drop_func"));
+        assertDoesNotThrow(() -> statement.execute("DROP FUNCTION IF EXISTS test_drop_func(INTEGER)"));
 
         // Drop without IF EXISTS should fail
     }
@@ -107,17 +107,17 @@ public class DropIfExistsTest extends BaseJdbcTest {
     @Test
     public void testDropProcedureIfExists() throws SQLException {
         // Drop non-existent procedure should succeed with IF EXISTS
-        assertDoesNotThrow(() -> statement.execute("DROP PROCEDURE IF EXISTS nonexistent_proc"));
+        assertDoesNotThrow(() -> statement.execute("DROP PROCEDURE IF EXISTS nonexistent_proc()"));
 
         // Create and drop procedure
         statement.execute("""
                 CREATE PROCEDURE test_drop_proc(x INTEGER) RETURNS INTEGER AS $$\
                 BEGIN RETURN x + 1; END;$$
                 """);
-        assertDoesNotThrow(() -> statement.execute("DROP PROCEDURE IF EXISTS test_drop_proc"));
+        assertDoesNotThrow(() -> statement.execute("DROP PROCEDURE IF EXISTS test_drop_proc(INTEGER)"));
 
         // Drop again should succeed with IF EXISTS
-        assertDoesNotThrow(() -> statement.execute("DROP PROCEDURE IF EXISTS test_drop_proc"));
+        assertDoesNotThrow(() -> statement.execute("DROP PROCEDURE IF EXISTS test_drop_proc(INTEGER)"));
 
         // Drop without IF EXISTS should fail
     }

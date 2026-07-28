@@ -20,14 +20,16 @@
     <!-- frostlake-db IS published to Central; override the parent's default deploy skip. -->
     <properties>
         <maven.deploy.skip>false</maven.deploy.skip>
-        <!-- One Truffle line for every polyglot language. 25.0.2 keeps Java 17 base classes AND is the
-             version downstream builds (e.g. the vendor test harness) already put on the classpath — a
-             consumer resolving "newest wins" must not end up with our Python on a different Truffle
-             than its JS, which breaks Truffle library initialization at context startup. -->
-        <graalvm.version>25.0.2</graalvm.version>
     </properties>
 
     <dependencies>
+        <!-- Pure-Java snappy for COMPRESS/DECOMPRESS (Snowflake's default method); no transitive deps -->
+        <dependency>
+            <groupId>io.airlift</groupId>
+            <artifactId>aircompressor</artifactId>
+            <version>0.27</version>
+        </dependency>
+
         <!-- ANTLR for SQL parsing -->
         <dependency>
             <groupId>org.antlr</groupId>
@@ -62,7 +64,9 @@
             <version>3.30.9</version>
         </dependency>
 
-        <!-- GraalVM polyglot: JavaScript AND Python UDF support, both on ${graalvm.version} (see the
+        <!-- GraalVM polyglot API only (the small language-neutral surface, for TruffleLogBridge). The
+             heavyweight language runtimes live in the optional frostlake-rt-js / frostlake-rt-py
+             modules and are discovered via the UdfLanguageRuntime ServiceLoader SPI. (See the
              property above for why the versions must match). Python here is GraalPy, a Python 3
              implementation; Snowflake UDFs declare RUNTIME_VERSION 3.x, so the previous Python 2
              interpreter (Jython) could not parse annotations, f-strings or walrus at all. -->
@@ -70,30 +74,6 @@
             <groupId>org.graalvm.polyglot</groupId>
             <artifactId>polyglot</artifactId>
             <version>${graalvm.version}</version>
-        </dependency>
-        <dependency>
-            <groupId>org.graalvm.polyglot</groupId>
-            <artifactId>js</artifactId>
-            <version>${graalvm.version}</version>
-            <type>pom</type>
-        </dependency>
-        <dependency>
-            <groupId>org.graalvm.js</groupId>
-            <artifactId>js-scriptengine</artifactId>
-            <version>${graalvm.version}</version>
-        </dependency>
-        <dependency>
-            <groupId>org.graalvm.polyglot</groupId>
-            <artifactId>python</artifactId>
-            <version>${graalvm.version}</version>
-            <type>pom</type>
-        </dependency>
-
-        <!-- Scala compiler for in-process Scala UDF/procedure compilation (no external scalac) -->
-        <dependency>
-            <groupId>org.scala-lang</groupId>
-            <artifactId>scala-compiler</artifactId>
-            <version>2.13.18</version>
         </dependency>
 
         <!-- Testing -->
@@ -154,7 +134,7 @@
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-surefire-plugin</artifactId>
-                <version>3.5.5</version>
+                <version>3.5.6</version>
                 <configuration>
                     <argLine>-Dpolyglot.engine.WarnInterpreterOnly=false</argLine>
                     <excludedGroups>${perf.excludedGroups}</excludedGroups>
@@ -166,7 +146,7 @@
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-jar-plugin</artifactId>
-                <version>3.4.2</version>
+                <version>3.5.0</version>
                 <executions>
                     <execution>
                         <id>make-test-jar</id>
@@ -183,14 +163,23 @@
             <plugin>
                 <groupId>org.apache.rat</groupId>
                 <artifactId>apache-rat-plugin</artifactId>
-                <version>0.16.1</version>
+                <version>${apache-rat-plugin.version}</version>
                 <configuration>
                     <consoleOutput>true</consoleOutput>
-                    <includes>
-                        <include>src/main/java/dev/frostlake/**/*.java</include>
-                        <include>src/test/java/dev/frostlake/**/*.java</include>
-                        <include>src/main/java/com/snowflake/snowpark_java/**/*.java</include>
-                    </includes>
+                    <!-- RAT 0.17+ scans every file not excluded (the pre-0.17 "<includes> restricts the
+                         scan" semantics are gone, and an excluded directory is pruned before includes can
+                         override). So instead of listing the audited .java sets, exclude the non-audited
+                         categories; everything left IS the owned Java source, and new .java files are
+                         audited automatically wherever they appear. -->
+                    <inputExcludes>
+                        <inputExclude>/pom.xml</inputExclude>
+                        <inputExclude>/.flattened-pom.xml</inputExclude>
+                        <inputExclude>/src/main/antlr4/**</inputExclude>
+                        <inputExclude>/src/main/resources/**</inputExclude>
+                        <inputExclude>/src/test/resources/**</inputExclude>
+                        <inputExclude>**/*.md</inputExclude>
+                        <inputExclude>**/*.log</inputExclude>
+                    </inputExcludes>
                 </configuration>
                 <executions>
                     <execution>

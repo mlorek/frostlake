@@ -111,6 +111,22 @@ public class EngineConfig {
     }
 
     /**
+     * Configuration with explicit programmatic overrides: the built-in defaults and any discovered
+     * {@code frostlake.properties} (classpath / working directory / {@code ~/.frostlake}) load first,
+     * then {@code overrides} apply last and win. Used by the {@code jdbc:frostlake:file:} URL to pin
+     * persistence to the URL's directory regardless of ambient configuration, while ambient
+     * conveniences (e.g. {@code python.venv}, stage mappings) still apply.
+     */
+    public EngineConfig(final Properties overrides) {
+        this.properties = new Properties();
+        loadDefaults();
+        loadConfiguration();
+        for (final String key : overrides.stringPropertyNames()) {
+            properties.setProperty(key, overrides.getProperty(key));
+        }
+    }
+
+    /**
      * Resolve the default base directory for persisted data: the {@code SQL_ENGINE_DATA_DIR} environment
      * variable when set (and non-blank), otherwise {@code <user-home>/.frostlake_engine/data}. Package-visible
      * and pure (env value + home directory injected) so it is unit-testable without mutating the process

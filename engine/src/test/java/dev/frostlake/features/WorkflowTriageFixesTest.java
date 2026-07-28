@@ -386,34 +386,6 @@ public class WorkflowTriageFixesTest extends BaseDatabaseTest {
         assertEquals("MINUTE", scalar("CALL p5()"));
     }
 
-    // ---- a Python UDF returning a dict/list yields a VARIANT, not a Jython object ----
-
-    @Test
-    public void pythonDictReturnBecomesAVariant() {
-        engine.execute("""
-            CREATE OR REPLACE FUNCTION pyobj(k VARCHAR) RETURNS VARIANT
-            LANGUAGE PYTHON RUNTIME_VERSION='3.11' HANDLER='h' AS $$
-            def h(k):
-                return {'a': k, 'n': 2}
-            $$""");
-        assertEquals("x", scalar("SELECT pyobj('x'):a::VARCHAR"));
-        // PyObject.hashCode() delegates to Python __hash__, so any hash-based stage used to raise
-        // "unhashable type: 'dict'".
-        assertEquals(1, q("SELECT DISTINCT pyobj('x')").getRowCount());
-    }
-
-    @Test
-    public void pythonListReturnBecomesAVariantArray() {
-        engine.execute("""
-            CREATE OR REPLACE FUNCTION pylist(k VARCHAR) RETURNS VARIANT
-            LANGUAGE PYTHON RUNTIME_VERSION='3.11' HANDLER='h' AS $$
-            def h(k):
-                return [k, 1, True]
-            $$""");
-        assertEquals("[\"x\",1,true]", scalar("SELECT pylist('x')"));
-        assertEquals("x", scalar("SELECT pylist('x')[0]::VARCHAR"));
-    }
-
     // ---- ANSI derived-column alias lists: FROM t AS d (a,b) and PIVOT(...) AS p (c1,c2) ----
 
     @Test

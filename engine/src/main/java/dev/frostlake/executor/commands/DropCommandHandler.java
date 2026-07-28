@@ -21,6 +21,8 @@ import dev.frostlake.metastore.*;
 import dev.frostlake.metastore.model.*;
 import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.storage.ResultSet;
+import dev.frostlake.metastore.DroppedObject;
+import dev.frostlake.metastore.model.Tag;
 import dev.frostlake.storage.Row;
 import dev.frostlake.storage.StorageEngine;
 import dev.frostlake.stream.StreamManager;
@@ -479,7 +481,15 @@ public class DropCommandHandler implements CommandHandler {
                 String tagName = getText(ctx.qualifiedName());
                 try {
                     checkDrop(SecurableObjectType.TAG, tagName);
+                    final Tag droppedTag = catalog.getTag(tagName);
                     catalog.dropTag(tagName);
+                    final String[] tagParts = qualifiedNameParts(ctx.qualifiedName());
+                    final String tagDb = tagParts.length == 3 ? tagParts[0] : catalog.getCurrentDatabase();
+                    final String tagSchema = tagParts.length == 3 ? tagParts[1]
+                        : tagParts.length == 2 ? tagParts[0] : catalog.getCurrentSchema();
+                    catalog.recordDropped(
+                        "TAG:" + (tagDb + "." + tagSchema + "." + tagParts[tagParts.length - 1]).toUpperCase(),
+                        new DroppedObject(droppedTag, (List<Row>) null));
                     logger.trace("Dropped tag: {}", tagName);
                 } catch (final RuntimeException e) {
                     if (!ifExists) throw e;
@@ -492,6 +502,10 @@ public class DropCommandHandler implements CommandHandler {
                         : parts.length == 2 ? catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0])
                         : catalog.getDatabase(parts[0]).getSchema(parts[1]);
                     checkDrop(SecurableObjectType.MASKING_POLICY, getText(ctx.qualifiedName()));
+                    if (catalog.isPolicyInUse(parts[parts.length - 1], true)) {
+                        throw new RuntimeException("Policy " + parts[parts.length - 1].toUpperCase()
+                            + " cannot be dropped/replaced as it is associated with one or more entities.");
+                    }
                     schema.dropMaskingPolicy(parts[parts.length - 1].toUpperCase());
                     logger.trace("Dropped masking policy: {}", getText(ctx.qualifiedName()));
                 } catch (final RuntimeException e) { if (!ifExists) throw e; }
@@ -502,6 +516,10 @@ public class DropCommandHandler implements CommandHandler {
                         : parts.length == 2 ? catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0])
                         : catalog.getDatabase(parts[0]).getSchema(parts[1]);
                     checkDrop(SecurableObjectType.ROW_ACCESS_POLICY, getText(ctx.qualifiedName()));
+                    if (catalog.isPolicyInUse(parts[parts.length - 1], false)) {
+                        throw new RuntimeException("Policy " + parts[parts.length - 1].toUpperCase()
+                            + " cannot be dropped/replaced as it is associated with one or more entities.");
+                    }
                     schema.dropRowAccessPolicy(parts[parts.length - 1].toUpperCase());
                     logger.trace("Dropped row access policy: {}", getText(ctx.qualifiedName()));
                 } catch (final RuntimeException e) { if (!ifExists) throw e; }
@@ -513,5 +531,7 @@ public class DropCommandHandler implements CommandHandler {
             throw new RuntimeException("Failed to execute DROP statement: " + e.getMessage(), e);
         }
     }
+
+
 
 }

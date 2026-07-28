@@ -98,7 +98,7 @@ public class TaskSchedulingTest {
     @Test
     public void cronScheduledTaskIsArmed() {
         engine.startTaskScheduler();
-        engine.execute("CREATE TASK cron_task WAREHOUSE = 'COMPUTE_WH' SCHEDULE = 'USING CRON 0 * * * *' AS SELECT 1");
+        engine.execute("CREATE TASK cron_task WAREHOUSE = 'COMPUTE_WH' SCHEDULE = 'USING CRON 0 * * * * UTC' AS SELECT 1");
         engine.execute("ALTER TASK cron_task RESUME");
 
         final Task t = task("CRON_TASK");

@@ -117,7 +117,14 @@ public class DDLCommandHandler implements CommandHandler {
 
     @Override
     public String extractComment(final FrostlakeParser.CommentClauseContext ctx) {
-        if (ctx == null || ctx.STRING_LITERAL() == null) {
+        if (ctx == null) {
+            return null;
+        }
+        if (ctx.DOLLAR_QUOTED_STRING() != null) {
+            final String raw = ctx.DOLLAR_QUOTED_STRING().getText();
+            return raw.substring(2, raw.length() - 2);
+        }
+        if (ctx.STRING_LITERAL() == null) {
             return null;
         }
         return extractStringLiteral(ctx.STRING_LITERAL());
@@ -514,9 +521,16 @@ public class DDLCommandHandler implements CommandHandler {
             catalog.useWarehouse(warehouseName);
             logger.trace("Using warehouse: {}", warehouseName);
         } else if (ctx.SECONDARY() != null) {
-            final String spec = ctx.ALL() != null ? "ALL" : getText(ctx.identifier());
-            catalog.useSecondaryRoles(spec);
-            logger.trace("Using secondary roles: {}", spec);
+            if (ctx.ALL() != null) {
+                catalog.useSecondaryRoles("ALL");
+                logger.trace("Using secondary roles: ALL");
+            } else {
+                // USE SECONDARY ROLES r1, r2, ... — activate each named role.
+                for (final FrostlakeParser.IdentifierContext role : ctx.identifier()) {
+                    catalog.useSecondaryRoles(getText(role));
+                    logger.trace("Using secondary role: {}", getText(role));
+                }
+            }
         } else if (ctx.ROLE() != null) {
             String roleName = queryExecutor.resolveObjectName(ctx.objectName());
             catalog.useRole(roleName);
@@ -573,6 +587,19 @@ public class DDLCommandHandler implements CommandHandler {
             catalog.getDatabase(databaseName).addSchema(restoredSchema);
             restoreTableStorage(databaseName, Collections.singletonList(restoredSchema), dropped.getTableRows());
             logger.trace("Undropped schema: {}", name);
+        } else if (ctx.TAG() != null) {
+            final String name = getText(ctx.qualifiedName());
+            final String[] parts = qualifiedNameParts(ctx.qualifiedName());
+            final String dbName = parts.length == 3 ? parts[0] : catalog.getCurrentDatabase();
+            final String schemaName = parts.length == 3 ? parts[1]
+                : parts.length == 2 ? parts[0] : catalog.getCurrentSchema();
+            final DroppedObject dropped = catalog.takeDropped(
+                "TAG:" + (dbName + "." + schemaName + "." + parts[parts.length - 1]).toUpperCase());
+            if (dropped == null || dropped.getObject() == null) {
+                throw new RuntimeException("Cannot UNDROP: no recently dropped tag named " + name);
+            }
+            catalog.getDatabase(dbName).getSchema(schemaName).addTag((Tag) dropped.getObject());
+            logger.trace("Undropped tag: {}", name);
         } else if (ctx.DATABASE() != null) {
             final String name = getText(ctx.identifier());
             final DroppedObject dropped = catalog.takeDropped("DATABASE:" + name.toUpperCase());

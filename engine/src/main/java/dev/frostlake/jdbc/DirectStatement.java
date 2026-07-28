@@ -144,6 +144,14 @@ public class DirectStatement implements Statement {
         return new DirectResultSet(this, currentResultSet);
     }
 
+    /**
+     * The engine-level result of the last execution, for subclasses that need row access without
+     * disturbing the JDBC cursor (e.g. the callable statement's OUT-parameter extraction).
+     */
+    protected ResultSet currentEngineResultSet() {
+        return currentResultSet;
+    }
+
     @Override
     public void close() throws SQLException {
         closed = true;

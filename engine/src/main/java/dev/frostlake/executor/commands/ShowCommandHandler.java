@@ -21,6 +21,7 @@ import dev.frostlake.executor.ShowCommandExecutor;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.storage.ResultSet;
+import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
 import java.util.ArrayList;
 import java.util.List;
@@ -55,7 +56,25 @@ public class ShowCommandHandler implements CommandHandler {
 
     public ResultSet handleShowStatement(final FrostlakeParser.ShowStatementContext ctx) {
         ResultSet result = handleShowStatementInternal(ctx);
-        return applyLikeFilter(result, getLikePattern(ctx));
+        result = applyLikeFilter(result, getLikePattern(ctx));
+        final FrostlakeParser.ShowTailContext tail = ctx.showTail();
+        if (tail != null) {
+            int literalIndex = 0;
+            if (tail.STARTS() != null) {
+                result = applyStartsWith(result, stripQuotes(tail.STRING_LITERAL(literalIndex++).getText()));
+            }
+            if (tail.LIMIT() != null) {
+                final int limit = Integer.parseInt(tail.INTEGER_LITERAL().getText());
+                final String fromName = tail.FROM() != null
+                    ? stripQuotes(tail.STRING_LITERAL(literalIndex).getText()) : null;
+                result = applyLimitFrom(result, limit, fromName);
+            }
+            // WITH PRIVILEGES p1, p2 is accepted but the listing is not privilege-filtered.
+        }
+        if (ctx.TERSE() != null) {
+            result = applyTerse(result);
+        }
+        return result;
     }
 
     private ResultSet handleShowStatementInternal(final FrostlakeParser.ShowStatementContext ctx) {
@@ -84,6 +103,8 @@ public class ShowCommandHandler implements CommandHandler {
                 schemaName = getText(ctx.qualifiedName());
             }
             return showExecutor.showHybridTables(schemaName);
+        } else if (ctx.ICEBERG() != null) {
+            return withoutRows(showExecutor.showTables(null));
         } else if (ctx.TABLES() != null) {
             if (ctx.DATABASE() != null && ctx.qualifiedName() != null) {
                 return showExecutor.showTablesInDatabase(getText(ctx.qualifiedName()));
@@ -94,8 +115,8 @@ public class ShowCommandHandler implements CommandHandler {
             }
             return showExecutor.showTables(schemaName);
         } else if (ctx.COLUMNS() != null) {
-            String tableName = getText(ctx.qualifiedName());
-            return showExecutor.showColumns(tableName);
+            final String name = ctx.qualifiedName() != null ? getText(ctx.qualifiedName()) : null;
+            return showExecutor.showColumnsScoped(name, ctx.VIEW() != null);
         } else if (ctx.MATERIALIZED() != null && ctx.VIEWS() != null) {
             if (ctx.DATABASE() != null && ctx.qualifiedName() != null) {
                 return showExecutor.showMaterializedViewsInDatabase(getText(ctx.qualifiedName()));
@@ -106,6 +127,9 @@ public class ShowCommandHandler implements CommandHandler {
             }
             return showExecutor.showMaterializedViews(schemaName);
         } else if (ctx.VIEWS() != null) {
+            if (ctx.ACCOUNT() != null) {
+                return showExecutor.showViewsInAccount();
+            }
             if (ctx.DATABASE() != null && ctx.qualifiedName() != null) {
                 return showExecutor.showViewsInDatabase(getText(ctx.qualifiedName()));
             }
@@ -119,6 +143,9 @@ public class ShowCommandHandler implements CommandHandler {
         } else if (ctx.ROLES() != null) {
             return showExecutor.showRoles();
         } else if (ctx.FUNCTIONS() != null) {
+            if (ctx.CLASS() != null) {
+                return withoutRows(showExecutor.showFunctions(null, true));
+            }
             if (ctx.DATABASE() != null && ctx.qualifiedName() != null) {
                 return showExecutor.showFunctionsInDatabase(getText(ctx.qualifiedName()));
             }
@@ -128,6 +155,9 @@ public class ShowCommandHandler implements CommandHandler {
             }
             return showExecutor.showFunctions(schemaName, ctx.USER() != null);
         } else if (ctx.PROCEDURES() != null) {
+            if (ctx.APPLICATION() != null) {
+                return withoutRows(showExecutor.showProcedures(null, true));
+            }
             if (ctx.DATABASE() != null && ctx.qualifiedName() != null) {
                 return showExecutor.showProceduresInDatabase(getText(ctx.qualifiedName()));
             }
@@ -166,6 +196,9 @@ public class ShowCommandHandler implements CommandHandler {
             }
             return showExecutor.showPipes(schemaName, like);
         } else if (ctx.SEQUENCES() != null) {
+            if (ctx.ACCOUNT() != null) {
+                return showExecutor.showSequencesInAccount();
+            }
             if (ctx.DATABASE() != null && ctx.qualifiedName() != null) {
                 return showExecutor.showSequencesInDatabase(getText(ctx.qualifiedName()));
             }
@@ -212,10 +245,29 @@ public class ShowCommandHandler implements CommandHandler {
                 schemaName = getText(ctx.qualifiedName());
             }
             return showExecutor.showRowAccessPolicies(schemaName);
-        } else if (ctx.PRIMARY() != null && ctx.KEYS() != null) {
-            return showExecutor.showPrimaryKeys(ctx.qualifiedName() != null ? getText(ctx.qualifiedName()) : null);
-        } else if (ctx.UNIQUE() != null && ctx.KEYS() != null) {
-            return showExecutor.showUniqueKeys(ctx.qualifiedName() != null ? getText(ctx.qualifiedName()) : null);
+        } else if (ctx.KEYS() != null) {
+            final String scopeKind;
+            final String scopeName;
+            if (ctx.IN() == null) {
+                scopeKind = "TABLE";
+                scopeName = null;
+            } else if (ctx.ACCOUNT() != null) {
+                scopeKind = "ACCOUNT";
+                scopeName = null;
+            } else if (ctx.DATABASE() != null) {
+                scopeKind = "DATABASE";
+                scopeName = ctx.identifier() != null ? getText(ctx.identifier()) : null;
+            } else if (ctx.SCHEMA() != null) {
+                scopeKind = "SCHEMA";
+                scopeName = ctx.qualifiedName() != null ? getText(ctx.qualifiedName()) : null;
+            } else {
+                scopeKind = "TABLE";     // IN TABLE name?, or a bare qualified table name
+                scopeName = ctx.qualifiedName() != null ? getText(ctx.qualifiedName()) : null;
+            }
+            if (ctx.IMPORTED() != null) {
+                return showExecutor.showImportedKeys(scopeKind, scopeName);
+            }
+            return showExecutor.showKeysScoped(ctx.PRIMARY() != null, scopeKind, scopeName);
         } else if (ctx.TAGS() != null) {
             if (ctx.DATABASE() != null && ctx.qualifiedName() != null) {
                 return showExecutor.showTagsInDatabase(getText(ctx.qualifiedName()));
@@ -332,15 +384,91 @@ public class ShowCommandHandler implements CommandHandler {
         return raw.startsWith("'") && raw.endsWith("'") ? raw.substring(1, raw.length() - 1) : raw;
     }
 
+    /** The index of the name-ish column SHOW filters (LIKE / STARTS WITH / LIMIT FROM) apply to, or -1. */
+    private static int nameColumnIndex(final ResultSet rs) {
+        for (final String col : new String[]{"name", "parameter_name", "key", "account_name", "column_name"}) {
+            try {
+                return rs.getColumnIndex(col);
+            } catch (final RuntimeException ignored) {
+            }
+        }
+        return -1;
+    }
+
+    private static String stripQuotes(final String raw) {
+        return raw != null && raw.startsWith("'") && raw.endsWith("'")
+            ? raw.substring(1, raw.length() - 1) : raw;
+    }
+
+    /** SHOW ... STARTS WITH 'prefix': case-sensitive prefix filter on the name column (Snowflake semantics). */
+    private ResultSet applyStartsWith(final ResultSet rs, final String prefix) {
+        if (prefix == null || rs == null) return rs;
+        final int nameIdx = nameColumnIndex(rs);
+        if (nameIdx < 0) return rs;
+        final List<Row> filtered = new ArrayList<>();
+        for (final Row row : rs.getRows()) {
+            final Object val = row.getValue(nameIdx);
+            if (val != null && val.toString().startsWith(prefix)) {
+                filtered.add(row);
+            }
+        }
+        return new ResultSet(rs.getColumns(), filtered);
+    }
+
+    /** SHOW ... LIMIT n [FROM 'name']: keep rows whose name sorts after 'name', then the first n. */
+    private ResultSet applyLimitFrom(final ResultSet rs, final int limit, final String fromName) {
+        if (rs == null) return rs;
+        final int nameIdx = nameColumnIndex(rs);
+        final List<Row> kept = new ArrayList<>();
+        for (final Row row : rs.getRows()) {
+            if (fromName != null && nameIdx >= 0) {
+                final Object val = row.getValue(nameIdx);
+                if (val == null || val.toString().compareTo(fromName) <= 0) {
+                    continue;
+                }
+            }
+            kept.add(row);
+            if (kept.size() >= limit) {
+                break;
+            }
+        }
+        return new ResultSet(rs.getColumns(), kept);
+    }
+
+    /** SHOW TERSE ...: project to Snowflake's terse column subset (whichever of them the listing has). */
+    private ResultSet applyTerse(final ResultSet rs) {
+        if (rs == null) return rs;
+        final List<Integer> keep = new ArrayList<>();
+        final List<ResultSetColumn> cols = new ArrayList<>();
+        for (final String col : new String[]{"created_on", "name", "kind", "database_name", "schema_name"}) {
+            try {
+                final int idx = rs.getColumnIndex(col);
+                keep.add(idx);
+                cols.add(rs.getColumns().get(idx));
+            } catch (final RuntimeException ignored) {
+            }
+        }
+        if (keep.isEmpty()) return rs;
+        final List<Row> rows = new ArrayList<>();
+        for (final Row row : rs.getRows()) {
+            final List<Object> values = new ArrayList<>();
+            for (final Integer idx : keep) {
+                values.add(row.getValue(idx));
+            }
+            rows.add(new Row(values));
+        }
+        return new ResultSet(cols, rows);
+    }
+
+    /** The same columns with no rows — for accepted scopes that list nothing (ICEBERG, APPLICATION, CLASS). */
+    private static ResultSet withoutRows(final ResultSet rs) {
+        return new ResultSet(rs.getColumns(), new ArrayList<>());
+    }
+
     /** Filter a ResultSet by a LIKE pattern applied to the 'name' column (column index 1). */
     private ResultSet applyLikeFilter(final ResultSet rs, final String pattern) {
         if (pattern == null || rs == null) return rs;
-        // Find a name-like column to filter on
-        int nameIdx = -1;
-        for (final String col : new String[]{"name", "parameter_name", "key", "account_name"}) {
-            try { nameIdx = rs.getColumnIndex(col); break; }
-            catch (final RuntimeException ignored) {}
-        }
+        final int nameIdx = nameColumnIndex(rs);
         if (nameIdx < 0) return rs; // no filterable column — return unfiltered
         // Convert SQL LIKE pattern to regex: % -> .*, _ -> .
         String regex = pattern.replace(".", "\\.").replace("%", ".*").replace("_", ".");

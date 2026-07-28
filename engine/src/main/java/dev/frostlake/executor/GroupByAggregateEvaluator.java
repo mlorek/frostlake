@@ -19,6 +19,7 @@ package dev.frostlake.executor;
 import dev.frostlake.executor.expressions.AstPrinterVisitor;
 import dev.frostlake.executor.expressions.ColumnReferenceExpression;
 import dev.frostlake.executor.expressions.Expression;
+import dev.frostlake.executor.expressions.SqlTruth;
 import dev.frostlake.executor.operators.AggregateEvaluator;
 import dev.frostlake.executor.operators.GroupByOperator;
 import dev.frostlake.executor.operators.OperatorContext;
@@ -625,6 +626,10 @@ final class GroupByAggregateEvaluator {
         // DISTINCT and argument all come from the parse tree — not from re-splitting the concatenated text.
         if (expr instanceof FrostlakeParser.FunctionCallExprContext) {
             final FrostlakeParser.FunctionCallExprContext funcCtx = (FrostlakeParser.FunctionCallExprContext) expr;
+            if (funcCtx.filterClause() != null) {
+                // FILTER (WHERE ...) needs the per-group path, which restricts the input rows.
+                return null;
+            }
             final String funcName = funcCtx.functionName().getText().toUpperCase();
             final boolean distinct = funcCtx.DISTINCT() != null;
             final List<String> args = aggArgTexts(funcCtx);
@@ -780,12 +785,15 @@ final class GroupByAggregateEvaluator {
             final boolean distinct = funcCtx.DISTINCT() != null;
             final List<String> args = aggArgTexts(funcCtx);
             final String arg0 = args.isEmpty() ? "" : args.get(0);
+            // FILTER (WHERE cond): the aggregate operates only on the group rows satisfying the condition.
+            final List<Row> aggregateInputRows = funcCtx.filterClause() == null ? groupRows
+                : rowsSatisfying(funcCtx.filterClause().booleanExpr(), groupRows, table, aliasToTable, allTables);
             switch (funcName) {
                 case "COUNT": {
                     if (distinct && args.size() > 1) {
-                        return countDistinctTuples(args, groupRows, table, aliasToTable, allTables);
+                        return countDistinctTuples(args, aggregateInputRows, table, aliasToTable, allTables);
                     }
-                    final List<Object> vals = aggArgValues(arg0, groupRows, table, aliasToTable, allTables);
+                    final List<Object> vals = aggArgValues(arg0, aggregateInputRows, table, aliasToTable, allTables);
                     if (distinct) {
                         final Set<Object> seen = new HashSet<>();
                         for (final Object v : vals) {
@@ -804,7 +812,7 @@ final class GroupByAggregateEvaluator {
                 case "SUM": {
                     final Set<Object> seen = distinct ? new HashSet<>() : null;
                     final List<Object> values = new ArrayList<>();
-                    for (final Object v : aggArgValues(arg0, groupRows, table, aliasToTable, allTables)) {
+                    for (final Object v : aggArgValues(arg0, aggregateInputRows, table, aliasToTable, allTables)) {
                         if (v != null && (seen == null || seen.add(ValueComparisons.normalizeValueForDistinct(v)))) {
                             values.add(v);
                         }
@@ -816,7 +824,7 @@ final class GroupByAggregateEvaluator {
                     final Set<Object> seen = distinct ? new HashSet<>() : null;
                     double sum = 0.0;
                     int count = 0;
-                    for (final Object v : aggArgValues(arg0, groupRows, table, aliasToTable, allTables)) {
+                    for (final Object v : aggArgValues(arg0, aggregateInputRows, table, aliasToTable, allTables)) {
                         if (v != null && (seen == null || seen.add(ValueComparisons.normalizeValueForDistinct(v)))) {
                             sum += aggNumeric(v);
                             count++;
@@ -827,7 +835,7 @@ final class GroupByAggregateEvaluator {
                 }
                 case "MIN": {
                     Object min = null;
-                    for (final Object v : aggArgValues(arg0, groupRows, table, aliasToTable, allTables)) {
+                    for (final Object v : aggArgValues(arg0, aggregateInputRows, table, aliasToTable, allTables)) {
                         if (v != null && (min == null || ((Comparable) v).compareTo(min) < 0)) {
                             min = v;
                         }
@@ -836,7 +844,7 @@ final class GroupByAggregateEvaluator {
                 }
                 case "MAX": {
                     Object max = null;
-                    for (final Object v : aggArgValues(arg0, groupRows, table, aliasToTable, allTables)) {
+                    for (final Object v : aggArgValues(arg0, aggregateInputRows, table, aliasToTable, allTables)) {
                         if (v != null && (max == null || ((Comparable) v).compareTo(max) > 0)) {
                             max = v;
                         }
@@ -845,10 +853,10 @@ final class GroupByAggregateEvaluator {
                 }
                 case "PERCENTILE_CONT":
                 case "PERCENTILE_DISC":
-                    return AggregateFunctions.evaluatePercentile(funcCtx, groupRows, table);
+                    return AggregateFunctions.evaluatePercentile(funcCtx, aggregateInputRows, table);
                 default:
                     if (executor.getFunctionRegistry().hasAggregateFunction(funcName)) {
-                        return evaluateGenericAggregate(funcCtx, funcName, args, groupRows, table, aliasToTable, allTables);
+                        return evaluateGenericAggregate(funcCtx, funcName, args, aggregateInputRows, table, aliasToTable, allTables);
                     }
                     break;
             }
@@ -1036,6 +1044,21 @@ final class GroupByAggregateEvaluator {
      * the other generic accumulators → wrong count) — so aggregates over qualified columns and
      * expressions silently produced wrong results.
      */
+    /** The subset of {@code rows} on which a FILTER (WHERE cond) aggregate operates. */
+    private List<Row> rowsSatisfying(final FrostlakeParser.BooleanExprContext condition, final List<Row> rows,
+                                     final Table table, final Map<String, Table> aliasToTable,
+                                     final List<Table> allTables) {
+        final List<Object> outcomes =
+            aggArgValues(ParseTreeText.getOriginalText(condition), rows, table, aliasToTable, allTables);
+        final List<Row> kept = new ArrayList<>();
+        for (int i = 0; i < rows.size(); i++) {
+            if (SqlTruth.isTrue(outcomes.get(i))) {
+                kept.add(rows.get(i));
+            }
+        }
+        return kept;
+    }
+
     private List<Object> aggArgValues(final String arg, final List<Row> groupRows, final Table table,
                                       final Map<String, Table> aliasToTable, final List<Table> allTables) {
         final List<Object> values = new ArrayList<>(groupRows.size());

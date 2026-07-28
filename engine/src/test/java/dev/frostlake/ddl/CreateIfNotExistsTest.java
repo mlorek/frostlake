@@ -120,7 +120,7 @@ public class CreateIfNotExistsTest extends BaseJdbcTest {
         ));
 
         // Cleanup
-        statement.execute("DROP FUNCTION test_create_func");
+        statement.execute("DROP FUNCTION test_create_func(INTEGER)");
     }
 
     @Test
@@ -144,7 +144,7 @@ public class CreateIfNotExistsTest extends BaseJdbcTest {
                 """));
 
         // Cleanup
-        statement.execute("DROP PROCEDURE test_create_proc");
+        statement.execute("DROP PROCEDURE test_create_proc(INTEGER)");
     }
 
     @Test

@@ -112,6 +112,44 @@ public class Catalog {
         return db;
     }
 
+    /** True when a masking policy ({@code masking}) or row access policy is attached to any column,
+     *  table or view — Snowflake refuses to drop or replace such a policy (live-verified). Attachment
+     *  names may be stored bare or qualified, so the comparison uses the last segment. */
+    public boolean isPolicyInUse(final String policyName, final boolean masking) {
+        final String bare = policyName.toUpperCase();
+        for (final Database database : getAllDatabases()) {
+            for (final Schema schema : database.getAllSchemas()) {
+                for (final Table table : schema.getTables()) {
+                    if (masking) {
+                        for (final TableColumn column : table.getColumns()) {
+                            if (policyNameMatches(column.getMaskingPolicyName(), bare)) {
+                                return true;
+                            }
+                        }
+                    } else if (policyNameMatches(table.getRowAccessPolicyName(), bare)) {
+                        return true;
+                    }
+                }
+                if (!masking) {
+                    for (final View view : schema.getViews()) {
+                        if (policyNameMatches(view.getRowAccessPolicyName(), bare)) {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
+    private boolean policyNameMatches(final String attached, final String bare) {
+        if (attached == null) {
+            return false;
+        }
+        final int dot = attached.lastIndexOf('.');
+        return (dot >= 0 ? attached.substring(dot + 1) : attached).equalsIgnoreCase(bare);
+    }
+
     public List<Database> getAllDatabases() {
         return new ArrayList<>(databases.values());
     }

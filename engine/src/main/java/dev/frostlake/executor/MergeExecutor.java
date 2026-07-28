@@ -64,9 +64,8 @@ final class MergeExecutor {
             if (executor.isDeferredApply() && !executor.getTransactionManager().hasActiveTransaction()) {
                 executor.getTransactionManager().beginTransaction();
             }
-            // Handle WITH clause CTEs if present
-            final Map<String, ResultSet> cteResults = ctx.withClause() != null
-                ? executor.executeCTEs(ctx.withClause(), null) : null;
+            // WITH-prefixed DML is not Snowflake syntax (live-verified).
+            final Map<String, ResultSet> cteResults = null;
 
             // Get target table
             String targetTableName = executor.getQualifiedName(ctx.qualifiedName());
@@ -74,13 +73,17 @@ final class MergeExecutor {
             int mergeInserted = 0;
             int mergeUpdated = 0;
 
-            // Get optional target and source aliases
+            // Get optional target and source aliases. Both are direct identifier children of the
+            // merge rule and either may be absent, so index alone cannot tell them apart: an
+            // identifier before the USING token is the target's alias, after it the source's.
             String targetAlias = null;
             String sourceAlias = null;
-            if (ctx.identifier() != null && !ctx.identifier().isEmpty()) {
-                targetAlias = executor.getIdentifier(ctx.identifier(0));
-                if (ctx.identifier().size() > 1) {
-                    sourceAlias = executor.getIdentifier(ctx.identifier(1));
+            final int usingTokenIndex = ctx.USING().getSymbol().getTokenIndex();
+            for (final FrostlakeParser.IdentifierContext aliasCtx : ctx.identifier()) {
+                if (aliasCtx.getStart().getTokenIndex() < usingTokenIndex) {
+                    targetAlias = executor.getIdentifier(aliasCtx);
+                } else {
+                    sourceAlias = executor.getIdentifier(aliasCtx);
                 }
             }
 

@@ -17,9 +17,17 @@
 package dev.frostlake.jdbc;
 
 import dev.frostlake.DatabaseEngine;
+import dev.frostlake.config.EngineConfig;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.File;
+import java.io.IOException;
+import java.net.URLDecoder;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.FileAlreadyExistsException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.sql.*;
 import java.util.HashMap;
 import java.util.Map;
@@ -40,6 +48,17 @@ public class DatabaseDriver implements Driver {
     // embedded DatabaseEngine for the JVM's lifetime; different names are isolated (mirrors H2's mem-DB model).
     private static final String DIRECT_PREFIX = "jdbc:frostlake:direct:";
     private static final Map<String, DatabaseEngine> DIRECT_ENGINES = new HashMap<>();
+    // Embedded-persistent scheme (H2's file-DB model):
+    //   jdbc:frostlake:file:<dir>[?database=DB&schema=S&wal=false&venv=<graalpy-venv-dir>]
+    // The engine runs in this JVM and persists to <dir>; state restores on the first connection and survives
+    // restarts. Connections naming the same directory (by canonical path) share one engine; a lock file guards
+    // the directory against a second process. Durable via the WAL by default, ?wal=false switches to
+    // snapshot-only persistence (autosave + save-on-close; a hard kill can lose the last interval). ?venv=
+    // (URL-encoded path) pins python.venv for the rt-py runtime, replacing an ambient frostlake.properties.
+    private static final String FILE_PREFIX = "jdbc:frostlake:file:";
+    private static final Map<String, DatabaseEngine> FILE_ENGINES = new HashMap<>();
+    private static final Map<String, Thread> FILE_SHUTDOWN_HOOKS = new HashMap<>();
+    private static final String LOCK_FILE_NAME = "frostlake.lock";
     private static final int MAJOR_VERSION = 1;
     private static final int MINOR_VERSION = 0;
 
@@ -61,6 +80,9 @@ public class DatabaseDriver implements Driver {
         }
         if (url.startsWith(DIRECT_PREFIX)) {
             return connectDirect(url, info);
+        }
+        if (url.startsWith(FILE_PREFIX)) {
+            return connectFile(url, info);
         }
 
         try {
@@ -90,7 +112,8 @@ public class DatabaseDriver implements Driver {
 
     @Override
     public boolean acceptsURL(final String url) {
-        return url != null && (url.startsWith(URL_PREFIX) || url.startsWith(DIRECT_PREFIX));
+        return url != null
+            && (url.startsWith(URL_PREFIX) || url.startsWith(DIRECT_PREFIX) || url.startsWith(FILE_PREFIX));
     }
 
     /**
@@ -99,6 +122,27 @@ public class DatabaseDriver implements Driver {
      * lifetime (an empty name uses a single default engine); different names are isolated. Optional
      * database/schema (URL query or Properties) set the connection's current context.
      */
+    /**
+     * Register a pre-built engine under a direct-URL name, so {@code jdbc:frostlake:direct:<name>}
+     * connections reach it instead of lazily creating a fresh empty engine. This is how a harness
+     * hands out engine-instance clones ({@link DatabaseEngine#cloneInstance()}): clone the migrated
+     * template, register the clone under a per-test-class name, and point that class's JDBC url at
+     * it — each class then runs on its own engine (and its own monitor, so classes execute SQL in
+     * parallel instead of serializing on one shared engine).
+     */
+    public static void registerDirectEngine(final String name, final DatabaseEngine engine) {
+        synchronized (DIRECT_ENGINES) {
+            DIRECT_ENGINES.put(name.trim(), engine);
+        }
+    }
+
+    /** Remove a registered direct engine; returns it (for shutdown) or null if the name is unknown. */
+    public static DatabaseEngine unregisterDirectEngine(final String name) {
+        synchronized (DIRECT_ENGINES) {
+            return DIRECT_ENGINES.remove(name.trim());
+        }
+    }
+
     private Connection connectDirect(final String url, final Properties info) throws SQLException {
         try {
             final int q = url.indexOf('?');
@@ -137,6 +181,159 @@ public class DatabaseDriver implements Driver {
         } catch (final Exception e) {
             throw new SQLException("Failed to create in-process connection: " + e.getMessage(), e);
         }
+    }
+
+    /**
+     * Open an embedded-persistent connection: {@code jdbc:frostlake:file:<dir>[?database=DB&schema=S&wal=false]}.
+     * The engine runs in this JVM with its state persisted under {@code <dir>}: the first connection restores
+     * whatever a previous run left there, and connections naming the same directory (canonical path) share one
+     * engine. Durability defaults to the write-ahead log (every committed statement fsync'd and replayed on the
+     * next open — nothing committed is lost, even on a hard kill); {@code ?wal=false} switches to snapshot-only
+     * persistence (autosave every interval + a final save on clean shutdown). A {@code frostlake.lock} file
+     * guards the directory: a second process gets a clear error instead of silently corrupting the data.
+     * {@code ?venv=<dir>} (URL-encoded) sets {@code python.venv} for the optional rt-py runtime, so Python
+     * UDF handlers can import the venv's packages without any ambient {@code frostlake.properties}.
+     */
+    private Connection connectFile(final String url, final Properties info) throws SQLException {
+        try {
+            final int q = url.indexOf('?');
+            final String rawPath = (q >= 0 ? url.substring(FILE_PREFIX.length(), q)
+                                           : url.substring(FILE_PREFIX.length())).trim();
+            if (rawPath.isEmpty()) {
+                throw new SQLException(
+                    "jdbc:frostlake:file: URL must name a data directory, e.g. jdbc:frostlake:file:/var/frostlake/dev");
+            }
+            final String key = new File(rawPath).getCanonicalPath();
+
+            final String rawVenv = parseParameter(url, "venv");
+            final String venv = rawVenv == null ? null : URLDecoder.decode(rawVenv, StandardCharsets.UTF_8);
+
+            DatabaseEngine engine;
+            synchronized (FILE_ENGINES) {
+                engine = FILE_ENGINES.get(key);
+                if (engine == null) {
+                    engine = openFileEngine(key, "false".equalsIgnoreCase(parseParameter(url, "wal")), venv);
+                    FILE_ENGINES.put(key, engine);
+                }
+            }
+
+            final DirectConnection connection = new DirectConnection(engine);
+
+            String database = parseParameter(url, "database");
+            if ((database == null || database.isEmpty()) && info != null) {
+                database = info.getProperty("database");
+            }
+            final String schema = info != null ? info.getProperty("schema", parseParameter(url, "schema"))
+                                                : parseParameter(url, "schema");
+            if (database != null && !database.isEmpty()) {
+                try (Statement stmt = connection.createStatement()) {
+                    stmt.execute("USE DATABASE " + database);
+                }
+            }
+            if (schema != null && !schema.isEmpty()) {
+                try (Statement stmt = connection.createStatement()) {
+                    stmt.execute("USE SCHEMA " + schema);
+                }
+            }
+            logger.debug("Opened file-backed connection (dir '{}', database: {}, schema: {})", key, database, schema);
+            return connection;
+        } catch (final SQLException e) {
+            throw e;
+        } catch (final Exception e) {
+            throw new SQLException("Failed to open file-backed connection: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Create the engine behind a data directory: take the directory lock, pin persistence to the directory
+     * (WAL by default, snapshot-only when {@code snapshotOnly}), and register a JVM shutdown hook so an
+     * abandoned engine still persists its final state and releases the lock at exit. Callers hold the
+     * {@code FILE_ENGINES} monitor.
+     */
+    private static DatabaseEngine openFileEngine(final String canonicalDir, final boolean snapshotOnly,
+                                                 final String venv) throws IOException {
+        final Path dir = Path.of(canonicalDir);
+        Files.createDirectories(dir);
+        final Path lockFile = dir.resolve(LOCK_FILE_NAME);
+        try {
+            Files.createFile(lockFile);
+            Files.writeString(lockFile, "pid=" + ProcessHandle.current().pid() + System.lineSeparator());
+        } catch (final FileAlreadyExistsException e) {
+            throw new IOException("Data directory " + canonicalDir + " is locked by another Frostlake process ("
+                + LOCK_FILE_NAME + " exists). If no other process is using the directory, delete the lock file "
+                + "and reconnect.");
+        }
+
+        final Properties overrides = new Properties();
+        overrides.setProperty(EngineConfig.PROP_PERSISTENCE_DIRECTORY, canonicalDir);
+        overrides.setProperty(EngineConfig.PROP_DURABILITY_WAL_FILE, canonicalDir + File.separator + "wal.log");
+        if (venv != null && !venv.isEmpty()) {
+            overrides.setProperty(EngineConfig.PROP_PYTHON_VENV, venv);
+        }
+        if (snapshotOnly) {
+            overrides.setProperty(EngineConfig.PROP_PERSISTENCE_ENABLED, "true");
+            overrides.setProperty(EngineConfig.PROP_DURABILITY_WAL_ENABLED, "false");
+        } else {
+            // WAL mode: the log is the authoritative restore path (snapshot persistence stays off — the
+            // engine ignores it under WAL anyway). Periodic checkpoints bound the log and recovery time.
+            overrides.setProperty(EngineConfig.PROP_PERSISTENCE_ENABLED, "false");
+            overrides.setProperty(EngineConfig.PROP_DURABILITY_WAL_ENABLED, "true");
+            overrides.setProperty(EngineConfig.PROP_DURABILITY_CHECKPOINT_INTERVAL, "500");
+        }
+
+        final DatabaseEngine engine;
+        try {
+            engine = new DatabaseEngine(new EngineConfig(overrides));
+        } catch (final RuntimeException e) {
+            try {
+                Files.deleteIfExists(lockFile);
+            } catch (final IOException cleanup) {
+                logger.warn("Could not remove {} after failed engine open", lockFile, cleanup);
+            }
+            throw e;
+        }
+
+        final DatabaseEngine opened = engine;
+        final Thread hook = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                opened.shutdown();
+                try {
+                    Files.deleteIfExists(lockFile);
+                } catch (final IOException e) {
+                    // The JVM is exiting; a leftover lock file is all that can go wrong here.
+                }
+            }
+        }, "frostlake-file-engine-shutdown");
+        Runtime.getRuntime().addShutdownHook(hook);
+        FILE_SHUTDOWN_HOOKS.put(canonicalDir, hook);
+        return engine;
+    }
+
+    /**
+     * Close the shared engine behind a {@code jdbc:frostlake:file:<dir>} URL: persist its final state, release
+     * the directory lock and forget the engine, so a later connection re-opens the directory (restoring the
+     * state) fresh. Returns the closed engine, or null if the directory has no open engine. This is the
+     * in-JVM equivalent of the exit-time shutdown hook, for embedders that want to release a data directory
+     * without exiting.
+     */
+    public static DatabaseEngine closeFileEngine(final String dataDir) throws IOException {
+        final String key = new File(dataDir).getCanonicalPath();
+        final DatabaseEngine engine;
+        final Thread hook;
+        synchronized (FILE_ENGINES) {
+            engine = FILE_ENGINES.remove(key);
+            hook = FILE_SHUTDOWN_HOOKS.remove(key);
+        }
+        if (engine == null) {
+            return null;
+        }
+        if (hook != null) {
+            Runtime.getRuntime().removeShutdownHook(hook);
+        }
+        engine.shutdown();
+        Files.deleteIfExists(Path.of(key).resolve(LOCK_FILE_NAME));
+        return engine;
     }
 
     @Override

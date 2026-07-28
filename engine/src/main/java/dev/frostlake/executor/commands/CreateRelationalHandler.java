@@ -111,6 +111,16 @@ public class CreateRelationalHandler implements CommandHandler {
                 view = new View(viewName, selectQuery);
             }
 
+            if (ctx.rowAccessPolicyClause() != null) {
+                // CREATE VIEW ... [WITH] ROW ACCESS POLICY p ON (cols) — same attach as the ALTER form.
+                view.setRowAccessPolicyName(getText(ctx.rowAccessPolicyClause().qualifiedName()).toUpperCase());
+                final List<String> policyCols = new ArrayList<>();
+                for (final FrostlakeParser.IdentifierContext id : ctx.rowAccessPolicyClause().identifierList().identifier()) {
+                    policyCols.add(getText(id));
+                }
+                view.setRowAccessPolicyColumns(policyCols);
+            }
+
             if (ctx.SECURE() != null) view.setSecure(true);
 
             String comment = ddl.extractCommentFromList(ctx.commentClause());

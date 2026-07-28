@@ -50,6 +50,10 @@ public class TableColumn implements Taggable {
     // Object tags applied via ALTER TABLE ... ALTER COLUMN ... SET TAG (canonical upper-cased name -> value)
     private final Map<String, String> tags = new HashMap<>();
 
+    // Resolvable by name/qualifier but omitted from SELECT * — the right-side duplicate of a
+    // JOIN ... USING / NATURAL JOIN column in a merged join view. Never set on catalog columns.
+    private boolean hiddenFromStar;
+
     public TableColumn(final String name, final DataType dataType, final boolean nullable,
                  final Object defaultValue, final boolean primaryKey, final boolean unique,
                  final boolean autoIncrement) {
@@ -72,6 +76,29 @@ public class TableColumn implements Taggable {
 
     public String getName() {
         return name;
+    }
+
+    public boolean isHiddenFromStar() {
+        return hiddenFromStar;
+    }
+
+    /** A copy of this column marked hidden from {@code SELECT *} — used for the right-side duplicate
+     *  of a USING / NATURAL join column in a merged join view (the shared catalog instance stays
+     *  untouched). */
+    public TableColumn starHiddenCopy() {
+        final TableColumn copy = new TableColumn(name, dataType, nullable, defaultValue, primaryKey,
+            unique, autoIncrement, identityStart, identityIncrement);
+        copy.comment = comment;
+        copy.collation = collation;
+        copy.referencedTable = referencedTable;
+        copy.referencedColumn = referencedColumn;
+        copy.onDelete = onDelete;
+        copy.onUpdate = onUpdate;
+        copy.rely = rely;
+        copy.maskingPolicyName = maskingPolicyName;
+        copy.tags.putAll(tags);
+        copy.hiddenFromStar = true;
+        return copy;
     }
 
     @Override

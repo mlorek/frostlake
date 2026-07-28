@@ -237,7 +237,7 @@ public class TagTest {
     @Order(15)
     public void testAlterTagRename() {
         logger.info("Testing ALTER TAG RENAME");
-        engine.execute("ALTER TAG project_code RENAME project_id");
+        engine.execute("ALTER TAG project_code RENAME TO project_id");
 
         assertFalse(engine.getCatalog().hasTag("project_code"));
         assertTrue(engine.getCatalog().hasTag("project_id"));

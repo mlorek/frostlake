@@ -20,13 +20,16 @@ import dev.frostlake.config.EngineConfig;
 import dev.frostlake.config.S3PathResolver;
 import dev.frostlake.executor.ProceduralExecutor;
 import dev.frostlake.executor.QueryExecutor;
-import dev.frostlake.executor.udf.PythonRuntime;
+import dev.frostlake.executor.udf.UdfLanguageRuntime;
+import dev.frostlake.executor.udf.UdfRuntimes;
 import dev.frostlake.functions.FunctionRegistry;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.model.Database;
 import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.parser.SqlSyntaxException;
+import dev.frostlake.persistence.CatalogSnapshot;
+import dev.frostlake.persistence.MemoryTableDataStore;
 import dev.frostlake.persistence.PersistenceManager;
 import dev.frostlake.persistence.WalRecord;
 import dev.frostlake.persistence.WalRecordType;
@@ -47,8 +50,11 @@ import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.nio.file.DirectoryStream;
+import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.SimpleFileVisitor;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -87,9 +93,12 @@ public class DatabaseEngine {
         logger.info("Initializing Frostlake SQL Engine");
 
         this.config = config;
-        // JVM-wide by nature (the polyglot contexts are per-thread, not per-engine); a no-op unless the
-        // property points at a real venv, so engines without one are unaffected.
-        PythonRuntime.configureVenv(config.getPythonVenv());
+        // Hand every discovered language runtime this engine's configuration (e.g. python.venv).
+        // Runtime state is JVM-wide by nature (polyglot contexts are per-thread, not per-engine), so
+        // implementations are idempotent; without the optional udf modules the loop is empty.
+        for (final UdfLanguageRuntime udfRuntime : UdfRuntimes.all()) {
+            udfRuntime.configure(config);
+        }
         this.catalog = new Catalog();
         this.storageEngine = new StorageEngine();
         this.storageEngine.setEnforcePrimaryKey(config.isEnforcePrimaryKey());
@@ -437,6 +446,15 @@ public class DatabaseEngine {
         if (!config.isPersistenceEnabled()) {
             return;
         }
+        if (config.isWalEnabled()) {
+            // Snapshot persistence and WAL recovery cannot both restore at startup: loadCatalog would
+            // restore the newest autosave and the WAL replay would then re-apply every transaction since
+            // the last WAL checkpoint on top of it (double-apply). With the WAL on, its checkpoint+replay
+            // is the authoritative restore path, so snapshot persistence is ignored entirely.
+            logger.warn("persistence.enabled is ignored while durability.walEnabled=true — "
+                + "WAL recovery (checkpoint + replay) is the authoritative restore path");
+            return;
+        }
 
         try {
             persistenceManager.initialize();
@@ -635,6 +653,50 @@ public class DatabaseEngine {
     }
 
     // Component Access
+    /**
+     * Write this engine's complete state — every database with its schemas, tables and rows, views,
+     * sequences (at their current positions), functions, procedures, streams with pending records,
+     * tasks, stages, roles and policies — to {@code dir}, from which {@link #restoreStateFrom(Path)}
+     * can rebuild an equivalent engine. Holds the engine monitor, so it is mutually exclusive with
+     * statements running on direct connections. Works regardless of {@code persistence.enabled}.
+     */
+    public synchronized void checkpointStateTo(final Path dir) throws IOException {
+        persistenceManager.checkpointTo(dir, catalog, storageEngine);
+    }
+
+    /**
+     * Rebuild this engine's state from a {@link #checkpointStateTo(Path)} snapshot. Intended for a
+     * freshly constructed engine (the template-clone pattern: migrate once, checkpoint, boot many);
+     * restored functions and procedures recompile lazily from their stored source on first use.
+     */
+    public synchronized void restoreStateFrom(final Path dir) throws IOException, ClassNotFoundException {
+        persistenceManager.restoreFrom(dir, catalog, storageEngine);
+    }
+
+    /**
+     * A new, fully independent engine carrying a copy of this engine's complete state — databases,
+     * schemas, tables with rows, views, sequences at their current positions, functions, procedures,
+     * streams with pending records, tasks, stages, roles and policies. Writes to either engine are
+     * invisible to the other. The copy happens entirely in memory (no filesystem involvement); use
+     * {@link #checkpointStateTo(Path)} / {@link #restoreStateFrom(Path)} instead when the clone must
+     * cross a process boundary — a serialized checkpoint is the only form of this engine that can.
+     */
+    public DatabaseEngine cloneInstance() throws IOException, ClassNotFoundException {
+        final MemoryTableDataStore tableData = new MemoryTableDataStore();
+        final CatalogSnapshot state;
+        synchronized (this) {
+            state = persistenceManager.buildState(catalog, storageEngine, tableData);
+        }
+        final DatabaseEngine clone = new DatabaseEngine();
+        clone.persistenceManager.applyState(state, tableData, clone.catalog, clone.storageEngine);
+        return clone;
+    }
+
+    /** This engine's effective configuration (read-only introspection, e.g. by embedders and tests). */
+    public EngineConfig getConfig() {
+        return config;
+    }
+
     public Catalog getCatalog() {
         return catalog;
     }
@@ -748,8 +810,9 @@ public class DatabaseEngine {
 
         dropTemporaryTables();
 
-        // Save catalog before shutdown
-        if (config.isPersistenceEnabled()) {
+        // Save catalog before shutdown (snapshot-persistence mode only: with the WAL on, the log
+        // already holds everything committed and startup ignores snapshot persistence anyway).
+        if (config.isPersistenceEnabled() && !config.isWalEnabled()) {
             try {
                 persistenceManager.stopAutoSave();
                 persistenceManager.saveCatalog(catalog, storageEngine);
