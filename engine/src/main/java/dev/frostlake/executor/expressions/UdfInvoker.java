@@ -40,6 +40,8 @@ import dev.frostlake.types.DataType;
 import dev.frostlake.types.DateTimeType;
 import dev.frostlake.types.ObjectType;
 import dev.frostlake.types.TypeCategory;
+import dev.frostlake.types.VectorType;
+import dev.frostlake.values.VariantValue;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -114,7 +116,10 @@ final class UdfInvoker {
             // the RETURNS NULL ON NULL INPUT check as a non-null argument — so a strict handler was
             // invoked with Python None (path leaf like source_type.CloudGroup = null) and crashed.
             if (paramType instanceof ObjectType || paramType instanceof ArrayType) {
-                if ("null".equals(value instanceof String ? ((String) value).trim() : null)) {
+                final boolean jsonNull = value instanceof VariantValue
+                    ? ((VariantValue) value).isJsonNull()
+                    : "null".equals(value instanceof String ? ((String) value).trim() : null);
+                if (jsonNull) {
                     if (coerced == null) {
                         coerced = new ArrayList<>(args);
                     }
@@ -360,6 +365,22 @@ final class UdfInvoker {
             }
         }
 
+        // A body that is a Snowflake-Scripting block runs as one — parameters bound as procedural
+        // variables in an isolated scope, control flow and all — rather than being substituted into text.
+        // Live-verified on a real account: a scalar SQL UDF whose body is `BEGIN … END` is
+        // created AND executed there (`AS $$ BEGIN RETURN 1; END $$` → SELECT f() = 1), with variables,
+        // DECLARE sections, IF/loops and EXCEPTION handlers all working. Delimiters are irrelevant here:
+        // extractBodyDefinition already stripped $$…$$ / '…', and the unquoted `AS BEGIN … END` form
+        // parses to the same text.
+        if (queryExecutor != null && queryExecutor.isProceduralBlock(trimmedBody)) {
+            rejectUnsupportedScriptingReturnType(function);
+            final Object returned = queryExecutor.executeScriptingFunctionBody(function, args);
+            // Snowflake casts the RETURNed value to the DECLARED return type: `RETURNS INT` over
+            // `RETURN '7'` is 7, `RETURNS VARCHAR` over `RETURN 42` is the string '42', and
+            // `RETURNS INT` over `RETURN 'abc'` fails "Numeric value 'abc' is not recognized".
+            return queryExecutor.getProceduralExecutor().coerceToType(returned, function.getReturnType());
+        }
+
         // Otherwise evaluate the body as an expression with param substitution. The body arrives ALREADY
         // unquoted — extractBodyDefinition removed the $$…$$ or '…' delimiters when the routine was created —
         // so it must not be unquoted again here. Stripping a second time corrupted every body that IS an
@@ -413,6 +434,22 @@ final class UdfInvoker {
         return null;
     }
 
+    /**
+     * A scripting-block UDF may not RETURN a semi-structured value. Snowflake compiles such a body lazily,
+     * so this surfaces on the CALL and not on the CREATE (a block-bodied
+     * function declared {@code RETURNS VARIANT} / {@code ARRAY} / {@code OBJECT} is created without
+     * complaint, then every call fails "Unsupported return type for Snowscript UDF: VARIANT"). Every other
+     * type was verified to work — VARCHAR, NUMBER(p,s), FLOAT, BOOLEAN, BINARY, DATE, TIMESTAMP_NTZ — and
+     * a semi-structured PARAMETER is fine; only the return type is refused.
+     */
+    private void rejectUnsupportedScriptingReturnType(final Function function) {
+        final DataType returnType = function.getReturnType();
+        if (returnType != null && returnType.getCategory() == TypeCategory.SEMI_STRUCTURED) {
+            throw new RuntimeException("Unsupported return type for Snowscript UDF: "
+                + returnType.getName().toUpperCase());
+        }
+    }
+
     /** The exception's message, or its class name when the message is null (an NPE's message usually is) —
      *  so a wrapped failure never surfaces as the bare text "null". */
     private String describe(final Exception e) {
@@ -445,6 +482,13 @@ final class UdfInvoker {
             } else if (param.getDataType() != null
                     && param.getDataType().getCategory() == TypeCategory.SEMI_STRUCTURED) {
                 argStr = "PARSE_JSON(" + SqlStringLiterals.encode(argVal.toString()) + ")";
+            } else if (param.getDataType() instanceof VectorType) {
+                // A VECTOR parameter substitutes as a TYPED vector literal, like the temporals above:
+                // the vector functions' argument rules are compile-time and read the STATIC type, so a
+                // bare string body would fail "Invalid argument types … (VARCHAR(13))" where Snowflake
+                // evaluates the body fine (live: a UDF whose body is
+                // VECTOR_L2_DISTANCE(a, b) over two VECTOR(FLOAT,3) parameters returns 5.196152422706632).
+                argStr = SqlStringLiterals.encode(argVal.toString()) + "::" + param.getDataType().getName();
             } else {
                 argStr = SqlStringLiterals.encode(argVal.toString());
             }

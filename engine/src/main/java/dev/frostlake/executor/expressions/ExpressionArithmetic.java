@@ -17,6 +17,11 @@
 package dev.frostlake.executor.expressions;
 
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
+import dev.frostlake.values.BinaryValue;
+import dev.frostlake.values.VariantJsonNulls;
+import dev.frostlake.values.VariantValue;
+import dev.frostlake.values.XmlVariants;
+import tools.jackson.databind.JsonNode;
 import java.time.LocalTime;
 import java.math.BigDecimal;
 import java.time.LocalDate;
@@ -31,6 +36,17 @@ import java.time.temporal.ChronoUnit;
 final class ExpressionArithmetic {
 
     private ExpressionArithmetic() {
+    }
+
+    /**
+     * Whether an arithmetic operand reads as SQL NULL: either it IS SQL NULL, or it is the VARIANT
+     * JSON null, which has no numeric reading. Live-verified with
+     * {@code jn = PARSE_JSON('{"b":null}'):b} — {@code jn + 1}, {@code jn - 1} and {@code jn * 2} are
+     * all SQL NULL on a real account. Comparisons deliberately do NOT use this: there a JSON null is a
+     * value that orders above numbers and strings ({@code jn > 0} is TRUE live, {@code jn = jn} TRUE).
+     */
+    private static boolean isJsonNullOperand(final Object value) {
+        return value == null || VariantJsonNulls.isJsonNull(value);
     }
 
     /**
@@ -70,7 +86,45 @@ final class ExpressionArithmetic {
         if (leftNumber == null || rightNumber == null) {
             return null;
         }
+        // Snowflake's implicit VARCHAR coercion depends on WHAT IT IS MIXED WITH (live-verified):
+        //   '3' + 1     -> NUMBER(19,0) 4        a VARCHAR against a NUMBER converts to FIXED-POINT,
+        //   '2.5' * 2   -> NUMBER(19,1) 5.0      taking its scale from the text,
+        //   '10' - '4'  -> FLOAT 6.0             but VARCHAR against VARCHAR goes to FLOAT.
+        // (Unary minus on a VARCHAR is also FLOAT — handled at the negation site.)
+        if (left instanceof CharSequence && right instanceof CharSequence) {
+            return new Number[] {Double.valueOf(leftNumber.doubleValue()), Double.valueOf(rightNumber.doubleValue())};
+        }
         return new Number[] {leftNumber, rightNumber};
+    }
+
+    /**
+     * The two operands as doubles when at least one of them is a VARIANT holding a number (or numeric
+     * text), else null. Snowflake arithmetic over VARIANT operands produces FLOAT (live-verified:
+     * {@code PARSE_JSON('1') + 1} → 2.0 FLOAT, {@code TRANSFORM([1,2,3], x -> x + 1)} → doubles).
+     */
+    private static Number[] coerceVariantOperands(final Object left, final Object right) {
+        if (!(left instanceof VariantValue) && !(right instanceof VariantValue)) {
+            return null;
+        }
+        final Number leftNumber = left instanceof VariantValue
+            ? variantAsNumber((VariantValue) left) : asNumber(left);
+        final Number rightNumber = right instanceof VariantValue
+            ? variantAsNumber((VariantValue) right) : asNumber(right);
+        if (leftNumber == null || rightNumber == null) {
+            return null;
+        }
+        return new Number[] {Double.valueOf(leftNumber.doubleValue()), Double.valueOf(rightNumber.doubleValue())};
+    }
+
+    private static Number variantAsNumber(final VariantValue variant) {
+        final JsonNode node = variant.node();
+        if (node != null && node.isNumber()) {
+            return node.decimalValue();
+        }
+        if (node != null && node.isTextual()) {
+            return asNumber(node.asText());
+        }
+        return null;
     }
 
     static boolean isTrue(final Object value) {
@@ -101,13 +155,17 @@ final class ExpressionArithmetic {
     }
 
     static Object add(final Object left, final Object right) {
-        if (left == null || right == null) {
+        if (isJsonNullOperand(left) || isJsonNullOperand(right)) {
             return null;
         }
         if (left instanceof Number && right instanceof Number) {
             // If both are integer types, perform integer arithmetic
             if (isIntegerType(left) && isIntegerType(right)) {
                 return ((Number) left).longValue() + ((Number) right).longValue();
+            }
+            // A FLOAT operand makes the result FLOAT (Snowflake's type propagation).
+            if (isFloatType(left) || isFloatType(right)) {
+                return ((Number) left).doubleValue() + ((Number) right).doubleValue();
             }
             // Otherwise, use BigDecimal for precision
             BigDecimal result = new BigDecimal(left.toString()).add(new BigDecimal(right.toString()));
@@ -122,10 +180,15 @@ final class ExpressionArithmetic {
                 return applyInterval(temporal, (IntervalValue) other, 1);
             }
             if (other instanceof Number) {
+                rejectTimestampPlusNumber(temporal, other, "+");
                 return addDays(temporal, ((Number) other).longValue());
             }
         }
-        // Retry with a numeric VARCHAR coerced to a number (Snowflake's implicit conversion).
+        // Retry with VARIANT / numeric-VARCHAR operands coerced to FLOAT (Snowflake's implicit conversion).
+        final Number[] addVariant = coerceVariantOperands(left, right);
+        if (addVariant != null) {
+            return add(addVariant[0], addVariant[1]);
+        }
         final Number[] addCoerced = coerceTextOperands(left, right);
         if (addCoerced != null) {
             return add(addCoerced[0], addCoerced[1]);
@@ -133,14 +196,43 @@ final class ExpressionArithmetic {
         throw new RuntimeException("Cannot add: " + left + " + " + right);
     }
 
+    /**
+     * Snowflake allows {@code DATE ± integer} (day arithmetic) but REJECTS it for TIMESTAMP values
+     * (live: "Invalid argument types for function '+': (TIMESTAMP_NTZ(9), NUMBER(1,0))"). Only a real
+     * TIMESTAMP runtime value rejects — a temporal-looking string stays on the lenient path.
+     */
+    private static void rejectTimestampPlusNumber(final Object temporal, final Object number, final String op) {
+        if (!(temporal instanceof LocalDateTime)) {
+            return;
+        }
+        final String numberType;
+        if (isIntegerType(number)) {
+            final String digits = new BigDecimal(number.toString()).abs().toBigInteger().toString();
+            numberType = "NUMBER(" + digits.length() + ",0)";
+        } else {
+            numberType = "FLOAT";
+        }
+        throw new RuntimeException("SQL compilation error:\nInvalid argument types for function '" + op
+            + "': (TIMESTAMP_NTZ(9), " + numberType + ")");
+    }
+
+    /** Whether the value is an approximate (FLOAT) number — Double or Float. */
+    private static boolean isFloatType(final Object value) {
+        return value instanceof Double || value instanceof Float;
+    }
+
     static Object subtract(final Object left, final Object right) {
-        if (left == null || right == null) {
+        if (isJsonNullOperand(left) || isJsonNullOperand(right)) {
             return null;
         }
         if (left instanceof Number && right instanceof Number) {
             // If both are integer types, perform integer arithmetic
             if (isIntegerType(left) && isIntegerType(right)) {
                 return ((Number) left).longValue() - ((Number) right).longValue();
+            }
+            // A FLOAT operand makes the result FLOAT (Snowflake's type propagation).
+            if (isFloatType(left) || isFloatType(right)) {
+                return ((Number) left).doubleValue() - ((Number) right).doubleValue();
             }
             // Otherwise, use BigDecimal for precision
             return new BigDecimal(left.toString()).subtract(new BigDecimal(right.toString()));
@@ -153,6 +245,7 @@ final class ExpressionArithmetic {
                 return applyInterval(left, (IntervalValue) right, -1);
             }
             if (right instanceof Number) {
+                rejectTimestampPlusNumber(left, right, "-");
                 return addDays(left, -((Number) right).longValue());
             }
             final LocalDateTime rightTemporal = asTemporal(right);
@@ -165,7 +258,11 @@ final class ExpressionArithmetic {
                 return ChronoUnit.DAYS.between(rightTemporal, leftTemporal);
             }
         }
-        // Retry with a numeric VARCHAR coerced to a number (Snowflake's implicit conversion).
+        // Retry with VARIANT / numeric-VARCHAR operands coerced to FLOAT (Snowflake's implicit conversion).
+        final Number[] subtractVariant = coerceVariantOperands(left, right);
+        if (subtractVariant != null) {
+            return subtract(subtractVariant[0], subtractVariant[1]);
+        }
         final Number[] subtractCoerced = coerceTextOperands(left, right);
         if (subtractCoerced != null) {
             return subtract(subtractCoerced[0], subtractCoerced[1]);
@@ -228,44 +325,53 @@ final class ExpressionArithmetic {
     }
 
     /**
-     * Apply an INTERVAL to a temporal ({@code sign} = +1 to add, -1 to subtract). A date-only operand
-     * keeps its DATE type for a date-only interval (YEAR/MONTH/DAY) but is promoted to a TIMESTAMP when
-     * the interval carries a time component (HOUR/MINUTE/SECOND), matching Snowflake.
+     * Apply an INTERVAL to a temporal ({@code sign} = +1 to add, -1 to subtract). Snowflake's typing,
+     * both live-verified: a DAY-or-finer interval promotes a DATE to TIMESTAMP_NTZ
+     * ({@code DATE + INTERVAL '5' DAY} renders 2020-01-20 00:00:00.000), while YEAR/MONTH intervals
+     * PRESERVE the DATE ({@code DATE + INTERVAL '1' MONTH} stays a DATE).
      */
     private static Object applyInterval(final Object temporal, final IntervalValue interval, final int sign) {
+        // Multi-part intervals ('1 day, 2 hours') chain via rest; apply each part in order.
+        Object result = applyIntervalPart(temporal, interval, sign);
+        for (IntervalValue part = interval.getRest(); part != null; part = part.getRest()) {
+            result = applyIntervalPart(result, part, sign);
+        }
+        return result;
+    }
+
+    private static Object applyIntervalPart(final Object temporal, final IntervalValue interval, final int sign) {
         final long amount = sign * interval.getValueAsLong();
         LocalDateTime dt = asTemporal(temporal);
-        boolean timeComponent = false;
+        boolean preservesDate = false;
         switch (interval.getUnit()) {
             case YEAR: case YEARS:
                 dt = dt.plusYears(amount);
+                preservesDate = true;
                 break;
             case MONTH: case MONTHS:
                 dt = dt.plusMonths(amount);
+                preservesDate = true;
                 break;
             case DAY: case DAYS:
                 dt = dt.plusDays(amount);
                 break;
             case HOUR: case HOURS:
                 dt = dt.plusHours(amount);
-                timeComponent = true;
                 break;
             case MINUTE: case MINUTES:
                 dt = dt.plusMinutes(amount);
-                timeComponent = true;
                 break;
             case SECOND: case SECONDS:
                 dt = dt.plusSeconds(amount);
-                timeComponent = true;
                 break;
             default:
                 throw new RuntimeException("Unsupported interval unit: " + interval.getUnit());
         }
-        return isDateOnly(temporal) && !timeComponent ? dt.toLocalDate() : dt;
+        return preservesDate && isDateOnly(temporal) ? dt.toLocalDate() : dt;
     }
 
     static Object multiply(final Object left, final Object right) {
-        if (left == null || right == null) {
+        if (isJsonNullOperand(left) || isJsonNullOperand(right)) {
             return null;
         }
         if (left instanceof Number && right instanceof Number) {
@@ -273,10 +379,18 @@ final class ExpressionArithmetic {
             if (isIntegerType(left) && isIntegerType(right)) {
                 return ((Number) left).longValue() * ((Number) right).longValue();
             }
+            // A FLOAT operand makes the result FLOAT (Snowflake's type propagation).
+            if (isFloatType(left) || isFloatType(right)) {
+                return ((Number) left).doubleValue() * ((Number) right).doubleValue();
+            }
             // Otherwise, use BigDecimal for precision
             return new BigDecimal(left.toString()).multiply(new BigDecimal(right.toString()));
         }
-        // Retry with a numeric VARCHAR coerced to a number (Snowflake's implicit conversion).
+        // Retry with VARIANT / numeric-VARCHAR operands coerced to FLOAT (Snowflake's implicit conversion).
+        final Number[] multiplyVariant = coerceVariantOperands(left, right);
+        if (multiplyVariant != null) {
+            return multiply(multiplyVariant[0], multiplyVariant[1]);
+        }
         final Number[] multiplyCoerced = coerceTextOperands(left, right);
         if (multiplyCoerced != null) {
             return multiply(multiplyCoerced[0], multiplyCoerced[1]);
@@ -285,7 +399,7 @@ final class ExpressionArithmetic {
     }
 
     static Object divide(final Object left, final Object right) {
-        if (left == null || right == null) {
+        if (isJsonNullOperand(left) || isJsonNullOperand(right)) {
             return null;
         }
         if (left instanceof Number && right instanceof Number) {
@@ -293,15 +407,19 @@ final class ExpressionArithmetic {
             if (divisor == 0.0) {
                 throw new RuntimeException("Division by zero");
             }
-            final BigDecimal quotient = SharedFunctionHelpers.divideWithSnowflakeScale(new BigDecimal(left.toString()), new BigDecimal(right.toString()));
-            // Integer operands historically produced a double; keep the runtime type, now at Snowflake's
-            // six-digit division scale (0.333333, not 0.3333333333333333).
-            if (isIntegerType(left) && isIntegerType(right)) {
-                return quotient.doubleValue();
+            // A FLOAT operand makes the quotient FLOAT; fixed-point division carries Snowflake's
+            // NUMBER result with scale MIN(s1 + 6, 12) — 10/3 is BigDecimal 3.333333, 10/2 is 5.000000.
+            if (isFloatType(left) || isFloatType(right)) {
+                return ((Number) left).doubleValue() / divisor;
             }
-            return quotient;
+            return SharedFunctionHelpers.divideWithSnowflakeScale(
+                new BigDecimal(left.toString()), new BigDecimal(right.toString()));
         }
-        // Retry with a numeric VARCHAR coerced to a number (Snowflake's implicit conversion).
+        // Retry with VARIANT / numeric-VARCHAR operands coerced to FLOAT (Snowflake's implicit conversion).
+        final Number[] divideVariant = coerceVariantOperands(left, right);
+        if (divideVariant != null) {
+            return divide(divideVariant[0], divideVariant[1]);
+        }
         final Number[] divideCoerced = coerceTextOperands(left, right);
         if (divideCoerced != null) {
             return divide(divideCoerced[0], divideCoerced[1]);
@@ -310,7 +428,7 @@ final class ExpressionArithmetic {
     }
 
     static Object modulo(final Object left, final Object right) {
-        if (left == null || right == null) {
+        if (isJsonNullOperand(left) || isJsonNullOperand(right)) {
             return null;
         }
         if (left instanceof Number && right instanceof Number) {
@@ -354,6 +472,18 @@ final class ExpressionArithmetic {
         if (numeric != null) {
             return numeric == 0;
         }
+        final Integer variantNumeric = variantVsNumber(left, right);
+        if (variantNumeric != null) {
+            return variantNumeric == 0;
+        }
+        final Integer variantText = variantVsText(left, right);
+        if (variantText != null) {
+            return variantText == 0;
+        }
+        final Integer binary = binaryVsOther(left, right);
+        if (binary != null) {
+            return binary == 0;
+        }
         return left.toString().equals(right.toString());
     }
 
@@ -376,7 +506,99 @@ final class ExpressionArithmetic {
         if (numeric != null) {
             return numeric;
         }
+        final Integer variantNumericCompare = variantVsNumber(left, right);
+        if (variantNumericCompare != null) {
+            return variantNumericCompare;
+        }
+        final Integer variantText = variantVsText(left, right);
+        if (variantText != null) {
+            return variantText;
+        }
+        final Integer binary = binaryVsOther(left, right);
+        if (binary != null) {
+            return binary;
+        }
         return left.toString().compareTo(right.toString());
+    }
+
+    /**
+     * A VARIANT holding a number compared against a plain number (or two numeric variants) compares
+     * NUMERICALLY — JSON-text comparison would order 10 before 9. Returns null when the pair is not
+     * a numeric variant/number combination, so text and other variant shapes keep their paths.
+     */
+    private static Integer variantVsNumber(final Object left, final Object right) {
+        final boolean leftVariant = left instanceof VariantValue;
+        final boolean rightVariant = right instanceof VariantValue;
+        if (!leftVariant && !rightVariant) {
+            return null;
+        }
+        final Number leftNumber = leftVariant
+            ? numericVariant((VariantValue) left) : (left instanceof Number ? (Number) left : null);
+        final Number rightNumber = rightVariant
+            ? numericVariant((VariantValue) right) : (right instanceof Number ? (Number) right : null);
+        if (leftNumber == null || rightNumber == null) {
+            return null;
+        }
+        return new BigDecimal(leftNumber.toString()).compareTo(new BigDecimal(rightNumber.toString()));
+    }
+
+    /** The variant's numeric content, or null when it does not hold a JSON number. */
+    private static Number numericVariant(final VariantValue variant) {
+        final JsonNode node = variant.node();
+        return node != null && node.isNumber() ? node.decimalValue() : null;
+    }
+
+    /**
+     * A semi-structured value compared against a VARCHAR compares the variant's DISPLAY TEXT
+     * (live-verified): a variant STRING unwraps to its content ({@code PARSE_JSON('"abc"') = 'abc'}
+     * is TRUE and {@code = '"abc"'} is FALSE), while an object/array/number/boolean compares as its
+     * JSON text. Variant-vs-variant comparisons are not handled here — canonical-text equality
+     * (the toString fallback) already matches Snowflake's typed behavior for those. Returns null
+     * when the pair is not a variant/text combination.
+     */
+    private static Integer variantVsText(final Object left, final Object right) {
+        if (left instanceof VariantValue && right instanceof CharSequence) {
+            return variantDisplayText((VariantValue) left).compareTo(right.toString());
+        }
+        if (left instanceof CharSequence && right instanceof VariantValue) {
+            return left.toString().compareTo(variantDisplayText((VariantValue) right));
+        }
+        return null;
+    }
+
+    /** The text a variant presents to VARCHAR contexts: a string's content, an XML element's compact XML, otherwise the JSON text. */
+    private static String variantDisplayText(final VariantValue variant) {
+        if (variant.node().isTextual()) {
+            return variant.node().asText();
+        }
+        if (XmlVariants.isXmlElement(variant.node())) {
+            return XmlVariants.compactXml(variant.node());
+        }
+        return variant.text();
+    }
+
+    /**
+     * A BINARY value compared against another BINARY. Comparing BINARY against a STRING is a
+     * compile error in Snowflake (live-verified: "Can not convert parameter ''AB'' of type
+     * [VARCHAR(2)] into expected type [BINARY(8388608)]") — there is NO implicit hex conversion in
+     * comparisons; use TO_BINARY explicitly. Returns null when neither side is a binary value.
+     */
+    private static Integer binaryVsOther(final Object left, final Object right) {
+        if (left instanceof BinaryValue && right instanceof BinaryValue) {
+            return ((BinaryValue) left).compareTo((BinaryValue) right);
+        }
+        if (left instanceof BinaryValue && right instanceof CharSequence) {
+            throw varcharBinaryMismatch(right.toString());
+        }
+        if (left instanceof CharSequence && right instanceof BinaryValue) {
+            throw varcharBinaryMismatch(left.toString());
+        }
+        return null;
+    }
+
+    private static RuntimeException varcharBinaryMismatch(final String text) {
+        return new RuntimeException("Can not convert parameter ''" + text + "'' of type [VARCHAR("
+            + text.length() + ")] into expected type [BINARY(8388608)]");
     }
 
     /**
@@ -430,21 +652,22 @@ final class ExpressionArithmetic {
      * A number compared against a string: Snowflake implicitly coerces the VARCHAR side to a number —
      * {@code 999001 = '999001'} is TRUE (the idiom appears in loaders whose staging tables re-declare a
      * NUMBER key as VARCHAR and then join back to the numeric original). Two strings never coerce
-     * ({@code '01' = '1'} stays a text comparison). Returns null when the string is not numeric, keeping
-     * the caller's text path — Snowflake would raise there; the engine stays lenient as before.
+     * ({@code '01' = '1'} stays a text comparison). A string that is NOT numeric is an ERROR, not a
+     * mismatch — live-verified on a real account: {@code SELECT 'abc' = 1} fails "Numeric
+     * value 'abc' is not recognized", as do {@code 'abc' &lt;&gt; 1}, {@code 'other' &gt; 0},
+     * {@code 'abc' IN (1,2)} and {@code '' = 1}, while {@code '3' &lt; 5} and {@code '1.5' = 1.5} are TRUE.
      */
     private static Integer numberVsString(final Object left, final Object right) {
-        try {
-            if (left instanceof Number && right instanceof CharSequence) {
-                return new BigDecimal(left.toString()).compareTo(new BigDecimal(right.toString().trim()));
-            }
-            if (right instanceof Number && left instanceof CharSequence) {
-                return new BigDecimal(left.toString().trim()).compareTo(new BigDecimal(right.toString()));
-            }
-        } catch (final NumberFormatException notANumericString) {
+        final Object text = left instanceof Number && right instanceof CharSequence ? right
+            : right instanceof Number && left instanceof CharSequence ? left : null;
+        if (text == null) {
             return null;
         }
-        return null;
+        try {
+            return new BigDecimal(left.toString().trim()).compareTo(new BigDecimal(right.toString().trim()));
+        } catch (final NumberFormatException notANumericString) {
+            throw new RuntimeException("Numeric value '" + text + "' is not recognized");
+        }
     }
 
     static Object negate(final Number value) {

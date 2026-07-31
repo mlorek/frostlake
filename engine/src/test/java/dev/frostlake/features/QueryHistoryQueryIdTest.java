@@ -19,6 +19,7 @@ package dev.frostlake.features;
 import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
 import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -49,7 +50,7 @@ public class QueryHistoryQueryIdTest extends BaseDatabaseTest {
         // Get the query ID from history
         ResultSet historyResult = engine.executeQuery("""
             SELECT query_id
-            FROM INFORMATION_SCHEMA.QUERY_HISTORY
+            FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY())
             WHERE query_text = 'SELECT 1 as value'
             ORDER BY start_time DESC
             LIMIT 1
@@ -92,7 +93,7 @@ public class QueryHistoryQueryIdTest extends BaseDatabaseTest {
         // Verify both are in history with correct IDs
         ResultSet history = engine.executeQuery("""
             SELECT query_id, query_text
-            FROM INFORMATION_SCHEMA.QUERY_HISTORY
+            FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY())
             WHERE query_text IN ('SELECT 100', 'SELECT 200')
             ORDER BY start_time ASC
             """);
@@ -110,6 +111,10 @@ public class QueryHistoryQueryIdTest extends BaseDatabaseTest {
 
     @Test
     public void testDMLQueryIdConsistency() {
+        Assumptions.assumeFalse(isLiveSnowflake(),
+            "clears the EMBEDDED engine's history through engine.getExecutor().getQueryHistoryTracker(), "
+            + "which under SF_LIVE leaves the account's INFORMATION_SCHEMA.QUERY_HISTORY untouched — the "
+            + "row count then also carries every earlier CREATE/INSERT of the shared live session");
         logger.info("Testing query ID consistency for DML operations");
 
         engine.getExecutor().getQueryHistoryTracker().clear();
@@ -126,7 +131,7 @@ public class QueryHistoryQueryIdTest extends BaseDatabaseTest {
         // Verify in history
         ResultSet history = engine.executeQuery("""
             SELECT query_id, query_type
-            FROM INFORMATION_SCHEMA.QUERY_HISTORY
+            FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY())
             WHERE query_type IN ('CREATE', 'INSERT')
             ORDER BY start_time ASC
             """);
@@ -158,7 +163,7 @@ public class QueryHistoryQueryIdTest extends BaseDatabaseTest {
         // Verify all have non-null query IDs
         ResultSet history = engine.executeQuery("""
             SELECT query_id, query_type
-            FROM INFORMATION_SCHEMA.QUERY_HISTORY
+            FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY())
             WHERE query_id IS NOT NULL
             """);
 
@@ -199,7 +204,7 @@ public class QueryHistoryQueryIdTest extends BaseDatabaseTest {
         // Verify the query ID is in history
         ResultSet history = engine.executeQuery("""
             SELECT query_id
-            FROM INFORMATION_SCHEMA.QUERY_HISTORY
+            FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY())
             WHERE query_text = 'SELECT 42 as answer'
             LIMIT 1
             """);
@@ -232,7 +237,7 @@ public class QueryHistoryQueryIdTest extends BaseDatabaseTest {
         // Check history
         ResultSet history = engine.executeQuery("""
             SELECT query_id, execution_status
-            FROM INFORMATION_SCHEMA.QUERY_HISTORY
+            FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY())
             WHERE execution_status = 'FAILED'
             AND query_text LIKE '%table_that_does_not_exist%'
             LIMIT 1

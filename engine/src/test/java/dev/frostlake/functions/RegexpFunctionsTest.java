@@ -48,7 +48,9 @@ public class RegexpFunctionsTest extends BaseDatabaseTest {
 
     @Test
     public void replaceUsesSnowflakeBackreferences() {
-        assertEquals("[b][a]", scalar("SELECT REGEXP_REPLACE('ab', '(a)(b)', '[\\2][\\1]')").toString());
+        // The SQL literal decode turns '\2' into the control character 0x02, so a back-reference
+        // must be written '\\2' (Java source: four backslashes).
+        assertEquals("[b][a]", scalar("SELECT REGEXP_REPLACE('ab', '(a)(b)', '[\\\\2][\\\\1]')").toString());
     }
 
     @Test

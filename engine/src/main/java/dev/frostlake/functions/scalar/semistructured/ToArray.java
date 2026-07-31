@@ -18,7 +18,8 @@ package dev.frostlake.functions.scalar.semistructured;
 
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
-import dev.frostlake.types.VariantType;
+import dev.frostlake.types.ArrayType;
+import dev.frostlake.values.VariantValue;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.node.ArrayNode;
 
@@ -29,19 +30,19 @@ import java.util.List;
  * scalar value is wrapped in a single-element array.
  */
 public class ToArray extends BuiltInFunction {
-    public ToArray() { super("TO_ARRAY", VariantType.VARIANT); }
+    public ToArray() { super("TO_ARRAY", ArrayType.ARRAY); }
 
     @Override
     public Object evaluate(final List<Object> args) {
         final Object v = args.get(0);
         if (v == null) return null;
         final ArrayNode existing = ArrayFunctionHelper.parseArray(v);
-        if (existing != null) return existing.toString();
+        if (existing != null) return VariantValue.ofNode(existing);
         final JsonNode node = ArrayFunctionHelper.parseNode(v);
         if (node != null && node.isNull()) return null;
         final ArrayNode result = ArrayFunctionHelper.MAPPER.createArrayNode();
         result.add(ArrayFunctionHelper.toNode(ArrayFunctionHelper.MAPPER, v));
-        return result.toString();
+        return VariantValue.ofNode(result);
     }
 
     @Override public int getMinArgCount() { return 1; }

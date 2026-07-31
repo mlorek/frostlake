@@ -18,6 +18,7 @@ package dev.frostlake.dml;
 
 import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 import org.slf4j.Logger;
@@ -35,8 +36,14 @@ public class CopyIntoTest extends BaseDatabaseTest {
 
     private static final Logger logger = LoggerFactory.getLogger(CopyIntoTest.class);
 
+    private static final String PLACEHOLDER_CLOUD_BUCKET =
+        "loads from (or unloads to) a placeholder `s3://mybucket/...` stage; the engine treats "
+        + "COPY over an unreachable stage as a no-op, while a real account actually contacts S3 "
+        + "and fails with Access Denied (403) — the test would need a bucket the account owns";
+
     @Test
     public void testCopyIntoTableFromStageSimple() {
+        Assumptions.assumeFalse(isLiveSnowflake(), PLACEHOLDER_CLOUD_BUCKET);
         logger.info("Testing COPY INTO table FROM stage - simple case");
 
         engine.execute("CREATE TABLE employees (id INTEGER, name VARCHAR, salary DECIMAL(10,2))");
@@ -53,6 +60,7 @@ public class CopyIntoTest extends BaseDatabaseTest {
 
     @Test
     public void testCopyIntoTableWithFileFormat() {
+        Assumptions.assumeFalse(isLiveSnowflake(), PLACEHOLDER_CLOUD_BUCKET);
         logger.info("Testing COPY INTO with FILE_FORMAT");
 
         engine.execute("CREATE TABLE sales (sale_id INTEGER, product VARCHAR, amount DECIMAL(10,2))");
@@ -69,6 +77,7 @@ public class CopyIntoTest extends BaseDatabaseTest {
 
     @Test
     public void testCopyIntoTableWithPattern() {
+        Assumptions.assumeFalse(isLiveSnowflake(), PLACEHOLDER_CLOUD_BUCKET);
         logger.info("Testing COPY INTO with PATTERN");
 
         engine.execute("CREATE TABLE logs (timestamp VARCHAR, message VARCHAR, level VARCHAR)");
@@ -85,6 +94,7 @@ public class CopyIntoTest extends BaseDatabaseTest {
 
     @Test
     public void testCopyIntoTableWithOnError() {
+        Assumptions.assumeFalse(isLiveSnowflake(), PLACEHOLDER_CLOUD_BUCKET);
         logger.info("Testing COPY INTO with ON_ERROR");
 
         engine.execute("CREATE TABLE transactions (id INTEGER, amount DECIMAL(10,2), status VARCHAR)");
@@ -102,6 +112,7 @@ public class CopyIntoTest extends BaseDatabaseTest {
 
     @Test
     public void testCopyIntoTableWithValidationMode() {
+        Assumptions.assumeFalse(isLiveSnowflake(), PLACEHOLDER_CLOUD_BUCKET);
         logger.info("Testing COPY INTO with VALIDATION_MODE");
 
         engine.execute("CREATE TABLE test_data (col1 INTEGER, col2 VARCHAR)");
@@ -118,6 +129,7 @@ public class CopyIntoTest extends BaseDatabaseTest {
 
     @Test
     public void testCopyIntoTableWithForce() {
+        Assumptions.assumeFalse(isLiveSnowflake(), PLACEHOLDER_CLOUD_BUCKET);
         logger.info("Testing COPY INTO with FORCE");
 
         engine.execute("CREATE TABLE reload_data (id INTEGER, value VARCHAR)");
@@ -132,24 +144,38 @@ public class CopyIntoTest extends BaseDatabaseTest {
         logger.info("COPY INTO with FORCE executed successfully");
     }
 
+    /**
+     * FILES = (…) over an empty stage. Naming files that are not there is an ERROR on Snowflake (SQLSTATE
+     * 22000, error 91016) rather than a quiet no-op, so what this asserts is the failure — see
+     * {@link CopyMissingFileTest} for the whole rule and its live evidence.
+     */
     @Test
     public void testCopyIntoTableWithFiles() {
+        Assumptions.assumeFalse(isLiveSnowflake(), PLACEHOLDER_CLOUD_BUCKET);
         logger.info("Testing COPY INTO with FILES");
 
         engine.execute("CREATE TABLE specific_files (id INTEGER, data VARCHAR)");
         engine.execute("CREATE STAGE files_stage URL = 's3://mybucket/specific/'");
 
-        engine.execute("""
-            COPY INTO specific_files
-            FROM @files_stage
-            FILES = ('file1.csv', 'file2.csv', 'file3.csv')
-            """);
+        final RuntimeException e = assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.execute("""
+                    COPY INTO specific_files
+                    FROM @files_stage
+                    FILES = ('file1.csv', 'file2.csv', 'file3.csv')
+                    """);
+            }
+        });
+        assertTrue(e.getMessage().contains("Remote file") && e.getMessage().contains("was not found"),
+            e.getMessage());
 
-        logger.info("COPY INTO with FILES executed successfully");
+        logger.info("COPY INTO with FILES reported the missing files");
     }
 
     @Test
     public void testCopyIntoTableWithColumnMapping() {
+        Assumptions.assumeFalse(isLiveSnowflake(), PLACEHOLDER_CLOUD_BUCKET);
         logger.info("Testing COPY INTO with column mapping");
 
         engine.execute("CREATE TABLE mapped_data (id INTEGER, name VARCHAR, email VARCHAR)");
@@ -166,6 +192,7 @@ public class CopyIntoTest extends BaseDatabaseTest {
 
     @Test
     public void testCopyIntoTableFromS3Direct() {
+        Assumptions.assumeFalse(isLiveSnowflake(), PLACEHOLDER_CLOUD_BUCKET);
         logger.info("Testing COPY INTO from S3 URL directly");
 
         engine.execute("CREATE TABLE s3_data (id INTEGER, value VARCHAR)");
@@ -182,15 +209,34 @@ public class CopyIntoTest extends BaseDatabaseTest {
     @Test
     public void testCopyIntoTableWithJsonFormat() {
         logger.info("Testing COPY INTO with JSON format");
+        Assumptions.assumeFalse(isLiveSnowflake(), PLACEHOLDER_CLOUD_BUCKET);
 
-        engine.execute("CREATE TABLE json_data (id INTEGER, data VARIANT)");
+        engine.execute("CREATE TABLE json_data (data VARIANT)");
         engine.execute("CREATE STAGE json_stage URL = 's3://mybucket/json/'");
 
+        // A JSON record is ONE semi-structured value, so the target must be a SINGLE variant/object/array
+        // column. Live-verified on a real account: copying into a two-column table fails
+        // "JSON file format can produce one and only one column of type variant, object, or array. Load
+        // data into separate columns using the MATCH_BY_COLUMN_NAME copy option or copy with
+        // transformation."
         engine.execute("""
             COPY INTO json_data
             FROM @json_stage
             FILE_FORMAT = (TYPE = 'JSON')
             """);
+        engine.execute("CREATE TABLE json_pair (id INTEGER, data VARIANT)");
+        final RuntimeException tooManyColumns = assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.execute("""
+                    COPY INTO json_pair
+                    FROM @json_stage
+                    FILE_FORMAT = (TYPE = 'JSON')
+                    """);
+            }
+        });
+        assertTrue(tooManyColumns.getMessage().contains("one and only one column"),
+            tooManyColumns.getMessage());
 
         logger.info("COPY INTO with JSON format executed successfully");
     }
@@ -200,7 +246,10 @@ public class CopyIntoTest extends BaseDatabaseTest {
     // silently "succeeding" while loading nothing. (The formats module's own tests cover a real PARQUET load.)
     @Test
     public void testCopyIntoTableRejectsParquetWithoutFormatsModule() {
-        engine.execute("CREATE TABLE parquet_data (id INTEGER, name VARCHAR, value DECIMAL(10,2))");
+        Assumptions.assumeFalse(isLiveSnowflake(), PLACEHOLDER_CLOUD_BUCKET);
+        // A single variant column, so the load reaches the reader rather than failing the
+        // one-column rule first (see testCopyIntoTableWithJsonFormat).
+        engine.execute("CREATE TABLE parquet_data (data VARIANT)");
         engine.execute("CREATE STAGE parquet_stage URL = 's3://mybucket/parquet/'");
 
         final RuntimeException ex = assertThrows(RuntimeException.class, new Executable() {
@@ -218,6 +267,7 @@ public class CopyIntoTest extends BaseDatabaseTest {
 
     @Test
     public void testCopyIntoTableComplexOptions() {
+        Assumptions.assumeFalse(isLiveSnowflake(), PLACEHOLDER_CLOUD_BUCKET);
         logger.info("Testing COPY INTO with multiple complex options");
 
         engine.execute("""
@@ -251,6 +301,7 @@ public class CopyIntoTest extends BaseDatabaseTest {
 
     @Test
     public void testCopyIntoStageFromTable() {
+        Assumptions.assumeFalse(isLiveSnowflake(), PLACEHOLDER_CLOUD_BUCKET);
         logger.info("Testing COPY INTO stage FROM table (unload)");
 
         engine.execute("CREATE TABLE export_data (id INTEGER, name VARCHAR, value DECIMAL(10,2))");
@@ -268,6 +319,7 @@ public class CopyIntoTest extends BaseDatabaseTest {
 
     @Test
     public void testCopyIntoStageFromQuery() {
+        Assumptions.assumeFalse(isLiveSnowflake(), PLACEHOLDER_CLOUD_BUCKET);
         logger.info("Testing COPY INTO stage FROM query");
 
         engine.execute("CREATE TABLE source_data (id INTEGER, category VARCHAR, amount DECIMAL(10,2))");
@@ -285,6 +337,7 @@ public class CopyIntoTest extends BaseDatabaseTest {
 
     @Test
     public void testCopyIntoWithTransformation() {
+        Assumptions.assumeFalse(isLiveSnowflake(), PLACEHOLDER_CLOUD_BUCKET);
         logger.info("Testing COPY INTO with data transformation");
 
         engine.execute("CREATE TABLE transformed_data (id INTEGER, upper_name VARCHAR, doubled_value INTEGER)");
@@ -304,6 +357,7 @@ public class CopyIntoTest extends BaseDatabaseTest {
 
     @Test
     public void testCopyIntoTableReturnsResults() {
+        Assumptions.assumeFalse(isLiveSnowflake(), PLACEHOLDER_CLOUD_BUCKET);
         logger.info("Testing COPY INTO returns result information");
 
         engine.execute("CREATE TABLE result_test (id INTEGER, name VARCHAR)");
@@ -321,6 +375,7 @@ public class CopyIntoTest extends BaseDatabaseTest {
 
     @Test
     public void testMultipleCopyOperations() {
+        Assumptions.assumeFalse(isLiveSnowflake(), PLACEHOLDER_CLOUD_BUCKET);
         logger.info("Testing multiple COPY operations in sequence");
 
         engine.execute("CREATE TABLE batch1 (id INTEGER, data VARCHAR)");
@@ -348,6 +403,7 @@ public class CopyIntoTest extends BaseDatabaseTest {
 
     @Test
     public void testCopyIntoTableWithMatchByColumnName() {
+        Assumptions.assumeFalse(isLiveSnowflake(), PLACEHOLDER_CLOUD_BUCKET);
         logger.info("Testing COPY INTO with MATCH_BY_COLUMN_NAME");
 
         engine.execute("CREATE TABLE column_match (id INTEGER, name VARCHAR, email VARCHAR)");

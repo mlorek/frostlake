@@ -19,6 +19,7 @@ package dev.frostlake.stream;
 import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.Row;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
@@ -32,6 +33,33 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * own base table); plain UNION, joins, and other set operators are not supported and stay rejected.
  */
 public class StreamOnUnionViewTest extends BaseDatabaseTest {
+
+    /**
+     * A stream's {@code SELECT *} yields the source's data columns first, then METADATA$ACTION,
+     * METADATA$ISUPDATE, METADATA$ROW_ID (Snowflake's order). The metadata columns are read by NAME so
+     * these assertions survive a change to the number of data columns.
+     */
+    private String metadata(final ResultSet rs, final Row row, final String column) {
+        return String.valueOf(row.getValue(rs.getColumnIndex(column)));
+    }
+
+    @Test
+    public void testStreamStarPutsDataColumnsBeforeMetadata() {
+        engine.execute("CREATE TABLE st_src (id INTEGER)");
+        engine.execute("CREATE STREAM st ON TABLE st_src");
+        engine.execute("INSERT INTO st_src VALUES (1)");
+
+        final ResultSet rs = engine.executeQuery("SELECT * FROM st");
+        assertEquals(4, rs.getColumns().size());
+        assertEquals("ID", rs.getColumns().get(0).getName().toUpperCase());
+        assertEquals("METADATA$ACTION", rs.getColumns().get(1).getName().toUpperCase());
+        assertEquals("METADATA$ISUPDATE", rs.getColumns().get(2).getName().toUpperCase());
+        assertEquals("METADATA$ROW_ID", rs.getColumns().get(3).getName().toUpperCase());
+        // An explicit column list still resolves the metadata columns by name.
+        final ResultSet explicit = engine.executeQuery("SELECT id, METADATA$ACTION FROM st");
+        assertEquals(2, explicit.getColumns().size());
+        assertEquals("INSERT", String.valueOf(explicit.getRows().get(0).getValue(1)));
+    }
 
     @Test
     public void testStreamOnUnionAllViewCapturesBothBranches() {
@@ -49,12 +77,12 @@ public class StreamOnUnionViewTest extends BaseDatabaseTest {
         final Row first = rs.getRows().get(0);
         assertEquals(1L, ((Number) first.getValue(0)).longValue());
         assertEquals("a", first.getValue(1));
-        assertEquals("INSERT", String.valueOf(first.getValue(2)));   // METADATA$ACTION
+        assertEquals("INSERT", metadata(rs, first, "METADATA$ACTION"));
 
         final Row second = rs.getRows().get(1);
         assertEquals(2L, ((Number) second.getValue(0)).longValue());
         assertEquals("b", second.getValue(1));
-        assertEquals("INSERT", String.valueOf(second.getValue(2)));
+        assertEquals("INSERT", metadata(rs, second, "METADATA$ACTION"));
     }
 
     @Test
@@ -94,7 +122,7 @@ public class StreamOnUnionViewTest extends BaseDatabaseTest {
         final Row row = rs.getRows().get(0);
         assertEquals(1L, ((Number) row.getValue(0)).longValue());
         assertEquals("FROM_T1", row.getValue(1), "the surviving row must be t1's, not t2's");
-        assertEquals("INSERT", String.valueOf(row.getValue(2)));
+        assertEquals("INSERT", metadata(rs, row, "METADATA$ACTION"));
     }
 
     @Test
@@ -109,12 +137,16 @@ public class StreamOnUnionViewTest extends BaseDatabaseTest {
                 engine.execute("CREATE STREAM s ON VIEW u");
             }
         });
-        assertTrue(ex.getMessage().contains("change tracking supports"),
+        assertTrue(ex.getMessage().contains("joins of type '[UNION]'"),
             "plain UNION (dedup) is unsupported, matching Snowflake: " + ex.getMessage());
     }
 
     @Test
     public void testJoinViewIsRejected() {
+        Assumptions.assumeFalse(isLiveSnowflake(),
+            "matches FROSTLAKE's rejection wording (\"change tracking supports …\") for a stream on a "
+            + "join view; a real account turns the same CREATE STREAM away with its own differently "
+            + "worded error");
         engine.execute("CREATE TABLE t1 (id INTEGER)");
         engine.execute("CREATE TABLE t2 (id INTEGER)");
         engine.execute("CREATE VIEW u AS SELECT t1.id FROM t1 JOIN t2 ON t1.id = t2.id");

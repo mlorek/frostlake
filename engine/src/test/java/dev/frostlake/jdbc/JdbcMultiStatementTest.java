@@ -17,6 +17,8 @@
 package dev.frostlake.jdbc;
 
 import dev.frostlake.BaseJdbcTest;
+import org.junit.jupiter.api.Assumptions;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.sql.ResultSet;
@@ -32,6 +34,15 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * {@code getMoreResults()} iteration — not only the first.
  */
 public class JdbcMultiStatementTest extends BaseJdbcTest {
+
+    @BeforeEach
+    public void onlyEmbedded() {
+        // Frostlake's driver runs every `;`-separated statement of one execute() by itself; the
+        // real Snowflake JDBC driver requires an explicit per-statement MULTI_STATEMENT_COUNT
+        // parameter, so this transport extension is not exercised against the live account.
+        Assumptions.assumeFalse(isLiveSnowflake(),
+            "multi-statement execute() is a Frostlake driver extension");
+    }
 
     @Test
     public void multipleStatementsInOneExecuteAllRun() throws SQLException {

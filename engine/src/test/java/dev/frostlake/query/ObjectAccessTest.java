@@ -19,28 +19,35 @@ package dev.frostlake.query;
 import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Tests for object literal access operator ':'
  * Used to access properties of JSON/VARIANT objects
  * Example: SELECT data:name, data:address:city FROM table
+ *
+ * The path source must be a VARIANT (or OBJECT/ARRAY) column — colon access over a declared
+ * VARCHAR column is a compile-time error in Snowflake, so the fixture stores VARIANT and the
+ * asserts unwrap variant strings with ::VARCHAR (a bare variant string displays quoted).
  */
 public class ObjectAccessTest extends BaseDatabaseTest {
     private static final Logger logger = LoggerFactory.getLogger(ObjectAccessTest.class);
 
     @Override
     protected void setupTest() {
-        engine.execute("CREATE TABLE json_data (id INTEGER, data VARCHAR)");
+        engine.execute("CREATE TABLE json_data (id INTEGER, data VARIANT)");
         engine.execute("""
-            INSERT INTO json_data VALUES (1, '{"name": "Alice", "age": 30, "address": {"city": "NYC", "zip": "10001"}}')
+            INSERT INTO json_data SELECT 1, PARSE_JSON('{"name": "Alice", "age": 30, "address": {"city": "NYC", "zip": "10001"}}')
             """);
         engine.execute("""
-            INSERT INTO json_data VALUES (2, '{"name": "Bob", "age": 25, "address": {"city": "LA", "zip": "90001"}}')
+            INSERT INTO json_data SELECT 2, PARSE_JSON('{"name": "Bob", "age": 25, "address": {"city": "LA", "zip": "90001"}}')
             """);
     }
 
@@ -48,25 +55,26 @@ public class ObjectAccessTest extends BaseDatabaseTest {
     public void testSimplePropertyAccess() {
         logger.info("Testing simple property access with :");
 
-        ResultSet result = engine.executeQuery("SELECT data:name FROM json_data WHERE id = 1");
+        ResultSet result = engine.executeQuery("SELECT data:name::VARCHAR FROM json_data WHERE id = 1");
 
         assertNotNull(result);
         assertEquals(1, result.getRowCount());
         assertEquals("Alice", result.getRows().get(0).getValue(0));
     }
 
+
     @Test
     public void testMultiplePropertyAccess() {
         logger.info("Testing multiple properties with :");
 
         ResultSet result = engine.executeQuery("""
-            SELECT data:name as name, data:age as age FROM json_data WHERE id = 1
+            SELECT data:name::VARCHAR as name, data:age as age FROM json_data WHERE id = 1
             """);
 
         assertNotNull(result);
         assertEquals(1, result.getRowCount());
         assertEquals("Alice", result.getRows().get(0).getValue(0));
-        assertEquals(30L, result.getRows().get(0).getValue(1));
+        assertEquals("30", String.valueOf(result.getRows().get(0).getValue(1)));
     }
 
     @Test
@@ -74,7 +82,7 @@ public class ObjectAccessTest extends BaseDatabaseTest {
         logger.info("Testing nested property access with :");
 
         ResultSet result = engine.executeQuery("""
-            SELECT data:address:city FROM json_data WHERE id = 1
+            SELECT data:address:city::VARCHAR FROM json_data WHERE id = 1
             """);
 
         assertNotNull(result);
@@ -87,7 +95,7 @@ public class ObjectAccessTest extends BaseDatabaseTest {
         logger.info("Testing property access in WHERE clause");
 
         ResultSet result = engine.executeQuery("""
-            SELECT id, data:name FROM json_data WHERE data:age > 28
+            SELECT id, data:name::VARCHAR FROM json_data WHERE data:age > 28
             """);
 
         assertNotNull(result);
@@ -101,7 +109,7 @@ public class ObjectAccessTest extends BaseDatabaseTest {
         logger.info("Testing property access with table alias");
 
         ResultSet result = engine.executeQuery("""
-            SELECT j.data:name, j.data:address:city
+            SELECT j.data:name::VARCHAR, j.data:address:city::VARCHAR
             FROM json_data j
             WHERE j.id = 2
             """);
@@ -110,5 +118,20 @@ public class ObjectAccessTest extends BaseDatabaseTest {
         assertEquals(1, result.getRowCount());
         assertEquals("Bob", result.getRows().get(0).getValue(0));
         assertEquals("LA", result.getRows().get(0).getValue(1));
+    }
+
+    @Test
+    public void testPropertyAccessOverVarcharColumnIsRejected() {
+        logger.info("Testing that colon access over a declared VARCHAR column is a compile error");
+
+        engine.execute("CREATE TABLE json_text (id INTEGER, data VARCHAR)");
+        final RuntimeException rejected = assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.executeQuery("SELECT data:name FROM json_text");
+            }
+        });
+        assertTrue(rejected.getMessage().contains("Invalid argument types for function 'GET'"),
+            "unexpected: " + rejected.getMessage());
     }
 }

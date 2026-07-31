@@ -18,7 +18,9 @@ package dev.frostlake.functions.scalar.semistructured;
 
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
-import dev.frostlake.types.VariantType;
+import dev.frostlake.types.ArrayType;
+import dev.frostlake.values.VariantUndefined;
+import dev.frostlake.values.VariantValue;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.node.ArrayNode;
 
@@ -28,18 +30,36 @@ import java.util.Set;
 
 /** ARRAY_DISTINCT(array) — removes duplicate elements. */
 public class ArrayDistinct extends BuiltInFunction {
-    public ArrayDistinct() { super("ARRAY_DISTINCT", VariantType.VARIANT); }
+    public ArrayDistinct() { super("ARRAY_DISTINCT", ArrayType.ARRAY); }
 
     @Override
     public Object evaluate(final List<Object> args) {
-        ArrayNode src = ArrayFunctionHelper.parseArray(args.get(0));
+        final ArrayNode src = ArrayFunctionHelper.parseArray(args.get(0));
         if (src == null) return null;
-        Set<String> seen = new LinkedHashSet<>();
-        ArrayNode result = ArrayFunctionHelper.MAPPER.createArrayNode();
+        // Live-verified: when nothing is a duplicate the array comes back UNCHANGED
+        // (ARRAY_DISTINCT(ARRAY_CONSTRUCT(NULL,1,2)) is [undefined,1,2], ARRAY_DISTINCT([2,NULL,1]) is
+        // [2,undefined,1]); as soon as a duplicate is dropped the surviving values keep first-occurrence
+        // order but the `undefined` moves LAST — ARRAY_DISTINCT(ARRAY_CONSTRUCT(NULL,1,1)) is [1,undefined],
+        // ARRAY_DISTINCT(ARRAY_CONSTRUCT(NULL,2,NULL,1)) is [2,1,undefined]. A JSON null keeps its
+        // first-occurrence position throughout (ARRAY_DISTINCT of [null,1,null,2] is [null,1,2]).
+        final Set<String> seen = new LinkedHashSet<>();
+        final ArrayNode values = ArrayFunctionHelper.MAPPER.createArrayNode();
+        boolean anyUndefined = false;
         for (final JsonNode el : src) {
-            if (seen.add(el.toString())) result.add(el);
+            if (VariantUndefined.isUndefined(el)) {
+                anyUndefined = true;
+                continue;
+            }
+            if (seen.add(el.toString())) values.add(el);
         }
-        return result.toString();
+        final int distinctSize = values.size() + (anyUndefined ? 1 : 0);
+        if (distinctSize == src.size()) {
+            return VariantValue.ofNode(src);
+        }
+        final ArrayNode result = ArrayFunctionHelper.MAPPER.createArrayNode();
+        for (final JsonNode el : values) result.add(el);
+        if (anyUndefined) result.add(VariantUndefined.node());
+        return VariantValue.ofNode(result);
     }
 
     @Override public int getMinArgCount() { return 1; }

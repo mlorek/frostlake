@@ -42,6 +42,7 @@ public class ProjectOperator implements Operator {
     private final List<String> columnAliases;
     private final RowExpressionEvaluator expressionEvaluator;
     private final Map<String, Object> lateralAliasSink;
+    private final Map<String, Object> baseBindings;
 
     /**
      * Create a PROJECT operator.
@@ -69,10 +70,30 @@ public class ProjectOperator implements Operator {
                           final List<String> columnAliases,
                           final RowExpressionEvaluator expressionEvaluator,
                           final Map<String, Object> lateralAliasSink) {
+        this(projectionExpressions, columnAliases, expressionEvaluator, lateralAliasSink, null);
+    }
+
+    /**
+     * As {@link #ProjectOperator(List, List, RowExpressionEvaluator, Map)}, additionally carrying
+     * the OUTER bindings of a LATERAL / correlated execution.
+     *
+     * @param baseBindings outer-row name → value bindings re-seeded into {@code lateralAliasSink}
+     *     after its per-row reset, so a SELECT item may reference an outer alias by qualified name
+     *     ({@code SELECT fa.asset_key} inside {@code LEFT JOIN LATERAL (…)}) — the sink is the
+     *     evaluator's lateral context, and its per-row clear would otherwise drop them. Item
+     *     aliases fill in later, so they shadow a same-named outer key; null when the query does
+     *     not execute under an outer row.
+     */
+    public ProjectOperator(final List<String> projectionExpressions,
+                          final List<String> columnAliases,
+                          final RowExpressionEvaluator expressionEvaluator,
+                          final Map<String, Object> lateralAliasSink,
+                          final Map<String, Object> baseBindings) {
         this.projectionExpressions = projectionExpressions;
         this.columnAliases = columnAliases;
         this.expressionEvaluator = expressionEvaluator;
         this.lateralAliasSink = lateralAliasSink;
+        this.baseBindings = baseBindings;
 
         if (columnAliases != null && projectionExpressions.size() != columnAliases.size()) {
             throw new IllegalArgumentException(
@@ -106,6 +127,9 @@ public class ProjectOperator implements Operator {
             // still powers the exact-whole-item-is-an-alias shortcut. Reset per row so aliases don't leak.
             final Map<String, Object> rowAliasValues = lateralAliasSink != null ? lateralAliasSink : new HashMap<>();
             rowAliasValues.clear();
+            if (baseBindings != null) {
+                rowAliasValues.putAll(baseBindings);
+            }
 
             for (int i = 0; i < projectionExpressions.size(); i++) {
                 String expr = projectionExpressions.get(i).trim();

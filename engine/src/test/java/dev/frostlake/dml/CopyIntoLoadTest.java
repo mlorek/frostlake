@@ -186,7 +186,10 @@ public class CopyIntoLoadTest {
         writeStageFile("p.json", "{\"id\":1,\"name\":\"Alice\"}\n{\"id\":2,\"name\":\"Bob\"}\n");
         engine.execute("CREATE TABLE people (id INTEGER, name VARCHAR)");
 
-        engine.execute("COPY INTO people FROM @data_stage FILE_FORMAT = (TYPE = 'JSON')");
+        // Splitting a JSON record across several columns is what MATCH_BY_COLUMN_NAME is for —
+        // without it Snowflake rejects a multi-column target (live-verified).
+        engine.execute("COPY INTO people FROM @data_stage FILE_FORMAT = (TYPE = 'JSON')"
+            + " MATCH_BY_COLUMN_NAME = 'CASE_INSENSITIVE'");
 
         assertEquals(2, count("people"));
         final ResultSet rs = engine.executeQuery("SELECT name FROM people WHERE id = 2");

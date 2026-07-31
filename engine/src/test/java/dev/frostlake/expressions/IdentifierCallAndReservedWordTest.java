@@ -20,14 +20,16 @@ import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /**
- * Two leniency/dynamic-name features: {@code IDENTIFIER('name')(args)} / {@code IDENTIFIER($var)(args)}
+ * Dynamic-name and keyword handling: {@code IDENTIFIER('name')(args)} / {@code IDENTIFIER($var)(args)}
  * as a dynamically named FUNCTION call (resolved per evaluation, so cached expression ASTs stay
- * correct across sessions), and the reserved words {@code group} (expression positions) and a
- * trailing {@code table} part in qualified names ({@code db.schema.table}).
+ * correct across sessions), non-reserved keywords staying usable as identifiers, and the reserved
+ * words {@code GROUP} and {@code TABLE} being rejected as bare identifiers (live-verified).
  */
 public class IdentifierCallAndReservedWordTest extends BaseDatabaseTest {
 
@@ -48,14 +50,14 @@ public class IdentifierCallAndReservedWordTest extends BaseDatabaseTest {
     }
 
     @Test
-    public void groupIsUsableInExpressionPositions() {
-        engine.execute("CREATE TABLE gwords (id INTEGER, group VARCHAR)");
-        engine.execute("INSERT INTO gwords VALUES (1, 'alpha'), (2, 'beta')");
-        assertEquals("alpha", scalar("SELECT group FROM gwords WHERE id = 1"));
-        assertEquals("ALPHA", scalar("SELECT UPPER(group) FROM gwords WHERE id = 1"),
-            "group works as a function argument");
-        // GROUP BY itself must be untouched by the leniency.
-        assertEquals(2L, ((Number) scalar("SELECT COUNT(*) FROM (SELECT group FROM gwords GROUP BY group)")).longValue());
+    public void groupIsRejectedAsBareIdentifier() {
+        // GROUP is reserved (live-verified): it cannot be used as a bare column name.
+        assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.execute("CREATE TABLE gwords (id INTEGER, group VARCHAR)");
+            }
+        });
     }
 
     @Test
@@ -76,19 +78,48 @@ public class IdentifierCallAndReservedWordTest extends BaseDatabaseTest {
     @Test
     public void getFunctionAndBodylessCreateTable() {
         assertEquals("1", String.valueOf(scalar("SELECT GET(PARSE_JSON('{\"a\": 1}'), 'a')")));
-        // Body-less CREATE TABLE (only tail options) makes an empty table; columns arrive via ALTER.
-        engine.execute("CREATE TABLE bare_tagged TAG (key1='value_1', key2='value_2')");
-        engine.execute("CREATE TABLE bare_clustered CLUSTER BY (n1, n2)");
-        engine.execute("ALTER TABLE bare_tagged ADD id INTEGER");
-        engine.execute("INSERT INTO bare_tagged VALUES (4)");
-        assertEquals(4L, ((Number) scalar("SELECT id FROM bare_tagged")).longValue());
+        // Live-verified: a table must say what its columns ARE. A body-less `CREATE TABLE t`, or one
+        // carrying only tail options (`TAG (…)`, `CLUSTER BY (…)`), is a syntax error — the shape has to
+        // come from a column list, CTAS, LIKE or CLONE.
+        assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.execute("CREATE TABLE bare_none");
+            }
+        });
+        // A TAG (…) clause also requires the tag to exist — live-verified, an unknown tag
+        // fails "Tag 'KEY1' does not exist or not authorized." Create them so the shape, not the tag
+        // reference, is what these assertions are about.
+        engine.execute("CREATE TAG IF NOT EXISTS key1");
+        engine.execute("CREATE TAG IF NOT EXISTS key2");
+        assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.execute("CREATE TABLE bare_tagged TAG (key1='value_1', key2='value_2')");
+            }
+        });
+        assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.execute("CREATE TABLE bare_clustered CLUSTER BY (n1, n2)");
+            }
+        });
+        // With a column list the very same tail options parse.
+        engine.execute("CREATE TABLE tagged (id INTEGER) TAG (key1='value_1', key2='value_2')");
+        engine.execute("CREATE TABLE clustered (n1 INTEGER, n2 INTEGER) CLUSTER BY (n1, n2)");
+        engine.execute("ALTER TABLE tagged ADD extra INTEGER");
+        engine.execute("INSERT INTO tagged VALUES (4, 5)");
+        assertEquals(4L, ((Number) scalar("SELECT id FROM tagged")).longValue());
     }
 
     @Test
-    public void tableAsTheFinalQualifiedNamePart() {
-        engine.execute("CREATE TABLE test_db.test_schema.table (id INTEGER)");
-        engine.execute("INSERT INTO test_db.test_schema.table VALUES (5)");
-        assertEquals(5L, ((Number) scalar("SELECT id FROM test_db.test_schema.table")).longValue());
-        assertEquals(1, engine.executeQuery("DESCRIBE TABLE test_db.test_schema.table").getRowCount());
+    public void tableIsRejectedAsAQualifiedNamePart() {
+        // TABLE is reserved (live-verified): it cannot be the final part of a qualified table name.
+        assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.execute("CREATE TABLE test_db.test_schema.table (id INTEGER)");
+            }
+        });
     }
 }

@@ -17,6 +17,7 @@
 package dev.frostlake.functions.aggregate;
 
 import dev.frostlake.functions.AggregateFunction;
+import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.types.NumericType;
 
 import java.math.BigDecimal;
@@ -35,6 +36,12 @@ public class PercentileDisc extends AggregateFunction {
 
     @Override public int getMinArgCount() { return 2; }
     @Override public int getMaxArgCount() { return 2; }
+
+    /** The fraction argument refuses a semi-structured value — see {@link PercentileCont}. */
+    @Override
+    public SemiStructuredRejection semiStructuredRejection(final int position) {
+        return SemiStructuredRejection.ARGUMENT_TYPES;
+    }
 
     public static class PercentileDiscAccumulator implements Accumulator {
         private final List<Double> values = new ArrayList<>();

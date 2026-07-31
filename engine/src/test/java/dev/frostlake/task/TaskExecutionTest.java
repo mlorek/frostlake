@@ -19,6 +19,7 @@ package dev.frostlake.task;
 import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.metastore.model.Task;
 import dev.frostlake.storage.ResultSet;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
@@ -37,6 +38,11 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 public class TaskExecutionTest extends BaseDatabaseTest {
 
+    private static final String TASK_EXECUTION =
+        "runs a task and asserts what it did: on a real account EXECUTE TASK is an asynchronous, "
+        + "scheduler-driven run that needs task/warehouse privileges, so the effect is not observable "
+        + "synchronously (and the failure/retry bookkeeping asserted here lives on the embedded engine)";
+
     private ResultSet run(final String sql) {
         return engine.executeQuery(sql);
     }
@@ -47,6 +53,7 @@ public class TaskExecutionTest extends BaseDatabaseTest {
 
     @Test
     public void executeTaskRunsItsSql() {
+        Assumptions.assumeFalse(isLiveSnowflake(), TASK_EXECUTION);
         engine.execute("CREATE TABLE tlog (v INTEGER)");
         engine.execute("CREATE TASK t1 SCHEDULE = '1 MINUTE' AS INSERT INTO tlog VALUES (1)");
         engine.execute("EXECUTE TASK t1");
@@ -57,11 +64,11 @@ public class TaskExecutionTest extends BaseDatabaseTest {
     public void showTasksReflectsResumeAndSuspend() {
         engine.execute("CREATE TABLE tlog (v INTEGER)");
         engine.execute("CREATE TASK t1 SCHEDULE = '1 MINUTE' AS INSERT INTO tlog VALUES (1)");
-        assertEquals("SUSPENDED", taskState("t1"));
+        assertEquals("suspended", taskState("t1"));
         engine.execute("ALTER TASK t1 RESUME");
-        assertEquals("STARTED", taskState("t1"));
+        assertEquals("started", taskState("t1"));
         engine.execute("ALTER TASK t1 SUSPEND");
-        assertEquals("SUSPENDED", taskState("t1"));
+        assertEquals("suspended", taskState("t1"));
     }
 
     private String taskState(final String taskName) {
@@ -77,6 +84,7 @@ public class TaskExecutionTest extends BaseDatabaseTest {
     // WHEN gates execution: skipped while false, runs once true (stream-driven, the canonical use).
     @Test
     public void whenConditionGatesExecution() {
+        Assumptions.assumeFalse(isLiveSnowflake(), TASK_EXECUTION);
         engine.execute("CREATE TABLE tlog (v INTEGER)");
         engine.execute("CREATE TABLE src (id INTEGER)");
         engine.execute("CREATE STREAM st ON TABLE src");
@@ -94,6 +102,7 @@ public class TaskExecutionTest extends BaseDatabaseTest {
 
     @Test
     public void afterChainRunsResumedChild() {
+        Assumptions.assumeFalse(isLiveSnowflake(), TASK_EXECUTION);
         engine.execute("CREATE TABLE tlog (v VARCHAR)");
         engine.execute("CREATE TASK parent SCHEDULE = '1 MINUTE' AS INSERT INTO tlog VALUES ('p')");
         engine.execute("CREATE TASK child AFTER parent AS INSERT INTO tlog VALUES ('c')");
@@ -107,6 +116,7 @@ public class TaskExecutionTest extends BaseDatabaseTest {
 
     @Test
     public void afterChainSkipsSuspendedChild() {
+        Assumptions.assumeFalse(isLiveSnowflake(), TASK_EXECUTION);
         engine.execute("CREATE TABLE tlog (v VARCHAR)");
         engine.execute("CREATE TASK parent SCHEDULE = '1 MINUTE' AS INSERT INTO tlog VALUES ('p')");
         engine.execute("CREATE TASK child AFTER parent AS INSERT INTO tlog VALUES ('c')");
@@ -118,6 +128,7 @@ public class TaskExecutionTest extends BaseDatabaseTest {
 
     @Test
     public void afterChainCascadesToGrandchild() {
+        Assumptions.assumeFalse(isLiveSnowflake(), TASK_EXECUTION);
         engine.execute("CREATE TABLE tlog (v VARCHAR)");
         engine.execute("CREATE TASK gen1 SCHEDULE = '1 MINUTE' AS INSERT INTO tlog VALUES ('a')");
         engine.execute("CREATE TASK gen2 AFTER gen1 AS INSERT INTO tlog VALUES ('b')");
@@ -131,6 +142,7 @@ public class TaskExecutionTest extends BaseDatabaseTest {
     // A WHEN condition that cannot be evaluated skips the run (it must not execute unconditionally).
     @Test
     public void whenEvaluationErrorSkipsRun() {
+        Assumptions.assumeFalse(isLiveSnowflake(), TASK_EXECUTION);
         engine.execute("CREATE TABLE tlog (v INTEGER)");
         engine.execute(
             "CREATE TASK t3 SCHEDULE = '1 MINUTE' WHEN 1 / 0 = 1 AS INSERT INTO tlog VALUES (1)");
@@ -141,11 +153,12 @@ public class TaskExecutionTest extends BaseDatabaseTest {
     // SYSTEM$TASK_DEPENDENTS_ENABLE resumes dependent tasks, after which the DAG cascades.
     @Test
     public void taskDependentsEnableResumesChildren() {
+        Assumptions.assumeFalse(isLiveSnowflake(), TASK_EXECUTION);
         engine.execute("CREATE TABLE tlog (v VARCHAR)");
         engine.execute("CREATE TASK parent SCHEDULE = '1 MINUTE' AS INSERT INTO tlog VALUES ('p')");
         engine.execute("CREATE TASK child AFTER parent AS INSERT INTO tlog VALUES ('c')");
         run("SELECT SYSTEM$TASK_DEPENDENTS_ENABLE('parent')");
-        assertEquals("STARTED", taskState("child"));
+        assertEquals("started", taskState("child"));
         engine.execute("EXECUTE TASK parent");
         assertEquals(2L, logCount());
     }
@@ -153,6 +166,7 @@ public class TaskExecutionTest extends BaseDatabaseTest {
     // A failed parent does not cascade to its children.
     @Test
     public void failedParentDoesNotCascade() {
+        Assumptions.assumeFalse(isLiveSnowflake(), TASK_EXECUTION);
         engine.execute("CREATE TABLE tlog (v VARCHAR)");
         engine.execute("CREATE TASK parent SCHEDULE = '1 MINUTE' AS INSERT INTO no_such_table VALUES ('p')");
         engine.execute("CREATE TASK child AFTER parent AS INSERT INTO tlog VALUES ('c')");
@@ -171,6 +185,7 @@ public class TaskExecutionTest extends BaseDatabaseTest {
     // A daily cron arms with a ~1440-minute interval (previously every cron meant 5 minutes).
     @Test
     public void cronDailyArmsWithDailyInterval() {
+        Assumptions.assumeFalse(isLiveSnowflake(), TASK_EXECUTION);
         engine.execute("CREATE TABLE tlog (v INTEGER)");
         engine.execute("CREATE TASK ct SCHEDULE = 'USING CRON 0 0 * * * UTC' AS INSERT INTO tlog VALUES (1)");
         engine.execute("ALTER TASK ct RESUME");
@@ -183,19 +198,21 @@ public class TaskExecutionTest extends BaseDatabaseTest {
 
     @Test
     public void suspendAfterConsecutiveFailures() {
+        Assumptions.assumeFalse(isLiveSnowflake(), TASK_EXECUTION);
         engine.execute(
             "CREATE TASK failing SCHEDULE = '1 MINUTE' SUSPEND_TASK_AFTER_NUM_FAILURES = 2"
             + " AS INSERT INTO no_such_table VALUES (1)");
         engine.execute("EXECUTE TASK failing");
-        assertEquals("SUSPENDED", taskState("failing")); // still suspended (never resumed), 1 failure
+        assertEquals("suspended", taskState("failing")); // still suspended (never resumed), 1 failure
         engine.execute("EXECUTE TASK failing");
         assertEquals(2, taskModel("failing").getFailureCount());
-        assertEquals("SUSPENDED", taskState("failing"));
+        assertEquals("suspended", taskState("failing"));
     }
 
     // A success resets the consecutive-failure streak.
     @Test
     public void successResetsFailureStreak() {
+        Assumptions.assumeFalse(isLiveSnowflake(), TASK_EXECUTION);
         engine.execute(
             "CREATE TASK flaky SCHEDULE = '1 MINUTE' SUSPEND_TASK_AFTER_NUM_FAILURES = 2"
             + " AS INSERT INTO maybe_t VALUES (1)");
@@ -212,6 +229,7 @@ public class TaskExecutionTest extends BaseDatabaseTest {
     // TASK_AUTO_RETRY_ATTEMPTS: one EXECUTE of a failing task records 1 + N attempts.
     @Test
     public void autoRetryRecordsEachAttempt() {
+        Assumptions.assumeFalse(isLiveSnowflake(), TASK_EXECUTION);
         engine.execute(
             "CREATE TASK retrying SCHEDULE = '1 MINUTE' TASK_AUTO_RETRY_ATTEMPTS = 2"
             + " AS INSERT INTO no_such_table VALUES (1)");
@@ -232,7 +250,7 @@ public class TaskExecutionTest extends BaseDatabaseTest {
                     + " AS INSERT INTO tlog VALUES ('c')");
             }
         });
-        assertTrue(ex.getMessage().contains("Cannot specify both SCHEDULE and AFTER"),
+        assertTrue(ex.getMessage().contains("Task BAD_CHILD cannot have both a schedule and a predecessor."),
             "unexpected message: " + ex.getMessage());
     }
 
@@ -244,13 +262,14 @@ public class TaskExecutionTest extends BaseDatabaseTest {
         engine.execute("CREATE TASK p2 SCHEDULE = '1 MINUTE' AS INSERT INTO tlog VALUES ('p2')");
         engine.execute("CREATE TASK c2 AFTER p2 AS INSERT INTO tlog VALUES ('c2')");
         run("SELECT SYSTEM$TASK_DEPENDENTS_ENABLE('p1')");
-        assertEquals("STARTED", taskState("c1"));
-        assertEquals("SUSPENDED", taskState("c2")); // the OTHER root's child stays suspended
+        assertEquals("started", taskState("c1"));
+        assertEquals("suspended", taskState("c2")); // the OTHER root's child stays suspended
     }
 
     // SYSTEM$SET_RETURN_VALUE in the parent is readable by the child via GET_PREDECESSOR_RETURN_VALUE.
     @Test
     public void predecessorReturnValueFlowsToChild() {
+        Assumptions.assumeFalse(isLiveSnowflake(), TASK_EXECUTION);
         engine.execute("CREATE TABLE tlog (v VARCHAR)");
         engine.execute(
             "CREATE TASK parent SCHEDULE = '1 MINUTE' AS SELECT SYSTEM$SET_RETURN_VALUE('hello')");

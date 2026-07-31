@@ -33,8 +33,8 @@ import java.util.Set;
  * Shared accumulator for {@link MaxBy} and {@link MinBy}. Unlike the numeric two-argument aggregates (CORR,
  * COVAR, REGR) it keeps RAW objects: the returned {@code value} may be any type and the sort {@code key} may
  * be any {@link Comparable}. Rows whose key is NULL are ignored. The {@code wantMax} flag selects whether the
- * maximum or minimum key wins; ties are resolved in favour of the latest row (Snowflake semantics), so a key
- * equal to the current best still replaces it.
+ * maximum or minimum key wins; ties are resolved in favour of the FIRST-encountered row (live-verified:
+ * MAX_BY over ('first', 10), ('second', 10) is 'first'), so only a strictly better key replaces the best.
  *
  * <p>The executor drives this via the two-argument {@link #accumulate(Object, Object)} overload with the raw
  * column values; the single-argument {@link #accumulate(Object)} inherited from the interface is unused.
@@ -67,7 +67,7 @@ public class MaxByMinByAccumulator implements AggregateFunction.Accumulator {
         // Two-argument aggregate: the executor calls accumulate(value, key); this form is unused.
     }
 
-    /** Offer one {@code (value, key)} pair. A NULL key is ignored; a key that meets-or-beats the current best wins. */
+    /** Offer one {@code (value, key)} pair. A NULL key is ignored; only a key that strictly beats the current best wins. */
     public void accumulate(final Object value, final Object key) {
         if (key == null) {
             return;
@@ -86,7 +86,7 @@ public class MaxByMinByAccumulator implements AggregateFunction.Accumulator {
 
     private boolean beatsBest(final Object key) {
         final int cmp = compareKeys(key, bestKey);
-        return wantMax ? cmp >= 0 : cmp <= 0;
+        return wantMax ? cmp > 0 : cmp < 0;
     }
 
     @Override
@@ -127,7 +127,7 @@ public class MaxByMinByAccumulator implements AggregateFunction.Accumulator {
             array.add(ArrayFunctionHelper.toNode(ArrayFunctionHelper.MAPPER, value));
             taken++;
         }
-        return ArrayFunctionHelper.toCanonicalJson(array);
+        return ArrayFunctionHelper.toCanonicalVariant(array);
     }
 
     @Override

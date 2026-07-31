@@ -266,7 +266,7 @@ public class SystemRolesTest {
         RuntimeException exception = assertThrows(RuntimeException.class, () -> {
             engine.getCatalog().getRole("TEST_ROLE");
         });
-        assertTrue(exception.getMessage().contains("Role does not exist"));
+        assertTrue(exception.getMessage().contains("Role 'TEST_ROLE' does not exist or not authorized."));
     }
 
     @Test

@@ -157,11 +157,12 @@ public class DatabaseHttpServer {
 
             } catch (final Exception e) {
                 logger.error("Error handling SQL execution", e);
-                String errorJson = String.format(
-                    "{\"success\":false,\"errorMessage\":\"%s\"}",
-                    e.getMessage().replace("\"", "\\\"")
-                );
-                sendResponse(exchange, 500, errorJson);
+                // Serialised, not hand-assembled: escaping only the quote left every other character that
+                // JSON forbids raw in a string to corrupt the body. A backslash, a tab or a newline was
+                // enough — and compilation errors always carry a newline, so this was one message away
+                // from emitting a response no client could parse.
+                sendResponse(exchange, 500, MAPPER.writeValueAsString(
+                    SqlResponse.error(null, e.getMessage())));
             }
         }
     }

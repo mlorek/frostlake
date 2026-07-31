@@ -20,6 +20,7 @@ import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.Row;
 import dev.frostlake.storage.StorageEngine.TableStorage;
 
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -38,6 +39,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 public class TransactionWriteSetTest extends BaseDatabaseTest {
 
+    private static final String ENGINE_INTERNALS =
+        "drives TransactionWriteSet against engine.getStorageEngine() directly — an embedded-only object "
+        + "graph with no counterpart on a live account (it fails there with 'Table storage does not exist')";
+
     private static final String QN = "TEST_DB.TEST_SCHEMA.T";
 
     private TableStorage seedThreeRows() {
@@ -48,6 +53,7 @@ public class TransactionWriteSetTest extends BaseDatabaseTest {
 
     @Test
     public void overlayShowsOwnChangesWhileBaseIsUntouched() {
+        Assumptions.assumeFalse(isLiveSnowflake(), ENGINE_INTERNALS);
         final TableStorage base = seedThreeRows();
         final long id0 = base.getRowId(0);   // (1,'a')
         final long id1 = base.getRowId(1);   // (2,'b')
@@ -73,6 +79,7 @@ public class TransactionWriteSetTest extends BaseDatabaseTest {
 
     @Test
     public void applyFlushesUpdatesDeletesInserts() {
+        Assumptions.assumeFalse(isLiveSnowflake(), ENGINE_INTERNALS);
         final TableStorage base = seedThreeRows();
         final TransactionWriteSet ws = new TransactionWriteSet();
         ws.recordUpdate(QN, base.getRowId(1), new Row(2, "B"));
@@ -94,6 +101,7 @@ public class TransactionWriteSetTest extends BaseDatabaseTest {
 
     @Test
     public void discardingWriteSetLeavesBaseUnchanged() {
+        Assumptions.assumeFalse(isLiveSnowflake(), ENGINE_INTERNALS);
         seedThreeRows();
         final TableStorage base = engine.getStorageEngine().getTableStorage(QN);
         final TransactionWriteSet ws = new TransactionWriteSet();

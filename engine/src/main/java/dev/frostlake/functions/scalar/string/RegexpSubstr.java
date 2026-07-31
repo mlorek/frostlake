@@ -16,7 +16,7 @@
 
 package dev.frostlake.functions.scalar.string;
 
-import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.functions.TextArgumentFunction;
 import dev.frostlake.types.StringType;
 
 import java.util.List;
@@ -29,7 +29,7 @@ import java.util.regex.Matcher;
  * returned instead of the whole match — group 1 by default; a pattern with no groups falls back to the
  * whole match. Returns NULL when there is no such match.
  */
-public class RegexpSubstr extends BuiltInFunction {
+public class RegexpSubstr extends TextArgumentFunction {
     public RegexpSubstr() { super("REGEXP_SUBSTR", StringType.VARCHAR); }
 
     @Override

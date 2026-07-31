@@ -22,6 +22,9 @@ import dev.frostlake.functions.scalar.JsonTypeHelper;
 import dev.frostlake.types.VariantType;
 import tools.jackson.databind.JsonNode;
 
+import dev.frostlake.values.VariantUndefined;
+import dev.frostlake.values.VariantValue;
+
 import java.util.List;
 
 public class ParseJson extends BuiltInFunction {
@@ -44,13 +47,18 @@ public class ParseJson extends BuiltInFunction {
         }
         // A literal JSON null parses to a JSON null VARIANT — represented as the text "null" so it stays
         // DISTINCT from a SQL NULL (Snowflake: "The JSON null value is distinct from the SQL NULL value").
-        if (input.equalsIgnoreCase("null")) return "null";
+        if (input.equalsIgnoreCase("null")) return VariantValue.of("null");
         // Parse leniently (Snowflake tolerates \' and invalid backslash escapes such as a regex \d).
         final JsonNode node = JsonTypeHelper.parseLenient(input);
+        // A WHOLE-VALUE `undefined` is SQL NULL — live: PARSE_JSON('undefined') IS NULL is
+        // TRUE and its TYPEOF is SQL NULL, while PARSE_JSON('[undefined]') keeps the array element.
+        if (VariantUndefined.isUndefined(node)) {
+            return null;
+        }
         if (node == null) {
             throw new RuntimeException("Invalid JSON: " + args.get(0));
         }
-        return ArrayFunctionHelper.toCanonicalJson(node);
+        return ArrayFunctionHelper.toCanonicalVariant(node);
     }
 
     @Override public int getMinArgCount() { return 1; }

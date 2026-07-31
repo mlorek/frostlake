@@ -26,6 +26,7 @@ import org.junit.jupiter.api.Test;
 
 import java.io.File;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
@@ -42,10 +43,12 @@ public class ImplicitStageTest {
 
     private DatabaseEngine engine;
     private Path internalRoot;
+    private Path localDir;
 
     @BeforeEach
     public void setUp() throws IOException {
         internalRoot = Files.createTempDirectory("implicit_stage_test_");
+        localDir = Files.createTempDirectory("implicit_stage_local_");
         final EngineConfig cfg = new EngineConfig();
         cfg.setProperty(EngineConfig.PROP_STAGE_INTERNAL_LOCAL_ROOT, internalRoot.toString());
         engine = new DatabaseEngine(cfg);
@@ -61,11 +64,19 @@ public class ImplicitStageTest {
             engine.shutdown();
         }
         deleteRecursively(internalRoot.toFile());
+        deleteRecursively(localDir.toFile());
     }
 
     private long count(final String table) {
         final ResultSet rs = engine.executeQuery("SELECT COUNT(*) FROM " + table);
         return ((Number) rs.getRows().get(0).getValue(0)).longValue();
+    }
+
+    /** Write a CSV outside the stage root and return the {@code file://} URL a PUT can upload from. */
+    private String localCsvUrl(final String fileName, final String content) throws IOException {
+        final Path file = localDir.resolve(fileName);
+        Files.write(file, content.getBytes(StandardCharsets.UTF_8));
+        return "file://" + file;
     }
 
     @Test
@@ -138,6 +149,121 @@ public class ImplicitStageTest {
 
         assertEquals(2, count("from_user"));
         assertEquals(1, count("from_table"));
+    }
+
+    /**
+     * {@code COPY INTO <table>} with NO FROM clause loads from that table's own stage {@code @%<table>} —
+     * the documented local-file load path (PUT the file into the table stage, then COPY it in). Live-verified
+     * on a real account: the staged file is loaded and reported LOADED exactly as it is under an
+     * explicit {@code FROM @%<table>}.
+     */
+    @Test
+    public void tableStageIsTheDefaultCopySource() throws IOException {
+        engine.execute("CREATE TABLE c (id INTEGER, name VARCHAR)");
+        engine.executeQuery("PUT " + localCsvUrl("u.csv", """
+            id,name
+            7,gina
+            8,hank
+            """) + " @%c");
+
+        final ResultSet copied = engine.executeQuery("COPY INTO c FILE_FORMAT = (TYPE = CSV SKIP_HEADER = 1)");
+
+        assertEquals(1, copied.getRows().size(), "the one staged file should be reported");
+        assertEquals("u.csv", copied.getRows().get(0).getValue(0));
+        assertEquals("LOADED", copied.getRows().get(0).getValue(1));
+        assertEquals(2, count("c"));
+    }
+
+    /**
+     * The no-FROM form shares the explicit path's load history: a second identical COPY re-reads the same
+     * staged file and loads nothing, while FORCE = TRUE reloads it (live-verified). The skipped
+     * file is not itself reported — with nothing loaded the statement answers with the one-column summary.
+     */
+    @Test
+    public void defaultTableStageCopySkipsAlreadyLoadedFiles() throws IOException {
+        engine.execute("CREATE TABLE c (id INTEGER, name VARCHAR)");
+        engine.executeQuery("PUT " + localCsvUrl("u.csv", """
+            id,name
+            7,gina
+            8,hank
+            """) + " @%c");
+
+        engine.executeQuery("COPY INTO c FILE_FORMAT = (TYPE = CSV SKIP_HEADER = 1)");
+        assertEquals(2, count("c"));
+
+        final ResultSet again = engine.executeQuery("COPY INTO c FILE_FORMAT = (TYPE = CSV SKIP_HEADER = 1)");
+        assertEquals(1, again.getColumns().size());
+        assertEquals("Copy executed with 0 files processed.", again.getRows().get(0).getValue(0));
+        assertEquals(2, count("c"));
+
+        engine.executeQuery("COPY INTO c FILE_FORMAT = (TYPE = CSV SKIP_HEADER = 1) FORCE = TRUE");
+        assertEquals(4, count("c"));
+    }
+
+    /**
+     * An EMPTY table stage is a success, not an error, and it answers with the one-column summary rather than
+     * an empty per-file result — live-verified, where the account returned a single {@code status}
+     * column holding {@code Copy executed with 0 files processed.} instead of failing the statement.
+     */
+    @Test
+    public void defaultTableStageCopyOnEmptyStageLoadsNothing() {
+        engine.execute("CREATE TABLE c (id INTEGER, name VARCHAR)");
+
+        final ResultSet copied = engine.executeQuery("COPY INTO c FILE_FORMAT = (TYPE = CSV SKIP_HEADER = 1)");
+
+        assertEquals(1, copied.getColumns().size(), "an empty table stage answers with one column");
+        assertEquals("status", copied.getColumns().get(0).getName());
+        assertEquals(1, copied.getRows().size(), "an empty table stage answers with one row");
+        assertEquals("Copy executed with 0 files processed.", copied.getRows().get(0).getValue(0));
+        assertEquals(0, count("c"));
+    }
+
+    /** PATTERN narrows the table stage's files on the no-FROM form just as it does with an explicit FROM. */
+    @Test
+    public void defaultTableStageCopyHonoursPattern() throws IOException {
+        engine.execute("CREATE TABLE c (id INTEGER, name VARCHAR)");
+        engine.executeQuery("PUT " + localCsvUrl("keep.csv", """
+            id,name
+            7,gina
+            8,hank
+            """) + " @%c");
+        engine.executeQuery("PUT " + localCsvUrl("skip.csv", """
+            id,name
+            9,ivy
+            """) + " @%c");
+
+        engine.execute("COPY INTO c PATTERN = '.*keep[.]csv' FILE_FORMAT = (TYPE = CSV SKIP_HEADER = 1)");
+
+        assertEquals(2, count("c"));
+    }
+
+    /**
+     * A qualified target defaults to ITS OWN stage, not to a same-named table in the current schema —
+     * live-verified with exactly this two-schema shape.
+     */
+    @Test
+    public void defaultTableStageCopyUsesTheQualifiedTargetsOwnStage() throws IOException {
+        engine.execute("CREATE SCHEMA s2");
+        engine.execute("USE SCHEMA s2");
+        engine.execute("CREATE TABLE tq (id INTEGER, name VARCHAR)");
+        engine.executeQuery("PUT " + localCsvUrl("q.csv", """
+            id,name
+            7,gina
+            8,hank
+            """) + " @%tq");
+
+        // A same-named table in another schema stages a different file in its own table stage.
+        engine.execute("USE SCHEMA s");
+        engine.execute("CREATE TABLE tq (id INTEGER, name VARCHAR)");
+        engine.executeQuery("PUT " + localCsvUrl("d.csv", """
+            id,name
+            99,zoe
+            """) + " @%tq");
+
+        engine.execute("COPY INTO db.s2.tq FILE_FORMAT = (TYPE = CSV SKIP_HEADER = 1)");
+
+        assertEquals(2, count("db.s2.tq"));
+        assertEquals(0, count("tq"), "the current schema's same-named table must be untouched");
     }
 
     private static void deleteRecursively(final File f) {

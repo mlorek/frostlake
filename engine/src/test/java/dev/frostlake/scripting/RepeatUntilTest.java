@@ -26,8 +26,9 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
- * REPEAT … UNTIL &lt;condition&gt; END REPEAT — a post-test loop executed in anonymous BEGIN…END blocks. The
+ * REPEAT … UNTIL (&lt;condition&gt;) END REPEAT — a post-test loop executed in anonymous BEGIN…END blocks. The
  * body runs at least once, then iterates while the condition is false and stops once it becomes true.
+ * The UNTIL condition must be parenthesized, as Snowflake requires.
  */
 public class RepeatUntilTest {
 
@@ -59,7 +60,7 @@ public class RepeatUntilTest {
                 LET i INTEGER := 0;
                 REPEAT
                     i := i + 1;
-                UNTIL i >= 5
+                UNTIL (i >= 5)
                 END REPEAT;
                 RETURN i;
             END;
@@ -75,7 +76,7 @@ public class RepeatUntilTest {
                 LET runs INTEGER := 0;
                 REPEAT
                     runs := runs + 1;
-                UNTIL i >= 5
+                UNTIL (i >= 5)
                 END REPEAT;
                 RETURN runs;
             END;
@@ -91,7 +92,7 @@ public class RepeatUntilTest {
                 REPEAT
                     i := i + 1;
                     total := total + i;
-                UNTIL i >= 4
+                UNTIL (i >= 4)
                 END REPEAT;
                 RETURN total;
             END;
@@ -105,10 +106,10 @@ public class RepeatUntilTest {
                 LET i INTEGER := 0;
                 REPEAT
                     i := i + 1;
-                    IF i = 3 THEN
+                    IF (i = 3) THEN
                         BREAK;
                     END IF;
-                UNTIL i >= 100
+                UNTIL (i >= 100)
                 END REPEAT;
                 RETURN i;
             END;

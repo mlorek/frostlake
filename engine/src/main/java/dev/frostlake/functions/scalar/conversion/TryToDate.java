@@ -28,6 +28,13 @@ public class TryToDate extends BuiltInFunction {
     @Override
     public Object evaluate(final List<Object> args) {
         if (args.get(0) == null) return null;
+        // Live-verified: TRY_TO_DATE(1631711999) is a COMPILE error, not a NULL —
+        // "invalid type [TRY_TO_DATE(1631711999)] for parameter 'TO_DATE'" — so the numeric rejection
+        // is raised outside the try that turns parse failures into NULL.
+        if (args.get(0) instanceof Number) {
+            throw new RuntimeException("invalid type [TRY_TO_DATE(" + args.get(0)
+                + ")] for parameter 'TO_DATE'");
+        }
         final String format = args.size() >= 2 && args.get(1) != null ? args.get(1).toString() : null;
         try { return SharedFunctionHelpers.parseDateWithFormat(args.get(0), format); } catch (final Exception e) { return null; }
     }

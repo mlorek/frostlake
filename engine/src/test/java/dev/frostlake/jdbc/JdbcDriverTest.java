@@ -415,7 +415,7 @@ public class JdbcDriverTest {
                 st.execute("USE DATABASE arr_db");
                 st.execute("USE SCHEMA PUBLIC");
                 st.execute("CREATE TABLE arr (a ARRAY)");
-                st.execute("INSERT INTO arr VALUES (ARRAY_CONSTRUCT(10, 20))");
+                st.execute("INSERT INTO arr SELECT ARRAY_CONSTRUCT(10, 20)");
                 try (ResultSet rs = st.executeQuery("SELECT a FROM arr")) {
                     assertTrue(rs.next());
                     assertEquals(Types.ARRAY, rs.getMetaData().getColumnType(1));

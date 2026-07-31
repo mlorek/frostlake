@@ -18,7 +18,7 @@ package dev.frostlake.functions.scalar.semistructured;
 
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
-import dev.frostlake.types.VariantType;
+import dev.frostlake.types.ObjectType;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.node.ObjectNode;
 
@@ -26,7 +26,7 @@ import java.util.List;
 
 /** OBJECT_PICK(object, key1 [, key2, ...]) — returns an object with only the specified keys. */
 public class ObjectPick extends BuiltInFunction {
-    public ObjectPick() { super("OBJECT_PICK", VariantType.VARIANT); }
+    public ObjectPick() { super("OBJECT_PICK", ObjectType.OBJECT); }
 
     @Override
     public Object evaluate(final List<Object> args) {
@@ -40,7 +40,7 @@ public class ObjectPick extends BuiltInFunction {
             if (val != null) result.set(key, val);
         }
         // Snowflake serializes OBJECT members key-sorted; raw insertion order leaked argument order.
-        return ArrayFunctionHelper.toCanonicalJson(result);
+        return ArrayFunctionHelper.toCanonicalVariant(result);
     }
 
     @Override public int getMinArgCount() { return 2; }

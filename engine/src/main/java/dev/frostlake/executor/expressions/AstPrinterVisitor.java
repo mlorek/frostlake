@@ -194,6 +194,25 @@ public class AstPrinterVisitor implements ExpressionVisitor<String> {
     }
 
     @Override
+    public String visitLikeAnyAll(final LikeAnyAllExpression expr) {
+        final StringBuilder out = new StringBuilder();
+        out.append('(').append(expr.getSubject().accept(this))
+            .append(expr.isCaseInsensitive() ? " ILIKE " : " LIKE ")
+            .append(expr.isAll() ? "ALL (" : "ANY (");
+        for (int i = 0; i < expr.getPatterns().size(); i++) {
+            if (i > 0) {
+                out.append(", ");
+            }
+            out.append(expr.getPatterns().get(i).accept(this));
+        }
+        out.append(')');
+        if (expr.getEscape() != null) {
+            out.append(" ESCAPE ").append(expr.getEscape().accept(this));
+        }
+        return out.append(')').toString();
+    }
+
+    @Override
     public String visitIn(final InExpression expr) {
         final StringBuilder sb = new StringBuilder("(");
         sb.append(expr.getValue().accept(this));
@@ -245,7 +264,14 @@ public class AstPrinterVisitor implements ExpressionVisitor<String> {
 
     @Override
     public String visitInterval(final IntervalExpression expr) {
-        return "(INTERVAL " + expr.getValueExpression().accept(this) + " " + expr.getUnit() + ")";
+        final StringBuilder out = new StringBuilder("(INTERVAL ");
+        for (IntervalExpression part = expr; part != null; part = part.getRest()) {
+            if (part != expr) {
+                out.append(", ");
+            }
+            out.append(part.getValueExpression().accept(this)).append(' ').append(part.getUnit());
+        }
+        return out.append(')').toString();
     }
 
     @Override

@@ -22,6 +22,8 @@ import dev.frostlake.metastore.model.Parameter;
 import dev.frostlake.metastore.model.Procedure;
 import dev.frostlake.metastore.model.UdfLanguage;
 import dev.frostlake.storage.ResultSet;
+import dev.frostlake.values.BinaryValue;
+import dev.frostlake.values.VariantValue;
 import dev.frostlake.storage.Row;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -359,6 +361,14 @@ public class PythonProcedureExecutor {
             }
             if (value instanceof LocalDateTime || value instanceof LocalDate || value instanceof LocalTime) {
                 return value.toString();
+            }
+            if (value instanceof BinaryValue) {
+                // BINARY crosses as its hex text; the shim re-types it to bytes via columnTypes().
+                return ((BinaryValue) value).toHex();
+            }
+            if (value instanceof VariantValue) {
+                // Semi-structured crosses as its JSON text; the shim re-types via columnTypes().
+                return ((VariantValue) value).text();
             }
             return value;
         }

@@ -184,9 +184,11 @@ public class ExpressionGoldenCorpusTest {
 
     @Test
     public void testJsonAccess() {
-        // data = {"a": 1, "b": "x"} on row id = 1; comparison keeps the assertion type-robust.
-        assertEquals(true, evalCol("data:a = 1"));
-        assertEquals(true, evalCol("data:b = 'x'"));
+        // data = {"a": 1, "b": "x"} on row id = 1, stored as VARCHAR text. A colon path over a
+        // declared VARCHAR column is a compile error (GET needs VARIANT), so the access goes
+        // through an explicit PARSE_JSON; comparison keeps the assertion type-robust.
+        assertEquals(true, evalCol("PARSE_JSON(data):a = 1"));
+        assertEquals(true, evalCol("PARSE_JSON(data):b = 'x'"));
     }
 
     @Test

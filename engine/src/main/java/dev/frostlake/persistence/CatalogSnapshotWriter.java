@@ -127,7 +127,27 @@ final class CatalogSnapshotWriter {
                         colSnapshot.onDelete = col.getOnDelete();
                         colSnapshot.onUpdate = col.getOnUpdate();
                         colSnapshot.rely = col.getRely();
+                        // Constraint names, so a restored table keeps reporting the same ones. Reading them
+                        // is what generates an as-yet-unnamed constraint's SYS_CONSTRAINT_<uuid>, which is
+                        // exactly what should be pinned into the snapshot.
+                        colSnapshot.uniqueConstraintName = col.isUnique()
+                            ? table.uniqueConstraintName(col.getName()) : null;
+                        colSnapshot.foreignKeyConstraintName = col.hasForeignKey()
+                            ? table.columnForeignKeyConstraintName(col.getName()) : null;
                         tableSnapshot.columns.add(colSnapshot);
+                    }
+
+                    // PRIMARY KEY name (null when the table has no primary key) and the table-level UNIQUE
+                    // constraints, whose names and multi-column spans the column flags cannot express.
+                    tableSnapshot.primaryKeyConstraintName = table.primaryKeyConstraintName();
+                    if (!table.getDeclaredUniqueConstraints().isEmpty()) {
+                        tableSnapshot.uniqueConstraints = new ArrayList<>();
+                        for (final UniqueConstraint unique : table.getDeclaredUniqueConstraints()) {
+                            UniqueConstraintSnapshot uniqueSnapshot = new UniqueConstraintSnapshot();
+                            uniqueSnapshot.constraintName = unique.getConstraintName();
+                            uniqueSnapshot.columnNames = new ArrayList<>(unique.getColumnNames());
+                            tableSnapshot.uniqueConstraints.add(uniqueSnapshot);
+                        }
                     }
 
                     // Table-level FOREIGN KEY constraints (column-level REFERENCES are on the column above).
@@ -171,6 +191,7 @@ final class CatalogSnapshotWriter {
                     viewSnapshot.rowAccessPolicyName = view.getRowAccessPolicyName();
                     viewSnapshot.rowAccessPolicyColumns = view.hasRowAccessPolicy()
                         ? new ArrayList<>(view.getRowAccessPolicyColumns()) : null;
+                    viewSnapshot.columns = derivedColumnSnapshots(view.getResolvedColumns());
                     schemaSnapshot.views.add(viewSnapshot);
                 }
 
@@ -466,6 +487,34 @@ final class CatalogSnapshotWriter {
             }
         }
         return result;
+    }
+
+    /**
+     * Snapshot a DERIVED relation's column list — a view's, resolved once when it was created. Only the
+     * identity and the declared type are written, including the parameters that make a NUMBER(p,s) or
+     * VARCHAR(n) survive the round trip: a view column carries no DEFAULT, IDENTITY, key or constraint
+     * for INFORMATION_SCHEMA to report. Null in, null out — an unresolved view stays unresolved.
+     */
+    static List<ColumnSnapshot> derivedColumnSnapshots(final List<TableColumn> columns) {
+        if (columns == null) {
+            return null;
+        }
+        final List<ColumnSnapshot> snapshots = new ArrayList<>();
+        for (final TableColumn col : columns) {
+            final ColumnSnapshot colSnapshot = new ColumnSnapshot();
+            colSnapshot.name = col.getName();
+            colSnapshot.dataType = col.getDataType() != null ? col.getDataType().getName() : null;
+            if (col.getDataType() instanceof NumericType) {
+                final NumericType numericType = (NumericType) col.getDataType();
+                colSnapshot.precision = numericType.getPrecision();
+                colSnapshot.scale = numericType.getScale();
+            } else if (col.getDataType() instanceof StringType) {
+                colSnapshot.maxLength = ((StringType) col.getDataType()).getMaxLength();
+            }
+            colSnapshot.nullable = col.isNullable();
+            snapshots.add(colSnapshot);
+        }
+        return snapshots;
     }
 
     /** Snapshot a routine/policy parameter list (name + data-type name + optional default). */

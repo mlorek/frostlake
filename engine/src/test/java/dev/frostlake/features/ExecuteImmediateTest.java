@@ -19,6 +19,7 @@ package dev.frostlake.features;
 import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -130,12 +131,20 @@ public class ExecuteImmediateTest extends BaseDatabaseTest {
         // Set a variable containing SQL
         engine.execute("SET my_sql = 'INSERT INTO products VALUES (100, ''Variable Insert'', 999)'");
 
-        // Execute the SQL from the variable
-        engine.execute("EXECUTE IMMEDIATE my_sql");
+        // A session variable source needs the $ prefix (live-verified)
+        engine.execute("EXECUTE IMMEDIATE $my_sql");
 
         ResultSet result = engine.executeQuery("SELECT * FROM products WHERE id = 100");
         assertEquals(1, result.getRowCount());
         assertEquals("Variable Insert", result.getRows().get(0).getValue(1));
+
+        // The bare-identifier source is a syntax error at session level (live-verified)
+        assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.execute("EXECUTE IMMEDIATE my_sql");
+            }
+        });
     }
 
     @Test

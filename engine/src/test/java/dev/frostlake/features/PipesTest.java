@@ -20,6 +20,7 @@ import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.metastore.model.Pipe;
 import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.storage.ResultSet;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 import org.slf4j.Logger;
@@ -38,8 +39,20 @@ public class PipesTest extends BaseDatabaseTest {
 
     private static final Logger logger = LoggerFactory.getLogger(PipesTest.class);
 
+    private static final String PIPE_OVER_MISSING_STAGE =
+        "declares a pipe over a stage the suite never creates — Frostlake does not require the "
+        + "stage to pre-exist, while a real account rejects CREATE PIPE with \"Stage ... does not "
+        + "exist or not authorized\" — and then asserts through engine.getCatalog(), which under "
+        + "SF_LIVE still reads the embedded engine";
+
+    private static final String PIPE_REFRESH_NEEDS_CLOUD_STORAGE =
+        "ALTER PIPE ... REFRESH makes the account read the stage's cloud storage; the URL here is "
+        + "a placeholder bucket the account has no credentials for, so Snowflake answers with "
+        + "Access Denied (403)";
+
     @Test
     public void testCreateSimplePipe() {
+        Assumptions.assumeFalse(isLiveSnowflake(), PIPE_OVER_MISSING_STAGE);
         logger.info("Testing CREATE PIPE with basic configuration");
 
         engine.execute("CREATE TABLE target_table (id INTEGER, name VARCHAR, value DECIMAL(10,2))");
@@ -63,6 +76,7 @@ public class PipesTest extends BaseDatabaseTest {
 
     @Test
     public void testCreatePipeWithAutoIngest() {
+        Assumptions.assumeFalse(isLiveSnowflake(), PIPE_OVER_MISSING_STAGE);
         logger.info("Testing CREATE PIPE with AUTO_INGEST enabled");
 
         engine.execute("CREATE TABLE target_table (id INTEGER, data VARCHAR)");
@@ -85,6 +99,7 @@ public class PipesTest extends BaseDatabaseTest {
 
     @Test
     public void testCreatePipeWithNotificationChannel() {
+        Assumptions.assumeFalse(isLiveSnowflake(), PIPE_OVER_MISSING_STAGE);
         logger.info("Testing CREATE PIPE with AWS SNS notification channel");
 
         engine.execute("CREATE TABLE events (event_id INTEGER, event_data VARCHAR)");
@@ -109,6 +124,7 @@ public class PipesTest extends BaseDatabaseTest {
 
     @Test
     public void testAlterPipePause() {
+        Assumptions.assumeFalse(isLiveSnowflake(), PIPE_OVER_MISSING_STAGE);
         logger.info("Testing ALTER PIPE ... SET PIPE_EXECUTION_PAUSED = TRUE");
 
         engine.execute("CREATE TABLE target (id INTEGER)");
@@ -129,6 +145,7 @@ public class PipesTest extends BaseDatabaseTest {
 
     @Test
     public void testAlterPipeResume() {
+        Assumptions.assumeFalse(isLiveSnowflake(), PIPE_OVER_MISSING_STAGE);
         logger.info("Testing ALTER PIPE ... SET PIPE_EXECUTION_PAUSED = FALSE");
 
         engine.execute("CREATE TABLE target (id INTEGER)");
@@ -150,6 +167,7 @@ public class PipesTest extends BaseDatabaseTest {
 
     @Test
     public void testAlterPipePauseResumeCycle() {
+        Assumptions.assumeFalse(isLiveSnowflake(), PIPE_OVER_MISSING_STAGE);
         logger.info("Testing multiple PAUSE/RESUME cycles");
 
         engine.execute("CREATE TABLE target (id INTEGER)");
@@ -180,6 +198,7 @@ public class PipesTest extends BaseDatabaseTest {
 
     @Test
     public void testDropPipe() {
+        Assumptions.assumeFalse(isLiveSnowflake(), PIPE_OVER_MISSING_STAGE);
         logger.info("Testing DROP PIPE");
 
         engine.execute("CREATE TABLE target (id INTEGER)");
@@ -209,6 +228,7 @@ public class PipesTest extends BaseDatabaseTest {
 
     @Test
     public void testShowPipes() {
+        Assumptions.assumeFalse(isLiveSnowflake(), PIPE_OVER_MISSING_STAGE);
         logger.info("Testing SHOW PIPES");
 
         engine.execute("CREATE TABLE target1 (id INTEGER)");
@@ -243,6 +263,7 @@ public class PipesTest extends BaseDatabaseTest {
 
     @Test
     public void testShowPipesAfterDrop() {
+        Assumptions.assumeFalse(isLiveSnowflake(), PIPE_OVER_MISSING_STAGE);
         logger.info("Testing SHOW PIPES after dropping a pipe");
 
         engine.execute("CREATE TABLE target (id INTEGER)");
@@ -263,6 +284,7 @@ public class PipesTest extends BaseDatabaseTest {
 
     @Test
     public void testDescribePipe() {
+        Assumptions.assumeFalse(isLiveSnowflake(), PIPE_OVER_MISSING_STAGE);
         logger.info("Testing DESCRIBE PIPE");
 
         engine.execute("CREATE TABLE target (id INTEGER, name VARCHAR)");
@@ -291,6 +313,7 @@ public class PipesTest extends BaseDatabaseTest {
 
     @Test
     public void testCreatePipeDuplicateName() {
+        Assumptions.assumeFalse(isLiveSnowflake(), PIPE_OVER_MISSING_STAGE);
         logger.info("Testing CREATE PIPE with duplicate name");
 
         engine.execute("CREATE TABLE target (id INTEGER)");
@@ -311,6 +334,7 @@ public class PipesTest extends BaseDatabaseTest {
 
     @Test
     public void testPipeWithComplexCopyStatement() {
+        Assumptions.assumeFalse(isLiveSnowflake(), PIPE_OVER_MISSING_STAGE);
         logger.info("Testing PIPE with complex COPY statement");
 
         engine.execute("""
@@ -347,6 +371,7 @@ public class PipesTest extends BaseDatabaseTest {
 
     @Test
     public void testPipeWithErrorIntegration() {
+        Assumptions.assumeFalse(isLiveSnowflake(), PIPE_OVER_MISSING_STAGE);
         logger.info("Testing PIPE with error integration");
 
         engine.execute("CREATE TABLE target (id INTEGER)");
@@ -381,6 +406,7 @@ public class PipesTest extends BaseDatabaseTest {
 
     @Test
     public void testPipeStatusTracking() {
+        Assumptions.assumeFalse(isLiveSnowflake(), PIPE_OVER_MISSING_STAGE);
         logger.info("Testing pipe status changes");
 
         engine.execute("CREATE TABLE target (id INTEGER)");
@@ -412,6 +438,7 @@ public class PipesTest extends BaseDatabaseTest {
 
     @Test
     public void testMultiplePipesIndependence() {
+        Assumptions.assumeFalse(isLiveSnowflake(), PIPE_OVER_MISSING_STAGE);
         logger.info("Testing multiple pipes operate independently");
 
         engine.execute("CREATE TABLE target1 (id INTEGER)");
@@ -453,6 +480,7 @@ public class PipesTest extends BaseDatabaseTest {
 
     @Test
     public void testPipeCaseInsensitivity() {
+        Assumptions.assumeFalse(isLiveSnowflake(), PIPE_OVER_MISSING_STAGE);
         logger.info("Testing pipe name case insensitivity");
 
         engine.execute("CREATE TABLE target (id INTEGER)");
@@ -480,6 +508,7 @@ public class PipesTest extends BaseDatabaseTest {
 
     @Test
     public void testAlterPipeSetExecutionPaused() {
+        Assumptions.assumeFalse(isLiveSnowflake(), PIPE_OVER_MISSING_STAGE);
         logger.info("Testing ALTER PIPE ... SET PIPE_EXECUTION_PAUSED (real Snowflake syntax)");
 
         engine.execute("CREATE TABLE target (id INTEGER)");
@@ -495,6 +524,7 @@ public class PipesTest extends BaseDatabaseTest {
 
     @Test
     public void testAlterPipeRefreshExecutesCopy() {
+        Assumptions.assumeFalse(isLiveSnowflake(), PIPE_REFRESH_NEEDS_CLOUD_STORAGE);
         logger.info("Testing ALTER PIPE ... REFRESH triggers the pipe's COPY");
 
         // REFRESH runs the pipe's COPY INTO … FROM @stage. The engine's COPY is currently a simulation,
@@ -512,6 +542,7 @@ public class PipesTest extends BaseDatabaseTest {
 
     @Test
     public void testSystemPipeStatusReflectsState() {
+        Assumptions.assumeFalse(isLiveSnowflake(), PIPE_OVER_MISSING_STAGE);
         logger.info("Testing SYSTEM$PIPE_STATUS reflects RUNNING/PAUSED");
 
         engine.execute("CREATE TABLE target (id INTEGER)");
@@ -539,6 +570,7 @@ public class PipesTest extends BaseDatabaseTest {
 
     @Test
     public void testCreateOrReplacePipe() {
+        Assumptions.assumeFalse(isLiveSnowflake(), PIPE_OVER_MISSING_STAGE);
         logger.info("Testing CREATE OR REPLACE PIPE");
 
         engine.execute("CREATE TABLE t1 (id INTEGER)");
@@ -554,6 +586,7 @@ public class PipesTest extends BaseDatabaseTest {
 
     @Test
     public void testCreatePipeIfNotExists() {
+        Assumptions.assumeFalse(isLiveSnowflake(), PIPE_OVER_MISSING_STAGE);
         logger.info("Testing CREATE PIPE IF NOT EXISTS keeps the original definition");
 
         engine.execute("CREATE TABLE target (id INTEGER)");
@@ -573,6 +606,7 @@ public class PipesTest extends BaseDatabaseTest {
 
     @Test
     public void testShowPipesLike() {
+        Assumptions.assumeFalse(isLiveSnowflake(), PIPE_OVER_MISSING_STAGE);
         logger.info("Testing SHOW PIPES LIKE filtering");
 
         engine.execute("CREATE TABLE t (id INTEGER)");
@@ -586,6 +620,7 @@ public class PipesTest extends BaseDatabaseTest {
 
     @Test
     public void testShowPipesColumnContent() {
+        Assumptions.assumeFalse(isLiveSnowflake(), PIPE_OVER_MISSING_STAGE);
         logger.info("Testing SHOW PIPES column contents (name / definition / auto_ingest / status)");
 
         engine.execute("CREATE TABLE t (id INTEGER)");
@@ -604,6 +639,7 @@ public class PipesTest extends BaseDatabaseTest {
 
     @Test
     public void testCreatePipeWithIntegration() {
+        Assumptions.assumeFalse(isLiveSnowflake(), PIPE_OVER_MISSING_STAGE);
         logger.info("Testing CREATE PIPE with INTEGRATION (notification integration)");
 
         engine.execute("CREATE TABLE t (id INTEGER)");
@@ -616,6 +652,7 @@ public class PipesTest extends BaseDatabaseTest {
 
     @Test
     public void testDescribePipeColumnarRow() {
+        Assumptions.assumeFalse(isLiveSnowflake(), PIPE_OVER_MISSING_STAGE);
         logger.info("Testing DESCRIBE PIPE returns a single columnar row (name / definition)");
 
         engine.execute("CREATE TABLE t (id INTEGER, name VARCHAR)");

@@ -19,6 +19,7 @@ package dev.frostlake.functions.scalar.semistructured;
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.scalar.JsonTypeHelper;
 import dev.frostlake.types.VariantType;
+import dev.frostlake.values.VariantValue;
 import tools.jackson.databind.JsonNode;
 
 import java.util.List;
@@ -40,11 +41,13 @@ public class TryParseJson extends BuiltInFunction {
                 input = inner;
             }
         }
-        if (input.equalsIgnoreCase("null")) return null;
+        // 'null' parses to the VARIANT JSON null, exactly as PARSE_JSON does — live:
+        // TYPEOF(TRY_PARSE_JSON('null')) = 'NULL_VALUE', not SQL NULL.
+        if (input.equalsIgnoreCase("null")) return VariantValue.of("null");
         // Parse leniently (Snowflake tolerates \' and invalid backslash escapes such as a regex \d);
         // TRY_ variant returns NULL when it still cannot be parsed.
         final JsonNode node = JsonTypeHelper.parseLenient(input);
-        return node == null ? null : node.toString();
+        return node == null ? null : VariantValue.ofNode(node);
     }
 
     @Override public int getMinArgCount() { return 1; }

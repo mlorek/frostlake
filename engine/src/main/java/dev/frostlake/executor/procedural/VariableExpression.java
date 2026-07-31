@@ -18,12 +18,28 @@ package dev.frostlake.executor.procedural;
 
 public class VariableExpression extends BaseExpression {
     private final String name;
+    private final boolean bindForm;
 
+    /** A name written BARE (no leading colon) — legal only in a Snowflake Scripting expression. */
     public VariableExpression(final String name) {
+        this(name, false);
+    }
+
+    public VariableExpression(final String name, final boolean bindForm) {
         this.name = name;
+        this.bindForm = bindForm;
     }
 
     public String getName() {
         return name;
+    }
+
+    /**
+     * True when the reference was written as {@code :name}. Snowflake accepts only that form where a
+     * scripting name feeds an embedded SQL statement (a CALL argument, DML, a query); a bare name
+     * there is an identifier and fails with {@code invalid identifier}.
+     */
+    public boolean isBindForm() {
+        return bindForm;
     }
 }

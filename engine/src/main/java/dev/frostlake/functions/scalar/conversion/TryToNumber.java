@@ -19,18 +19,30 @@ package dev.frostlake.functions.scalar.conversion;
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.types.NumericType;
 
-import java.math.BigDecimal;
 import java.util.List;
 
+/**
+ * TRY_TO_NUMBER / TRY_TO_DECIMAL / TRY_TO_NUMERIC — TO_NUMBER's full signature
+ * (expr [, format] [, precision, scale]) returning NULL instead of erroring, INCLUDING the
+ * scale handling: with no scale the result rounds to a whole number like TO_NUMBER's NUMBER(38,0)
+ * default. (Previously the precision/scale arguments were silently ignored.)
+ */
 public class TryToNumber extends BuiltInFunction {
-    public TryToNumber() { super("TRY_TO_NUMBER", NumericType.DOUBLE); }
+
+    private static final ToNumber BASE = new ToNumber();
+
+    public TryToNumber() { super("TRY_TO_NUMBER", NumericType.NUMBER); }
 
     @Override
     public Object evaluate(final List<Object> args) {
         if (args.get(0) == null) return null;
-        try { return new BigDecimal(args.get(0).toString().trim()); } catch (final Exception e) { return null; }
+        try {
+            return BASE.evaluate(args);
+        } catch (final Exception notNumeric) {
+            return null;
+        }
     }
 
     @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return 1; }
+    @Override public int getMaxArgCount() { return 4; }
 }

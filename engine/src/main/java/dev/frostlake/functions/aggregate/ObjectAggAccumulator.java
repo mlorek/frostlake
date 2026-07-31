@@ -51,7 +51,7 @@ public class ObjectAggAccumulator implements AggregateFunction.Accumulator {
         for (final Map.Entry<String, Object> entry : entries.entrySet()) {
             obj.set(entry.getKey(), ArrayFunctionHelper.toNode(ArrayFunctionHelper.MAPPER, entry.getValue()));
         }
-        return ArrayFunctionHelper.toCanonicalJson(obj);
+        return ArrayFunctionHelper.toCanonicalVariant(obj);
     }
 
     @Override

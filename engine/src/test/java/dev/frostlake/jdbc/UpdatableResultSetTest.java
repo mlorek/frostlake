@@ -19,6 +19,8 @@ package dev.frostlake.jdbc;
 import dev.frostlake.BaseJdbcTest;
 import dev.frostlake.DatabaseEngine;
 import dev.frostlake.storage.ResultSet;
+import org.junit.jupiter.api.Assumptions;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.sql.SQLException;
@@ -30,6 +32,20 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class UpdatableResultSetTest extends BaseJdbcTest {
+
+    /**
+     * Every test here builds a {@link DirectResultSet} over the in-process engine, which means casting
+     * the connection to {@link DirectConnection} — under SF_LIVE the connection is Snowflake's own
+     * driver, so the cast throws before any assertion runs.
+     */
+    @BeforeEach
+    public void skipWhenLive() {
+        Assumptions.assumeFalse(isLiveSnowflake(),
+            "every test casts the connection to dev.frostlake.jdbc.DirectConnection to build a "
+            + "DirectResultSet over the embedded engine; under SF_LIVE the connection is Snowflake's "
+            + "own SnowflakeConnectionImpl, so the cast fails (updatable result sets are a Frostlake "
+            + "driver feature, not an account feature)");
+    }
 
     private DirectResultSet createUpdatableResultSet(final String sql, final String tableName, final String... keyColumns) throws SQLException {
         statement.execute(sql);

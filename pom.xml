@@ -39,6 +39,7 @@
     <modules>
         <module>engine</module>
         <module>formats</module>
+        <module>geo</module>
         <module>perf-tests</module>
         <module>rt-js</module>
         <module>rt-py</module>

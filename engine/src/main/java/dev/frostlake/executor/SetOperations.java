@@ -17,13 +17,22 @@
 package dev.frostlake.executor;
 
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
+import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
+import dev.frostlake.types.BooleanType;
+import dev.frostlake.types.DataType;
+import dev.frostlake.types.DateTimeType;
+import dev.frostlake.types.NumericType;
+import dev.frostlake.types.StringType;
+import dev.frostlake.values.VariantValue;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -50,7 +59,19 @@ public final class SetOperations {
      * Apply UNION operation. The distinct variant deduplicates via a hash set on normalized row keys,
      * turning the former O(n^2) scan into O(n).
      */
-    public static List<Row> applyUnion(final List<Row> leftRows, final List<Row> rightRows, final boolean all) {
+    public static List<Row> applyUnion(final List<Row> leftRows, final List<Row> rightRowsRaw, final boolean all) {
+        return applyUnion(leftRows, rightRowsRaw, all, null);
+    }
+
+    /**
+     * Apply UNION, with the LEADING branch's column layout available so an empty leading branch still
+     * types the union. Snowflake unifies branch types from the branch's declared column TYPE, not from
+     * the rows it happens to produce, so {@code SELECT ts FROM t WHERE FALSE UNION ALL SELECT '…'} still
+     * converts the string branch to TIMESTAMP.
+     */
+    public static List<Row> applyUnion(final List<Row> leftRows, final List<Row> rightRowsRaw,
+                                       final boolean all, final List<ResultSetColumn> leadingColumns) {
+        final List<Row> rightRows = coerceToFirstBranchTypes(leftRows, rightRowsRaw, leadingColumns);
         if (all) {
             // UNION ALL: keep all rows
             List<Row> result = new ArrayList<>(leftRows);
@@ -75,11 +96,273 @@ public final class SetOperations {
         return result;
     }
 
+
+    /**
+     * A set operation's column type comes from its FIRST branch, and later branches' VALUES are
+     * converted to it — not merely compared against it. Live-verified on a real account:
+     * {@code SELECT 1, True AS c UNION ALL SELECT 5, 'Y'} yields TRUE and TRUE ('Y' is a TO_BOOLEAN
+     * text form), the same union over {@code 'zzz'} fails "Boolean value 'zzz' is not recognized", and
+     * {@code SELECT 1, 1 AS c UNION ALL SELECT 5, 'Y'} fails "Numeric value 'Y' is not recognized".
+     * Only a STRING on the later side is converted; every other shape is left to the key coercion.
+     *
+     * <p>The leading type comes from the first branch's VALUES when it produced any, and otherwise from
+     * its declared COLUMN types — an EMPTY leading branch still types the union in Snowflake
+     * (live-verified on a real account: {@code SELECT ts FROM t WHERE FALSE UNION ALL
+     * SELECT '9999-12-31 00:00:003'} answers the TIMESTAMP {@code 9999-12-31 00:00:03.000}, and
+     * INSERTing that union succeeds even though INSERTing the bare literal is rejected, because the
+     * union already converted it; the same union over {@code 'not-a-timestamp'} fails "Timestamp
+     * 'not-a-timestamp' is not recognized").
+     */
+    private static List<Row> coerceToFirstBranchTypes(final List<Row> leftRows, final List<Row> rightRows,
+                                                      final List<ResultSetColumn> leadingColumns) {
+        if (rightRows.isEmpty()) {
+            return rightRows;
+        }
+        final List<Object> firstValues = leftRows.isEmpty()
+            ? Collections.emptyList() : leftRows.get(0).getValues();
+        final List<Row> converted = new ArrayList<>(rightRows.size());
+        for (final Row row : rightRows) {
+            final List<Object> values = row.getValues();
+            List<Object> replaced = null;
+            for (int i = 0; i < values.size(); i++) {
+                final Object value = values.get(i);
+                if (!(value instanceof CharSequence)) {
+                    continue;
+                }
+                final Object leading = i < firstValues.size() ? firstValues.get(i) : null;
+                final Object coerced = leading != null
+                    ? coerceStringToLeadingType(leading, value.toString())
+                    : coerceStringToDeclaredType(declaredTypeAt(leadingColumns, i), value.toString());
+                if (coerced == null) {
+                    continue;
+                }
+                if (replaced == null) {
+                    replaced = new ArrayList<>(values);
+                }
+                replaced.set(i, coerced);
+            }
+            converted.add(replaced == null ? row : new Row(replaced));
+        }
+        return converted;
+    }
+
+    /**
+     * Convert every branch's values toward the unified column types, in place in {@code branchRows}.
+     * Live: when a set operation mixes a VARCHAR branch with a numeric or date branch, the STRING
+     * side's values convert to the non-string side's type whichever side LEADS — {@code 'x' ∪ 1} and
+     * {@code 1 ∪ 'x'} both fail "Numeric value 'x' is not recognized", an empty string fails the
+     * same way, and a date pairing fails "Date 'y' is not recognized" — and every branch's values
+     * take the unified NUMBER's scale ({@code '5' ∪ 1::NUMBER(10,2)} renders 5.00 and 1.00,
+     * {@code '2.7'::VARCHAR(3) ∪ 1} renders 2.70000 and 1.00000 at the unified NUMBER(18,5)).
+     * Only columns where a string branch actually participates are touched, so all-numeric unions
+     * keep their existing values. Rows are REPLACED, never mutated — a branch's rows can alias
+     * storage.
+     */
+    public static void coerceStringBranches(final List<List<Row>> branchRows,
+                                            final List<List<ResultSetColumn>> branchColumns,
+                                            final List<ResultSetColumn> unified) {
+        if (unified == null) {
+            return;
+        }
+        for (int col = 0; col < unified.size(); col++) {
+            final DataType target = unified.get(col).getStaticType();
+            if (!isStringCoercionTarget(target)) {
+                continue;
+            }
+            boolean anyStringBranch = false;
+            for (final List<ResultSetColumn> columns : branchColumns) {
+                if (col < columns.size() && columns.get(col).getStaticType() instanceof StringType) {
+                    anyStringBranch = true;
+                    break;
+                }
+            }
+            if (!anyStringBranch) {
+                continue;
+            }
+            for (final List<Row> rows : branchRows) {
+                for (int r = 0; r < rows.size(); r++) {
+                    final Row row = rows.get(r);
+                    if (col >= row.getValues().size()) {
+                        continue;
+                    }
+                    final Object value = row.getValue(col);
+                    final Object converted = toUnifiedColumnValue(value, target);
+                    if (converted != value) {
+                        final List<Object> replaced = new ArrayList<>(row.getValues());
+                        replaced.set(col, converted);
+                        rows.set(r, new Row(replaced));
+                    }
+                }
+            }
+        }
+    }
+
+    /** Whether {@code target} is a unified type string-branch values convert INTO. */
+    private static boolean isStringCoercionTarget(final DataType target) {
+        if (target instanceof NumericType) {
+            return true;
+        }
+        return target instanceof DateTimeType && "DATE".equalsIgnoreCase(target.getName());
+    }
+
+    /** One value converted to the unified column type ({@code null} and already-fitting values pass). */
+    private static Object toUnifiedColumnValue(final Object value, final DataType target) {
+        if (value == null) {
+            return null;
+        }
+        if (target instanceof NumericType) {
+            final NumericType numeric = (NumericType) target;
+            if ("FLOAT".equalsIgnoreCase(numeric.getName()) || "DOUBLE".equalsIgnoreCase(numeric.getName())) {
+                if (value instanceof CharSequence) {
+                    try {
+                        return Double.valueOf(Double.parseDouble(value.toString().trim()));
+                    } catch (final NumberFormatException notANumber) {
+                        throw new RuntimeException("Numeric value '" + value + "' is not recognized");
+                    }
+                }
+                return value;
+            }
+            if (value instanceof CharSequence) {
+                final BigDecimal parsed;
+                try {
+                    parsed = new BigDecimal(value.toString().trim());
+                } catch (final NumberFormatException notANumber) {
+                    throw new RuntimeException("Numeric value '" + value + "' is not recognized");
+                }
+                return parsed.setScale(numeric.getScale(), RoundingMode.HALF_UP);
+            }
+            if (value instanceof Double || value instanceof Float) {
+                return value;
+            }
+            if (value instanceof Number) {
+                // The unified scale applies to every branch's values — live renders the NUMBER
+                // branch's 1 as 1.00 under a unified NUMBER(10,2).
+                return new BigDecimal(value.toString()).setScale(numeric.getScale(), RoundingMode.HALF_UP);
+            }
+            return value;
+        }
+        if (value instanceof CharSequence) {
+            return toDateBranchValue(value.toString());
+        }
+        return value;
+    }
+
+    /** One later-branch STRING converted to the leading branch's runtime type, or null to leave it. */
+    private static Object coerceStringToLeadingType(final Object leading, final String text) {
+        if (leading instanceof Boolean) {
+            return toBooleanBranchValue(text);
+        }
+        if (leading instanceof Number) {
+            return toNumericBranchValue(text);
+        }
+        if (leading instanceof LocalDateTime) {
+            return toTimestampBranchValue(text);
+        }
+        if (leading instanceof LocalDate) {
+            return toDateBranchValue(text);
+        }
+        if (leading instanceof LocalTime) {
+            return toTimeBranchValue(text);
+        }
+        return null;
+    }
+
+    /** The declared type of the leading branch's column {@code index}, or null when unknown. */
+    private static DataType declaredTypeAt(final List<ResultSetColumn> leadingColumns, final int index) {
+        if (leadingColumns == null || index >= leadingColumns.size()) {
+            return null;
+        }
+        final ResultSetColumn column = leadingColumns.get(index);
+        return column == null ? null : column.getDataType();
+    }
+
+    /** One later-branch STRING converted to the leading branch's DECLARED type, or null to leave it. */
+    private static Object coerceStringToDeclaredType(final DataType declared, final String text) {
+        if (declared instanceof BooleanType) {
+            return toBooleanBranchValue(text);
+        }
+        if (declared instanceof NumericType) {
+            return toNumericBranchValue(text);
+        }
+        if (declared instanceof DateTimeType) {
+            final String name = declared.getName().toUpperCase();
+            if (name.startsWith("DATE")) {
+                return toDateBranchValue(text);
+            }
+            if (name.startsWith("TIME") && !name.startsWith("TIMESTAMP")) {
+                return toTimeBranchValue(text);
+            }
+            return toTimestampBranchValue(text);
+        }
+        return null;
+    }
+
+    private static Object toBooleanBranchValue(final String text) {
+        final String lower = text.trim().toLowerCase();
+        if (lower.equals("true") || lower.equals("t") || lower.equals("yes") || lower.equals("y")
+                || lower.equals("on") || lower.equals("1")) {
+            return Boolean.TRUE;
+        }
+        if (lower.equals("false") || lower.equals("f") || lower.equals("no") || lower.equals("n")
+                || lower.equals("off") || lower.equals("0")) {
+            return Boolean.FALSE;
+        }
+        throw new RuntimeException("Boolean value '" + text + "' is not recognized");
+    }
+
+    private static Object toNumericBranchValue(final String text) {
+        try {
+            return new BigDecimal(text.trim());
+        } catch (final NumberFormatException notANumber) {
+            throw new RuntimeException("Numeric value '" + text + "' is not recognized");
+        }
+    }
+
+    private static Object toTimestampBranchValue(final String text) {
+        try {
+            return SharedFunctionHelpers.toLocalDateTime(text);
+        } catch (final RuntimeException notATimestamp) {
+            throw new RuntimeException("Timestamp '" + text + "' is not recognized");
+        }
+    }
+
+    private static Object toDateBranchValue(final String text) {
+        try {
+            return SharedFunctionHelpers.toLocalDate(text);
+        } catch (final RuntimeException notADate) {
+            throw new RuntimeException("Date '" + text + "' is not recognized");
+        }
+    }
+
+    private static Object toTimeBranchValue(final String text) {
+        try {
+            return SharedFunctionHelpers.toLocalTime(text);
+        } catch (final RuntimeException notATime) {
+            throw new RuntimeException("Time '" + text + "' is not recognized");
+        }
+    }
+
+    /**
+     * The result of a SUBTRACTIVE set operation (MINUS / EXCEPT / INTERSECT) whose LEFT side produced no
+     * rows: empty, WITHOUT touching the right side. Snowflake short-circuits these — live-verified on a
+     * real account, {@code SELECT n FROM tnum MINUS SELECT s FROM tstr} over an EMPTY
+     * numeric left and a VARCHAR right holding a non-numeric value answers zero rows, as do the same
+     * shapes with EXCEPT and INTERSECT, while UNION [ALL] over the identical inputs errors "Numeric
+     * value '…' is not recognized" and MINUS over a NON-empty left errors too. So the right branch's
+     * values are converted only when a left row can actually be compared against them.
+     */
+    private static List<Row> emptyLeftResult() {
+        return new ArrayList<>();
+    }
+
     /**
      * Apply INTERSECT operation. ALL keeps min(count_left, count_right) occurrences via a right-side
      * count map; the distinct variant uses hash-set membership — both O(n) instead of O(n^2).
      */
     public static List<Row> applyIntersect(final List<Row> leftRows, final List<Row> rightRows, final boolean all) {
+        if (leftRows.isEmpty()) {
+            return emptyLeftResult();
+        }
         final SetOpColumnCoercion[] coercions = columnCoercions(leftRows, rightRows);
         List<Row> result = new ArrayList<>();
 
@@ -114,6 +397,9 @@ public final class SetOperations {
      * map; the distinct variant uses hash-set membership — both O(n) instead of O(n^2).
      */
     public static List<Row> applyExcept(final List<Row> leftRows, final List<Row> rightRows, final boolean all) {
+        if (leftRows.isEmpty()) {
+            return emptyLeftResult();
+        }
         final SetOpColumnCoercion[] coercions = columnCoercions(leftRows, rightRows);
         List<Row> result = new ArrayList<>();
 
@@ -292,11 +578,20 @@ public final class SetOperations {
     }
 
     /**
-     * Normalize one value for key comparison under a column's coercion. A value that cannot be coerced
-     * (a string that is not a valid timestamp/number/boolean literal) is kept as-is — Snowflake would
-     * raise a cast error there; the engine stays lenient, so the row simply never matches the other side.
+     * Normalize one value for key comparison under a column's coercion. A string that the column's
+     * unified type cannot read is an ERROR, not simply an unmatched row — live-verified on a real
+     * account: {@code SELECT 'not-a-timestamp' EXCEPT SELECT <ts>} fails "Timestamp
+     * 'not-a-timestamp' is not recognized" and {@code SELECT 'abc' UNION SELECT 1} fails "Numeric value
+     * 'abc' is not recognized", while the same statements over a coercible string run. BOOLEAN stays
+     * lenient: an unrecognized string compared against a boolean is FALSE there, not an error
+     * (live: {@code SELECT 'zz' = TRUE} is FALSE).
      */
     private static Object normalizeValue(final SetOpColumnCoercion coercion, final Object value) {
+        if (value instanceof VariantValue) {
+            // Set-operation keys compare semi-structured values by their JSON text, so a typed value
+            // dedups/intersects against a text-carried equal one.
+            return ((VariantValue) value).text();
+        }
         if (value == null || coercion == SetOpColumnCoercion.NONE) {
             return value;
         }
@@ -309,7 +604,7 @@ public final class SetOperations {
                     try {
                         return SharedFunctionHelpers.toLocalDateTime(value.toString());
                     } catch (final RuntimeException notATimestampString) {
-                        return value;
+                        throw new RuntimeException("Timestamp '" + value + "' is not recognized");
                     }
                 }
                 return value;
@@ -318,7 +613,7 @@ public final class SetOperations {
                     try {
                         return SharedFunctionHelpers.toLocalDate(value.toString());
                     } catch (final RuntimeException notADateString) {
-                        return value;
+                        throw new RuntimeException("Date '" + value + "' is not recognized");
                     }
                 }
                 return value;
@@ -327,7 +622,7 @@ public final class SetOperations {
                     try {
                         return SharedFunctionHelpers.toLocalTime(value.toString());
                     } catch (final RuntimeException notATimeString) {
-                        return value;
+                        throw new RuntimeException("Time '" + value + "' is not recognized");
                     }
                 }
                 return value;
@@ -336,7 +631,7 @@ public final class SetOperations {
                     try {
                         return new BigDecimal(value.toString().trim()).stripTrailingZeros();
                     } catch (final NumberFormatException notANumericValue) {
-                        return value;
+                        throw new RuntimeException("Numeric value '" + value + "' is not recognized");
                     }
                 }
                 return value;

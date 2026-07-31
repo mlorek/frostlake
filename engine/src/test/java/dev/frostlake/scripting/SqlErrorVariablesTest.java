@@ -27,8 +27,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * The Snowflake Scripting error variables {@code SQLCODE}, {@code SQLERRM}, and {@code SQLSTATE},
  * available inside an EXCEPTION handler. A user-defined exception exposes its declared code and
  * message with SQLSTATE 'P0001'; division by zero maps to its Snowflake code (100051 / '22012');
- * other engine errors carry a generic statement-error code. Values are handler-scoped: a nested
- * handled block restores the enclosing handler's values.
+ * a missing object reports SQLSTATE '42S02'; other engine errors carry a generic statement-error
+ * code. Values are handler-scoped: a nested handled block restores the enclosing handler's values.
  */
 public class SqlErrorVariablesTest extends BaseDatabaseTest {
 
@@ -88,8 +88,9 @@ public class SqlErrorVariablesTest extends BaseDatabaseTest {
     // ── generic engine error: statement-error fallback code/state, message preserved ──────────────
 
     @Test
-    public void genericStatementErrorSqlstate() {
-        assertEquals("P0000", ret(
+    public void missingObjectSqlstateIs42S02() {
+        // Snowflake reports missing-object compilation errors with SQLSTATE '42S02'.
+        assertEquals("42S02", ret(
             "BEGIN SELECT * FROM no_such_table_xyz;"
             + " EXCEPTION WHEN OTHER THEN RETURN SQLSTATE; END"));
     }
@@ -103,14 +104,16 @@ public class SqlErrorVariablesTest extends BaseDatabaseTest {
             "SQLERRM should mention the failing object, got: " + v);
     }
 
-    // ── error variables are usable in DML inside the handler ──────────────────────────────────────
+    // ── error variables are usable in DML inside the handler, bound as :SQLCODE / :SQLERRM ────────
 
     @Test
     public void handlerLogsSqlerrmViaInsert() {
+        // They are scripting variables, so an embedded SQL statement reaches them only through the bind
+        // form; written bare inside the INSERT they would be column names ("invalid identifier").
         engine.execute("CREATE TABLE err_log (code INTEGER, msg VARCHAR)");
         engine.executeQuery(
             "DECLARE e EXCEPTION (-20007, 'kaput'); BEGIN RAISE e;"
-            + " EXCEPTION WHEN e THEN INSERT INTO err_log VALUES (SQLCODE, SQLERRM); RETURN 'ok'; END");
+            + " EXCEPTION WHEN e THEN INSERT INTO err_log VALUES (:SQLCODE, :SQLERRM); RETURN 'ok'; END");
         final ResultSet rs = engine.executeQuery("SELECT code, msg FROM err_log");
         assertEquals(1, rs.getRowCount());
         assertEquals(-20007L, ((Number) rs.getRows().get(0).getValue(0)).longValue());

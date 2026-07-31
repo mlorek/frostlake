@@ -18,6 +18,7 @@ package dev.frostlake.query;
 
 import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
+import java.math.BigDecimal;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -274,19 +275,22 @@ public class PivotUnpivotTest extends BaseDatabaseTest {
         engine.execute("INSERT INTO scores VALUES ('Alice', 'Math', 90), ('Alice', 'Math', 95)");
         engine.execute("INSERT INTO scores VALUES ('Bob', 'Math', 80), ('Bob', 'Math', 85)");
 
+        // PIVOT does not order its groups; the ORDER BY makes the row order the assertions rely on
+        // deterministic on any engine (Snowflake's grouping order is unspecified).
         ResultSet result = engine.executeQuery(
-            "SELECT * FROM scores PIVOT (AVG(score) FOR subject IN ('Math'))"
+            "SELECT * FROM scores PIVOT (AVG(score) FOR subject IN ('Math')) ORDER BY student"
         );
 
         assertEquals(2, result.getRowCount());
 
-        // Alice average: (90 + 95) / 2 = 92.5
+        // AVG over an integer column is a BigDecimal with Snowflake's scale 6.
+        // Alice average: (90 + 95) / 2 = 92.500000
         assertEquals("Alice", result.getRows().get(0).getValue(0));
-        assertEquals(92.5, result.getRows().get(0).getValue(1));
+        assertEquals(new BigDecimal("92.500000"), result.getRows().get(0).getValue(1));
 
-        // Bob average: (80 + 85) / 2 = 82.5
+        // Bob average: (80 + 85) / 2 = 82.500000
         assertEquals("Bob", result.getRows().get(1).getValue(0));
-        assertEquals(82.5, result.getRows().get(1).getValue(1));
+        assertEquals(new BigDecimal("82.500000"), result.getRows().get(1).getValue(1));
     }
 
     @Test
@@ -409,23 +413,25 @@ public class PivotUnpivotTest extends BaseDatabaseTest {
         // Test MAX
         ResultSet maxResult = engine.executeQuery(
             "SELECT * FROM temperatures PIVOT (MAX(temp) FOR season IN ('Summer', 'Winter'))"
+            + " ORDER BY city DESC"
         );
 
         assertEquals(2, maxResult.getRowCount());
+        // MIN/MAX keep the input column's type — INTEGER in, Long out.
         assertEquals("NYC", maxResult.getRows().get(0).getValue(0));
-        assertEquals(85.0, maxResult.getRows().get(0).getValue(1));
-        assertEquals(32.0, maxResult.getRows().get(0).getValue(2));
+        assertEquals(85L, maxResult.getRows().get(0).getValue(1));
+        assertEquals(32L, maxResult.getRows().get(0).getValue(2));
 
         // Test MIN
         engine.execute("INSERT INTO temperatures VALUES ('NYC', 'Summer', 80)");
         ResultSet minResult = engine.executeQuery(
-            "SELECT * FROM temperatures PIVOT (MIN(temp) FOR season IN ('Summer'))"
+            "SELECT * FROM temperatures PIVOT (MIN(temp) FOR season IN ('Summer')) ORDER BY city DESC"
         );
 
         assertEquals(2, minResult.getRowCount());
         // NYC should have min summer temp of 80 (from the two summer temps: 85 and 80)
         assertEquals("NYC", minResult.getRows().get(0).getValue(0));
-        assertEquals(80.0, minResult.getRows().get(0).getValue(1));
+        assertEquals(80L, minResult.getRows().get(0).getValue(1));
     }
 
     @Test

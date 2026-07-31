@@ -16,12 +16,12 @@
 
 package dev.frostlake.functions.scalar.string;
 
-import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.functions.TextArgumentFunction;
 import dev.frostlake.types.StringType;
 
 import java.util.List;
 
-public class InitCap extends BuiltInFunction {
+public class InitCap extends TextArgumentFunction {
 
     // Snowflake's default INITCAP delimiter set: whitespace plus this fixed punctuation set. A word
     // boundary is any of these characters; the first letter after one is capitalized, the rest lowercased.

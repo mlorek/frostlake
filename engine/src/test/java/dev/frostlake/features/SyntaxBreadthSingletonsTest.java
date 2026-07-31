@@ -19,6 +19,7 @@ package dev.frostlake.features;
 import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
 
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
@@ -29,9 +30,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Grammar-breadth singletons from the Snowflake-corpus audit: LIMIT NULL, bare DESCRIBE,
- * INSERT OVERWRITE TABLE, comma-separated ALTER SESSION SET, USE SECONDARY ROLES lists,
- * $$-quoted column comments, DATE_PART('part' FROM expr), star function arguments, and the
- * honest rejection of AT (STREAM =&gt; ...) time travel.
+ * INSERT OVERWRITE INTO (the TABLE-keyword form is rejected), comma-separated ALTER SESSION SET,
+ * USE SECONDARY ROLES lists, $$-quoted column comments, the rejection of DATE_PART's FROM form
+ * (EXTRACT-only), star function arguments, and the honest rejection of AT (STREAM =&gt; ...)
+ * time travel.
  */
 public class SyntaxBreadthSingletonsTest extends BaseDatabaseTest {
 
@@ -52,25 +54,43 @@ public class SyntaxBreadthSingletonsTest extends BaseDatabaseTest {
     }
 
     @Test
-    public void bareDescribeResolvesTheTable() {
+    public void bareDescribeIsRejectedLikeSnowflake() {
         engine.execute("CREATE TABLE bd (id INTEGER, name VARCHAR)");
-        assertEquals(2, engine.executeQuery("DESCRIBE bd").getRowCount());
-        assertEquals(2, engine.executeQuery("DESCRIBE test_db.test_schema.bd").getRowCount());
+        // Live-verified: DESCRIBE requires the object type (DESCRIBE bd is a syntax error there).
+        assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.executeQuery("DESCRIBE bd");
+            }
+        });
+        assertEquals(2, engine.executeQuery("DESCRIBE TABLE bd").getRowCount());
+        assertEquals(2, engine.executeQuery("DESCRIBE TABLE test_db.test_schema.bd").getRowCount());
     }
 
     @Test
-    public void insertOverwriteTableKeywordTruncatesThenInserts() {
+    public void insertOverwriteIntoTruncatesThenInserts() {
         engine.execute("CREATE TABLE io (a INTEGER)");
         engine.execute("INSERT INTO io VALUES (1), (2)");
-        engine.execute("INSERT OVERWRITE TABLE io SELECT 9");
+        engine.execute("INSERT OVERWRITE INTO io SELECT 9");
         final ResultSet rs = engine.executeQuery("SELECT a FROM io");
         assertEquals(1, rs.getRowCount(), "OVERWRITE must replace the previous rows");
         assertEquals(9L, ((Number) rs.getRows().get(0).getValue(0)).longValue());
+        // Live-verified: the TABLE-keyword form (INSERT OVERWRITE TABLE t) is a syntax error.
+        assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.execute("INSERT OVERWRITE TABLE io SELECT 8");
+            }
+        });
     }
 
     @Test
     public void alterSessionSetAppliesEveryCommaSeparatedAssignment() {
         engine.execute("ALTER SESSION SET autocommit = FALSE, QUERY_TAG = 'qtag', JSON_INDENT = 1");
+        // The statement runs on both backends; only the read-back is embedded-only.
+        Assumptions.assumeFalse(isLiveSnowflake(),
+            "reads the applied values back through engine.getSessionContext()/isAutoCommit(), which exist "
+            + "only on the embedded engine — a live session's parameters live on the account");
         assertEquals("qtag", engine.getSessionContext().getSessionParameter("QUERY_TAG"));
         assertEquals(1L, ((Number) engine.getSessionContext().getSessionParameter("JSON_INDENT")).longValue());
         assertFalse(engine.isAutoCommit(), "AUTOCOMMIT in the list must drive the transaction mode");
@@ -80,23 +100,58 @@ public class SyntaxBreadthSingletonsTest extends BaseDatabaseTest {
 
     @Test
     public void useSecondaryRolesAcceptsARoleList() {
-        engine.execute("CREATE ROLE sr_a");
-        engine.execute("CREATE ROLE sr_b");
+        // Secondary roles must be granted to the executing user just like the primary one:
+        // live-verified, the activation otherwise fails "Requested role 'SR_A' is not assigned to the
+        // executing user." The working spelling is GRANT ROLE <role> TO USER <user> — live Snowflake
+        // rejects GRANT ROLE r TO USER IDENTIFIER(CURRENT_USER()) with a syntax error at the '(' —
+        // so the executing user's name is read first and spliced into the statement.
+        final String user = String.valueOf(scalar("SELECT CURRENT_USER()"));
+        // The account is stateful across runs, so create tolerantly and hand everything back below.
+        engine.execute("CREATE ROLE IF NOT EXISTS sr_a");
+        engine.execute("CREATE ROLE IF NOT EXISTS sr_b");
+        // Live: the executing user already exists (no-op). Embedded: CURRENT_USER() is not in the
+        // catalog until something creates it, and GRANT ROLE ... TO USER needs it to exist.
+        engine.execute("CREATE USER IF NOT EXISTS \"" + user + "\"");
+        engine.execute("GRANT ROLE sr_a TO USER \"" + user + "\"");
+        engine.execute("GRANT ROLE sr_b TO USER \"" + user + "\"");
         engine.execute("USE SECONDARY ROLES sr_a, sr_b");
         assertEquals(1L, ((Number) scalar("SELECT 1")).longValue(), "the session stays usable");
+
+        engine.execute("USE SECONDARY ROLES NONE");
+        engine.execute("REVOKE ROLE sr_a FROM USER \"" + user + "\"");
+        engine.execute("REVOKE ROLE sr_b FROM USER \"" + user + "\"");
+        engine.execute("DROP ROLE IF EXISTS sr_a");
+        engine.execute("DROP ROLE IF EXISTS sr_b");
     }
 
     @Test
     public void dollarQuotedColumnComment() {
         engine.execute("CREATE TABLE dq (id INTEGER COMMENT $$some comment$$)");
+        // The CREATE runs on both backends; only the read-back is embedded-only.
+        Assumptions.assumeFalse(isLiveSnowflake(),
+            "reads the stored column comment through engine.getCatalog(), which live Snowflake never "
+            + "populates (the account's comment lives in its own INFORMATION_SCHEMA)");
         assertEquals("some comment", engine.getCatalog().getDatabase("TEST_DB").getSchema("TEST_SCHEMA")
             .getTable("DQ").getColumn("ID").getComment());
     }
 
     @Test
-    public void datePartAcceptsAQuotedPartWithFrom() {
-        assertEquals(4L, ((Number) scalar("SELECT DATE_PART('month' FROM CAST('2024-04-08' AS DATE))")).longValue());
-        assertEquals(2024L, ((Number) scalar("SELECT DATE_PART('year' FROM CAST('2024-04-08' AS DATE))")).longValue());
+    public void datePartRejectsTheFromForm() {
+        // Live-verified: the FROM argument form belongs to EXTRACT only; DATE_PART rejects it.
+        assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.executeQuery("SELECT DATE_PART('month' FROM CAST('2024-04-08' AS DATE))");
+            }
+        });
+        assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.executeQuery("SELECT DATE_PART('year' FROM CAST('2024-04-08' AS DATE))");
+            }
+        });
+        // The comma form works.
+        assertEquals(4L, ((Number) scalar("SELECT DATE_PART('month', CAST('2024-04-08' AS DATE))")).longValue());
     }
 
     @Test
@@ -179,17 +234,70 @@ public class SyntaxBreadthSingletonsTest extends BaseDatabaseTest {
 
     @Test
     public void curlyBraceStarSelectItems() {
+        // Live-verified: the BRACED star is an OBJECT constructor over the row ({*} is
+        // OBJECT_CONSTRUCT(*)), so it projects ONE column keyed by the column names — not the star's
+        // N columns. The star modifiers still choose which columns take part.
         engine.execute("CREATE TABLE cbs (col1 INTEGER, col2 VARCHAR, other INTEGER)");
         engine.execute("INSERT INTO cbs VALUES (1, 'a', 9)");
-        assertEquals(3, engine.executeQuery("SELECT {*} FROM cbs").getColumns().size());
-        assertEquals(2, engine.executeQuery("SELECT {* EXCLUDE (col1)} FROM cbs").getColumns().size());
-        assertEquals(1, engine.executeQuery("SELECT {* EXCLUDE (col1, col2)} FROM cbs").getColumns().size());
-        assertEquals("COL1", engine.executeQuery("SELECT {* ILIKE 'col1%'} FROM cbs")
-            .getColumns().get(0).getName());
-        assertEquals(3, engine.executeQuery("SELECT {cbs.*} FROM cbs").getColumns().size());
+        assertEquals(1, engine.executeQuery("SELECT {*} FROM cbs").getColumns().size());
+        assertEquals("{\"COL1\":1,\"COL2\":\"a\",\"OTHER\":9}",
+            String.valueOf(scalar("SELECT {*} FROM cbs")));
+        assertEquals(1, engine.executeQuery("SELECT {* EXCLUDE (col1)} FROM cbs").getColumns().size());
+        assertEquals("{\"COL2\":\"a\",\"OTHER\":9}",
+            String.valueOf(scalar("SELECT {* EXCLUDE (col1)} FROM cbs")));
+        assertEquals("{\"OTHER\":9}",
+            String.valueOf(scalar("SELECT {* EXCLUDE (col1, col2)} FROM cbs")));
+        assertEquals("{\"COL1\":1}", String.valueOf(scalar("SELECT {* ILIKE 'col1%'} FROM cbs")));
+        assertEquals("{\"COL1\":1,\"COL2\":\"a\",\"OTHER\":9}",
+            String.valueOf(scalar("SELECT {cbs.*} FROM cbs")));
+        // A braced star takes only the modifiers that PICK columns: the projection-REWRITING RENAME and
+        // REPLACE are rejected there (live-verified), though they stay legal on a plain star.
+        assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.executeQuery("SELECT {* RENAME (col1 AS c1)} FROM cbs");
+            }
+        });
+        assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.executeQuery("SELECT {* REPLACE (col1 + 100 AS col1)} FROM cbs");
+            }
+        });
+        assertEquals(3, engine.executeQuery("SELECT * RENAME (col1 AS c1) FROM cbs").getColumns().size());
+        // It is one item among many, not a whole-list shorthand.
+        assertEquals(2, engine.executeQuery("SELECT {*}, col1 FROM cbs").getColumns().size());
+        // Unlike the star it constructs from, it does NOT need a FROM clause: with no row to read it
+        // simply constructs the empty object. Live-verified on a real account —
+        // SELECT {*} answers {}, as does SELECT {* EXCLUDE (a)} and SELECT OBJECT_CONSTRUCT(*).
+        assertEquals("{}", String.valueOf(scalar("SELECT {*}")));
+        assertEquals("{}", String.valueOf(scalar("SELECT {* EXCLUDE (col1)}")));
         // The braces must not disturb JSON object literals or the plain star.
         assertEquals(3, engine.executeQuery("SELECT * FROM cbs").getColumns().size());
+        assertEquals(3, engine.executeQuery("SELECT cbs.* FROM cbs").getColumns().size());
         assertEquals("{\"a\":1}", String.valueOf(scalar("SELECT {'a': 1}")));
+    }
+
+    @Test
+    public void curlyBraceStarColumnIsLabelledWithItsSourceForm() {
+        // Live-verified: the output column's NAME is the item's own source form with its identifiers
+        // upper-cased — SELECT {* EXCLUDE (a)} reports the column as {* EXCLUDE (A)}.
+        engine.execute("CREATE TABLE cbl (a INTEGER, b INTEGER, c VARCHAR)");
+        engine.execute("INSERT INTO cbl VALUES (1, 2, 'x')");
+        assertEquals("{*}", engine.executeQuery("SELECT {*} FROM cbl").getColumns().get(0).getName());
+        assertEquals("{* EXCLUDE (A)}",
+            engine.executeQuery("SELECT {* EXCLUDE (a)} FROM cbl").getColumns().get(0).getName());
+        assertEquals("{CBL.*}",
+            engine.executeQuery("SELECT {cbl.*} FROM cbl").getColumns().get(0).getName());
+        // An explicit alias still wins over the echoed source form.
+        assertEquals("ROW_OBJ",
+            engine.executeQuery("SELECT {*} AS row_obj FROM cbl").getColumns().get(0).getName());
+        assertEquals("{\"A\":1,\"B\":2,\"C\":\"x\"}",
+            String.valueOf(scalar("SELECT {*} AS row_obj FROM cbl")));
+        // A NULL column is omitted from the object, exactly as OBJECT_CONSTRUCT omits a NULL value.
+        engine.execute("INSERT INTO cbl VALUES (3, NULL, NULL)");
+        assertEquals("{\"A\":3}",
+            String.valueOf(scalar("SELECT {*} FROM cbl WHERE a = 3")));
     }
 
     @Test

@@ -19,9 +19,12 @@ package dev.frostlake.functions;
 import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.Row;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -73,6 +76,10 @@ public class RandomUniformTest extends BaseDatabaseTest {
 
     @Test
     public void uniformFloatBoundsReturnDoubleInHalfOpenRange() {
+        Assumptions.assumeFalse(isLiveSnowflake(),
+            "asserts the JAVA runtime type (Double) of a single nondeterministic draw; over JDBC a live "
+            + "UNIFORM(0.0, 1.0, …) arrives as a scaled decimal, and whether the upper bound is open is "
+            + "an RNG-internal detail of the account");
         final Object v = one("SELECT UNIFORM(0.0, 1.0, RANDOM()) AS r");
         assertTrue(v instanceof Double, "float bounds → double result");
         final double d = (Double) v;
@@ -81,6 +88,7 @@ public class RandomUniformTest extends BaseDatabaseTest {
 
     @Test
     public void uniformWithConstantSeedGeneratorRepeatsAcrossRows() {
+        Assumptions.assumeFalse(isLiveSnowflake(), "RNG algorithm is Snowflake-internal");
         final ResultSet rs = engine.executeQuery("SELECT UNIFORM(1, 100, RANDOM(7)) AS r FROM t ORDER BY id");
         final Object first = rs.getRows().get(0).getValue(0);
         for (final Row row : rs.getRows()) {
@@ -89,8 +97,16 @@ public class RandomUniformTest extends BaseDatabaseTest {
     }
 
     @Test
-    public void uniformWithoutGeneratorStaysInRange() {
-        final ResultSet rs = engine.executeQuery("SELECT UNIFORM(5, 10) AS r FROM t");
+    public void uniformRequiresAGeneratorArgument() {
+        // Snowflake's UNIFORM is strictly three-argument: UNIFORM(5, 10) errors "not enough
+        // arguments for function [UNIFORM(5, 10)], expected 3, got 2" (live-verified).
+        assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.executeQuery("SELECT UNIFORM(5, 10) AS r FROM t");
+            }
+        });
+        final ResultSet rs = engine.executeQuery("SELECT UNIFORM(5, 10, RANDOM()) AS r FROM t");
         for (final Row row : rs.getRows()) {
             final long v = ((Number) row.getValue(0)).longValue();
             assertTrue(v >= 5 && v <= 10, "UNIFORM(5,10) out of inclusive range: " + v);

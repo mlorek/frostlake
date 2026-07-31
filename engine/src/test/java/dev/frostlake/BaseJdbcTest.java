@@ -58,9 +58,15 @@ public abstract class BaseJdbcTest {
 
     @BeforeEach
     public void setupConnection() throws SQLException {
-        // Create a direct JDBC connection to the shared engine
-        connection = new DirectConnection(sharedEngine);
+        // A direct JDBC connection to the shared engine — or, with SF_LIVE=1, a fresh session on a
+        // real Snowflake account, so the same java.sql-level tests validate both backends.
+        connection = LiveSnowflake.enabled() ? LiveSnowflake.open() : new DirectConnection(sharedEngine);
         statement = connection.createStatement();
+
+        if (LiveSnowflake.enabled()) {
+            // Record which account-level objects pre-date the run, before the suite creates any.
+            LiveAccountObjects.captureBaseline(connection);
+        }
 
         // Setup test database and schema
         // Drop first to ensure clean state
@@ -85,6 +91,13 @@ public abstract class BaseJdbcTest {
             // Ignore errors during cleanup
         }
 
+        // Roles, users, warehouses and sibling databases live OUTSIDE test_db, so dropping it leaves
+        // them on the account to collide with the next test that creates the same name. Nothing here
+        // observes the raw java.sql statements these tests run, so the diff is unconditional.
+        if (LiveSnowflake.enabled()) {
+            LiveAccountObjects.dropNewAccountObjects(connection);
+        }
+
         // Close resources
         if (statement != null) {
             try {
@@ -101,6 +114,11 @@ public abstract class BaseJdbcTest {
                 // Ignore
             }
         }
+    }
+
+    /** Whether this run targets live Snowflake — for tests that must skip driver-internal checks there. */
+    protected static boolean isLiveSnowflake() {
+        return LiveSnowflake.enabled();
     }
 
     /**

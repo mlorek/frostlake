@@ -35,8 +35,8 @@ public class ScriptTypedDeclareParamsTest extends BaseDatabaseTest {
     @Test
     public void declareNumberWithPrecisionAndScale() {
         assertEquals(0.0, ((Number) ret("""
+            DECLARE profit NUMBER(38, 2) DEFAULT 0.0;
             BEGIN
-              DECLARE profit NUMBER(38, 2) DEFAULT 0.0;
               RETURN profit;
             END;""")).doubleValue(), 1e-9);
     }
@@ -54,8 +54,8 @@ public class ScriptTypedDeclareParamsTest extends BaseDatabaseTest {
     public void declareNumberScaleCoercesAssignedValue() {
         // NUMBER(10,2) rounds an assigned value to scale 2.
         assertEquals(3.14, ((Number) ret("""
+            DECLARE amt NUMBER(10, 2);
             BEGIN
-              DECLARE amt NUMBER(10, 2);
               amt := 3.14159;
               RETURN amt;
             END;""")).doubleValue(), 1e-9);
@@ -64,8 +64,8 @@ public class ScriptTypedDeclareParamsTest extends BaseDatabaseTest {
     @Test
     public void declareVarcharWithLength() {
         assertEquals("Alice", String.valueOf(ret("""
+            DECLARE name VARCHAR(20) := 'Alice';
             BEGIN
-              DECLARE name VARCHAR(20) := 'Alice';
               RETURN name;
             END;""")));
     }

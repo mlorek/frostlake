@@ -25,7 +25,7 @@ import java.time.format.DateTimeFormatter;
 import java.util.List;
 
 public class ToTime extends BuiltInFunction {
-    public ToTime() { super("TO_TIME", DateTimeType.TIMESTAMP_NTZ); }
+    public ToTime() { super("TO_TIME", DateTimeType.TIME); }
 
     @Override
     public Object evaluate(final List<Object> args) {

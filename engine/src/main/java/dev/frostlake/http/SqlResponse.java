@@ -17,6 +17,8 @@
 package dev.frostlake.http;
 
 import dev.frostlake.storage.ResultSet;
+import dev.frostlake.values.BinaryValue;
+import dev.frostlake.values.VariantValue;
 
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.types.NumericType;
@@ -135,12 +137,17 @@ public class SqlResponse {
                 data.getColumns().add(colData);
             }
 
-            // Copy rows
+            // Copy rows. Engine-internal value objects are mapped to their JSON wire form here:
+            // a BINARY cell crosses as its uppercase-hex text (the client re-types via the column
+            // metadata), so Jackson never bean-serializes an engine value class.
             rs.reset();
             while (rs.next()) {
                 List<Object> rowData = new ArrayList<>();
                 for (int i = 0; i < rs.getColumnCount(); i++) {
-                    rowData.add(rs.getValue(i));
+                    final Object cell = rs.getValue(i);
+                    rowData.add(cell instanceof BinaryValue ? ((BinaryValue) cell).toHex()
+                        : cell instanceof VariantValue ? ((VariantValue) cell).text()
+                        : cell);
                 }
                 data.getRows().add(rowData);
             }

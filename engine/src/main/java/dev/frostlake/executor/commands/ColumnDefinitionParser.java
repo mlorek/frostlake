@@ -16,6 +16,7 @@
 
 package dev.frostlake.executor.commands;
 
+import dev.frostlake.executor.ParseTreeText;
 import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.executor.SqlStringLiterals;
 import dev.frostlake.metastore.Catalog;
@@ -64,7 +65,7 @@ public class ColumnDefinitionParser implements CommandHandler {
      * constraints are the caller's concern, not this method's.
      */
     public TableColumn parseSingleColumnDef(final FrostlakeParser.ColumnDefContext colDef) {
-        final String colName = getText(colDef.identifier());
+        final String colName = ParseTreeText.namePartText(colDef.namePart());
         final DataType dataType = parseDataType(colDef.dataTypeName(), colDef.typeParameters());
 
         boolean primaryKey = false;
@@ -128,6 +129,8 @@ public class ColumnDefinitionParser implements CommandHandler {
             }
         }
 
+        rejectNonNullableFieldsInNullableStructure(colName, dataType, notNull);
+
         final TableColumn column = new TableColumn(colName, dataType, !notNull, defaultValue,
                                     primaryKey, unique, autoIncrement, identityStart, identityIncrement);
 
@@ -160,6 +163,7 @@ public class ColumnDefinitionParser implements CommandHandler {
     public List<TableColumn> parseColumnList(final FrostlakeParser.ColumnListContext ctx) {
         List<TableColumn> columns = new ArrayList<>();
         List<String> tablePrimaryKeys = new ArrayList<>();
+        List<String> tableUniqueColumns = new ArrayList<>();
         List<ForeignKeyConstraint> tableForeignKeys = new ArrayList<>();
 
         for (final FrostlakeParser.ColumnOrConstraintContext item : ctx.columnOrConstraint()) {
@@ -170,6 +174,13 @@ public class ColumnDefinitionParser implements CommandHandler {
                 if (constraint.PRIMARY() != null) {
                     for (final FrostlakeParser.IdentifierContext id : constraint.identifierList(0).identifier()) {
                         tablePrimaryKeys.add(getText(id));
+                    }
+                } else if (constraint.UNIQUE() != null) {
+                    // Table-level UNIQUE (a, b): every listed column carries the uniqueness flag. The fact
+                    // that they form ONE constraint (and any CONSTRAINT <name>) is kept separately — see
+                    // parseUniqueConstraints, which the CREATE TABLE handler records on the table.
+                    for (final FrostlakeParser.IdentifierContext id : constraint.identifierList(0).identifier()) {
+                        tableUniqueColumns.add(getText(id));
                     }
                 } else if (constraint.FOREIGN() != null) {
                     // Table-level foreign key
@@ -205,16 +216,11 @@ public class ColumnDefinitionParser implements CommandHandler {
             }
         }
 
-        if (!tablePrimaryKeys.isEmpty()) {
+        if (!tablePrimaryKeys.isEmpty() || !tableUniqueColumns.isEmpty()) {
             List<TableColumn> updatedColumns = new ArrayList<>();
             for (final TableColumn col : columns) {
-                boolean isPrimaryKey = false;
-                for (final String pk : tablePrimaryKeys) {
-                    if (pk.equalsIgnoreCase(col.getName())) {
-                        isPrimaryKey = true;
-                        break;
-                    }
-                }
+                final boolean isPrimaryKey = namesContain(tablePrimaryKeys, col.getName());
+                final boolean isUnique = namesContain(tableUniqueColumns, col.getName());
 
                 TableColumn newCol = new TableColumn(
                     col.getName(),
@@ -222,13 +228,14 @@ public class ColumnDefinitionParser implements CommandHandler {
                     col.isNullable(),
                     col.getDefaultValue(),
                     isPrimaryKey || col.isPrimaryKey(),
-                    col.isUnique(),
+                    isUnique || col.isUnique(),
                     col.isAutoIncrement(),
                     col.getIdentityStart(),      // 9-arg ctor: the 7-arg one resets identity to (1,1)
                     col.getIdentityIncrement()
                 );
                 newCol.setComment(col.getComment());
                 newCol.setCollation(col.getCollation());
+                newCol.setRely(col.getRely());
 
                 // Copy foreign key info
                 if (col.hasForeignKey()) {
@@ -244,6 +251,55 @@ public class ColumnDefinitionParser implements CommandHandler {
         }
 
         return columns;
+    }
+
+    /** Case-insensitive membership of a column name in a table-level constraint's column list. */
+    private boolean namesContain(final List<String> names, final String columnName) {
+        for (final String name : names) {
+            if (name.equalsIgnoreCase(columnName)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * The name an explicit table-level {@code CONSTRAINT <name> PRIMARY KEY (...)} gave the key, or null
+     * when it was declared without one (or only as a column-level {@code PRIMARY KEY}). A table has at most
+     * one primary key, so the first such declaration wins.
+     */
+    public String parsePrimaryKeyConstraintName(final FrostlakeParser.ColumnListContext ctx) {
+        for (final FrostlakeParser.ColumnOrConstraintContext item : ctx.columnOrConstraint()) {
+            final FrostlakeParser.TableConstraintContext constraint = item.tableConstraint();
+            if (constraint != null && constraint.PRIMARY() != null && constraint.constraintName() != null) {
+                return getText(constraint.constraintName().identifier());
+            }
+        }
+        return null;
+    }
+
+    /**
+     * The table-level UNIQUE constraints of a column list — ONE per declaration, so {@code UNIQUE (a, b)} is
+     * a single multi-column constraint rather than one constraint per column. Unnamed ones auto-name
+     * themselves; column-level {@code UNIQUE} declarations are not returned here (they are plain column
+     * flags and {@code Table} names them itself).
+     */
+    public List<UniqueConstraint> parseUniqueConstraints(final FrostlakeParser.ColumnListContext ctx) {
+        final List<UniqueConstraint> uniques = new ArrayList<>();
+        for (final FrostlakeParser.ColumnOrConstraintContext item : ctx.columnOrConstraint()) {
+            final FrostlakeParser.TableConstraintContext constraint = item.tableConstraint();
+            if (constraint == null || constraint.UNIQUE() == null) {
+                continue;
+            }
+            final String constraintName = constraint.constraintName() != null
+                ? getText(constraint.constraintName().identifier()) : null;
+            final List<String> columnNames = new ArrayList<>();
+            for (final FrostlakeParser.IdentifierContext id : constraint.identifierList(0).identifier()) {
+                columnNames.add(getText(id));
+            }
+            uniques.add(new UniqueConstraint(constraintName, columnNames));
+        }
+        return uniques;
     }
 
     public List<ForeignKeyConstraint> parseForeignKeys(final FrostlakeParser.ColumnListContext ctx) {
@@ -300,60 +356,57 @@ public class ColumnDefinitionParser implements CommandHandler {
     }
 
     public DataType parseDataType(final FrostlakeParser.DataTypeNameContext ctx, final FrostlakeParser.TypeParametersContext typeParams) {
-        int precision = 9; // Default precision for timestamp types
+        return DataTypeParser.parse(ctx, typeParams);
+    }
 
-        // Extract precision if typeParameters present
-        if (typeParams != null && typeParams.INTEGER_LITERAL() != null && typeParams.INTEGER_LITERAL().size() > 0) {
-            precision = Integer.parseInt(typeParams.INTEGER_LITERAL(0).getText());
-        }
+    /**
+     * Snowflake's structured-nullability DDL rule, every cell live-measured:
+     * a NOT NULL structured field is legal only when EVERYTHING enclosing it is itself non-nullable.
+     * A NOT NULL field whose immediately-enclosing object (the column, or an object-typed field) is
+     * nullable fails with "DDL operation failed because it would result in a non-nullable structured
+     * type field '&lt;path&gt;' contained within a nullable object" — so {@code o OBJECT(inner
+     * OBJECT(x INT NOT NULL)) NOT NULL} is still refused ('O.inner.x'; {@code inner} is nullable)
+     * while marking every level NOT NULL is accepted. Under an ARRAY or MAP the refusal is
+     * unconditional — "'&lt;path&gt;' contained within an array or map" — with path segments
+     * {@code .element} (array) / {@code .value} (map), even when the column is NOT NULL.
+     */
+    private void rejectNonNullableFieldsInNullableStructure(final String columnName,
+                                                            final DataType dataType,
+                                                            final boolean columnNotNull) {
+        walkStructuredNullability(columnName, dataType, !columnNotNull, false);
+    }
 
-        // VECTOR(FLOAT|INT, n) must be classified BEFORE the plain numeric checks: its element-type
-        // token (FLOAT / INT) lives in the same context, so the FLOAT/INT branches would shadow it.
-        if (ctx.VECTOR() != null) {
-            final VectorType.ElementType vectorElem = ctx.INT() != null
-                ? VectorType.ElementType.INT
-                : VectorType.ElementType.FLOAT;
-            final int vectorDim = ctx.INTEGER_LITERAL() != null
-                ? Integer.parseInt(ctx.INTEGER_LITERAL().getText())
-                : 1;
-            return new VectorType(vectorElem, vectorDim);
-        }
-        if (ctx.INTEGER() != null || ctx.INT() != null) return NumericType.INTEGER;
-        if (ctx.BIGINT() != null) return NumericType.BIGINT;
-        if (ctx.SMALLINT() != null) return NumericType.SMALLINT;
-        if (ctx.TINYINT() != null || ctx.BYTEINT() != null) return NumericType.TINYINT;
-        if (ctx.NUMBER() != null || ctx.DECIMAL() != null) {
-            if (typeParams != null && typeParams.INTEGER_LITERAL() != null && !typeParams.INTEGER_LITERAL().isEmpty()) {
-                final int numberScale = typeParams.INTEGER_LITERAL().size() > 1
-                    ? Integer.parseInt(typeParams.INTEGER_LITERAL(1).getText()) : 0;
-                return new NumericType("NUMBER", precision, numberScale);
+    /**
+     * @param path              dotted path to this position ({@code COL}, {@code COL.f},
+     *                          {@code COL.a.element}, …) — upper column name, field names verbatim
+     * @param enclosingNullable whether the immediately-enclosing object or column is nullable here
+     * @param insideContainer   whether an ARRAY or MAP lies between the column and this position
+     */
+    private void walkStructuredNullability(final String path, final DataType type,
+                                           final boolean enclosingNullable,
+                                           final boolean insideContainer) {
+        if (type instanceof StructuredObjectType) {
+            for (final StructuredField field : ((StructuredObjectType) type).getFields()) {
+                final String fieldPath = path + "." + field.getName();
+                if (field.isNotNull() && insideContainer) {
+                    throw new RuntimeException("SQL compilation error: DDL operation failed because it"
+                        + " would result in a non-nullable structured type field '" + fieldPath
+                        + "' contained within an array or map");
+                }
+                if (field.isNotNull() && enclosingNullable) {
+                    throw new RuntimeException("SQL compilation error: DDL operation failed because it"
+                        + " would result in a non-nullable structured type field '" + fieldPath
+                        + "' contained within a nullable object");
+                }
+                walkStructuredNullability(fieldPath, field.getDataType(), !field.isNotNull(),
+                    insideContainer);
             }
-            return NumericType.NUMBER;
+        } else if (type instanceof MapType) {
+            walkStructuredNullability(path + ".value", ((MapType) type).getValueType(), true, true);
+        } else if (type instanceof ArrayType && ((ArrayType) type).getElementType() != null) {
+            walkStructuredNullability(path + ".element", ((ArrayType) type).getElementType(),
+                true, true);
         }
-        // DECFLOAT (decimal floating point) is approximated by DOUBLE — the engine has no
-        // arbitrary-exponent decimal representation.
-        if (ctx.DECFLOAT() != null) return NumericType.DOUBLE;
-        if (ctx.FLOAT() != null || ctx.FLOAT4() != null || ctx.FLOAT8() != null || ctx.REAL() != null) return NumericType.FLOAT;
-        if (ctx.DOUBLE() != null) return NumericType.DOUBLE;   // DOUBLE and DOUBLE PRECISION
-        if (ctx.VARCHAR() != null || ctx.STRING() != null || ctx.TEXT() != null) {
-            return hasTypeLength(typeParams) ? new StringType("VARCHAR", precision) : StringType.VARCHAR;
-        }
-        if (ctx.CHAR() != null) {
-            return hasTypeLength(typeParams) ? new StringType("CHAR", precision) : StringType.CHAR;
-        }
-        if (ctx.BOOLEAN() != null) return BooleanType.BOOLEAN;
-        if (ctx.DATE() != null) return DateTimeType.DATE;
-        if (ctx.TIME() != null) return DateTimeType.TIME;
-        if (ctx.DATETIME() != null) return new DateTimeType("TIMESTAMP_NTZ", precision, false);
-        if (ctx.TIMESTAMP() != null) return new DateTimeType("TIMESTAMP", precision, false);
-        if (ctx.TIMESTAMP_NTZ() != null || ctx.TIMESTAMPNTZ() != null) return new DateTimeType("TIMESTAMP_NTZ", precision, false);
-        if (ctx.TIMESTAMP_LTZ() != null) return new DateTimeType("TIMESTAMP_LTZ", precision, true);
-        if (ctx.TIMESTAMP_TZ() != null) return new DateTimeType("TIMESTAMP_TZ", precision, true);
-        if (ctx.VARIANT() != null) return VariantType.VARIANT;
-        if (ctx.ARRAY() != null) return ArrayType.ARRAY;
-        if (ctx.OBJECT() != null) return ObjectType.OBJECT;
-        if (ctx.UUID() != null) return new StringType("UUID", 36);
-        return StringType.VARCHAR;
     }
 
     private String[] parseReferentialActions(final FrostlakeParser.ReferentialActionsContext ctx) {
@@ -397,12 +450,6 @@ public class ColumnDefinitionParser implements CommandHandler {
             return false;
         }
         return null;
-    }
-
-    /** True if the type carries an explicit length/precision parameter, e.g. VARCHAR(20) or CHAR(5). */
-    private boolean hasTypeLength(final FrostlakeParser.TypeParametersContext typeParams) {
-        return typeParams != null && typeParams.INTEGER_LITERAL() != null
-            && !typeParams.INTEGER_LITERAL().isEmpty();
     }
 
     public Object parseDefaultExpression(final FrostlakeParser.DefaultExpressionContext ctx) {

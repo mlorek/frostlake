@@ -21,11 +21,16 @@ import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
 
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 
+import java.util.ArrayList;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -45,12 +50,17 @@ public class ShowSuffixAndScopeTest extends BaseDatabaseTest {
     public void terseProjectsTheReducedColumnSet() {
         engine.execute("CREATE TABLE t_terse (id INTEGER)");
         final ResultSet rs = engine.executeQuery("SHOW TERSE TABLES");
-        for (final ResultSetColumn col : rs.getColumns()) {
-            final String name = col.getName();
-            assertTrue(List.of("created_on", "name", "kind", "database_name", "schema_name").contains(name),
-                "unexpected TERSE column: " + name);
-        }
+        assertEquals(List.of("created_on", "name", "kind", "database_name", "schema_name"),
+            columnNames(rs), "SHOW TERSE TABLES has these five columns in this order");
         assertTrue(rs.getRowCount() >= 1);
+    }
+
+    private static List<String> columnNames(final ResultSet rs) {
+        final List<String> names = new ArrayList<>();
+        for (final ResultSetColumn col : rs.getColumns()) {
+            names.add(col.getName());
+        }
+        return names;
     }
 
     @Test
@@ -62,18 +72,63 @@ public class ShowSuffixAndScopeTest extends BaseDatabaseTest {
             "STARTS WITH is case-sensitive; stored names are uppercase");
     }
 
+    /**
+     * LIMIT keeps the first n rows <em>by name</em>, and FROM resumes strictly after a name — which only
+     * means anything because the listing is name-ordered to begin with (a
+     * schema holding DT_A, T_A…T_D and a quoted "t_lower" lists them in exactly that order, so
+     * {@code LIMIT 2} returns DT_A and T_A and {@code LIMIT 10 FROM 'T_A'} returns T_B, T_C, T_D,
+     * t_lower). The unlimited listing is pinned alongside so a LIMIT that silently returned everything
+     * could not pass.
+     */
     @Test
     public void limitAndFromPaginateByName() {
+        engine.execute("CREATE TABLE p3 (id INTEGER)");
         engine.execute("CREATE TABLE p1 (id INTEGER)");
         engine.execute("CREATE TABLE p2 (id INTEGER)");
-        engine.execute("CREATE TABLE p3 (id INTEGER)");
-        assertEquals(2, engine.executeQuery("SHOW TABLES LIMIT 2").getRowCount());
-        final ResultSet afterP1 = engine.executeQuery("SHOW TABLES LIMIT 10 FROM 'P1'");
-        assertEquals(2, afterP1.getRowCount());
-        for (final Row row : afterP1.getRows()) {
-            assertTrue(String.valueOf(row.getValue(nameIndex(afterP1))).compareTo("P1") > 0);
-        }
+        assertEquals(List.of("P1", "P2", "P3"), names(engine.executeQuery("SHOW TABLES")),
+            "the unlimited listing is name-ordered regardless of creation order");
+        assertEquals(List.of("P1", "P2"), names(engine.executeQuery("SHOW TABLES LIMIT 2")),
+            "LIMIT keeps the FIRST n by name, not an arbitrary n");
+        assertEquals(List.of("P2", "P3"), names(engine.executeQuery("SHOW TABLES LIMIT 10 FROM 'P1'")));
+        assertEquals(List.of("P2"), names(engine.executeQuery("SHOW TABLES LIMIT 1 FROM 'P1'")));
         assertEquals(1, engine.executeQuery("SHOW TABLES LIKE 'P%' STARTS WITH 'P' LIMIT 1").getRowCount());
+    }
+
+    /**
+     * Byte-wise ordering, not case-insensitive: a quoted lowercase name sorts after every uppercase one.
+     * Live-verified — "t_lower" is the last row of SHOW TABLES, behind T_D.
+     */
+    @Test
+    public void listingsAreOrderedByNameByteWise() {
+        engine.execute("CREATE TABLE t_b (id INTEGER)");
+        engine.execute("CREATE TABLE \"t_lower\" (id INTEGER)");
+        engine.execute("CREATE TABLE t_a (id INTEGER)");
+        assertEquals(List.of("T_A", "T_B", "t_lower"), names(engine.executeQuery("SHOW TABLES")));
+    }
+
+    /**
+     * {@code LIMIT 0} is rejected, and everywhere — live-verified across twenty listings,
+     * including the ones that go on to ignore a positive LIMIT.
+     */
+    @Test
+    public void limitZeroIsRejected() {
+        engine.execute("CREATE TABLE lz (id INTEGER)");
+        final RuntimeException error = assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.executeQuery("SHOW TABLES LIMIT 0");
+            }
+        });
+        assertTrue(error.getMessage().contains("must be greater than 0"), error.getMessage());
+        assertEquals(1, engine.executeQuery("SHOW TABLES LIMIT 1").getRowCount());
+    }
+
+    private List<String> names(final ResultSet rs) {
+        final List<String> result = new ArrayList<>();
+        for (final Row row : rs.getRows()) {
+            result.add(String.valueOf(row.getValue(nameIndex(rs))));
+        }
+        return result;
     }
 
     @Test
@@ -124,13 +179,31 @@ public class ShowSuffixAndScopeTest extends BaseDatabaseTest {
         assertEquals(1, engine.executeQuery("SHOW COLUMNS LIKE 'LAB%' IN TABLE c_one").getRowCount());
 
         engine.execute("CREATE VIEW c_view (vc) AS SELECT id FROM c_one");
-        final ResultSet viewCols = engine.executeQuery("SHOW COLUMNS IN VIEW c_view");
+        // SHOW COLUMNS IN VIEW needs the FULL search path — Snowflake rejects the unqualified form
+        // (live-verified) even though the TABLE form accepts a bare name.
+        final RuntimeException unqualified = assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.executeQuery("SHOW COLUMNS IN VIEW c_view");
+            }
+        });
+        assertTrue(unqualified.getMessage().contains("Must specify the full search path"),
+            unqualified.getMessage());
+        final ResultSet viewCols =
+            engine.executeQuery("SHOW COLUMNS IN VIEW test_db.test_schema.c_view");
         assertEquals(1, viewCols.getRowCount());
-        assertEquals("VC", String.valueOf(viewCols.getRows().get(0).getValue(0)).toUpperCase());
+        // Read by NAME: SHOW COLUMNS leads with table_name/schema_name in Snowflake's shape.
+        assertEquals("VC", String.valueOf(
+            viewCols.getRows().get(0).getValue(viewCols.getColumnIndex("column_name"))).toUpperCase());
     }
 
     @Test
     public void acceptedScopesThatListNothing() {
+        // The APPLICATION / APPLICATION PACKAGE / CLASS scopes are parsed and treated as empty here;
+        // a real account rejects them outright unless those object types exist, so the leniency is
+        // only meaningful embedded.
+        Assumptions.assumeFalse(isLiveSnowflake(),
+            "APPLICATION / CLASS scopes are Frostlake leniencies a real account rejects");
         assertEquals(0, engine.executeQuery("SHOW ICEBERG TABLES").getRowCount());
         assertEquals(0, engine.executeQuery("SHOW TERSE ICEBERG TABLES IN test_db.test_schema").getRowCount());
         assertEquals(0, engine.executeQuery("SHOW PROCEDURES LIKE 'foo' IN APPLICATION app").getRowCount());
@@ -152,10 +225,23 @@ public class ShowSuffixAndScopeTest extends BaseDatabaseTest {
         engine.execute("CREATE TABLE hist_t (id INTEGER)");
         assertTrue(engine.executeQuery("SHOW DATABASES HISTORY").getRowCount() >= 1);
         assertTrue(engine.executeQuery("SHOW TABLES HISTORY IN test_db.test_schema").getRowCount() >= 1);
-        engine.executeQuery("SHOW WAREHOUSES LIKE 'foo' WITH PRIVILEGES USAGE, MODIFY");
-        engine.executeQuery("SHOW TERSE DATABASES HISTORY LIKE 'foo' STARTS WITH 'bla' LIMIT 5 FROM 'bob' "
-            + "WITH PRIVILEGES USAGE, MODIFY");
+        engine.executeQuery("SHOW TERSE DATABASES HISTORY LIKE 'foo' STARTS WITH 'bla' LIMIT 5 FROM 'bob'");
         engine.executeQuery("SHOW USERS LIKE '_foo%' STARTS WITH 'bar' LIMIT 5 FROM 'baz'");
         engine.executeQuery("SHOW TERSE USERS");
+    }
+
+    @Test
+    public void withPrivilegesSuffixIsAccepted() {
+        // Live-verified: SHOW ... WITH PRIVILEGES <priv-list> is real Snowflake syntax on the
+        // account-level listings — `SHOW WAREHOUSES WITH PRIVILEGES USAGE, MODIFY` and
+        // `SHOW DATABASES WITH PRIVILEGES USAGE` both run. The privilege LIST is mandatory: a bare
+        // `SHOW TABLES WITH PRIVILEGES` is a syntax error. Whether a given object type honours the
+        // filter is SEMANTIC — a real account answers `SHOW TABLES ... WITH PRIVILEGES` with
+        // "Unsupported feature", i.e. it parses — so the grammar accepts it and the listing is
+        // simply not privilege-filtered here.
+        assertNotNull(engine.executeQuery("SHOW WAREHOUSES WITH PRIVILEGES USAGE, MODIFY"));
+        assertNotNull(engine.executeQuery("SHOW DATABASES WITH PRIVILEGES USAGE"));
+        assertNotNull(engine.executeQuery("SHOW SCHEMAS WITH PRIVILEGES USAGE"));
+        assertNotNull(engine.executeQuery("SHOW WAREHOUSES STARTS WITH 'F' WITH PRIVILEGES USAGE"));
     }
 }

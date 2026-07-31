@@ -25,7 +25,8 @@ import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Tests for numeric type handling
@@ -137,8 +138,8 @@ public class NumericTypeTest extends BaseDatabaseTest {
     }
 
     @Test
-    public void testDivisionReturnsDouble() {
-        logger.info("Testing 10 / 3 returns Double (for precision)");
+    public void testDivisionReturnsSnowflakeScaledDecimal() {
+        logger.info("Testing 10 / 3 returns a BigDecimal with Snowflake's division scale");
 
         ExecutionResult result = engine.execute("SELECT 10 / 3");
         ResultSet rs = result.getResultSets().get(0);
@@ -148,8 +149,25 @@ public class NumericTypeTest extends BaseDatabaseTest {
 
         logger.info("Value: {} (type: {})", value, value.getClass().getName());
 
-        assertTrue(value instanceof Double, "Expected Double but got " + value.getClass().getName());
-        assertEquals(3.3333333333333335, (Double) value, 0.0001);
+        // Snowflake fixed-point division scale is min(s1 + 6, 12): integer inputs yield scale 6.
+        assertTrue(value instanceof BigDecimal, "Expected BigDecimal but got " + value.getClass().getName());
+        assertEquals(new BigDecimal("3.333333"), value);
+    }
+
+    @Test
+    public void testDivisionKeepsScaleSixForExactResults() {
+        logger.info("Testing 10 / 2 returns BigDecimal 5.000000");
+
+        ExecutionResult result = engine.execute("SELECT 10 / 2");
+        ResultSet rs = result.getResultSets().get(0);
+
+        Row row = rs.getRows().get(0);
+        Object value = row.getValues().get(0);
+
+        logger.info("Value: {} (type: {})", value, value.getClass().getName());
+
+        assertTrue(value instanceof BigDecimal, "Expected BigDecimal but got " + value.getClass().getName());
+        assertEquals(new BigDecimal("5.000000"), value);
     }
 
     @Test

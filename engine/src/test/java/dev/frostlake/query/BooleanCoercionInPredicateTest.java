@@ -20,14 +20,19 @@ import dev.frostlake.BaseDatabaseTest;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Snowflake implicitly coerces a value in predicate position to BOOLEAN: a VARCHAR via TO_BOOLEAN's
- * text forms ({@code 'true'/'t'/'yes'/'y'/'on'/'1'}, case-insensitive), a number as zero/non-zero.
- * A bare {@code WHERE is_direct} over a VARCHAR column holding {@code 'true'} is a real loader idiom
- * (boolean-ish flags declared VARCHAR); treating any non-Boolean as FALSE silently dropped every row.
+ * Snowflake type-checks predicate position at compile time: a bare column whose static type is
+ * VARCHAR or NUMBER is rejected with {@code Invalid data type [VARCHAR(16777216)] for predicate
+ * [IS_DIRECT]} — the predicate itself is never implicitly TO_BOOLEAN'ed. Operands nested under a
+ * boolean operator (AND/NOT) still coerce through TO_BOOLEAN's text forms
+ * ({@code 'true'/'t'/'yes'/'y'/'on'/'1'}, case-insensitive; numbers as zero/non-zero), and the
+ * portable idioms are an explicit comparison or an explicit TO_BOOLEAN call.
  */
 public class BooleanCoercionInPredicateTest extends BaseDatabaseTest {
 
@@ -42,9 +47,27 @@ public class BooleanCoercionInPredicateTest extends BaseDatabaseTest {
         return engine.executeQuery(sql).getRowCount();
     }
 
+    private void assertPredicateRejected(final String sql, final String expectedTypePrefix) {
+        final RuntimeException rejected = assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.executeQuery(sql);
+            }
+        });
+        assertTrue(rejected.getMessage().contains("Invalid data type")
+                && rejected.getMessage().contains("[" + expectedTypePrefix)
+                && rejected.getMessage().contains("for predicate"),
+            "unexpected: " + rejected.getMessage());
+    }
+
     @Test
-    public void aBareVarcharColumnFiltersAsAPredicate() {
-        assertEquals(3, rows("SELECT id FROM t WHERE is_direct"));                       // 1, 3, 5
+    public void aBareVarcharColumnPredicateIsRejected() {
+        assertPredicateRejected("SELECT id FROM t WHERE is_direct", "VARCHAR(");
+    }
+
+    @Test
+    public void aBareNumberColumnPredicateIsRejected() {
+        assertPredicateRejected("SELECT id FROM t WHERE n", "NUMBER(");
     }
 
     @Test
@@ -54,8 +77,17 @@ public class BooleanCoercionInPredicateTest extends BaseDatabaseTest {
     }
 
     @Test
-    public void numbersCoerceAsZeroNonzeroAndNotInverts() {
-        assertEquals(3, rows("SELECT id FROM t WHERE n"));                                // 1, 3, 5
+    public void notOverAVarcharFlagStillCoerces() {
         assertEquals(2, rows("SELECT id FROM t WHERE NOT is_direct"));                    // 2, 4
+    }
+
+    @Test
+    public void explicitFormsFilterRows() {
+        // The seed's UNION ALL takes its column type from the FIRST branch — a BOOLEAN literal — so
+        // every later branch's string is converted by TO_BOOLEAN before it reaches the VARCHAR column:
+        // 'Y' lands as 'true'. Live-verified on a real account: the stored flags are
+        // true/false/true/false/true, so BOTH forms below select 1, 3 and 5.
+        assertEquals(3, rows("SELECT id FROM t WHERE is_direct = 'true'"));               // 1, 3, 5
+        assertEquals(3, rows("SELECT id FROM t WHERE TO_BOOLEAN(is_direct)"));            // 1, 3, 5
     }
 }

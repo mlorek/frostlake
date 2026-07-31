@@ -18,20 +18,31 @@ package dev.frostlake.functions.scalar.encoding;
 
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
-import dev.frostlake.types.StringType;
+import dev.frostlake.types.BinaryType;
+import dev.frostlake.values.BinaryValue;
 
 import java.util.List;
 
+/**
+ * COMPRESS(input, method) — compresses the input (a string's UTF-8 bytes, or a BINARY value's
+ * bytes) with {@code method} and returns the compressed bytes as BINARY, matching Snowflake's
+ * return type.
+ *
+ * <p>The method is mandatory: Snowflake has no default and rejects {@code COMPRESS('hello')} with
+ * "not enough arguments for function [COMPRESS('hello')], expected 2, got 1" (SQLSTATE 22023, error
+ * 938). Either argument being NULL yields NULL, without validating the other.
+ */
 public class Compress extends BuiltInFunction {
-    public Compress() { super("COMPRESS", StringType.VARCHAR); }
+    public Compress() { super("COMPRESS", BinaryType.BINARY); }
 
     @Override
     public Object evaluate(final List<Object> args) {
-        if (args.get(0) == null) return null;
-        String method = args.size() > 1 && args.get(1) != null ? args.get(1).toString() : "deflate";
-        return SharedFunctionHelpers.compressToBase64(SharedFunctionHelpers.toUtf8(args.get(0)), method);
+        if (args.get(0) == null || args.get(1) == null) return null;
+        final CompressionMethod method = CompressionMethod.parse(args.get(1).toString());
+        return BinaryValue.of(
+            CompressionCodec.compress(SharedFunctionHelpers.toUtf8(args.get(0)), method));
     }
 
-    @Override public int getMinArgCount() { return 1; }
+    @Override public int getMinArgCount() { return 2; }
     @Override public int getMaxArgCount() { return 2; }
 }

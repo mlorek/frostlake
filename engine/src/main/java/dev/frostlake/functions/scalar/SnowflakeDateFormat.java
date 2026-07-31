@@ -28,32 +28,39 @@ import java.util.Locale;
 /**
  * Formats a temporal value with a subset of Snowflake's date/time format model (TO_CHAR / TO_VARCHAR
  * with a date format). Snowflake elements are translated to a {@link DateTimeFormatter} pattern:
- * YYYY/YY, MM/MON/MONTH, DD/DY/DAY, HH24/HH12/HH, MI, SS, FF[1-9], AM/PM. Any other character is
- * emitted as a quoted literal, so separators (-, /, :, spaces) pass through unchanged and unsupported
- * elements degrade to literal text rather than throwing. Month/day names use the English (US) locale
- * in title case (e.g. "Jan", "January", "Wed"); the format element's own case is not propagated to the
- * output. TZH/TZM render the NTZ zero offset ("Z" for the pair). Not modeled: HH is treated as 24-hour,
- * and era / quarter / week elements.
+ * YYYY/YY/Y, MMMM/MON/MM, DD/DY/D, HH24/HH12/HH/H, MI, SS, FF[1-9], AM/PM. The scan is greedy
+ * longest-match at each position; any UNMATCHED character is emitted as a quoted literal, so
+ * separators (-, /, :, spaces) pass through unchanged and unsupported elements degrade to literal
+ * text rather than throwing. Snowflake has NO full-name 'DAY'/'MONTH' elements (live-verified on
+ * DATE '2020-01-15'): 'DAY' tokenizes as D+A+Y — unpadded day-of-month, literal A, 2-digit year —
+ * giving "15A20", and 'MONTH' as MON+T+H — "Jan", literal T, unpadded hour — giving "JanT0".
+ * Month/day names use the English (US) locale in title case (e.g. "Jan", "January", "Wed"); the
+ * format element's own case is not propagated to the output. TZH/TZM render the NTZ zero offset
+ * ("Z" for the pair). Not modeled: HH is treated as 24-hour, and era / quarter / week elements.
  */
 public final class SnowflakeDateFormat {
 
     private SnowflakeDateFormat() {
     }
 
-    // Ordered longest-first so the greedy scan matches MONTH before MON before MM, HH24 before HH, etc.
+    // Ordered longest-first so the greedy scan matches MMMM before MON before MM, HH24 before HH
+    // before H, DD/DY before D, YYYY before YY before Y, etc.
     private static final String[][] TOKENS = {
         // The engine's timestamps are all NTZ (a UTC wall clock, offset zero), and Snowflake renders the
         // zero offset of the TZH:TZM pair as the ISO "Z" (captured: TO_VARCHAR(ntz,
         // 'YYYY-MM-DDTHH24:MI:SS.FFTZH:TZM') → …589000000Z). As pattern literals these also PARSE the
         // matching text, so an explicit-format TO_TIMESTAMP over an ISO string with Z works too.
         {"TZH:TZM", "'Z'"}, {"TZH", "'+00'"}, {"TZM", "'00'"},
-        {"MONTH", "MMMM"},
         {"YYYY", "yyyy"}, {"HH24", "HH"}, {"HH12", "hh"}, {"MMMM", "MMMM"},
         {"FF9", "SSSSSSSSS"}, {"FF8", "SSSSSSSS"}, {"FF7", "SSSSSSS"}, {"FF6", "SSSSSS"},
         {"FF5", "SSSSS"}, {"FF4", "SSSS"}, {"FF3", "SSS"}, {"FF2", "SS"}, {"FF1", "S"},
-        {"MON", "MMM"}, {"DAY", "EEEE"}, {"MMM", "MMM"},
+        {"MON", "MMM"}, {"MMM", "MMM"},
         {"YY", "yy"}, {"MM", "MM"}, {"DD", "dd"}, {"DY", "EEE"}, {"HH", "HH"},
         {"MI", "mm"}, {"SS", "ss"}, {"FF", "SSSSSSSSS"}, {"AM", "a"}, {"PM", "a"},
+        // Single-letter elements (live-verified): Y = 2-digit year ('Y' on 2020-01-15 → "20"),
+        // D = day-of-month UNPADDED ('D' → "15"), H = hour UNPADDED (the H in 'MONTH' rendered "0"
+        // for a DATE). These are what make 'DAY' and 'MONTH' come out as "15A20" / "JanT0".
+        {"Y", "yy"}, {"D", "d"}, {"H", "H"},
     };
 
     public static String format(final Object value, final String snowflakeFormat) {

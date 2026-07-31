@@ -16,7 +16,7 @@
 
 package dev.frostlake.functions.scalar.string;
 
-import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.functions.TextArgumentFunction;
 import dev.frostlake.types.NumericType;
 
 import java.util.List;
@@ -29,7 +29,7 @@ import java.util.regex.Matcher;
  * character just after the match. With the {@code e} flag or an explicit {@code group_num}, the position of
  * that capture group is reported instead of the whole match.
  */
-public class RegexpInstr extends BuiltInFunction {
+public class RegexpInstr extends TextArgumentFunction {
     public RegexpInstr() { super("REGEXP_INSTR", NumericType.INTEGER); }
 
     @Override

@@ -18,14 +18,15 @@ package dev.frostlake.functions.scalar.semistructured;
 
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
-import dev.frostlake.types.VariantType;
+import dev.frostlake.types.ArrayType;
+import dev.frostlake.values.VariantValue;
 import tools.jackson.databind.node.ArrayNode;
 
 import java.util.List;
 
 /** ARRAY_SLICE(array, from, to) — returns a sub-array from index `from` (inclusive) to `to` (exclusive). */
 public class ArraySlice extends BuiltInFunction {
-    public ArraySlice() { super("ARRAY_SLICE", VariantType.VARIANT); }
+    public ArraySlice() { super("ARRAY_SLICE", ArrayType.ARRAY); }
 
     @Override
     public Object evaluate(final List<Object> args) {
@@ -39,7 +40,7 @@ public class ArraySlice extends BuiltInFunction {
         to   = Math.min(to,   src.size());
         ArrayNode result = ArrayFunctionHelper.MAPPER.createArrayNode();
         for (int i = from; i < to; i++) result.add(src.get(i));
-        return result.toString();
+        return VariantValue.ofNode(result);
     }
 
     @Override public int getMinArgCount() { return 2; }

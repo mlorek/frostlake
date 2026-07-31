@@ -18,6 +18,7 @@ package dev.frostlake.security;
 
 import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.metastore.model.View;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -31,6 +32,12 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 public class ViewRowAccessPolicyTest extends BaseDatabaseTest {
 
+    private static final String EMBEDDED_SESSION_AND_CATALOG =
+        "switches roles through engine.getSecurityManager().getSessionContext() and reads the "
+        + "attachment through engine.getCatalog(); under SF_LIVE both still address the EMBEDDED "
+        + "engine while the SQL runs on Snowflake, so the role never moves for the account's "
+        + "queries and the embedded catalog holds no view";
+
     private void createOrdersAndView() {
         engine.execute("CREATE TABLE orders (id INTEGER, region VARCHAR)");
         engine.execute("INSERT INTO orders VALUES (1, 'EU'), (2, 'US'), (3, 'EU')");
@@ -43,6 +50,7 @@ public class ViewRowAccessPolicyTest extends BaseDatabaseTest {
 
     @Test
     public void alterViewAddRowAccessPolicyAttaches() {
+        Assumptions.assumeFalse(isLiveSnowflake(), EMBEDDED_SESSION_AND_CATALOG);
         createOrdersAndView();
         engine.execute("CREATE ROW ACCESS POLICY eu_only AS (r VARCHAR) RETURNS BOOLEAN -> r = 'EU'");
         engine.execute("ALTER VIEW orders_view ADD ROW ACCESS POLICY eu_only ON (region)");
@@ -55,6 +63,7 @@ public class ViewRowAccessPolicyTest extends BaseDatabaseTest {
 
     @Test
     public void policyFiltersViewRowsForNonAdminAndBypassesForAdmin() {
+        Assumptions.assumeFalse(isLiveSnowflake(), EMBEDDED_SESSION_AND_CATALOG);
         createOrdersAndView();
         engine.execute("""
             CREATE ROW ACCESS POLICY eu_only AS (r VARCHAR) RETURNS BOOLEAN
@@ -70,6 +79,7 @@ public class ViewRowAccessPolicyTest extends BaseDatabaseTest {
 
     @Test
     public void dropRowAccessPolicyRestoresFullVisibility() {
+        Assumptions.assumeFalse(isLiveSnowflake(), EMBEDDED_SESSION_AND_CATALOG);
         createOrdersAndView();
         engine.execute("CREATE ROW ACCESS POLICY none_visible AS (r VARCHAR) RETURNS BOOLEAN -> FALSE");
         engine.execute("ALTER VIEW orders_view ADD ROW ACCESS POLICY none_visible ON (region)");
@@ -103,6 +113,7 @@ public class ViewRowAccessPolicyTest extends BaseDatabaseTest {
 
     @Test
     public void cloneDatabasePreservesViewPolicyAttachment() {
+        Assumptions.assumeFalse(isLiveSnowflake(), EMBEDDED_SESSION_AND_CATALOG);
         createOrdersAndView();
         engine.execute("""
             CREATE ROW ACCESS POLICY eu_only AS (r VARCHAR) RETURNS BOOLEAN

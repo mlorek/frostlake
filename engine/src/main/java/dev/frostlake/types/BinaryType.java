@@ -16,7 +16,7 @@
 
 package dev.frostlake.types;
 
-import java.util.Base64;
+import dev.frostlake.values.BinaryValue;
 
 public class BinaryType extends DataType {
 
@@ -36,24 +36,19 @@ public class BinaryType extends DataType {
         if (value == null || value.equalsIgnoreCase("NULL")) {
             return null;
         }
-        // Parse hex string or base64 encoded binary data
-        if (value.startsWith("0x") || value.startsWith("0X")) {
-            return hexStringToBytes(value.substring(2));
-        }
-        // Assume base64 encoding
-        try {
-            return Base64.getDecoder().decode(value);
-        } catch (final IllegalArgumentException e) {
-            // If not valid base64, treat as raw bytes
-            return value.getBytes();
-        }
+        // BINARY text is hex (an optional 0x prefix is accepted), matching Snowflake's
+        // VARCHAR-to-BINARY conversion.
+        return BinaryValue.fromHex(value);
     }
 
     @Override
     public String formatValue(final Object value) {
         if (value == null) return "NULL";
+        if (value instanceof BinaryValue) {
+            return ((BinaryValue) value).toHex();
+        }
         if (value instanceof byte[]) {
-            return "0x" + bytesToHex((byte[]) value);
+            return BinaryValue.of((byte[]) value).toHex();
         }
         return value.toString();
     }
@@ -76,24 +71,6 @@ public class BinaryType extends DataType {
     @Override
     public int getSize() {
         return maxLength > 0 ? maxLength : 8388608; // Default max size (8MB)
-    }
-
-    private byte[] hexStringToBytes(final String hex) {
-        int len = hex.length();
-        byte[] data = new byte[len / 2];
-        for (int i = 0; i < len; i += 2) {
-            data[i / 2] = (byte) ((Character.digit(hex.charAt(i), 16) << 4)
-                    + Character.digit(hex.charAt(i + 1), 16));
-        }
-        return data;
-    }
-
-    private String bytesToHex(final byte[] bytes) {
-        StringBuilder result = new StringBuilder();
-        for (final byte b : bytes) {
-            result.append(String.format("%02X", b));
-        }
-        return result.toString();
     }
 
     public static BinaryType BINARY = new BinaryType("BINARY", 8388608);

@@ -25,6 +25,7 @@ import dev.frostlake.metastore.model.StreamRecord;
 import dev.frostlake.metastore.model.StreamSourceType;
 import dev.frostlake.metastore.model.StreamType;
 import dev.frostlake.storage.ResultSet;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -36,11 +37,17 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 public class StreamsTest extends BaseDatabaseTest {
 
+    private static final String CATALOG_ASSERTIONS =
+        "reads the stream's change records off the in-memory Stream model via engine.getCatalog(), "
+        + "which under SF_LIVE still points at the embedded engine — the CREATE STREAM and the DML "
+        + "went to Snowflake, so the embedded catalog holds neither the stream nor its records";
+
     @Test
     public void testCreateStream() {
         engine.execute("CREATE TABLE users (id INTEGER, name VARCHAR, email VARCHAR)");
         engine.execute("CREATE STREAM user_stream ON TABLE users");
 
+        Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_ASSERTIONS);
         Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
         Stream stream = schema.getStream("user_stream");
 
@@ -55,6 +62,7 @@ public class StreamsTest extends BaseDatabaseTest {
         engine.execute("CREATE TABLE users (id INTEGER, name VARCHAR)");
         engine.execute("CREATE STREAM user_stream ON TABLE users APPEND_ONLY = TRUE");
 
+        Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_ASSERTIONS);
         Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
         Stream stream = schema.getStream("user_stream");
 
@@ -94,6 +102,7 @@ public class StreamsTest extends BaseDatabaseTest {
         engine.execute("CREATE TABLE users (id INTEGER, name VARCHAR)");
         engine.execute("CREATE STREAM user_stream ON TABLE users");
 
+        Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_ASSERTIONS);
         Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
         Stream stream = schema.getStream("user_stream");
 
@@ -113,6 +122,7 @@ public class StreamsTest extends BaseDatabaseTest {
 
         engine.execute("UPDATE users SET age = 31 WHERE id = 1");
 
+        Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_ASSERTIONS);
         Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
         Stream stream = schema.getStream("user_stream");
 
@@ -133,6 +143,7 @@ public class StreamsTest extends BaseDatabaseTest {
 
         engine.execute("DELETE FROM users WHERE id = 1");
 
+        Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_ASSERTIONS);
         Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
         Stream stream = schema.getStream("user_stream");
 
@@ -150,6 +161,7 @@ public class StreamsTest extends BaseDatabaseTest {
         engine.execute("UPDATE users SET name = 'Alicia' WHERE id = 1");
         engine.execute("DELETE FROM users WHERE id = 1");
 
+        Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_ASSERTIONS);
         Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
         Stream stream = schema.getStream("user_stream");
 
@@ -165,6 +177,7 @@ public class StreamsTest extends BaseDatabaseTest {
 
         engine.execute("INSERT INTO users VALUES (1, 'Alice')");
 
+        Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_ASSERTIONS);
         Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
         Stream stream = schema.getStream("user_stream");
 
@@ -181,6 +194,7 @@ public class StreamsTest extends BaseDatabaseTest {
         engine.execute("CREATE STREAM user_stream ON TABLE users");
         engine.execute("DROP STREAM user_stream");
 
+        Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_ASSERTIONS);
         Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
 
         assertThrows(RuntimeException.class, () -> {
@@ -195,6 +209,7 @@ public class StreamsTest extends BaseDatabaseTest {
 
         engine.execute("INSERT INTO orders VALUES (1, 100, 'pending'), (2, 200, 'completed')");
 
+        Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_ASSERTIONS);
         Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
         Stream stream = schema.getStream("order_stream");
 
@@ -232,6 +247,7 @@ public class StreamsTest extends BaseDatabaseTest {
         assertEquals(1, viaId.getRowCount());
 
         // The cloned stream preserved its VIEW source type.
+        Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_ASSERTIONS);
         final Stream cloned = engine.getCatalog().getDatabase("clonedst").getSchema("bt").getStream("s_and_delete");
         assertNotNull(cloned);
         assertEquals(StreamSourceType.VIEW, cloned.getSourceType());

@@ -16,10 +16,9 @@
 
 package dev.frostlake.executor;
 
-import dev.frostlake.functions.AggregateFunction;
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.FunctionRegistry;
-import dev.frostlake.functions.TableFunction;
+import dev.frostlake.functions.OperatorFunctionNames;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.model.FileFormat;
 import dev.frostlake.metastore.model.Function;
@@ -63,33 +62,78 @@ final class ShowRoutineExecutor {
             appendUserProcedureRows(catalog.getDatabase(dbName).getSchema(scName), dbName, rows);
         }
 
-        // Built-in system stored procedures (is_builtin = 'Y'). SHOW PROCEDURES lists these alongside
-        // user procedures; SHOW USER PROCEDURES omits them. This is the subset of Snowflake's built-in
-        // procedures whose behaviour Frostlake implements (its SYSTEM$ task routines), not the full
-        // Snowflake catalog.
+        // SHOW PROCEDURES = the built-in catalog plus the user procedures in scope, and SHOW USER
+        // PROCEDURES drops the former — the same split SHOW FUNCTIONS makes, live-verified on a real
+        // account (with one user procedure in the current schema, SHOW PROCEDURES answers 33,
+        // SHOW BUILTIN PROCEDURES 32 and SHOW USER PROCEDURES 1).
         if (!userOnly) {
-            addBuiltinProcedure(rows, "SYSTEM$WAIT",
-                "SYSTEM$WAIT(NUMBER, VARCHAR) RETURN VARCHAR",
-                "Pause the current session for the given number of seconds (or the given time unit).");
-            addBuiltinProcedure(rows, "SYSTEM$SET_RETURN_VALUE",
-                "SYSTEM$SET_RETURN_VALUE(VARCHAR) RETURN VARCHAR",
-                "Set the return value of the current task run, readable by its successors.");
-            addBuiltinProcedure(rows, "SYSTEM$USER_TASK_CANCEL_ONGOING_EXECUTIONS",
-                "SYSTEM$USER_TASK_CANCEL_ONGOING_EXECUTIONS(VARCHAR) RETURN VARCHAR",
-                "Cancel all ongoing executions of the specified task.");
+            appendBuiltinProcedureRows(rows);
         }
         return new ResultSet(columns, rows);
     }
 
-    /** SHOW PROCEDURES IN DATABASE &lt;db&gt;: user procedures across all schemas of the database. Built-in
-     *  procedures are not scoped to a user database, so they are omitted here. */
+    /**
+     * SHOW BUILTIN PROCEDURES: the built-in catalog only, never user-defined procedures.
+     *
+     * <p>Live-verified on a real account: with one user procedure in the current schema it
+     * returns 32 rows to SHOW PROCEDURES' 33, the user procedure is in none of them, and the listing
+     * ignores scope — {@code IN SCHEMA} and {@code IN DATABASE} both still answer 32.
+     */
+    public ResultSet showBuiltinProcedures() {
+        final List<Row> rows = new ArrayList<>();
+        appendBuiltinProcedureRows(rows);
+        return new ResultSet(procedureColumns(), rows);
+    }
+
+    /**
+     * One row per built-in procedure the engine can CALL — of which there are none, so this appends
+     * nothing.
+     *
+     * <p>This is not an oversight and must not become a hand-maintained list of the names a real account
+     * happens to ship: like the function listing, this one describes what <em>this</em> engine dispatches.
+     * {@code CALL} resolves a name through {@code Schema.getProcedure} and nothing else
+     * ({@code SQLCommandVisitor.visitCallStatement} raises "Procedure not found" the moment the catalog
+     * misses), so every procedure Frostlake can run is a user procedure in a schema, and the built-in
+     * half of the listing is structurally empty. The SYSTEM$ routines the engine implements are
+     * FUNCTIONS, not procedures — a real account agrees (
+     * {@code SHOW BUILTIN PROCEDURES} does not list SYSTEM$WAIT while {@code SHOW BUILTIN FUNCTIONS}
+     * does), so {@code appendBuiltinFunctionRows} lists them instead.
+     *
+     * <p>When the engine grows a built-in procedure, add it to whatever source {@code CALL} learns to
+     * dispatch it from and enumerate that source here — the one mistake to avoid is a second, separate
+     * list that the dispatcher never reads.
+     */
+    private void appendBuiltinProcedureRows(final List<Row> rows) {
+        // Intentionally empty — see the javadoc above.
+    }
+
+    /**
+     * SHOW PROCEDURES IN DATABASE &lt;db&gt;: the built-in catalog plus the user procedures of every
+     * schema in the database, mirroring {@link #showFunctionsInDatabase(String)}.
+     *
+     * <p>Live-verified: with two user procedures in one schema of a two-schema database,
+     * {@code IN DATABASE} answers 34 (32 built-in + 2) and {@code IN SCHEMA} the other schema 32.
+     * {@link #appendBuiltinProcedureRows} contributes nothing here because Frostlake dispatches no
+     * built-in procedures — the call is what keeps the two listings structurally identical, so a
+     * built-in procedure would show up in both the moment one exists.
+     */
     public ResultSet showProceduresInDatabase(final String databaseName) {
         final List<ResultSetColumn> columns = procedureColumns();
         final List<Row> rows = new ArrayList<>();
         for (final Schema schema : catalog.getDatabase(databaseName).getAllSchemas()) {
             appendUserProcedureRows(schema, databaseName, rows);
         }
+        appendBuiltinProcedureRows(rows);
         return new ResultSet(columns, rows);
+    }
+
+    /** SHOW USER PROCEDURES IN DATABASE &lt;db&gt;: the same listing with the built-in half dropped. */
+    public ResultSet showUserProceduresInDatabase(final String databaseName) {
+        final List<Row> rows = new ArrayList<>();
+        for (final Schema schema : catalog.getDatabase(databaseName).getAllSchemas()) {
+            appendUserProcedureRows(schema, databaseName, rows);
+        }
+        return new ResultSet(procedureColumns(), rows);
     }
 
     private void appendUserProcedureRows(final Schema schema, final String dbName, final List<Row> rows) {
@@ -97,21 +141,34 @@ final class ShowRoutineExecutor {
             final String sig = proc.getName() + buildArgSig(proc.getParameters())
                 + " RETURN " + proc.getReturnType().getName();
             rows.add(new Row(Arrays.asList(
-                proc.getCreatedTime().toString(),
+                ShowResultHelpers.createdOnText(proc.getCreatedTime()),
                 proc.getName(),
                 schema.getName(),
                 "N", "N", "N",
                 proc.getParameters().size(), proc.getParameters().size(),
                 sig,
-                proc.getComment(),
+                routineDescription(proc.getComment(), "user-defined procedure"),
                 dbName,
-                "N", "N", "N", "N",
-                proc.getLanguage(),
-                proc.getExecuteAs()
+                "N", "N", "N",
+                null, null
             )));
         }
     }
 
+    /**
+     * The SHOW PROCEDURES column shape: the first 16 of the 20 {@link #functionColumns()}, which is to
+     * say every one of them except the four a procedure has no answer for
+     * ({@code is_external_function}, {@code language}, {@code is_memoizable}, {@code is_data_metric}).
+     *
+     * <p>Live-verified on a real account: all six procedure listings — plain, USER, BUILTIN,
+     * each with and without TERSE — return exactly these 16 names in this order.
+     *
+     * <p>Frostlake used to end this list with {@code is_external_function, language, execute_as}. The
+     * last two are not SHOW PROCEDURES columns at all on a real account; both surface under
+     * {@code DESCRIBE PROCEDURE} instead, which answers {@code language | SQL} and
+     * {@code execute as | OWNER} property rows (live-verified the same day), and which
+     * {@link #describeProcedure(String)} already reports.
+     */
     private List<ResultSetColumn> procedureColumns() {
         return Arrays.asList(
             new ResultSetColumn("created_on", StringType.VARCHAR),
@@ -128,30 +185,9 @@ final class ShowRoutineExecutor {
             new ResultSetColumn("is_table_function", StringType.VARCHAR),
             new ResultSetColumn("valid_for_clustering", StringType.VARCHAR),
             new ResultSetColumn("is_secure", StringType.VARCHAR),
-            new ResultSetColumn("is_external_function", StringType.VARCHAR),
-            new ResultSetColumn("language", StringType.VARCHAR),
-            new ResultSetColumn("execute_as", StringType.VARCHAR)
+            new ResultSetColumn("secrets", StringType.VARCHAR),
+            new ResultSetColumn("external_access_integrations", StringType.VARCHAR)
         );
-    }
-
-    /** Append a SHOW PROCEDURES row for a built-in system stored procedure (is_builtin = 'Y'). */
-    private void addBuiltinProcedure(final List<Row> rows, final String name, final String arguments,
-                                     final String description) {
-        rows.add(new Row(Arrays.asList(
-            null,              // created_on
-            name,              // name
-            null,              // schema_name (built-ins are not in a user schema)
-            "Y",               // is_builtin
-            "N",               // is_aggregate
-            "N",               // is_ansi
-            null, null,        // min / max num arguments (not modeled)
-            arguments,         // arguments
-            description,       // description
-            null,              // catalog_name
-            "N", "N", "N", "N", // is_table_function / valid_for_clustering / is_secure / is_external_function
-            "SQL",             // language
-            "OWNER"            // execute_as
-        )));
     }
 
     public ResultSet showFunctions(final String schemaName, final boolean userOnly) {
@@ -165,32 +201,75 @@ final class ShowRoutineExecutor {
             appendUserFunctionRows(catalog.getDatabase(dbName).getSchema(scName), dbName, rows);
         }
 
-        // Built-in (system-defined) functions: scalars, aggregates, and table functions. SHOW FUNCTIONS
-        // lists these alongside user functions (is_builtin = 'Y'); SHOW USER FUNCTIONS omits them. Without
-        // them SHOW FUNCTIONS returns nothing on a fresh session that has not created any user functions.
+        // Built-in (system-defined) functions. SHOW FUNCTIONS lists these alongside user functions
+        // (is_builtin = 'Y'); SHOW USER FUNCTIONS omits them. Without them SHOW FUNCTIONS returns nothing
+        // on a fresh session that has not created any user functions. Live-verified: on a real
+        // account SHOW FUNCTIONS = SHOW BUILTIN FUNCTIONS plus the user functions in scope, exactly — the
+        // 1134 built-in rows of the two listings share all 926 names, with nothing in either alone.
         if (!userOnly) {
-            for (final BuiltInFunction fn : functionRegistry.getAllFunctions()) {
-                rows.add(builtinRow(fn, "N", "N"));
-            }
-            for (final AggregateFunction fn : functionRegistry.getAllAggregateFunctions()) {
-                rows.add(builtinRow(fn, "Y", "N"));
-            }
-            for (final TableFunction fn : functionRegistry.getAllTableFunctions()) {
-                rows.add(builtinTableFunctionRow(fn));
-            }
+            appendBuiltinFunctionRows(rows);
         }
         return new ResultSet(columns, rows);
     }
 
-    /** SHOW FUNCTIONS IN DATABASE &lt;db&gt;: user functions across all schemas of the database. Built-in
-     *  functions are not scoped to a user database, so they are omitted here. */
+    /**
+     * SHOW BUILTIN FUNCTIONS: the built-in catalog only, never user-defined functions.
+     *
+     * <p>Live-verified on a real account: with a schema in use holding one UDF,
+     * {@code SHOW BUILTIN FUNCTIONS} returns 1134 rows and {@code SHOW FUNCTIONS} 1135 — the same rows
+     * plus that UDF — while {@code SHOW BUILTIN FUNCTIONS LIKE '<the udf>'} returns nothing. The listing
+     * ignores scope: {@code IN SCHEMA} / {@code IN DATABASE} / {@code IN ACCOUNT} all still answer 1134.
+     */
+    public ResultSet showBuiltinFunctions() {
+        final List<Row> rows = new ArrayList<>();
+        appendBuiltinFunctionRows(rows);
+        return new ResultSet(functionColumns(), rows);
+    }
+
+    /**
+     * One row per name the engine can dispatch, taken from {@code FunctionRegistry.allDispatchableNames()}
+     * — the single source shared with the dispatchers themselves.
+     *
+     * <p>This replaced three loops over the registry's function/aggregate/table-function <em>values</em>,
+     * which listed 396 distinct names out of the 552 the engine can run: those loops read
+     * {@code BuiltInFunction.getName()}, so every alias reported its canonical name instead (SUBSTR showed
+     * as a second SUBSTRING row, and ARRAYAGG, RLIKE, DAYOFMONTH, BIT_OR_AGG, … never appeared at all),
+     * and the window, higher-order, SYSTEM$ and operator families are not in those maps to begin with.
+     */
+    private void appendBuiltinFunctionRows(final List<Row> rows) {
+        for (final String name : functionRegistry.allDispatchableNames()) {
+            rows.add(builtinRow(name));
+        }
+    }
+
+    /**
+     * SHOW FUNCTIONS IN DATABASE &lt;db&gt;: the built-in catalog plus the user functions of every schema
+     * in the database.
+     *
+     * <p>The built-ins belong here for the same reason they belong in the unqualified listing: scoping
+     * the command narrows which <em>user</em> functions it reaches, not whether the system ones are
+     * callable. Live-verified on a real account with three UDFs spread over two schemas of
+     * one database: {@code SHOW FUNCTIONS} answers 1136 for the schema holding two of them,
+     * {@code IN SCHEMA} the other schema 1135, and {@code IN DATABASE} 1137 — 1134 built-ins plus the
+     * user functions in scope every time. {@code SHOW USER FUNCTIONS IN DATABASE} answers a bare 3.
+     */
     public ResultSet showFunctionsInDatabase(final String databaseName) {
         final List<ResultSetColumn> columns = functionColumns();
         final List<Row> rows = new ArrayList<>();
         for (final Schema schema : catalog.getDatabase(databaseName).getAllSchemas()) {
             appendUserFunctionRows(schema, databaseName, rows);
         }
+        appendBuiltinFunctionRows(rows);
         return new ResultSet(columns, rows);
+    }
+
+    /** SHOW USER FUNCTIONS IN DATABASE &lt;db&gt;: the same listing with the built-in half dropped. */
+    public ResultSet showUserFunctionsInDatabase(final String databaseName) {
+        final List<Row> rows = new ArrayList<>();
+        for (final Schema schema : catalog.getDatabase(databaseName).getAllSchemas()) {
+            appendUserFunctionRows(schema, databaseName, rows);
+        }
+        return new ResultSet(functionColumns(), rows);
     }
 
     private void appendUserFunctionRows(final Schema schema, final String dbName, final List<Row> rows) {
@@ -198,21 +277,30 @@ final class ShowRoutineExecutor {
             final String sig = func.getName() + buildArgSig(func.getParameters())
                 + " RETURN " + func.getReturnType().getName();
             rows.add(new Row(Arrays.asList(
-                func.getCreatedTime().toString(),
+                ShowResultHelpers.createdOnText(func.getCreatedTime()),
                 func.getName(),
                 schema.getName(),
                 "N", "N", "N",
                 func.getParameters().size(), func.getParameters().size(),
                 sig,
-                func.getComment(),
+                routineDescription(func.getComment(), "user-defined function"),
                 dbName,
                 func.isTableFunction() ? "Y" : "N",
-                "N", "N", "N",
-                func.getLanguage()
+                "N", "N",
+                null, null,
+                "N",
+                func.getLanguage(),
+                "N", "N"
             )));
         }
     }
 
+    /**
+     * The SHOW FUNCTIONS / SHOW BUILTIN FUNCTIONS column shape, matched against a real account
+     * (both commands, and SHOW USER FUNCTIONS, return the same 20 columns in
+     * this order). {@code secrets}, {@code external_access_integrations}, {@code is_memoizable} and
+     * {@code is_data_metric} were missing here.
+     */
     private List<ResultSetColumn> functionColumns() {
         return Arrays.asList(
             new ResultSetColumn("created_on", StringType.VARCHAR),
@@ -229,48 +317,82 @@ final class ShowRoutineExecutor {
             new ResultSetColumn("is_table_function", StringType.VARCHAR),
             new ResultSetColumn("valid_for_clustering", StringType.VARCHAR),
             new ResultSetColumn("is_secure", StringType.VARCHAR),
+            new ResultSetColumn("secrets", StringType.VARCHAR),
+            new ResultSetColumn("external_access_integrations", StringType.VARCHAR),
             new ResultSetColumn("is_external_function", StringType.VARCHAR),
-            new ResultSetColumn("language", StringType.VARCHAR)
+            new ResultSetColumn("language", StringType.VARCHAR),
+            new ResultSetColumn("is_memoizable", StringType.VARCHAR),
+            new ResultSetColumn("is_data_metric", StringType.VARCHAR)
         );
     }
 
-    /** A SHOW FUNCTIONS row for a built-in scalar / aggregate function (is_builtin = 'Y'). */
-    private Row builtinRow(final BuiltInFunction fn, final String isAggregate, final String isTableFunction) {
-        final Object maxArgs = fn.isVariadic() ? null : fn.getMaxArgCount();
-        final String args = fn.getName() + (fn.getMaxArgCount() == 0 ? "()" : "(...)")
-            + " RETURN " + fn.getReturnType().getName();
+    /**
+     * A SHOW FUNCTIONS row for one dispatchable built-in name (is_builtin = 'Y').
+     *
+     * <p>The name is the registry <em>key</em>, so an alias is listed under the name it is called by, and
+     * the arity / return type come from whichever map holds it. The window, higher-order, SYSTEM$ and
+     * operator families have no function object at all, so their arity is left unmodelled (null) — a real
+     * account fills those in and reports variadic maxima as -1 (
+     * {@code COUNT} is {@code min_num_arguments = 1, max_num_arguments = -1}), which is why a variadic
+     * registry function reports -1 here rather than null.
+     */
+    private Row builtinRow(final String name) {
+        final boolean isAggregate = functionRegistry.hasAggregateFunction(name);
+        final BuiltInFunction fn = isAggregate
+            ? functionRegistry.getAggregateFunction(name) : functionRegistry.getFunction(name);
+        final Object minArgs = fn != null ? Integer.valueOf(fn.getMinArgCount()) : null;
+        final Object maxArgs = fn == null ? null
+            : Integer.valueOf(fn.isVariadic() || fn.getMaxArgCount() < 0 ? -1 : fn.getMaxArgCount());
+        final String args;
+        if (fn != null) {
+            args = name + (fn.getMaxArgCount() == 0 ? "()" : "(...)")
+                + " RETURN " + fn.getReturnType().getName();
+        } else if (OperatorFunctionNames.contains(name)) {
+            // An operator name is not call-shaped — "IS NULL(...)" or "COUNT(*)(...)" would be nonsense.
+            args = null;
+        } else {
+            args = name + "(...)";
+        }
         return new Row(Arrays.asList(
             null,                    // created_on
-            fn.getName(),            // name
+            name,                    // name
             null,                    // schema_name (built-ins are not in a user schema)
             "Y",                     // is_builtin
-            isAggregate,             // is_aggregate
+            isAggregate ? "Y" : "N", // is_aggregate
             "N",                     // is_ansi
-            fn.getMinArgCount(),     // min_num_arguments
-            maxArgs,                 // max_num_arguments (null when variadic)
+            minArgs,                 // min_num_arguments
+            maxArgs,                 // max_num_arguments (-1 when variadic)
             args,                    // arguments
             null,                    // description
             null,                    // catalog_name
-            isTableFunction,         // is_table_function
+            functionRegistry.hasTableFunction(name) ? "Y" : "N", // is_table_function
             "N",                     // valid_for_clustering
             "N",                     // is_secure
+            null,                    // secrets
+            null,                    // external_access_integrations
             "N",                     // is_external_function
-            "SQL"                    // language
+            "SQL",                   // language
+            "N",                     // is_memoizable
+            "N"                      // is_data_metric
         ));
     }
 
-    /** A SHOW FUNCTIONS row for a built-in table function (per-argument metadata is not modeled). */
-    private Row builtinTableFunctionRow(final TableFunction fn) {
-        return new Row(Arrays.asList(
-            null, fn.getName(), null,
-            "Y", "N", "N",
-            null, null,
-            fn.getName() + "(...)",
-            null, null,
-            "Y",
-            "N", "N", "N",
-            "SQL"
-        ));
+    /**
+     * The {@code description} cell of a SHOW FUNCTIONS / SHOW PROCEDURES row for a user routine: its
+     * COMMENT, or a fixed placeholder when it has none.
+     *
+     * <p>Live-verified on a real account: a UDF created without a comment lists
+     * {@code description = 'user-defined function'} and a stored procedure without one
+     * {@code 'user-defined procedure'}; creating either {@code WITH COMMENT = 'my fn comment'} puts that
+     * comment in the same cell instead. The column is therefore never null for a user routine — it was
+     * here, because Frostlake passed the raw (null) comment straight through.
+     *
+     * <p>Built-in rows are a different matter and stay null: a real account fills them with per-function
+     * prose ({@code ABS} reads "returns absolute value of numeric"), which only a hand-maintained
+     * catalogue of ~1000 strings could reproduce.
+     */
+    private String routineDescription(final String comment, final String placeholder) {
+        return comment == null || comment.isEmpty() ? placeholder : comment;
     }
 
     private String buildArgSig(final List<Parameter> params) {
@@ -308,7 +430,7 @@ final class ShowRoutineExecutor {
         for (final Tag tag : schema.getTags()) {
             final String av = tag.hasAllowedValues() ? String.join(", ", tag.getAllowedValues()) : null;
             rows.add(new Row(Arrays.asList(
-                tag.getCreatedTime().toString(),
+                ShowResultHelpers.createdOnText(tag.getCreatedTime()),
                 tag.getName(),
                 dbName, scName,
                 tag.getOwner(),
@@ -356,7 +478,7 @@ final class ShowRoutineExecutor {
     public ResultSet describeFunction(final String name) {
         final Function fn = resolveDescribeSchema().getFunction(lastSegment(name));
         if (fn == null) {
-            throw new RuntimeException("Function does not exist: " + name);
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Function", name));
         }
         final List<Row> rows = new ArrayList<>();
         rows.add(new Row(Arrays.asList("signature", routineSignature(fn.getParameters()))));
@@ -377,7 +499,7 @@ final class ShowRoutineExecutor {
     public ResultSet describeProcedure(final String name) {
         final Procedure proc = resolveDescribeSchema().getProcedure(lastSegment(name));
         if (proc == null) {
-            throw new RuntimeException("Procedure does not exist: " + name);
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Procedure", name));
         }
         final List<Row> rows = new ArrayList<>();
         rows.add(new Row(Arrays.asList("signature", routineSignature(proc.getParameters()))));
@@ -395,42 +517,63 @@ final class ShowRoutineExecutor {
     public ResultSet describeMaskingPolicy(final String name) {
         final MaskingPolicy policy = resolveDescribeSchema().getMaskingPolicy(lastSegment(name));
         if (policy == null) {
-            throw new RuntimeException("Masking policy does not exist: " + name);
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Masking policy", name));
         }
-        final List<Row> rows = new ArrayList<>();
-        rows.add(new Row(Arrays.asList("name", lastSegment(name))));
-        rows.add(new Row(Arrays.asList("signature", routineSignature(policy.getParameters()))));
-        rows.add(new Row(Arrays.asList("return_type", policy.getReturnType())));
-        rows.add(new Row(Arrays.asList("body", policy.getBody())));
-        return propertyValueResult(rows);
+        return policyDescribeResult(policy.getName(), routineSignature(policy.getParameters()),
+            normalizePolicyType(policy.getReturnType()), policy.getBody());
     }
 
     public ResultSet describeRowAccessPolicy(final String name) {
         final RowAccessPolicy policy = resolveDescribeSchema().getRowAccessPolicy(lastSegment(name));
         if (policy == null) {
-            throw new RuntimeException("Row access policy does not exist: " + name);
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Row access policy", name));
         }
+        return policyDescribeResult(policy.getName(), routineSignature(policy.getParameters()),
+            "BOOLEAN", policy.getBody());
+    }
+
+    /**
+     * Snowflake DESC MASKING / ROW ACCESS POLICY returns a single columnar row —
+     * name | signature | return_type | body — not property/value rows (live-verified).
+     */
+    private ResultSet policyDescribeResult(final String name, final String signature,
+                                           final String returnType, final String body) {
+        final List<ResultSetColumn> columns = Arrays.asList(
+            new ResultSetColumn("name", StringType.VARCHAR),
+            new ResultSetColumn("signature", StringType.VARCHAR),
+            new ResultSetColumn("return_type", StringType.VARCHAR),
+            new ResultSetColumn("body", StringType.VARCHAR)
+        );
         final List<Row> rows = new ArrayList<>();
-        rows.add(new Row(Arrays.asList("name", lastSegment(name))));
-        rows.add(new Row(Arrays.asList("signature", routineSignature(policy.getParameters()))));
-        rows.add(new Row(Arrays.asList("return_type", "BOOLEAN")));
-        rows.add(new Row(Arrays.asList("body", policy.getBody())));
-        return propertyValueResult(rows);
+        rows.add(new Row(Arrays.asList(name, signature, returnType, body)));
+        return new ResultSet(columns, rows);
+    }
+
+    /** Snowflake reports policy return types by canonical name: STRING / TEXT surface as VARCHAR. */
+    private String normalizePolicyType(final String typeName) {
+        if (typeName == null) {
+            return null;
+        }
+        final String upper = typeName.toUpperCase();
+        if (upper.equals("STRING") || upper.equals("TEXT")) {
+            return "VARCHAR";
+        }
+        return upper;
     }
 
     public ResultSet describeFileFormat(final String name) {
         final FileFormat ff = resolveDescribeSchema().getFileFormat(lastSegment(name));
         if (ff == null) {
-            throw new RuntimeException("File format does not exist: " + name);
+            throw new RuntimeException(SqlCompilationError.doesNotExist("File format", name));
         }
         final List<Row> rows = new ArrayList<>();
         rows.add(new Row(Arrays.asList("TYPE", ff.getType())));
         for (final String key : ff.getOptions().keySet()) {
             rows.add(new Row(Arrays.asList(key, ff.getOptions().get(key))));
         }
-        if (ff.getComment() != null) {
-            rows.add(new Row(Arrays.asList("COMMENT", ff.getComment())));
-        }
+        // No COMMENT row: live-verified on a real account, DESCRIBE FILE FORMAT lists only
+        // the FORMAT properties (TYPE, RECORD_DELIMITER, FIELD_DELIMITER, …) — a format's comment,
+        // whether given inline or by COMMENT ON FILE FORMAT, surfaces in SHOW FILE FORMATS instead.
         return propertyValueResult(rows);
     }
 
@@ -504,7 +647,7 @@ final class ShowRoutineExecutor {
         final String scName = schema.getName();
         for (final MaskingPolicy mp : schema.getMaskingPolicies()) {
             rows.add(new Row(Arrays.asList(
-                mp.getCreatedTime().toString(),
+                ShowResultHelpers.createdOnText(mp.getCreatedTime()),
                 mp.getName(),
                 dbName, scName,
                 "MASKING_POLICY",
@@ -538,7 +681,7 @@ final class ShowRoutineExecutor {
         final String scName = schema.getName();
         for (final RowAccessPolicy rap : schema.getRowAccessPolicies()) {
             rows.add(new Row(Arrays.asList(
-                rap.getCreatedTime().toString(),
+                ShowResultHelpers.createdOnText(rap.getCreatedTime()),
                 rap.getName(),
                 dbName, scName,
                 "ROW_ACCESS_POLICY",

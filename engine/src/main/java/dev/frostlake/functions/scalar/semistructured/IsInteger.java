@@ -16,13 +16,13 @@
 
 package dev.frostlake.functions.scalar.semistructured;
 
-import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.functions.StructuredArgumentFunction;
 import dev.frostlake.functions.scalar.JsonTypeHelper;
 import dev.frostlake.types.BooleanType;
 import java.util.List;
 import tools.jackson.databind.JsonNode;
 
-public class IsInteger extends BuiltInFunction {
+public class IsInteger extends StructuredArgumentFunction {
     public IsInteger() { super("IS_INTEGER", new BooleanType()); }
 
     @Override

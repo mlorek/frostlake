@@ -17,8 +17,10 @@
 package dev.frostlake.functions.scalar.context;
 
 import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.functions.table.QueryRunner;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.QualifiedName;
+import dev.frostlake.metastore.SqlObject;
 import dev.frostlake.metastore.model.DefaultValueExpression;
 import dev.frostlake.metastore.model.ForeignKeyConstraint;
 import dev.frostlake.metastore.model.MaterializedView;
@@ -26,7 +28,10 @@ import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.metastore.model.Sequence;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.TableColumn;
+import dev.frostlake.metastore.model.UniqueConstraint;
 import dev.frostlake.metastore.model.View;
+import dev.frostlake.storage.ResultSet;
+import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.types.DataType;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.types.StringType;
@@ -45,10 +50,17 @@ import java.util.List;
 public class GetDdl extends BuiltInFunction {
 
     private final Catalog catalog;
+    /** Runs a view's defining query to derive its output column names; null until the executor wires it. */
+    private final QueryRunner queryRunner;
 
     public GetDdl(final Catalog catalog) {
+        this(catalog, null);
+    }
+
+    public GetDdl(final Catalog catalog, final QueryRunner queryRunner) {
         super("GET_DDL", StringType.VARCHAR);
         this.catalog = catalog;
+        this.queryRunner = queryRunner;
     }
 
     @Override
@@ -78,9 +90,22 @@ public class GetDdl extends BuiltInFunction {
         final StringBuilder sb = new StringBuilder();
         sb.append("create or replace TABLE ").append(table.getName()).append(" (");
 
+        // A UNIQUE constraint spanning several columns is ONE constraint, so it renders as a table-level
+        // line; re-emitting it as an inline UNIQUE per column would recreate it as several independent
+        // single-column constraints. A single-column UNIQUE keeps the inline form Snowflake prints.
+        final List<UniqueConstraint> multiColumnUniques = new ArrayList<UniqueConstraint>();
+        for (final UniqueConstraint unique : table.getUniqueConstraints()) {
+            if (unique.getColumnNames().size() > 1) {
+                multiColumnUniques.add(unique);
+            }
+        }
+
         final List<String> lines = new ArrayList<String>();
         for (final TableColumn col : table.getColumns()) {
-            lines.add(columnLine(col));
+            lines.add(columnLine(col, spannedByMultiColumnUnique(multiColumnUniques, col.getName())));
+        }
+        for (final UniqueConstraint unique : multiColumnUniques) {
+            lines.add("unique (" + String.join(", ", unique.getColumnNames()) + ")");
         }
         if (!table.getPrimaryKeys().isEmpty()) {
             lines.add("primary key (" + String.join(", ", table.getPrimaryKeys()) + ")");
@@ -99,7 +124,17 @@ public class GetDdl extends BuiltInFunction {
         return sb.append(";").toString();
     }
 
-    private String columnLine(final TableColumn col) {
+    /** True when a multi-column UNIQUE already renders the column, so its inline UNIQUE must be skipped. */
+    private boolean spannedByMultiColumnUnique(final List<UniqueConstraint> uniques, final String columnName) {
+        for (final UniqueConstraint unique : uniques) {
+            if (unique.covers(columnName)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private String columnLine(final TableColumn col, final boolean uniqueRenderedAtTableLevel) {
         final StringBuilder c = new StringBuilder();
         c.append(col.getName()).append(" ").append(renderType(col.getDataType()));
         if (col.getCollation() != null && !col.getCollation().isEmpty()) {
@@ -116,7 +151,7 @@ public class GetDdl extends BuiltInFunction {
                 c.append(" DEFAULT ").append(renderDefault(col.getDefaultValue()));
             }
         }
-        if (col.isUnique() && !col.isPrimaryKey()) {
+        if (col.isUnique() && !col.isPrimaryKey() && !uniqueRenderedAtTableLevel) {
             c.append(" UNIQUE");
         }
         if (col.getComment() != null && !col.getComment().isEmpty()) {
@@ -159,8 +194,52 @@ public class GetDdl extends BuiltInFunction {
 
     // ─────────────────────────── VIEW ───────────────────────────
 
+    /**
+     * Live Snowflake's GET_DDL always renders a view's parenthesized output column list, one
+     * tab-indented column per line: {@code create or replace view V(\n\tA,\n\tB\n) as SELECT ...;}.
+     * Columns come from the explicit column list when declared, otherwise from executing the
+     * defining query; if neither is available the list is omitted (pre-existing shape).
+     */
     private String viewDdl(final View view) {
-        return view.ddl(view.getName());
+        final List<String> columns = viewOutputColumns(view);
+        if (columns == null || columns.isEmpty()) {
+            return view.ddl(view.getName());
+        }
+        final StringBuilder sb = new StringBuilder();
+        sb.append("create or replace ");
+        if (view.isSecure()) {
+            sb.append("secure ");
+        }
+        sb.append("view ").append(view.getName()).append("(");
+        for (int i = 0; i < columns.size(); i++) {
+            sb.append(i == 0 ? "\n\t" : ",\n\t").append(columns.get(i));
+        }
+        sb.append("\n) as ");
+        return sb.append(SqlObject.withoutTrailingSemicolon(view.getDefinition())).append(";").toString();
+    }
+
+    /** The view's output column names: the declared list, else derived by running the definition. */
+    private List<String> viewOutputColumns(final View view) {
+        if (view.hasExplicitColumnNames()) {
+            return view.getColumnNames();
+        }
+        if (queryRunner == null) {
+            return null;
+        }
+        try {
+            final ResultSet rs = queryRunner.runQuery(view.getDefinition());
+            if (rs == null) {
+                return null;
+            }
+            final List<String> names = new ArrayList<String>();
+            for (final ResultSetColumn column : rs.getColumns()) {
+                names.add(column.getName());
+            }
+            return names;
+        } catch (final RuntimeException e) {
+            // An unexecutable definition (e.g. a dropped base table) falls back to the list-free form.
+            return null;
+        }
     }
 
     private String materializedViewDdl(final MaterializedView view) {
@@ -170,10 +249,11 @@ public class GetDdl extends BuiltInFunction {
     // ─────────────────────────── SEQUENCE ───────────────────────────
 
     private String sequenceDdl(final Sequence seq) {
+        // Live Snowflake wording: "start with N increment by N", not "start N increment N".
         final StringBuilder sb = new StringBuilder();
         sb.append("create or replace sequence ").append(seq.getName())
-          .append(" start ").append(seq.getStartValue())
-          .append(" increment ").append(seq.getIncrement())
+          .append(" start with ").append(seq.getStartValue())
+          .append(" increment by ").append(seq.getIncrement())
           .append(seq.isOrder() ? " order" : " noorder");
         if (seq.getComment() != null && !seq.getComment().isEmpty()) {
             sb.append(" comment = '").append(seq.getComment().replace("'", "''")).append("'");

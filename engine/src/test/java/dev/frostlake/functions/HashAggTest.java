@@ -22,7 +22,6 @@ import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
-import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -66,8 +65,9 @@ public class HashAggTest extends BaseDatabaseTest {
     }
 
     @Test
-    public void emptyGroupYieldsNull() {
-        assertNull(engine.executeQuery("SELECT HASH_AGG(v) FROM h WHERE g = 999")
+    public void emptyGroupYieldsZero() {
+        // Live-verified: HASH_AGG over zero rows is 0, not NULL.
+        assertEquals(0L, engine.executeQuery("SELECT HASH_AGG(v) FROM h WHERE g = 999")
             .getRows().get(0).getValue(0));
     }
 }

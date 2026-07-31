@@ -216,9 +216,9 @@ public class DirectPreparedStatement extends DirectStatement implements Prepared
                     parameters.clear();
                     parameters.putAll(params);
 
-                    // Execute with these parameters
-                    executeUpdate();
-                    results[index] = SUCCESS_NO_INFO;
+                    // Execute with these parameters — live Snowflake reports the real
+                    // affected-row count per batch entry, not SUCCESS_NO_INFO.
+                    results[index] = executeUpdate();
 
                     // Restore original parameters
                     parameters.clear();

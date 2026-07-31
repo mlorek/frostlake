@@ -1,0 +1,104 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>dev.frostlake</groupId>
+        <artifactId>frostlake-parent</artifactId>
+        <version>${revision}</version>
+        <relativePath>../pom.xml</relativePath>
+    </parent>
+
+    <artifactId>frostlake-geo</artifactId>
+    <packaging>jar</packaging>
+
+    <name>Frostlake Geo</name>
+    <description>Optional GEOGRAPHY / GEOMETRY function pack for Frostlake (TO_GEOGRAPHY, the ST_ family,
+        HAVERSINE companions), contributed to the engine via the FunctionProvider ServiceLoader SPI. The
+        engine keeps only the type surface; add this module to the classpath to enable geospatial SQL. The
+        spherical model is live-verified against Snowflake (R = 6371010 m exactly). Dependency-free beyond the
+        engine itself.</description>
+
+    <!-- frostlake-geo IS published to Central as its own separate jar; override the parent's deploy skip. -->
+    <properties>
+        <maven.deploy.skip>false</maven.deploy.skip>
+    </properties>
+
+    <dependencies>
+        <!-- The engine: provides the FunctionProvider SPI, the GEOGRAPHY/GEOMETRY types and GeoValue.
+             Compile scope, one direction (geo -> engine); the engine discovers this pack at runtime via
+             ServiceLoader and never depends back. -->
+        <dependency>
+            <groupId>dev.frostlake</groupId>
+            <artifactId>frostlake-db</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
+        <!-- Testing -->
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <version>6.0.3</version>
+            <scope>test</scope>
+        </dependency>
+        <!-- Live-Snowflake test mode (SF_LIVE=1): the switch lives in the engine test-jar but the
+             JDBC driver must be on THIS module's test classpath too. -->
+        <dependency>
+            <groupId>net.snowflake</groupId>
+            <artifactId>snowflake-jdbc</artifactId>
+            <version>4.3.2</version>
+            <scope>test</scope>
+        </dependency>
+        <!-- Engine test-jar: reuse BaseDatabaseTest (and the SF_LIVE live-Snowflake switch). -->
+        <dependency>
+            <groupId>dev.frostlake</groupId>
+            <artifactId>frostlake-db</artifactId>
+            <version>${project.version}</version>
+            <type>test-jar</type>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <version>3.5.6</version>
+                <configuration>
+                    <argLine>-Dpolyglot.engine.WarnInterpreterOnly=false</argLine>
+                    <excludedGroups>${perf.excludedGroups}</excludedGroups>
+                </configuration>
+            </plugin>
+            <!-- License-header audit (Apache RAT): fails the build at `verify` if any owned .java file is
+                 missing the Apache-2.0 header. -->
+            <plugin>
+                <groupId>org.apache.rat</groupId>
+                <artifactId>apache-rat-plugin</artifactId>
+                <version>${apache-rat-plugin.version}</version>
+                <configuration>
+                    <consoleOutput>true</consoleOutput>
+                    <inputExcludes>
+                        <inputExclude>/pom.xml</inputExclude>
+                        <inputExclude>/.flattened-pom.xml</inputExclude>
+                        <inputExclude>/src/main/resources/**</inputExclude>
+                        <inputExclude>/src/test/resources/**</inputExclude>
+                        <inputExclude>**/*.md</inputExclude>
+                        <inputExclude>**/*.log</inputExclude>
+                    </inputExcludes>
+                </configuration>
+                <executions>
+                    <execution>
+                        <id>check-license-headers</id>
+                        <phase>verify</phase>
+                        <goals>
+                            <goal>check</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+</project>

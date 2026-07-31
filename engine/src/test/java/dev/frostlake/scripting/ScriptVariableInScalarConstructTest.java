@@ -19,8 +19,10 @@ package dev.frostlake.scripting;
 import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /**
  * A Snowflake Scripting variable referenced inside a scalar construct the procedural builder doesn't
@@ -108,5 +110,52 @@ public class ScriptVariableInScalarConstructTest extends BaseDatabaseTest {
               LET dt DATE := '2020-09-30';
               RETURN w::VARCHAR || ', ' || dt::VARCHAR;
             END;""")));
+    }
+
+    @Test
+    public void semiStructuredCastOnVariableSurvivesIntoAFunctionCall() {
+        // Snowflake BINDS the variable's value into the statement and then compiles the surrounding
+        // expression, so a written ::VARIANT still applies. Live-verified on a real account
+        //: this exact block answers 'available', TYPEOF(v::VARIANT) answers VARCHAR, and
+        // dropping the cast errors "Invalid argument types for function 'ARRAY_CONTAINS': (VARCHAR(1),
+        // VARIANT)" — reporting the BOUND value's width. Rebuilding the call from argument VALUES alone
+        // dropped the cast, so the strict semi-structured families rejected the bare VARCHAR literal
+        // that substitution had created.
+        assertEquals("available", String.valueOf(ret("""
+            DECLARE
+              v_target_role VARCHAR := 'ROLE_CALLER';
+              role_array VARIANT;
+            BEGIN
+              SELECT PARSE_JSON('["ROLE_CALLER","OTHER"]') INTO role_array;
+              IF (NOT ARRAY_CONTAINS(v_target_role::VARIANT, role_array)) THEN
+                RETURN 'NOT available';
+              END IF;
+              RETURN 'available';
+            END;""")));
+    }
+
+    @Test
+    public void variantCastOnVariableKeepsTypeofWorking() {
+        assertEquals("VARCHAR", String.valueOf(ret("""
+            BEGIN
+              LET v VARCHAR := 'abc';
+              RETURN TYPEOF(v::VARIANT);
+            END;""")));
+    }
+
+    @Test
+    public void uncastVariableStaysRejectedByTheStrictFamily() {
+        // The rule itself must keep firing: live rejects ARRAY_CONTAINS over a bare VARCHAR needle in
+        // every source position tried (literal, column, scripting variable and SQL-UDF parameter).
+        assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                ret("""
+                    BEGIN
+                      LET v VARCHAR := 'abc';
+                      RETURN ARRAY_CONTAINS(v, PARSE_JSON('["abc"]'));
+                    END;""");
+            }
+        });
     }
 }

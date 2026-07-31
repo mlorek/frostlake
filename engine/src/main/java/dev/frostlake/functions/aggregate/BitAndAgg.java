@@ -17,6 +17,7 @@
 package dev.frostlake.functions.aggregate;
 
 import dev.frostlake.functions.AggregateFunction;
+import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.types.NumericType;
 
 import java.math.BigDecimal;
@@ -33,6 +34,17 @@ public class BitAndAgg extends AggregateFunction {
 
     @Override public int getMinArgCount() { return 1; }
     @Override public int getMaxArgCount() { return 1; }
+
+    /**
+     * The bitwise aggregates read their input as an integer. Live, {@code BITAND_AGG(o)}
+     * over an OBJECT column is "Invalid argument types for function 'BITAND_AGG': (OBJECT)", and
+     * {@code BITOR_AGG(a)} names ARRAY — while {@code BITOR_AGG(v)} over a VARIANT holding numbers
+     * returned 3.
+     */
+    @Override
+    public SemiStructuredRejection semiStructuredRejection(final int position) {
+        return SemiStructuredRejection.ARGUMENT_TYPES;
+    }
 
     private static class BitAndAccumulator implements Accumulator {
         private long result = -1L; private boolean hasValue = false;

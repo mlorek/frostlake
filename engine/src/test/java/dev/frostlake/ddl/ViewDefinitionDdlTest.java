@@ -40,21 +40,23 @@ public class ViewDefinitionDdlTest extends BaseDatabaseTest {
     }
 
     @Test
-    public void viewDefinitionIsTheFullSchemaQualifiedCreateStatement() {
+    public void viewDefinitionIsTheOriginalCreateStatementVerbatim() {
+        // Live-verified: Snowflake surfaces the statement exactly as typed — original case, no
+        // normalization, no schema qualification, no added OR REPLACE.
         engine.execute("CREATE TABLE orders (id INTEGER, amount NUMBER(10,2))");
         engine.execute("CREATE VIEW big_orders AS SELECT id, amount FROM orders WHERE amount > 100");
 
         final String ddl = viewDefinitionOf("BIG_ORDERS");
-        assertEquals(
-            "create or replace view TEST_SCHEMA.BIG_ORDERS as SELECT id, amount FROM orders WHERE amount > 100;",
-            ddl);
+        assertEquals("CREATE VIEW big_orders AS SELECT id, amount FROM orders WHERE amount > 100", ddl);
     }
 
     @Test
     public void viewDefinitionIsExecutableAndRecreatesTheView() {
         engine.execute("CREATE TABLE customers (id INTEGER, name VARCHAR)");
         engine.execute("INSERT INTO customers VALUES (1, 'a'), (2, 'b')");
-        engine.execute("CREATE VIEW customer_names AS SELECT name FROM customers");
+        // The verbatim text is re-executable when the original statement says OR REPLACE — the
+        // deployment-tooling idiom this test guards.
+        engine.execute("CREATE OR REPLACE VIEW customer_names AS SELECT name FROM customers");
 
         final String ddl = viewDefinitionOf("CUSTOMER_NAMES");
         engine.execute(ddl);
@@ -66,11 +68,11 @@ public class ViewDefinitionDdlTest extends BaseDatabaseTest {
     @Test
     public void secureViewAndExplicitColumnListSurviveInTheDdl() {
         engine.execute("CREATE TABLE products (id INTEGER, price NUMBER)");
-        engine.execute("CREATE SECURE VIEW priced (pid, cost) AS SELECT id, price FROM products");
+        engine.execute("CREATE OR REPLACE SECURE VIEW priced (pid, cost) AS SELECT id, price FROM products");
 
         final String ddl = viewDefinitionOf("PRICED");
-        assertTrue(ddl.startsWith("create or replace secure view TEST_SCHEMA.PRICED (PID, COST) as "),
-            "unexpected DDL: " + ddl);
+        assertEquals("CREATE OR REPLACE SECURE VIEW priced (pid, cost) AS SELECT id, price FROM products",
+            ddl);
         engine.execute(ddl);
     }
 
@@ -88,7 +90,7 @@ public class ViewDefinitionDdlTest extends BaseDatabaseTest {
                 text = String.valueOf(row.getValue(textIdx));
             }
         }
-        assertEquals("create or replace view TEST_SCHEMA.EMP_VIEW as SELECT id FROM emp;", text);
+        assertEquals("CREATE VIEW emp_view AS SELECT id FROM emp", text);
     }
 
     @Test
@@ -105,18 +107,19 @@ public class ViewDefinitionDdlTest extends BaseDatabaseTest {
                 text = String.valueOf(row.getValue(textIdx));
             }
         }
-        assertEquals("create or replace materialized view TEST_SCHEMA.DEPT_MV as SELECT id FROM dept;", text);
+        assertEquals("CREATE MATERIALIZED VIEW dept_mv AS SELECT id FROM dept", text);
     }
 
     @Test
     public void getDdlStaysBareNamed() {
         // Snowflake's GET_DDL renders the object name unqualified by default; the metadata views are
         // the schema-qualified surfaces. Guard that delegating both to one renderer kept them apart.
+        // GET_DDL (and only GET_DDL) also renders the output column list (live-verified shape).
         engine.execute("CREATE TABLE items (id INTEGER)");
         engine.execute("CREATE VIEW item_view AS SELECT id FROM items");
 
         final ResultSet rs = engine.executeQuery("SELECT GET_DDL('VIEW', 'item_view')");
-        assertEquals("create or replace view ITEM_VIEW as SELECT id FROM items;",
+        assertEquals("create or replace view ITEM_VIEW(\n\tID\n) as SELECT id FROM items;",
             String.valueOf(rs.getRows().get(0).getValue(0)));
     }
 
@@ -125,7 +128,7 @@ public class ViewDefinitionDdlTest extends BaseDatabaseTest {
         // The vendor deployment pattern: fetch VIEW_DEFINITION into a scripting variable and
         // EXECUTE IMMEDIATE it to recreate the view.
         engine.execute("CREATE TABLE clients (id INTEGER)");
-        engine.execute("CREATE VIEW client_view AS SELECT id FROM clients");
+        engine.execute("CREATE OR REPLACE VIEW client_view AS SELECT id FROM clients");
 
         final ResultSet rs = engine.executeQuery("""
             EXECUTE IMMEDIATE $$

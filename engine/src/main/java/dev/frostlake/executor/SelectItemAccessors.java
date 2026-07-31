@@ -23,8 +23,8 @@ import java.util.Collections;
 import java.util.List;
 
 /**
- * Stateless accessors over SELECT-item parse-tree nodes — star / qualified-star / spread / expression item
- * predicates, plus the alias, qualifier and value/full expression of an item. Extracted from
+ * Stateless accessors over SELECT-item parse-tree nodes — star / qualified-star / braced-star / expression
+ * item predicates, plus the alias, qualifier and value/full expression of an item. Extracted from
  * {@link QueryExecutor}; pure functions over ANTLR {@code FrostlakeParser} contexts with no engine state.
  */
 public final class SelectItemAccessors {
@@ -37,16 +37,61 @@ public final class SelectItemAccessors {
         return item instanceof FrostlakeParser.QualifiedStarItemContext;
     }
 
-    public static boolean isSpreadItem(final FrostlakeParser.SelectItemContext item) {
-        return item instanceof FrostlakeParser.SpreadItemContext || item instanceof FrostlakeParser.SpreadPrefixItemContext;
+    /**
+     * Snowflake's braced star ({@code {*}}, {@code {* EXCLUDE (c)}}, {@code {t.*}}) — an OBJECT
+     * constructor over the row, i.e. {@code OBJECT_CONSTRUCT(*)}. It projects ONE object-valued column,
+     * never the star's N columns, so it is deliberately NOT a star item.
+     */
+    public static boolean isObjectStarItem(final FrostlakeParser.SelectItemContext item) {
+        if (!(item instanceof FrostlakeParser.ObjectStarItemContext)) {
+            return false;
+        }
+        rejectProjectionRewritingModifiers((FrostlakeParser.ObjectStarItemContext) item);
+        return true;
     }
 
-    public static boolean isSpreadExprItem(final FrostlakeParser.SelectItemContext item) {
-        return item instanceof FrostlakeParser.SpreadExprItemContext;
+    /**
+     * A braced star accepts only the modifiers that PICK columns — {@code EXCLUDE} and {@code ILIKE}.
+     * {@code RENAME} and {@code REPLACE} rewrite the projection and Snowflake rejects them there
+     * (live-verified: {@code {* RENAME (a AS z)}} and {@code {* REPLACE (a + 1 AS a)}} both fail, while
+     * {@code {* EXCLUDE (a)}} and {@code {* ILIKE 'a%'}} run). They stay legal on a plain {@code *}.
+     */
+    private static void rejectProjectionRewritingModifiers(final FrostlakeParser.ObjectStarItemContext star) {
+        for (final FrostlakeParser.StarModifierContext modifier : star.starModifier()) {
+            if (modifier.RENAME() != null || modifier.REPLACE() != null) {
+                throw new RuntimeException("SQL compilation error:\nsyntax error unexpected '"
+                    + (modifier.RENAME() != null ? "RENAME" : "REPLACE")
+                    + "'. A braced star {*} accepts only EXCLUDE and ILIKE.");
+            }
+        }
     }
 
     public static boolean isExprItem(final FrostlakeParser.SelectItemContext item) {
         return item instanceof FrostlakeParser.ExprItemContext;
+    }
+
+    /**
+     * Snowflake refuses to project the UNIT-LESS interval literal on its own: {@code SELECT INTERVAL
+     * '1 day'} and the multi-part {@code SELECT INTERVAL '1 day, 2 hours'} both fail with "interval
+     * literal is not supported in this form" (live-verified). The UNIT-SUFFIXED spelling is a first-class
+     * value and projects fine — {@code SELECT INTERVAL '1' DAY} is typed {@code INTERVAL DAY(9)}, aliases
+     * fine, and {@code TO_VARCHAR} of it is {@code +1} — so only {@code IntervalStringExpr} is rejected
+     * here, never {@code IntervalExpr}.
+     *
+     * <p>Both spellings stay legal as an operand of date arithmetic, so the test is on each item's ROOT
+     * expression: in {@code DATE '2024-01-01' + INTERVAL '1 day'} the root is the addition and the item
+     * stands.
+     */
+    public static void rejectStandaloneInterval(final FrostlakeParser.SelectListContext selectList) {
+        if (selectList == null) {
+            return;
+        }
+        for (final FrostlakeParser.SelectItemContext item : selectList.selectItem()) {
+            if (getItemValueExpr(item) instanceof FrostlakeParser.IntervalStringExprContext) {
+                throw new RuntimeException(SqlCompilationError.at(0, -1,
+                    "interval literal is not supported in this form."));
+            }
+        }
     }
 
     /**
@@ -76,10 +121,11 @@ public final class SelectItemAccessors {
 
     public static FrostlakeParser.IdentifierContext getItemAlias(final FrostlakeParser.SelectItemContext item) {
         if (item instanceof FrostlakeParser.ExprItemContext) return ((FrostlakeParser.ExprItemContext) item).identifier();
+        if (item instanceof FrostlakeParser.ObjectStarItemContext) return ((FrostlakeParser.ObjectStarItemContext) item).identifier();
         return null;
     }
 
-    /** The EXCLUDE/RENAME/REPLACE/ILIKE modifiers on a {@code *} or {@code t.*} item (empty if none). */
+    /** The EXCLUDE/RENAME/REPLACE/ILIKE modifiers on a {@code *}, {@code t.*} or {@code {*}} item (empty if none). */
     public static List<FrostlakeParser.StarModifierContext> getStarModifiers(final FrostlakeParser.SelectItemContext item) {
         if (item instanceof FrostlakeParser.StarItemContext) {
             return ((FrostlakeParser.StarItemContext) item).starModifier();
@@ -87,18 +133,80 @@ public final class SelectItemAccessors {
         if (item instanceof FrostlakeParser.QualifiedStarItemContext) {
             return ((FrostlakeParser.QualifiedStarItemContext) item).starModifier();
         }
+        if (item instanceof FrostlakeParser.ObjectStarItemContext) {
+            return ((FrostlakeParser.ObjectStarItemContext) item).starModifier();
+        }
         return Collections.emptyList();
     }
 
-    /** Returns qualifier for t.* or t.** forms, or null for bare * */
+    /** Returns qualifier for the {@code t.*} / {@code {t.*}} forms, or null for a bare star. */
     public static String getItemQualifier(final FrostlakeParser.SelectItemContext item) {
         if (item instanceof FrostlakeParser.QualifiedStarItemContext)
             return ((FrostlakeParser.QualifiedStarItemContext) item).qualifiedName().getText();
-        if (item instanceof FrostlakeParser.SpreadItemContext)
-            return ((FrostlakeParser.SpreadItemContext) item).qualifiedName().getText();
-        if (item instanceof FrostlakeParser.SpreadPrefixItemContext)
-            return ((FrostlakeParser.SpreadPrefixItemContext) item).qualifiedName().getText();
+        if (item instanceof FrostlakeParser.ObjectStarItemContext
+                && ((FrostlakeParser.ObjectStarItemContext) item).qualifiedName() != null)
+            return ((FrostlakeParser.ObjectStarItemContext) item).qualifiedName().getText();
         return null;
+    }
+
+    /**
+     * The output column name Snowflake gives a braced-star item: the item's own source form with its
+     * identifiers canonicalised — {@code {*}}, {@code {* EXCLUDE (A)}}, {@code {T.*}} — or its explicit
+     * alias when it carries one. Rebuilt from the parse tree rather than re-read off the SQL text.
+     */
+    public static String objectStarLabel(final FrostlakeParser.SelectItemContext item) {
+        final FrostlakeParser.ObjectStarItemContext star = (FrostlakeParser.ObjectStarItemContext) item;
+        if (star.identifier() != null) {
+            return ParseTreeText.getIdentifier(star.identifier());
+        }
+        final StringBuilder label = new StringBuilder("{");
+        if (star.qualifiedName() != null) {
+            label.append(ParseTreeText.getQualifiedName(star.qualifiedName())).append('.');
+        }
+        label.append('*');
+        for (final FrostlakeParser.StarModifierContext modifier : star.starModifier()) {
+            label.append(' ').append(starModifierLabel(modifier));
+        }
+        return label.append('}').toString();
+    }
+
+    /** One star modifier rendered back in Snowflake's echoed form, identifiers canonicalised. */
+    private static String starModifierLabel(final FrostlakeParser.StarModifierContext modifier) {
+        if (modifier.ILIKE() != null) {
+            return "ILIKE " + modifier.STRING_LITERAL().getText();
+        }
+        if (modifier.EXCLUDE() != null) {
+            final StringBuilder excluded = new StringBuilder("EXCLUDE (");
+            for (int i = 0; i < modifier.identifier().size(); i++) {
+                if (i > 0) {
+                    excluded.append(", ");
+                }
+                excluded.append(ParseTreeText.getIdentifier(modifier.identifier(i)));
+            }
+            return excluded.append(')').toString();
+        }
+        if (modifier.RENAME() != null) {
+            final StringBuilder renamed = new StringBuilder("RENAME (");
+            for (int i = 0; i < modifier.starRenameItem().size(); i++) {
+                if (i > 0) {
+                    renamed.append(", ");
+                }
+                final FrostlakeParser.StarRenameItemContext rename = modifier.starRenameItem(i);
+                renamed.append(ParseTreeText.getIdentifier(rename.identifier(0))).append(" AS ")
+                    .append(ParseTreeText.getIdentifier(rename.identifier(1)));
+            }
+            return renamed.append(')').toString();
+        }
+        final StringBuilder replaced = new StringBuilder("REPLACE (");
+        for (int i = 0; i < modifier.starReplaceItem().size(); i++) {
+            if (i > 0) {
+                replaced.append(", ");
+            }
+            final FrostlakeParser.StarReplaceItemContext replace = modifier.starReplaceItem(i);
+            replaced.append(ParseTreeText.getOriginalText(replace.expression())).append(" AS ")
+                .append(ParseTreeText.getIdentifier(replace.identifier()));
+        }
+        return replaced.append(')').toString();
     }
 
     private SelectItemAccessors() {

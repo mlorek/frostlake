@@ -16,7 +16,7 @@
 
 package dev.frostlake.functions.scalar.string;
 
-import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.functions.TextArgumentFunction;
 import dev.frostlake.types.NumericType;
 
 import java.util.List;
@@ -31,7 +31,7 @@ import java.util.List;
  * factor 0.1), then {@code round(similarity * 100)}. For example {@code JAROWINKLER_SIMILARITY('Snowflake',
  * 'Oracle')} is 61 (Jaro 0.6111, no common prefix).
  */
-public class JarowinklerSimilarity extends BuiltInFunction {
+public class JarowinklerSimilarity extends TextArgumentFunction {
     private static final int MAX_PREFIX = 4;
     private static final double PREFIX_SCALE = 0.1;
 

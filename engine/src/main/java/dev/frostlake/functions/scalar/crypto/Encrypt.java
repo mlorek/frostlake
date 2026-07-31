@@ -18,18 +18,23 @@ package dev.frostlake.functions.scalar.crypto;
 
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
-import dev.frostlake.types.StringType;
+import dev.frostlake.types.BinaryType;
+import dev.frostlake.values.BinaryValue;
 import java.security.SecureRandom;
 
 import java.util.Arrays;
-import java.util.Base64;
 import java.util.List;
 import javax.crypto.Cipher;
 import javax.crypto.spec.GCMParameterSpec;
 import javax.crypto.spec.SecretKeySpec;
 
+/**
+ * ENCRYPT(value, passphrase [, aad]) — AES-GCM encryption of the value (a string's UTF-8 bytes or
+ * a BINARY value's bytes) under a passphrase-derived key. Returns {@code iv || ciphertext} as
+ * BINARY, matching Snowflake's return type.
+ */
 public class Encrypt extends BuiltInFunction {
-    public Encrypt() { super("ENCRYPT", StringType.VARCHAR); }
+    public Encrypt() { super("ENCRYPT", BinaryType.BINARY); }
 
     @Override
     public Object evaluate(final List<Object> args) {
@@ -47,7 +52,7 @@ public class Encrypt extends BuiltInFunction {
             byte[] combined = new byte[iv.length + enc.length];
             System.arraycopy(iv, 0, combined, 0, iv.length);
             System.arraycopy(enc, 0, combined, iv.length, enc.length);
-            return Base64.getEncoder().encodeToString(combined);
+            return BinaryValue.of(combined);
         } catch (final Exception e) {
             throw new RuntimeException("ENCRYPT failed: " + e.getMessage());
         }

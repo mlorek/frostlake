@@ -18,7 +18,8 @@ package dev.frostlake.functions.scalar.semistructured;
 
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
-import dev.frostlake.types.VariantType;
+import dev.frostlake.types.ArrayType;
+import dev.frostlake.values.VariantValue;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.node.ArrayNode;
 
@@ -26,7 +27,7 @@ import java.util.List;
 
 /** ARRAY_REMOVE_AT(array, index) — removes element at given index (0-based). Negative indices count from end. */
 public class ArrayRemoveAt extends BuiltInFunction {
-    public ArrayRemoveAt() { super("ARRAY_REMOVE_AT", VariantType.VARIANT); }
+    public ArrayRemoveAt() { super("ARRAY_REMOVE_AT", ArrayType.ARRAY); }
 
     @Override
     public Object evaluate(final List<Object> args) {
@@ -38,7 +39,7 @@ public class ArrayRemoveAt extends BuiltInFunction {
         for (int i = 0; i < src.size(); i++) {
             if (i != idx) result.add(src.get(i));
         }
-        return result.toString();
+        return VariantValue.ofNode(result);
     }
 
     @Override public int getMinArgCount() { return 2; }

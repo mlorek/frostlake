@@ -22,6 +22,7 @@ import dev.frostlake.jdbc.JdbcMarshaling;
 import dev.frostlake.metastore.model.Parameter;
 import dev.frostlake.metastore.model.Procedure;
 import dev.frostlake.metastore.model.UdfLanguage;
+import dev.frostlake.values.VariantValue;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.Row;
 import dev.frostlake.types.ArrayType;
@@ -131,6 +132,15 @@ public class JavaScriptProcedureExecutor {
                 engine.eval(name + " = JSON.parse(" + name + ");");
             } catch (final ScriptException nonJson) {
                 logger.debug("semi-structured JS parameter {} was not valid JSON; left as string", name);
+            }
+        } else if (value instanceof VariantValue) {
+            // A semi-structured runtime value carries its canonical JSON text — parse that directly.
+            final String holder = "__frostlake_json_" + name;
+            try {
+                engine.put(holder, value.toString());
+                engine.eval(name + " = JSON.parse(" + holder + "); " + holder + " = undefined;");
+            } catch (final ScriptException e) {
+                logger.debug("semi-structured JS parameter {} could not be parsed; left as text", name);
             }
         } else if (value != null) {
             // A host container (List/Map/JsonNode/...) has no JS Array/Object protocol (no forEach,

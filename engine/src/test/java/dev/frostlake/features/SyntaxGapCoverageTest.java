@@ -107,7 +107,7 @@ public class SyntaxGapCoverageTest extends BaseDatabaseTest {
         // The declared name AND type define the table (not the SELECT's output column).
         assertEquals("ITEM_CODE", scalar(
             "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'CT_TYPED'"));
-        assertEquals("VARCHAR", scalar(
+        assertEquals("TEXT", scalar(
             "SELECT DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'CT_TYPED'"));
     }
 
@@ -140,7 +140,7 @@ public class SyntaxGapCoverageTest extends BaseDatabaseTest {
 
     // ---- DO as an identifier (table alias + column qualifier) ----
     // `DO` is only the WHILE/FOR ... DO loop keyword; it is not reserved in Snowflake, so it must also be
-    // usable as an ordinary name — e.g. the real loader's `FROM detection_output do ... SELECT do.col`.
+    // usable as an ordinary name — e.g. `FROM daily_output do ... SELECT do.col`.
 
     @Test
     public void doUsableAsTableAliasAndColumnQualifier() {
@@ -183,7 +183,7 @@ public class SyntaxGapCoverageTest extends BaseDatabaseTest {
             CREATE OR REPLACE PROCEDURE p_while_do() RETURNS INTEGER LANGUAGE SQL AS $$
             DECLARE i INTEGER DEFAULT 0;
             BEGIN
-              WHILE i < 3 DO i := i + 1; END WHILE;
+              WHILE (i < 3) DO i := i + 1; END WHILE;
               RETURN i;
             END $$""");
         assertEquals(3, ((Number) scalar("CALL p_while_do()")).intValue());

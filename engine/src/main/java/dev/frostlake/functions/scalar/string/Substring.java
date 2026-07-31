@@ -16,26 +16,56 @@
 
 package dev.frostlake.functions.scalar.string;
 
-import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.functions.TextArgumentFunction;
 import dev.frostlake.types.StringType;
+import dev.frostlake.values.BinaryValue;
 
+import java.util.Arrays;
 import java.util.List;
 
-public class Substring extends BuiltInFunction {
+/**
+ * SUBSTRING(expr, start [, length]) — a slice of a VARCHAR by characters or of a BINARY by BYTES.
+ *
+ * <p>A BINARY input is sliced over its own bytes and yields BINARY:
+ * {@code SUBSTR(TO_BINARY('48454C4C4F','HEX'), 2, 2)} is {@code 454C}. Slicing the hex rendering
+ * instead returned {@code 84} — half of each of two different bytes.
+ */
+public class Substring extends TextArgumentFunction {
     public Substring() {
         super("SUBSTRING", StringType.VARCHAR);
     }
 
     @Override
     public Object evaluate(final List<Object> args) {
-        if (args.get(0) == null) return null;
-        String str = args.get(0).toString();
-        int start = ((Number) args.get(1)).intValue() - 1;
-        if (args.size() == 3) {
-            int length = ((Number) args.get(2)).intValue();
-            return str.substring(Math.max(0, start), Math.min(str.length(), start + length));
+        final Object value = args.get(0);
+        if (value == null) return null;
+        final int start = ((Number) args.get(1)).intValue();
+        final int length = args.size() == 3 && args.get(2) != null
+            ? ((Number) args.get(2)).intValue() : Integer.MAX_VALUE;
+        if (value instanceof BinaryValue) {
+            final byte[] bytes = ((BinaryValue) value).bytes();
+            final int[] window = window(bytes.length, start, length);
+            return BinaryValue.of(Arrays.copyOfRange(bytes, window[0], window[1]));
         }
-        return str.substring(Math.max(0, start));
+        final String str = value.toString();
+        final int[] window = window(str.length(), start, length);
+        return str.substring(window[0], window[1]);
+    }
+
+    /**
+     * The 0-based {@code [from, to)} window Snowflake selects, live-verified: a start of 0
+     * behaves as 1 ({@code SUBSTR('hello',0,2)} is {@code he}), a negative start counts back from the
+     * end ({@code SUBSTR('hello',-2,2)} is {@code lo}), a window falling entirely outside the value is
+     * empty rather than clamped ({@code SUBSTR('hello',-99,2)} and {@code SUBSTR('hello',9,2)} are both
+     * empty), and a negative length is empty too ({@code SUBSTR('hello',2,-1)}).
+     */
+    private int[] window(final int total, final int start, final int length) {
+        final long first = start == 0 ? 1L : (start > 0 ? start : (long) total + start + 1L);
+        final long lastExclusive = length == Integer.MAX_VALUE
+            ? (long) total + 1L : first + Math.max(length, 0);
+        final int from = (int) Math.min(Math.max(first, 1L), total + 1L);
+        final int to = (int) Math.min(Math.max(lastExclusive, 1L), total + 1L);
+        return new int[] { from - 1, Math.max(to - 1, from - 1) };
     }
 
     @Override

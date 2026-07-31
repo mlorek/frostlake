@@ -129,7 +129,7 @@ public class StreamOnViewCdcTest extends BaseDatabaseTest {
                 engine.execute("CREATE STREAM st ON VIEW vw");
             }
         });
-        assertTrue(ex.getMessage().contains("change tracking"),
+        assertTrue(ex.getMessage().contains("change tracking supports"),
             "unexpected message: " + ex.getMessage());
     }
 
@@ -143,7 +143,7 @@ public class StreamOnViewCdcTest extends BaseDatabaseTest {
                 engine.execute("CREATE STREAM st ON VIEW vw");
             }
         });
-        assertTrue(ex.getMessage().contains("change tracking"),
+        assertTrue(ex.getMessage().contains("Change tracking is not supported on queries with GROUP BY."),
             "unexpected message: " + ex.getMessage());
     }
 }

@@ -16,9 +16,11 @@
 
 package dev.frostlake.functions.scalar.string;
 
+import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.types.BooleanType;
 
+import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
@@ -33,10 +35,14 @@ import java.util.Set;
  * query yields NULL; an empty token set yields FALSE.
  *
  * <p>Named arguments reach the evaluation positionally: a trailing string equal to AND/OR selects the
- * mode, any other trailing string names an analyzer (accepted; tokenization is the default analyzer's
- * either way).
+ * mode, any other trailing string names an analyzer — which must be one Snowflake actually ships
+ * (tokenization is the default analyzer's either way).
  */
 public class Search extends BuiltInFunction {
+
+    /** The analyzers Snowflake ships; any other ANALYZER name is an "Object does not exist" error. */
+    private static final Set<String> ANALYZERS = new HashSet<>(
+        Arrays.asList("DEFAULT_ANALYZER", "UNICODE_ANALYZER", "NO_OP_ANALYZER"));
 
     public Search() {
         super("SEARCH", BooleanType.BOOLEAN);
@@ -68,8 +74,13 @@ public class Search extends BuiltInFunction {
                 andMode = true;
             } else if ("OR".equalsIgnoreCase(text)) {
                 andMode = false;
+            } else if (!ANALYZERS.contains(text.toUpperCase())) {
+                // Any other value is an analyzer NAME, and Snowflake ships exactly three. Live-verified
+                // on a real account: DEFAULT_ANALYZER / UNICODE_ANALYZER / NO_OP_ANALYZER
+                // all work, while ANALYZER => 'PATTERN_ANALYZER' and ANALYZER => 'BOGUS_ANALYZER' both
+                // fail "Object 'PATTERN_ANALYZER' does not exist or not authorized."
+                throw new RuntimeException(SqlCompilationError.doesNotExist("Object", text));
             }
-            // Any other value is an analyzer name — accepted; the default tokenization applies.
         }
 
         final Set<String> dataTokens = new HashSet<>();

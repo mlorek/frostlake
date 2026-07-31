@@ -17,28 +17,25 @@
 package dev.frostlake.functions.scalar.hash;
 
 import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.types.StringType;
 
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.util.List;
 
+/**
+ * MD5(msg) — the lowercase hex MD5 digest of the message bytes.
+ *
+ * <p>A BINARY message is digested as its OWN bytes, so {@code MD5(TO_BINARY('61','HEX'))} equals
+ * {@code MD5('a')}; digesting {@code toString()} would hash the ASCII hex text instead.
+ */
 public class Md5 extends BuiltInFunction {
     public Md5() { super("MD5", StringType.VARCHAR); }
 
     @Override
     public Object evaluate(final List<Object> args) {
         if (args.get(0) == null) return null;
-        try {
-            MessageDigest md = MessageDigest.getInstance("MD5");
-            byte[] digest = md.digest(args.get(0).toString().getBytes(StandardCharsets.UTF_8));
-            StringBuilder sb = new StringBuilder();
-            for (final byte b : digest) sb.append(String.format("%02x", b));
-            return sb.toString();
-        } catch (final NoSuchAlgorithmException e) {
-            throw new RuntimeException("MD5 algorithm not available");
-        }
+        return SharedFunctionHelpers.toHex(
+            SharedFunctionHelpers.digest("MD5", SharedFunctionHelpers.toUtf8(args.get(0))));
     }
 
     @Override public int getMinArgCount() { return 1; }

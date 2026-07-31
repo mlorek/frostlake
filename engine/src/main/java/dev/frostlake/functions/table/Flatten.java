@@ -18,6 +18,8 @@ package dev.frostlake.functions.table;
 
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.cfg.JsonNodeFeature;
+import tools.jackson.databind.json.JsonMapper;
 import tools.jackson.databind.node.StringNode;
 import dev.frostlake.functions.TableFunction;
 import dev.frostlake.storage.ResultSet;
@@ -25,6 +27,8 @@ import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.types.StringType;
+import dev.frostlake.values.VariantUndefined;
+import dev.frostlake.values.VariantValue;
 
 import java.util.*;
 
@@ -42,7 +46,7 @@ import java.util.*;
  */
 public class Flatten extends TableFunction {
 
-    private static final ObjectMapper JACKSON = new ObjectMapper();
+    private static final ObjectMapper JACKSON = JsonMapper.builder().enable(JsonNodeFeature.USE_BIG_DECIMAL_FOR_FLOATS).build();
 
     public Flatten() {
         super("FLATTEN");
@@ -89,9 +93,17 @@ public class Flatten extends TableFunction {
 
         List<Row> rows = new ArrayList<>();
 
-        // Parse input as JSON
+        // Parse input as JSON (a semi-structured wrapper contributes its CANONICAL text — toString
+        // renders XML-shaped variants as XML text, which is not parseable JSON)
         JsonNode jsonInput = parseInput(input);
-        String inputStr = input == null ? null : input.toString();
+        String inputStr;
+        if (input == null) {
+            inputStr = null;
+        } else if (input instanceof VariantValue) {
+            inputStr = ((VariantValue) input).text();
+        } else {
+            inputStr = input.toString();
+        }
 
         // Apply path filter if specified
         if (path != null && !path.isEmpty()) {
@@ -120,12 +132,16 @@ public class Flatten extends TableFunction {
         if (input == null) {
             return null;
         }
+        if (input instanceof VariantValue) {
+            return ((VariantValue) input).node();
+        }
 
         String inputStr = input.toString();
 
         // Try to parse as JSON
         try {
-            return JACKSON.readTree(inputStr);
+            // Array text can carry Snowflake's bare `undefined` element token — see VariantUndefined.
+            return VariantUndefined.readTree(JACKSON, inputStr);
         } catch (final Exception e) {
             // If not valid JSON, treat as string
             return new StringNode(inputStr);
@@ -203,13 +219,25 @@ public class Flatten extends TableFunction {
                 }
             }
         } else if (element.isArray()) {
-            if (element.size() == 0 && outer) {
+            // FLATTEN SKIPS a VARIANT `undefined` element entirely — live-verified: over
+            // ARRAY_CONSTRUCT(1,NULL,2) it yields 2 rows whose INDEX values are 0 and 2 (the ORIGINAL
+            // positions, not renumbered), while over PARSE_JSON('[1,null,2]') it yields 3 rows with
+            // TYPEOF(value) INTEGER / NULL_VALUE / INTEGER. An array whose elements are ALL `undefined`
+            // behaves like an empty one: 0 rows, or the single OUTER row when outer => TRUE.
+            int visible = 0;
+            for (final JsonNode candidate : element) {
+                if (!VariantUndefined.isUndefined(candidate)) visible++;
+            }
+            if (visible == 0 && outer) {
                 // Empty array with outer=true
                 addRow(rows, seq++, null, currentPath, null, null, thisValue);
             } else {
                 for (int i = 0; i < element.size(); i++) {
                     JsonNode value = element.get(i);
                     String newPath = currentPath + "[" + i + "]";
+                    if (VariantUndefined.isUndefined(value)) {
+                        continue;
+                    }
 
                     if (mode == FlattenMode.ARRAY || mode == FlattenMode.BOTH) {
                         addRow(rows, seq++, null, newPath, (long) i, nodeToValue(value), thisValue);
@@ -248,8 +276,19 @@ public class Flatten extends TableFunction {
      * their text; objects/arrays stay JSON text for path access.
      */
     private Object nodeToValue(final JsonNode node) {
-        if (node == null || node.isNull()) {
+        if (node == null) {
             return null;
+        }
+        // An `undefined` ELEMENT never reaches here (the array walk skips it) and would read as SQL NULL.
+        if (VariantUndefined.isUndefined(node)) {
+            return null;
+        }
+        // A JSON null MEMBER is flattened as the typed VARIANT NULL_VALUE, not as SQL NULL — live
+        // FLATTEN over PARSE_JSON('[1,null,2]') yields TYPEOF(value)
+        // INTEGER / NULL_VALUE / INTEGER, and over PARSE_JSON('{"a":1,"b":null}') the b row's
+        // TYPEOF(value) is 'NULL_VALUE'.
+        if (node.isNull()) {
+            return VariantValue.of("null");
         }
         if (node.isTextual()) {
             // Same disambiguation as path extraction: a string element whose content looks like JSON
@@ -257,7 +296,7 @@ public class Flatten extends TableFunction {
             final String text = node.asText();
             final String trimmedText = text.trim();
             if (trimmedText.startsWith("[") || trimmedText.startsWith("{")) {
-                return node.toString();
+                return VariantValue.ofNode(node);
             }
             return text;
         }
@@ -273,7 +312,7 @@ public class Flatten extends TableFunction {
         if (node.isNumber()) {
             return node.asDouble();
         }
-        return node.toString();
+        return VariantValue.ofNode(node);
     }
 
     @Override

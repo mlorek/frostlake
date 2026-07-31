@@ -18,6 +18,7 @@ package dev.frostlake.query;
 
 import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -270,6 +271,9 @@ public class SelectDistinctTest extends BaseDatabaseTest {
 
     @Test
     public void testSelectDistinctWithPositionalParameters() {
+        Assumptions.assumeFalse(isLiveSnowflake(),
+            "asserts the ROW ORDER of a DISTINCT result that carries no ORDER BY; a real account is free "
+            + "to hand the distinct rows back in any order");
         logger.info("Testing SELECT DISTINCT with positional parameters");
 
         ResultSet result = engine.executeQuery("""

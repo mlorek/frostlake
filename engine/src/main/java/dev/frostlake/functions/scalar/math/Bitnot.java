@@ -16,12 +16,12 @@
 
 package dev.frostlake.functions.scalar.math;
 
-import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.functions.NumericArgumentFunction;
 import dev.frostlake.types.NumericType;
 
 import java.util.List;
 
-public class Bitnot extends BuiltInFunction {
+public class Bitnot extends NumericArgumentFunction {
     public Bitnot() { super("BITNOT", NumericType.INTEGER); }
 
     @Override

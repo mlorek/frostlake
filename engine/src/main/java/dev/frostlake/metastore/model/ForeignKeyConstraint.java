@@ -30,10 +30,16 @@ public class ForeignKeyConstraint {
     private final ReferentialAction onUpdate;
     private final Boolean rely;  // null = not specified, true = RELY, false = NORELY
 
+    /**
+     * @param constraintName the name from an explicit {@code CONSTRAINT <name>} clause; null or blank when
+     *                       the constraint was declared without one, in which case it is auto-named
+     *                       {@code SYS_CONSTRAINT_<uuid>} the way Snowflake does (see {@link ConstraintNames}).
+     */
     public ForeignKeyConstraint(final String constraintName, final List<String> columnNames,
                                final String referencedTable, final List<String> referencedColumns,
                                final String onDelete, final String onUpdate, final Boolean rely) {
-        this.constraintName = constraintName;
+        this.constraintName = constraintName == null || constraintName.isEmpty()
+            ? ConstraintNames.generate() : constraintName;
         this.columnNames = columnNames;
         this.referencedTable = referencedTable;
         this.referencedColumns = referencedColumns;

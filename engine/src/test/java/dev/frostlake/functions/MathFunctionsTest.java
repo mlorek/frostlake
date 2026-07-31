@@ -29,7 +29,9 @@ public class MathFunctionsTest extends BaseDatabaseTest {
     @Override
     protected void setupTest() {
         // Create test table with numeric data
-        engine.execute("CREATE TABLE test_numbers (id INTEGER, value NUMBER)");
+        // NUMBER(10,5), not bare NUMBER: bare NUMBER is NUMBER(38,0) and ROUNDS fractional writes
+        // (live-verified — 10.5 stores as 11), which would defeat these fractional fixtures.
+        engine.execute("CREATE TABLE test_numbers (id INTEGER, value NUMBER(10,5))");
         engine.execute("INSERT INTO test_numbers VALUES (1, 10.5)");
         engine.execute("INSERT INTO test_numbers VALUES (2, -5.7)");
         engine.execute("INSERT INTO test_numbers VALUES (3, 0)");
@@ -192,20 +194,20 @@ public class MathFunctionsTest extends BaseDatabaseTest {
     @Test
     public void testLogBase10() {
         ResultSet result = engine.executeQuery(
-            "SELECT LOG(value) as log_val FROM test_numbers WHERE id = 4"
+            "SELECT LOG(10, value) as log_val FROM test_numbers WHERE id = 4"
         );
         assertEquals(1, result.getRowCount());
-        // LOG(100) = 2 (base 10)
+        // LOG(10, 100) = 2 — Snowflake's LOG is strictly LOG(base, x) (live-verified)
         assertEquals(2.0, ((Number) result.getRows().get(0).getValue(result.getColumnIndex("log_val"))).doubleValue(), 0.0001);
     }
 
     @Test
     public void testLogBase10Ten() {
         ResultSet result = engine.executeQuery(
-            "SELECT LOG(10) as log_val FROM test_numbers WHERE id = 1"
+            "SELECT LOG(10, 10) as log_val FROM test_numbers WHERE id = 1"
         );
         assertEquals(1, result.getRowCount());
-        // LOG(10) = 1 (base 10)
+        // LOG(10, 10) = 1
         assertEquals(1.0, ((Number) result.getRows().get(0).getValue(result.getColumnIndex("log_val"))).doubleValue(), 0.0001);
     }
 

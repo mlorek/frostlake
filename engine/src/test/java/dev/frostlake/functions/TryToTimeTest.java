@@ -18,10 +18,12 @@ package dev.frostlake.functions;
 
 import dev.frostlake.BaseDatabaseTest;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /** TRY_TO_TIME(expr [, format]) — non-throwing TO_TIME: NULL instead of an error on unparseable input. */
 public class TryToTimeTest extends BaseDatabaseTest {
@@ -43,7 +45,16 @@ public class TryToTimeTest extends BaseDatabaseTest {
     }
 
     @Test
-    public void nullInputYieldsNull() {
-        assertNull(scalar("SELECT TRY_TO_TIME(NULL)"));
+    public void untypedNullIsRejectedAndCastNullYieldsNull() {
+        // TRY_TO_* is TRY_CAST under the hood and needs a VARCHAR source: an UNTYPED NULL
+        // errors "Function TRY_CAST cannot be used with arguments of types NULL and TIME(9)"
+        // (live-verified), while NULL::VARCHAR converts to NULL.
+        assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                scalar("SELECT TRY_TO_TIME(NULL)");
+            }
+        });
+        assertNull(scalar("SELECT TRY_TO_TIME(NULL::VARCHAR)"));
     }
 }

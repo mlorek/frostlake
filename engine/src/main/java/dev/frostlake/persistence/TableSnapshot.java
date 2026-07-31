@@ -42,4 +42,11 @@ public class TableSnapshot implements Serializable {
     // null on old snapshot files — restore null-guards.
     public String rowAccessPolicyName;
     public List<String> rowAccessPolicyColumns;
+    // Constraint NAMES — the name an explicit CONSTRAINT <name> clause gave, or the generated
+    // SYS_CONSTRAINT_<uuid>. Null on old snapshots, where a missing name simply regenerates on first
+    // use, exactly as it did before these fields existed.
+    public String primaryKeyConstraintName;
+    // Only the UNIQUE constraints declared at TABLE level; a column-level UNIQUE is named per column
+    // (ColumnSnapshot.uniqueConstraintName) and must not become a table-level constraint on reload.
+    public List<UniqueConstraintSnapshot> uniqueConstraints;
 }

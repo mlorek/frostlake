@@ -69,7 +69,7 @@ public class LoopBreakContinueTest {
                 LET counter INTEGER := 0;
                 LOOP
                     counter := counter + 1;
-                    IF counter >= 5 THEN
+                    IF (counter >= 5) THEN
                         BREAK;
                     END IF;
                 END LOOP;
@@ -89,10 +89,10 @@ public class LoopBreakContinueTest {
                 LET evens INTEGER := 0;
                 LOOP
                     i := i + 1;
-                    IF i > 10 THEN
+                    IF (i > 10) THEN
                         BREAK;
                     END IF;
-                    IF MOD(i, 2) = 1 THEN
+                    IF (MOD(i, 2) = 1) THEN
                         CONTINUE;
                     END IF;
                     evens := evens + 1;
@@ -109,9 +109,9 @@ public class LoopBreakContinueTest {
         final int result = runReturningInt("""
             BEGIN
                 LET i INTEGER := 0;
-                WHILE i < 100 DO
+                WHILE (i < 100) DO
                     i := i + 1;
-                    IF i = 7 THEN
+                    IF (i = 7) THEN
                         BREAK;
                     END IF;
                 END WHILE;
@@ -129,7 +129,7 @@ public class LoopBreakContinueTest {
             BEGIN
                 LET i INTEGER := 0;
                 LET total INTEGER := 0;
-                WHILE i < 5 DO
+                WHILE (i < 5) DO
                     i := i + 1;
                     total := total + i;
                 END WHILE;

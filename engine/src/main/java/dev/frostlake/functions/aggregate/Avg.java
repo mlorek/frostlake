@@ -17,12 +17,16 @@
 package dev.frostlake.functions.aggregate;
 
 import dev.frostlake.functions.AggregateFunction;
+import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.types.NumericType;
 
-import java.math.BigDecimal;
-import java.math.RoundingMode;
 import java.util.List;
 
+/**
+ * AVG(expr) — see {@link AvgAccumulator} / {@link AggregateNumerics#avg(Iterable)} for the live-verified
+ * Snowflake result typing (fixed-point inputs → BigDecimal scale = max input scale + 6, HALF_UP; any
+ * double/VARIANT input → double; empty → NULL).
+ */
 public class Avg extends AggregateFunction {
     public Avg() {
         super("AVG", NumericType.DOUBLE);
@@ -39,32 +43,15 @@ public class Avg extends AggregateFunction {
     @Override public int getMinArgCount() { return 1; }
     @Override public int getMaxArgCount() { return 1; }
 
-    private static class AvgAccumulator implements Accumulator {
-        private BigDecimal sum = BigDecimal.ZERO;
-        private long count = 0;
-
-        @Override
-        public void accumulate(final Object value) {
-            if (value != null) {
-                sum = sum.add(new BigDecimal(value.toString()));
-                count++;
-            }
-        }
-
-        @Override
-        public Object getResult() {
-            if (count == 0) return null;
-            return sum.divide(BigDecimal.valueOf(count), 10, RoundingMode.HALF_UP);
-        }
-
-        @Override
-        public void reset() { sum = BigDecimal.ZERO; count = 0; }
-
-        @Override
-        public void merge(final Accumulator other) {
-            AvgAccumulator otherAvg = (AvgAccumulator) other;
-            sum = sum.add(otherAvg.sum);
-            count += otherAvg.count;
-        }
+    /**
+     * AVG refuses a semi-structured value exactly as {@link Sum} does — live,
+     * {@code AVG(DISTINCT o)} and {@code AVG(o) OVER (…)} are "Invalid argument types for function
+     * 'AVG': (OBJECT)". The BARE {@code AVG(o)} form reports 'SUM' live, because Snowflake desugars
+     * the average into a sum over a count before it type-checks; Frostlake reports the name written,
+     * matching live in two of its three forms and never inventing a plan it does not have.
+     */
+    @Override
+    public SemiStructuredRejection semiStructuredRejection(final int position) {
+        return SemiStructuredRejection.ARGUMENT_TYPES;
     }
 }

@@ -17,20 +17,26 @@
 package dev.frostlake.functions.scalar.encoding;
 
 import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.types.StringType;
 
-import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 import java.util.List;
 
+/**
+ * BASE64_ENCODE(expr) — the base64 encoding of the input's bytes.
+ *
+ * <p>A BINARY argument contributes its OWN bytes, so
+ * {@code BASE64_ENCODE(COMPRESS('hello','snappy'))} is {@code BRBoZWxsbw==}. Encoding
+ * {@code toString()} instead would base64 the hex RENDERING and yield {@code MDUxMDY4NjU2QzZDNkY=}.
+ */
 public class Base64Encode extends BuiltInFunction {
     public Base64Encode() { super("BASE64_ENCODE", StringType.VARCHAR); }
 
     @Override
     public Object evaluate(final List<Object> args) {
         if (args.get(0) == null) return null;
-        return Base64.getEncoder().encodeToString(
-            args.get(0).toString().getBytes(StandardCharsets.UTF_8));
+        return Base64.getEncoder().encodeToString(SharedFunctionHelpers.toUtf8(args.get(0)));
     }
 
     @Override public int getMinArgCount() { return 1; }

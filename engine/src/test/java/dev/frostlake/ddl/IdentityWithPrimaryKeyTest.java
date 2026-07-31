@@ -18,6 +18,7 @@ package dev.frostlake.ddl;
 
 import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -34,6 +35,10 @@ public class IdentityWithPrimaryKeyTest extends BaseDatabaseTest {
 
     @Test
     public void identityStartAndStepSurviveATableLevelPrimaryKey() {
+        Assumptions.assumeFalse(isLiveSnowflake(), "an AUTOINCREMENT column defaults to NOORDER on Snowflake, which allocates values in "
+            + "BATCHES per statement — a real account answers 100 then 600 (and 1 then 101 for step 1) "
+            + "for two single-row INSERTs, and the jump is not deterministic; only an explicit ORDER "
+            + "sequence is gapless. Frostlake models the gapless allocation");
         engine.execute("CREATE TABLE ip (id NUMBER IDENTITY(100,5), name STRING, PRIMARY KEY (name))");
         engine.execute("INSERT INTO ip (name) VALUES ('x')");
         engine.execute("INSERT INTO ip (name) VALUES ('y')");

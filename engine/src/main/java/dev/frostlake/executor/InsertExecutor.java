@@ -17,7 +17,19 @@
 package dev.frostlake.executor;
 
 import dev.frostlake.metastore.model.Privilege;
+import dev.frostlake.executor.expressions.CastExpression;
+import dev.frostlake.executor.expressions.Expression;
+import dev.frostlake.executor.expressions.FunctionCallExpression;
+import dev.frostlake.executor.expressions.JsonArrayExpression;
+import dev.frostlake.executor.expressions.JsonObjectExpression;
 import dev.frostlake.executor.expressions.SqlTruth;
+import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.types.ArrayType;
+import dev.frostlake.types.GeographyType;
+import dev.frostlake.types.GeometryType;
+import dev.frostlake.types.ObjectType;
+import dev.frostlake.types.VariantType;
+import dev.frostlake.types.VectorType;
 import dev.frostlake.metastore.model.SecurableObjectType;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.TableColumn;
@@ -27,6 +39,7 @@ import dev.frostlake.storage.Row;
 import dev.frostlake.storage.StorageEngine;
 import dev.frostlake.transaction.TransactionWriteSet;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -72,7 +85,7 @@ final class InsertExecutor {
             String tableName = ctx.objectName().KW_IDENTIFIER() != null
                 ? executor.resolveObjectName(ctx.objectName())
                 : executor.getQualifiedName(ctx.objectName().qualifiedName());
-            Table table = executor.getCatalog().resolveTable(tableName);
+            Table table = executor.getCatalog().resolveTableAsWritten(tableName, "Table");
 
             // Check INSERT permission
             if (executor.getSecurityManager() != null) {
@@ -89,8 +102,8 @@ final class InsertExecutor {
             List<String> columnNames = null;
             if (ctx.columnListOptional() != null) {
                 columnNames = new ArrayList<>();
-                for (final FrostlakeParser.IdentifierContext id : ctx.columnListOptional().identifierList().identifier()) {
-                    columnNames.add(executor.getIdentifier(id));
+                for (final FrostlakeParser.NamePartContext id : ctx.columnListOptional().namePart()) {
+                    columnNames.add(ParseTreeText.namePartText(id));
                 }
             }
 
@@ -107,12 +120,14 @@ final class InsertExecutor {
                         rejectStringLiteralIntoSemiStructured(table, columnNames, valuePosition, expr);
                         valuePosition++;
                         String exprText = executor.getOriginalText(expr);
+                        rejectSemiStructuredValueExpression(exprText);
                         // Create dummy table/row for expression evaluation
                         Table dummyTable = new Table("DUMMY", new ArrayList<>(), false);
                         Row dummyRow = new Row(new ArrayList<>());
+                        // No scripting variables are offered to the evaluator: INSERT is an embedded SQL
+                        // statement, where a stored-procedure parameter / DECLAREd / LET name must be
+                        // written :name (a bare one is an identifier — live: "invalid identifier 'V'").
                         ExpressionEvaluator evaluator = new ExpressionEvaluator(dummyTable, executor.getFunctionRegistry(), executor.getCatalog(), executor);
-                        // Add procedural variables to the lateral context
-                        evaluator.setOuterLateralContext(executor.getProceduralVariablesAsContext());
                         Object value = evaluator.evaluate(exprText, dummyRow);
                         values.add(value);
                     }
@@ -153,7 +168,7 @@ final class InsertExecutor {
         } catch (final SecurityException e) {
             throw e; // Let security exceptions propagate
         } catch (final Exception e) {
-            throw new RuntimeException("Failed to execute INSERT: " + e.getMessage(), e);
+            throw StatementErrors.propagate(e);
         }
     }
 
@@ -188,6 +203,54 @@ final class InsertExecutor {
                 + typeName + " but got VARCHAR for column " + col.getName());
         }
     }
+
+    /**
+     * Snowflake rejects semi-structured expressions in a VALUES clause outright (live-verified:
+     * OBJECT_CONSTRUCT / ARRAY_CONSTRUCT / PARSE_JSON / TO_VARIANT, the {@code [..]} and
+     * {@code {..}} literals and {@code ::VARIANT} casts all raise
+     * {@code Invalid expression [...] in VALUES clause}); INSERT ... SELECT is the supported route.
+     * The check is on the expression AST's top-level shape.
+     */
+    private void rejectSemiStructuredValueExpression(final String exprText) {
+        final Expression ast;
+        try {
+            ast = ExpressionEvaluator.parse(exprText);
+        } catch (final RuntimeException notAnExpression) {
+            return;
+        }
+        boolean semiStructured = false;
+        if (ast instanceof JsonObjectExpression || ast instanceof JsonArrayExpression) {
+            semiStructured = true;
+        } else if (ast instanceof CastExpression) {
+            // A VECTOR cast is rejected too, but Snowflake names the TYPE rather than the expression
+            // (live: "Invalid data type [VECTOR(FLOAT, 3)] in VALUES clause").
+            if (((CastExpression) ast).getDeclaredTarget() instanceof VectorType) {
+                throw new RuntimeException("Invalid data type ["
+                    + ((CastExpression) ast).getDeclaredTarget().getName() + "] in VALUES clause");
+            }
+            final String target = ((CastExpression) ast).getTargetType().toUpperCase();
+            semiStructured = target.startsWith("VARIANT") || target.startsWith("OBJECT") || target.startsWith("ARRAY");
+        } else if (ast instanceof FunctionCallExpression) {
+            final String name = ((FunctionCallExpression) ast).getFunctionName().toUpperCase();
+            final BuiltInFunction fn = executor.getFunctionRegistry().getFunction(name);
+            semiStructured = fn != null && (fn.getReturnType() instanceof VariantType
+                || fn.getReturnType() instanceof ObjectType || fn.getReturnType() instanceof ArrayType
+                || fn.getReturnType() instanceof GeographyType || fn.getReturnType() instanceof GeometryType);
+            // Beyond the semi-structured families, live rejects a further per-FUNCTION set in VALUES —
+            // measured (Probe169b): COMPRESS, MD5_BINARY, HEX_DECODE_BINARY, SHA2 and
+            // RANDOM all raise the same sentence, while TO_BINARY and UPPER pass. The boundary is not
+            // a return-type rule (SHA2 returns VARCHAR and is rejected; TO_BINARY returns BINARY and
+            // passes), so only the measured names are listed.
+            semiStructured = semiStructured || VALUES_REJECTED_FUNCTIONS.contains(name);
+        }
+        if (semiStructured) {
+            throw new RuntimeException("Invalid expression [" + exprText + "] in VALUES clause");
+        }
+    }
+
+    /** The measured non-semi-structured functions live refuses inside a VALUES clause. */
+    private static final Set<String> VALUES_REJECTED_FUNCTIONS = new HashSet<>(Arrays.asList(
+        "COMPRESS", "MD5_BINARY", "HEX_DECODE_BINARY", "SHA2", "RANDOM"));
 
     Row buildInsertRow(final Table table, final String fullyQualifiedName,
                                final List<String> columnNames, final List<Object> values) {
@@ -236,7 +299,7 @@ final class InsertExecutor {
 
     /** Insert one fully-built row: enforce constraints, then buffer (deferred-apply) or write + log + track streams. */
     void insertRowInto(final Table table, final String fullyQualifiedName, final Row row) {
-        executor.enforceColumnConstraints(table, row);
+        executor.enforceColumnConstraintsForDml(table, row);
         if (executor.isDeferredApply()) {
             final StorageEngine.TableStorage base = executor.getStorageEngine().getTableStorage(fullyQualifiedName);
             final TransactionWriteSet writeSet = executor.getTransactionManager().getCurrentTransaction().getWriteSet();
@@ -281,7 +344,7 @@ final class InsertExecutor {
                     final String fqn = executor.getFullyQualifiedTableName(tableName);
                     if (truncated.add(fqn)) {
                         executor.emptyTableContents(fqn);
-                        executor.getCatalog().resolveTable(tableName).setRowCount(0);
+                        executor.getCatalog().resolveTableAsWritten(tableName, "Table").setRowCount(0);
                     }
                 }
             }
@@ -309,7 +372,7 @@ final class InsertExecutor {
 
                 for (final FrostlakeParser.MultiInsertIntoContext into : applicable) {
                     final String tableName = executor.getQualifiedName(into.qualifiedName());
-                    final Table target = executor.getCatalog().resolveTable(tableName);
+                    final Table target = executor.getCatalog().resolveTableAsWritten(tableName, "Table");
                     final String fqn = executor.getFullyQualifiedTableName(tableName);
                     if (executor.getSecurityManager() != null) {
                         executor.getSecurityManager().checkPermission(Privilege.INSERT, SecurableObjectType.TABLE, tableName);
@@ -317,8 +380,8 @@ final class InsertExecutor {
                     List<String> columnNames = null;
                     if (into.columnListOptional() != null) {
                         columnNames = new ArrayList<>();
-                        for (final FrostlakeParser.IdentifierContext id : into.columnListOptional().identifierList().identifier()) {
-                            columnNames.add(executor.getIdentifier(id));
+                        for (final FrostlakeParser.NamePartContext id : into.columnListOptional().namePart()) {
+                            columnNames.add(ParseTreeText.namePartText(id));
                         }
                     }
                     final List<Object> values;
@@ -339,7 +402,7 @@ final class InsertExecutor {
         } catch (final SecurityException e) {
             throw e;
         } catch (final Exception e) {
-            throw new RuntimeException("Failed to execute multi-table INSERT: " + e.getMessage(), e);
+            throw StatementErrors.propagate(e);
         }
     }
 
@@ -356,7 +419,6 @@ final class InsertExecutor {
 
     private Object evaluateRowExpression(final ParserRuleContext exprCtx, final Table sourceTable, final Row srcRow) {
         final ExpressionEvaluator evaluator = new ExpressionEvaluator(sourceTable, executor.getFunctionRegistry(), executor.getCatalog(), executor);
-        evaluator.setOuterLateralContext(executor.getProceduralVariablesAsContext());
         return evaluator.evaluate(executor.getOriginalText(exprCtx), srcRow);
     }
 

@@ -18,6 +18,8 @@ package dev.frostlake.dml;
 
 import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
+import org.junit.jupiter.api.Assumptions;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.slf4j.Logger;
@@ -42,6 +44,18 @@ public class CopyUnloadStagePathTest extends BaseDatabaseTest {
 
     @TempDir
     Path stageDir;
+
+    /**
+     * Every test unloads to (or loads from) a stage whose URL is a local {@code file://} directory and
+     * then reads the produced file off the local disk — neither half exists on a real account.
+     */
+    @BeforeEach
+    public void skipWhenLive() {
+        Assumptions.assumeFalse(isLiveSnowflake(),
+            "needs a `file://` local stage and then inspects the unloaded file on the local filesystem; "
+            + "a real account rejects the URL prefix and writes into a named internal stage or cloud "
+            + "storage the test process cannot read");
+    }
 
     @Test
     public void unloadToStageSubPathWithTrailingSlash() throws IOException {

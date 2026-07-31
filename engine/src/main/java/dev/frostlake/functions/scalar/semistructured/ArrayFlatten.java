@@ -18,7 +18,8 @@ package dev.frostlake.functions.scalar.semistructured;
 
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
-import dev.frostlake.types.VariantType;
+import dev.frostlake.types.ArrayType;
+import dev.frostlake.values.VariantValue;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.node.ArrayNode;
 
@@ -26,7 +27,7 @@ import java.util.List;
 
 /** ARRAY_FLATTEN(array) — flattens one level of nested arrays. */
 public class ArrayFlatten extends BuiltInFunction {
-    public ArrayFlatten() { super("ARRAY_FLATTEN", VariantType.VARIANT); }
+    public ArrayFlatten() { super("ARRAY_FLATTEN", ArrayType.ARRAY); }
 
     @Override
     public Object evaluate(final List<Object> args) {
@@ -40,7 +41,7 @@ public class ArrayFlatten extends BuiltInFunction {
                 result.add(el);
             }
         }
-        return result.toString();
+        return VariantValue.ofNode(result);
     }
 
     @Override public int getMinArgCount() { return 1; }

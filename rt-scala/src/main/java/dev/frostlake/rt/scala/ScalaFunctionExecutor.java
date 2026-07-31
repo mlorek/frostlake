@@ -20,6 +20,7 @@ import dev.frostlake.config.S3PathResolver;
 import dev.frostlake.executor.udf.JarHandlerLoader;
 import dev.frostlake.executor.udf.UdfConsoleCapture;
 import dev.frostlake.metastore.Catalog;
+import dev.frostlake.values.BinaryValue;
 import dev.frostlake.metastore.model.Function;
 import dev.frostlake.metastore.model.Parameter;
 import dev.frostlake.metastore.model.UdfLanguage;
@@ -116,6 +117,9 @@ public class ScalaFunctionExecutor {
             if (targetType == float.class || targetType == Float.class) return n.floatValue();
             if (targetType == short.class || targetType == Short.class) return n.shortValue();
             if (targetType == byte.class || targetType == Byte.class) return n.byteValue();
+        }
+        if (value instanceof BinaryValue && targetType == byte[].class) {
+            return ((BinaryValue) value).bytes();
         }
         if (targetType == String.class) {
             return value.toString();

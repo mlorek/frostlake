@@ -52,7 +52,7 @@ public class ArrayAggAccumulator implements AggregateFunction.Accumulator {
         for (final Object value : values) {
             array.add(ArrayFunctionHelper.toNode(ArrayFunctionHelper.MAPPER, value));
         }
-        return ArrayFunctionHelper.toCanonicalJson(array);
+        return ArrayFunctionHelper.toCanonicalVariant(array);
     }
 
     @Override

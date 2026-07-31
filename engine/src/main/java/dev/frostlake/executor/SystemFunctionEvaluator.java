@@ -16,6 +16,7 @@
 
 package dev.frostlake.executor;
 
+import dev.frostlake.functions.SystemFunctionNames;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.model.Task;
 import dev.frostlake.metastore.model.TaskState;
@@ -55,6 +56,13 @@ public class SystemFunctionEvaluator {
 
     /** Evaluate a SYSTEM$FUNCNAME call from expression context (no ANTLR ctx available). */
     public Object evaluateSystemFunction(final String funcName, final List<Object> args) {
+        // SystemFunctionNames is the one place these names are declared, and the one place SHOW FUNCTIONS
+        // reads them from (through FunctionRegistry.allDispatchableNames()) — they are in none of the
+        // registry maps. Checking it here, ahead of the switch, keeps the two in step: a case added below
+        // but not declared there does not dispatch, so the listing cannot fall behind unnoticed.
+        if (!SystemFunctionNames.contains(funcName)) {
+            throw new RuntimeException("Unsupported system function: " + funcName);
+        }
         switch (funcName.toUpperCase()) {
             case "SYSTEM$TYPEOF": {
                 if (!args.isEmpty() && args.get(0) != null) {
@@ -123,7 +131,7 @@ public class SystemFunctionEvaluator {
                 return 0L;
             }
             case "SYSTEM$STREAM_GET_TABLE_TIMESTAMP":
-                return LocalDateTime.now().toString();
+                return LocalDateTime.now();
             case "SYSTEM$CURRENT_USER_TASK_NAME": {
                 final Task current = TaskScheduler.currentTask();
                 return current != null ? current.getName() : null;

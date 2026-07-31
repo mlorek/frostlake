@@ -16,7 +16,7 @@
 
 package dev.frostlake.functions.scalar.semistructured;
 
-import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.functions.VariantAccessorFunction;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
 import dev.frostlake.types.VariantType;
 import tools.jackson.databind.JsonNode;
@@ -27,7 +27,7 @@ import java.util.List;
  * GET(object_or_array, field_or_index) — extracts a value by key (object) or index (array).
  * GET_PATH(object, path_string) — navigates a dot/bracket path like 'a.b[0].c'.
  */
-public class GetPath extends BuiltInFunction {
+public class GetPath extends VariantAccessorFunction {
     private final boolean pathMode;
 
     public GetPath(final boolean pathMode) {
@@ -49,7 +49,11 @@ public class GetPath extends BuiltInFunction {
         } else {
             result = src.get(accessor);
         }
-        return ArrayFunctionHelper.fromNode(result);
+        // A key that IS present but holds JSON null stays a VARIANT NULL_VALUE — only a MISSING key is
+        // SQL NULL (live: TYPEOF(GET(PARSE_JSON('{"b":null}'),'b')) = 'NULL_VALUE', while
+        // TYPEOF(GET(PARSE_JSON('{"a":1}'),'zz')) is SQL NULL). Same for an array element: live,
+        // TYPEOF(GET(PARSE_JSON('[1,null,2]'),1)) = 'NULL_VALUE' but index 99 is SQL NULL.
+        return ArrayFunctionHelper.fromNodeKeepingJsonNull(result);
     }
 
     private JsonNode navigatePath(JsonNode node, final String path) {

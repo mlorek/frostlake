@@ -18,32 +18,42 @@ package dev.frostlake.ddl;
 
 import dev.frostlake.BaseJdbcTest;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.sql.ResultSet;
 import java.sql.SQLException;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class CreateViewCommentPositionTest extends BaseJdbcTest {
     private static final Logger logger = LoggerFactory.getLogger(CreateViewCommentPositionTest.class);
 
     @Test
-    public void testViewCommentAfterSelect() throws SQLException {
-        logger.info("Testing CREATE VIEW with COMMENT after SELECT");
+    public void testViewCommentAfterSelectIsRejected() throws SQLException {
+        logger.info("Testing CREATE VIEW with COMMENT after SELECT is a syntax error");
 
         statement.execute("CREATE TABLE products (id INTEGER, name VARCHAR)");
         statement.execute("INSERT INTO products VALUES (1, 'Apple')");
 
-        statement.execute("CREATE VIEW product_view AS SELECT id, name FROM products COMMENT = 'Products view'");
+        // Live-verified: the COMMENT property belongs BEFORE AS; after the query it is a syntax error.
+        assertThrows(SQLException.class, new Executable() {
+            @Override
+            public void execute() throws SQLException {
+                statement.execute("CREATE VIEW product_view AS SELECT id, name FROM products COMMENT = 'Products view'");
+            }
+        });
 
-        // Verify view works
-        ResultSet rs = statement.executeQuery("SELECT id, name FROM product_view");
-        assertTrue(rs.next());
-        assertEquals(1, rs.getInt("id"));
-        assertEquals("Apple", rs.getString("name"));
-        assertFalse(rs.next());
+        // The before-AS position works: the view is created and listed.
+        statement.execute("CREATE VIEW product_view COMMENT = 'Products view' AS SELECT id, name FROM products");
+        final ResultSet shown = statement.executeQuery("SHOW VIEWS");
+        assertTrue(shown.next());
+        assertEquals("PRODUCT_VIEW", shown.getString("name"));
+        shown.close();
     }
 
     @Test
@@ -81,21 +91,19 @@ public class CreateViewCommentPositionTest extends BaseJdbcTest {
     }
 
     @Test
-    public void testViewBothCommentPositions() throws SQLException {
-        logger.info("Testing CREATE VIEW with COMMENT in both positions - first one wins");
+    public void testViewCommentInBothPositionsIsRejected() throws SQLException {
+        logger.info("Testing CREATE VIEW with COMMENT in both positions is a syntax error");
 
         statement.execute("CREATE TABLE items (id INTEGER, description VARCHAR)");
         statement.execute("INSERT INTO items VALUES (1, 'Widget')");
 
-        // When both are present, the first one (before AS) should be used
-        statement.execute("CREATE VIEW item_view COMMENT = 'Comment before AS' AS SELECT id, description FROM items COMMENT = 'Comment after SELECT'");
-
-        // Verify view works
-        ResultSet rs = statement.executeQuery("SELECT id, description FROM item_view");
-        assertTrue(rs.next());
-        assertEquals(1, rs.getInt("id"));
-        assertEquals("Widget", rs.getString("description"));
-        assertFalse(rs.next());
+        // The trailing after-SELECT comment makes the whole statement a syntax error.
+        assertThrows(SQLException.class, new Executable() {
+            @Override
+            public void execute() throws SQLException {
+                statement.execute("CREATE VIEW item_view COMMENT = 'Comment before AS' AS SELECT id, description FROM items COMMENT = 'Comment after SELECT'");
+            }
+        });
     }
 
     @Test
@@ -149,14 +157,20 @@ public class CreateViewCommentPositionTest extends BaseJdbcTest {
     }
 
     @Test
-    public void testMaterializedViewCommentAfterSelectCreation() throws SQLException {
-        logger.info("Testing CREATE MATERIALIZED VIEW with COMMENT after SELECT - creation only");
+    public void testMaterializedViewCommentAfterSelectIsRejected() throws SQLException {
+        logger.info("Testing CREATE MATERIALIZED VIEW with COMMENT after SELECT is a syntax error");
 
         statement.execute("CREATE TABLE sales (product VARCHAR, amount INTEGER)");
         statement.execute("INSERT INTO sales VALUES ('Gadget', 500)");
 
-        // Just verify creation works with COMMENT after SELECT
-        statement.execute("CREATE MATERIALIZED VIEW sales_mv AS SELECT product, amount FROM sales COMMENT = 'Sales snapshot'");
+        // Live-verified: the COMMENT property belongs BEFORE AS on materialized views too.
+        assertThrows(SQLException.class, new Executable() {
+            @Override
+            public void execute() throws SQLException {
+                statement.execute("CREATE MATERIALIZED VIEW sales_mv AS SELECT product, amount FROM sales COMMENT = 'Sales snapshot'");
+            }
+        });
+        statement.execute("CREATE MATERIALIZED VIEW sales_mv COMMENT = 'Sales snapshot' AS SELECT product, amount FROM sales");
     }
 
     @Test

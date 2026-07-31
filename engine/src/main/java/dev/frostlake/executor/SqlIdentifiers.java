@@ -38,6 +38,24 @@ public final class SqlIdentifiers {
     private SqlIdentifiers() {
     }
 
+    /**
+     * The identifier EXACTLY as written — quotes stripped, but no case folding. Structured-type field
+     * names are the one place Snowflake does not fold: live-verified,
+     * {@code CAST(OBJECT_CONSTRUCT('x','a') AS OBJECT(x VARCHAR))} yields {@code {"x":"a"}} while the
+     * same cast to {@code OBJECT(X VARCHAR)} FAILS "Typed object schema mismatch in conversion" — the
+     * unquoted {@code X} stayed upper case and did not match the key {@code x}.
+     */
+    public static String verbatim(final FrostlakeParser.IdentifierContext ctx) {
+        if (ctx == null) {
+            return null;
+        }
+        if (ctx.QUOTED_IDENTIFIER() != null) {
+            final String quoted = ctx.QUOTED_IDENTIFIER().getText();
+            return quoted.substring(1, quoted.length() - 1).replace("\"\"", "\"");
+        }
+        return ctx.getText();
+    }
+
     public static String canonical(final FrostlakeParser.IdentifierContext ctx) {
         if (ctx == null) {
             return null;

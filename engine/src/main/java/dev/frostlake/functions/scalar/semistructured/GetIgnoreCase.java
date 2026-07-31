@@ -19,6 +19,8 @@ package dev.frostlake.functions.scalar.semistructured;
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
 import dev.frostlake.types.VariantType;
+import dev.frostlake.values.VariantUndefined;
+import dev.frostlake.values.VariantValue;
 import tools.jackson.databind.JsonNode;
 
 import java.util.List;
@@ -36,7 +38,13 @@ public class GetIgnoreCase extends BuiltInFunction {
         for (final String name : node.propertyNames()) {
             if (name.equalsIgnoreCase(key)) {
                 JsonNode v = node.get(name);
-                if (v == null || v.isNull()) return null;
+                if (v == null) return null;
+                // A key that IS present but holds JSON null keeps the typed VARIANT NULL_VALUE; only a
+                // missing key is SQL NULL (live:
+                // TYPEOF(GET_IGNORE_CASE(PARSE_JSON('{"b":null}'),'B')) = 'NULL_VALUE').
+                // An `undefined` element reads as SQL NULL, a JSON null as the NULL_VALUE variant.
+                if (VariantUndefined.isUndefined(v)) return null;
+                if (v.isNull()) return VariantValue.of("null");
                 if (v.isTextual()) return v.asText();
                 if (v.isNumber()) return v.isLong() || v.isInt() ? v.asLong() : v.asDouble();
                 if (v.isBoolean()) return v.asBoolean();

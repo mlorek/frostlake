@@ -23,17 +23,23 @@ import dev.frostlake.types.StringType;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 
+/**
+ * DECOMPRESS_STRING(input, method) — decompresses a BINARY input and returns the bytes as UTF-8
+ * text. The method is mandatory, as in Snowflake ("not enough arguments … expected 2, got 1"); a
+ * level suffix such as {@code 'zlib(9)'} is accepted and ignored, decompression being
+ * level-independent.
+ */
 public class DecompressString extends BuiltInFunction {
     public DecompressString() { super("DECOMPRESS_STRING", StringType.VARCHAR); }
 
     @Override
     public Object evaluate(final List<Object> args) {
-        if (args.get(0) == null) return null;
-        String method = args.size() > 1 && args.get(1) != null ? args.get(1).toString() : "deflate";
-        byte[] plain = SharedFunctionHelpers.decompressFromBase64(args.get(0).toString(), method);
-        return new String(plain, StandardCharsets.UTF_8);
+        if (args.get(0) == null || args.get(1) == null) return null;
+        final byte[] data = SharedFunctionHelpers.binaryArgBytes(args.get(0), "DECOMPRESS_STRING");
+        final CompressionMethod method = CompressionMethod.parse(args.get(1).toString());
+        return new String(CompressionCodec.decompress(data, method), StandardCharsets.UTF_8);
     }
 
-    @Override public int getMinArgCount() { return 1; }
+    @Override public int getMinArgCount() { return 2; }
     @Override public int getMaxArgCount() { return 2; }
 }

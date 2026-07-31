@@ -21,6 +21,7 @@ import dev.frostlake.storage.ResultSet;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -28,6 +29,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /**
  * Regression coverage for Snowflake Scripting worked examples taken from the Snowflake Scripting
@@ -445,18 +447,39 @@ public class ScriptingDocExamplesTest {
     // ─────────────────────────── Loop labels ───────────────────────────
 
     @Test
-    public void labeledLoopBreakAndTrailingLabel() {
-        logger.info("Doc example: <label>: LOOP … BREAK <label>; END LOOP <label>;");
+    public void labeledLoopIsRejectedAndTheBareLoopStands() {
+        logger.info("Loop labels do not exist in Snowflake Scripting: `<label>: LOOP` fails at the ':'");
+        // Live-verified: `my_loop: LOOP … BREAK my_loop; END LOOP my_loop;` is a syntax error on a real
+        // account — there is no labelled loop, labelled BREAK/CONTINUE or trailing label. Only the bare
+        // forms exist, and they act on the innermost enclosing loop.
+        assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.executeQuery("""
+                    DECLARE
+                      counter INTEGER DEFAULT 0;
+                    BEGIN
+                      my_loop: LOOP
+                        counter := counter + 1;
+                        IF (counter >= 5) THEN
+                          BREAK my_loop;
+                        END IF;
+                      END LOOP my_loop;
+                      RETURN counter;
+                    END;
+                    """);
+            }
+        });
         assertEquals(5L, asLong(scalar("""
             DECLARE
               counter INTEGER DEFAULT 0;
             BEGIN
-              my_loop: LOOP
+              LOOP
                 counter := counter + 1;
                 IF (counter >= 5) THEN
-                  BREAK my_loop;
+                  BREAK;
                 END IF;
-              END LOOP my_loop;
+              END LOOP;
               RETURN counter;
             END;
             """)));

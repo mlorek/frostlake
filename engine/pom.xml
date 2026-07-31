@@ -23,11 +23,16 @@
     </properties>
 
     <dependencies>
-        <!-- Pure-Java snappy for COMPRESS/DECOMPRESS (Snowflake's default method); no transitive deps -->
+        <!-- Pure-Java snappy/zlib/zstd/bz2 for COMPRESS/DECOMPRESS; no transitive deps.
+             Pinned at 2.0.3: advisory GHSA-vx9q-rhv9-3jvg (the Snappy/LZ4 decompressors could leak a
+             reused output buffer's contents on malformed input) is fixed there on this line. The
+             successor artifact io.airlift:aircompressor-v3 carries the same fix from 3.4, but is
+             Java 22+ only (Java 25 bytecode, java.lang.foreign) and bundles native libraries, so it
+             cannot be used here. -->
         <dependency>
             <groupId>io.airlift</groupId>
             <artifactId>aircompressor</artifactId>
-            <version>0.27</version>
+            <version>2.0.3</version>
         </dependency>
 
         <!-- ANTLR for SQL parsing -->
@@ -81,6 +86,16 @@
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter</artifactId>
             <version>6.0.3</version>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- Live-Snowflake test mode only (SF_LIVE=1 routes the test bases' SQL to a real Snowflake
+             account instead of the embedded engine). Test scope: the published frostlake-db artifact
+             stays free of it. -->
+        <dependency>
+            <groupId>net.snowflake</groupId>
+            <artifactId>snowflake-jdbc</artifactId>
+            <version>4.3.2</version>
             <scope>test</scope>
         </dependency>
 

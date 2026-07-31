@@ -115,7 +115,7 @@ public class RangeForLoopTest {
                 LET last INTEGER := 0;
                 FOR i IN 1 TO 100 DO
                     last := i;
-                    IF i = 4 THEN
+                    IF (i = 4) THEN
                         BREAK;
                     END IF;
                 END FOR;

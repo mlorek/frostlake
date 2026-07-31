@@ -19,6 +19,8 @@ package dev.frostlake.jdbc;
 import dev.frostlake.executor.SqlStringLiterals;
 import dev.frostlake.executor.SqlTokens;
 import dev.frostlake.parser.FrostlakeLexer;
+import dev.frostlake.values.BinaryValue;
+import dev.frostlake.values.VariantValue;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.Reader;
@@ -206,18 +208,37 @@ public final class JdbcMarshaling {
         if (v == null) {
             return null;
         }
+        if (v instanceof BinaryValue) {
+            return ((BinaryValue) v).bytes();
+        }
         if (v instanceof byte[]) {
             return (byte[]) v;
         }
         final String s = v.toString();
-        if (s.startsWith("0x") || s.startsWith("0X")) {       // engine renders BINARY as "0x<hex>"
+        if (s.startsWith("0x") || s.startsWith("0X")) {
             return hexToBytes(s.substring(2));
         }
+        if (isHexText(s)) {                                   // BINARY crosses the JSON wire as bare hex
+            return hexToBytes(s);
+        }
         try {
-            return Base64.getDecoder().decode(s);             // byte[] crosses the JSON wire as Base64
+            return Base64.getDecoder().decode(s);             // legacy byte[] cells crossed as Base64
         } catch (final IllegalArgumentException notBase64) {
             return s.getBytes(StandardCharsets.UTF_8);
         }
+    }
+
+    /** True when {@code s} is non-empty, even-length, and entirely hex digits. */
+    private static boolean isHexText(final String s) {
+        if (s.isEmpty() || s.length() % 2 != 0) {
+            return false;
+        }
+        for (int i = 0; i < s.length(); i++) {
+            if (Character.digit(s.charAt(i), 16) < 0) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /**
@@ -316,17 +337,24 @@ public final class JdbcMarshaling {
             return value.toString();
         }
         if (value instanceof Timestamp) {
-            return "'" + ((Timestamp) value).toLocalDateTime() + "'";
+            return "'" + ((Timestamp) value).toLocalDateTime() + "'::TIMESTAMP_NTZ";
         }
         if (value instanceof Date) {
-            return "'" + ((Date) value).toLocalDate() + "'";
+            return "'" + ((Date) value).toLocalDate() + "'::DATE";
         }
         if (value instanceof Time) {
-            return "'" + ((Time) value).toLocalTime() + "'";
+            return "'" + ((Time) value).toLocalTime() + "'::TIME";
+        }
+        if (value instanceof BinaryValue) {
+            // A binary parameter binds as a hex literal, which the parser reads back as BINARY.
+            return "X'" + ((BinaryValue) value).toHex() + "'";
+        }
+        if (value instanceof VariantValue) {
+            // A semi-structured parameter binds as PARSE_JSON of its text, keeping its variant-ness.
+            return "PARSE_JSON(" + SqlStringLiterals.encode(((VariantValue) value).text()) + ")";
         }
         if (value instanceof byte[]) {
-            // Engine renders/parses BINARY as "0x<hex>"; bind it as that string (coerced to BINARY on use).
-            return "'0x" + bytesToHex((byte[]) value) + "'";
+            return "X'" + bytesToHex((byte[]) value) + "'";
         }
         if (value instanceof List) {
             final List<?> list = (List<?>) value;

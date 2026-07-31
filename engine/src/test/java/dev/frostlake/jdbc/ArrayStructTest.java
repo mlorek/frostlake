@@ -17,6 +17,7 @@
 package dev.frostlake.jdbc;
 
 import dev.frostlake.BaseJdbcTest;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 
 import java.sql.Array;
@@ -34,10 +35,23 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 
 public class ArrayStructTest extends BaseJdbcTest {
 
+    /**
+     * The tests that go through {@code Connection.createArrayOf} / {@code createStruct} (or that cast the
+     * result to {@link DirectArray} / {@link DirectStruct}) assert Frostlake's own driver objects. The
+     * Snowflake driver returns its own {@code SfSqlArray}, does not implement {@code createStruct}, and
+     * rejects {@code getArray(index, count)} — so those assertions describe a driver surface, not SQL
+     * behaviour, and cannot hold on both drivers. The tests that build a {@code DirectStruct} directly are
+     * backend-independent and keep running.
+     */
+    private static final String DRIVER_OBJECTS =
+        "asserts Frostlake's own JDBC Array/Struct objects (DirectArray / DirectStruct); the Snowflake "
+        + "driver returns SfSqlArray, has no createStruct, and rejects getArray(index, count)";
+
     // === ARRAY TESTS ===
 
     @Test
     public void testCreateIntegerArray() throws SQLException {
+        Assumptions.assumeFalse(isLiveSnowflake(), DRIVER_OBJECTS);
         Object[] elements = {1, 2, 3, 4, 5};
         Array array = connection.createArrayOf("INTEGER", elements);
 
@@ -51,6 +65,7 @@ public class ArrayStructTest extends BaseJdbcTest {
 
     @Test
     public void testCreateStringArray() throws SQLException {
+        Assumptions.assumeFalse(isLiveSnowflake(), DRIVER_OBJECTS);
         Object[] elements = {"apple", "banana", "cherry"};
         Array array = connection.createArrayOf("VARCHAR", elements);
 
@@ -64,6 +79,7 @@ public class ArrayStructTest extends BaseJdbcTest {
 
     @Test
     public void testCreateEmptyArray() throws SQLException {
+        Assumptions.assumeFalse(isLiveSnowflake(), DRIVER_OBJECTS);
         Object[] elements = {};
         Array array = connection.createArrayOf("INTEGER", elements);
 
@@ -74,6 +90,7 @@ public class ArrayStructTest extends BaseJdbcTest {
 
     @Test
     public void testArrayGetArraySubset() throws SQLException {
+        Assumptions.assumeFalse(isLiveSnowflake(), DRIVER_OBJECTS);
         Object[] elements = {10, 20, 30, 40, 50};
         Array array = connection.createArrayOf("INTEGER", elements);
 
@@ -85,6 +102,7 @@ public class ArrayStructTest extends BaseJdbcTest {
 
     @Test
     public void testArrayGetArraySubsetAtEnd() throws SQLException {
+        Assumptions.assumeFalse(isLiveSnowflake(), DRIVER_OBJECTS);
         Object[] elements = {1, 2, 3, 4, 5};
         Array array = connection.createArrayOf("INTEGER", elements);
 
@@ -96,6 +114,7 @@ public class ArrayStructTest extends BaseJdbcTest {
 
     @Test
     public void testArrayInvalidIndex() throws SQLException {
+        Assumptions.assumeFalse(isLiveSnowflake(), DRIVER_OBJECTS);
         Object[] elements = {1, 2, 3};
         Array array = connection.createArrayOf("INTEGER", elements);
 
@@ -108,6 +127,7 @@ public class ArrayStructTest extends BaseJdbcTest {
 
     @Test
     public void testArrayFree() throws SQLException {
+        Assumptions.assumeFalse(isLiveSnowflake(), DRIVER_OBJECTS);
         Object[] elements = {1, 2, 3};
         Array array = connection.createArrayOf("INTEGER", elements);
 
@@ -120,6 +140,7 @@ public class ArrayStructTest extends BaseJdbcTest {
 
     @Test
     public void testArrayWithNullElements() throws SQLException {
+        Assumptions.assumeFalse(isLiveSnowflake(), DRIVER_OBJECTS);
         Object[] elements = {1, null, 3, null, 5};
         Array array = connection.createArrayOf("INTEGER", elements);
 
@@ -129,6 +150,7 @@ public class ArrayStructTest extends BaseJdbcTest {
 
     @Test
     public void testArrayWithDoubles() throws SQLException {
+        Assumptions.assumeFalse(isLiveSnowflake(), DRIVER_OBJECTS);
         Object[] elements = {1.5, 2.5, 3.5};
         Array array = connection.createArrayOf("DOUBLE", elements);
 
@@ -141,6 +163,7 @@ public class ArrayStructTest extends BaseJdbcTest {
 
     @Test
     public void testArrayWithBooleans() throws SQLException {
+        Assumptions.assumeFalse(isLiveSnowflake(), DRIVER_OBJECTS);
         Object[] elements = {true, false, true};
         Array array = connection.createArrayOf("BOOLEAN", elements);
 
@@ -153,6 +176,7 @@ public class ArrayStructTest extends BaseJdbcTest {
 
     @Test
     public void testArrayLength() throws SQLException {
+        Assumptions.assumeFalse(isLiveSnowflake(), DRIVER_OBJECTS);
         Object[] elements = {1, 2, 3, 4, 5};
         DirectArray array = (DirectArray) connection.createArrayOf("INTEGER", elements);
 
@@ -163,6 +187,7 @@ public class ArrayStructTest extends BaseJdbcTest {
 
     @Test
     public void testCreateStruct() throws SQLException {
+        Assumptions.assumeFalse(isLiveSnowflake(), DRIVER_OBJECTS);
         Object[] attributes = {"John", 30, true};
         Struct struct = connection.createStruct("PERSON", attributes);
 
@@ -299,6 +324,7 @@ public class ArrayStructTest extends BaseJdbcTest {
 
     @Test
     public void testArrayOfStructs() throws SQLException {
+        Assumptions.assumeFalse(isLiveSnowflake(), DRIVER_OBJECTS);
         // Create structs
         String[] names = {"id", "name"};
         DirectStruct struct1 = new DirectStruct("PERSON", names, new Object[]{1, "Alice"});
@@ -318,6 +344,7 @@ public class ArrayStructTest extends BaseJdbcTest {
 
     @Test
     public void testStructWithArrayField() throws SQLException {
+        Assumptions.assumeFalse(isLiveSnowflake(), DRIVER_OBJECTS);
         // Create array
         Object[] numbers = {1, 2, 3, 4, 5};
         Array array = connection.createArrayOf("INTEGER", numbers);
@@ -367,6 +394,7 @@ public class ArrayStructTest extends BaseJdbcTest {
 
     @Test
     public void testArrayToString() throws SQLException {
+        Assumptions.assumeFalse(isLiveSnowflake(), DRIVER_OBJECTS);
         Object[] elements = {1, 2, 3};
         DirectArray array = (DirectArray) connection.createArrayOf("INTEGER", elements);
 

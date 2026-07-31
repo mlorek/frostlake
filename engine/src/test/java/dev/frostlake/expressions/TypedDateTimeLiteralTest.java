@@ -18,14 +18,17 @@ package dev.frostlake.expressions;
 
 import dev.frostlake.BaseDatabaseTest;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /**
- * Typed date/time literals — {@code DATE '2020-01-15'}, {@code TIMESTAMP '…'}, {@code TIMESTAMP_NTZ '…'} —
- * which previously failed to parse. Each is equivalent to {@code '<string>'::<TYPE>}, so it composes with
- * the date/time operators, WHERE, and INSERT. A {@code DATE}/{@code TIMESTAMP} keyword NOT followed by a
- * string still parses as an identifier (column name), so nothing regresses.
+ * Typed date/time literals — {@code DATE '2020-01-15'}, {@code TIME '…'}, {@code TIMESTAMP '…'}. Each is
+ * equivalent to {@code '<string>'::<TYPE>}, so it composes with the date/time operators, WHERE, and
+ * INSERT. Live-verified: only those three keywords form typed literals — {@code TIMESTAMP_NTZ '…'} is a
+ * syntax error (use the {@code ::TIMESTAMP_NTZ} cast instead). A {@code DATE}/{@code TIMESTAMP} keyword
+ * NOT followed by a string still parses as an identifier (column name), so nothing regresses.
  */
 public class TypedDateTimeLiteralTest extends BaseDatabaseTest {
 
@@ -48,7 +51,14 @@ public class TypedDateTimeLiteralTest extends BaseDatabaseTest {
 
     @Test
     public void timestampNtzLiteral() {
-        assertEquals("2020-01-15T10:30", scalar("SELECT TIMESTAMP_NTZ '2020-01-15 10:30:00'").toString());
+        // TIMESTAMP_NTZ is not a typed-literal keyword (live-verified) — the cast form is the way.
+        assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.executeQuery("SELECT TIMESTAMP_NTZ '2020-01-15 10:30:00'");
+            }
+        });
+        assertEquals("2020-01-15T10:30", scalar("SELECT '2020-01-15 10:30:00'::TIMESTAMP_NTZ").toString());
     }
 
     @Test

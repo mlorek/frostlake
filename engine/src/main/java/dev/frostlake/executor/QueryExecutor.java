@@ -26,6 +26,8 @@ import dev.frostlake.executor.expressions.BinaryOperationExpression;
 import dev.frostlake.executor.expressions.BinaryOperator;
 import dev.frostlake.executor.expressions.ColumnReferenceExpression;
 import dev.frostlake.executor.expressions.Expression;
+import dev.frostlake.executor.expressions.LiteralExpression;
+import dev.frostlake.executor.expressions.LiteralType;
 import dev.frostlake.executor.operators.*;
 import dev.frostlake.executor.procedural.ProceduralException;
 import dev.frostlake.executor.streaming.FilterRowStream;
@@ -34,16 +36,21 @@ import dev.frostlake.executor.streaming.ListRowStream;
 import dev.frostlake.executor.streaming.RowPredicate;
 import dev.frostlake.executor.streaming.RowStream;
 import dev.frostlake.executor.udf.UdfRuntimes;
+import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.FunctionRegistry;
 import dev.frostlake.functions.TableFunction;
+import dev.frostlake.functions.table.QueryHistoryFunction;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
 import dev.frostlake.functions.aggregate.PercentileCont;
 import dev.frostlake.functions.aggregate.PercentileDisc;
+import dev.frostlake.functions.scalar.AutoTemporalParser;
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
-import dev.frostlake.functions.scalar.context.CurrVal;
 import dev.frostlake.functions.scalar.context.CurrentAccount;
+import dev.frostlake.functions.scalar.context.GetDdl;
 import dev.frostlake.functions.scalar.context.LastQueryId;
 import dev.frostlake.functions.scalar.context.NextVal;
+import dev.frostlake.functions.scalar.file.ToFile;
+import dev.frostlake.functions.scalar.file.TryToFile;
 import dev.frostlake.functions.table.QueryRunner;
 import dev.frostlake.functions.table.ResultScan;
 import dev.frostlake.functions.table.ToQuery;
@@ -68,12 +75,23 @@ import dev.frostlake.transaction.StreamReadScope;
 import dev.frostlake.transaction.TransactionManager;
 import dev.frostlake.transaction.TransactionWriteSet;
 import dev.frostlake.types.ArrayType;
+import dev.frostlake.types.BinaryType;
 import dev.frostlake.types.BooleanType;
 import dev.frostlake.types.DataType;
+import dev.frostlake.types.FileType;
+import dev.frostlake.types.GeographyType;
+import dev.frostlake.types.GeometryType;
 import dev.frostlake.types.DateTimeType;
+import dev.frostlake.types.NumericLiteralTypes;
 import dev.frostlake.types.NumericType;
+import dev.frostlake.types.ObjectType;
 import dev.frostlake.types.StringType;
 import dev.frostlake.types.VariantType;
+import dev.frostlake.types.VectorType;
+import dev.frostlake.values.BinaryValue;
+import dev.frostlake.values.GeoValue;
+import dev.frostlake.values.VariantValue;
+import dev.frostlake.values.VectorValue;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.node.ArrayNode;
 import java.math.BigDecimal;
@@ -215,6 +233,9 @@ public class QueryExecutor {
         this.queryHistoryTracker = new QueryHistoryTracker(
             config != null ? config.getQueryHistorySize() : 10000);
         this.showExecutor = new ShowCommandExecutor(catalog, transactionManager, queryHistoryTracker, sessionVariables, functionRegistry);
+        // INFORMATION_SCHEMA.QUERY_HISTORY is a TABLE FUNCTION in Snowflake (the bare-object form
+        // does not exist there, live-verified); registered here because it needs the tracker.
+        functionRegistry.registerTableFunction(new QueryHistoryFunction(queryHistoryTracker));
         this.systemFunctionEvaluator = new SystemFunctionEvaluator(catalog, storageEngine, transactionManager);
 
         // Register RESULT_SCAN table function with access to result cache
@@ -229,16 +250,32 @@ public class QueryExecutor {
             }
         }));
 
+        // Re-register GET_DDL with a callback that can run a view's defining query through this
+        // executor: view DDL renders the output column list, which only execution can derive.
+        functionRegistry.register(new GetDdl(catalog, new QueryRunner() {
+            @Override
+            public ResultSet runQuery(final String sql) {
+                final List<ResultSet> results = execute(sql);
+                return results.isEmpty() ? null : results.get(results.size() - 1);
+            }
+        }));
+
         // Register LAST_QUERY_ID() scalar function with access to result cache
         functionRegistry.register(new LastQueryId(resultCache));
 
-        // Register NEXTVAL and CURRVAL sequence functions
+        // Register the NEXTVAL sequence function (Snowflake has no CURRVAL — live-verified)
         // NEXTVAL('seq') as a FUNCTION is not Snowflake syntax (live-verified: "Unknown function
         // NEXTVAL") — only the member form seq.NEXTVAL exists, handled by the evaluator directly.
-        functionRegistry.register(new CurrVal(catalog));
 
         // Register CURRENT_ACCOUNT() function with access to config
         functionRegistry.register(new CurrentAccount(config));
+
+        // Re-register TO_FILE / TRY_TO_FILE with a resolver that can reach stages: a FILE value is the
+        // metadata of a REAL staged file, so both must resolve '@stage/path' against the filesystem to
+        // read its size, mtime and MD5 — and to fail "was not found" exactly as Snowflake does.
+        final StageFileResolver stageFileResolver = new StageFileResolver(this, catalog);
+        functionRegistry.register(new ToFile(stageFileResolver));
+        functionRegistry.register(new TryToFile(stageFileResolver));
     }
 
     public void setStreamManager(final StreamManager streamManager) {
@@ -380,9 +417,135 @@ public class QueryExecutor {
     }
 
     /**
+     * True when {@code sql} parses as a single Snowflake-Scripting block — {@code BEGIN … END} or
+     * {@code DECLARE … BEGIN … END}. Sibling of {@link #isQueryStatement(String)}: the decision is made on the
+     * parse tree, never on a string prefix, so the transaction statement {@code BEGIN;} (a different grammar
+     * rule that also starts with BEGIN) is correctly not a block, while a lower-cased or multi-line block is.
+     *
+     * <p>Used to compile a {@code LANGUAGE SQL} stored-procedure body at CREATE time: Snowflake requires such a
+     * body to be a scripting block and rejects a bare statement outright.
+     */
+    public boolean isProceduralBlock(final String sql) {
+        return proceduralBlockOf(sql) != null;
+    }
+
+    /**
+     * The parsed script {@code sql} forms when it is a single query statement, or null when it is not one.
+     * The parse-tree half of {@link #isQueryStatement(String)}, for the CREATE-time SQL-UDF body check;
+     * unlike that method this parses afresh rather than consulting the hot-path cache, because it is only
+     * ever reached once per CREATE.
+     */
+    public FrostlakeParser.SqlScriptContext queryStatementOf(final String sql) {
+        if (sql == null) {
+            return null;
+        }
+        try {
+            final FrostlakeParser.SqlScriptContext tree = parseScript(sql, true);
+            final boolean isQuery = !tree.flowChain().isEmpty()
+                && tree.flowChain().get(0).statement().get(0).queryStatement() != null;
+            return isQuery ? tree : null;
+        } catch (final RuntimeException notAStatement) {
+            return null;
+        }
+    }
+
+    /**
+     * The {@code BEGIN … END} block {@code sql} consists of, or null when it is not exactly one block.
+     * The parse-tree half of {@link #isProceduralBlock(String)}, for callers that must INSPECT the block
+     * rather than merely recognise it (the CREATE-time SQL-UDF body check reads which statements and
+     * expressions it contains).
+     */
+    public FrostlakeParser.BeginEndBlockContext proceduralBlockOf(final String sql) {
+        if (sql == null || sql.trim().isEmpty()) {
+            return null;
+        }
+        try {
+            final FrostlakeParser.SqlScriptContext tree = parseScript(sql, true);
+            if (tree.flowChain().size() != 1) {
+                return null;
+            }
+            final List<FrostlakeParser.StatementContext> statements = tree.flowChain().get(0).statement();
+            if (statements.isEmpty()) {
+                return null;
+            }
+            // A DECLARE is part of the block itself (beginEndBlock carries declareSection), so the
+            // whole thing is a single statement: anything before it means this is not one block.
+            if (statements.size() != 1) {
+                return null;
+            }
+            final FrostlakeParser.ProceduralStatementContext proceduralCtx = statements.get(0).proceduralStatement();
+            return proceduralCtx != null ? proceduralCtx.beginEndBlock() : null;
+        } catch (final RuntimeException e) {
+            return null;   // does not even parse → certainly not a block
+        }
+    }
+
+    /**
+     * Whether {@code sql} parses at all under the engine's grammar. Frostlake's grammar is a SUBSET of
+     * Snowflake's, so a parse FAILURE means "this engine does not recognise some construct" — never
+     * "Snowflake would reject it". The CREATE-time routine-body checks use this to fail OPEN: they only
+     * reject a body whose shape they can positively read and know to be wrong.
+     */
+    public boolean parsesAsScript(final String sql) {
+        if (sql == null || sql.trim().isEmpty()) {
+            return false;
+        }
+        try {
+            parseScript(sql, true);
+            return true;
+        } catch (final RuntimeException doesNotParse) {
+            return false;
+        }
+    }
+
+    /**
+     * Whether {@code sql} is exactly ONE plain (non-procedural) SQL statement — a bare
+     * {@code SELECT …} / {@code UPDATE …} and nothing else. This is the one routine-body shape the
+     * engine can positively call wrong: Snowflake requires a LANGUAGE SQL procedure body to be a
+     * scripting block and rejects a bare statement outright. A body that does not parse, or parses
+     * as several statements, or contains any procedural construct, is NOT this shape.
+     */
+    public boolean isSinglePlainStatement(final String sql) {
+        if (sql == null || sql.trim().isEmpty()) {
+            return false;
+        }
+        try {
+            final FrostlakeParser.SqlScriptContext tree = parseScript(sql, true);
+            if (tree.flowChain().size() != 1) {
+                return false;
+            }
+            final List<FrostlakeParser.StatementContext> statements = tree.flowChain().get(0).statement();
+            return statements.size() == 1 && statements.get(0).proceduralStatement() == null;
+        } catch (final RuntimeException doesNotParse) {
+            return false;
+        }
+    }
+
+    /**
      * Execute SQL with lateral context support (for correlated subqueries)
      */
+    /** Depth of correlated / lateral re-execution — non-zero while a subquery runs with an OUTER
+     *  context, whose names a plan-time scope walk cannot see (they resolve per row). */
+    private int lateralExecutionDepth;
+
+    /** Whether a correlated / lateral re-execution is on the stack. */
+    public boolean isInLateralExecution() {
+        return lateralExecutionDepth > 0;
+    }
+
     public List<ResultSet> executeWithLateralContext(final String sql, final Map<String, Object> lateralContext) {
+        if (lateralContext == null) {
+            return executeWithLateralContextInner(sql, null);
+        }
+        lateralExecutionDepth++;
+        try {
+            return executeWithLateralContextInner(sql, lateralContext);
+        } finally {
+            lateralExecutionDepth--;
+        }
+    }
+
+    private List<ResultSet> executeWithLateralContextInner(final String sql, final Map<String, Object> lateralContext) {
         List<ResultSet> results = new ArrayList<>();
         boolean hasResultSet = false;
 
@@ -528,7 +691,7 @@ public class QueryExecutor {
             }
             logger.error("Error executing SQL: {}", sql, e);
             if (e instanceof ProceduralException) throw (ProceduralException) e;
-            throw new RuntimeException("Failed to execute SQL: " + e.getMessage(), e);
+            throw StatementErrors.propagate(e);
         }
     }
 
@@ -607,6 +770,20 @@ public class QueryExecutor {
     ResultSet executeSelectFromContextWithCTEs(final FrostlakeParser.SelectStatementContext ctx,
                                                        final Map<String, Object> lateralContext,
                                                        final Map<String, ResultSet> cteResults) {
+        if (lateralContext == null) {
+            return executeSelectFromContextWithCTEsInner(ctx, null, cteResults);
+        }
+        lateralExecutionDepth++;
+        try {
+            return executeSelectFromContextWithCTEsInner(ctx, lateralContext, cteResults);
+        } finally {
+            lateralExecutionDepth--;
+        }
+    }
+
+    private ResultSet executeSelectFromContextWithCTEsInner(final FrostlakeParser.SelectStatementContext ctx,
+                                                       final Map<String, Object> lateralContext,
+                                                       final Map<String, ResultSet> cteResults) {
         try {
             // If CTEs are already computed (from parent DML statement), use them
             // Otherwise, compute them from the SELECT statement's WITH clause
@@ -650,7 +827,7 @@ public class QueryExecutor {
             // which rendered every logged statement as an unreadable single word.
             logger.error("Error executing SQL: {}", getOriginalText(ctx), e);
             if (e instanceof ProceduralException) throw (ProceduralException) e;
-            throw new RuntimeException("Failed to execute SELECT: " + e.getMessage(), e);
+            throw StatementErrors.propagate(e);
         }
     }
 
@@ -658,6 +835,18 @@ public class QueryExecutor {
      * Execute SELECT from parsed context with LATERAL context support
      */
     private ResultSet executeSelectFromContext(final FrostlakeParser.SelectStatementContext ctx, final Map<String, Object> lateralContext) {
+        if (lateralContext == null) {
+            return executeSelectFromContextInner(ctx, null);
+        }
+        lateralExecutionDepth++;
+        try {
+            return executeSelectFromContextInner(ctx, lateralContext);
+        } finally {
+            lateralExecutionDepth--;
+        }
+    }
+
+    private ResultSet executeSelectFromContextInner(final FrostlakeParser.SelectStatementContext ctx, final Map<String, Object> lateralContext) {
         try {
             // Handle CTEs (WITH clause)
             Map<String, ResultSet> cteResults = null;
@@ -695,7 +884,7 @@ public class QueryExecutor {
             // which rendered every logged statement as an unreadable single word.
             logger.error("Error executing SQL: {}", getOriginalText(ctx), e);
             if (e instanceof ProceduralException) throw (ProceduralException) e;
-            throw new RuntimeException("Failed to execute SELECT: " + e.getMessage(), e);
+            throw StatementErrors.propagate(e);
         }
     }
 
@@ -712,7 +901,9 @@ public class QueryExecutor {
      * scope's CTEs: a nested WITH inside a CTE body may reference its parent's siblings (Snowflake
      * scoping) — {@code WITH outputs AS (...), x AS (WITH cleaned AS (... FROM outputs) ...)}.
      * Executing the inner definitions with an empty map made every such reference fail with
-     * "Table does not exist". Inner names shadow outer ones, as in standard scoping.
+     * "Table does not exist". An inner definition of a name the OUTER scope already defines is
+     * IGNORED — the outer CTE wins (live-verified: {@code WITH t AS (SELECT 'outer'), u AS (WITH t
+     * AS (SELECT 'inner') SELECT * FROM t) SELECT * FROM u} yields 'outer' on Snowflake).
      */
     Map<String, ResultSet> executeCTEs(final FrostlakeParser.WithClauseContext withCtx,
                                        final Map<String, Object> lateralContext,
@@ -721,6 +912,10 @@ public class QueryExecutor {
 
         for (final FrostlakeParser.CteDefinitionContext cteCtx : withCtx.cteDefinition()) {
             String cteName = cteCtx.identifier().getText().toUpperCase();
+            if (outerCtes != null && outerCtes.containsKey(cteName)) {
+                // The outer CTE of the same name wins; the inner definition is never executed.
+                continue;
+            }
             ResultSet cteResult;
 
             // Snowflake's RECURSIVE keyword is OPTIONAL: a CTE that references its own name as a
@@ -733,8 +928,8 @@ public class QueryExecutor {
             } else {
                 cteResult = executeSelectFromContextWithCTEs(cteCtx.selectStatement(), lateralContext, cteResults);
                 // Apply column aliases for non-recursive CTEs: WITH cte(a, b) AS (...)
-                if (cteCtx.columnListOptional() != null && cteCtx.columnListOptional().identifierList() != null) {
-                    cteResult = renameColumns(cteResult, cteCtx.columnListOptional().identifierList());
+                if (cteCtx.columnListOptional() != null) {
+                    cteResult = renameColumns(cteResult, cteCtx.columnListOptional());
                 }
             }
 
@@ -756,7 +951,6 @@ public class QueryExecutor {
             tree.flowChain().get(0).statement().get(0).proceduralStatement();
         return p != null && (
                p.letStatement() != null
-            || p.declareStatement() != null
             || p.ifStatement() != null
             || p.loopStatement() != null
             || p.whileStatement() != null
@@ -777,8 +971,8 @@ public class QueryExecutor {
     private boolean referencesAsTableSource(final ParseTree node, final String cteName) {
         if (node instanceof FrostlakeParser.TableSourceContext) {
             final FrostlakeParser.TableSourceContext source = (FrostlakeParser.TableSourceContext) node;
-            if (source.qualifiedName() != null) {
-                final String[] parts = ParseTreeText.qualifiedNameParts(source.qualifiedName());
+            if (source.tableQualifiedName() != null) {
+                final String[] parts = ParseTreeText.qualifiedNameParts(source.tableQualifiedName());
                 if (parts.length == 1 && parts[0].equalsIgnoreCase(cteName)) {
                     return true;
                 }
@@ -830,8 +1024,8 @@ public class QueryExecutor {
         ResultSet anchor = executeSingleSelect(stmtCtx, clauses.get(splitIdx), lateralContext, workingCtes);
 
         // Apply CTE column aliases to anchor so the recursive step can reference named columns
-        if (cteCtx.columnListOptional() != null && cteCtx.columnListOptional().identifierList() != null) {
-            anchor = renameColumns(anchor, cteCtx.columnListOptional().identifierList());
+        if (cteCtx.columnListOptional() != null) {
+            anchor = renameColumns(anchor, cteCtx.columnListOptional());
         }
 
         List<Row> accumulated = new ArrayList<>(anchor.getRows());
@@ -875,10 +1069,10 @@ public class QueryExecutor {
      * Rename columns in a ResultSet according to an explicit column list.
      * Used for: WITH cte(col1, col2) AS (SELECT a, b FROM ...)
      */
-    private ResultSet renameColumns(final ResultSet original, final FrostlakeParser.IdentifierListContext idList) {
+    private ResultSet renameColumns(final ResultSet original, final FrostlakeParser.ColumnListOptionalContext columnList) {
         List<String> newNames = new ArrayList<>();
-        for (final FrostlakeParser.IdentifierContext idCtx : idList.identifier()) {
-            newNames.add(getIdentifier(idCtx));
+        for (final FrostlakeParser.NamePartContext partCtx : columnList.namePart()) {
+            newNames.add(ParseTreeText.namePartText(partCtx));
         }
         if (newNames.isEmpty() || newNames.size() != original.getColumns().size()) {
             return original; // mismatch — leave unchanged
@@ -886,7 +1080,8 @@ public class QueryExecutor {
         List<ResultSetColumn> newCols = new ArrayList<>();
         for (int i = 0; i < original.getColumns().size(); i++) {
             ResultSetColumn old = original.getColumns().get(i);
-            newCols.add(new ResultSetColumn(newNames.get(i), old.getDataType(), old.getTableName()));
+            newCols.add(new ResultSetColumn(newNames.get(i), old.getDataType(), old.getTableName(),
+                old.getStaticType()));
         }
         return new ResultSet(newCols, original.getRows());
     }
@@ -917,14 +1112,16 @@ public class QueryExecutor {
         // left-to-right fold would wrongly evaluate "A UNION B INTERSECT C" as "(A UNION B) INTERSECT C".
         // Each term also carries its column layout (its first operand's columns) so a UNION [ALL] BY NAME
         // between terms can align by column name; INTERSECT/EXCEPT stay positional (same-columns) as before.
-        final List<List<Row>> terms = new ArrayList<>();
-        final List<List<ResultSetColumn>> termColumns = new ArrayList<>();
-        final List<FrostlakeParser.SetOperatorContext> termOperators = new ArrayList<>();
-        List<Row> currentTerm = new ArrayList<>(firstResult.getRows());
-        List<ResultSetColumn> currentTermColumns = firstResult.getColumns();
-
+        // Every branch executes first, so the branches' declared types can be unified BEFORE any
+        // rows are combined — a string branch's values convert to the non-string side's type
+        // whichever side leads (live: 'x' ∪ 1 and 1 ∪ 'x' both fail "Numeric value 'x' is not
+        // recognized"), and dedup must compare the CONVERTED values.
+        final List<ResultSet> branchResults = new ArrayList<>();
+        branchResults.add(firstResult);
+        boolean anyByName = false;
         for (int i = 1; i < operands.size(); i++) {
             final ResultSet nextResult = executeSelectOperand(ctx, operands.get(i), lateralContext, cteResults);
+            branchResults.add(nextResult);
             final FrostlakeParser.SetOperatorContext operator = setOperators.get(i - 1);
             // ALL applies only to UNION in Snowflake (live-verified error shapes below).
             if (operator.ALL() != null && operator.UNION() == null) {
@@ -933,19 +1130,50 @@ public class QueryExecutor {
             }
             // BY NAME aligns columns by name and so allows different column counts; every other operator
             // requires matching column counts.
+            anyByName |= isUnionByName(operator);
             if (!isUnionByName(operator) && nextResult.getColumns().size() != columnCount) {
                 throw new RuntimeException("Set operation queries must have the same number of columns");
             }
+        }
+        // Every branch's own column layout, kept so the combined result can only claim a STATIC type
+        // where all branches declare one type TOGETHER — the leading branch's layout wins the fold.
+        final List<List<ResultSetColumn>> branchColumns = new ArrayList<>();
+        final List<List<Row>> branchRows = new ArrayList<>();
+        for (final ResultSet branch : branchResults) {
+            branchColumns.add(branch.getColumns());
+            branchRows.add(new ArrayList<>(branch.getRows()));
+        }
+        final List<List<NumericType>> literalMeasurements = stringLiteralMeasurements(operands);
+        // Eager conversion applies to all-UNION chains only: a subtractive operator over an EMPTY
+        // left side short-circuits WITHOUT converting the right side (live-verified in
+        // SetOperations), so MINUS / EXCEPT / INTERSECT keep the lazy compare-time coercion.
+        boolean allUnion = true;
+        for (final FrostlakeParser.SetOperatorContext operator : setOperators) {
+            allUnion &= operator.UNION() != null;
+        }
+        if (!anyByName && allUnion) {
+            SetOperations.coerceStringBranches(branchRows, branchColumns,
+                reconcileBranchTypes(firstResult.getColumns(), branchColumns, literalMeasurements));
+        }
+
+        final List<List<Row>> terms = new ArrayList<>();
+        final List<List<ResultSetColumn>> termColumns = new ArrayList<>();
+        final List<FrostlakeParser.SetOperatorContext> termOperators = new ArrayList<>();
+        List<Row> currentTerm = branchRows.get(0);
+        List<ResultSetColumn> currentTermColumns = firstResult.getColumns();
+
+        for (int i = 1; i < operands.size(); i++) {
+            final FrostlakeParser.SetOperatorContext operator = setOperators.get(i - 1);
             final boolean hasAll = operator.ALL() != null;
             if (operator.INTERSECT() != null) {
-                currentTerm = SetOperations.applyIntersect(currentTerm, nextResult.getRows(), hasAll);
+                currentTerm = SetOperations.applyIntersect(currentTerm, branchRows.get(i), hasAll);
             } else {
                 // UNION or EXCEPT/MINUS: close the current INTERSECT term and start a new one.
                 terms.add(currentTerm);
                 termColumns.add(currentTermColumns);
                 termOperators.add(operator);
-                currentTerm = new ArrayList<>(nextResult.getRows());
-                currentTermColumns = nextResult.getColumns();
+                currentTerm = branchRows.get(i);
+                currentTermColumns = branchResults.get(i).getColumns();
             }
         }
         terms.add(currentTerm);
@@ -964,20 +1192,23 @@ public class QueryExecutor {
                     final List<ResultSetColumn> merged = mergeColumnsByName(accColumns, rightColumns);
                     final List<Row> leftReshaped = reshapeRowsByName(allRows, accColumns, merged);
                     final List<Row> rightReshaped = reshapeRowsByName(terms.get(j), rightColumns, merged);
-                    allRows = SetOperations.applyUnion(leftReshaped, rightReshaped, hasAll);
+                    allRows = SetOperations.applyUnion(leftReshaped, rightReshaped, hasAll, merged);
                     accColumns = merged;
                 } else {
-                    allRows = SetOperations.applyUnion(allRows, terms.get(j), hasAll);
+                    allRows = SetOperations.applyUnion(allRows, terms.get(j), hasAll, accColumns);
                 }
             } else {
                 // EXCEPT / MINUS (MINUS is a Snowflake synonym for EXCEPT).
                 allRows = SetOperations.applyExcept(allRows, terms.get(j), hasAll);
             }
         }
+        accColumns = reconcileBranchTypes(accColumns, branchColumns, literalMeasurements);
 
-        // ORDER BY / LIMIT / FETCH apply once to the combined result (statement level).
+        // ORDER BY / LIMIT / FETCH apply once to the combined result (statement level). A set
+        // operation's ORDER BY resolves against the combined OUTPUT only (its column names,
+        // ordinals, and expressions over those names) — never any branch's FROM scope.
         if (ctx.orderByClause() != null) {
-            allRows = orderByAfterGroupBy(allRows, ctx);
+            allRows = orderByExecutor.orderBySetOperation(allRows, ctx, accColumns);
         }
         if (ctx.limitClause() != null) {
             // LIMIT NULL means no limit; its INTEGER_LITERAL list then holds only the OFFSET (if any).
@@ -1068,6 +1299,8 @@ public class QueryExecutor {
                                          final FrostlakeParser.SelectClauseContext ctx,
                                          final Map<String, Object> lateralContext,
                                          final Map<String, ResultSet> cteResults) {
+        // Outside the try so Snowflake's own wording reaches the caller unwrapped.
+        SelectItemAccessors.rejectStandaloneInterval(ctx.selectList());
         try {
             FrostlakeParser.TableExpressionContext tableExpr = ctx.tableExpression();
 
@@ -1105,8 +1338,8 @@ public class QueryExecutor {
             String tableName = table.getName();
 
             // Check SELECT permission on first table (if it's not a subquery)
-            if (securityManager != null && firstTableRef.tableSource().qualifiedName() != null) {
-                String qualifiedTableName = getQualifiedName(firstTableRef.tableSource().qualifiedName());
+            if (securityManager != null && firstTableRef.tableSource().tableQualifiedName() != null) {
+                String qualifiedTableName = ParseTreeText.getQualifiedName(firstTableRef.tableSource().tableQualifiedName());
                 securityManager.checkPermission(Privilege.SELECT, SecurableObjectType.TABLE, qualifiedTableName);
             }
 
@@ -1219,6 +1452,30 @@ public class QueryExecutor {
             // Process explicit joins
             for (final FrostlakeParser.JoinClauseContext joinCtx : allJoins) {
                 FrostlakeParser.TableReferenceContext rightTableRef = joinCtx.tableReference();
+
+                // ASOF JOIN — the closest-match join. Its right side is an ordinary relation, but the
+                // MATCH_CONDITION must be evaluated one side at a time (Snowflake requires the left operand
+                // to reference only left-side columns and the right operand only right-side ones), so it
+                // gets its own operator rather than the generic ON-condition path.
+                if (joinCtx.ASOF() != null || joinCtx.asofMatchCondition() != null) {
+                    final Map<String, Table> leftAliases = new LinkedHashMap<>(aliasToTable);
+                    final List<Table> leftTables = new ArrayList<>(allTables);
+                    final TableData asofRight = executeTableReference(rightTableRef, null, cteResults);
+                    final Table asofRightTable = distinctJoinTable(asofRight.table, allTables);
+                    // `ASOF JOIN r LIMIT MATCH_CONDITION (…)` aliases the right table LIMIT — a word the
+                    // ordinary alias rule keeps out, so the ASOF clause carries it (live-verified syntax).
+                    final String asofAlias = joinCtx.asofMatchCondition() != null
+                            && joinCtx.asofMatchCondition().LIMIT() != null
+                        ? "LIMIT"
+                        : (asofRight.alias != null ? asofRight.alias : asofRightTable.getName());
+                    aliasToTable.put(asofAlias, asofRightTable);
+                    allTables.add(asofRightTable);
+                    rows = applyAsofJoin(rows, table, asofRight.rows, asofRightTable, joinCtx,
+                        leftAliases, leftTables, asofAlias, aliasToTable, allTables);
+                    table = mergeTableMetadata(table, asofRightTable,
+                        usingJoinColumnNames(joinCtx, table, asofRightTable));
+                    continue;
+                }
                 // A table function joined WITHOUT the LATERAL keyword is still implicitly lateral in
                 // Snowflake: FROM t JOIN TABLE(FLATTEN(t_col:path)) references the left row's columns
                 // (vendor loaders use exactly this shape, with no ON clause). Only the CONDITION-LESS
@@ -1226,10 +1483,15 @@ public class QueryExecutor {
                 // JOIN TABLE(GENERATOR(...)) g ON t.id = g.seq must keep the regular join path.
                 if (isImplicitlyLateral(rightTableRef) && joinCtx.ON() != null) {
                     // Live-verified Snowflake restriction on lateral table FUNCTIONS — even ON TRUE is
-                    // rejected. A lateral SUBQUERY joined with ON stays valid.
+                    // rejected, with or without the LATERAL keyword.
                     throw new RuntimeException("Unsupported feature 'lateral table function called with "
                         + "OUTER JOIN syntax or a join predicate (ON clause)'.");
                 }
+                // A lateral SUBQUERY may carry a join predicate — `LEFT JOIN LATERAL (<correlated>) l ON
+                // TRUE` is live-verified to work over tables and CTEs, null-extending the unmatched rows.
+                // (Only a lateral TABLE FUNCTION is restricted, handled above.) An earlier check suggested
+                // otherwise, but its failure came from correlating into a UNION ALL derived table — an
+                // unrelated Snowflake limitation that reports the same "Unsupported subquery type".
                 boolean isLateral = joinCtx.LATERAL() != null
                     || (isImplicitlyLateral(rightTableRef) && joinCtx.ON() == null && joinCtx.USING() == null);
 
@@ -1281,6 +1543,30 @@ public class QueryExecutor {
                 allTables.add(lateralData.table);
             }
 
+            // CONNECT BY expands the FROM clause into a hierarchy BEFORE the WHERE stage: Snowflake
+            // filters the expanded rows, so a WHERE that removes a parent still keeps its children
+            // (live-verified). Everything after this point sees an ordinary relation that also carries the
+            // hidden LEVEL / CONNECT_BY_ROOT$<col> pseudo-columns.
+            if (ctx.connectByClause() != null) {
+                final ConnectByExpander hierarchy = new ConnectByExpander(this, functionRegistry, catalog);
+                final Table hierarchyTable = hierarchy.expandedTable(table);
+                rows = hierarchy.expand(rows, table, hierarchyTable, ctx.connectByClause(),
+                    aliasToTable, allTables);
+                // Re-point resolution at the expanded relation: the alias keeps naming the same rows, now
+                // one row per hierarchy position and wider by the pseudo-columns.
+                for (final Map.Entry<String, Table> entry : aliasToTable.entrySet()) {
+                    if (entry.getValue() == table) {
+                        entry.setValue(hierarchyTable);
+                    }
+                }
+                for (int i = 0; i < allTables.size(); i++) {
+                    if (allTables.get(i) == table) {
+                        allTables.set(i, hierarchyTable);
+                    }
+                }
+                table = hierarchyTable;
+            }
+
             // Apply Row Access Policy (RLS) before WHERE — filters rows the user can't see
             rows = applyRowAccessPolicy(rows, table);
 
@@ -1300,6 +1586,12 @@ public class QueryExecutor {
             // already excludes a pivot, so the streaming branch is unaffected.
             final boolean hasPivotSource =
                 firstTableRef.pivotClause() != null || firstTableRef.unpivotClause() != null;
+            // Plan-time WHERE scope validation — before either evaluation branch, so it fires over
+            // empty inputs and under the streaming path alike. A pivot rewrites the referencable
+            // columns, so its deferred WHERE is left to row-time resolution.
+            if (whereExpr != null && !hasPivotSource && lateralContext == null) {
+                validateClauseScope(whereExpr, table, aliasToTable, allTables, selectItemAliasNames(ctx));
+            }
             if (lateralContext == null
                     && isStreamableSelect(ctx, stmtCtx, firstTableRef, allTables)) {
                 rows = streamFilterLimit(rows, table, whereExpr, stmtCtx.limitClause());
@@ -1368,6 +1660,14 @@ public class QueryExecutor {
             // Apply HAVING clause (only after GROUP BY)
             if (ctx.havingClause() != null && (hasGroupBy || hasAggregates)) {
                 rows = applyHaving(rows, ctx, table, aliasToTable, allTables, havingGroupRows);
+            }
+
+            // Plan-time QUALIFY scope validation (the clause itself filters later, against window
+            // results). Window CALLS are opaque text nodes, so references inside an OVER clause are
+            // not walked — only the predicate around them.
+            if (ctx.qualifyClause() != null && lateralContext == null) {
+                validateClauseScope(getOriginalText(ctx.qualifyClause().booleanExpr()),
+                    table, aliasToTable, allTables, selectItemAliasNames(ctx));
             }
 
             // Compute window functions if present and store results. Over a JOIN, publish the alias context
@@ -1452,11 +1752,16 @@ public class QueryExecutor {
             // operation are applied once to the combined result at the statement level.
             boolean isPartOfUnion = stmtCtx.selectOperand().size() > 1;
             // Projection is needed unless the SELECT list is a bare star or grouping/window functions have
-            // already reshaped the rows into SELECT-list form.
-            boolean needsProjection = !isSimpleStar(ctx) && !hasWindowFunctions && !hasGroupBy && !hasAggregates;
+            // already reshaped the rows into SELECT-list form. A CONNECT BY relation carries hidden
+            // pseudo-columns and a USING / NATURAL join's relation carries hidden key duplicates, so even
+            // a bare star must be projected there — the pass-through would hand back rows that are wider
+            // than the star's column list.
+            boolean needsProjection = (!isSimpleStar(ctx) || ctx.connectByClause() != null
+                    || hasHiddenStarColumns(table))
+                && !hasWindowFunctions && !hasGroupBy && !hasAggregates;
             if (isPartOfUnion) {
                 if (needsProjection) {
-                    rows = applyProjection(rows, table, ctx, aliasToTable, allTables);
+                    rows = applyProjection(rows, table, ctx, aliasToTable, allTables, lateralContext);
                 }
             } else {
                 boolean orderByApplied = false;
@@ -1470,7 +1775,7 @@ public class QueryExecutor {
 
                 // Apply projection
                 if (needsProjection) {
-                    rows = applyProjection(rows, table, ctx, aliasToTable, allTables);
+                    rows = applyProjection(rows, table, ctx, aliasToTable, allTables, lateralContext);
                 }
 
                 // Apply ORDER BY after GROUP BY/aggregates/window functions if not already applied
@@ -1485,11 +1790,18 @@ public class QueryExecutor {
                         //     window projection (windowOrderKeyValues) and looked up by projected-row identity.
                         final GroupOrderKeyResolver orderResolver;
                         if ((hasGroupBy || hasAggregates) && !hasWindowFunctions) {
-                            orderResolver = newGroupOrderResolver(rows, orderRowToGroup, table, aliasToTable, allTables);
+                            orderResolver = newGroupOrderResolver(rows, orderRowToGroup, table, aliasToTable,
+                                allTables, ctx);
                         } else if (hasWindowFunctions && !hasGroupBy && !hasAggregates) {
                             orderResolver = newWindowOrderResolver(rows, windowOrderKeyValues, windowOrderKeyIndex);
                         } else {
                             orderResolver = null;
+                        }
+                        // Plan-time key scope validation — the per-group resolution below never
+                        // runs over an empty input, while live rejects at compile time.
+                        if (lateralContext == null) {
+                            orderByExecutor.validateGroupedOrderKeyScope(stmtCtx, ctx, table,
+                                aliasToTable, allTables);
                         }
                         rows = orderByAfterGroupBy(rows, stmtCtx, orderResolver);
                     } else {
@@ -1531,38 +1843,39 @@ public class QueryExecutor {
 
             // Build result columns
             List<ResultSetColumn> columns = new ArrayList<>();
+            // The static type of each projected column, so a derived table / CTE / view built from this
+            // result set carries REAL declared types into the enclosing query rather than the VARCHAR
+            // placeholder below — that placeholder is why every type-based rule could be bypassed by
+            // wrapping the query one level deeper. Built once for the whole select list.
+            final ExpressionEvaluator projectionTypes =
+                new ExpressionEvaluator(table, functionRegistry, catalog, this);
+            projectionTypes.setMultiTableContext(aliasToTable, allTables);
             // Handle select items - iterate through all items, expanding STAR if present
             for (final FrostlakeParser.SelectItemContext item : ctx.selectList().selectItem()) {
                 if (SelectItemAccessors.isStarItem(item)) {
                     // Expand STAR (honoring EXCLUDE/RENAME/REPLACE/ILIKE) to its effective columns.
-                    for (final StarColumn sc : expandStarColumns(item, table.getColumns(), "")) {
-                        columns.add(new ResultSetColumn(sc.getOutputName(), sc.getDataType(), tableName));
+                    for (final StarColumn sc : expandStarColumns(item, starOrderedColumns(table), "")) {
+                        columns.add(projectedColumn(sc.getOutputName(), sc.getDataType(), tableName,
+                            sc.getExpression(), projectionTypes));
                     }
-                } else if (SelectItemAccessors.isQualifiedStarItem(item) || SelectItemAccessors.isSpreadItem(item)) {
-                    // Expand t.* or t.** to all columns of the referenced table/alias
+                } else if (SelectItemAccessors.isQualifiedStarItem(item)) {
+                    // Expand t.* to all columns of the referenced table/alias
                     String qualifier = SelectItemAccessors.getItemQualifier(item).toUpperCase();
                     for (final Table t : allTables) {
                         String tAlias = (aliasToTable.entrySet().stream()
                             .filter((final var e) -> e.getValue() == t).map(Map.Entry::getKey).findFirst().orElse(t.getName())).toUpperCase();
                         if (qualifier.equals(tAlias) || qualifier.equals(t.getName().toUpperCase())) {
                             for (final TableColumn col : t.getColumns()) {
-                                columns.add(new ResultSetColumn(col.getName(), col.getDataType(), t.getName()));
+                                columns.add(projectedColumn(col.getName(), col.getDataType(), t.getName(),
+                                    qualifier + "." + col.getName(), projectionTypes));
                             }
                             break;
                         }
                     }
-                } else if (SelectItemAccessors.isSpreadExprItem(item)) {
-                    // SELECT ** <array>: one output column per element, labeled '<item text>[N]' —
-                    // mirrors the projection expansion in applyProjection.
-                    final FrostlakeParser.SpreadExprItemContext spread =
-                        (FrostlakeParser.SpreadExprItemContext) item;
-                    final List<Object> spreadValues = spreadElements(new ExpressionEvaluator(
-                        new Table("DUMMY", new ArrayList<>(), false), functionRegistry, catalog, this)
-                        .evaluate(getOriginalText(spread.expression()), new Row(new ArrayList<>())));
-                    final String itemText = getOriginalText(item);
-                    for (int i = 0; i < spreadValues.size(); i++) {
-                        columns.add(new ResultSetColumn(itemText + "[" + (i + 1) + "]", StringType.VARCHAR, null));
-                    }
+                } else if (SelectItemAccessors.isObjectStarItem(item)) {
+                    // One OBJECT-valued column, labelled with the item's own source form ({* EXCLUDE (A)}).
+                    columns.add(new ResultSetColumn(SelectItemAccessors.objectStarLabel(item),
+                        ObjectType.OBJECT, null));
                 } else {
                     // Handle expression select item — the output name/type come from the parse tree.
                     final FrostlakeParser.ExpressionContext valueExpr = SelectItemAccessors.getItemValueExpr(item);
@@ -1585,14 +1898,19 @@ public class QueryExecutor {
                             colType = table.getColumns().get(colIndex).getDataType();
                             // An unaliased, unqualified simple column takes the table's properly-cased name.
                             final boolean unqualified = ((FrostlakeParser.QualifiedNameExprContext) valueExpr)
-                                .qualifiedName().identifier().size() == 1;
+                                .qualifiedName().namePart().isEmpty();
                             if (!hasAlias && unqualified) {
                                 colName = table.getColumns().get(colIndex).getName();
                             }
                         }
                     }
 
-                    columns.add(new ResultSetColumn(colName, colType, null));
+                    // A boolean projection (SELECT a AND b) has no value expression — the whole item IS
+                    // the boolean, so its own text is what carries the type.
+                    final ParserRuleContext typeSource = valueExpr != null
+                        ? valueExpr : SelectItemAccessors.getItemExpression(item);
+                    columns.add(projectedColumn(colName, colType, null,
+                        typeSource != null ? getOriginalText(typeSource) : null, projectionTypes));
                 }
             }
 
@@ -1615,7 +1933,7 @@ public class QueryExecutor {
             throw e; // Let security exceptions propagate
         } catch (final Exception e) {
             if (e instanceof ProceduralException) throw (ProceduralException) e;
-            throw new RuntimeException("Failed to execute SELECT: " + e.getMessage(), e);
+            throw StatementErrors.propagate(e);
         }
     }
 
@@ -1647,22 +1965,18 @@ public class QueryExecutor {
                 if (SelectItemAccessors.isStarItem(item)) {
                     throw new RuntimeException("SELECT * requires a FROM clause");
                 }
-                if (SelectItemAccessors.isSpreadExprItem(item)) {
-                    // SELECT ** <array>: one output column per element, labeled '<item text>[N]' (1-based).
-                    final FrostlakeParser.SpreadExprItemContext spread =
-                        (FrostlakeParser.SpreadExprItemContext) item;
-                    final List<Object> spreadValues = spreadElements(evaluator.evaluate(
-                        getOriginalText(spread.expression()), new Row(values)));
-                    final String itemText = getOriginalText(item);
-                    int elementIndex = 1;
-                    for (final Object element : spreadValues) {
-                        columns.add(new ResultSetColumn(itemText + "[" + elementIndex + "]", StringType.VARCHAR));
-                        values.add(element);
-                        elementIndex++;
-                    }
+                if (SelectItemAccessors.isObjectStarItem(item)) {
+                    // The braced star is OBJECT_CONSTRUCT over the row, and with no FROM there IS no
+                    // row — so it constructs the EMPTY object rather than failing. Live-verified on a
+                    // real account: SELECT {*} answers {}, exactly as SELECT
+                    // OBJECT_CONSTRUCT(*) does, and SELECT {* EXCLUDE (a)} answers {} too, while the
+                    // bare SELECT * still has nothing to expand.
+                    final Row emptyRow = new Row(values);
+                    columns.add(projectedColumn(SelectItemAccessors.objectStarLabel(item),
+                        StringType.VARCHAR, null, "OBJECT_CONSTRUCT()", evaluator));
+                    values.add(evaluator.evaluate("OBJECT_CONSTRUCT()", emptyRow));
                     continue;
                 }
-
                 String exprText = getOriginalText(SelectItemAccessors.getItemExpression(item)).trim();
 
                 Object value;
@@ -1687,7 +2001,9 @@ public class QueryExecutor {
                     columnName = exprText.length() > 30 ? exprText.substring(0, 30) : exprText;
                 }
 
-                columns.add(new ResultSetColumn(columnName, StringType.VARCHAR));
+                // Same channel as the FROM-bearing projection: live types the two identically
+                // (OBJECT/ARRAY/VARIANT reported, everything else recovered from the values).
+                columns.add(projectedColumn(columnName, StringType.VARCHAR, null, exprText, evaluator));
                 values.add(value);
                 selectAliasValues.put(columnName.toUpperCase(), value);
             }
@@ -1719,7 +2035,7 @@ public class QueryExecutor {
             return new ResultSet(columns, rows);
 
         } catch (final Exception e) {
-            throw new RuntimeException("Failed to execute SELECT without FROM: " + e.getMessage(), e);
+            throw StatementErrors.propagate(e);
         }
     }
 
@@ -1738,13 +2054,13 @@ public class QueryExecutor {
     }
 
     /**
-     * Enforce NOT NULL at statement time (Snowflake always enforces it, unlike informational PK/UK/FK). A
-     * column declared NOT NULL — after defaults and auto-increment are applied — must not hold null. Called
-     * on the write path so the violation surfaces at the statement, not deferred to commit.
-     */
-    /**
-     * Enforce column constraints at statement time on every write path: coerce values to the column type
-     * (only when constraints.enforce.types is on), then check NOT NULL (always — Snowflake enforces it).
+     * Enforce column constraints at statement time on the COPY write path: coerce values to the column
+     * type (only when constraints.enforce.types is on), then check NOT NULL (always — Snowflake enforces
+     * NOT NULL, unlike the informational PK/UK/FK). The violation sentences here are BARE — a COPY
+     * reports them as the file's {@code first_error}, naming the column separately in
+     * {@code first_error_column_name}. DML statements go through
+     * {@link #enforceColumnConstraintsForDml(Table, Row)}, which wraps the same sentences in the
+     * per-statement envelope live uses.
      */
     public void enforceColumnConstraints(final Table table, final Row row) {
         if (enforceTypes) {
@@ -1753,8 +2069,34 @@ public class QueryExecutor {
         final List<TableColumn> cols = table.getColumns();
         for (int i = 0; i < cols.size(); i++) {
             if (!cols.get(i).isNullable() && i < row.getValues().size() && row.getValue(i) == null) {
-                throw new RuntimeException("NULL result in a non-nullable column: " + cols.get(i).getName()
-                    + " (table " + table.getName() + ")");
+                // Snowflake's own wording, verbatim.
+                throw new RuntimeException("NULL result in a non-nullable column");
+            }
+        }
+    }
+
+    /**
+     * The DML flavour of {@link #enforceColumnConstraints(Table, Row)}: INSERT, {@code INSERT … SELECT},
+     * UPDATE and MERGE all report a write violation inside a per-statement envelope naming the table and
+     * the column — live-verified verbatim, {@code DML operation to table NN failed on column C with
+     * error: NULL result in a non-nullable column} — around the same inner sentences the COPY path
+     * reports bare. Enforcement is per column in declaration order, so the first violating column names
+     * the failure.
+     */
+    public void enforceColumnConstraintsForDml(final Table table, final Row row) {
+        final List<TableColumn> cols = table.getColumns();
+        for (int i = 0; i < cols.size() && i < row.getValues().size(); i++) {
+            try {
+                if (enforceTypes) {
+                    row.setValue(i, coerceWriteValue(row.getValue(i), cols.get(i).getDataType()));
+                }
+                if (!cols.get(i).isNullable() && row.getValue(i) == null) {
+                    throw new RuntimeException("NULL result in a non-nullable column");
+                }
+            } catch (final RuntimeException violation) {
+                throw new RuntimeException("DML operation to table " + table.getName()
+                    + " failed on column " + cols.get(i).getName() + " with error: "
+                    + violation.getMessage());
             }
         }
     }
@@ -1794,12 +2136,51 @@ public class QueryExecutor {
         if (value == null) {
             return null;
         }
+        if (type instanceof FileType) {
+            // A write to a FILE column goes through TO_FILE, so both live-measured shapes work
+            //: a stage-path string is RESOLVED against the stage — INSERT … SELECT
+            // '@st/x.txt' stores the full descriptor of the real file and fails when it is absent —
+            // and a metadata object is validated structurally but not resolved. Snowflake wraps the
+            // failure with the column it happened on ("DML operation to table W failed on column F
+            // with error: Remote file '@sse/nope.txt' was not found. …"); the same message reaches
+            // the caller here, wrapped by the DML layer's own context.
+            final List<Object> fileArgs = new ArrayList<Object>();
+            fileArgs.add(value);
+            return functionRegistry.getFunction("TO_FILE").evaluate(fileArgs);
+        }
+        if (type instanceof GeographyType || type instanceof GeometryType) {
+            if (value instanceof GeoValue) {
+                return value;
+            }
+            // A WKT/GeoJSON string coerces on write, like TO_GEOGRAPHY / TO_GEOMETRY. The parser
+            // lives in the optional frostlake-geo module and is reached through the registry, so
+            // the engine itself stays free of geo code.
+            final BuiltInFunction geoParser = functionRegistry.getFunction(
+                type instanceof GeographyType ? "TO_GEOGRAPHY" : "TO_GEOMETRY");
+            if (geoParser == null) {
+                throw new RuntimeException(type.getName()
+                    + " input requires the frostlake-geo module on the classpath");
+            }
+            final List<Object> geoArgs = new ArrayList<Object>();
+            geoArgs.add(value.toString());
+            return geoParser.evaluate(geoArgs);
+        }
+        if (type instanceof VectorType) {
+            // A VECTOR column keeps a typed VectorValue: the declared element type and dimension are
+            // applied on write, so a stored vector always satisfies its column (an array of the wrong
+            // length or with the wrong element kind raises Snowflake's own conversion error).
+            return VectorValue.cast(value, (VectorType) type);
+        }
+        if (value instanceof VariantValue && !(type instanceof ArrayType
+                || type instanceof ObjectType || type instanceof VariantType)) {
+            // A semi-structured value written into a non-semi-structured column coerces via its text.
+            return coerceWriteValue(((VariantValue) value).text(), type);
+        }
         if (type instanceof StringType) {
             final StringType st = (StringType) type;
             final String s = (value instanceof String) ? (String) value : value.toString();
             if (st.getMaxLength() > 0 && s.length() > st.getMaxLength()) {
-                throw new RuntimeException("String of length " + s.length()
-                    + " exceeds the column maximum of " + st.getMaxLength() + " for " + st.getName());
+                throw new ColumnLengthException(st.getMaxLength(), s);
             }
             return s;
         }
@@ -1814,25 +2195,61 @@ public class QueryExecutor {
             return applyColumnScale(value, (NumericType) type);
         }
         if (type instanceof DateTimeType) {
+            // Snowflake's DML write path is stricter about field WIDTH than its CAST: an over-wide field
+            // (a 3-digit month/day/second, a 5-digit year) is rejected here even though the same literal
+            // casts fine (live-verified — see AutoTemporalParser.hasOverWideIsoFields).
+            if (value instanceof CharSequence
+                    && AutoTemporalParser.hasOverWideIsoFields(value.toString())) {
+                throw new RuntimeException((type.getName().toUpperCase().startsWith("DATE")
+                    ? "Date '" : "Timestamp '") + value + "' is not recognized");
+            }
             // A string (or other temporal) written into a DATE/TIME/TIMESTAMP column becomes a real
             // LocalDate/LocalTime/LocalDateTime — the same value TO_DATE/TO_TIMESTAMP would produce — so a
             // string-inserted timestamp compares equal to a computed one (e.g. under EXCEPT / joins).
             return SharedFunctionHelpers.toTemporalValue(type.getName().toUpperCase(), value);
         }
+        if (type instanceof BinaryType) {
+            if (value instanceof BinaryValue) {
+                return value;
+            }
+            if (value instanceof byte[]) {
+                return BinaryValue.of((byte[]) value);
+            }
+            // Snowflake's implicit VARCHAR-to-BINARY conversion interprets the text as hex.
+            return BinaryValue.fromHex(value.toString());
+        }
         if (type instanceof ArrayType) {
             // Writing into an ARRAY column follows TO_ARRAY semantics: an existing array passes through
-            // unchanged, any other non-null variant value is wrapped in a one-element array — the fixture
-            // idiom `INSERT ... SELECT PARSE_JSON('{...}')` then reads it back as arr[0].
+            // (typed — a JSON-text string is wrapped keeping its exact text), any other non-null variant
+            // value is wrapped in a one-element array — the fixture idiom
+            // `INSERT ... SELECT PARSE_JSON('{...}')` then reads it back as arr[0].
             if (ArrayFunctionHelper.parseArray(value) != null) {
-                return value;
+                return value instanceof VariantValue ? value : VariantValue.of(value.toString());
             }
             final JsonNode node = ArrayFunctionHelper.parseNode(value);
             if (node != null && node.isNull()) {
-                return value;
+                return value instanceof VariantValue ? value : VariantValue.of(value.toString());
             }
             final ArrayNode wrapped = ArrayFunctionHelper.MAPPER.createArrayNode();
             wrapped.add(ArrayFunctionHelper.toNode(ArrayFunctionHelper.MAPPER, value));
-            return wrapped.toString();
+            return VariantValue.ofNode(wrapped);
+        }
+        if (type instanceof ObjectType && value instanceof String) {
+            // An object-shaped JSON text written into an OBJECT column becomes a typed cell with its
+            // exact text; anything else keeps today's permissive pass-through.
+            final JsonNode objectNode = ArrayFunctionHelper.parseNode(value);
+            if (objectNode != null && (objectNode.isObject() || objectNode.isNull())) {
+                return VariantValue.of((String) value);
+            }
+        }
+        if (type instanceof VariantType && value instanceof String) {
+            // JSON text written into a VARIANT column becomes a typed cell (exact text kept); a plain
+            // string that is not valid JSON stays a string, as before.
+            final JsonNode variantNode = ArrayFunctionHelper.parseNode(value);
+            if (variantNode != null
+                    && (variantNode.isObject() || variantNode.isArray() || variantNode.isNull())) {
+                return VariantValue.of((String) value);
+            }
         }
         if (type instanceof BooleanType) {
             // Snowflake implicitly converts on write into a BOOLEAN column: numbers by zero/non-zero
@@ -1871,19 +2288,31 @@ public class QueryExecutor {
      * bare/scale-0 columns are returned unchanged, as is a value already at the target scale.
      */
     private Object applyColumnScale(final Object value, final NumericType type) {
-        if (value == null || type.getScale() <= 0 || !isFixedPointNumeric(type.getName())) {
+        if (value == null || type.getScale() < 0 || !isFixedPointNumeric(type.getName())) {
             return value;
         }
         final BigDecimal bd = (value instanceof BigDecimal) ? (BigDecimal) value : new BigDecimal(value.toString());
-        if (bd.scale() != type.getScale()) {
-            return bd.setScale(type.getScale(), RoundingMode.HALF_UP);
+        if (bd.scale() == type.getScale()) {
+            return value;
         }
-        return value;
+        final BigDecimal rounded = bd.setScale(type.getScale(), RoundingMode.HALF_UP);
+        if (type.getScale() == 0) {
+            // Scale-0 fixed-point columns (bare NUMBER, INTEGER, …) round fractional writes to a
+            // whole value — live-verified: INSERT of 10.5 into a NUMBER column stores 11.
+            try {
+                return rounded.longValueExact();
+            } catch (final ArithmeticException beyondLong) {
+                return rounded;
+            }
+        }
+        return rounded;
     }
 
     private static boolean isFixedPointNumeric(final String name) {
         final String upper = name.toUpperCase();
-        return upper.equals("NUMBER") || upper.equals("DECIMAL") || upper.equals("NUMERIC");
+        return upper.equals("NUMBER") || upper.equals("DECIMAL") || upper.equals("NUMERIC")
+            || upper.equals("INTEGER") || upper.equals("INT") || upper.equals("BIGINT")
+            || upper.equals("SMALLINT") || upper.equals("TINYINT") || upper.equals("BYTEINT");
     }
 
     /**
@@ -1917,7 +2346,7 @@ public class QueryExecutor {
         } catch (final SecurityException e) {
             throw e; // Let security exceptions propagate
         } catch (final Exception e) {
-            throw new RuntimeException("Failed to execute TRUNCATE: " + e.getMessage(), e);
+            throw StatementErrors.propagate(e);
         }
     }
 
@@ -2173,9 +2602,30 @@ public class QueryExecutor {
     }
 
 
-    /** Regular files in {@code baseDir}, filtered by an explicit FILES list or a PATTERN regex; stable order. */
+    /**
+     * Regular files in {@code baseDir}, narrowed either by an explicit {@code FILES = (…)} list or by a
+     * {@code PATTERN} regex — never by both. Live-verified on a real account: when a statement
+     * carries both, the PATTERN is ignored outright. {@code FILES = ('good1.csv','good2.csv')} beside
+     * {@code PATTERN = '.*good1.*'} loaded BOTH files, and {@code FILES = ('good1.csv')} beside a pattern
+     * matching nothing still loaded good1 — so a FILES list is the whole selection, not a candidate set the
+     * pattern then filters.
+     *
+     * <p>A FILES entry is a PATH relative to the FROM location, not a bare file name: the account loads
+     * {@code FILES = ('sub/nested.csv')} from {@code @stage} and reports it as {@code stage/sub/nested.csv}.
+     * Entries are returned in the order the statement wrote them (duplicates collapsed); a directory scan
+     * keeps its name order.
+     */
     public List<Path> listCopyFiles(final Path baseDir, final String pattern, final List<String> files) {
         final List<Path> result = new ArrayList<>();
+        if (files != null && !files.isEmpty()) {
+            for (final String name : new LinkedHashSet<>(files)) {
+                final Path named = resolveStagedFile(baseDir, name);
+                if (named != null && Files.isRegularFile(named)) {
+                    result.add(named);
+                }
+            }
+            return result;
+        }
         final File[] children = baseDir.toFile().listFiles();
         if (children == null) {
             return result;
@@ -2185,17 +2635,30 @@ public class QueryExecutor {
             if (!child.isFile()) {
                 continue;
             }
-            final String name = child.getName();
-            if (files != null && !files.isEmpty()) {
-                if (!files.contains(name)) {
-                    continue;
-                }
-            } else if (pattern != null && !name.matches(pattern)) {
+            if (pattern != null && !child.getName().matches(pattern)) {
                 continue;
             }
             result.add(child.toPath());
         }
         return result;
+    }
+
+    /**
+     * The local path a {@code FILES = (…)} entry names beneath {@code baseDir}, or null when it names nothing
+     * addressable from there. A name is resolved as a relative path, so {@code 'sub/nested.csv'} reaches into
+     * a subdirectory; one that escapes the stage — an absolute {@code '/good1.csv'} or a {@code '../'} climb —
+     * resolves to null rather than to a file outside it. The account agrees on the escape: it reads
+     * {@code FILES = ('/good1.csv')} as the (non-existent) {@code @stage//good1.csv} even though
+     * {@code good1.csv} is right there, so a leading slash is not stripped. Returning null here does not mean
+     * "absent" — the caller still has to test the path — but a null can only ever BE absent.
+     */
+    public Path resolveStagedFile(final Path baseDir, final String name) {
+        if (baseDir == null || name == null || name.isEmpty()) {
+            return null;
+        }
+        final Path root = baseDir.toAbsolutePath().normalize();
+        final Path resolved = root.resolve(name).normalize();
+        return resolved.startsWith(root) ? resolved : null;
     }
 
     // ==================== HELPER METHODS ====================
@@ -2318,9 +2781,16 @@ public class QueryExecutor {
      */
     private String selectItemColumnName(final FrostlakeParser.ExpressionContext valueExpr) {
         if (valueExpr instanceof FrostlakeParser.QualifiedNameExprContext) {
-            final List<FrostlakeParser.IdentifierContext> ids =
-                ((FrostlakeParser.QualifiedNameExprContext) valueExpr).qualifiedName().identifier();
-            return getIdentifier(ids.get(ids.size() - 1));
+            final String[] parts = ParseTreeText.qualifiedNameParts(
+                ((FrostlakeParser.QualifiedNameExprContext) valueExpr).qualifiedName());
+            return parts[parts.length - 1];
+        }
+        // An unaliased CONNECT_BY_ROOT item is named after the COLUMN, like a plain column reference —
+        // live-verified: `SELECT CONNECT_BY_ROOT nm …` comes back labelled NM, not after the item's text.
+        if (valueExpr instanceof FrostlakeParser.ConnectByRootExprContext) {
+            final String[] parts = ParseTreeText.qualifiedNameParts(
+                ((FrostlakeParser.ConnectByRootExprContext) valueExpr).qualifiedName());
+            return parts[parts.length - 1];
         }
         return valueExpr != null ? valueExpr.getText() : "";
     }
@@ -2518,8 +2988,6 @@ public class QueryExecutor {
                 return systemViews.queryTags(database, null);
             case "TAG_REFERENCES":
                 return systemViews.queryTagReferences(database, null);
-            case "QUERY_HISTORY":
-                return showQueryHistory(null);
             default:
                 return null;
         }
@@ -2587,7 +3055,7 @@ public class QueryExecutor {
                 for (final TableColumn col : table.getColumns()) {
                     cols.add(new ResultSetColumn(col.getName(), col.getDataType()));
                 }
-            } else if (SelectItemAccessors.isQualifiedStarItem(item) || SelectItemAccessors.isSpreadItem(item)) {
+            } else if (SelectItemAccessors.isQualifiedStarItem(item)) {
                 // qualified star — columns added later in applyProjection; skip here
             } else {
                 String alias = SelectItemAccessors.getItemAlias(item) != null ? getIdentifier(SelectItemAccessors.getItemAlias(item)) : SelectItemAccessors.getItemExpression(item).getText();
@@ -2824,7 +3292,7 @@ public class QueryExecutor {
                 public Object evaluate(final Expression expr, final Row row) {
                     final Map<String, Object> values = new HashMap<>(outerValues);
                     // An alias's defining expression may reference OTHER select aliases — Snowflake
-                    // resolves left-to-right (`… AS ces_diff, ces_diff / x AS pct … WHERE ABS(pct) >= 1`).
+                    // resolves left-to-right (`… AS raw_diff, raw_diff / x AS pct … WHERE ABS(pct) >= 1`).
                     // Resolve iteratively: each pass offers the aliases already computed as outer values
                     // and retries the rest, until a pass adds nothing; a still-unresolvable alias
                     // (aggregate-dependent, forward-only) stays NULL as before.
@@ -2875,6 +3343,19 @@ public class QueryExecutor {
             return aliases;
         }
         for (final FrostlakeParser.SelectItemContext item : ctx.selectList().selectItem()) {
+            // A star RENAME target is an output alias too: `SELECT * RENAME (v AS w) … WHERE w > 15`
+            // filters on the renamed column, live-verified. Its defining expression is simply the
+            // original column name.
+            for (final FrostlakeParser.StarModifierContext modifier : SelectItemAccessors.getStarModifiers(item)) {
+                if (modifier.RENAME() != null) {
+                    for (final FrostlakeParser.StarRenameItemContext rename : modifier.starRenameItem()) {
+                        final String renamedTo = ParseTreeText.getIdentifier(rename.identifier(1)).toUpperCase();
+                        if (table == null || !table.hasColumn(renamedTo)) {
+                            aliases.put(renamedTo, ParseTreeText.getIdentifier(rename.identifier(0)));
+                        }
+                    }
+                }
+            }
             if (!SelectItemAccessors.isExprItem(item) || SelectItemAccessors.getItemAlias(item) == null) {
                 continue;
             }
@@ -3016,8 +3497,8 @@ public class QueryExecutor {
             final List<String> usingCols = new ArrayList<>();
             // A USING column may arrive qualified (USING (t2.c)); only the column part joins.
             for (final FrostlakeParser.QualifiedNameContext qn : joinCtx.usingColumnList().qualifiedName()) {
-                final List<FrostlakeParser.IdentifierContext> parts = qn.identifier();
-                usingCols.add(SqlIdentifiers.canonical(parts.get(parts.size() - 1)));
+                final String[] parts = ParseTreeText.qualifiedNameParts(qn);
+                usingCols.add(parts[parts.length - 1]);
             }
             return executeUsingJoin(leftRows, leftTable, rightRows, rightTable, joinType, usingCols);
         }
@@ -3126,6 +3607,151 @@ public class QueryExecutor {
         return joinOp.execute(leftRows, context);
     }
 
+    /**
+     * Snowflake {@code ASOF JOIN … MATCH_CONDITION (<left> op <right>) [ON … | USING …]} — for each left
+     * row the CLOSEST right row satisfying the condition, left-outer (unmatched left rows survive
+     * null-extended). All the wording below is Snowflake's own, live-verified against a real account.
+     *
+     * @param leftAliases/leftTables the alias context of everything joined SO FAR, i.e. without the right
+     *                               table, so the condition's left operand can only see left-side columns
+     */
+    private List<Row> applyAsofJoin(final List<Row> leftRows, final Table leftTable,
+                                    final List<Row> rightRows, final Table rightTable,
+                                    final FrostlakeParser.JoinClauseContext joinCtx,
+                                    final Map<String, Table> leftAliases, final List<Table> leftTables,
+                                    final String rightAlias,
+                                    final Map<String, Table> aliasToTable, final List<Table> allTables) {
+        if (joinCtx.ASOF() == null) {
+            throw new RuntimeException("MATCH_CONDITION is allowed only in an ASOF JOIN.");
+        }
+        if (joinCtx.asofMatchCondition() == null) {
+            throw new RuntimeException("ASOF JOIN requires a MATCH_CONDITION clause.");
+        }
+        final Expression condition =
+            ExpressionEvaluator.parse(getOriginalText(joinCtx.asofMatchCondition().booleanExpr()));
+        if (!(condition instanceof BinaryOperationExpression)) {
+            throw new RuntimeException("MATCH_CONDITION clause is invalid: Only comparison operators "
+                + "'>=', '>', '<=' and '<' are allowed.");
+        }
+        final BinaryOperationExpression comparison = (BinaryOperationExpression) condition;
+        final BinaryOperator op = comparison.getOperator();
+        if (op != BinaryOperator.GREATER_THAN && op != BinaryOperator.GREATER_THAN_OR_EQUAL
+                && op != BinaryOperator.LESS_THAN && op != BinaryOperator.LESS_THAN_OR_EQUAL) {
+            throw new RuntimeException("MATCH_CONDITION clause is invalid: Only comparison operators "
+                + "'>=', '>', '<=' and '<' are allowed. Keywords such as AND and OR are not allowed.");
+        }
+
+        // Snowflake pins each operand to its own side of the join (live-verified: `MATCH_CONDITION
+        // (r.t <= q.t)` is rejected even though it means the same thing). A directly qualified operand is
+        // checked here; the evaluators below reject anything else that cannot resolve on its own side.
+        final String leftSideQualifier = asofOperandQualifier(comparison.getLeft());
+        final String rightSideQualifier = asofOperandQualifier(comparison.getRight());
+        boolean rightOperandNamesLeftSide = false;
+        if (rightSideQualifier != null) {
+            for (final String leftName : leftAliases.keySet()) {
+                if (leftName.equalsIgnoreCase(rightSideQualifier)) {
+                    rightOperandNamesLeftSide = true;
+                    break;
+                }
+            }
+        }
+        if ((leftSideQualifier != null && leftSideQualifier.equalsIgnoreCase(rightAlias))
+                || rightOperandNamesLeftSide) {
+            throw new RuntimeException("MATCH_CONDITION clause is invalid: The left side allows only column "
+                + "references from the left side table, and the right side allows only column references "
+                + "from the right side table.");
+        }
+
+        final ExpressionEvaluator leftSideEval = new ExpressionEvaluator(leftTable, functionRegistry, catalog, this);
+        leftSideEval.setMultiTableContext(leftAliases, leftTables);
+        final Map<String, Table> rightOnly = new LinkedHashMap<>();
+        rightOnly.put(rightAlias, rightTable);
+        final ExpressionEvaluator rightSideEval = new ExpressionEvaluator(rightTable, functionRegistry, catalog, this);
+        rightSideEval.setMultiTableContext(rightOnly, Collections.singletonList(rightTable));
+        final RowExpressionEvaluator leftMatch = new RowExpressionEvaluator() {
+            @Override
+            public Object evaluate(final Expression expr, final Row row) {
+                try {
+                    return leftSideEval.evaluate(expr, row);
+                } catch (final RuntimeException notALeftColumn) {
+                    throw new RuntimeException("MATCH_CONDITION clause is invalid: The left side allows only "
+                        + "column references from the left side table, and the right side allows only column "
+                        + "references from the right side table.");
+                }
+            }
+        };
+        final RowExpressionEvaluator rightMatch = new RowExpressionEvaluator() {
+            @Override
+            public Object evaluate(final Expression expr, final Row row) {
+                try {
+                    return rightSideEval.evaluate(expr, row);
+                } catch (final RuntimeException notARightColumn) {
+                    throw new RuntimeException("MATCH_CONDITION clause is invalid: The left side allows only "
+                        + "column references from the left side table, and the right side allows only column "
+                        + "references from the right side table.");
+                }
+            }
+        };
+
+        final AsofJoinOperator asofOp = new AsofJoinOperator(leftTable, rightTable, rightRows, op,
+            comparison.getLeft(), leftMatch, comparison.getRight(), rightMatch,
+            asofPartitionEvaluator(joinCtx, leftTable, rightTable, aliasToTable, allTables));
+        final OperatorContext context = OperatorContext.builder()
+            .table(leftTable).functionRegistry(functionRegistry).queryExecutor(this)
+            .aliasToTable(aliasToTable).allTables(allTables).build();
+        return asofOp.execute(leftRows, context);
+    }
+
+    /** The table qualifier of a MATCH_CONDITION operand that is a directly qualified column reference
+     *  ({@code r.t}), or null for anything else (a bare column, an arithmetic expression, a call). */
+    private String asofOperandQualifier(final Expression operand) {
+        if (operand instanceof ColumnReferenceExpression) {
+            return ((ColumnReferenceExpression) operand).getTableName();
+        }
+        return null;
+    }
+
+    /**
+     * The ON / USING part of an ASOF JOIN as a pair test, or null when the join has neither. Snowflake
+     * restricts it to a conjunction of equalities (live-verified: {@code ON q.k > r.k} and a non-join
+     * predicate are both rejected), and it merely narrows the candidate set — the closest-match choice
+     * happens inside the operator.
+     */
+    private JoinConditionEvaluator asofPartitionEvaluator(final FrostlakeParser.JoinClauseContext joinCtx,
+                                                          final Table leftTable, final Table rightTable,
+                                                          final Map<String, Table> aliasToTable,
+                                                          final List<Table> allTables) {
+        final String conditionText;
+        if (joinCtx.USING() != null) {
+            final StringBuilder equalities = new StringBuilder();
+            for (final FrostlakeParser.QualifiedNameContext qn : joinCtx.usingColumnList().qualifiedName()) {
+                final String[] parts = ParseTreeText.qualifiedNameParts(qn);
+                final String column = parts[parts.length - 1];
+                if (equalities.length() > 0) {
+                    equalities.append(" AND ");
+                }
+                equalities.append(leftTable.getName()).append('.').append(column)
+                    .append(" = ").append(rightTable.getName()).append('.').append(column);
+            }
+            conditionText = equalities.toString();
+        } else if (joinCtx.ON() != null) {
+            conditionText = getOriginalText(joinCtx.booleanExpr());
+        } else {
+            return null;
+        }
+        final Expression conditionAst = ExpressionEvaluator.parse(conditionText);
+        final ExpressionEvaluator conditionEval = new ExpressionEvaluator(leftTable, functionRegistry, catalog, this);
+        conditionEval.setMultiTableContext(aliasToTable, allTables);
+        return new JoinConditionEvaluator() {
+            @Override
+            public boolean matches(final Row leftRow, final Row rightRow) {
+                final List<Object> combined = new ArrayList<>(leftRow.getValues());
+                combined.addAll(rightRow.getValues());
+                return SqlTruth.isTrue(conditionEval.evaluate(conditionAst, new Row(combined)));
+            }
+        };
+    }
+
     /** Join two row sets on an arbitrary condition text for a given join type (the shared ON-join body,
      *  used by the Oracle {@code (+)} outer-join rewrite). {@code aliasToTable}/{@code allTables} must be in
      *  left-then-right order so qualified columns resolve to the correct side of the combined row. */
@@ -3197,10 +3823,11 @@ public class QueryExecutor {
     /** Collect the (upper-cased) table-qualifier alias of every {@code (+)}-marked column in a parse subtree. */
     private void outerJoinMarkedAliases(final ParseTree tree, final Set<String> out) {
         if (tree instanceof FrostlakeParser.OuterJoinColumnExprContext) {
-            final List<FrostlakeParser.IdentifierContext> parts =
-                ((FrostlakeParser.OuterJoinColumnExprContext) tree).qualifiedName().identifier();
-            if (parts.size() >= 2) {
-                out.add(getIdentifier(parts.get(parts.size() - 2)).toUpperCase());
+            final String[] parts =
+                ParseTreeText.qualifiedNameParts(
+                    ((FrostlakeParser.OuterJoinColumnExprContext) tree).qualifiedName());
+            if (parts.length >= 2) {
+                out.add(parts[parts.length - 2].toUpperCase());
             }
         }
         for (int i = 0; i < tree.getChildCount(); i++) {
@@ -3211,10 +3838,55 @@ public class QueryExecutor {
     /**
      * Apply projection (SELECT list evaluation) using operator pipeline.
      */
+    /**
+     * Plan-time scope validation for a non-SELECT-list clause expression (WHERE, a GROUP BY key,
+     * HAVING, QUALIFY, an ORDER BY key): the invalid-qualifier and ambiguous-bare-duplicate
+     * rejections fire over EMPTY inputs, matching live's compile-time behavior — measured per
+     * clause on a real account. {@code outputNames} are the query's SELECT output aliases (plus,
+     * for ORDER BY, its output column names): every one of these clauses may legally reference
+     * them in Snowflake — aliases work even in WHERE — so they are exempt from the bare-name
+     * rejection. The walk skips itself under LATERAL / correlated execution, where outer names
+     * resolve per row.
+     */
+    void validateClauseScope(final String expressionText, final Table table,
+                             final Map<String, Table> aliasToTable, final List<Table> allTables,
+                             final Set<String> outputNames) {
+        final ExpressionEvaluator scopeEval = new ExpressionEvaluator(table, functionRegistry, catalog, this);
+        if (aliasToTable != null && allTables != null && !allTables.isEmpty()) {
+            scopeEval.setMultiTableContext(aliasToTable, allTables);
+        }
+        scopeEval.setScopeExemptNames(outputNames);
+        scopeEval.validateStrict(ExpressionEvaluator.parse(expressionText));
+    }
+
+    /**
+     * The SELECT list's output alias names, upper-cased — item aliases plus star {@code RENAME}
+     * targets ({@code SELECT * RENAME (v AS w)} makes W referencable in WHERE, live-verified) —
+     * the names every other clause may reference.
+     */
+    Set<String> selectItemAliasNames(final FrostlakeParser.SelectClauseContext ctx) {
+        final Set<String> names = new HashSet<>();
+        for (final FrostlakeParser.SelectItemContext item : ctx.selectList().selectItem()) {
+            final FrostlakeParser.IdentifierContext alias = SelectItemAccessors.getItemAlias(item);
+            if (alias != null) {
+                names.add(getIdentifier(alias).toUpperCase());
+            }
+            for (final FrostlakeParser.StarModifierContext modifier : SelectItemAccessors.getStarModifiers(item)) {
+                if (modifier.RENAME() != null) {
+                    for (final FrostlakeParser.StarRenameItemContext rename : modifier.starRenameItem()) {
+                        names.add(getIdentifier(rename.identifier(1)).toUpperCase());
+                    }
+                }
+            }
+        }
+        return names;
+    }
+
     private List<Row> applyProjection(final List<Row> rows, final Table table,
                                       final FrostlakeParser.SelectClauseContext ctx,
                                       final Map<String, Table> aliasToTable,
-                                      final List<Table> allTables) {
+                                      final List<Table> allTables,
+                                      final Map<String, Object> lateralContext) {
         // Extract projection expressions from SELECT list
         List<String> projectionExpressions = new ArrayList<>();
         List<String> columnAliases = new ArrayList<>();
@@ -3222,11 +3894,11 @@ public class QueryExecutor {
         for (final FrostlakeParser.SelectItemContext item : ctx.selectList().selectItem()) {
             if (SelectItemAccessors.isStarItem(item)) {
                 // Expand STAR (honoring EXCLUDE/RENAME/REPLACE/ILIKE) to its effective columns.
-                for (final StarColumn sc : expandStarColumns(item, table.getColumns(), "")) {
+                for (final StarColumn sc : expandStarColumns(item, starOrderedColumns(table), "")) {
                     projectionExpressions.add(sc.getExpression());
                     columnAliases.add(sc.isRenamed() ? sc.getOutputName() : null);
                 }
-            } else if (SelectItemAccessors.isQualifiedStarItem(item) || SelectItemAccessors.isSpreadItem(item)) {
+            } else if (SelectItemAccessors.isQualifiedStarItem(item)) {
                 // Expand t.* or t.** to all columns of the referenced table/alias
                 String qualifier = SelectItemAccessors.getItemQualifier(item).toUpperCase();
                 Table target = null;
@@ -3241,21 +3913,11 @@ public class QueryExecutor {
                     projectionExpressions.add(qualifier + "." + col.getName());
                     columnAliases.add(null);
                 }
-            } else if (SelectItemAccessors.isSpreadExprItem(item)) {
-                // SELECT ** <array>: expand to one projection per element (the array must be constant —
-                // the element COUNT fixes the column list before any row is seen). Each projection is
-                // the 0-based element access; the label is '<item text>[N]' (1-based).
-                final FrostlakeParser.SpreadExprItemContext spread =
-                    (FrostlakeParser.SpreadExprItemContext) item;
-                final String innerText = getOriginalText(spread.expression());
-                final List<Object> spreadValues = spreadElements(new ExpressionEvaluator(
-                    new Table("DUMMY", new ArrayList<>(), false), functionRegistry, catalog, this)
-                    .evaluate(innerText, new Row(new ArrayList<>())));
-                final String itemText = getOriginalText(item);
-                for (int i = 0; i < spreadValues.size(); i++) {
-                    projectionExpressions.add("(" + innerText + ")[" + i + "]");
-                    columnAliases.add(itemText + "[" + (i + 1) + "]");
-                }
+            } else if (SelectItemAccessors.isObjectStarItem(item)) {
+                // {*} builds ONE object over the row's columns — never the star's N columns.
+                projectionExpressions.add(objectStarExpression(item, table, aliasToTable));
+                columnAliases.add(SelectItemAccessors.getItemAlias(item) != null
+                    ? getIdentifier(SelectItemAccessors.getItemAlias(item)) : null);
             } else {
                 // Regular expression select item
                 String exprText = getOriginalText(SelectItemAccessors.getItemExpression(item));
@@ -3300,7 +3962,7 @@ public class QueryExecutor {
         } else {
             // Single table query - simple evaluation. The alias map still matters: a correlated
             // subquery references the outer row by its FROM alias (FROM idents ident … WHERE acc.ref =
-            // ident.asset_key) — without it, the alias-qualified outer key was never assembled and the
+            // ident.item_key) — without it, the alias-qualified outer key was never assembled and the
             // strip-qualifier fallback bound the reference to the INNER table's same-named column, so
             // the correlation compared the inner row with itself.
             final ExpressionEvaluator projEval = new ExpressionEvaluator(table, functionRegistry, catalog, this);
@@ -3322,9 +3984,26 @@ public class QueryExecutor {
             .allTables(allTables)
             .build();
 
-        // Create and execute PROJECT operator (lateralAliases is filled per-item by the operator)
+        // Plan-time strictness: Snowflake argument-type errors fire before any row is projected,
+        // so a query over an EMPTY table rejects exactly like a populated one. The exemption set
+        // grows item by item: a lateral column alias is referencable only by LATER items
+        // (a FORWARD reference is "invalid identifier" live), so each item sees exactly the
+        // aliases defined before it.
+        final ExpressionEvaluator strictEval = new ExpressionEvaluator(table, functionRegistry, catalog, this);
+        strictEval.setMultiTableContext(aliasToTable, allTables);
+        final Set<String> earlierOutputNames = new HashSet<>();
+        strictEval.setScopeExemptNames(earlierOutputNames);
+        for (int i = 0; i < projectionExpressions.size(); i++) {
+            strictEval.validateStrict(ExpressionEvaluator.parse(projectionExpressions.get(i)));
+            if (columnAliases.get(i) != null) {
+                earlierOutputNames.add(columnAliases.get(i).toUpperCase());
+            }
+        }
+
+        // Create and execute PROJECT operator (lateralAliases is filled per-item by the operator;
+        // under a lateral/correlated execution the outer row's bindings are its per-row base).
         ProjectOperator projectOp = new ProjectOperator(projectionExpressions, columnAliases,
-            expressionEvaluator, lateralAliases);
+            expressionEvaluator, lateralAliases, lateralContext);
         return projectOp.execute(rows, context);
     }
 
@@ -3334,6 +4013,57 @@ public class QueryExecutor {
      * is "" for a bare star, or "alias." for a qualified star, so each projected value expression resolves
      * against the intended table.
      */
+    /**
+     * The columns of {@code table} in {@code SELECT *} order: a USING / NATURAL join's key columns
+     * first (USING-list / left-table order, one visible copy each), then the rest in physical order.
+     * Live: {@code t1(a,k,b) JOIN t2(c,k,d) USING (k)} projects {@code K A B C D}; a chained
+     * {@code … JOIN t3 USING (j)} projects {@code J K A B C}; the keys stay first through a later ON
+     * join. An ordinary table comes back unchanged.
+     */
+    private List<TableColumn> starOrderedColumns(final Table table) {
+        final List<String> keyNames = table.getJoinKeyNames();
+        if (keyNames == null || keyNames.isEmpty()) {
+            return table.getColumns();
+        }
+        final List<TableColumn> rest = new ArrayList<>(table.getColumns());
+        final List<TableColumn> ordered = new ArrayList<>();
+        for (final String keyName : keyNames) {
+            final Iterator<TableColumn> remaining = rest.iterator();
+            while (remaining.hasNext()) {
+                final TableColumn candidate = remaining.next();
+                if (!candidate.isHiddenFromStar() && candidate.getName().equalsIgnoreCase(keyName)) {
+                    ordered.add(candidate);
+                    remaining.remove();
+                    break;
+                }
+            }
+        }
+        ordered.addAll(rest);
+        return ordered;
+    }
+
+    /** Whether any column of {@code table} is hidden from {@code SELECT *} — true for a USING /
+     *  NATURAL join's merged relation, whose combined rows are WIDER than the star's column list, so
+     *  even a bare star must project rather than pass rows through. */
+    private boolean hasHiddenStarColumns(final Table table) {
+        for (final TableColumn col : table.getColumns()) {
+            if (col.isHiddenFromStar()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** The per-column expressions a bare {@code *} item projects over {@code table}, in star order —
+     *  for row-reshaping paths (the window projection) that must never copy the raw combined row. */
+    List<String> bareStarExpressions(final FrostlakeParser.SelectItemContext item, final Table table) {
+        final List<String> expressions = new ArrayList<>();
+        for (final StarColumn sc : expandStarColumns(item, starOrderedColumns(table), "")) {
+            expressions.add(sc.getExpression());
+        }
+        return expressions;
+    }
+
     private List<StarColumn> expandStarColumns(final FrostlakeParser.SelectItemContext item,
                                                final List<TableColumn> columns, final String qualifierPrefix) {
         final Set<String> excluded = new HashSet<>();
@@ -3379,6 +4109,42 @@ public class QueryExecutor {
             result.add(new StarColumn(expression, renames.getOrDefault(key, name), name, col.getDataType()));
         }
         return result;
+    }
+
+    /**
+     * Render Snowflake's braced star ({@code {*}}, {@code {t.* EXCLUDE (c)}}) as the OBJECT_CONSTRUCT call it
+     * stands for: {@code {*}} is {@code OBJECT_CONSTRUCT(*)}, one object-valued column whose keys are the
+     * star's effective column names and whose values are that row's values. The participating columns come
+     * from {@link #expandStarColumns}, so EXCLUDE / ILIKE / RENAME / REPLACE are read by the one modifier
+     * interpreter the plain star already uses, and the object itself is built by the ordinary function.
+     */
+    String objectStarExpression(final FrostlakeParser.SelectItemContext item, final Table table,
+                                final Map<String, Table> aliasToTable) {
+        final String qualifier = SelectItemAccessors.getItemQualifier(item);
+        Table source = table;
+        String qualifierPrefix = "";
+        if (qualifier != null) {
+            qualifierPrefix = qualifier + ".";
+            if (aliasToTable != null) {
+                for (final Map.Entry<String, Table> entry : aliasToTable.entrySet()) {
+                    if (qualifier.equalsIgnoreCase(entry.getKey())
+                            || qualifier.equalsIgnoreCase(entry.getValue().getName())) {
+                        source = entry.getValue();
+                        break;
+                    }
+                }
+            }
+        }
+        final StringBuilder call = new StringBuilder("OBJECT_CONSTRUCT(");
+        boolean firstPair = true;
+        for (final StarColumn sc : expandStarColumns(item, starOrderedColumns(source), qualifierPrefix)) {
+            if (!firstPair) {
+                call.append(", ");
+            }
+            firstPair = false;
+            call.append(SqlStringLiterals.encode(sc.getOutputName())).append(", ").append(sc.getExpression());
+        }
+        return call.append(')').toString();
     }
 
     /** Convert a SQL ILIKE pattern (%, _) into a case-insensitive regex for matching column names. */
@@ -3431,6 +4197,11 @@ public class QueryExecutor {
                                   final List<Table> allTables, final List<List<Row>> groupRows) {
         String havingExpr = getOriginalText(ctx.havingClause().booleanExpr());
         final FrostlakeParser.BooleanExprContext havingBool = ctx.havingClause().booleanExpr();
+
+        // Plan-time HAVING scope validation: an invalid qualifier inside an aggregate argument
+        // ("HAVING max(r.v) > 0" with r aliased away) is a compile-time error live, empty group
+        // set included.
+        validateClauseScope(havingExpr, table, aliasToTable, allTables, selectItemAliasNames(ctx));
 
         // Per output column, the canonical AST form of the SELECT item (+ its alias). A HAVING
         // condition referencing an alias / group column / an aggregate that IS a SELECT item resolves
@@ -3533,6 +4304,7 @@ public class QueryExecutor {
         collectWindowFunctionCalls(qualifyBool, inlineWindowFns);
         final Map<String, List<Object>> inlineWindowValues = new LinkedHashMap<>();
         if (!inlineWindowFns.isEmpty()) {
+            windowEvaluator.rejectFileWindowArguments(inlineWindowFns, table, selectItemAliasNames(ctx));
             final Map<FrostlakeParser.OverClauseContext, Map<List<Object>, List<Row>>> overCache = new HashMap<>();
             // Expose the SELECT aliases so an inline QUALIFY window's PARTITION BY / ORDER BY can name one
             // (e.g. QUALIFY ROW_NUMBER() OVER (PARTITION BY <select-alias> ...) = 1).
@@ -3725,8 +4497,14 @@ public class QueryExecutor {
         final List<TableColumn> columns = new ArrayList<>();
         for (final FrostlakeParser.SelectItemContext item : ctx.selectList().selectItem()) {
             if (SelectItemAccessors.isStarItem(item)
-                    || SelectItemAccessors.isQualifiedStarItem(item) || SelectItemAccessors.isSpreadItem(item)) {
+                    || SelectItemAccessors.isQualifiedStarItem(item)) {
                 columns.addAll(base.getColumns());
+                continue;
+            }
+            if (SelectItemAccessors.isObjectStarItem(item)) {
+                // The braced star occupies ONE output slot (the row object), not the base columns.
+                columns.add(new TableColumn(SelectItemAccessors.objectStarLabel(item),
+                    ObjectType.OBJECT, true, null, false, false, false));
                 continue;
             }
             final String name = SelectItemAccessors.getItemAlias(item) != null
@@ -3789,9 +4567,6 @@ public class QueryExecutor {
         return orderByExecutor.orderBy(rows, table, ctx, aliasToTable, allTables);
     }
 
-    private List<Row> orderByAfterGroupBy(final List<Row> rows, final FrostlakeParser.SelectStatementContext ctx) {
-        return orderByExecutor.orderByAfterGroupBy(rows, ctx);
-    }
 
     private List<Row> orderByAfterGroupBy(final List<Row> rows, final FrostlakeParser.SelectStatementContext ctx,
                                           final GroupOrderKeyResolver resolver) {
@@ -3804,15 +4579,34 @@ public class QueryExecutor {
      */
     private GroupOrderKeyResolver newGroupOrderResolver(final List<Row> outputRows,
             final Map<Row, List<Row>> rowToGroup, final Table table,
-            final Map<String, Table> aliasToTable, final List<Table> allTables) {
+            final Map<String, Table> aliasToTable, final List<Table> allTables,
+            final FrostlakeParser.SelectClauseContext selectCtx) {
+        // Output alias → SELECT column index, so a key referencing an aggregate's alias (ORDER BY
+        // m + 1 beside max(v) AS m) reads the already-computed value off the output row.
+        final Map<String, Integer> aliasIndex = new HashMap<>();
+        final List<FrostlakeParser.SelectItemContext> selectItems = selectCtx.selectList().selectItem();
+        for (int i = 0; i < selectItems.size(); i++) {
+            final FrostlakeParser.IdentifierContext alias = SelectItemAccessors.getItemAlias(selectItems.get(i));
+            if (alias != null) {
+                aliasIndex.put(getIdentifier(alias).toUpperCase(), i);
+            }
+        }
         return new GroupOrderKeyResolver() {
             @Override
             public Object resolve(final int rowIndex, final FrostlakeParser.OrderItemContext item) {
-                final List<Row> group = rowToGroup.get(outputRows.get(rowIndex));
+                final Row outputRow = outputRows.get(rowIndex);
+                final List<Row> group = rowToGroup.get(outputRow);
                 if (group == null || group.isEmpty()) {
                     return null;
                 }
-                return groupByEvaluator.evaluateOverGroup(item.expression(), group, table, aliasToTable, allTables);
+                final Map<String, Object> outputAliasValues = new HashMap<>();
+                for (final Map.Entry<String, Integer> entry : aliasIndex.entrySet()) {
+                    if (entry.getValue() < outputRow.getValues().size()) {
+                        outputAliasValues.put(entry.getKey(), outputRow.getValue(entry.getValue()));
+                    }
+                }
+                return groupByEvaluator.evaluateOverGroup(item.expression(), group, table, aliasToTable,
+                    allTables, outputAliasValues);
             }
         };
     }
@@ -3915,6 +4709,11 @@ public class QueryExecutor {
     /** The session's procedural (Snowflake Scripting) executor — used to resolve :name bind variables. */
     public ProceduralExecutor getProceduralExecutor() {
         return visitor.getProceduralExecutor();
+    }
+
+    /** @see SQLCommandVisitor#executeScriptingFunctionBody(Function, List) */
+    public Object executeScriptingFunctionBody(final Function function, final List<Object> args) {
+        return visitor.executeScriptingFunctionBody(function, args);
     }
 
     public EngineConfig getEngineConfig() {
@@ -4344,10 +5143,10 @@ public class QueryExecutor {
             }
             if (columnAliases == null && source.columnListOptional() != null) {
                 columnAliases = new ArrayList<>();
-                for (final FrostlakeParser.IdentifierContext idCtx
-                        : source.columnListOptional().identifierList().identifier()) {
-                    String colName = getIdentifier(idCtx);
-                    if (idCtx.QUOTED_IDENTIFIER() == null) {
+                for (final FrostlakeParser.NamePartContext partCtx
+                        : source.columnListOptional().namePart()) {
+                    String colName = ParseTreeText.namePartText(partCtx);
+                    if (partCtx.identifier() == null || partCtx.identifier().QUOTED_IDENTIFIER() == null) {
                         colName = colName.toUpperCase();
                     }
                     columnAliases.add(colName);
@@ -4406,7 +5205,7 @@ public class QueryExecutor {
         }
 
         // Handle regular table or CTE
-        String tableName = getQualifiedName(source.qualifiedName());
+        String tableName = ParseTreeText.getQualifiedName(source.tableQualifiedName());
 
         // Check if it's a CTE first (also check thread-local CTE context for UPDATE/DELETE)
         Map<String, ResultSet> effectiveCtes = cteResults != null ? cteResults
@@ -4487,7 +5286,9 @@ public class QueryExecutor {
         // therefore shadows the DUAL pseudo-table fallback below.
         Table table;
         try {
-            table = catalog.resolveTable(tableName);
+            // A name missing from a FROM clause is an OBJECT, not a Table, and is echoed as written —
+            // see Catalog#resolveTableAsWritten for the measurements.
+            table = catalog.resolveTableAsWritten(tableName, "Object");
         } catch (final RuntimeException notFound) {
             // DUAL — the legacy one-row pseudo-table used by `SELECT <expr> FROM DUAL`. It is synthesized
             // ONLY when nothing named DUAL exists (a real DUAL table/view/stream, resolved above or here,
@@ -4870,21 +5671,28 @@ public class QueryExecutor {
         for (final FrostlakeParser.SetOperatorContext op : sel.setOperator()) {
             // Only UNION ALL is allowed between branches: plain UNION deduplicates (which change
             // tracking cannot express), and INTERSECT / EXCEPT / MINUS are unsupported.
+            // Snowflake's own wording for the plain-UNION case (live-verified).
             if (op.UNION() == null || op.ALL() == null) {
-                throw new RuntimeException(reject);
+                throw new RuntimeException(
+                    "Change tracking is not supported on queries with joins of type '[UNION]'.");
             }
         }
         final List<FrostlakeParser.SelectClauseContext> branches = new ArrayList<>();
         for (final FrostlakeParser.SelectOperandContext operand : sel.selectOperand()) {
             final FrostlakeParser.SelectClauseContext clause = operand.selectClause();
-            if (clause == null || clause.DISTINCT() != null || clause.groupByClause() != null
+            if (clause != null && clause.groupByClause() != null) {
+                // Snowflake's own wording for the aggregate case (live-verified).
+                throw new RuntimeException(
+                    "Change tracking is not supported on queries with GROUP BY.");
+            }
+            if (clause == null || clause.DISTINCT() != null
                     || clause.havingClause() != null || clause.qualifyClause() != null
                     || clause.tableExpression() == null) {
                 throw new RuntimeException(reject);
             }
             final FrostlakeParser.TableExpressionContext tableExpr = clause.tableExpression();
             if (tableExpr.tableReference().size() != 1 || !tableExpr.joinClause().isEmpty()
-                    || tableExpr.tableReference(0).tableSource().qualifiedName() == null) {
+                    || tableExpr.tableReference(0).tableSource().tableQualifiedName() == null) {
                 throw new RuntimeException(reject);
             }
             branches.add(clause);
@@ -4899,7 +5707,7 @@ public class QueryExecutor {
         // over BASE.* tables) must resolve them by their own schema, not the current one. capturesTable()
         // already reduces a qualified capture name to its last segment before matching, so this is safe.
         final String[] parts = ParseTreeText.qualifiedNameParts(
-            branch.tableExpression().tableReference(0).tableSource().qualifiedName());
+            branch.tableExpression().tableReference(0).tableSource().tableQualifiedName());
         final StringBuilder qualified = new StringBuilder();
         for (int i = 0; i < parts.length; i++) {
             if (i > 0) {
@@ -5002,23 +5810,6 @@ public class QueryExecutor {
     }
 
     /** Execute CHANGES clause — returns inserted/updated/deleted rows between two snapshots. */
-    /** The elements of a SELECT-list spread (** <array>) value; the engine's ARRAY values are
-     *  canonical JSON text, so both the native-List and JSON-text forms are accepted. */
-    private List<Object> spreadElements(final Object value) {
-        if (value instanceof List) {
-            return new ArrayList<Object>((List<?>) value);
-        }
-        final JsonNode node = ArrayFunctionHelper.parseNode(value);
-        if (node != null && node.isArray()) {
-            final List<Object> elements = new ArrayList<>();
-            for (final JsonNode element : node) {
-                elements.add(ArrayFunctionHelper.fromNode(element));
-            }
-            return elements;
-        }
-        throw new RuntimeException("The spread operator (**) in the SELECT list requires an ARRAY value");
-    }
-
     /** The evaluable source text of a named argument's value; a bare subquery value
      *  ({@code INPUT => SELECT ...}) is parenthesized into the scalar-subquery expression form. */
     private String namedArgumentText(final FrostlakeParser.NamedArgumentContext argCtx) {
@@ -5618,7 +6409,7 @@ public class QueryExecutor {
             }
         }
 
-        throw new RuntimeException("Column not found: " + qualifiedName);
+        throw new RuntimeException(SqlCompilationError.invalidIdentifier(qualifiedName));
     }
 
     /**
@@ -5628,30 +6419,52 @@ public class QueryExecutor {
         return mergeTableMetadata(left, right, Collections.emptySet());
     }
 
-    /** Merge metadata for a join result; the right-side columns named in {@code mergedNames} (a USING /
-     *  NATURAL join's key columns, upper-cased) stay resolvable but are hidden from {@code SELECT *} —
-     *  Snowflake outputs one merged column, in the left table's position. */
+    /**
+     * Merge metadata for a join result; the right-side columns named in {@code mergedNames} (a USING /
+     * NATURAL join's key columns, upper-cased, in USING-list / left-table order) stay resolvable but
+     * are hidden from {@code SELECT *} — Snowflake outputs ONE merged column, and puts it FIRST:
+     * live, {@code t1(a,k,b) JOIN t2(c,k,d) USING (k)} projects {@code K A B C D}, a chained
+     * {@code … JOIN t3 USING (j)} puts J before the earlier K, and the key columns stay in front
+     * through a later ON join. The physical column list keeps the left-then-right layout the combined
+     * rows use; the star ORDER is applied at expansion time from {@link Table#getJoinKeyNames}.
+     */
     Table mergeTableMetadata(final Table left, final Table right, final Set<String> mergedNames) {
         List<TableColumn> allColumns = new ArrayList<>(left.getColumns());
         for (final TableColumn col : right.getColumns()) {
             allColumns.add(mergedNames.contains(col.getName().toUpperCase()) ? col.starHiddenCopy() : col);
         }
-        return new Table("joined", allColumns, false);
+        final Table joined = new Table("joined", allColumns, false);
+        final List<String> keyNames = new ArrayList<>();
+        for (final String name : mergedNames) {
+            keyNames.add(name.toUpperCase());
+        }
+        if (left.getJoinKeyNames() != null) {
+            for (final String inherited : left.getJoinKeyNames()) {
+                if (!keyNames.contains(inherited)) {
+                    keyNames.add(inherited);
+                }
+            }
+        }
+        if (!keyNames.isEmpty()) {
+            joined.setJoinKeyNames(keyNames);
+        }
+        return joined;
     }
 
-    /** The upper-cased key column names of a USING / NATURAL join, or an empty set for ON / CROSS. */
+    /** The upper-cased key column names of a USING / NATURAL join in USING-list / left-table order
+     *  (the order {@code SELECT *} surfaces them in), or an empty set for ON / CROSS. */
     private Set<String> usingJoinColumnNames(final FrostlakeParser.JoinClauseContext joinCtx,
                                              final Table leftTable, final Table rightTable) {
         if (joinCtx.NATURAL() != null) {
-            return new HashSet<>(commonColumnNames(leftTable, rightTable));
+            return new LinkedHashSet<>(commonColumnNames(leftTable, rightTable));
         }
         if (joinCtx.USING() == null) {
             return Collections.emptySet();
         }
-        final Set<String> names = new HashSet<>();
+        final Set<String> names = new LinkedHashSet<>();
         for (final FrostlakeParser.QualifiedNameContext qn : joinCtx.usingColumnList().qualifiedName()) {
-            final List<FrostlakeParser.IdentifierContext> parts = qn.identifier();
-            names.add(SqlIdentifiers.canonical(parts.get(parts.size() - 1)));
+            final String[] parts = ParseTreeText.qualifiedNameParts(qn);
+            names.add(parts[parts.length - 1]);
         }
         return names;
     }
@@ -5674,13 +6487,53 @@ public class QueryExecutor {
         return rightTable;
     }
 
+    /** The throwaway relation name {@link #resolveRelationColumns} converts under: only the resulting
+     *  column list is kept, so the name it is briefly attached to is never observed. */
+    private static final String RESOLVED_SHAPE_NAME = "";
+
+    /**
+     * The columns a view-shaped {@code definition} produces — the list a {@code CREATE VIEW} freezes
+     * onto its catalog entry so {@code INFORMATION_SCHEMA.COLUMNS} can report them without ever
+     * planning a query during a metadata read. {@code explicitColumnNames} is the view's declared
+     * column list ({@code CREATE VIEW v (x, y) AS …}) or null when it has none.
+     *
+     * <p>Returns null rather than throwing when the body will not plan — a forward reference to a table
+     * that does not exist yet, a function the engine lacks, a role without SELECT on the source. Live
+     * Snowflake rejects the CREATE outright in those cases; Frostlake has always accepted them, and
+     * this method exists to add column metadata, not to start failing statements that used to succeed.
+     * A view whose columns could not be resolved simply reports none, exactly as every view did before.
+     *
+     * <p>The columns come from the same {@link #resultSetToTable} conversion a read of the view goes
+     * through, so a view's metadata and a query over that view can never disagree about its shape —
+     * including the static types #149 threads out of the inner projection, which is how an
+     * {@code OBJECT_CONSTRUCT} column is reported OBJECT rather than as the VARCHAR placeholder.
+     */
+    public List<TableColumn> resolveRelationColumns(final String definition,
+                                                    final List<String> explicitColumnNames) {
+        try {
+            final List<ResultSet> results = execute(definition);
+            if (results.isEmpty() || results.get(0) == null) {
+                return null;
+            }
+            final ResultSet resolved = results.get(0);
+            final Table shape = explicitColumnNames != null && !explicitColumnNames.isEmpty()
+                ? resultSetToTable(resolved, RESOLVED_SHAPE_NAME, explicitColumnNames)
+                : resultSetToTable(resolved, RESOLVED_SHAPE_NAME);
+            return shape.getColumns();
+        } catch (final RuntimeException undetermined) {
+            logger.debug("View columns could not be resolved from its definition: {}",
+                undetermined.getMessage());
+            return null;
+        }
+    }
+
     /**
      * Convert a ResultSet to a Table object
      */
     Table resultSetToTable(final ResultSet rs, final String tableName) {
         List<TableColumn> columns = new ArrayList<>();
         for (final ResultSetColumn col : rs.getColumns()) {
-            columns.add(new TableColumn(col.getName(), col.getDataType(), true, null, false, false, false));
+            columns.add(derivedColumn(col.getName(), col));
         }
         return new Table(tableName, columns, false);
     }
@@ -5695,11 +6548,317 @@ public class QueryExecutor {
         }
 
         for (int i = 0; i < rsColumns.size(); i++) {
-            ResultSetColumn rsCol = rsColumns.get(i);
-            String colName = columnNames.get(i);
-            columns.add(new TableColumn(colName, rsCol.getDataType(), true, null, false, false, false));
+            columns.add(derivedColumn(columnNames.get(i), rsColumns.get(i)));
         }
         return new Table(tableName, columns, false);
+    }
+
+    /**
+     * The combined columns of a set operation, giving each column the STATIC type its branches support
+     * TOGETHER: the numeric supertype for measured NUMBERs, the shared type where every branch declares
+     * the same one — parameters included — and undetermined otherwise. The fold takes the leading
+     * branch's layout, so a differing branch would otherwise hand the outer query the first branch's
+     * type for values Snowflake coerces to a common one — live, {@code SELECT s UNION ALL
+     * SELECT n} reports {@code NUMBER(18,5)}, neither branch's own type.
+     *
+     * <p>Name-level agreement is NOT enough for the parameter-blind families: NUMBER's name drops its
+     * precision and scale, so a (3,0) branch and a (4,1) branch read as "agreeing" and the leading
+     * branch's scale-0 type then stores 183 for the 182.5 the other branch produced — silent value
+     * corruption once the union feeds a CTE, view or CTAS, not a metadata nicety.
+     */
+    private List<ResultSetColumn> reconcileBranchTypes(final List<ResultSetColumn> combined,
+                                                       final List<List<ResultSetColumn>> branches,
+                                                       final List<List<NumericType>> literalMeasurements) {
+        final List<ResultSetColumn> reconciled = new ArrayList<>();
+        for (int i = 0; i < combined.size(); i++) {
+            final ResultSetColumn column = combined.get(i);
+            final DataType agreedStatic = branchStaticType(i, branches, literalMeasurements);
+            reconciled.add(agreedStatic == column.getStaticType() ? column
+                : new ResultSetColumn(column.getName(), column.getDataType(), column.getTableName(),
+                    agreedStatic));
+        }
+        return reconciled;
+    }
+
+    /**
+     * The static type every branch supports for column {@code i}, or null when any branch is
+     * undetermined or the branches cannot be combined. Undetermined stays undetermined: a branch whose
+     * inference answered null may hold ANY runtime value, so skipping it would let the other branches'
+     * narrow type truncate what it produces.
+     *
+     * <p>A VARCHAR branch beside exactly one non-string family unifies INTO that family (live):
+     * beside NUMBER it contributes NUMBER(18,5) — the fold with the number side gives {@code s ∪
+     * NUMBER(10,2)} NUMBER(18,5), {@code ∪ NUMBER(30,10)} NUMBER(30,10) and {@code ∪ NUMBER(38,0)}
+     * NUMBER(38,5) — except that a bare STRING LITERAL branch contributes the literal's own numeric
+     * measurement instead ({@code '5' ∪ 1} declares NUMBER(1,0), {@code '5' ∪ 1::NUMBER(10,2)}
+     * NUMBER(10,2), {@code '2.75' ∪ 1} NUMBER(3,2)); beside FLOAT it contributes FLOAT, and beside
+     * DATE, DATE.
+     */
+    private DataType branchStaticType(final int i, final List<List<ResultSetColumn>> branches,
+                                      final List<List<NumericType>> literalMeasurements) {
+        final List<DataType> declared = new ArrayList<>();
+        for (final List<ResultSetColumn> branch : branches) {
+            if (i >= branch.size()) {
+                return null;
+            }
+            final DataType branchType = branch.get(i).getStaticType();
+            if (branchType == null) {
+                return null;
+            }
+            declared.add(branchType);
+        }
+        boolean anyString = false;
+        DataType nonString = null;
+        boolean mixedNonString = false;
+        for (final DataType type : declared) {
+            if (type instanceof StringType) {
+                anyString = true;
+            } else if (nonString == null) {
+                nonString = type;
+            } else if (!nonString.getClass().equals(type.getClass())) {
+                mixedNonString = true;
+            }
+        }
+        DataType combined = null;
+        for (int k = 0; k < declared.size(); k++) {
+            DataType contribution = declared.get(k);
+            if (anyString && nonString != null && !mixedNonString
+                    && contribution instanceof StringType) {
+                contribution = stringBranchContribution(nonString,
+                    literalMeasurement(literalMeasurements, k, i));
+                if (contribution == null) {
+                    return null;
+                }
+            }
+            combined = combined == null ? contribution : combineDeclaredTypes(combined, contribution);
+            if (combined == null) {
+                return null;
+            }
+        }
+        return combined;
+    }
+
+    /** What a VARCHAR branch contributes to the fold beside the given non-string type, or null when
+     *  the pairing is not one of the measured ones. */
+    private DataType stringBranchContribution(final DataType nonString,
+                                              final NumericType literalMeasurement) {
+        if (nonString instanceof NumericType) {
+            final String name = nonString.getName();
+            if ("NUMBER".equalsIgnoreCase(name)) {
+                return literalMeasurement != null ? literalMeasurement
+                    : new NumericType("NUMBER", 18, 5);
+            }
+            if ("FLOAT".equalsIgnoreCase(name) || "DOUBLE".equalsIgnoreCase(name)) {
+                return nonString;
+            }
+            return null;
+        }
+        if (nonString instanceof DateTimeType && "DATE".equalsIgnoreCase(nonString.getName())) {
+            return nonString;
+        }
+        return null;
+    }
+
+    /** The literal measurement recorded for branch {@code k}'s column {@code i}, or null. */
+    private NumericType literalMeasurement(final List<List<NumericType>> literalMeasurements,
+                                           final int k, final int i) {
+        if (literalMeasurements == null || k >= literalMeasurements.size()) {
+            return null;
+        }
+        final List<NumericType> branch = literalMeasurements.get(k);
+        return i < branch.size() ? branch.get(i) : null;
+    }
+
+    /**
+     * Per branch, per column: the numeric measurement of a bare STRING LITERAL select item, or null.
+     * Only the plain {@code selectClause} operand shape is inspected — a parenthesized sub-statement
+     * contributes no measurement and unifies through its declared types alone.
+     */
+    private List<List<NumericType>> stringLiteralMeasurements(
+            final List<FrostlakeParser.SelectOperandContext> operands) {
+        final List<List<NumericType>> perBranch = new ArrayList<>();
+        for (final FrostlakeParser.SelectOperandContext operand : operands) {
+            final List<NumericType> measurements = new ArrayList<>();
+            if (operand.selectClause() != null && operand.selectClause().selectList() != null) {
+                for (final FrostlakeParser.SelectItemContext item
+                        : operand.selectClause().selectList().selectItem()) {
+                    measurements.add(stringLiteralMeasurement(item));
+                }
+            }
+            perBranch.add(measurements);
+        }
+        return perBranch;
+    }
+
+    /** The numeric measurement of one select item when it is a bare string literal spelling a
+     *  number, else null. */
+    private NumericType stringLiteralMeasurement(final FrostlakeParser.SelectItemContext item) {
+        if (!SelectItemAccessors.isExprItem(item)) {
+            return null;
+        }
+        final FrostlakeParser.ExpressionContext valueExpr = SelectItemAccessors.getItemValueExpr(item);
+        if (valueExpr == null) {
+            return null;
+        }
+        try {
+            final Expression parsed = ExpressionEvaluator.parse(ParseTreeText.getOriginalText(valueExpr));
+            if (!(parsed instanceof LiteralExpression)
+                    || ((LiteralExpression) parsed).getType() != LiteralType.STRING) {
+                return null;
+            }
+            return NumericLiteralTypes.forDecimal(
+                new BigDecimal(String.valueOf(((LiteralExpression) parsed).getValue()).trim()));
+        } catch (final RuntimeException notANumericLiteral) {
+            return null;
+        }
+    }
+
+    /**
+     * Two branches' declared types folded into the one the combined column declares, or null when they
+     * cannot be. Differently-parameterized NUMBERs fold to Snowflake's supertype; any other difference
+     * is undetermined — a FLOAT-vs-NUMBER or INTEGER-vs-NUMBER union is left to the value scan rather
+     * than guessed.
+     */
+    private DataType combineDeclaredTypes(final DataType left, final DataType right) {
+        if (sameDeclaredType(left, right)) {
+            return left;
+        }
+        if (left instanceof NumericType && right instanceof NumericType
+                && "NUMBER".equalsIgnoreCase(left.getName())
+                && "NUMBER".equalsIgnoreCase(right.getName())) {
+            return numericSupertype((NumericType) left, (NumericType) right);
+        }
+        return null;
+    }
+
+    /**
+     * Snowflake's numeric set-operation supertype: the widest integer part meets the widest scale.
+     * Live-verified: {@code SELECT 208 UNION ALL SELECT 0.3} declares NUMBER(4,1) — NOT the
+     * max-precision/max-scale (3,1), which could not even hold 208 — {@code 0.3 ∪ 0.33333} declares
+     * NUMBER(6,5), {@code 208 ∪ 30 ∪ 182.5} NUMBER(4,1), {@code -208 ∪ 1.25} NUMBER(5,2), and the same
+     * rule holds for UNION, UNION ALL and EXCEPT, and through a view.
+     */
+    private NumericType numericSupertype(final NumericType left, final NumericType right) {
+        final int integerDigits = Math.max(left.getPrecision() - left.getScale(),
+            right.getPrecision() - right.getScale());
+        final int scale = Math.max(left.getScale(), right.getScale());
+        return new NumericType("NUMBER", Math.min(integerDigits + scale, 38), scale);
+    }
+
+    /** Whether two declared types are the same type — the family AND its parameters. A VECTOR's
+     *  dimension and a structured OBJECT's fields are rendered into the name; NUMBER's precision/scale
+     *  and VARCHAR's length are not, so those compare their parameters explicitly. */
+    private boolean sameDeclaredType(final DataType left, final DataType right) {
+        if (left == null || right == null || !left.getClass().equals(right.getClass())
+                || !left.getName().equalsIgnoreCase(right.getName())) {
+            return false;
+        }
+        if (left instanceof NumericType) {
+            return ((NumericType) left).getPrecision() == ((NumericType) right).getPrecision()
+                && ((NumericType) left).getScale() == ((NumericType) right).getScale();
+        }
+        if (left instanceof StringType) {
+            return ((StringType) left).getMaxLength() == ((StringType) right).getMaxLength();
+        }
+        return true;
+    }
+
+    /**
+     * A derived relation's column: the STATIC type where the projection could infer one, the reported
+     * type otherwise. Only the inferred case is marked statically typed, so an undetermined column stays
+     * undetermined and the enclosing query sees "no declared type" rather than a guess — which is what
+     * lets a type-based rule fire through a subquery, CTE or view without ever firing on a placeholder.
+     */
+    private TableColumn derivedColumn(final String name, final ResultSetColumn source) {
+        final DataType staticType = source.getStaticType();
+        final TableColumn column = new TableColumn(name,
+            staticType != null ? staticType : source.getDataType(), true, null, false, false, false);
+        column.setStaticallyTyped(staticType != null);
+        return column;
+    }
+
+    /**
+     * A projected result column: the type it REPORTS is exactly what it always reported, and the type it
+     * is statically KNOWN to produce rides alongside. Keeping the two apart is deliberate — JDBC
+     * metadata, CTAS and set-operation coercion all read the reported type, and this change is about
+     * what the compile-time type rules may conclude, not about what a column claims to be.
+     *
+     * <p>The one exception is the SEMI-STRUCTURED family, which reports its static type. Live,
+     * {@code CREATE TABLE t AS SELECT OBJECT_CONSTRUCT('k','v') AS c FROM s} declares {@code c} OBJECT
+     * ({@code DESC TABLE} on a real account), an {@code ARRAY_CONSTRUCT} column ARRAY, and a
+     * {@code PARSE_JSON} or path-extraction column VARIANT — an OBJECT even when the select matches ZERO
+     * rows, and the same in a view and with no FROM clause at all — while a VARCHAR placeholder makes all
+     * of them VARCHAR. See {@link #semiStructuredReportedType}.
+     *
+     * <p>The family restriction is itself a measured boundary, not caution: promoting EVERY static type
+     * instead reports a bare {@code NUMBER} where the value scan downstream would have kept the scale, so
+     * {@code CREATE TABLE t AS SELECT 1.5 AS c} becomes NUMBER(38,0) and STORES 2 where live declares
+     * NUMBER(2,1) and stores 1.5. Every non-semi-structured family is already recovered from the VALUES by
+     * the CTAS reader (widest scale seen, BOOLEAN, temporals); a semi-structured cell is not a
+     * Number/Boolean/temporal and so falls through that recovery to the placeholder every time, which is
+     * why it and nothing else needs the static channel. Reporting live's precision for computed numerics
+     * needs Snowflake's arithmetic precision/scale rules and is a separate change.
+     *
+     * <p>The FROM-less projection ({@link #executeSelectWithoutFrom}) routes through here too — live
+     * types the two forms identically ({@code CREATE TABLE t AS SELECT
+     * OBJECT_CONSTRUCT('k','v') AS c} with no FROM declares OBJECT, {@code SELECT {*}} declares OBJECT,
+     * and a view over either does the same). That flip was blocked for a day by what looked like a
+     * consumer of this column's two type channels: with FROM-less statics attached, one downstream
+     * integration loader failed as a silent DATA mismatch. The culprit was not here at all —
+     * {@link #reconcileBranchTypes} compared branch statics by NAME, NUMBER's name drops its
+     * parameters, so a set operation's (3,0) and (4,1) branches "agreed" and the leading branch's
+     * scale-0 type truncated the other branch's 182.5 to 183 through a CTE-shaped CTAS. FROM-less
+     * statics merely made that reachable: literal-only union branches all carry measured NUMBERs.
+     * Fixed by the numeric supertype fold on {@link #reconcileBranchTypes}.
+     *
+     * <p>Recorded because it looked like a regression and is not: the promotion types one downstream
+     * integration suite's CTAS column ARRAY — the select is a {@code UNION ALL} of an
+     * {@code ARRAY_CONSTRUCT} branch with a VARIANT branch — a later {@code FLATTEN} then yields one
+     * element and {@code ::NUMBER} over it fails. That sequence was replayed statement-for-statement on a
+     * real account and Snowflake does the SAME THING at every step: it declares the union
+     * column ARRAY (either branch order, leading branch empty or not), {@code PARSE_JSON('{}')::ARRAY}
+     * wraps to {@code [{}]} there too, FLATTEN over that yields one row there too, and the cast fails
+     * there too with {@code Failed to cast variant value {} to FIXED}. The promotion REPRODUCES live
+     * exactly; that suite had passed only because the placeholder called the column VARCHAR, and what was
+     * wrong was one line of its own local scaffolding — it seeded the VARIANT stand-in column with
+     * {@code PARSE_JSON('{}')}, an empty OBJECT, where the SQL under test unions it with
+     * {@code ARRAY_CONSTRUCT(...)} and flattens it. An empty ARRAY is the shape that column must hold for
+     * the procedure to run on Snowflake at all, and it is seeded that way now.
+     */
+    private ResultSetColumn projectedColumn(final String name, final DataType reportedType,
+                                            final String sourceTableName, final String expressionText,
+                                            final ExpressionEvaluator projectionTypes) {
+        final DataType staticType = staticProjectionType(expressionText, projectionTypes);
+        return new ResultSetColumn(name, semiStructuredReportedType(reportedType, staticType),
+            sourceTableName, staticType);
+    }
+
+    /**
+     * The type a projected column REPORTS: the static type for the semi-structured family, the placeholder
+     * for everything else. See {@link #projectedColumn} for why the family restriction is exact — every
+     * other family is recovered from the VALUES by the CTAS reader, while a semi-structured cell is not a
+     * Number/Boolean/temporal and falls through that recovery to the placeholder every time.
+     */
+    private DataType semiStructuredReportedType(final DataType reportedType, final DataType staticType) {
+        if (staticType instanceof ObjectType || staticType instanceof ArrayType
+                || staticType instanceof VariantType) {
+            return staticType;
+        }
+        return reportedType;
+    }
+
+    /** The static type of a select item's expression text, or null when it cannot be determined —
+     *  including when the text is not something the expression grammar can parse on its own. */
+    private DataType staticProjectionType(final String expressionText,
+                                          final ExpressionEvaluator projectionTypes) {
+        if (expressionText == null || expressionText.trim().isEmpty()) {
+            return null;
+        }
+        try {
+            return projectionTypes.inferStaticType(ExpressionEvaluator.parse(expressionText));
+        } catch (final RuntimeException undetermined) {
+            return null;
+        }
     }
 
     /**
@@ -5718,6 +6877,15 @@ public class QueryExecutor {
             return DateTimeType.DATE;
         } else if (value instanceof Timestamp) {
             return DateTimeType.TIMESTAMP_NTZ;
+        } else if (value instanceof BinaryValue) {
+            return BinaryType.BINARY;
+        } else if (value instanceof GeoValue) {
+            return ((GeoValue) value).isGeography() ? GeographyType.GEOGRAPHY : GeometryType.GEOMETRY;
+        } else if (value instanceof VariantValue) {
+            final VariantValue variant = (VariantValue) value;
+            return variant.isJsonObject() ? ObjectType.OBJECT
+                : variant.isJsonArray() ? ArrayType.ARRAY
+                : VariantType.VARIANT;
         } else if (value instanceof String) {
             return StringType.VARCHAR;
         } else {
@@ -5744,6 +6912,9 @@ public class QueryExecutor {
                 originalCol.isUnique(),
                 originalCol.isAutoIncrement()
             );
+            // Renaming a derived column keeps its declared type, so it keeps its static-type verdict too:
+            // FROM (SELECT f FROM t) d (g) makes d.g exactly as FILE-typed as the f it renames.
+            newCol.setStaticallyTyped(originalCol.isStaticallyTyped());
             newColumns.add(newCol);
         }
 
@@ -5899,6 +7070,20 @@ public class QueryExecutor {
         return getQualifiedColumnValueFromTables(row, tables, aliasToTable, qualifiedName);
     }
 
+    /** Whether {@code text} is a plain dotted reference (identifier parts only) rather than an
+     *  expression text routed through this resolver's lenient cleaning. */
+    private static boolean isPlainDottedReference(final String text) {
+        for (int i = 0; i < text.length(); i++) {
+            final char c = text.charAt(i);
+            final boolean word = Character.isLetterOrDigit(c) || c == '_' || c == '$' || c == '.'
+                || c == '"';
+            if (!word) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     /** Whether {@code name} is exactly a column of one of {@code tables} (a null-safe scan). */
     private static boolean namesAColumnOf(final List<Table> tables, final String name) {
         if (tables == null) {
@@ -5914,7 +7099,24 @@ public class QueryExecutor {
 
     Object getQualifiedColumnValueFromTables(final Row row, final List<Table> tables,
                                                      final Map<String, Table> aliasToTable,
-                                                     String qualifiedName) {
+                                                     final String qualifiedName) {
+        return getQualifiedColumnValueFromTables(row, tables, aliasToTable, qualifiedName, null);
+    }
+
+    /** Whether {@code name} is one of the join-key names (case-insensitive). */
+    private static boolean namesJoinKey(final List<String> joinKeyNames, final String name) {
+        for (final String keyName : joinKeyNames) {
+            if (keyName.equalsIgnoreCase(name)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    Object getQualifiedColumnValueFromTables(final Row row, final List<Table> tables,
+                                                     final Map<String, Table> aliasToTable,
+                                                     String qualifiedName,
+                                                     final List<String> joinKeyNames) {
         // Remove parentheses only if present (avoid a per-access regex on the common path)
         if (qualifiedName.indexOf('(') >= 0 || qualifiedName.indexOf(')') >= 0) {
             qualifiedName = qualifiedName.replace("(", "").replace(")", "");
@@ -5961,7 +7163,7 @@ public class QueryExecutor {
             columnName = qualifiedName.toUpperCase();
         }
 
-        // Resolve table by alias or name (case-insensitive)
+        // Resolve table by its FROM-clause key (case-insensitive)
         Table targetTable = null;
         if (tableName != null) {
             // Try exact match first
@@ -5976,9 +7178,54 @@ public class QueryExecutor {
                     }
                 }
             }
+            // Live: an alias REPLACES the table name — with FROM r AS x, the reference r.t is
+            // "invalid identifier 'R.T'" in plain, JOIN and ASOF queries alike. A dotted qualifier
+            // naming NO FROM-clause key is an invalid identifier, never a bare-name search.
+            // Sequence value reads (seq.NEXTVAL / seq.CURRVAL) are not FROM-clause references and
+            // resolve through the sequence machinery instead.
+            if (targetTable == null && aliasToTable != null && !aliasToTable.isEmpty()
+                    && !"NEXTVAL".equalsIgnoreCase(columnName) && !"CURRVAL".equalsIgnoreCase(columnName)
+                    && isPlainDottedReference(qualifiedName)) {
+                // TYPED only for a genuine dotted reference: this resolver also receives raw
+                // EXPRESSION texts (GROUP BY / ORDER BY keys like COALESCE(a.b, c)) whose parens
+                // were stripped above — those must soft-fail so the caller's expression path runs.
+                throw new InvalidQualifierException(tableName.toUpperCase() + "." + columnName);
+            }
         }
 
-        // Search through all tables
+        // A bare reference to a USING / NATURAL join key reads the MERGED column: the first non-null
+        // among the per-side copies (an outer join null-extends one side's copy — live, the
+        // right-only row of a FULL JOIN answers the right side's key for the bare name in SELECT,
+        // WHERE, GROUP BY and ORDER BY alike). A qualified reference keeps reading its own side.
+        if (tableName == null && joinKeyNames != null && namesJoinKey(joinKeyNames, columnName)) {
+            int keyOffset = 0;
+            boolean present = false;
+            for (final Table table : tables) {
+                final List<TableColumn> cols = table.getColumns();
+                for (int i = 0; i < cols.size(); i++) {
+                    if (cols.get(i).getName().equalsIgnoreCase(columnName)) {
+                        present = true;
+                        if (keyOffset + i < row.getValues().size()) {
+                            final Object value = row.getValue(keyOffset + i);
+                            if (value != null) {
+                                return value;
+                            }
+                        }
+                        break;
+                    }
+                }
+                keyOffset += cols.size();
+            }
+            if (present) {
+                return null;
+            }
+        }
+
+        // Search through all tables. NOTE — live raises "ambiguous column name 'T'" for a bare
+        // name carried by more than one table OF THE SAME FROM SCOPE, but this flat list also
+        // carries OUTER tables injected for correlated subqueries, whose inner FROM must shadow
+        // them (a vendor loader's `(SELECT MAX(file_date) FROM tmp_files)` inside a join over
+        // tmp_files is live-legal). Until resolution is scope-aware, first match wins here.
         int offset = 0;
         for (final Table table : tables) {
             boolean isTargetTable = (targetTable == null) || (table == targetTable);
@@ -5995,7 +7242,7 @@ public class QueryExecutor {
             offset += table.getColumns().size();
         }
 
-        throw new RuntimeException("Column not found: " + qualifiedName);
+        throw new RuntimeException(SqlCompilationError.invalidIdentifier(qualifiedName));
     }
 
     /** True when s matches \d+\.\d+ (a numeric literal like 1.5), to tell it from a qualified name. */
@@ -6062,13 +7309,4 @@ public class QueryExecutor {
         }
     }
 
-    /**
-     * Get procedural variables as a context map for expression evaluation
-     */
-    public Map<String, Object> getProceduralVariablesAsContext() {
-        if (visitor != null) {
-            return visitor.getProceduralExecutor().getAllVariables();
-        }
-        return new HashMap<>();
-    }
 }

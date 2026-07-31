@@ -16,7 +16,7 @@
 
 package dev.frostlake.functions.scalar.math;
 
-import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.functions.NumericArgumentFunction;
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.types.NumericType;
 
@@ -28,7 +28,7 @@ import java.util.List;
  * DIV0NULL(a, b) additionally returns 0 when the divisor is NULL. In both cases a NULL
  * dividend (with a normal, non-zero divisor) yields NULL, matching standard division.
  */
-public class Div0 extends BuiltInFunction {
+public class Div0 extends NumericArgumentFunction {
     private final boolean nullDivisorToZero;
 
     public Div0(final boolean nullDivisorToZero) {

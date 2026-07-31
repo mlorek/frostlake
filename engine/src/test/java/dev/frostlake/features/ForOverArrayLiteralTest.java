@@ -19,9 +19,13 @@ package dev.frostlake.features;
 import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
 
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * {@code FOR x IN [a, b] DO … END FOR} iterates the ARRAY literal's elements, binding the loop
@@ -33,8 +37,14 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
  */
 public class ForOverArrayLiteralTest extends BaseDatabaseTest {
 
+    private static final String FOR_OVER_ARRAY_BINDS =
+        "binds the loop variable of a `FOR x IN [array literal]` loop into the body's SQL, which is a "
+        + "Frostlake extension: a real account's FOR takes a range or a cursor / RESULTSET, so the body's "
+        + "binds are never set there (\"Bind variable :x not set\")";
+
     @Test
     public void iteratesBooleanArrayWithCorrectBinding() {
+        Assumptions.assumeFalse(isLiveSnowflake(), FOR_OVER_ARRAY_BINDS);
         engine.execute("CREATE TABLE loop_out (val VARCHAR, branch VARCHAR)");
         engine.execute("""
             CREATE OR REPLACE PROCEDURE dual_pass() RETURNS VARCHAR LANGUAGE SQL AS $$
@@ -57,6 +67,7 @@ public class ForOverArrayLiteralTest extends BaseDatabaseTest {
 
     @Test
     public void iteratesStringAndNumberArrays() {
+        Assumptions.assumeFalse(isLiveSnowflake(), FOR_OVER_ARRAY_BINDS);
         engine.execute("CREATE TABLE loop_out2 (val VARCHAR)");
         engine.execute("""
             CREATE OR REPLACE PROCEDURE walk_lists() RETURNS VARCHAR LANGUAGE SQL AS $$
@@ -91,12 +102,19 @@ public class ForOverArrayLiteralTest extends BaseDatabaseTest {
     }
 
     @Test
-    public void iffCoercesStringConditionLikeBooleanPosition() {
-        // Snowflake coerces IFF's condition like any boolean position — 'false' text is FALSE.
+    public void iffRejectsNonBooleanConditionsAtCompileTime() {
+        // Live-verified: Snowflake REJECTS VARCHAR and NUMBER conditions in IFF at compile time
+        // ("Invalid argument types for function 'IFF'"); only BOOLEAN/VARIANT conditions compile.
+        final RuntimeException text = assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.executeQuery("SELECT IFF('false', 'a', 'b')");
+            }
+        });
+        assertTrue(text.getMessage().contains("Invalid argument types for function 'IFF'"),
+            "unexpected: " + text.getMessage());
         assertEquals("b", String.valueOf(
-            engine.executeQuery("SELECT IFF('false', 'a', 'b')").getRows().get(0).getValue(0)));
-        assertEquals("a", String.valueOf(
-            engine.executeQuery("SELECT IFF('true', 'a', 'b')").getRows().get(0).getValue(0)));
+            engine.executeQuery("SELECT IFF(1 = 2, 'a', 'b')").getRows().get(0).getValue(0)));
         assertEquals("b", String.valueOf(
             engine.executeQuery("SELECT IFF(NULL, 'a', 'b')").getRows().get(0).getValue(0)));
     }

@@ -27,8 +27,8 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
  * where a backslash always escapes — so backslashes must be doubled, not just quotes. Escaping
  * quotes alone corrupted any value carrying escape sequences: an OBJECT whose JSON text held a
  * nested JSON string ({@code "profile":"{\"firstName\":\"A\"}"}) reached the substituted
- * {@code PARSE_JSON('…')} with bare inner quotes and failed with "Invalid JSON" (the vendor
- * {@code asset_type(value OBJECT)} shape).
+ * {@code PARSE_JSON('…')} with bare inner quotes and failed with "Invalid JSON" (the
+ * {@code classify(value OBJECT)} shape).
  */
 public class UdfParamEscapingTest extends BaseDatabaseTest {
 
@@ -58,7 +58,7 @@ public class UdfParamEscapingTest extends BaseDatabaseTest {
             LANGUAGE SQL
             AS $$
             SELECT CASE
-                WHEN NVL(UPPER(value:asset_class::VARCHAR), 'NULL') <> 'NULL' THEN UPPER(value:asset_class::VARCHAR)
+                WHEN NVL(UPPER(value:item_class::VARCHAR), 'NULL') <> 'NULL' THEN UPPER(value:item_class::VARCHAR)
                 WHEN IS_OBJECT(value:attributes) THEN 'GENERAL'
                 ELSE 'UNKNOWN'
             END

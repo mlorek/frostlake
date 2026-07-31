@@ -18,6 +18,8 @@ package dev.frostlake.executor.copy;
 
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.cfg.JsonNodeFeature;
+import tools.jackson.databind.json.JsonMapper;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -31,7 +33,7 @@ import java.util.List;
  */
 public class JsonStageReader implements StageFileReader {
 
-    private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final ObjectMapper MAPPER = JsonMapper.builder().enable(JsonNodeFeature.USE_BIG_DECIMAL_FOR_FLOATS).build();
 
     @Override
     public List<JsonNode> readRecords(final Path file) throws IOException {

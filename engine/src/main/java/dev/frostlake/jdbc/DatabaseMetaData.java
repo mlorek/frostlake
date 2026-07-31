@@ -632,49 +632,18 @@ public class DatabaseMetaData implements java.sql.DatabaseMetaData {
         throw new SQLFeatureNotSupportedException("getProcedureColumns not implemented");
     }
 
-    // Append a case-insensitive equality / LIKE filter for a metadata query, skipping the "match all" cases
-    // (null, empty, or "%"). Single quotes in the value are doubled to keep the generated SQL well-formed.
-    private static void appendEquals(final StringBuilder sql, final String column, final String value) {
-        if (value != null && !value.isEmpty()) {
-            sql.append(" AND UPPER(").append(column).append(") = '")
-                .append(value.toUpperCase().replace("'", "''")).append("'");
-        }
-    }
-
-    private static void appendLike(final StringBuilder sql, final String column, final String pattern) {
-        if (pattern != null && !pattern.isEmpty() && !pattern.equals("%")) {
-            sql.append(" AND UPPER(").append(column).append(") LIKE '")
-                .append(pattern.toUpperCase().replace("'", "''")).append("'");
-        }
-    }
-
     @Override
     public ResultSet getTables(final String catalog, final String schemaPattern, final String tableNamePattern, final String[] types) throws SQLException {
         // Run the same INFORMATION_SCHEMA query the in-process (DirectDatabaseMetaData) path uses, but over
         // the HTTP connection — so BI tools that read object metadata work over jdbc:frostlake://.
-        final StringBuilder sql = new StringBuilder(
-            "SELECT TABLE_CATALOG, TABLE_SCHEMA, TABLE_NAME, TABLE_TYPE FROM INFORMATION_SCHEMA.TABLES WHERE 1=1");
-        appendEquals(sql, "TABLE_CATALOG", catalog);
-        appendLike(sql, "TABLE_SCHEMA", schemaPattern);
-        appendLike(sql, "TABLE_NAME", tableNamePattern);
-        if (types != null && types.length > 0) {
-            sql.append(" AND TABLE_TYPE IN (");
-            for (int i = 0; i < types.length; i++) {
-                if (i > 0) {
-                    sql.append(", ");
-                }
-                sql.append("'").append(types[i].replace("'", "''")).append("'");
-            }
-            sql.append(")");
-        }
-        return connection.createStatement().executeQuery(sql.toString());
+        return JdbcMetadataQueries.tables(connection, catalog, schemaPattern, tableNamePattern, types);
     }
 
     @Override
     public ResultSet getSchemas() throws SQLException {
-        return connection.createStatement().executeQuery(
-            "SELECT SCHEMA_NAME AS TABLE_SCHEM, CATALOG_NAME AS TABLE_CATALOG"
-                + " FROM INFORMATION_SCHEMA.SCHEMATA ORDER BY SCHEMA_NAME");
+        // Per the JDBC contract this is getSchemas(null, null): every catalog, with TABLE_CATALOG
+        // telling them apart. Live Snowflake returns exactly the same rows for both calls.
+        return getSchemas(null, null);
     }
 
     @Override
@@ -691,15 +660,7 @@ public class DatabaseMetaData implements java.sql.DatabaseMetaData {
 
     @Override
     public ResultSet getColumns(final String catalog, final String schemaPattern, final String tableNamePattern, final String columnNamePattern) throws SQLException {
-        final StringBuilder sql = new StringBuilder(
-            "SELECT TABLE_CATALOG, TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME, DATA_TYPE, "
-            + "ORDINAL_POSITION, IS_NULLABLE, COLUMN_DEFAULT FROM INFORMATION_SCHEMA.COLUMNS WHERE 1=1");
-        appendEquals(sql, "TABLE_CATALOG", catalog);
-        appendLike(sql, "TABLE_SCHEMA", schemaPattern);
-        appendLike(sql, "TABLE_NAME", tableNamePattern);
-        appendLike(sql, "COLUMN_NAME", columnNamePattern);
-        sql.append(" ORDER BY TABLE_CATALOG, TABLE_SCHEMA, TABLE_NAME, ORDINAL_POSITION");
-        return connection.createStatement().executeQuery(sql.toString());
+        return JdbcMetadataQueries.columns(connection, catalog, schemaPattern, tableNamePattern, columnNamePattern);
     }
 
     @Override
@@ -724,14 +685,7 @@ public class DatabaseMetaData implements java.sql.DatabaseMetaData {
 
     @Override
     public ResultSet getPrimaryKeys(final String catalog, final String schema, final String table) throws SQLException {
-        final StringBuilder sql = new StringBuilder(
-            "SELECT TABLE_CATALOG, TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME, ORDINAL_POSITION AS KEY_SEQ, "
-            + "'PRIMARY' AS PK_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE IS_PRIMARY_KEY = 'YES'");
-        appendEquals(sql, "TABLE_CATALOG", catalog);
-        appendEquals(sql, "TABLE_SCHEMA", schema);
-        appendEquals(sql, "TABLE_NAME", table);
-        sql.append(" ORDER BY ORDINAL_POSITION");
-        return connection.createStatement().executeQuery(sql.toString());
+        return JdbcMetadataQueries.primaryKeys(connection, catalog, schema, table);
     }
 
     @Override
@@ -928,7 +882,9 @@ public class DatabaseMetaData implements java.sql.DatabaseMetaData {
 
     @Override
     public ResultSet getSchemas(final String catalog, final String schemaPattern) throws SQLException {
-        throw new SQLFeatureNotSupportedException("getSchemas not implemented");
+        // Browsing tools populate their tree per catalog and call this overload, not the no-arg one;
+        // throwing here is what left a freshly created database showing no schemas at all.
+        return JdbcMetadataQueries.schemas(connection, catalog, schemaPattern);
     }
 
     @Override

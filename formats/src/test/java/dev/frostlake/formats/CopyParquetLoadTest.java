@@ -106,7 +106,12 @@ public class CopyParquetLoadTest {
         writeTwoUsers();
         engine.execute("CREATE TABLE users (id INTEGER, name VARCHAR, score DOUBLE)");
 
-        engine.execute("COPY INTO users FROM @data_stage FILE_FORMAT = (TYPE = 'PARQUET')");
+        // Splitting a schema-bearing record across several columns is what MATCH_BY_COLUMN_NAME is
+        // for — without it Snowflake rejects a multi-column target (
+        // "PARQUET file format can produce one and only one column of type variant, object, or
+        // array. Load data into separate columns using the MATCH_BY_COLUMN_NAME copy option ...").
+        engine.execute("COPY INTO users FROM @data_stage FILE_FORMAT = (TYPE = 'PARQUET')"
+            + " MATCH_BY_COLUMN_NAME = 'CASE_INSENSITIVE'");
 
         assertEquals(2L, count("users"));
         final ResultSet rs = engine.executeQuery("SELECT name, score FROM users WHERE id = 2");

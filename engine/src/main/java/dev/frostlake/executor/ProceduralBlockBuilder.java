@@ -72,12 +72,6 @@ public class ProceduralBlockBuilder {
      * Build a Statement from ANTLR proceduralStatement context
      */
     private Statement buildProceduralStatement(final FrostlakeParser.ProceduralStatementContext ctx) {
-        if (ctx.declareStatement() != null) {
-            // DECLARE statements now only appear in declareSection before BEGIN, not in statement lists
-            // This shouldn't be reached in normal usage
-            throw new RuntimeException("DECLARE statements must appear in DECLARE section before BEGIN");
-        }
-
         if (ctx.setStatement() != null) {
             String varName = visitor.getText(ctx.setStatement().identifier());
             BaseExpression expr = visitor.buildExpression(ctx.setStatement().expression());
@@ -114,17 +108,13 @@ public class ProceduralBlockBuilder {
 
         if (ctx.breakStatement() != null) {
             final Statement brk = new Statement(StatementType.BREAK) {};
-            if (ctx.breakStatement().identifier() != null) {
-                brk.setLabel(visitor.getText(ctx.breakStatement().identifier()));
-            }
+            applyTrailingLabel(brk, ctx.breakStatement().identifier());
             return brk;
         }
 
         if (ctx.continueStatement() != null) {
             final Statement cont = new Statement(StatementType.CONTINUE) {};
-            if (ctx.continueStatement().identifier() != null) {
-                cont.setLabel(visitor.getText(ctx.continueStatement().identifier()));
-            }
+            applyTrailingLabel(cont, ctx.continueStatement().identifier());
             return cont;
         }
 
@@ -193,6 +183,19 @@ public class ProceduralBlockBuilder {
             String varName = visitor.getText(aCtx.identifier());
             if (aCtx.callStatement() != null) {
                 return new SqlStatement(visitor.getOriginalText(ctx));
+            }
+            if (aCtx.executeImmediateStatement() != null) {
+                // rs := (EXECUTE IMMEDIATE :stmt [USING (...)]) — build the deferred dynamic-SQL
+                // expression so the statement runs when the block executes it.
+                final FrostlakeParser.ExecuteImmediateStatementContext ei = aCtx.executeImmediateStatement();
+                final BaseExpression eiSql = visitor.buildExpression(ei.expression());
+                final List<BaseExpression> eiBinds = new ArrayList<>();
+                if (ei.expressionList() != null) {
+                    for (final FrostlakeParser.ExpressionContext bind : ei.expressionList().expression()) {
+                        eiBinds.add(visitor.buildExpression(bind));
+                    }
+                }
+                return new SetStatement(varName, new ExecuteImmediateExpression(eiSql, eiBinds));
             }
             if (aCtx.expression() != null) {
                 BaseExpression expr = visitor.buildExpression(aCtx.expression());
@@ -271,7 +274,7 @@ public class ProceduralBlockBuilder {
 
     Statement buildLoopStatement(final FrostlakeParser.LoopStatementContext ctx) {
         final LoopStatement stmt = new LoopStatement(buildProceduralBlock(ctx.statementList()));
-        applyLoopLabel(stmt, ctx.loopLabel());
+        applyTrailingLabel(stmt, ctx.identifier());
         return stmt;
     }
 
@@ -279,12 +282,12 @@ public class ProceduralBlockBuilder {
         BaseExpression condition = visitor.buildExpression(ctx.booleanExpr());
         ProceduralBlock block = buildProceduralBlock(ctx.statementList());
         final WhileStatement stmt = new WhileStatement(condition, block);
-        applyLoopLabel(stmt, ctx.loopLabel());
+        applyTrailingLabel(stmt, ctx.identifier());
         return stmt;
     }
 
     Statement buildForStatement(final FrostlakeParser.ForStatementContext ctx) {
-        // identifier(0) is the loop variable; a trailing identifier(1), if any, is the END-label.
+        // identifier(0) is the loop variable; a trailing identifier(1), if any, is the loop's label.
         final String varName = visitor.getText(ctx.identifier(0));
         final ProceduralBlock block = buildProceduralBlock(ctx.statementList());
         final ForStatement stmt;
@@ -296,7 +299,7 @@ public class ProceduralBlockBuilder {
         } else {
             stmt = new ForStatement(varName, visitor.buildExpression(ctx.expression(0)), block);
         }
-        applyLoopLabel(stmt, ctx.loopLabel());
+        applyTrailingLabel(stmt, ctx.identifier().size() > 1 ? ctx.identifier(1) : null);
         return stmt;
     }
 
@@ -304,14 +307,14 @@ public class ProceduralBlockBuilder {
         final BaseExpression condition = visitor.buildExpression(ctx.booleanExpr());
         final ProceduralBlock block = buildProceduralBlock(ctx.statementList());
         final RepeatStatement stmt = new RepeatStatement(condition, block);
-        applyLoopLabel(stmt, ctx.loopLabel());
+        applyTrailingLabel(stmt, ctx.identifier());
         return stmt;
     }
 
-    /** Copy a loop's leading label (`<name>:`) onto its statement, so labeled BREAK/CONTINUE can target it. */
-    private void applyLoopLabel(final Statement stmt, final FrostlakeParser.LoopLabelContext labelCtx) {
+    /** Copy a loop's TRAILING label (`END LOOP <name>`) onto its statement so BREAK/CONTINUE can target it. */
+    private void applyTrailingLabel(final Statement stmt, final FrostlakeParser.IdentifierContext labelCtx) {
         if (labelCtx != null) {
-            stmt.setLabel(visitor.getText(labelCtx.identifier()));
+            stmt.setLabel(visitor.getText(labelCtx));
         }
     }
 

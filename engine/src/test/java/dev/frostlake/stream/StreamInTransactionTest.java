@@ -18,6 +18,7 @@ package dev.frostlake.stream;
 
 import dev.frostlake.BaseDatabaseTest;
 
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -31,12 +32,18 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
  */
 public class StreamInTransactionTest extends BaseDatabaseTest {
 
+    private static final String SAME_TRANSACTION_READ =
+        "deliberate, documented model divergence: Frostlake lets a stream read see its own transaction's "
+        + "uncommitted DML (read-your-writes), while Snowflake pins a stream read to the transaction's "
+        + "start time and therefore returns nothing for changes made inside it";
+
     private long streamCount(final String sql) {
         return engine.executeQuery(sql).getRowCount();
     }
 
     @Test
     public void appendOnlyStreamSeesSameTransactionInserts() {
+        Assumptions.assumeFalse(isLiveSnowflake(), SAME_TRANSACTION_READ);
         engine.execute("CREATE TABLE t (id INT)");
         engine.execute("CREATE STREAM s ON TABLE t APPEND_ONLY=TRUE SHOW_INITIAL_ROWS=TRUE");
         engine.execute("BEGIN TRANSACTION");
@@ -48,6 +55,7 @@ public class StreamInTransactionTest extends BaseDatabaseTest {
 
     @Test
     public void streamAfterFlushSeesOnlyNewSameTransactionInserts() {
+        Assumptions.assumeFalse(isLiveSnowflake(), SAME_TRANSACTION_READ);
         // The loader shape: seed + flush the stream, then insert more in a transaction and read.
         engine.execute("CREATE TABLE t (id INT)");
         engine.execute("CREATE STREAM s ON TABLE t APPEND_ONLY=TRUE SHOW_INITIAL_ROWS=TRUE");
@@ -61,6 +69,7 @@ public class StreamInTransactionTest extends BaseDatabaseTest {
 
     @Test
     public void rollbackDiscardsBufferedStreamChanges() {
+        Assumptions.assumeFalse(isLiveSnowflake(), SAME_TRANSACTION_READ);
         engine.execute("CREATE TABLE t (id INT)");
         engine.execute("CREATE STREAM s ON TABLE t APPEND_ONLY=TRUE SHOW_INITIAL_ROWS=TRUE");
         engine.execute("BEGIN TRANSACTION");
@@ -72,6 +81,7 @@ public class StreamInTransactionTest extends BaseDatabaseTest {
 
     @Test
     public void standardStreamSeesSameTransactionUpdateAndDelete() {
+        Assumptions.assumeFalse(isLiveSnowflake(), SAME_TRANSACTION_READ);
         engine.execute("CREATE TABLE t (id INT, v VARCHAR)");
         engine.execute("INSERT INTO t VALUES (1, 'a'), (2, 'b')");
         engine.execute("CREATE STREAM s ON TABLE t");   // standard (not APPEND_ONLY), no initial rows
@@ -85,6 +95,7 @@ public class StreamInTransactionTest extends BaseDatabaseTest {
 
     @Test
     public void viewStreamSeesSameTransactionInsertsToBothBranches() {
+        Assumptions.assumeFalse(isLiveSnowflake(), SAME_TRANSACTION_READ);
         engine.execute("CREATE TABLE active (id INT, st VARCHAR)");
         engine.execute("CREATE TABLE del (id INT, st VARCHAR)");
         engine.execute("CREATE VIEW v AS SELECT id, st FROM active UNION ALL SELECT id, 'DELETE' AS st FROM del");
@@ -129,6 +140,7 @@ public class StreamInTransactionTest extends BaseDatabaseTest {
 
     @Test
     public void crossSchemaViewStreamSeesSameTransactionInserts() {
+        Assumptions.assumeFalse(isLiveSnowflake(), SAME_TRANSACTION_READ);
         // The loader shape: a view (and its stream) in one schema over base tables in ANOTHER schema, all
         // driven inside one stored-proc transaction. The write-set match is by bare table name, not schema.
         engine.execute("CREATE SCHEMA other_schema");

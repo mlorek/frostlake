@@ -47,7 +47,8 @@ public class CreateProcedureTest {
         engine.execute("USE SCHEMA PUBLIC");
 
         // Create a simple procedure
-        engine.execute("CREATE PROCEDURE update_data(id INTEGER, value VARCHAR) RETURNS VARCHAR AS 'UPDATE statement'");
+        engine.execute("CREATE PROCEDURE update_data(id INTEGER, value VARCHAR) RETURNS VARCHAR "
+            + "AS 'BEGIN UPDATE data_rows SET label = :value WHERE id = :id; RETURN ''updated''; END'");
 
         // Verify procedure was created
         Schema schema = engine.getCatalog().getDatabase("TEST_DB").getSchema("PUBLIC");
@@ -58,7 +59,8 @@ public class CreateProcedureTest {
         assertEquals(2, proc.getParameters().size());
         assertEquals("ID", proc.getParameters().get(0).getName());
         assertEquals("VALUE", proc.getParameters().get(1).getName());
-        assertEquals("UPDATE statement", proc.getBody());
+        assertEquals("BEGIN UPDATE data_rows SET label = :value WHERE id = :id; RETURN 'updated'; END",
+            proc.getBody());
     }
 
     @Test
@@ -69,7 +71,8 @@ public class CreateProcedureTest {
         engine.execute("USE SCHEMA PUBLIC");
 
         // Create a procedure with no parameters
-        engine.execute("CREATE PROCEDURE cleanup() RETURNS VARCHAR AS 'DELETE FROM temp_table'");
+        engine.execute("CREATE PROCEDURE cleanup() RETURNS VARCHAR "
+            + "AS 'BEGIN DELETE FROM temp_table; RETURN ''cleaned''; END'");
 
         // Verify procedure was created
         Schema schema = engine.getCatalog().getDatabase("TEST_DB").getSchema("PUBLIC");
@@ -78,7 +81,7 @@ public class CreateProcedureTest {
         assertNotNull(proc, "Procedure should be created");
         assertEquals("CLEANUP", proc.getName());
         assertEquals(0, proc.getParameters().size());
-        assertEquals("DELETE FROM temp_table", proc.getBody());
+        assertEquals("BEGIN DELETE FROM temp_table; RETURN 'cleaned'; END", proc.getBody());
     }
 
     @Test
@@ -90,7 +93,8 @@ public class CreateProcedureTest {
 
         // Create procedure with schema-qualified name
         engine.execute("""
-            CREATE PROCEDURE my_schema.process_orders(order_id INTEGER) RETURNS INTEGER AS 'SELECT COUNT(*) FROM orders'
+            CREATE PROCEDURE my_schema.process_orders(order_id INTEGER) RETURNS INTEGER
+            AS 'BEGIN RETURN (SELECT COUNT(*) FROM orders); END'
             """);
 
         // Verify procedure was created in correct schema
@@ -100,7 +104,7 @@ public class CreateProcedureTest {
         assertNotNull(proc, "Procedure should be created");
         assertEquals("PROCESS_ORDERS", proc.getName());
         assertEquals(1, proc.getParameters().size());
-        assertEquals("SELECT COUNT(*) FROM orders", proc.getBody());
+        assertEquals("BEGIN RETURN (SELECT COUNT(*) FROM orders); END", proc.getBody());
     }
 
     @Test
@@ -112,7 +116,8 @@ public class CreateProcedureTest {
 
         // Create procedure with multiple parameters
         engine.execute("""
-            CREATE PROCEDURE insert_record(name VARCHAR, age INTEGER, active BOOLEAN) RETURNS INTEGER AS 'INSERT statement'
+            CREATE PROCEDURE insert_record(name VARCHAR, age INTEGER, active BOOLEAN) RETURNS INTEGER
+            AS 'BEGIN INSERT INTO people (name, age, active) VALUES (:name, :age, :active); RETURN 1; END'
             """);
 
         // Verify procedure was created
@@ -125,7 +130,8 @@ public class CreateProcedureTest {
         assertEquals("NAME", proc.getParameters().get(0).getName());
         assertEquals("AGE", proc.getParameters().get(1).getName());
         assertEquals("ACTIVE", proc.getParameters().get(2).getName());
-        assertEquals("INSERT statement", proc.getBody());
+        assertEquals("BEGIN INSERT INTO people (name, age, active) VALUES (:name, :age, :active); "
+            + "RETURN 1; END", proc.getBody());
     }
 
     @Test
@@ -136,7 +142,7 @@ public class CreateProcedureTest {
         engine.execute("USE SCHEMA PUBLIC");
 
         // Create and then drop procedure
-        engine.execute("CREATE PROCEDURE test_proc(x INTEGER) RETURNS INTEGER AS 'RETURN x * 2'");
+        engine.execute("CREATE PROCEDURE test_proc(x INTEGER) RETURNS INTEGER AS 'BEGIN RETURN x * 2; END'");
 
         Schema schema = engine.getCatalog().getDatabase("TEST_DB").getSchema("PUBLIC");
         assertNotNull(schema.getProcedure("test_proc"), "Procedure should exist");
@@ -158,8 +164,9 @@ public class CreateProcedureTest {
         engine.execute("USE SCHEMA PUBLIC");
 
         // Create multiple procedures
-        engine.execute("CREATE PROCEDURE proc1(x INTEGER) RETURNS INTEGER AS 'RETURN x'");
-        engine.execute("CREATE PROCEDURE proc2(x INTEGER, y INTEGER) RETURNS INTEGER AS 'RETURN x + y'");
+        engine.execute("CREATE PROCEDURE proc1(x INTEGER) RETURNS INTEGER AS 'BEGIN RETURN x; END'");
+        engine.execute(
+            "CREATE PROCEDURE proc2(x INTEGER, y INTEGER) RETURNS INTEGER AS 'BEGIN RETURN x + y; END'");
 
         // Show procedures
         var result = engine.showProcedures();
@@ -183,7 +190,8 @@ public class CreateProcedureTest {
 
         // Create procedure with IF statement that returns different values based on input
         engine.execute("""
-            CREATE PROCEDURE check_value(max_count INTEGER) RETURNS VARCHAR AS 'DECLARE result VARCHAR; IF max_count > 2 THEN SET result = ''many''; ELSE SET result = ''few''; END IF; RETURN result;'
+            CREATE PROCEDURE check_value(max_count INTEGER) RETURNS VARCHAR
+            AS 'DECLARE outcome VARCHAR; BEGIN IF (max_count > 2) THEN outcome := ''many''; ELSE outcome := ''few''; END IF; RETURN outcome; END'
             """);
 
         // Verify procedure was created
@@ -199,10 +207,9 @@ public class CreateProcedureTest {
         assertTrue(proc.getBody().contains("END IF"), "Body should contain END IF");
         assertTrue(proc.getBody().contains("RETURN"), "Body should contain RETURN");
 
-        // CALL now runs the SQL body (rather than logging it). This particular body uses non-standard
-        // syntax (SET =, no BEGIN…END); well-formed bodies with real return values are asserted in
-        // SqlProcedureCallTest. Here just verify the call runs and the procedure stays registered.
-        engine.execute("CALL check_value(3)");
+        // CALL runs the SQL body; the body is a well-formed scripting block, so it really returns 'many'.
+        final var callResult = engine.executeQuery("CALL check_value(3)");
+        assertEquals("many", callResult.getRows().get(0).getValue(0));
         assertEquals("CHECK_VALUE", schema.getProcedure("check_value").getName());
     }
 
@@ -215,7 +222,8 @@ public class CreateProcedureTest {
 
         // Create procedure with loop and OBJECT return type
         engine.execute("""
-            CREATE PROCEDURE process_with_loop(max_iterations INTEGER) RETURNS OBJECT AS 'DECLARE counter INTEGER := 0; DECLARE result OBJECT; WHILE counter < 10 DO SET counter = counter + 1; END WHILE; SET result = OBJECT_CONSTRUCT(''count'', counter, ''status'', ''completed''); RETURN result;'
+            CREATE PROCEDURE process_with_loop(max_iterations INTEGER) RETURNS OBJECT
+            AS 'DECLARE counter INTEGER := 0; outcome OBJECT; BEGIN WHILE (counter < 10) DO counter := counter + 1; END WHILE; outcome := OBJECT_CONSTRUCT(''count'', counter, ''status'', ''completed''); RETURN outcome; END'
             """);
 
         // Verify procedure was created

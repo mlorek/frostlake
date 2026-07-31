@@ -18,6 +18,7 @@ package dev.frostlake.features;
 
 import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -33,8 +34,15 @@ public class QueryHistoryTest extends BaseDatabaseTest {
 
     private static final Logger logger = LoggerFactory.getLogger(QueryHistoryTest.class);
 
+    private static final String SESSION_SCOPED_HISTORY =
+        "every test here clears the embedded QueryHistoryTracker (engine.getExecutor(), an internal "
+        + "accessor) and then asserts that the statements it just ran are the history; on a real account "
+        + "QUERY_HISTORY is account-wide, populated asynchronously and cannot be cleared, and its "
+        + "query_type values are finer-grained (CREATE_TABLE, not CREATE)";
+
     @Test
     public void testQueryHistoryTracking() {
+        Assumptions.assumeFalse(isLiveSnowflake(), SESSION_SCOPED_HISTORY);
         logger.info("Testing basic query history tracking");
 
         // Clear any existing history
@@ -46,7 +54,7 @@ public class QueryHistoryTest extends BaseDatabaseTest {
         engine.executeQuery("SELECT * FROM test_table");
 
         // Query history
-        ResultSet history = engine.executeQuery("SELECT * FROM INFORMATION_SCHEMA.QUERY_HISTORY");
+        ResultSet history = engine.executeQuery("SELECT * FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY())");
 
         assertNotNull(history);
         assertTrue(history.getRowCount() >= 3); // At least 3 queries: CREATE, INSERT, SELECT
@@ -56,16 +64,17 @@ public class QueryHistoryTest extends BaseDatabaseTest {
 
     @Test
     public void testQueryHistoryColumns() {
+        Assumptions.assumeFalse(isLiveSnowflake(), SESSION_SCOPED_HISTORY);
         logger.info("Testing query history columns");
 
         engine.getExecutor().getQueryHistoryTracker().clear();
 
         engine.execute("SELECT 1");
 
-        ResultSet history = engine.executeQuery("SELECT * FROM INFORMATION_SCHEMA.QUERY_HISTORY");
+        ResultSet history = engine.executeQuery("SELECT * FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY())");
 
-        // Verify columns exist by checking column count
-        assertEquals(17, history.getColumns().size());
+        // Snowflake's QUERY_HISTORY table function exposes 62 columns (live-captured).
+        assertEquals(62, history.getColumns().size());
 
         // Verify we have at least one row
         assertTrue(history.getRowCount() > 0);
@@ -75,6 +84,7 @@ public class QueryHistoryTest extends BaseDatabaseTest {
 
     @Test
     public void testQueryHistoryQueryTypes() {
+        Assumptions.assumeFalse(isLiveSnowflake(), SESSION_SCOPED_HISTORY);
         logger.info("Testing query type classification");
 
         engine.getExecutor().getQueryHistoryTracker().clear();
@@ -89,7 +99,7 @@ public class QueryHistoryTest extends BaseDatabaseTest {
 
         ResultSet history = engine.executeQuery("""
             SELECT query_type, COUNT(*) as count
-            FROM INFORMATION_SCHEMA.QUERY_HISTORY
+            FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY())
             GROUP BY query_type
             ORDER BY query_type
             """);
@@ -100,6 +110,7 @@ public class QueryHistoryTest extends BaseDatabaseTest {
 
     @Test
     public void testQueryHistoryStatus() {
+        Assumptions.assumeFalse(isLiveSnowflake(), SESSION_SCOPED_HISTORY);
         logger.info("Testing query execution status tracking");
 
         engine.getExecutor().getQueryHistoryTracker().clear();
@@ -116,7 +127,7 @@ public class QueryHistoryTest extends BaseDatabaseTest {
 
         ResultSet history = engine.executeQuery("""
             SELECT execution_status, COUNT(*) as count
-            FROM INFORMATION_SCHEMA.QUERY_HISTORY
+            FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY())
             GROUP BY execution_status
             """);
 
@@ -126,6 +137,7 @@ public class QueryHistoryTest extends BaseDatabaseTest {
 
     @Test
     public void testQueryHistoryFilter() {
+        Assumptions.assumeFalse(isLiveSnowflake(), SESSION_SCOPED_HISTORY);
         logger.info("Testing query history filtering");
 
         engine.getExecutor().getQueryHistoryTracker().clear();
@@ -136,7 +148,7 @@ public class QueryHistoryTest extends BaseDatabaseTest {
 
         // Filter by query type
         ResultSet selectQueries = engine.executeQuery("""
-            SELECT * FROM INFORMATION_SCHEMA.QUERY_HISTORY
+            SELECT * FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY())
             WHERE query_type = 'SELECT'
             """);
 
@@ -145,7 +157,7 @@ public class QueryHistoryTest extends BaseDatabaseTest {
 
         // Filter by status
         ResultSet successQueries = engine.executeQuery("""
-            SELECT * FROM INFORMATION_SCHEMA.QUERY_HISTORY
+            SELECT * FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY())
             WHERE execution_status = 'SUCCESS'
             """);
 
@@ -155,6 +167,7 @@ public class QueryHistoryTest extends BaseDatabaseTest {
 
     @Test
     public void testQueryHistoryOrderByTime() {
+        Assumptions.assumeFalse(isLiveSnowflake(), SESSION_SCOPED_HISTORY);
         logger.info("Testing query history ordering");
 
         engine.getExecutor().getQueryHistoryTracker().clear();
@@ -165,7 +178,7 @@ public class QueryHistoryTest extends BaseDatabaseTest {
 
         ResultSet history = engine.executeQuery("""
             SELECT query_text, start_time
-            FROM INFORMATION_SCHEMA.QUERY_HISTORY
+            FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY())
             ORDER BY start_time DESC
             """);
 
@@ -175,6 +188,7 @@ public class QueryHistoryTest extends BaseDatabaseTest {
 
     @Test
     public void testQueryHistoryExecutionTime() {
+        Assumptions.assumeFalse(isLiveSnowflake(), SESSION_SCOPED_HISTORY);
         logger.info("Testing execution time tracking");
 
         engine.getExecutor().getQueryHistoryTracker().clear();
@@ -183,8 +197,8 @@ public class QueryHistoryTest extends BaseDatabaseTest {
         engine.execute("INSERT INTO perf_test VALUES (1), (2), (3), (4), (5)");
 
         ResultSet history = engine.executeQuery("""
-            SELECT query_type, execution_time_ms
-            FROM INFORMATION_SCHEMA.QUERY_HISTORY
+            SELECT query_type, TOTAL_ELAPSED_TIME
+            FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY())
             WHERE query_type IN ('CREATE', 'INSERT')
             """);
 
@@ -199,6 +213,7 @@ public class QueryHistoryTest extends BaseDatabaseTest {
 
     @Test
     public void testQueryHistoryRowsProduced() {
+        Assumptions.assumeFalse(isLiveSnowflake(), SESSION_SCOPED_HISTORY);
         logger.info("Testing rows produced tracking");
 
         engine.getExecutor().getQueryHistoryTracker().clear();
@@ -209,7 +224,7 @@ public class QueryHistoryTest extends BaseDatabaseTest {
 
         ResultSet history = engine.executeQuery("""
             SELECT query_text, rows_produced
-            FROM INFORMATION_SCHEMA.QUERY_HISTORY
+            FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY())
             WHERE query_type = 'SELECT'
             ORDER BY start_time DESC
             LIMIT 1
@@ -221,6 +236,7 @@ public class QueryHistoryTest extends BaseDatabaseTest {
 
     @Test
     public void testQueryHistoryWithDDL() {
+        Assumptions.assumeFalse(isLiveSnowflake(), SESSION_SCOPED_HISTORY);
         logger.info("Testing query history with DDL operations");
 
         engine.getExecutor().getQueryHistoryTracker().clear();
@@ -233,7 +249,7 @@ public class QueryHistoryTest extends BaseDatabaseTest {
 
         ResultSet history = engine.executeQuery("""
             SELECT query_type, COUNT(*) as count
-            FROM INFORMATION_SCHEMA.QUERY_HISTORY
+            FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY())
             WHERE query_type = 'CREATE'
             GROUP BY query_type
             """);
@@ -244,6 +260,7 @@ public class QueryHistoryTest extends BaseDatabaseTest {
 
     @Test
     public void testQueryHistoryWithTransactions() {
+        Assumptions.assumeFalse(isLiveSnowflake(), SESSION_SCOPED_HISTORY);
         logger.info("Testing query history with transactions");
 
         engine.getExecutor().getQueryHistoryTracker().clear();
@@ -261,7 +278,7 @@ public class QueryHistoryTest extends BaseDatabaseTest {
 
         ResultSet history = engine.executeQuery("""
             SELECT query_type
-            FROM INFORMATION_SCHEMA.QUERY_HISTORY
+            FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY())
             WHERE query_type IN ('BEGIN', 'COMMIT', 'CREATE', 'INSERT')
             """);
 
@@ -271,6 +288,7 @@ public class QueryHistoryTest extends BaseDatabaseTest {
 
     @Test
     public void testQueryHistoryLimit() {
+        Assumptions.assumeFalse(isLiveSnowflake(), SESSION_SCOPED_HISTORY);
         logger.info("Testing query history limit");
 
         engine.getExecutor().getQueryHistoryTracker().clear();
@@ -281,12 +299,12 @@ public class QueryHistoryTest extends BaseDatabaseTest {
         }
 
         // Verify we have at least 10 queries
-        ResultSet allHistory = engine.executeQuery("SELECT * FROM INFORMATION_SCHEMA.QUERY_HISTORY");
+        ResultSet allHistory = engine.executeQuery("SELECT * FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY())");
         assertTrue(allHistory.getRowCount() >= 10);
 
         // Test LIMIT
         ResultSet limitedHistory = engine.executeQuery("""
-            SELECT * FROM INFORMATION_SCHEMA.QUERY_HISTORY
+            SELECT * FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY())
             LIMIT 5
             """);
 
@@ -296,6 +314,7 @@ public class QueryHistoryTest extends BaseDatabaseTest {
 
     @Test
     public void testQueryHistoryErrorMessages() {
+        Assumptions.assumeFalse(isLiveSnowflake(), SESSION_SCOPED_HISTORY);
         logger.info("Testing error message tracking");
 
         engine.getExecutor().getQueryHistoryTracker().clear();
@@ -309,7 +328,7 @@ public class QueryHistoryTest extends BaseDatabaseTest {
 
         ResultSet history = engine.executeQuery("""
             SELECT error_message
-            FROM INFORMATION_SCHEMA.QUERY_HISTORY
+            FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY())
             WHERE execution_status = 'FAILED'
             AND error_message IS NOT NULL
             """);
@@ -320,6 +339,7 @@ public class QueryHistoryTest extends BaseDatabaseTest {
 
     @Test
     public void testQueryHistoryPersistence() {
+        Assumptions.assumeFalse(isLiveSnowflake(), SESSION_SCOPED_HISTORY);
         logger.info("Testing query history persistence across multiple queries");
 
         engine.getExecutor().getQueryHistoryTracker().clear();
@@ -328,13 +348,13 @@ public class QueryHistoryTest extends BaseDatabaseTest {
         engine.execute("SELECT 1");
         engine.execute("SELECT 2");
 
-        ResultSet history1 = engine.executeQuery("SELECT COUNT(*) as count FROM INFORMATION_SCHEMA.QUERY_HISTORY");
+        ResultSet history1 = engine.executeQuery("SELECT COUNT(*) as count FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY())");
         long count1 = ((Number) history1.getRows().get(0).getValues().get(0)).longValue();
 
         // Execute more queries
         engine.execute("SELECT 3");
 
-        ResultSet history2 = engine.executeQuery("SELECT COUNT(*) as count FROM INFORMATION_SCHEMA.QUERY_HISTORY");
+        ResultSet history2 = engine.executeQuery("SELECT COUNT(*) as count FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY())");
         long count2 = ((Number) history2.getRows().get(0).getValues().get(0)).longValue();
 
         assertTrue(count2 > count1);

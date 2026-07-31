@@ -298,9 +298,9 @@ public class DirectStatement implements Statement {
         try {
             for (String sql : batchStatements) {
                 try {
-                    // Execute the statement
-                    executeUpdate(sql);
-                    results[index] = SUCCESS_NO_INFO;  // Indicate success
+                    // Live Snowflake reports the REAL affected-row count per batch entry, not
+                    // SUCCESS_NO_INFO — executeBatch of three single-row INSERTs returns {1, 1, 1}.
+                    results[index] = executeUpdate(sql);
                 } catch (final SQLException e) {
                     results[index] = EXECUTE_FAILED;  // Indicate failure
                     // In batch mode, continue executing remaining statements

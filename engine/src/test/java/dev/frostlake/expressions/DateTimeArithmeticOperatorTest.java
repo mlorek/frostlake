@@ -27,11 +27,12 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * The {@code +} / {@code -} operators on DATE and TIMESTAMP values (previously they threw "Cannot
- * add/subtract"): {@code DATE ± int} shifts by days and stays a DATE, {@code TIMESTAMP ± int} shifts by
- * days preserving the time, {@code DATE − DATE} yields the integer day count, and {@code ± INTERVAL}
- * applies the unit — a time-component interval promoting a DATE to a TIMESTAMP. Non-date operands still
- * fail, so ordinary string/number arithmetic is unaffected.
+ * The {@code +} / {@code -} operators on DATE and TIMESTAMP values, matching live Snowflake:
+ * {@code DATE ± int} shifts by days and stays a DATE, {@code TIMESTAMP ± int} is REJECTED at compile
+ * time ("Invalid argument types for function '+'" — use DATEADD), {@code DATE − DATE} yields the
+ * integer day count, and {@code ± INTERVAL} applies the unit — DATE + INTERVAL always promotes to a
+ * TIMESTAMP (midnight time component for date-only units). Non-date operands still fail, so ordinary
+ * string/number arithmetic is unaffected.
  */
 public class DateTimeArithmeticOperatorTest extends BaseDatabaseTest {
 
@@ -48,6 +49,7 @@ public class DateTimeArithmeticOperatorTest extends BaseDatabaseTest {
 
     @Test
     public void datePlusIntegerAddsDaysStayingADate() {
+        assertEquals("2020-01-16", scalar("SELECT d + 1 FROM t").toString());
         assertEquals("2020-01-20", scalar("SELECT d + 5 FROM t").toString());
     }
 
@@ -68,16 +70,23 @@ public class DateTimeArithmeticOperatorTest extends BaseDatabaseTest {
     }
 
     @Test
-    public void timestampPlusIntegerAddsDaysPreservingTime() {
-        // Still a TIMESTAMP (time preserved) — rendered with a 'T' separator.
-        final String result = scalar("SELECT ts + 1 FROM t").toString();
-        assertTrue(result.startsWith("2020-01-16"), result);
-        assertTrue(result.contains("10:30"), result);
+    public void timestampPlusIntegerIsRejected() {
+        // Snowflake has no TIMESTAMP + <number> overload — it rejects at compile time (use DATEADD).
+        final RuntimeException rejected = assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.executeQuery("SELECT ts + 1 FROM t");
+            }
+        });
+        assertTrue(rejected.getMessage().contains("Invalid argument types for function '+'"),
+            "unexpected: " + rejected.getMessage());
     }
 
     @Test
-    public void datePlusDateOnlyIntervalStaysADate() {
-        assertEquals("2020-01-20", scalar("SELECT d + INTERVAL '5' DAY FROM t").toString());
+    public void datePlusIntervalPromotesToTimestamp() {
+        // Live-verified nuance: a DAY-or-finer interval promotes the DATE to TIMESTAMP (midnight),
+        // while MONTH/YEAR intervals preserve the DATE.
+        assertEquals("2020-01-20T00:00", scalar("SELECT d + INTERVAL '5' DAY FROM t").toString());
         assertEquals("2020-02-15", scalar("SELECT d + INTERVAL '1' MONTH FROM t").toString());
         assertEquals("2021-01-15", scalar("SELECT d + INTERVAL '1' YEAR FROM t").toString());
     }

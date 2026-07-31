@@ -21,9 +21,12 @@ import dev.frostlake.storage.ResultSet;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Snowflake lateral column aliases in a SELECT list that does NOT go through {@code ProjectOperator}: a select
@@ -37,6 +40,12 @@ import static org.junit.jupiter.api.Assertions.assertNull;
  * out NULL; and (2) a WINDOWED projection, which failed the whole query with "Column not found". Both are
  * covered here, along with the precedence rule (a real column of the same name wins) and the one shape that
  * stays unsupported (an alias inside an aggregate's argument, which is a per-row context).
+ *
+ * <p>The rule has a second, rejecting half, which a plain GROUP BY now enforces the way Snowflake does
+ * (live-verified): only EARLIER aliases are visible, so naming a later item's alias is
+ * {@code invalid identifier}; and because a real column outranks a same-named alias, a select item that
+ * reads a column which is neither grouped nor aggregated fails to compile. Both are exercised below, next
+ * to the shapes that deliberately stay permissive (star items, subqueries, GROUP BY ALL, super-groups).
  */
 public class GroupByLateralAliasTest extends BaseDatabaseTest {
 
@@ -126,27 +135,203 @@ public class GroupByLateralAliasTest extends BaseDatabaseTest {
 
     @Test
     public void aRealColumnWinsOverAnAliasOfTheSameName() {
-        // CITY is both a table column and this list's alias for QTY; Snowflake resolves the column, so
-        // LOWER(city) reads 'Berlin'/'Oslo' rather than the aliased quantity.
-        final ResultSet rs = q("SELECT qty AS city, LOWER(city) AS lc, COUNT(1) AS n "
-            + "FROM orders GROUP BY qty ORDER BY city");
+        // CITY is both a table column and this list's alias for QTY; Snowflake resolves the COLUMN, and
+        // the column is neither grouped (the key is QTY) nor aggregated — so the query does not compile
+        // (live-verified). It is precisely the column-wins rule that makes this an error.
+        final String message = assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                q("SELECT qty AS city, LOWER(city) AS lc, COUNT(1) AS n "
+                    + "FROM orders GROUP BY qty ORDER BY city");
+            }
+        }).getMessage();
+        assertTrue(message.contains("SQL compilation error:"), message);
+        assertTrue(message.contains("'ORDERS.CITY' in select clause is neither an aggregate "
+            + "nor in the group by clause."), message);
+    }
+
+    @Test
+    public void aForwardAliasReferenceIsRejected() {
+        // Only EARLIER items are visible; naming a later item's alias is an unknown identifier, not a
+        // NULL (live-verified).
+        final String message = assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                q("SELECT LOWER(c) AS lc, city AS c, COUNT(1) AS n FROM orders GROUP BY city");
+            }
+        }).getMessage();
+        assertTrue(message.contains("SQL compilation error:"), message);
+        assertTrue(message.contains("invalid identifier 'C'"), message);
+    }
+
+    @Test
+    public void mutuallyRecursiveAliasesAreRejected() {
+        // b AS a, a AS b: the FIRST item already names an alias defined later, so that is the reported
+        // failure (live-verified).
+        final String message = assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                q("SELECT b AS a, a AS b, COUNT(1) AS n FROM orders GROUP BY city");
+            }
+        }).getMessage();
+        assertTrue(message.contains("invalid identifier 'B'"), message);
+    }
+
+    @Test
+    public void anItemNamingItsOwnAliasIsRejected() {
+        // The degenerate self-reference: N is not a column, and its only definition is this very item.
+        assertTrue(assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                q("SELECT n AS n, COUNT(1) AS c FROM orders GROUP BY city");
+            }
+        }).getMessage().contains("invalid identifier 'N'"));
+    }
+
+    // ── ungrouped columns ────────────────────────────────────────────────────
+
+    @Test
+    public void aBareUngroupedColumnIsRejected() {
+        assertTrue(assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                q("SELECT city, qty, COUNT(1) FROM orders GROUP BY city");
+            }
+        }).getMessage().contains("'ORDERS.QTY' in select clause is neither an aggregate "
+            + "nor in the group by clause."));
+    }
+
+    @Test
+    public void anUngroupedColumnNestedInAnExpressionIsRejected() {
+        assertTrue(assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                q("SELECT city, CASE WHEN qty > 1 THEN 'big' ELSE 'small' END, COUNT(1) "
+                    + "FROM orders GROUP BY city");
+            }
+        }).getMessage().contains("'ORDERS.QTY' in select clause is neither an aggregate "
+            + "nor in the group by clause."));
+    }
+
+    @Test
+    public void anUngroupedColumnOfTheOtherSideOfAJoinIsRejected() {
+        // The reported name is the column's FROM alias, the way the query itself spells it.
+        engine.execute("CREATE TABLE fees (city VARCHAR, fee INTEGER)");
+        engine.execute("INSERT INTO fees VALUES ('Berlin', 9)");
+        assertTrue(assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                q("SELECT o.city, f.fee, COUNT(1) FROM orders o JOIN fees f ON o.city = f.city "
+                    + "GROUP BY o.city");
+            }
+        }).getMessage().contains("'F.FEE' in select clause is neither an aggregate "
+            + "nor in the group by clause."));
+    }
+
+    // ── shapes that stay legal ───────────────────────────────────────────────
+
+    @Test
+    public void aGroupedColumnMayBeReadThroughAnyExpression() {
+        final ResultSet rs = q("SELECT LOWER(city) || '/' || UPPER(city) AS both, COUNT(1) AS n "
+            + "FROM orders GROUP BY city ORDER BY 1");
+        assertEquals(2, rs.getRowCount());
+        assertEquals("berlin/BERLIN", rs.getRows().get(0).getValue(0));
+    }
+
+    @Test
+    public void aGroupKeyExpressionMayBeSelectedWholesale() {
+        // The key is an EXPRESSION, so its ungrouped operand is reachable only through that same
+        // expression — which the SELECT list repeats verbatim.
+        final ResultSet rs = q("SELECT LOWER(city) AS lc, COUNT(1) AS n "
+            + "FROM orders GROUP BY LOWER(city) ORDER BY lc");
+        assertEquals(2, rs.getRowCount());
+        assertEquals("berlin", rs.getRows().get(0).getValue(0));
+    }
+
+    @Test
+    public void anExpressionKeyMatchesAcrossFormattingAndAnAsLessAlias() {
+        // The loader shape: a multi-line CASE repeated as the grouping key on one line, carrying an
+        // AS-less alias, next to an expression key whose two spellings differ only in whitespace. The
+        // operands (CITY, QTY) are reachable ONLY through those expressions, so the match has to hold.
+        final ResultSet rs = q("""
+            SELECT COALESCE(city, '') AS c,
+                   CASE
+                       WHEN qty = 1 THEN 'one'
+                       WHEN qty = 2 THEN 'two'
+                       ELSE 'many'
+                   END size_class,
+                   COUNT(1) AS n
+            FROM orders
+            GROUP BY COALESCE(city, '') ,
+                     CASE WHEN qty = 1 THEN 'one' WHEN qty = 2 THEN 'two' ELSE 'many' END
+            ORDER BY c, size_class""");
         assertEquals(3, rs.getRowCount());
+        assertEquals("Berlin", rs.getRows().get(0).getValue(0));
+        assertEquals("one", rs.getRows().get(0).getValue(1));
+    }
+
+    @Test
+    public void anAsLessAliasIsVisibleToLaterItems() {
+        final ResultSet rs = q("SELECT city c, LOWER(c) lc, COUNT(1) n FROM orders GROUP BY city ORDER BY c");
+        assertEquals(2, rs.getRowCount());
         assertEquals("berlin", rs.getRows().get(0).getValue(1));
     }
 
     @Test
-    public void aForwardAliasReferenceDoesNotResolve() {
-        // Only EARLIER items are visible, matching the ungrouped projection path.
-        assertNull(q("SELECT LOWER(c) AS lc, city AS c, COUNT(1) AS n FROM orders GROUP BY city")
-            .getRows().get(0).getValue(0));
+    public void aQualifierMismatchAgainstTheGroupKeyStillResolves() {
+        // GROUP BY writes the bare column, the SELECT list the alias-qualified one: the same column.
+        final ResultSet rs = q("SELECT o.city, COUNT(1) AS n FROM orders o GROUP BY city ORDER BY 1");
+        assertEquals(2, rs.getRowCount());
+        assertEquals("Berlin", rs.getRows().get(0).getValue(0));
     }
 
     @Test
-    public void mutuallyRecursiveAliasesDoNotRecurse() {
-        final ResultSet rs = q("SELECT b AS a, a AS b, COUNT(1) AS n FROM orders GROUP BY city");
+    public void groupByAllAcceptsEveryItem() {
+        // GROUP BY ALL derives its keys FROM the select list, so no item can be ungrouped.
+        final ResultSet rs = q("SELECT city, qty, COUNT(1) AS n FROM orders GROUP BY ALL ORDER BY city, qty");
+        assertEquals(3, rs.getRowCount());
+        assertEquals("Berlin", rs.getRows().get(0).getValue(0));
+    }
+
+    @Test
+    public void superGroupsAcceptEveryItem() {
+        // A ROLLUP / CUBE / GROUPING SETS row aggregates some dimensions away by design, so the
+        // grouped-or-aggregated test does not apply to them.
+        assertEquals(3, q("SELECT city, COUNT(1) AS n FROM orders GROUP BY ROLLUP(city)").getRowCount());
+        assertEquals(5, q("SELECT city, qty, COUNT(1) AS n FROM orders "
+            + "GROUP BY GROUPING SETS ((city), (qty))").getRowCount());
+        assertEquals(9, q("SELECT city, qty, COUNT(1) AS n FROM orders "
+            + "GROUP BY CUBE(city, qty)").getRowCount());   // 3 detail + 2 city + 3 qty + 1 total
+    }
+
+    @Test
+    public void aStarItemIsNeverRejected() {
+        // Star expansion happens after this check, so `*` is left alone rather than guessed at.
+        assertEquals(3, q("SELECT *, COUNT(1) OVER () AS n FROM orders GROUP BY city, qty").getRowCount());
+    }
+
+    @Test
+    public void aDatePartKeywordArgumentIsNotReadAsAColumn() {
+        // DAY here is DATEADD's unit, not the table's DAY column — a bare unit word must not be
+        // mistaken for an ungrouped reference.
+        engine.execute("CREATE TABLE shipments (day INTEGER, sent DATE)");
+        engine.execute("INSERT INTO shipments VALUES (1, '2026-01-01')");
+        final ResultSet rs = q("SELECT sent, DATEADD(day, 1, sent) AS next_day, COUNT(1) AS n "
+            + "FROM shipments GROUP BY sent");
+        assertEquals(1, rs.getRowCount());
+        assertEquals(1L, ((Number) rs.getRows().get(0).getValue(2)).longValue());
+    }
+
+    @Test
+    public void aCorrelatedSubqueryItemIsNotRejected() {
+        // A subquery resolves in its own scope, so its column references say nothing about this
+        // query's grouping — accept rather than guess.
+        engine.execute("CREATE TABLE fee_book (city VARCHAR, fee INTEGER)");
+        engine.execute("INSERT INTO fee_book VALUES ('Berlin', 9), ('Oslo', 4)");
+        final ResultSet rs = q("SELECT city, (SELECT MAX(fee) FROM fee_book b WHERE b.city = orders.city) "
+            + "AS top_fee, COUNT(1) AS n FROM orders GROUP BY city ORDER BY city");
         assertEquals(2, rs.getRowCount());
-        assertNull(rs.getRows().get(0).getValue(0));
-        assertNull(rs.getRows().get(0).getValue(1));
+        assertEquals(9L, ((Number) rs.getRows().get(0).getValue(1)).longValue());
     }
 
     @Test
@@ -306,11 +491,14 @@ public class GroupByLateralAliasTest extends BaseDatabaseTest {
     }
 
     @Test
-    public void aggregatingOverASiblingAliasStaysUnsupported() {
-        // Documented limitation: the sink carries VALUES, and feeding a per-group constant into a per-row
-        // aggregate argument would be wrong whenever the alias is not a group key. Resolving this needs the
-        // alias's defining EXPRESSION substituted into the argument, so it stays NULL rather than wrong.
-        assertNull(q("SELECT city AS c, MAX(LENGTH(c)) AS widest FROM orders GROUP BY city")
-            .getRows().get(0).getValue(1));
+    public void anAggregateArgumentMayNameASiblingAlias() {
+        // An alias inside an aggregate ARGUMENT means the alias's defining EXPRESSION evaluated per row,
+        // not the alias's per-group value. Live-verified on a real account: the same query
+        // over ('abcd'),('xy') answers 4 and 2 — exactly MAX(LENGTH(city)).
+        final ResultSet rs = q("SELECT city AS c, MAX(LENGTH(c)) AS widest FROM orders GROUP BY city ORDER BY c");
+        assertEquals("Berlin", rs.getRows().get(0).getValue(0));
+        assertEquals(6L, ((Number) rs.getRows().get(0).getValue(1)).longValue());
+        assertEquals("Oslo", rs.getRows().get(1).getValue(0));
+        assertEquals(4L, ((Number) rs.getRows().get(1).getValue(1)).longValue());
     }
 }

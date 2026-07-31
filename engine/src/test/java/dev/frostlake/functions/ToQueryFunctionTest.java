@@ -56,8 +56,11 @@ public class ToQueryFunctionTest extends BaseDatabaseTest {
 
     @Test
     public void namedArgumentBindsIntoAPlaceholder() {
+        // Every TO_QUERY argument is a STRING. Live-verified on a real account:
+        // TO_QUERY(sql, v => '2') binds and returns 'b', while a NUMERIC bind value fails "argument
+        // needs to be a string: '0'" and the positional `?` form fails "Bind variable ? not set."
         final ResultSet rs = engine.executeQuery(
-            "SELECT s FROM TABLE(TO_QUERY('SELECT s FROM tq WHERE x = :v', v => 2))");
+            "SELECT s FROM TABLE(TO_QUERY('SELECT s FROM tq WHERE x = :v', v => '2'))");
         assertEquals(1, rs.getRowCount());
         assertEquals("b", String.valueOf(rs.getRows().get(0).getValue(0)));
     }

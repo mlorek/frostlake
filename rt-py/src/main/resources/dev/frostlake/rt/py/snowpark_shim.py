@@ -216,6 +216,14 @@ def _frostlake_install_snowpark():
             return _parse_timestamp(value)
         if n == 'DATE':
             return _parse_date(value)
+        if n.startswith('BINARY') or n.startswith('VARBINARY'):
+            # BINARY crosses the bridge as hex text; Snowpark exposes it as bytes.
+            if isinstance(value, str):
+                try:
+                    return bytes.fromhex(value)
+                except ValueError:
+                    return value
+            return value
         return value
 
     def _json_ready(value):
@@ -243,6 +251,8 @@ def _frostlake_install_snowpark():
             return _sql_string_literal(value.strftime('%Y-%m-%d %H:%M:%S.%f')) + '::TIMESTAMP_NTZ'
         if isinstance(value, _datetime.date):
             return _sql_string_literal(value.isoformat()) + '::DATE'
+        if isinstance(value, (bytes, bytearray)):
+            return "TO_BINARY(" + _sql_string_literal(bytes(value).hex().upper()) + ", 'HEX')"
         if isinstance(value, (list, tuple, dict)):
             return 'PARSE_JSON(' + _sql_string_literal(_json.dumps(value, default=_json_ready)) + ')'
         if hasattr(value, 'item'):
@@ -921,6 +931,21 @@ def _frostlake_install_snowpark():
             return 'VARCHAR'
         return 'VARCHAR'
 
+    def _spill_type(values):
+        """Column type for a session-temporary spill table.
+
+        Same reading as _python_type_to_sql, except that a column with NOTHING to read from — an empty
+        frame, or one whose every value is NULL — is declared VARIANT rather than VARCHAR. Real Snowpark
+        always knows the type; this shim does not, and VARCHAR is not a neutral guess: the engine applies
+        Snowflake's compile-time type rules to a declared VARCHAR, so a boolean column spilled from an
+        empty frame would make `df.where("flag")` fail "Invalid data type [VARCHAR(...)] for predicate".
+        VARIANT claims nothing, so no rule can read a guess out of it.
+        """
+        for value in values:
+            if value is not None:
+                return _python_type_to_sql(values)
+        return 'VARIANT'
+
     def _create_table_sql(table_name, df):
         parts = []
         for i, name in enumerate(df._names):
@@ -966,7 +991,7 @@ def _frostlake_install_snowpark():
             name = '__shim_df_' + _builtins.str(_TMP_COUNTER[0])
             self._session._execute(
                 'CREATE OR REPLACE TEMPORARY TABLE ' + name + ' ('
-                + ', '.join('%s %s' % (n, _python_type_to_sql([row[i] for row in self._rows]))
+                + ', '.join('%s %s' % (n, _spill_type([row[i] for row in self._rows]))
                             for i, n in enumerate(self._names)) + ')')
             DataFrameWriter(self).mode('append').save_as_table(name)
             return 'SELECT * FROM ' + name

@@ -36,11 +36,36 @@ public class UseRoleTest extends BaseDatabaseTest {
         return String.valueOf(rs.getRows().get(0).getValue(0));
     }
 
+    private String currentUser() {
+        final ResultSet rs = engine.executeQuery("SELECT CURRENT_USER()");
+        return String.valueOf(rs.getRows().get(0).getValue(0));
+    }
+
     @Test
     public void useRoleSwitchesCurrentRole() {
-        engine.execute("CREATE ROLE analyst");
+        // A role can only be ACTIVATED by a user it has been granted to. Live-verified: without the
+        // GRANT below the statement fails "Requested role 'ANALYST' is not assigned to the executing
+        // user. Specify another role to activate." The working spelling is
+        // GRANT ROLE <role> TO USER <user>; live Snowflake REJECTS
+        // GRANT ROLE r TO USER IDENTIFIER(CURRENT_USER()) with a syntax error at the '(', so the
+        // executing user's name is read first and spliced into the statement.
+        final String originalRole = currentRole();
+        final String user = currentUser();
+        // The account is stateful across runs (an earlier round failed with "Object 'ANALYST' already
+        // exists"), so create tolerantly and hand everything back at the end.
+        engine.execute("CREATE ROLE IF NOT EXISTS analyst");
+        // Live: the executing user is already on the account, so this is a no-op there. Embedded: the
+        // session user (CURRENT_USER()) is not in the catalog until something creates it, and
+        // GRANT ROLE ... TO USER needs it to exist.
+        engine.execute("CREATE USER IF NOT EXISTS \"" + user + "\"");
+        engine.execute("GRANT ROLE analyst TO USER \"" + user + "\"");
         engine.execute("USE ROLE analyst");
         assertEquals("ANALYST", currentRole());
+
+        // Step off the role before dropping it — a session left on a dropped role has none.
+        engine.execute("USE ROLE \"" + originalRole + "\"");
+        engine.execute("REVOKE ROLE analyst FROM USER \"" + user + "\"");
+        engine.execute("DROP ROLE IF EXISTS analyst");
     }
 
     @Test

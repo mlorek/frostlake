@@ -16,12 +16,12 @@
 
 package dev.frostlake.functions.scalar.math;
 
-import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.functions.NumericArgumentFunction;
 import dev.frostlake.types.NumericType;
 
 import java.util.List;
 
-public class Haversine extends BuiltInFunction {
+public class Haversine extends NumericArgumentFunction {
     public Haversine() { super("HAVERSINE", NumericType.DOUBLE); }
 
     @Override

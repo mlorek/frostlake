@@ -20,7 +20,12 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 
 /**
- * Base class for all Frostlake engine tests providing common setup/teardown
+ * Base class for all Frostlake engine tests providing common setup/teardown.
+ *
+ * <p>With {@code SF_LIVE=1} in the environment (see {@link LiveSnowflake}) the SQL these tests
+ * submit runs against a real Snowflake account instead of the embedded engine — the same suite,
+ * flipped by a switch, to confirm Frostlake and Snowflake agree. In live mode {@code test_db} is
+ * recreated on the account before each test for isolation.
  */
 public abstract class BaseDatabaseTest {
 
@@ -28,8 +33,20 @@ public abstract class BaseDatabaseTest {
 
     @BeforeEach
     public void baseSetup() {
-        engine = new DatabaseEngine();
-        engine.execute("CREATE DATABASE test_db");
+        if (LiveSnowflake.enabled()) {
+            engine = new LiveSnowflakeEngine();
+            // A previous test may have left the shared session in an open transaction or with
+            // autocommit/role/warehouse moved — restore the baseline before touching test_db.
+            LiveSnowflake.resetSharedIfDirty();
+            // Record which account-level objects pre-date the run, before the suite creates any.
+            LiveAccountObjects.captureBaseline(LiveSnowflake.shared());
+            engine.execute("CREATE OR REPLACE DATABASE test_db");
+            // Everything the TEST creates from here on is the test's to clean up, not the harness's.
+            LiveAccountObjects.beginTest();
+        } else {
+            engine = new DatabaseEngine();
+            engine.execute("CREATE DATABASE test_db");
+        }
         engine.execute("USE DATABASE test_db");
         engine.execute("CREATE SCHEMA test_schema");
         engine.execute("USE SCHEMA test_schema");
@@ -38,10 +55,24 @@ public abstract class BaseDatabaseTest {
         setupTest();
     }
 
+    /** Whether this run targets live Snowflake — for tests that must skip engine-internal checks there. */
+    protected static boolean isLiveSnowflake() {
+        return LiveSnowflake.enabled();
+    }
+
     @AfterEach
     public void baseTeardown() {
         // Allow subclasses to add their own teardown
         teardownTest();
+
+        // Recreating test_db isolates everything INSIDE a database; roles, users, warehouses and
+        // sibling databases outlive it and would collide with the next test that uses the same name.
+        if (LiveSnowflake.enabled() && LiveAccountObjects.sawAccountObjectStatement()) {
+            // Restore the session's role/warehouse first: dropping the role a test switched TO would
+            // otherwise leave the shared session without a usable one.
+            LiveSnowflake.resetSharedIfDirty();
+            LiveAccountObjects.dropNewAccountObjects(LiveSnowflake.shared());
+        }
 
         if (engine != null) {
             engine.shutdown();

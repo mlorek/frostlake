@@ -27,7 +27,12 @@ enum CastTargetCategory {
     /** Classify a cast target's base type name (uppercased, without any precision/scale); null if unhandled. */
     static CastTargetCategory fromTypeName(final String baseType) {
         switch (baseType) {
-            case "INTEGER": case "INT": case "BIGINT": return INTEGER;
+            // Every integer alias rounds, not truncates — live, `2.7::SMALLINT`, `2.5::TINYINT`
+            // and `2.5::BYTEINT` are all 3 and `-2.5::TINYINT` is -3, exactly like INT / INTEGER / BIGINT.
+            // The three small spellings used to fall through to null here and passed the value straight
+            // out, so `2.7::SMALLINT` stayed 2.7.
+            case "INTEGER": case "INT": case "BIGINT":
+            case "SMALLINT": case "TINYINT": case "BYTEINT": return INTEGER;
             case "FLOAT": case "FLOAT4": case "FLOAT8": case "DOUBLE": case "DOUBLEPRECISION": case "REAL": case "DECFLOAT": return FLOAT;
             case "NUMBER": case "DECIMAL": case "NUMERIC": return DECIMAL;
             case "VARCHAR": case "STRING": case "TEXT": return STRING;

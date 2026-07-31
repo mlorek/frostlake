@@ -16,12 +16,12 @@
 
 package dev.frostlake.functions.scalar.math;
 
-import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.functions.NumericArgumentFunction;
 import dev.frostlake.types.NumericType;
 
 import java.util.List;
 
-public class Tanh extends BuiltInFunction {
+public class Tanh extends NumericArgumentFunction {
     public Tanh() { super("TANH", NumericType.DOUBLE); }
 
     @Override

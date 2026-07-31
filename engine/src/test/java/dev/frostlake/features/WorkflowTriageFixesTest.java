@@ -79,10 +79,12 @@ public class WorkflowTriageFixesTest extends BaseDatabaseTest {
     }
 
     @Test
-    public void backslashDigitStaysVerbatimForRegexBackreferences() {
-        // Regression guard: a digit after the backslash must NOT be decoded, or REGEXP_REPLACE's
-        // replacement back-references break.
-        assertEquals("[b][a]", scalar("SELECT REGEXP_REPLACE('ab', '(a)(b)', '[\\2][\\1]')"));
+    public void backrefsNeedDoubledBackslashes() {
+        // Snowflake's string decode turns '\2' into the control character 0x02 (octal escape), so a
+        // regex back-reference must arrive as '\\2' — the doubled form survives decode as \2.
+        assertEquals("[b][a]", scalar("SELECT REGEXP_REPLACE('ab', '(a)(b)', '[\\\\2][\\\\1]')"));
+        // The single-backslash form injects the raw control characters instead of back-references.
+        assertEquals("[\u0002][\u0001]", scalar("SELECT REGEXP_REPLACE('ab', '(a)(b)', '[\\2][\\1]')"));
         assertEquals(1L, ((Number) q("SELECT LENGTH('\\\\')").getRows().get(0).getValue(0)).longValue());
     }
 
@@ -197,13 +199,25 @@ public class WorkflowTriageFixesTest extends BaseDatabaseTest {
 
     @Test
     public void useDatabaseResetsTheCurrentSchema() {
+        // Both databases are named literally. The old form switched back to
+        // engine.getCurrentDatabase(), an in-memory catalog accessor that answers SNOWFLAKE under
+        // SF_LIVE (the live CREATE/USE statements never reach the embedded catalog) — and a real
+        // account's shared SNOWFLAKE database has no PUBLIC schema, so CURRENT_SCHEMA() came back
+        // null. A database the test creates itself has a PUBLIC schema on both backends.
         engine.execute("CREATE DATABASE other_db");
         engine.execute("CREATE SCHEMA other_db.only_here");
+        engine.execute("CREATE DATABASE back_db");
         engine.execute("USE DATABASE other_db");
         engine.execute("USE SCHEMA only_here");
-        engine.execute("USE DATABASE " + engine.getCurrentDatabase());
+        engine.execute("USE DATABASE back_db");
         // Leaving ONLY_HERE current would be an impossible (database, schema) pair.
         assertEquals("PUBLIC", scalar("SELECT CURRENT_SCHEMA()"));
+
+        // Reruns on a stateful account: give both databases back, from a context outside them.
+        engine.execute("USE DATABASE test_db");
+        engine.execute("USE SCHEMA test_schema");
+        engine.execute("DROP DATABASE IF EXISTS other_db");
+        engine.execute("DROP DATABASE IF EXISTS back_db");
     }
 
     @Test
@@ -226,14 +240,17 @@ public class WorkflowTriageFixesTest extends BaseDatabaseTest {
         assertEquals("{\"a\":1}", scalar("CALL stats.echo(OBJECT_CONSTRUCT('a', 1))"));
     }
 
-    // ---- a numeric VARCHAR is coerced in an arithmetic context ----
+    // ---- a numeric VARCHAR is coerced in an arithmetic context (as DOUBLE, per Snowflake) ----
 
     @Test
     public void numericVarcharIsCoercedInArithmetic() {
-        assertEquals("-3", scalar("SELECT -'3'"));
+        // Live-verified typing: a VARCHAR mixed with a NUMBER converts to FIXED-POINT (taking its
+        // scale from the text), while VARCHAR-against-VARCHAR — and unary minus — go to FLOAT.
+        assertEquals("-3.0", scalar("SELECT -'3'"));
         assertEquals("4", scalar("SELECT '3' + 1"));
         assertEquals("6", scalar("SELECT '3' * 2"));
-        assertEquals("6", scalar("SELECT '10' - '4'"));
+        assertEquals("3.5", scalar("SELECT '2.5' + 1"));
+        assertEquals("6.0", scalar("SELECT '10' - '4'"));
         // The loader shape: SPLIT_TO_TABLE's VALUE column is VARCHAR and gets negated.
         assertEquals("2024-04-15", scalar(
             "SELECT DATEADD(month, -x.value, DATE '2024-06-15') FROM TABLE(SPLIT_TO_TABLE('2', ',')) x"));

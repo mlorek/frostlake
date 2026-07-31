@@ -16,21 +16,31 @@
 
 package dev.frostlake.functions.scalar.string;
 
-import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.functions.TextArgumentFunction;
 import dev.frostlake.types.StringType;
+import dev.frostlake.values.BinaryValue;
 
+import java.util.Arrays;
 import java.util.List;
 
-public class Right extends BuiltInFunction {
+/** RIGHT(expr, n) — the trailing n characters of a VARCHAR, or the trailing n BYTES of a BINARY. */
+public class Right extends TextArgumentFunction {
     public Right() {
         super("RIGHT", StringType.VARCHAR);
     }
 
     @Override
     public Object evaluate(final List<Object> args) {
-        if (args.get(0) == null) return null;
-        String str = args.get(0).toString();
-        int length = ((Number) args.get(1)).intValue();
+        final Object value = args.get(0);
+        if (value == null) return null;
+        final int length = ((Number) args.get(1)).intValue();
+        if (value instanceof BinaryValue) {
+            final byte[] bytes = ((BinaryValue) value).bytes();
+            if (length < 0) return BinaryValue.of(new byte[0]);
+            if (length >= bytes.length) return value;
+            return BinaryValue.of(Arrays.copyOfRange(bytes, bytes.length - length, bytes.length));
+        }
+        final String str = value.toString();
         if (length < 0) return "";
         if (length >= str.length()) return str;
         return str.substring(str.length() - length);

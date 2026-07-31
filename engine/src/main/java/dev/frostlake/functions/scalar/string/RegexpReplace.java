@@ -16,7 +16,7 @@
 
 package dev.frostlake.functions.scalar.string;
 
-import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.functions.TextArgumentFunction;
 import dev.frostlake.types.StringType;
 
 import java.util.List;
@@ -29,7 +29,7 @@ import java.util.regex.Matcher;
  * {@code occurrence} (default 0) replaces ALL matches, or only the Nth when &gt; 0. An invalid pattern is
  * an error (no longer silently returned unchanged).
  */
-public class RegexpReplace extends BuiltInFunction {
+public class RegexpReplace extends TextArgumentFunction {
     public RegexpReplace() { super("REGEXP_REPLACE", StringType.VARCHAR); }
 
     @Override

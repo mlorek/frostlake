@@ -17,6 +17,7 @@
 package dev.frostlake.functions.aggregate;
 
 import dev.frostlake.functions.AggregateFunction;
+import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -39,7 +40,8 @@ public class ListAggAccumulator implements AggregateFunction.Accumulator {
     @Override
     public void accumulate(final Object value) {
         if (value != null) {
-            values.add(value.toString());
+            // Snowflake output text for temporals (space + FF3), not java.time's T-separated form.
+            values.add(SharedFunctionHelpers.textOf(value));
         }
     }
 

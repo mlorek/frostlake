@@ -18,6 +18,7 @@ package dev.frostlake.functions.scalar.semistructured;
 
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.types.StringType;
+import dev.frostlake.values.VariantUndefined;
 import tools.jackson.databind.ObjectMapper;
 
 import java.util.List;
@@ -33,7 +34,9 @@ public class CheckJson extends BuiltInFunction {
         if (args.get(0) == null) return null;
         String input = args.get(0).toString().trim();
         try {
-            MAPPER.readTree(input);
+            // Snowflake accepts the bare `undefined` token: live, CHECK_JSON('[1,undefined,2]')
+            // reports the text as VALID (SQL NULL, no error).
+            VariantUndefined.readTree(MAPPER, input);
             return null;
         } catch (final Exception e) {
             return e.getMessage();

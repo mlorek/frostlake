@@ -16,8 +16,8 @@
 
 package dev.frostlake.functions.scalar.string;
 
-import dev.frostlake.functions.BuiltInFunction;
-import dev.frostlake.types.VariantType;
+import dev.frostlake.functions.TextArgumentFunction;
+import dev.frostlake.types.ArrayType;
 
 import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.node.ArrayNode;
@@ -30,11 +30,11 @@ import java.util.regex.Pattern;
  * substrings (rendered as a JSON array, the engine's VARIANT representation). Trailing empty parts are kept.
  * An empty delimiter yields the whole string as a single element; either NULL argument yields NULL.
  */
-public class Split extends BuiltInFunction {
+public class Split extends TextArgumentFunction {
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
-    public Split() { super("SPLIT", VariantType.VARIANT); }
+    public Split() { super("SPLIT", ArrayType.ARRAY); }
 
     @Override
     public Object evaluate(final List<Object> args) {

@@ -19,12 +19,17 @@ package dev.frostlake.functions.scalar.semistructured;
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
 import dev.frostlake.types.VariantType;
+import dev.frostlake.values.VariantUndefined;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.node.ArrayNode;
 
 import java.util.List;
 
-/** ARRAY_MIN(array) — the smallest non-null element, or NULL if the array is empty, all-null, or NULL. */
+/**
+ * ARRAY_MIN(array) — the smallest non-null element as a VARIANT (live-verified: a text element keeps its
+ * JSON-quoted form and SYSTEM$TYPEOF is VARIANT, mirroring ARRAY_MAX), or SQL NULL if the array is empty,
+ * all-null, or NULL.
+ */
 public class ArrayMin extends BuiltInFunction {
     public ArrayMin() { super("ARRAY_MIN", VariantType.VARIANT); }
 
@@ -34,10 +39,14 @@ public class ArrayMin extends BuiltInFunction {
         if (src == null) return null;
         JsonNode best = null;
         for (final JsonNode el : src) {
-            if (el.isNull()) continue;
+            // Only a VARIANT `undefined` element is skipped; a JSON null is a VALUE and ranks above
+            // every other type. Live: ARRAY_MIN(ARRAY_CONSTRUCT(1,NULL,2)) is 1 while
+            // ARRAY_MIN/ARRAY_MAX over PARSE_JSON('[1,null,2]') are 1 and the JSON null; over an
+            // all-undefined array both are SQL NULL.
+            if (VariantUndefined.isUndefined(el)) continue;
             if (best == null || ArrayFunctionHelper.compareNodes(el, best) < 0) best = el;
         }
-        return best == null ? null : ArrayFunctionHelper.fromNode(best);
+        return best == null ? null : ArrayFunctionHelper.toCanonicalVariant(best);
     }
 
     @Override public int getMinArgCount() { return 1; }

@@ -17,6 +17,7 @@
 package dev.frostlake.functions.aggregate;
 
 import dev.frostlake.functions.AggregateFunction;
+import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.types.VariantType;
 
 import java.util.List;
@@ -35,6 +36,15 @@ public class MinBy extends AggregateFunction {
     @Override
     public Accumulator createAccumulator() {
         return new MaxByMinByAccumulator(false);
+    }
+
+    /**
+     * Neither half takes a GEOSPATIAL value, where both take an OBJECT — see {@link MaxBy#geoRejection}
+     * for the measurement; {@code MIN_BY(n, g)} was the spelling that named the SORT-KEY half.
+     */
+    @Override
+    public SemiStructuredRejection geoRejection(final int position) {
+        return SemiStructuredRejection.ARGUMENT_TYPES;
     }
 
     @Override

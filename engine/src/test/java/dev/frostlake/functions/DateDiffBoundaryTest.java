@@ -91,7 +91,7 @@ public class DateDiffBoundaryTest {
 
     @Test
     public void testWeekBoundaryMondayStart() {
-        // 2026-07-25 is a Saturday, 2026-07-27 a Monday: one week boundary two days apart.
+        // is a Saturday, a Monday: one week boundary two days apart.
         assertEquals(1L, ql("SELECT DATEDIFF(WEEK, '2026-07-25'::DATE, '2026-07-27'::DATE)"));
         // Monday through Sunday of the same week: zero.
         assertEquals(0L, ql("SELECT DATEDIFF(WEEK, '2026-07-20'::DATE, '2026-07-26'::DATE)"));

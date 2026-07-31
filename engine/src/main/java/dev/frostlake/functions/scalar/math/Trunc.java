@@ -16,20 +16,38 @@
 
 package dev.frostlake.functions.scalar.math;
 
-import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.functions.NumericArgumentFunction;
 import dev.frostlake.types.NumericType;
+import dev.frostlake.functions.scalar.datetime.DateTrunc;
 
+import java.util.Arrays;
+import java.time.LocalTime;
+import java.time.LocalDateTime;
+import java.time.LocalDate;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.util.List;
 
-public class Trunc extends BuiltInFunction {
+public class Trunc extends NumericArgumentFunction {
+
+    private static final DateTrunc DATE_TRUNC = new DateTrunc();
+
     public Trunc() { super("TRUNC", NumericType.NUMBER); }
 
     @Override
     public Object evaluate(final List<Object> args) {
         if (args.get(0) == null) return null;
-        BigDecimal num = new BigDecimal(args.get(0).toString());
+        // Snowflake's TRUNC is overloaded: over a temporal it is DATE_TRUNC with swapped
+        // arguments — TRUNC(date, 'MONTH') = DATE_TRUNC('MONTH', date), part defaulting to DAY.
+        final Object first = args.get(0);
+        final boolean temporalInput = first instanceof LocalDate || first instanceof LocalDateTime
+            || first instanceof LocalTime;
+        final boolean partSecond = args.size() > 1 && args.get(1) instanceof CharSequence;
+        if (temporalInput || partSecond) {
+            final Object part = partSecond ? args.get(1) : "DAY";
+            return DATE_TRUNC.evaluate(Arrays.asList(part, first));
+        }
+        BigDecimal num = new BigDecimal(first.toString());
 
         if (args.size() > 1 && args.get(1) != null) {
             int scale = ((Number) args.get(1)).intValue();

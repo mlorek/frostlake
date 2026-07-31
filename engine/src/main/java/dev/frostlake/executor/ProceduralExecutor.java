@@ -19,11 +19,14 @@ package dev.frostlake.executor;
 import dev.frostlake.parser.FrostlakeLexer;
 import dev.frostlake.executor.expressions.BinaryOperationExpression;
 import dev.frostlake.executor.expressions.BinaryOperator;
+import dev.frostlake.executor.expressions.CastExpression;
+import dev.frostlake.executor.expressions.Expression;
 import dev.frostlake.executor.expressions.ExpressionEvaluatorVisitor;
 import dev.frostlake.executor.expressions.UnaryOperationExpression;
 import dev.frostlake.executor.expressions.UnaryOperator;
 import dev.frostlake.executor.procedural.BinaryExpression;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
+import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.executor.procedural.CallStatement;
 import dev.frostlake.executor.procedural.CaseStatement;
 import dev.frostlake.executor.procedural.CloseStatement;
@@ -69,6 +72,8 @@ import dev.frostlake.types.BooleanType;
 import dev.frostlake.types.DataType;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.types.StringType;
+import dev.frostlake.values.BinaryValue;
+import dev.frostlake.values.VariantValue;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.node.ArrayNode;
 
@@ -97,10 +102,10 @@ public class ProceduralExecutor {
     private final Deque<Exception> handledExceptions = new ArrayDeque<>();
     private boolean breakFlag;
     private boolean continueFlag;
-    // Target label of a labeled BREAK / CONTINUE (null = unlabeled → the innermost loop). A loop consumes
-    // the flag when the label matches its own; otherwise it unwinds, leaving the flag set to propagate.
     private String breakLabel;
     private String continueLabel;
+    // Target label of a labeled BREAK / CONTINUE (null = unlabeled → the innermost loop). A loop consumes
+    // the flag when the label matches its own; otherwise it unwinds, leaving the flag set to propagate.
     private boolean returnFlag;
     private boolean returnTableFlag;
     private Object returnValue;
@@ -326,11 +331,11 @@ public class ProceduralExecutor {
     }
 
     /**
-     * Post-body loop control for a loop with the given label. Returns true if the loop should proceed to
-     * its next iteration — the body completed normally, or a CONTINUE targeting THIS loop was consumed
-     * here. Returns false if the loop should stop: a BREAK or RETURN targeting this loop (the break is
-     * consumed here), or a BREAK / CONTINUE targeting an OUTER loop, which is left set so the enclosing
-     * loop handles it (labeled break/continue propagate outward through the nested loops).
+     * Post-body loop control for a loop carrying the given label. Returns true if the loop should proceed
+     * to its next iteration — the body completed normally, or a CONTINUE targeting THIS loop was consumed
+     * here. Returns false if it should stop: a BREAK or RETURN targeting this loop (the break is consumed
+     * here), or a BREAK / CONTINUE targeting an OUTER loop, which is left set so the enclosing loop
+     * handles it — labeled break/continue propagate outward through the nested loops.
      */
     private boolean loopProceeds(final String loopLabel) {
         if (continueFlag) {
@@ -357,20 +362,18 @@ public class ProceduralExecutor {
     }
 
     private void executeLoop(final LoopStatement stmt) {
-        final String label = stmt.getLabel();
         while (true) {
             executeLoopBody(stmt.getBlock());
-            if (!loopProceeds(label)) {
+            if (!loopProceeds(stmt.getLabel())) {
                 return;
             }
         }
     }
 
     private void executeWhile(final WhileStatement stmt) {
-        final String label = stmt.getLabel();
         while (isTrue(evaluateExpression(stmt.getCondition()))) {
             executeLoopBody(stmt.getBlock());
-            if (!loopProceeds(label)) {
+            if (!loopProceeds(stmt.getLabel())) {
                 return;
             }
         }
@@ -464,11 +467,10 @@ public class ProceduralExecutor {
         final long from = stmt.isReverse() ? end : start;
         final long to = stmt.isReverse() ? start : end;
         final long step = stmt.isReverse() ? -1 : 1;
-        final String label = stmt.getLabel();
         for (long v = from; stmt.isReverse() ? v >= to : v <= to; v += step) {
             setVariable(varName, v);
             executeLoopBody(stmt.getBlock());
-            if (!loopProceeds(label)) {
+            if (!loopProceeds(stmt.getLabel())) {
                 break;
             }
         }
@@ -476,10 +478,9 @@ public class ProceduralExecutor {
 
     /** REPEAT … UNTIL &lt;cond&gt; — a post-test loop: run the body, then stop once the condition is true. */
     private void executeRepeat(final RepeatStatement stmt) {
-        final String label = stmt.getLabel();
         while (true) {
             executeLoopBody(stmt.getBlock());
-            if (!loopProceeds(label)) {
+            if (!loopProceeds(stmt.getLabel())) {
                 return;
             }
             if (isTrue(evaluateExpression(stmt.getCondition()))) {
@@ -671,9 +672,9 @@ public class ProceduralExecutor {
             throw new RuntimeException("QueryExecutor not available to CALL procedure: " + stmt.getProcedureName());
         }
         // Evaluate each argument in the current procedural scope (so loop counters and DECLAREd
-        // variables resolve to their live values), then re-issue the CALL as a SQL statement. That
-        // routes through the visitor's CALL handler, reusing the full multi-language procedure
-        // dispatch (SQL / JavaScript / Python / Java / Scala). The re-entrant execute() runs at
+        // variables resolve to their live values, written :name), then re-issue the CALL as a SQL
+        // statement. That routes through the visitor's CALL handler, reusing the full multi-language
+        // procedure dispatch (SQL / JavaScript / Python / Java / Scala). The re-entrant execute() runs at
         // depth > 0, so this block's live cursors are preserved. A bare CALL statement discards the
         // procedure's return value (Snowflake scripting semantics).
         final List<String> argNames = stmt.getArgumentNames();
@@ -687,7 +688,9 @@ public class ProceduralExecutor {
                 // Preserve named-argument binding when re-issuing the CALL as SQL.
                 call.append(argName).append(" => ");
             }
-            call.append(toSqlLiteral(evaluateExpression(stmt.getArguments().get(i))));
+            final BaseExpression arg = stmt.getArguments().get(i);
+            rejectBareScriptingName(arg);
+            call.append(toSqlLiteral(evaluateExpression(arg)));
         }
         call.append(')');
         queryExecutor.execute(call.toString());
@@ -695,14 +698,39 @@ public class ProceduralExecutor {
         queryExecutor.getTransactionManager().autocommitStatementEnd();
     }
 
+    /**
+     * Snowflake dispatches CALL as a SQL statement, so a scripting name in an argument must be written
+     * {@code :name}; a bare one is an identifier and fails with {@code invalid identifier '<NAME>'}
+     * (live-verified: {@code LET v VARCHAR := 'x'; CALL log_it(v);} errors, {@code CALL log_it(:v)} works).
+     * A name that is not a declared scripting variable at all reaches this too, so the check is on the
+     * WRITTEN form rather than on whether the variable exists.
+     */
+    private void rejectBareScriptingName(final BaseExpression arg) {
+        if (arg instanceof VariableExpression && !((VariableExpression) arg).isBindForm()) {
+            throw new RuntimeException(
+                "invalid identifier '" + ((VariableExpression) arg).getName().toUpperCase() + "'");
+        }
+    }
+
     /** Render an evaluated CALL argument as a SQL literal: NULL and numeric/boolean values unquoted,
-     *  anything else as a quoted string with embedded quotes escaped. */
+     *  semi-structured values as PARSE_JSON of their text, BINARY as a hex literal, anything else as
+     *  a quoted string with embedded quotes escaped. */
     private String toSqlLiteral(final Object value) {
         if (value == null) {
             return "NULL";
         }
         if (value instanceof Number || value instanceof Boolean) {
             return value.toString();
+        }
+        if (value instanceof VariantValue) {
+            return "PARSE_JSON(" + SqlStringLiterals.encode(((VariantValue) value).text()) + ")";
+        }
+        if (value instanceof BinaryValue) {
+            return "X'" + ((BinaryValue) value).toHex() + "'";
+        }
+        final String temporal = SharedFunctionHelpers.temporalSqlLiteral(value);
+        if (temporal != null) {
+            return temporal;
         }
         return SqlStringLiterals.encode(value.toString());
     }
@@ -838,9 +866,22 @@ public class ProceduralExecutor {
                         } else if (av instanceof Number || av instanceof Boolean) {
                             // Numeric / boolean values are valid unquoted SQL literals.
                             callExpr.append(av);
+                        } else if (av instanceof VariantValue) {
+                            // A semi-structured value re-enters the rebuilt SELECT as PARSE_JSON of its
+                            // text, keeping its variant-ness (a bare string literal would be rejected by
+                            // the strict semi-structured functions, exactly as Snowflake rejects one).
+                            callExpr.append("PARSE_JSON(")
+                                .append(SqlStringLiterals.encode(((VariantValue) av).text()))
+                                .append(")");
+                        } else if (av instanceof BinaryValue) {
+                            callExpr.append("X'").append(((BinaryValue) av).toHex()).append("'");
+                        } else if (SharedFunctionHelpers.temporalSqlLiteral(av) != null) {
+                            // A temporal re-enters the rebuilt SELECT as a cast literal, keeping its
+                            // temporal identity (a bare quoted string would arrive as VARCHAR).
+                            callExpr.append(SharedFunctionHelpers.temporalSqlLiteral(av));
                         } else {
-                            // Everything else — strings, and crucially timestamp/date/time/object/array
-                            // values whose toString() is NOT valid unquoted SQL (e.g. a LocalDateTime prints
+                            // Everything else — strings, and crucially timestamp/date/time values whose
+                            // toString() is NOT valid unquoted SQL (e.g. a LocalDateTime prints
                             // 2026-07-24T08:49:12) — is emitted as a quoted string literal so the rebuilt
                             // SELECT parses. (A bare non-numeric value used to append raw and produce a
                             // "SQL syntax error", e.g. OBJECT_CONSTRUCT_KEEP_NULL('t', CURRENT_TIMESTAMP()).)
@@ -849,6 +890,20 @@ public class ProceduralExecutor {
                             // backslash, or a "\'" sequence) would otherwise escape the following char and
                             // derail the whole re-parse.
                             callExpr.append(SqlStringLiterals.encode(av.toString()));
+                        }
+                        // Snowflake BINDS a scripting variable's VALUE into the statement and then
+                        // compiles the surrounding expression, so a WRITTEN semi-structured cast still
+                        // applies to the bound value (live-verified: an anonymous block returning
+                        // ARRAY_CONTAINS(v::VARIANT, arr) over a VARCHAR variable runs, while the same
+                        // call without the cast errors "Invalid argument types … (VARCHAR(1), VARIANT)"
+                        // — reporting the BOUND value's width, which is how the binding shows). Rebuilding
+                        // the call from argument VALUES alone dropped the cast, so the semi-structured
+                        // strict families (ARRAY_CONTAINS / TYPEOF / GET / TO_JSON …) then rejected the
+                        // bare VARCHAR literal that substitution had created.
+                        final String castTarget = writtenSemiStructuredCast(
+                            i < argExprs.size() ? argExprs.get(i) : null);
+                        if (castTarget != null) {
+                            callExpr.append("::").append(castTarget);
                         }
                     }
                     callExpr.append(")");
@@ -863,6 +918,30 @@ public class ProceduralExecutor {
                 }
             }
             return null;
+        }
+        return null;
+    }
+
+    /**
+     * The SEMI-STRUCTURED target type of a call argument written as a plain {@code ::VARIANT} /
+     * {@code ::OBJECT} / {@code ::ARRAY} cast, or null for anything else. Only semi-structured targets
+     * are re-emitted when a call is rebuilt from its argument values: those are the casts whose effect
+     * a rendered value cannot carry (a VARIANT-cast VARCHAR renders as a bare string literal, losing
+     * exactly the variant-ness the strict families require), while a numeric / temporal / VARCHAR cast
+     * is already reflected in the value that was produced. TRY_CAST is excluded — its source must be a
+     * VARCHAR, so re-applying it to an already-converted value would be an argument-type error.
+     */
+    private String writtenSemiStructuredCast(final BaseExpression argExpr) {
+        if (!(argExpr instanceof SqlScalarExpression)) {
+            return null;
+        }
+        final Expression inner = ((SqlScalarExpression) argExpr).getExpression();
+        if (!(inner instanceof CastExpression) || ((CastExpression) inner).isTryMode()) {
+            return null;
+        }
+        final String target = ((CastExpression) inner).getTargetType().trim().toUpperCase();
+        if ("VARIANT".equals(target) || "OBJECT".equals(target) || "ARRAY".equals(target)) {
+            return target;
         }
         return null;
     }
@@ -955,6 +1034,11 @@ public class ProceduralExecutor {
         scope.exitScope();
     }
 
+    /** @see ScopeManager#enterIsolatedScope() */
+    public void enterIsolatedScope() {
+        scope.enterIsolatedScope();
+    }
+
     /** Called when a variable is DECLARED (not just assigned) in the current scope. */
     public void markDeclaredInCurrentScope(final String name) {
         scope.markDeclaredInCurrentScope(name);
@@ -1014,6 +1098,16 @@ public class ProceduralExecutor {
     public void clearReturnState() {
         this.returnFlag = false;
         this.returnValue = null;
+    }
+
+    /**
+     * Put the return state back to a value captured earlier. Only a caller that RUNS A NESTED BODY on this
+     * shared executor needs it — a SQL UDF invoked from an expression — so that the UDF's own RETURN can be
+     * consumed without erasing a RETURN the enclosing block had already recorded.
+     */
+    void restoreReturnState(final boolean returned, final Object value) {
+        this.returnFlag = returned;
+        this.returnValue = value;
     }
 
     /** Mark that a BEGIN…END block handler has started (nesting depth++). */

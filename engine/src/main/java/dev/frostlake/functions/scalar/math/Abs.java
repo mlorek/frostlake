@@ -16,13 +16,13 @@
 
 package dev.frostlake.functions.scalar.math;
 
-import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.functions.NumericArgumentFunction;
 import dev.frostlake.types.NumericType;
 
 import java.math.BigDecimal;
 import java.util.List;
 
-public class Abs extends BuiltInFunction {
+public class Abs extends NumericArgumentFunction {
     public Abs() { super("ABS", NumericType.NUMBER); }
 
     @Override

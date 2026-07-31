@@ -27,8 +27,8 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
  * A nested WITH inside a CTE body sees the ENCLOSING scope's CTEs (Snowflake scoping):
  * {@code WITH outputs AS (...), x AS (WITH cleaned AS (... FROM outputs) ...)}. Executing the inner
  * definitions with an empty CTE map made every such reference fail with "Table does not exist" —
- * swallowed by loader error handlers, leaving fact tables silently underpopulated. Inner names
- * shadow outer ones.
+ * swallowed by loader error handlers, leaving fact tables silently underpopulated. When a nested
+ * WITH reuses an outer CTE's name, the OUTER definition wins (live-Snowflake behavior).
  */
 public class NestedCteScopeTest extends BaseDatabaseTest {
 
@@ -92,7 +92,9 @@ public class NestedCteScopeTest extends BaseDatabaseTest {
     }
 
     @Test
-    public void innerCteShadowsOuterOfTheSameName() {
+    public void outerCteWinsOverSameNamedInnerCte() {
+        // Live-Snowflake behavior: when a nested WITH redefines an outer CTE's name, references
+        // resolve to the OUTER definition.
         final ResultSet rs = engine.executeQuery("""
             WITH t AS (SELECT 'outer' AS v),
             u AS (
@@ -100,6 +102,6 @@ public class NestedCteScopeTest extends BaseDatabaseTest {
                 SELECT v FROM t
             )
             SELECT v FROM u""");
-        assertEquals("inner", rs.getRows().get(0).getValue(0));
+        assertEquals("outer", rs.getRows().get(0).getValue(0));
     }
 }

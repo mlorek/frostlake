@@ -16,6 +16,7 @@
 
 package dev.frostlake.executor.commands;
 
+import dev.frostlake.executor.ParseTreeText;
 import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.metastore.*;
 import dev.frostlake.metastore.model.*;
@@ -65,6 +66,14 @@ public class CreateRoutineHandler implements CommandHandler {
         String qualifiedName = getText(ctx.qualifiedName(0));
         String[] parts = qualifiedNameParts(ctx.qualifiedName(0));
         boolean orReplace = ctx.or_replace() != null;
+
+        // Compile the body first, as Snowflake does: a SQL UDF whose body does not parse is rejected at CREATE
+        // time. Deliberately OUTSIDE the try below — a compilation error is not an "already exists" condition
+        // and must never be swallowed by IF NOT EXISTS.
+        RoutineBodyCompiler.compileFunctionBody(queryExecutor, functionLanguage(ctx),
+            ctx.bodyDefinition() != null ? ddl.extractBodyDefinition(ctx.bodyDefinition()) : null,
+            ctx.returnType() != null && ctx.returnType().TABLE() != null,
+            parts[parts.length - 1]);
 
         try {
             Schema schema;
@@ -122,7 +131,7 @@ public class CreateRoutineHandler implements CommandHandler {
                 if (ctx.returnType().columnList() != null) {
                     for (final FrostlakeParser.ColumnOrConstraintContext colCtx : ctx.returnType().columnList().columnOrConstraint()) {
                         if (colCtx.columnDef() != null) {
-                            String colName = getText(colCtx.columnDef().identifier()).toUpperCase();
+                            String colName = ParseTreeText.namePartText(colCtx.columnDef().namePart()).toUpperCase();
                             DataType colType = columnParser.parseDataType(colCtx.columnDef().dataTypeName(), colCtx.columnDef().typeParameters());
                             returnColumns.add(new Parameter(colName, colType));
                         }
@@ -146,12 +155,7 @@ public class CreateRoutineHandler implements CommandHandler {
             List<String> imports = new ArrayList<>();
             for (final FrostlakeParser.FunctionOptionContext opt : ctx.functionOption()) {
                 if (opt.languageClause() != null) {
-                    FrostlakeParser.LanguageClauseContext lc = opt.languageClause();
-                    if (lc.JAVASCRIPT() != null) language = "JAVASCRIPT";
-                    else if (lc.JAVA() != null) language = "JAVA";
-                    else if (lc.SCALA() != null) language = "SCALA";
-                    else if (lc.PYTHON() != null) language = "PYTHON";
-                    else language = "SQL";
+                    language = languageOf(opt.languageClause()).name();
                 } else if (opt.handlerClause() != null) {
                     handler = ddl.extractStringLiteral(opt.handlerClause().STRING_LITERAL());
                 } else if (opt.runtimeVersionClause() != null) {
@@ -194,6 +198,12 @@ public class CreateRoutineHandler implements CommandHandler {
         String qualifiedName = getText(ctx.qualifiedName(0));
         String[] parts = qualifiedNameParts(ctx.qualifiedName(0));
         boolean orReplace = ctx.or_replace() != null;
+
+        // Compile the body first, as Snowflake does: a LANGUAGE SQL procedure whose body is not a scripting
+        // block is rejected at CREATE time. Deliberately OUTSIDE the try below — a compilation error is not an
+        // "already exists" condition and must never be swallowed by IF NOT EXISTS.
+        RoutineBodyCompiler.compileProcedureBody(queryExecutor, languageOf(ctx.languageClause()),
+            ctx.bodyDefinition() != null ? ddl.extractBodyDefinition(ctx.bodyDefinition()) : null);
 
         try {
             Schema schema;
@@ -251,7 +261,7 @@ public class CreateRoutineHandler implements CommandHandler {
                 if (ctx.returnType().columnList() != null) {
                     for (final FrostlakeParser.ColumnOrConstraintContext colCtx : ctx.returnType().columnList().columnOrConstraint()) {
                         if (colCtx.columnDef() != null) {
-                            String colName = getText(colCtx.columnDef().identifier()).toUpperCase();
+                            String colName = ParseTreeText.namePartText(colCtx.columnDef().namePart()).toUpperCase();
                             DataType colType = columnParser.parseDataType(colCtx.columnDef().dataTypeName(), colCtx.columnDef().typeParameters());
                             procReturnColumns.add(new Parameter(colName, colType));
                         }
@@ -265,20 +275,7 @@ public class CreateRoutineHandler implements CommandHandler {
 
             String body = ctx.bodyDefinition() != null ? ddl.extractBodyDefinition(ctx.bodyDefinition()) : null;
 
-            String language = "SQL";
-            if (ctx.languageClause() != null) {
-                if (ctx.languageClause().JAVASCRIPT() != null) {
-                    language = "JAVASCRIPT";
-                } else if (ctx.languageClause().JAVA() != null) {
-                    language = "JAVA";
-                } else if (ctx.languageClause().SCALA() != null) {
-                    language = "SCALA";
-                } else if (ctx.languageClause().PYTHON() != null) {
-                    language = "PYTHON";
-                } else if (ctx.languageClause().SQL() != null) {
-                    language = "SQL";
-                }
-            }
+            String language = languageOf(ctx.languageClause()).name();
 
             String handler = null;
             if (ctx.handlerClause() != null) {
@@ -329,6 +326,40 @@ public class CreateRoutineHandler implements CommandHandler {
             logger.debug("Procedure already exists (IF NOT EXISTS): {}", qualifiedName);
         }
         return null;
+    }
+
+    /** The declared {@code LANGUAGE} of a routine; {@link UdfLanguage#SQL} when the clause is absent. */
+    private static UdfLanguage languageOf(final FrostlakeParser.LanguageClauseContext lc) {
+        if (lc == null) {
+            return UdfLanguage.SQL;
+        }
+        if (lc.JAVASCRIPT() != null) {
+            return UdfLanguage.JAVASCRIPT;
+        }
+        if (lc.JAVA() != null) {
+            return UdfLanguage.JAVA;
+        }
+        if (lc.SCALA() != null) {
+            return UdfLanguage.SCALA;
+        }
+        if (lc.PYTHON() != null) {
+            return UdfLanguage.PYTHON;
+        }
+        return UdfLanguage.SQL;
+    }
+
+    /**
+     * The declared {@code LANGUAGE} of a CREATE FUNCTION, whose options are order-independent so the clause has
+     * to be looked up among them. Absent clause → {@link UdfLanguage#SQL}, the Snowflake default.
+     */
+    private static UdfLanguage functionLanguage(final FrostlakeParser.CreateStatementContext ctx) {
+        UdfLanguage language = UdfLanguage.SQL;
+        for (final FrostlakeParser.FunctionOptionContext opt : ctx.functionOption()) {
+            if (opt.languageClause() != null) {
+                language = languageOf(opt.languageClause());
+            }
+        }
+        return language;
     }
 
 }

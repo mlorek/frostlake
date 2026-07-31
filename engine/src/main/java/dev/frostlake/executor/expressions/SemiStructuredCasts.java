@@ -18,6 +18,7 @@ package dev.frostlake.executor.expressions;
 
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
 import dev.frostlake.functions.scalar.JsonTypeHelper;
+import dev.frostlake.values.VariantValue;
 
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.node.ArrayNode;
@@ -44,11 +45,11 @@ final class SemiStructuredCasts {
         if (quoted != null) {
             final ArrayNode wrappedString = ArrayFunctionHelper.MAPPER.createArrayNode();
             wrappedString.add(ArrayFunctionHelper.MAPPER.getNodeFactory().textNode(quoted));
-            return wrappedString.toString();
+            return VariantValue.ofNode(wrappedString);
         }
         final ArrayNode existing = ArrayFunctionHelper.parseArray(value);
         if (existing != null) {
-            return existing.toString();
+            return VariantValue.ofNode(existing);
         }
         final JsonNode node = ArrayFunctionHelper.parseNode(value);
         if (node != null && node.isNull()) {
@@ -56,7 +57,7 @@ final class SemiStructuredCasts {
         }
         final ArrayNode wrapped = ArrayFunctionHelper.MAPPER.createArrayNode();
         wrapped.add(ArrayFunctionHelper.toNode(ArrayFunctionHelper.MAPPER, value));
-        return wrapped.toString();
+        return VariantValue.ofNode(wrapped);
     }
 
     /**
@@ -72,7 +73,7 @@ final class SemiStructuredCasts {
             return null;
         }
         if (node != null && node.isObject()) {
-            return node.toString();
+            return VariantValue.ofNode(node);
         }
         throw new RuntimeException("Cannot cast value to OBJECT: " + value);
     }

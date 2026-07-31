@@ -27,9 +27,11 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 /**
  * Backslash escape sequences inside single-quoted string literals, matching Snowflake. A {@code '…'}
  * literal accepts both quote doubling ({@code ''} &rarr; {@code '}) and backslash escapes
- * ({@code \'} &rarr; {@code '}, {@code \\} &rarr; {@code \}, {@code \n}/{@code \t}/{@code \r}); any other
- * backslash is kept verbatim. All decode sites share {@code SqlStringLiterals}, and the lexer treats
- * backslash as always beginning an escape so the boundaries agree.
+ * ({@code \'} &rarr; {@code '}, {@code \\} &rarr; {@code \}, {@code \n}/{@code \t}/{@code \r}); a
+ * backslash before an octal digit yields that control character ({@code \2} &rarr; 0x02), and any
+ * other backslash is simply dropped ({@code \%} &rarr; {@code %}). All decode sites share
+ * {@code SqlStringLiterals}, and the lexer treats backslash as always beginning an escape so the
+ * boundaries agree.
  *
  * <p>The headline case is a stored procedure whose {@code '}-quoted body builds dynamic SQL with
  * backslash-escaped quotes (a shape Snowflake exports produce). The body is decoded once at CREATE and
@@ -95,9 +97,17 @@ public class BackslashStringEscapeTest {
     }
 
     @Test
-    public void unrecognizedBackslashKeptVerbatim() {
-        // SQL: SELECT 'a\%b'  ->  a\%b   (\% is not an escape, backslash preserved)
-        assertEquals("a\\%b", scalar("SELECT 'a\\%b'"));
+    public void unrecognizedBackslashIsDropped() {
+        // SQL: SELECT 'a\%b'  ->  a%b   (\% is not a named escape, the backslash is dropped)
+        assertEquals("a%b", scalar("SELECT 'a\\%b'"));
+    }
+
+    @Test
+    public void backslashDigitDecodesAsAnOctalControlCharacter() {
+        // SQL: SELECT 'a\2b'  ->  a, 0x02, b — an octal escape, not a verbatim backslash + digit.
+        assertEquals("a\u0002b", scalar("SELECT 'a\\2b'"));
+        assertEquals("1", String.valueOf(engine.executeQuery("SELECT LENGTH('\\2')")
+            .getRows().get(0).getValue(0)));
     }
 
     @Test

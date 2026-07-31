@@ -18,7 +18,8 @@ package dev.frostlake.functions.scalar.semistructured;
 
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
-import dev.frostlake.types.VariantType;
+import dev.frostlake.types.ObjectType;
+import dev.frostlake.values.VariantValue;
 import tools.jackson.databind.JsonNode;
 
 import java.util.List;
@@ -29,7 +30,7 @@ import java.util.Map;
  * returned as an object. Any other, non-object input is an error.
  */
 public class ToObject extends BuiltInFunction {
-    public ToObject() { super("TO_OBJECT", VariantType.VARIANT); }
+    public ToObject() { super("TO_OBJECT", ObjectType.OBJECT); }
 
     @Override
     public Object evaluate(final List<Object> args) {
@@ -38,7 +39,7 @@ public class ToObject extends BuiltInFunction {
         if (v instanceof Map) return v;
         final JsonNode node = ArrayFunctionHelper.parseNode(v);
         if (node != null && node.isNull()) return null;
-        if (node != null && node.isObject()) return node.toString();
+        if (node != null && node.isObject()) return VariantValue.ofNode(node);
         throw new RuntimeException("TO_OBJECT: argument must be an OBJECT or a VARIANT containing an OBJECT, got: " + v);
     }
 

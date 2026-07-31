@@ -293,6 +293,13 @@ public class DatabaseResultSet implements ResultSet {
     public Object getObject(final int columnIndex) throws SQLException {
         Object value = getValue(columnIndex);
         wasNull = (value == null);
+        if (value instanceof String && columnIndex <= data.getColumns().size()) {
+            final String typeName = data.getColumns().get(columnIndex - 1).getDataType();
+            if (typeName != null && typeName.toUpperCase().contains("BINARY")) {
+                // BINARY crosses the JSON wire as hex text; getObject restores the JDBC byte[] form.
+                return JdbcMarshaling.toBytes(value);
+            }
+        }
         return value;
     }
 

@@ -19,6 +19,7 @@ package dev.frostlake.query;
 import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
 
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -58,6 +59,10 @@ public class AggregateAsWindowFunctionTest extends BaseDatabaseTest {
 
     @Test
     public void arrayAggDistinctOverAPartition() {
+        Assumptions.assumeFalse(isLiveSnowflake(),
+            "asserts the exact element ORDER of ARRAY_AGG(DISTINCT …) without a WITHIN GROUP clause; the "
+            + "order of a distinct aggregation is unspecified, so a real account may build the array in "
+            + "any order");
         final ResultSet rs = q("SELECT DISTINCT g, ARRAY_AGG(DISTINCT v) OVER (PARTITION BY g) AS vs "
             + "FROM t ORDER BY g");
         assertEquals("[\"b\",\"a\"]", String.valueOf(rs.getRows().get(0).getValue(1)));

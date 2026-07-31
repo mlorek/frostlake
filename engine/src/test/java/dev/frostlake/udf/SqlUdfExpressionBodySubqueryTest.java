@@ -66,7 +66,7 @@ public class SqlUdfExpressionBodySubqueryTest extends BaseDatabaseTest {
                         )
                     ),
                     0.0
-                ) $$""");
+                )::FLOAT $$""");
         assertEquals(5.0, ((Number) scalar("SELECT score_of('grade:A/weight:H')")).doubleValue());
         assertEquals(1.0, ((Number) scalar("SELECT score_of('grade:B/weight:L')")).doubleValue());
         assertEquals(0.0, ((Number) scalar("SELECT score_of('nonsense')")).doubleValue());

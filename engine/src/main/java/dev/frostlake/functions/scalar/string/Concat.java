@@ -16,13 +16,14 @@
 
 package dev.frostlake.functions.scalar.string;
 
-import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.functions.TextArgumentFunction;
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.types.StringType;
+import dev.frostlake.values.BinaryValue;
 
 import java.util.List;
 
-public class Concat extends BuiltInFunction {
+public class Concat extends TextArgumentFunction {
     public Concat() {
         super("CONCAT", StringType.VARCHAR);
     }
@@ -31,14 +32,48 @@ public class Concat extends BuiltInFunction {
     public Object evaluate(final List<Object> args) {
         // Snowflake: CONCAT returns NULL if ANY input is NULL (skipping them silently turned a missed
         // lookup's NULL prefix into ':' and the value survived where Snowflake yields NULL).
-        final StringBuilder result = new StringBuilder();
         for (final Object arg : args) {
             if (arg == null) {
                 return null;
             }
+        }
+        // All-BINARY inputs concatenate BYTE-wise and yield BINARY, so a downstream HEX_ENCODE /
+        // LENGTH / SUBSTR still sees bytes rather than the hex rendering.
+        if (isAllBinary(args)) {
+            return concatBytes(args);
+        }
+        final StringBuilder result = new StringBuilder();
+        for (final Object arg : args) {
             result.append(SharedFunctionHelpers.textOf(arg));
         }
         return result.toString();
+    }
+
+    private boolean isAllBinary(final List<Object> args) {
+        if (args.isEmpty()) {
+            return false;
+        }
+        for (final Object arg : args) {
+            if (!(arg instanceof BinaryValue)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private BinaryValue concatBytes(final List<Object> args) {
+        int total = 0;
+        for (final Object arg : args) {
+            total += ((BinaryValue) arg).length();
+        }
+        final byte[] joined = new byte[total];
+        int at = 0;
+        for (final Object arg : args) {
+            final byte[] bytes = ((BinaryValue) arg).bytes();
+            System.arraycopy(bytes, 0, joined, at, bytes.length);
+            at += bytes.length;
+        }
+        return BinaryValue.of(joined);
     }
 
     @Override

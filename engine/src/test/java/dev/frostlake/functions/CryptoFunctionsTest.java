@@ -123,15 +123,17 @@ public class CryptoFunctionsTest {
         assertNotEquals(q("SELECT HMAC('msg', 'key1')"), q("SELECT HMAC('msg', 'key2')"));
     }
 
-    // ENCRYPT / DECRYPT round-trip
+    // ENCRYPT / DECRYPT round-trip (both return BINARY, as in Snowflake)
     @Test public void testEncryptDecryptRoundTrip() {
-        engine.execute("CREATE TABLE secrets (plain VARCHAR, cipher VARCHAR)");
+        engine.execute("CREATE TABLE secrets (plain VARCHAR, cipher BINARY)");
         engine.execute("INSERT INTO secrets VALUES ('hello world', ENCRYPT('hello world', 'mypassword'))");
 
-        ResultSet rs = engine.executeQuery("SELECT plain, DECRYPT(cipher, 'mypassword') FROM secrets");
+        ResultSet rs = engine.executeQuery(
+            "SELECT plain, DECRYPT(cipher, 'mypassword') = TO_BINARY(plain, 'UTF-8') FROM secrets");
         assertEquals(1, rs.getRowCount());
         assertEquals("hello world", rs.getRows().get(0).getValue(0).toString());
-        assertEquals("hello world", rs.getRows().get(0).getValue(1).toString());
+        assertEquals(Boolean.TRUE, rs.getRows().get(0).getValue(1),
+            "DECRYPT returns the plaintext bytes as BINARY");
     }
     @Test public void testEncryptProducesNonPlaintext() {
         String cipher = q("SELECT ENCRYPT('secret', 'key')").toString();

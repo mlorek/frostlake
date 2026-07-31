@@ -17,8 +17,11 @@
 package dev.frostlake.functions.scalar.semistructured;
 
 import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.functions.scalar.ArrayFunctionHelper;
+import tools.jackson.databind.JsonNode;
 import dev.frostlake.types.NumericType;
 
+import java.math.BigDecimal;
 import java.util.List;
 
 public class AsInteger extends BuiltInFunction {
@@ -26,12 +29,22 @@ public class AsInteger extends BuiltInFunction {
 
     @Override
     public Object evaluate(final List<Object> args) {
+        // Live-verified: only an INTEGRAL variant number passes through — AS_INTEGER of 2.5 is
+        // NULL, never a rounded or truncated value.
         if (args.get(0) == null) return null;
-        Object v = args.get(0);
-        if (v instanceof Number) return ((Number) v).longValue();
-        try { return Long.parseLong(v.toString()); } catch (final Exception e) { return null; }
+        final JsonNode node = ArrayFunctionHelper.parseNode(args.get(0));
+        if (node != null && node.isNumber()) {
+            final BigDecimal dec = node.decimalValue().stripTrailingZeros();
+            return dec.scale() <= 0 ? (Object) dec.longValue() : null;
+        }
+        final Object v = args.get(0);
+        if (v instanceof Number) {
+            final BigDecimal dec = new BigDecimal(v.toString()).stripTrailingZeros();
+            return dec.scale() <= 0 ? (Object) dec.longValue() : null;
+        }
+        return null;
     }
 
     @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return 1; }
+    @Override public int getMaxArgCount() { return 2; }
 }

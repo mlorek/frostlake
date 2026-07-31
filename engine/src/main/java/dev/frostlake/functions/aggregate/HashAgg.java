@@ -17,6 +17,7 @@
 package dev.frostlake.functions.aggregate;
 
 import dev.frostlake.functions.AggregateFunction;
+import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.types.NumericType;
 
 import java.util.List;
@@ -37,6 +38,19 @@ public class HashAgg extends AggregateFunction {
     @Override
     public Accumulator createAccumulator() {
         return new HashAggAccumulator();
+    }
+
+    /**
+     * A GEOSPATIAL value is not hashable here, where an OBJECT is. Live, {@code HASH_AGG(o)}
+     * over a populated OBJECT column returns a number while {@code HASH_AGG(g)} over a GEOGRAPHY is
+     * "Invalid argument types for function 'HASH_AGG': (GEOGRAPHY)" (SQLSTATE 42P13) — so the
+     * inherited default, which reads the two semi-structured answers and finds neither, would be wrong.
+     * The SCALAR {@code HASH(g)} is deliberately untouched: it ACCEPTS a geo value live and returned
+     * one hash per row.
+     */
+    @Override
+    public SemiStructuredRejection geoRejection(final int position) {
+        return SemiStructuredRejection.ARGUMENT_TYPES;
     }
 
     @Override

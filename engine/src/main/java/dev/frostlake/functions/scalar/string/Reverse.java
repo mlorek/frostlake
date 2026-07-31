@@ -16,21 +16,36 @@
 
 package dev.frostlake.functions.scalar.string;
 
-import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.functions.TextArgumentFunction;
 import dev.frostlake.types.StringType;
+import dev.frostlake.values.BinaryValue;
 
 import java.util.List;
 
-public class Reverse extends BuiltInFunction {
+/**
+ * REVERSE(expr) — a VARCHAR reversed by characters, or a BINARY reversed by BYTES.
+ *
+ * <p>{@code REVERSE(TO_BINARY('AABBCC','HEX'))} is {@code CCBBAA}; reversing the hex rendering
+ * instead swapped the nibbles within each byte too.
+ */
+public class Reverse extends TextArgumentFunction {
     public Reverse() {
         super("REVERSE", StringType.VARCHAR);
     }
 
     @Override
     public Object evaluate(final List<Object> args) {
-        if (args.get(0) == null) return null;
-        String str = args.get(0).toString();
-        return new StringBuilder(str).reverse().toString();
+        final Object value = args.get(0);
+        if (value == null) return null;
+        if (value instanceof BinaryValue) {
+            final byte[] source = ((BinaryValue) value).bytes();
+            final byte[] reversed = new byte[source.length];
+            for (int i = 0; i < source.length; i++) {
+                reversed[i] = source[source.length - 1 - i];
+            }
+            return BinaryValue.of(reversed);
+        }
+        return new StringBuilder(value.toString()).reverse().toString();
     }
 
     @Override

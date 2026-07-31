@@ -21,6 +21,7 @@ import dev.frostlake.metastore.model.Function;
 import dev.frostlake.metastore.model.Parameter;
 import dev.frostlake.metastore.model.UdfLanguage;
 import dev.frostlake.types.TypeCategory;
+import dev.frostlake.values.BinaryValue;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.node.ArrayNode;
 import tools.jackson.databind.node.ObjectNode;
@@ -75,7 +76,7 @@ public class PythonExecutor {
                 // normalization PARSE_JSON and OBJECT_CONSTRUCT apply. The engine compares VARIANTs by
                 // their JSON TEXT, so a dict emitted in insertion order compared unequal to a structurally
                 // identical PARSE_JSON'd object even when the data was the same.
-                return ArrayFunctionHelper.toCanonicalJson(semiStructured);
+                return ArrayFunctionHelper.toCanonicalVariant(semiStructured);
             }
             return javaResult;
         } catch (final Exception e) {
@@ -185,6 +186,9 @@ public class PythonExecutor {
         if (parameter.getDataType() != null
                 && parameter.getDataType().getCategory() == TypeCategory.SEMI_STRUCTURED
                 && PythonRuntime.bindJson(name, value)) {
+            return;
+        }
+        if (value instanceof BinaryValue && PythonRuntime.bindBytes(name, ((BinaryValue) value).toHex())) {
             return;
         }
         PythonRuntime.bind(name, value);

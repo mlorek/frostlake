@@ -57,14 +57,14 @@ public class ToJsonTest extends BaseDatabaseTest {
 
     @Test
     public void plainStringSerializesQuoted() {
-        assertEquals("\"hello\"", q("SELECT TO_JSON('hello')"));
+        assertEquals("\"hello\"", q("SELECT TO_JSON(TO_VARIANT('hello'))"));
     }
 
     @Test
     public void stringWithJsonLikePrefixStaysAString() {
         // "2026-04-20 12:00:00" starts with a valid JSON number token; a lenient parser that ignored
         // trailing tokens would truncate it to 2026. It must serialize as the full quoted string.
-        assertEquals("\"2026-04-20 12:00:00\"", q("SELECT TO_JSON('2026-04-20 12:00:00')"));
+        assertEquals("\"2026-04-20 12:00:00\"", q("SELECT TO_JSON(TO_VARIANT('2026-04-20 12:00:00'))"));
     }
 
     @Test

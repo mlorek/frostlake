@@ -18,66 +18,72 @@ package dev.frostlake.ddl;
 
 import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
+import dev.frostlake.storage.Row;
 import org.junit.jupiter.api.Test;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Tests for DROP commands (TABLE, VIEW, SCHEMA, DATABASE)
+ * Tests for DROP commands (TABLE, VIEW, SCHEMA, DATABASE).
+ *
+ * <p>The listings are read through the SHOW commands and probed for the objects this test itself
+ * created, never for a total row count: a real account carries objects of its own, so only the
+ * presence or absence of a named object is a portable assertion.
  */
 public class DropCommandsTest extends BaseDatabaseTest {
+
+    /** Whether the SHOW listing carries a row whose {@code name} column is this object. */
+    private boolean listed(final String showSql, final String name) {
+        final ResultSet rs = engine.executeQuery(showSql);
+        final int nameColumn = rs.getColumnIndex("name");
+        for (final Row row : rs.getRows()) {
+            if (name.equalsIgnoreCase(String.valueOf(row.getValue(nameColumn)))) {
+                return true;
+            }
+        }
+        return false;
+    }
 
     @Test
     public void testDropTable() {
         engine.execute("CREATE TABLE users (id INTEGER, username VARCHAR)");
-
-        ResultSet tablesBefore = engine.showTables();
-        assertEquals(1, tablesBefore.getRowCount(), "Should have one table");
+        assertTrue(listed("SHOW TABLES", "USERS"), "the created table should be listed");
 
         engine.execute("DROP TABLE users");
 
-        ResultSet tablesAfter = engine.showTables();
-        assertEquals(0, tablesAfter.getRowCount(), "Should have no tables");
+        assertFalse(listed("SHOW TABLES", "USERS"), "the dropped table should be gone");
     }
 
     @Test
     public void testDropView() {
         engine.execute("CREATE TABLE users (id INTEGER, name VARCHAR)");
         engine.execute("CREATE VIEW user_view AS SELECT * FROM users");
-
-        ResultSet viewsBefore = engine.showViews();
-        assertEquals(1, viewsBefore.getRowCount(), "Should have one view");
+        assertTrue(listed("SHOW VIEWS", "USER_VIEW"), "the created view should be listed");
 
         engine.execute("DROP VIEW user_view");
 
-        ResultSet viewsAfter = engine.showViews();
-        assertEquals(0, viewsAfter.getRowCount(), "Should have no views");
+        assertFalse(listed("SHOW VIEWS", "USER_VIEW"), "the dropped view should be gone");
     }
 
     @Test
     public void testDropSchema() {
         engine.execute("CREATE SCHEMA drop_test_schema");
-
-        ResultSet schemasBefore = engine.showSchemas();
-        int countBefore = schemasBefore.getRowCount();
+        assertTrue(listed("SHOW SCHEMAS", "DROP_TEST_SCHEMA"), "the created schema should be listed");
 
         engine.execute("DROP SCHEMA drop_test_schema");
 
-        ResultSet schemasAfter = engine.showSchemas();
-        assertEquals(countBefore - 1, schemasAfter.getRowCount(), "Should have one less schema");
+        assertFalse(listed("SHOW SCHEMAS", "DROP_TEST_SCHEMA"), "the dropped schema should be gone");
     }
 
     @Test
     public void testDropDatabase() {
         engine.execute("CREATE DATABASE drop_test_db");
-
-        ResultSet dbsBefore = engine.showDatabases();
-        int countBefore = dbsBefore.getRowCount();
+        assertTrue(listed("SHOW DATABASES", "DROP_TEST_DB"), "the created database should be listed");
 
         engine.execute("DROP DATABASE drop_test_db");
 
-        ResultSet dbsAfter = engine.showDatabases();
-        assertEquals(countBefore - 1, dbsAfter.getRowCount(), "Should have one less database");
+        assertFalse(listed("SHOW DATABASES", "DROP_TEST_DB"), "the dropped database should be gone");
     }
 
     @Test
@@ -87,7 +93,7 @@ public class DropCommandsTest extends BaseDatabaseTest {
 
         engine.execute("DROP TABLE users");
 
-        ResultSet tables = engine.showTables();
-        assertEquals(1, tables.getRowCount(), "Should still have products table");
+        assertFalse(listed("SHOW TABLES", "USERS"), "the dropped table should be gone");
+        assertTrue(listed("SHOW TABLES", "PRODUCTS"), "the other table should survive");
     }
 }

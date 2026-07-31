@@ -18,6 +18,7 @@ package dev.frostlake.ddl;
 
 import dev.frostlake.BaseJdbcTest;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -78,15 +79,20 @@ public class CreateOrReplaceProcedureTest extends BaseJdbcTest {
 
     @Test
     public void testCreateOrReplaceProcedureWithIfNotExists() throws SQLException {
-        logger.info("Testing CREATE OR REPLACE PROCEDURE with IF NOT EXISTS");
+        logger.info("Testing CREATE OR REPLACE PROCEDURE with IF NOT EXISTS is rejected");
 
         // Create original
         statement.execute("CREATE PROCEDURE triple_number(n INTEGER) RETURNS INTEGER AS 'BEGIN RETURN n * 3; END;'");
 
-        // This should replace despite IF NOT EXISTS
-        statement.execute("CREATE OR REPLACE PROCEDURE IF NOT EXISTS triple_number(n INTEGER) RETURNS INTEGER AS 'BEGIN RETURN n * 4; END;'");
-
-        logger.info("OR REPLACE with IF NOT EXISTS succeeded");
+        // Live-verified: the two options are mutually exclusive
+        final SQLException exception = assertThrows(SQLException.class, new Executable() {
+            @Override
+            public void execute() throws SQLException {
+                statement.execute("CREATE OR REPLACE PROCEDURE IF NOT EXISTS triple_number(n INTEGER) RETURNS INTEGER AS 'BEGIN RETURN n * 4; END;'");
+            }
+        });
+        assertTrue(exception.getMessage().contains("options IF NOT EXISTS and OR REPLACE are incompatible"),
+            "unexpected message: " + exception.getMessage());
     }
 
     @Test

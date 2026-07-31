@@ -17,6 +17,7 @@
 package dev.frostlake.executor.commands;
 
 import dev.frostlake.metastore.Catalog;
+import dev.frostlake.executor.ParseTreeText;
 import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.parser.FrostlakeParser;
@@ -38,33 +39,13 @@ public interface CommandHandler {
 
     default String getText(final FrostlakeParser.QualifiedNameContext ctx) {
         if (ctx == null) return null;
-        List<FrostlakeParser.IdentifierContext> identifiers = ctx.identifier();
-        if (identifiers.isEmpty()) return null;
-
-        StringBuilder sb = new StringBuilder();
-        for (int i = 0; i < identifiers.size(); i++) {
-            if (i > 0) sb.append(".");
-            sb.append(getText(identifiers.get(i)));
-        }
-        if (ctx.TABLE() != null) {
-            sb.append(sb.length() > 0 ? ".TABLE" : "TABLE");   // db.table — trailing part named "table"
-        }
-        return sb.toString();
+        return ParseTreeText.getQualifiedName(ctx);
     }
 
     /** The identifier parts of a qualified name (db, schema, name), read from the parse tree instead of
      *  by splitting its flattened text on '.' — correct even for a quoted identifier containing a dot. */
     default String[] qualifiedNameParts(final FrostlakeParser.QualifiedNameContext ctx) {
-        final List<FrostlakeParser.IdentifierContext> ids = ctx.identifier();
-        final boolean trailingTable = ctx.TABLE() != null;   // db.table — a part literally named "table"
-        final String[] parts = new String[ids.size() + (trailingTable ? 1 : 0)];
-        for (int i = 0; i < ids.size(); i++) {
-            parts[i] = getText(ids.get(i));
-        }
-        if (trailingTable) {
-            parts[parts.length - 1] = "TABLE";
-        }
-        return parts;
+        return ParseTreeText.qualifiedNameParts(ctx);
     }
 
     /**

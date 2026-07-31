@@ -17,6 +17,7 @@
 package dev.frostlake.executor;
 
 import dev.frostlake.metastore.Catalog;
+import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.QueryHistory;
 import dev.frostlake.metastore.QueryHistoryTracker;
 import dev.frostlake.metastore.model.Database;
@@ -24,6 +25,7 @@ import dev.frostlake.metastore.model.ForeignKeyConstraint;
 import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.TableColumn;
+import dev.frostlake.metastore.model.UniqueConstraint;
 import dev.frostlake.security.SecurityManager;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
@@ -334,27 +336,71 @@ final class ShowSessionExecutor {
      * SHOW PRIMARY/UNIQUE KEYS with a scope: one row per key column of every table in the scope —
      * TABLE name (or a bare qualified name), a SCHEMA, a DATABASE, or the whole ACCOUNT; a null
      * scope name means the current one (a nameless TABLE scope lists the current schema's tables).
+     *
+     * <p>The column shape is Snowflake's (live-verified): {@code created_on, database_name, schema_name,
+     * table_name, column_name, key_sequence, constraint_name, rely, comment}. Unlike
+     * {@code INFORMATION_SCHEMA.TABLE_CONSTRAINTS}, which reports one row per CONSTRAINT, SHOW … KEYS keeps
+     * one row per key COLUMN (live-verified): a composite PRIMARY KEY over (a, b) is two rows numbered
+     * {@code key_sequence} 1 and 2 that SHARE one {@code constraint_name}. A multi-column UNIQUE behaves the
+     * same way; a column-level UNIQUE is its own single-column constraint and always numbers 1.
      */
     public ResultSet showKeysScoped(final boolean primary, final String scopeKind, final String scopeName) {
         final List<ResultSetColumn> cols = Arrays.asList(
+            new ResultSetColumn("created_on", StringType.VARCHAR),
+            new ResultSetColumn("database_name", StringType.VARCHAR),
             new ResultSetColumn("schema_name", StringType.VARCHAR),
             new ResultSetColumn("table_name", StringType.VARCHAR),
             new ResultSetColumn("column_name", StringType.VARCHAR),
             new ResultSetColumn("key_sequence", NumericType.INTEGER),
-            new ResultSetColumn("constraint_name", StringType.VARCHAR));
+            new ResultSetColumn("constraint_name", StringType.VARCHAR),
+            new ResultSetColumn("rely", StringType.VARCHAR),
+            new ResultSetColumn("comment", StringType.VARCHAR));
         final List<Row> rows = new ArrayList<>();
         for (final Schema schema : schemasInScope(scopeKind, scopeName)) {
+            final String dbName = databaseNameOf(schema);
             for (final Table table : tablesInScope(schema, scopeKind, scopeName)) {
-                int seq = 1;
-                for (final TableColumn col : table.getColumns()) {
-                    if (primary ? col.isPrimaryKey() : col.isUnique()) {
-                        rows.add(new Row(Arrays.asList(schema.getName(), table.getName(), col.getName(),
-                            seq++, "SYS_CONSTRAINT_" + table.getName() + "_" + (primary ? "PK" : "UK"))));
+                if (primary) {
+                    int seq = 1;
+                    for (final TableColumn col : table.getColumns()) {
+                        if (col.isPrimaryKey()) {
+                            rows.add(keyRow(dbName, schema, table, col.getName(), seq++,
+                                table.primaryKeyConstraintName(), col.getRely()));
+                        }
+                    }
+                } else {
+                    for (final UniqueConstraint unique : table.getUniqueConstraints()) {
+                        int seq = 1;
+                        for (final String columnName : unique.getColumnNames()) {
+                            final Boolean rely = table.hasColumn(columnName)
+                                ? table.getColumn(columnName).getRely() : null;
+                            rows.add(keyRow(dbName, schema, table, columnName, seq++,
+                                unique.getConstraintName(), rely));
+                        }
                     }
                 }
             }
         }
         return new ResultSet(cols, rows);
+    }
+
+    /** One SHOW … KEYS row: a key column, its position within its constraint, and the constraint's name. */
+    private Row keyRow(final String dbName, final Schema schema, final Table table, final String columnName,
+                       final int keySequence, final String constraintName, final Boolean rely) {
+        return new Row(Arrays.asList(
+            table.getCreatedTime().toString(),
+            dbName,
+            schema.getName(),
+            table.getName(),
+            columnName,
+            keySequence,
+            constraintName,
+            relyText(rely),
+            null));
+    }
+
+    /** SHOW … KEYS reports RELY as a lower-case boolean; a constraint without RELY reports "false". */
+    private static String relyText(final Boolean rely) {
+        return rely != null && rely ? "true" : "false";
     }
 
     /** SHOW IMPORTED KEYS: one row per foreign-key column of every table in the scope (see showKeysScoped). */
@@ -389,12 +435,38 @@ final class ShowSessionExecutor {
                             fk.getOnUpdate() != null ? fk.getOnUpdate() : "NO ACTION",
                             fk.getOnDelete() != null ? fk.getOnDelete() : "NO ACTION",
                             fk.getConstraintName(),
-                            "SYS_CONSTRAINT_" + fk.getReferencedTable() + "_PK")));
+                            referencedPrimaryKeyName(schema, fk.getReferencedTable()))));
                     }
                 }
             }
         }
         return new ResultSet(cols, rows);
+    }
+
+    /** The database a scope schema belongs to — Schema itself carries no back-reference to its database. */
+    private String databaseNameOf(final Schema schema) {
+        for (final Database db : catalog.getAllDatabases()) {
+            for (final Schema candidate : db.getAllSchemas()) {
+                if (candidate == schema) {
+                    return db.getName();
+                }
+            }
+        }
+        return catalog.getCurrentDatabase();
+    }
+
+    /** The name of the PRIMARY KEY constraint a foreign key points at, or null when it cannot be resolved. */
+    private String referencedPrimaryKeyName(final Schema schema, final String referencedTable) {
+        final String bare = QualifiedName.parse(referencedTable).last();
+        Table target = schema.hasTable(bare) ? schema.getTable(bare) : null;
+        if (target == null) {
+            try {
+                target = catalog.resolveTable(referencedTable);
+            } catch (final RuntimeException e) {
+                return null;   // the referenced table is gone or lives outside this catalog
+            }
+        }
+        return target != null ? target.primaryKeyConstraintName() : null;
     }
 
     /** The schemas a keys listing spans: current schema, a named schema, a database's schemas, or all. */

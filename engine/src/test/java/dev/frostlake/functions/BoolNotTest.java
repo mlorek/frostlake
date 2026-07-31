@@ -19,8 +19,10 @@ package dev.frostlake.functions;
 import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertNull;
 
 public class BoolNotTest extends BaseDatabaseTest {
@@ -33,7 +35,13 @@ public class BoolNotTest extends BaseDatabaseTest {
     @Test
     public void testNotTrue() {
         assertEquals(false, q("SELECT BOOLNOT(1)"));
-        assertEquals(false, q("SELECT BOOLNOT(true)"));
+        // BOOLNOT takes numeric/variant truthiness, not a BOOLEAN (live-verified rejection).
+        assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                q("SELECT BOOLNOT(true)");
+            }
+        });
     }
 
     @Test

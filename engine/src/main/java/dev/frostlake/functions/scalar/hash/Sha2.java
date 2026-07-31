@@ -17,30 +17,26 @@
 package dev.frostlake.functions.scalar.hash;
 
 import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.types.StringType;
 
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.util.List;
 
+/**
+ * SHA2(msg [, bits]) — the lowercase hex SHA-2 digest (256 by default) of the message bytes.
+ *
+ * <p>A BINARY message is digested as its OWN bytes, so {@code SHA2(TO_BINARY('61','HEX'))} equals
+ * {@code SHA2('a')}.
+ */
 public class Sha2 extends BuiltInFunction {
     public Sha2() { super("SHA2", StringType.VARCHAR); }
 
     @Override
     public Object evaluate(final List<Object> args) {
         if (args.get(0) == null) return null;
-        int bits = args.size() > 1 && args.get(1) != null ? ((Number) args.get(1)).intValue() : 256;
-        String algo = "SHA-" + bits;
-        try {
-            MessageDigest md = MessageDigest.getInstance(algo);
-            byte[] digest = md.digest(args.get(0).toString().getBytes(StandardCharsets.UTF_8));
-            StringBuilder sb = new StringBuilder();
-            for (final byte b : digest) sb.append(String.format("%02x", b));
-            return sb.toString();
-        } catch (final NoSuchAlgorithmException e) {
-            throw new RuntimeException("Algorithm not available: " + algo);
-        }
+        final int bits = args.size() > 1 && args.get(1) != null ? ((Number) args.get(1)).intValue() : 256;
+        return SharedFunctionHelpers.toHex(
+            SharedFunctionHelpers.digest("SHA-" + bits, SharedFunctionHelpers.toUtf8(args.get(0))));
     }
 
     @Override public int getMinArgCount() { return 1; }

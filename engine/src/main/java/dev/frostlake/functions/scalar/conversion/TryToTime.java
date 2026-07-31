@@ -29,7 +29,7 @@ import java.util.List;
 public class TryToTime extends BuiltInFunction {
     private final ToTime base = new ToTime();
 
-    public TryToTime() { super("TRY_TO_TIME", DateTimeType.TIMESTAMP_NTZ); }
+    public TryToTime() { super("TRY_TO_TIME", DateTimeType.TIME); }
 
     @Override
     public Object evaluate(final List<Object> args) {

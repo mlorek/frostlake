@@ -19,6 +19,7 @@ package dev.frostlake.executor;
 import dev.frostlake.executor.expressions.BinaryOperator;
 import dev.frostlake.executor.expressions.UnaryOperator;
 import dev.frostlake.executor.procedural.*;
+import dev.frostlake.functions.SystemFunctionNames;
 import dev.frostlake.metastore.*;
 import dev.frostlake.metastore.model.*;
 import dev.frostlake.parser.FrostlakeParser;
@@ -100,7 +101,7 @@ public class VisitorExpressionBuilder {
         if (ctx instanceof FrostlakeParser.BindVarExprContext) {
             // :varname — procedural variable binding, treat as variable reference
             String varName = visitor.getText(((FrostlakeParser.BindVarExprContext) ctx).identifier());
-            return new VariableExpression(varName);
+            return new VariableExpression(varName, true);
         }
 
         if (ctx instanceof FrostlakeParser.SessionVarExprContext) {
@@ -131,18 +132,6 @@ public class VisitorExpressionBuilder {
             }
 
             return new FunctionCallExpression(funcName, args);
-        }
-
-        if (ctx instanceof FrostlakeParser.ExecuteImmediateExprContext) {
-            FrostlakeParser.ExecuteImmediateExprContext execCtx = (FrostlakeParser.ExecuteImmediateExprContext) ctx;
-            BaseExpression sqlExpr = buildExpression(execCtx.expression());
-            List<BaseExpression> binds = new ArrayList<>();
-            if (execCtx.expressionList() != null) {
-                for (final FrostlakeParser.ExpressionContext bindCtx : execCtx.expressionList().expression()) {
-                    binds.add(buildExpression(bindCtx));
-                }
-            }
-            return new ExecuteImmediateExpression(sqlExpr, binds);
         }
 
         if (ctx instanceof FrostlakeParser.ConcatExprContext) {
@@ -216,15 +205,33 @@ public class VisitorExpressionBuilder {
     }
 
     /**
-     * Simplified expression evaluation for immediate values (like DEFAULT)
+     * Simplified expression evaluation for immediate values (like DEFAULT), in a Snowflake Scripting
+     * expression context — a bare name may be a scripting variable here (a {@code LET} / {@code :=}
+     * right-hand side, an {@code IF} condition, {@code RETURN <expr>}, a {@code DECLARE … DEFAULT}).
      */
     public Object evaluateExpression(final FrostlakeParser.ExpressionContext ctx) {
+        return evaluateExpression(ctx, true);
+    }
+
+    /**
+     * Evaluate an expression that sits in an <b>embedded SQL statement</b> rather than in a scripting
+     * expression (a CALL argument — Snowflake dispatches CALL as SQL — or a session {@code SET} value).
+     * A bare name is an identifier there, never a stored-procedure parameter / {@code DECLARE}d /
+     * {@code LET} variable: Snowflake answers {@code invalid identifier '<NAME>'} and requires the
+     * {@code :name} bind form. Session variables stay visible, as they are in Snowflake SQL.
+     */
+    public Object evaluateSqlExpression(final FrostlakeParser.ExpressionContext ctx) {
+        return evaluateExpression(ctx, false);
+    }
+
+    private Object evaluateExpression(final FrostlakeParser.ExpressionContext ctx,
+                                      final boolean scriptingNamesVisible) {
         if (ctx instanceof FrostlakeParser.LiteralExprContext) {
             return visitor.parseLiteral(((FrostlakeParser.LiteralExprContext) ctx).literal());
         }
         if (ctx instanceof FrostlakeParser.SystemUserTaskCancelExprContext) {
             FrostlakeParser.SystemUserTaskCancelExprContext sctx = (FrostlakeParser.SystemUserTaskCancelExprContext) ctx;
-            Object nameVal = evaluateExpression(sctx.expression());
+            Object nameVal = evaluateExpression(sctx.expression(), scriptingNamesVisible);
             String taskName = nameVal != null ? nameVal.toString().toUpperCase().replaceAll("^'|'$", "") : "";
             try {
                 Catalog cat = queryExecutor.getCatalog();
@@ -240,7 +247,7 @@ public class VisitorExpressionBuilder {
         }
         if (ctx instanceof FrostlakeParser.SystemStreamHasDataExprContext) {
             FrostlakeParser.SystemStreamHasDataExprContext sshd = (FrostlakeParser.SystemStreamHasDataExprContext) ctx;
-            Object nameVal = evaluateExpression(sshd.expression());
+            Object nameVal = evaluateExpression(sshd.expression(), scriptingNamesVisible);
             String streamName = nameVal != null ? nameVal.toString().toUpperCase().replaceAll("^'|'$", "") : "";
             try {
                 Catalog cat = queryExecutor.getCatalog();
@@ -256,12 +263,12 @@ public class VisitorExpressionBuilder {
             }
         }
         if (ctx instanceof FrostlakeParser.SystemFuncExprContext) {
-            return evaluateSystemFunc((FrostlakeParser.SystemFuncExprContext) ctx);
+            return evaluateSystemFunc((FrostlakeParser.SystemFuncExprContext) ctx, scriptingNamesVisible);
         }
         if (ctx instanceof FrostlakeParser.ConcatExprContext) {
             FrostlakeParser.ConcatExprContext cc = (FrostlakeParser.ConcatExprContext) ctx;
-            Object left = evaluateExpression(cc.expression(0));
-            Object right = evaluateExpression(cc.expression(1));
+            Object left = evaluateExpression(cc.expression(0), scriptingNamesVisible);
+            Object right = evaluateExpression(cc.expression(1), scriptingNamesVisible);
             if (left == null || right == null) return null;
             return left.toString() + right.toString();
         }
@@ -289,13 +296,13 @@ public class VisitorExpressionBuilder {
         if (ctx instanceof FrostlakeParser.QualifiedNameExprContext) {
             // This might be a variable reference
             String varName = ((FrostlakeParser.QualifiedNameExprContext) ctx).qualifiedName().getText();
-            if (visitor.getProceduralExecutor() != null) {
+            if (scriptingNamesVisible && visitor.getProceduralExecutor() != null) {
                 Object varValue = visitor.getProceduralExecutor().getVariable(varName);
                 if (varValue != null) {
                     return varValue;
                 }
             }
-            // Fall back to session variables
+            // Fall back to session variables — those ARE referenceable from SQL in Snowflake.
             SecurityManager sm = queryExecutor.getSecurityManager();
             Object sessionVal = sm != null
                 ? sm.getSessionContext().getSessionParameter(varName)
@@ -303,15 +310,19 @@ public class VisitorExpressionBuilder {
             if (sessionVal != null) {
                 return sessionVal;
             }
+            if (!scriptingNamesVisible) {
+                throw new RuntimeException("invalid identifier '" + varName.toUpperCase() + "'");
+            }
         }
         if (ctx instanceof FrostlakeParser.ParenExprContext) {
             // Recursively evaluate the expression inside parentheses
-            return evaluateExpression(unwrapValue(((FrostlakeParser.ParenExprContext) ctx).booleanExpr()));
+            return evaluateExpression(
+                unwrapValue(((FrostlakeParser.ParenExprContext) ctx).booleanExpr()), scriptingNamesVisible);
         }
         if (ctx instanceof FrostlakeParser.UnaryExprContext) {
             // Handle unary expressions like -20002
             FrostlakeParser.UnaryExprContext unaryCtx = (FrostlakeParser.UnaryExprContext) ctx;
-            Object operand = evaluateExpression(unaryCtx.expression());
+            Object operand = evaluateExpression(unaryCtx.expression(), scriptingNamesVisible);
             String operator = unaryCtx.op.getText();
 
             if (operator.equals("-") && operand instanceof Number) {
@@ -327,47 +338,58 @@ public class VisitorExpressionBuilder {
             }
             // For other cases, fall through
         }
-        if (ctx instanceof FrostlakeParser.ExecuteImmediateExprContext) {
-            // Build the expression and evaluate it via ProceduralExecutor
-            BaseExpression expr = buildExpression(ctx);
-            if (visitor.getProceduralExecutor() != null) {
-                return visitor.getProceduralExecutor().evaluateExpression(expr);
-            }
-        }
         // For any other construct (CAST / CASE / a variant path o:a:b / array access / IN / BETWEEN / …):
-        // when a procedural context is active, build it into the procedural AST and evaluate through the
+        // in a SCRIPTING expression, build it into the procedural AST and evaluate through the
         // ProceduralExecutor, which supplies the current scripting variables as a resolution context (the
         // same path buildExpression's own fallback uses). A bare "SELECT <text>" cannot see procedural
         // variables, so e.g. a DECLARE initializer that is a variant path over a script variable
         // (v := o:result:code) silently returned its own literal text "o:result:code".
-        if (visitor.getProceduralExecutor() != null) {
+        if (scriptingNamesVisible && visitor.getProceduralExecutor() != null) {
             return visitor.getProceduralExecutor().evaluateExpression(buildExpression(ctx));
         }
-        // No procedural context (e.g. DDL-time constant evaluation): evaluate via SELECT <expr> at runtime.
+        // A SQL context (or DDL-time constant evaluation): evaluate via SELECT <expr> at runtime, with no
+        // scripting names in scope — a bare one surfaces Snowflake's identifier error from the query layer.
         String exprText = visitor.getOriginalText(ctx);
         if (exprText != null && !exprText.isBlank() && queryExecutor != null) {
+            if (!scriptingNamesVisible) {
+                // In a SQL context the failure IS the answer, so it propagates rather than degrading to
+                // the expression's own text (which would silently pass "v" along as a string).
+                return firstCellOfSelect(exprText);
+            }
             try {
-                List<ResultSet> results =
-                    queryExecutor.execute("SELECT " + exprText);
-                if (!results.isEmpty() && results.get(0).getRowCount() > 0) {
-                    return results.get(0).getRows().get(0).getValue(0);
-                }
-                return null;
-            } catch (final Exception ignored) {}
+                return firstCellOfSelect(exprText);
+            } catch (final Exception ignored) {
+                // best-effort in a scripting context: fall through to the raw text
+            }
         }
         return ctx.getText();
+    }
+
+    /** The first cell of {@code SELECT <exprText>}, or null when the query yields no row. */
+    private Object firstCellOfSelect(final String exprText) {
+        final List<ResultSet> results = queryExecutor.execute("SELECT " + exprText);
+        return !results.isEmpty() && results.get(0).getRowCount() > 0
+            ? results.get(0).getRows().get(0).getValue(0) : null;
     }
 
     /**
      * Evaluate a SYSTEM$FUNCNAME(...) expression.
      * Handles general SYSTEM$ functions not covered by dedicated grammar rules.
      */
-    private Object evaluateSystemFunc(final FrostlakeParser.SystemFuncExprContext ctx) {
+    private Object evaluateSystemFunc(final FrostlakeParser.SystemFuncExprContext ctx,
+                                      final boolean scriptingNamesVisible) {
         String rawName = ctx.SYSTEM_FUNC().getText().toUpperCase(); // e.g. SYSTEM$WAIT
+        // Same guard as SystemFunctionEvaluator: SystemFunctionNames is the single declaration of the
+        // SYSTEM$ family, shared with SHOW FUNCTIONS via FunctionRegistry.allDispatchableNames(). This
+        // parse-tree path and the expression-AST path both consult it, so neither switch can grow a name
+        // the listing does not know about.
+        if (!SystemFunctionNames.contains(rawName)) {
+            throw new RuntimeException("Unsupported system function: " + rawName);
+        }
         List<Object> args = new ArrayList<>();
         if (ctx.expressionList() != null) {
             for (final FrostlakeParser.ExpressionContext argCtx : ctx.expressionList().expression()) {
-                args.add(evaluateExpression(argCtx));
+                args.add(evaluateExpression(argCtx, scriptingNamesVisible));
             }
         }
 
@@ -450,7 +472,7 @@ public class VisitorExpressionBuilder {
             }
 
             case "SYSTEM$STREAM_GET_TABLE_TIMESTAMP": {
-                return LocalDateTime.now().toString();
+                return LocalDateTime.now();
             }
 
             // ── Session / transaction ──────────────────────────────────────────

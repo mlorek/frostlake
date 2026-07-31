@@ -17,6 +17,8 @@
 package dev.frostlake.executor.expressions;
 
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
+import dev.frostlake.values.BinaryValue;
+import dev.frostlake.values.VariantValue;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -59,14 +61,14 @@ final class ValueCaster {
                 if (value instanceof Number) {
                     return ((Number) value).doubleValue();
                 }
-                return Double.parseDouble(value.toString().trim());
+                try {
+                    return Double.parseDouble(castSourceText(value));
+                } catch (final NumberFormatException notApproximate) {
+                    throw numericCastFailure(value, "REAL");
+                }
 
-            case DECIMAL: {
-                final BigDecimal number = (value instanceof Number)
-                    ? new BigDecimal(value.toString())
-                    : new BigDecimal(value.toString().trim());
-                return applyNumberScaleAndPrecision(number, targetType);
-            }
+            case DECIMAL:
+                return applyNumberScaleAndPrecision(toBigDecimalCast(value, "FIXED"), targetType);
 
             case STRING: {
                 // A quoted JSON string (the path-extraction form for structural-looking string values)
@@ -97,17 +99,15 @@ final class ValueCaster {
                 return SemiStructuredCasts.toObjectText(value);
 
             case BINARY:
-                if (value instanceof byte[]) {
+                // Snowflake's VARCHAR-to-BINARY cast interprets the string as hex (an illegal hex
+                // string is an error); an existing binary value passes through unchanged.
+                if (value instanceof BinaryValue) {
                     return value;
                 }
-                if (value instanceof String) {
-                    String strValue = (String) value;
-                    if (strValue.startsWith("0x") || strValue.startsWith("0X")) {
-                        return hexStringToBytes(strValue.substring(2));
-                    }
-                    return strValue.getBytes();
+                if (value instanceof byte[]) {
+                    return BinaryValue.of((byte[]) value);
                 }
-                return value.toString().getBytes();
+                return BinaryValue.fromHex(value.toString());
 
             default:
                 return value;
@@ -154,18 +154,53 @@ final class ValueCaster {
     private static long toIntegerCast(final Object value) {
         final BigDecimal decimal = value instanceof BigDecimal
             ? (BigDecimal) value
-            : new BigDecimal(value.toString().trim());
+            : toBigDecimalCast(value, "FIXED");
         return decimal.setScale(0, RoundingMode.HALF_UP).longValue();
     }
 
-    private static byte[] hexStringToBytes(final String hex) {
-        int len = hex.length();
-        byte[] data = new byte[len / 2];
-        for (int i = 0; i < len; i += 2) {
-            data[i / 2] = (byte) ((Character.digit(hex.charAt(i), 16) << 4)
-                    + Character.digit(hex.charAt(i + 1), 16));
+    /**
+     * The exact numeric value a cast reads off its source, or Snowflake's rejection when the source is not
+     * a number. Snowflake reports the two source shapes DIFFERENTLY, live-verified on a real
+     * account: a VARIANT that cannot become a number fails with {@code Failed to cast variant value {} to
+     * FIXED} (SQLSTATE 22000, error 100071) — {@code REAL} for the approximate targets — while a plain
+     * string fails with {@code Numeric value '{}' is not recognized} (SQLSTATE 22018, error 100038). Both
+     * previously escaped as the raw JDK text ("Character { is neither a decimal digit number…"), which
+     * named neither the value nor the target.
+     */
+    private static BigDecimal toBigDecimalCast(final Object value, final String family) {
+        if (value instanceof Number) {
+            return new BigDecimal(value.toString());
         }
-        return data;
+        try {
+            return new BigDecimal(castSourceText(value));
+        } catch (final NumberFormatException notNumeric) {
+            throw numericCastFailure(value, family);
+        }
+    }
+
+    /**
+     * The text a scalar cast parses from its source. A VARIANT holding a JSON STRING is read as that
+     * string's CONTENT, so {@code PARSE_JSON('"42"')::NUMBER} is 42 on a real account (live-verified)
+     * rather than a parse of the quoted form. Only a VARIANT is unwrapped: a plain VARCHAR
+     * whose text happens to start with a quote is its own literal content.
+     */
+    private static String castSourceText(final Object value) {
+        if (value instanceof VariantValue) {
+            final String jsonStringContent = SemiStructuredCasts.quotedJsonStringText(value);
+            if (jsonStringContent != null) {
+                return jsonStringContent.trim();
+            }
+        }
+        return value.toString().trim();
+    }
+
+    /** Snowflake's rejection of a source that cannot become the numeric {@code family} (FIXED or REAL). */
+    private static RuntimeException numericCastFailure(final Object value, final String family) {
+        if (value instanceof VariantValue) {
+            return new RuntimeException("Failed to cast variant value "
+                + ((VariantValue) value).text() + " to " + family);
+        }
+        return new RuntimeException("Numeric value '" + value + "' is not recognized");
     }
 
     /** Fold spelled-out type aliases onto their canonical names, so every downstream stage —

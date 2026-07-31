@@ -16,12 +16,12 @@
 
 package dev.frostlake.functions.scalar.math;
 
-import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.functions.NumericArgumentFunction;
 import dev.frostlake.types.NumericType;
 
 import java.util.List;
 
-public class BitShiftLeft extends BuiltInFunction {
+public class BitShiftLeft extends NumericArgumentFunction {
     public BitShiftLeft() { super("BITSHIFTLEFT", NumericType.INTEGER); }
 
     @Override

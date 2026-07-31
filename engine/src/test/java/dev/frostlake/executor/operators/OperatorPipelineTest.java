@@ -16,6 +16,7 @@
 
 package dev.frostlake.executor.operators;
 
+import dev.frostlake.executor.expressions.BinaryOperator;
 import dev.frostlake.executor.expressions.ColumnReferenceExpression;
 import dev.frostlake.executor.expressions.Expression;
 import dev.frostlake.functions.FunctionRegistry;
@@ -773,5 +774,102 @@ public class OperatorPipelineTest {
         // Should filter to only Engineering
         assertEquals(1, result.size());
         assertEquals("Engineering", result.get(0).getValue(0));
+    }
+
+    @Test
+    public void testAsofJoinOperator() {
+        // ASOF JOIN: for each left row, the CLOSEST right row satisfying the MATCH_CONDITION, left-outer.
+        // Live-verified against Snowflake: `>=` keeps the GREATEST qualifying right value, and a left row
+        // with no qualifying right row survives null-extended.
+        List<TableColumn> rightColumns = Arrays.asList(
+            new TableColumn("user_id", NumericType.INTEGER, true, null, false, false, false),
+            new TableColumn("as_of", NumericType.INTEGER, true, null, false, false, false)
+        );
+        Table quoteTable = new Table("quotes", rightColumns, false);
+
+        List<Row> quotes = new ArrayList<>();
+        quotes.add(new Row(Arrays.asList(1L, 20L)));
+        quotes.add(new Row(Arrays.asList(1L, 26L)));
+        quotes.add(new Row(Arrays.asList(1L, 40L)));
+
+        // MATCH_CONDITION (users.age >= quotes.as_of): age is index 2 on the left, as_of index 1 right.
+        final Expression leftKey = new ColumnReferenceExpression("age");
+        final Expression rightKey = new ColumnReferenceExpression("as_of");
+        final RowExpressionEvaluator leftEval = new RowExpressionEvaluator() {
+            @Override
+            public Object evaluate(final Expression expr, final Row row) {
+                return row.getValue(2);
+            }
+        };
+        final RowExpressionEvaluator rightEval = new RowExpressionEvaluator() {
+            @Override
+            public Object evaluate(final Expression expr, final Row row) {
+                return row.getValue(1);
+            }
+        };
+
+        OperatorContext context = OperatorContext.builder()
+            .table(testTable)
+            .functionRegistry(functionRegistry)
+            .build();
+
+        AsofJoinOperator asofOp = new AsofJoinOperator(testTable, quoteTable, quotes,
+            BinaryOperator.GREATER_THAN_OR_EQUAL, leftKey, leftEval, rightKey, rightEval, null);
+
+        List<Row> result = asofOp.execute(testData, context);
+
+        // Every left row survives, widened by the right table's two columns.
+        assertEquals(5, result.size());
+        assertEquals(5, result.get(0).getValues().size());
+        // Alice (30) -> 26, Bob (25) -> 20, Charlie (35) -> 26, David (28) -> 26, Eve (32) -> 26.
+        assertEquals(26L, result.get(0).getValue(4));
+        assertEquals(20L, result.get(1).getValue(4));
+        assertEquals(26L, result.get(2).getValue(4));
+        assertEquals(26L, result.get(3).getValue(4));
+        assertEquals(26L, result.get(4).getValue(4));
+    }
+
+    @Test
+    public void testAsofJoinOperatorKeepsUnmatchedLeftRows() {
+        List<TableColumn> rightColumns = Arrays.asList(
+            new TableColumn("as_of", NumericType.INTEGER, true, null, false, false, false)
+        );
+        Table quoteTable = new Table("quotes", rightColumns, false);
+
+        List<Row> quotes = new ArrayList<>();
+        quotes.add(new Row(Arrays.asList(31L)));
+
+        final Expression leftKey = new ColumnReferenceExpression("age");
+        final Expression rightKey = new ColumnReferenceExpression("as_of");
+        final RowExpressionEvaluator leftEval = new RowExpressionEvaluator() {
+            @Override
+            public Object evaluate(final Expression expr, final Row row) {
+                return row.getValue(2);
+            }
+        };
+        final RowExpressionEvaluator rightEval = new RowExpressionEvaluator() {
+            @Override
+            public Object evaluate(final Expression expr, final Row row) {
+                return row.getValue(0);
+            }
+        };
+
+        OperatorContext context = OperatorContext.builder()
+            .table(testTable)
+            .functionRegistry(functionRegistry)
+            .build();
+
+        AsofJoinOperator asofOp = new AsofJoinOperator(testTable, quoteTable, quotes,
+            BinaryOperator.GREATER_THAN_OR_EQUAL, leftKey, leftEval, rightKey, rightEval, null);
+
+        List<Row> result = asofOp.execute(testData, context);
+
+        assertEquals(5, result.size());
+        // Only Charlie (35) and Eve (32) reach 31; the rest are null-extended.
+        assertNull(result.get(0).getValue(3));
+        assertNull(result.get(1).getValue(3));
+        assertEquals(31L, result.get(2).getValue(3));
+        assertNull(result.get(3).getValue(3));
+        assertEquals(31L, result.get(4).getValue(3));
     }
 }

@@ -18,7 +18,8 @@ package dev.frostlake.functions.scalar.semistructured;
 
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
-import dev.frostlake.types.VariantType;
+import dev.frostlake.types.ArrayType;
+import dev.frostlake.values.VariantValue;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.node.ArrayNode;
 
@@ -26,18 +27,23 @@ import java.util.List;
 
 /** ARRAY_REMOVE(array, value) — removes all occurrences of value from array. */
 public class ArrayRemove extends BuiltInFunction {
-    public ArrayRemove() { super("ARRAY_REMOVE", VariantType.VARIANT); }
+    public ArrayRemove() { super("ARRAY_REMOVE", ArrayType.ARRAY); }
 
     @Override
     public Object evaluate(final List<Object> args) {
         ArrayNode src = ArrayFunctionHelper.parseArray(args.get(0));
         if (src == null) return null;
+        // A SQL NULL "value to remove" propagates — live: ARRAY_REMOVE(ARRAY_CONSTRUCT(1,NULL,2),
+        // NULL) is SQL NULL (it does NOT strip the undefined), while ARRAY_REMOVE over the same array with a
+        // JSON null needle leaves it untouched ([1,undefined,2]) and only PARSE_JSON('[1,null,2]') loses its
+        // JSON null ([1,2]).
+        if (args.get(1) == null) return null;
         JsonNode target = ArrayFunctionHelper.toNode(ArrayFunctionHelper.MAPPER, args.get(1));
         ArrayNode result = ArrayFunctionHelper.MAPPER.createArrayNode();
         for (final JsonNode el : src) {
             if (!ArrayFunctionHelper.nodesEqual(el, target)) result.add(el);
         }
-        return result.toString();
+        return VariantValue.ofNode(result);
     }
 
     @Override public int getMinArgCount() { return 2; }

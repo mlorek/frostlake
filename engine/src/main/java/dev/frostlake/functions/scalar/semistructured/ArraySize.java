@@ -16,7 +16,7 @@
 
 package dev.frostlake.functions.scalar.semistructured;
 
-import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.functions.VariantAccessorFunction;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
 import dev.frostlake.types.NumericType;
 import tools.jackson.databind.node.ArrayNode;
@@ -24,7 +24,7 @@ import tools.jackson.databind.node.ArrayNode;
 import java.util.List;
 
 /** ARRAY_SIZE(array) — returns the number of elements. */
-public class ArraySize extends BuiltInFunction {
+public class ArraySize extends VariantAccessorFunction {
     public ArraySize() { super("ARRAY_SIZE", NumericType.INTEGER); }
 
     @Override

@@ -21,13 +21,17 @@ import dev.frostlake.storage.ResultSet;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /**
  * EXECUTE IMMEDIATE '<sql with ? placeholders>' USING (v1, v2, ...) — Snowflake-style positional bind
- * variables. Covers the three execution paths (top-level statement, procedural statement, and the
- * parenthesized expression form) plus quote-escaping of a string bind.
+ * variables. USING is Snowflake SCRIPTING syntax: it is legal only inside a BEGIN…END block and a
+ * session-level EXECUTE IMMEDIATE rejects it, so the covered paths are procedural with a literal source
+ * and with a :variable source, plus quote-escaping of a string bind. EXECUTE IMMEDIATE is a statement,
+ * not an expression: embedding it in a RETURN expression is a syntax error.
  */
 public class ExecuteImmediateUsingTest {
 
@@ -49,11 +53,43 @@ public class ExecuteImmediateUsingTest {
     }
 
     @Test
-    public void usingBindsLiteralsInTopLevelStatement() {
+    public void usingIsRejectedInATopLevelStatement() {
+        // Live-verified: USING is Snowflake Scripting syntax — at session level EXECUTE IMMEDIATE takes
+        // no USING clause and fails with "Unsupported statement type 'EXECUTE'".
         engine.execute("CREATE TABLE t (id INTEGER, name VARCHAR)");
-        engine.execute("EXECUTE IMMEDIATE 'INSERT INTO t VALUES (?, ?)' USING (1, 'Alice')");
-        final ResultSet rs = engine.executeQuery("SELECT name FROM t WHERE id = 1");
-        assertEquals("Alice", rs.getRows().get(0).getValue(0).toString());
+        assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.execute("EXECUTE IMMEDIATE 'INSERT INTO t VALUES (?, ?)' USING (1, 'Alice')");
+            }
+        });
+        assertEquals(0, engine.executeQuery("SELECT name FROM t").getRowCount());
+    }
+
+    /**
+     * The two live wordings of a session-level USING rejection, measured one statement per cell:
+     * an argument that is not a bare name is a SYNTAX error at that argument's own position, while
+     * a list of names parses and then fails "Unsupported statement type 'EXECUTE'.".
+     */
+    @Test
+    public void topLevelUsingWordingsMatchLive() {
+        final RuntimeException literalArg = assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.execute("EXECUTE IMMEDIATE 'SELECT ?' USING (1)");
+            }
+        });
+        assertEquals("SQL compilation error:\nsyntax error line 1 at position 36 unexpected '1'.",
+            literalArg.getMessage());
+
+        final RuntimeException nameArg = assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.execute("EXECUTE IMMEDIATE 'SELECT ?' USING (myv)");
+            }
+        });
+        assertEquals("SQL compilation error:\nUnsupported statement type 'EXECUTE'.",
+            nameArg.getMessage());
     }
 
     @Test
@@ -70,26 +106,50 @@ public class ExecuteImmediateUsingTest {
     }
 
     @Test
-    public void usingBindsInExpressionForm() {
+    public void usingBindsWithVariableSqlSourceInBlock() {
         engine.execute("CREATE TABLE p (id INTEGER, price INTEGER)");
         engine.execute("INSERT INTO p VALUES (1, 50), (2, 150), (3, 250)");
-        // The Snowflake docs shape: rs := (EXECUTE IMMEDIATE :query USING (minimum_price)).
-        final ResultSet rs = engine.executeQuery(
+        engine.execute("CREATE TABLE p_out (cnt INTEGER)");
+        // The dynamic SQL text arrives via a :variable and the bind value via USING.
+        engine.executeQuery(
             "DECLARE minp INTEGER DEFAULT 100; "
-            + "        q STRING DEFAULT 'SELECT COUNT(*) FROM p WHERE price > ?'; "
+            + "        q STRING DEFAULT 'INSERT INTO p_out SELECT COUNT(*) FROM p WHERE price > ?'; "
             + "BEGIN "
-            + "  RETURN (EXECUTE IMMEDIATE :q USING (minp)); "
+            + "  EXECUTE IMMEDIATE :q USING (minp); "
+            + "  RETURN 'ok'; "
             + "END");
-        // The expression form yields the bound query's ResultSet (RETURN wraps it as the cell value).
-        final ResultSet inner = (ResultSet) rs.getRows().get(0).getValue(0);
-        assertEquals("2", inner.getRows().get(0).getValue(0).toString());   // prices 150, 250
+        final ResultSet rs = engine.executeQuery("SELECT cnt FROM p_out");
+        assertEquals("2", rs.getRows().get(0).getValue(0).toString());   // prices 150, 250
+    }
+
+    @Test
+    public void executeImmediateInsideReturnExpressionIsRejected() {
+        engine.execute("CREATE TABLE r (id INTEGER)");
+        // EXECUTE IMMEDIATE is a statement, not an expression: RETURN (EXECUTE IMMEDIATE ...) is a
+        // syntax error.
+        assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.executeQuery(
+                    "DECLARE q STRING DEFAULT 'SELECT COUNT(*) FROM r'; "
+                    + "BEGIN "
+                    + "  RETURN (EXECUTE IMMEDIATE :q); "
+                    + "END");
+            }
+        });
     }
 
     @Test
     public void usingEscapesStringBind() {
         engine.execute("CREATE TABLE q (name VARCHAR)");
-        // The bind value contains a single quote — must be escaped, not break the inner INSERT.
-        engine.execute("EXECUTE IMMEDIATE 'INSERT INTO q VALUES (?)' USING ('O''Brien')");
+        // The bind value contains a single quote — must be escaped, not break the inner INSERT. USING
+        // lives inside a block, so the binding runs there.
+        engine.executeQuery("""
+            DECLARE nm VARCHAR DEFAULT 'O''Brien';
+            BEGIN
+              EXECUTE IMMEDIATE 'INSERT INTO q VALUES (?)' USING (nm);
+              RETURN 'ok';
+            END""");
         final ResultSet rs = engine.executeQuery("SELECT name FROM q");
         assertEquals("O'Brien", rs.getRows().get(0).getValue(0).toString());
     }

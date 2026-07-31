@@ -19,6 +19,7 @@ package dev.frostlake.features;
 import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.metastore.QueryHistory;
 import dev.frostlake.metastore.QueryHistoryTracker;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -40,6 +41,9 @@ public class QueryHistoryTrackerTest extends BaseDatabaseTest {
 
     @Test
     public void trackerRecordsAndFiltersExecutedQueries() {
+        Assumptions.assumeFalse(isLiveSnowflake(),
+            "reads the embedded QueryHistoryTracker (engine.getExecutor()) and expects the statements it "
+            + "just ran to be its entire contents; a live session's statements never reach that tracker");
         final QueryHistoryTracker tracker = engine.getExecutor().getQueryHistoryTracker();
         tracker.clear();
 

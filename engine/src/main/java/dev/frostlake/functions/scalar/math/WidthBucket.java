@@ -16,12 +16,12 @@
 
 package dev.frostlake.functions.scalar.math;
 
-import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.functions.NumericArgumentFunction;
 import dev.frostlake.types.NumericType;
 
 import java.util.List;
 
-public class WidthBucket extends BuiltInFunction {
+public class WidthBucket extends NumericArgumentFunction {
     public WidthBucket() { super("WIDTH_BUCKET", NumericType.INTEGER); }
 
     @Override

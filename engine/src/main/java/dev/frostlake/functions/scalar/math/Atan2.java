@@ -16,12 +16,12 @@
 
 package dev.frostlake.functions.scalar.math;
 
-import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.functions.NumericArgumentFunction;
 import dev.frostlake.types.NumericType;
 
 import java.util.List;
 
-public class Atan2 extends BuiltInFunction {
+public class Atan2 extends NumericArgumentFunction {
     public Atan2() { super("ATAN2", NumericType.DOUBLE); }
 
     @Override

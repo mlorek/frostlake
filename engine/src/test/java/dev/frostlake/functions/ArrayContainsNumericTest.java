@@ -18,9 +18,11 @@ package dev.frostlake.functions;
 
 import dev.frostlake.BaseDatabaseTest;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -46,9 +48,19 @@ public class ArrayContainsNumericTest extends BaseDatabaseTest {
     }
 
     @Test
-    public void arrayContainsStillMatchesText() {
-        assertTrue((Boolean) scalar("SELECT ARRAY_CONTAINS('b', ARRAY_CONSTRUCT('a', 'b', 'c'))"));
-        assertFalse((Boolean) scalar("SELECT ARRAY_CONTAINS('z', ARRAY_CONSTRUCT('a', 'b', 'c'))"));
+    public void arrayContainsNeedsAVariantNeedleForText() {
+        // Live-verified on a real account: the needle must be VARIANT-coercible, and a
+        // VARCHAR is NOT — ARRAY_CONTAINS('b', [..]) fails "Invalid argument types for function
+        // 'ARRAY_CONTAINS': (VARCHAR(1), ARRAY)", as do a DATE and a BINARY needle, while a NUMBER, a
+        // BOOLEAN and an explicit ::VARIANT all work. Cast the text and the match runs.
+        assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                scalar("SELECT ARRAY_CONTAINS('b', ARRAY_CONSTRUCT('a', 'b', 'c'))");
+            }
+        });
+        assertTrue((Boolean) scalar("SELECT ARRAY_CONTAINS('b'::VARIANT, ARRAY_CONSTRUCT('a', 'b', 'c'))"));
+        assertFalse((Boolean) scalar("SELECT ARRAY_CONTAINS('z'::VARIANT, ARRAY_CONSTRUCT('a', 'b', 'c'))"));
     }
 
     @Test

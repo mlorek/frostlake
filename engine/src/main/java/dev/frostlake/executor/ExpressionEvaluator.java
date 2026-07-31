@@ -21,13 +21,16 @@ import dev.frostlake.executor.expressions.Expression;
 import dev.frostlake.executor.expressions.ExpressionEvaluatorVisitor;
 import dev.frostlake.executor.expressions.LiteralExpression;
 import dev.frostlake.executor.expressions.LiteralType;
+import dev.frostlake.executor.expressions.SortKeyRole;
 import dev.frostlake.executor.expressions.SubqueryMemo;
 import dev.frostlake.functions.FunctionRegistry;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.storage.Row;
+import dev.frostlake.types.DataType;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Evaluates expressions against rows.
@@ -46,6 +49,7 @@ public class ExpressionEvaluator {
     private Map<String, Object> outerLateralContext;
     private Map<String, Table> multiTableAliasToTable;
     private List<Table> multiTableAllTables;
+    private Set<String> scopeExemptNames;
     private Map<String, Object> resultContext;
     // One memo per evaluator instance (= one outer query's row loop). Evaluators are created per
     // operator-execution and never pooled, so cached uncorrelated-subquery results never leak across
@@ -147,6 +151,127 @@ public class ExpressionEvaluator {
      */
     public Object evaluate(final String expression, final Row row) {
         return evaluate(parse(expression), row);
+    }
+
+    /**
+     * Plan-time strict-argument validation over a parsed expression: runs the Snowflake
+     * argument-type checks for every function call in {@code expression} WITHOUT evaluating it,
+     * so rejection fires even over zero input rows.
+     */
+    public void validateStrict(final Expression expression) {
+        if (reusableVisitor == null) {
+            reusableVisitor = new ExpressionEvaluatorVisitor(table, null, functionRegistry, catalog);
+        }
+        reusableVisitor.setQueryExecutor(queryExecutor);
+        reusableVisitor.setScopeExemptNames(scopeExemptNames);
+        if (multiTableAllTables != null) {
+            reusableVisitor.setMultiTableContext(multiTableAliasToTable, multiTableAllTables);
+        }
+        reusableVisitor.validateStrictArguments(expression);
+    }
+
+    /** Bare names the plan-time scope walk must not reject — the query's SELECT output aliases /
+     *  output column names, legal in every non-SELECT clause (WHERE included, live-verified). */
+    public void setScopeExemptNames(final Set<String> names) {
+        this.scopeExemptNames = names;
+    }
+
+    /** {@link #validateStrict} for a WINDOW call re-formed without its OVER clause — the walk runs
+     *  with the windowed marker set, so the bare-form desugared-name rewrites stay off (live reports
+     * the WRITTEN name for windowed forms, measured). */
+    public void validateStrictWindowed(final Expression expression) {
+        if (reusableVisitor == null) {
+            reusableVisitor = new ExpressionEvaluatorVisitor(table, null, functionRegistry, catalog);
+        }
+        reusableVisitor.setWindowedStrictWalk(true);
+        try {
+            reusableVisitor.setQueryExecutor(queryExecutor);
+            reusableVisitor.setScopeExemptNames(scopeExemptNames);
+            if (multiTableAllTables != null) {
+                reusableVisitor.setMultiTableContext(multiTableAliasToTable, multiTableAllTables);
+            }
+            reusableVisitor.validateStrictArguments(expression);
+        } finally {
+            reusableVisitor.setWindowedStrictWalk(false);
+        }
+    }
+
+    /**
+     * Key-position validation: Snowflake rejects a FILE-typed expression used as a GROUP BY, ORDER BY
+     * or window PARTITION BY key at compile time, while leaving it usable everywhere else (equality,
+     * DISTINCT, joins). Run once per query on each parsed key, before any row is compared.
+     */
+    public void validateKey(final Expression expression, final SortKeyRole role) {
+        if (reusableVisitor == null) {
+            reusableVisitor = new ExpressionEvaluatorVisitor(table, null, functionRegistry, catalog);
+        }
+        reusableVisitor.setQueryExecutor(queryExecutor);
+        if (multiTableAllTables != null) {
+            reusableVisitor.setMultiTableContext(multiTableAliasToTable, multiTableAllTables);
+        }
+        reusableVisitor.validateKeyExpression(expression, role);
+    }
+
+    /**
+     * WITHIN GROUP (ORDER BY …) value validation: Snowflake rejects a semi-structured value in the
+     * position an ordering aggregate accumulates, with the same "incompatible types" sentence
+     * {@code MEDIAN} uses for its argument. Run once per query on the parsed clause expression.
+     */
+    public void validateOrderedValue(final Expression expression) {
+        if (reusableVisitor == null) {
+            reusableVisitor = new ExpressionEvaluatorVisitor(table, null, functionRegistry, catalog);
+        }
+        reusableVisitor.setQueryExecutor(queryExecutor);
+        if (multiTableAllTables != null) {
+            reusableVisitor.setMultiTableContext(multiTableAliasToTable, multiTableAllTables);
+        }
+        reusableVisitor.validateOrderedValueExpression(expression);
+    }
+
+    /**
+     * Predicate-position validation (Snowflake rejects VARCHAR/NUMBER-typed WHERE conditions at
+     * compile time) — run once per query on the parsed predicate before row evaluation.
+     *
+     * <p>The GEOSPATIAL comparison walk runs here too. It is a separate, deliberately NARROW walk
+     * rather than the full {@link #validateStrict} one: a WHERE clause is where a geo comparison is
+     * actually written ({@code WHERE g = TO_GEOGRAPHY(…)}, {@code JOIN … ON a.g = b.g} lowered into a
+     * filter), live refuses every such spelling, and a rule that can only fire on a statically
+     * GEOGRAPHY- or GEOMETRY-typed operand cannot reject anything else. Running the whole strict walk
+     * here would newly enforce the OBJECT / FILE operator rules in predicate position as well, which
+     * has not been measured and is not this rule's business.
+     */
+    public void validatePredicate(final Expression expression) {
+        if (reusableVisitor == null) {
+            reusableVisitor = new ExpressionEvaluatorVisitor(table, null, functionRegistry, catalog);
+        }
+        reusableVisitor.setQueryExecutor(queryExecutor);
+        if (multiTableAllTables != null) {
+            reusableVisitor.setMultiTableContext(multiTableAliasToTable, multiTableAllTables);
+        }
+        reusableVisitor.validatePredicateType(expression);
+        reusableVisitor.validateGeoComparisons(expression);
+    }
+
+    /**
+     * The type {@code expression} is statically KNOWN to produce in this table context, or null when it
+     * cannot be determined. Used at projection time to give a derived relation (subquery, CTE, view) a
+     * typed column list, so an outer reference to one of its columns resolves to the inner expression's
+     * type instead of the VARCHAR placeholder. Never throws: an expression this evaluator cannot even
+     * look at is simply undetermined.
+     */
+    public DataType inferStaticType(final Expression expression) {
+        if (reusableVisitor == null) {
+            reusableVisitor = new ExpressionEvaluatorVisitor(table, null, functionRegistry, catalog);
+        }
+        reusableVisitor.setQueryExecutor(queryExecutor);
+        if (multiTableAllTables != null) {
+            reusableVisitor.setMultiTableContext(multiTableAliasToTable, multiTableAllTables);
+        }
+        try {
+            return reusableVisitor.inferStaticType(expression);
+        } catch (final RuntimeException undetermined) {
+            return null;
+        }
     }
 
     /**

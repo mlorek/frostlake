@@ -19,9 +19,12 @@ package dev.frostlake.functions;
 import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * The conditional functions defined in terms of CASE short-circuit: only the selected branch is
@@ -105,6 +108,16 @@ public class ConditionalShortCircuitTest extends BaseDatabaseTest {
     @Test
     public void testWrongArityStillReportsFunctionError() {
         // Arity mismatches fall through to the eager path so the function's own validation reports it.
-        assertEquals(1L, ((Number) one("SELECT COALESCE(1)")).longValue());
+        // COALESCE needs at least TWO arguments — live-verified on a real account,
+        // SELECT COALESCE(1) fails "not enough arguments for function [COALESCE(1)], expected 2, got 1"
+        // (GREATEST(1) and LEAST(1), by contrast, are fine there).
+        final RuntimeException tooFew = assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                one("SELECT COALESCE(1)");
+            }
+        });
+        assertTrue(tooFew.getMessage().contains("not enough arguments"), tooFew.getMessage());
+        assertEquals(1L, ((Number) one("SELECT COALESCE(NULL, 1)")).longValue());
     }
 }

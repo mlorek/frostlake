@@ -18,6 +18,7 @@ package dev.frostlake.features;
 
 import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
@@ -31,8 +32,13 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
  */
 public class HybridTableTest extends BaseDatabaseTest {
 
+    private static final String HYBRID_UNAVAILABLE =
+        "hybrid tables are not available on every Snowflake account (unsupported on trial editions) and a "
+        + "real one demands a PRIMARY KEY, so a plain CREATE HYBRID TABLE cannot be created there";
+
     @Test
     public void createHybridTableBehavesAsNormalTable() {
+        Assumptions.assumeFalse(isLiveSnowflake(), HYBRID_UNAVAILABLE);
         engine.execute("""
             CREATE HYBRID TABLE IF NOT EXISTS h1 (
                 k1      VARCHAR NOT NULL,
@@ -46,15 +52,22 @@ public class HybridTableTest extends BaseDatabaseTest {
         final ResultSet rs = engine.executeQuery("SELECT status FROM h1");
         assertEquals("active", rs.getRows().get(0).getValue(0));
 
-        // The PRIMARY KEY constraint survives (one row per key column in TABLE_CONSTRAINTS).
+        // The PRIMARY KEY constraint survives as ONE row in TABLE_CONSTRAINTS (one row per CONSTRAINT,
+        // not per key column) under the name its CONSTRAINT clause gave it.
         final ResultSet pk = engine.executeQuery(
             "SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS "
             + "WHERE TABLE_NAME = 'H1' AND CONSTRAINT_TYPE = 'PRIMARY KEY'");
-        assertEquals(2L, ((Number) pk.getRows().get(0).getValue(0)).longValue());
+        assertEquals(1L, ((Number) pk.getRows().get(0).getValue(0)).longValue());
+
+        final ResultSet pkName = engine.executeQuery(
+            "SELECT CONSTRAINT_NAME FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS "
+            + "WHERE TABLE_NAME = 'H1' AND CONSTRAINT_TYPE = 'PRIMARY KEY'");
+        assertEquals("PK_H1", pkName.getRows().get(0).getValue(0));
     }
 
     @Test
     public void createHybridTableViaExecuteImmediate() {
+        Assumptions.assumeFalse(isLiveSnowflake(), HYBRID_UNAVAILABLE);
         // HYBRID TABLE inside a dynamic-SQL string.
         assertDoesNotThrow(new Executable() {
             @Override
@@ -69,6 +82,7 @@ public class HybridTableTest extends BaseDatabaseTest {
 
     @Test
     public void showHybridTablesListsOnlyHybridTables() {
+        Assumptions.assumeFalse(isLiveSnowflake(), HYBRID_UNAVAILABLE);
         engine.execute("CREATE HYBRID TABLE hyb (a INT)");
         engine.execute("CREATE TABLE plain (a INT)");
 
@@ -80,6 +94,7 @@ public class HybridTableTest extends BaseDatabaseTest {
 
     @Test
     public void showTablesReportsHybridKind() {
+        Assumptions.assumeFalse(isLiveSnowflake(), HYBRID_UNAVAILABLE);
         engine.execute("CREATE HYBRID TABLE hyb (a INT)");
         engine.execute("CREATE TABLE plain (a INT)");
 

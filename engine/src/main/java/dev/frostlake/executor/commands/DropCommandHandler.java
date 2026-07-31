@@ -17,6 +17,7 @@
 package dev.frostlake.executor.commands;
 
 import dev.frostlake.executor.QueryExecutor;
+import dev.frostlake.executor.StatementErrors;
 import dev.frostlake.metastore.*;
 import dev.frostlake.metastore.model.*;
 import dev.frostlake.parser.FrostlakeParser;
@@ -528,7 +529,7 @@ public class DropCommandHandler implements CommandHandler {
             return null;
         } catch (final Exception e) {
             if (e instanceof SecurityException) throw (SecurityException) e;
-            throw new RuntimeException("Failed to execute DROP statement: " + e.getMessage(), e);
+            throw StatementErrors.propagate(e);
         }
     }
 

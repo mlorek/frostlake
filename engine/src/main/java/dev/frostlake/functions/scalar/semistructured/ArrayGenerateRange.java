@@ -18,7 +18,8 @@ package dev.frostlake.functions.scalar.semistructured;
 
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
-import dev.frostlake.types.VariantType;
+import dev.frostlake.types.ArrayType;
+import dev.frostlake.values.VariantValue;
 import tools.jackson.databind.node.ArrayNode;
 
 import java.util.List;
@@ -28,7 +29,7 @@ import java.util.List;
  * (EXCLUSIVE). step defaults to 1 and may be negative. Returns an empty array when the range is empty.
  */
 public class ArrayGenerateRange extends BuiltInFunction {
-    public ArrayGenerateRange() { super("ARRAY_GENERATE_RANGE", VariantType.VARIANT); }
+    public ArrayGenerateRange() { super("ARRAY_GENERATE_RANGE", ArrayType.ARRAY); }
 
     @Override
     public Object evaluate(final List<Object> args) {
@@ -46,7 +47,7 @@ public class ArrayGenerateRange extends BuiltInFunction {
         } else if (step < 0) {
             for (long i = start; i > stop; i += step) result.add(i);
         }
-        return result.toString();
+        return VariantValue.ofNode(result);
     }
 
     @Override public int getMinArgCount() { return 2; }

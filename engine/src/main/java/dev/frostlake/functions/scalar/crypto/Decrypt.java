@@ -18,18 +18,17 @@ package dev.frostlake.functions.scalar.crypto;
 
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
-import dev.frostlake.types.StringType;
+import dev.frostlake.types.BinaryType;
+import dev.frostlake.values.BinaryValue;
 
-import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
-import java.util.Base64;
 import java.util.List;
 import javax.crypto.Cipher;
 import javax.crypto.spec.GCMParameterSpec;
 import javax.crypto.spec.SecretKeySpec;
 
 public class Decrypt extends BuiltInFunction {
-    public Decrypt() { super("DECRYPT", StringType.VARCHAR); }
+    public Decrypt() { super("DECRYPT", BinaryType.BINARY); }
 
     @Override
     public Object evaluate(final List<Object> args) {
@@ -37,14 +36,17 @@ public class Decrypt extends BuiltInFunction {
         try {
             byte[] key = Arrays.copyOf(
                 SharedFunctionHelpers.digest("SHA-256", SharedFunctionHelpers.toUtf8(args.get(1))), 32);
-            byte[] combined = Base64.getDecoder().decode(args.get(0).toString());
+            byte[] combined = SharedFunctionHelpers.binaryArgBytes(args.get(0), "DECRYPT");
             byte[] iv  = Arrays.copyOf(combined, 12);
             byte[] enc = Arrays.copyOfRange(combined, 12, combined.length);
             Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
             cipher.init(Cipher.DECRYPT_MODE,
                 new SecretKeySpec(key, "AES"),
                 new GCMParameterSpec(128, iv));
-            return new String(cipher.doFinal(enc), StandardCharsets.UTF_8);
+            // Snowflake's DECRYPT returns BINARY (cast the result to VARCHAR to read text).
+            return BinaryValue.of(cipher.doFinal(enc));
+        } catch (final RuntimeException e) {
+            throw e;
         } catch (final Exception e) {
             throw new RuntimeException("DECRYPT failed: " + e.getMessage());
         }

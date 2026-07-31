@@ -18,7 +18,9 @@ package dev.frostlake.functions.scalar.semistructured;
 
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
-import dev.frostlake.types.VariantType;
+import dev.frostlake.types.ArrayType;
+import dev.frostlake.values.VariantUndefined;
+import dev.frostlake.values.VariantValue;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.node.ArrayNode;
 
@@ -30,7 +32,7 @@ import java.util.List;
  * absolute position exceeds the array size, empty (null) elements pad the gap between the source and element.
  */
 public class ArrayInsert extends BuiltInFunction {
-    public ArrayInsert() { super("ARRAY_INSERT", VariantType.VARIANT); }
+    public ArrayInsert() { super("ARRAY_INSERT", ArrayType.ARRAY); }
 
     @Override
     public Object evaluate(final List<Object> args) {
@@ -39,7 +41,9 @@ public class ArrayInsert extends BuiltInFunction {
         if (args.get(1) == null) return null;
         final int n = src.size();
         final int pos = ((Number) args.get(1)).intValue();
-        final JsonNode element = ArrayFunctionHelper.toNode(ArrayFunctionHelper.MAPPER, args.get(2));
+        // Live: ARRAY_INSERT([1], 4, 9) is [1,undefined,undefined,undefined,9] — both the
+        // inserted SQL NULL and the padding are VARIANT `undefined`, whose TYPEOF is SQL NULL.
+        final JsonNode element = ArrayFunctionHelper.toElementNode(ArrayFunctionHelper.MAPPER, args.get(2));
         final ArrayNode result = ArrayFunctionHelper.MAPPER.createArrayNode();
 
         if (pos >= 0) {
@@ -49,7 +53,7 @@ public class ArrayInsert extends BuiltInFunction {
                 for (int i = pos; i < n; i++) result.add(src.get(i));
             } else {
                 for (int i = 0; i < n; i++) result.add(src.get(i));
-                for (int i = n; i < pos; i++) result.addNull();
+                for (int i = n; i < pos; i++) result.add(VariantUndefined.node());
                 result.add(element);
             }
         } else {
@@ -60,11 +64,11 @@ public class ArrayInsert extends BuiltInFunction {
                 for (int i = target; i < n; i++) result.add(src.get(i));
             } else {
                 result.add(element);
-                for (int i = target; i < -1; i++) result.addNull();
+                for (int i = target; i < -1; i++) result.add(VariantUndefined.node());
                 for (int i = 0; i < n; i++) result.add(src.get(i));
             }
         }
-        return result.toString();
+        return VariantValue.ofNode(result);
     }
 
     @Override public int getMinArgCount() { return 3; }

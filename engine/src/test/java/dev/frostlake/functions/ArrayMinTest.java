@@ -22,7 +22,7 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 
-/** ARRAY_MIN(array) — smallest non-null element. */
+/** ARRAY_MIN(array) — smallest non-null element, returned as a VARIANT (live-verified). */
 public class ArrayMinTest extends BaseDatabaseTest {
 
     private Object scalar(final String sql) {
@@ -31,12 +31,12 @@ public class ArrayMinTest extends BaseDatabaseTest {
 
     @Test
     public void smallestNumericElement() {
-        assertEquals(0L, scalar("SELECT ARRAY_MIN(ARRAY_CONSTRUCT(20, 0, 10))"));
+        assertEquals("0", String.valueOf(scalar("SELECT ARRAY_MIN(ARRAY_CONSTRUCT(20, 0, 10))")));
     }
 
     @Test
     public void ignoresNullElements() {
-        assertEquals(0L, scalar("SELECT ARRAY_MIN(ARRAY_CONSTRUCT(20, NULL, 0, 10))"));
+        assertEquals("0", String.valueOf(scalar("SELECT ARRAY_MIN(ARRAY_CONSTRUCT(20, NULL, 0, 10))")));
     }
 
     @Test

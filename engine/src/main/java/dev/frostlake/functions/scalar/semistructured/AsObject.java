@@ -16,16 +16,17 @@
 
 package dev.frostlake.functions.scalar.semistructured;
 
-import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.functions.StructuredArgumentFunction;
 import dev.frostlake.functions.scalar.JsonTypeHelper;
-import dev.frostlake.types.VariantType;
+import dev.frostlake.types.ObjectType;
+import dev.frostlake.values.VariantValue;
 import tools.jackson.databind.JsonNode;
 
 import java.util.List;
 import java.util.Map;
 
-public class AsObject extends BuiltInFunction {
-    public AsObject() { super("AS_OBJECT", VariantType.VARIANT); }
+public class AsObject extends StructuredArgumentFunction {
+    public AsObject() { super("AS_OBJECT", ObjectType.OBJECT); }
 
     @Override
     public Object evaluate(final List<Object> args) {
@@ -33,7 +34,7 @@ public class AsObject extends BuiltInFunction {
         Object v = args.get(0);
         if (v instanceof Map) return v;
         JsonNode node = JsonTypeHelper.parse(v);
-        if (node != null && node.isObject()) return node.toString();
+        if (node != null && node.isObject()) return VariantValue.ofNode(node);
         return null;
     }
 

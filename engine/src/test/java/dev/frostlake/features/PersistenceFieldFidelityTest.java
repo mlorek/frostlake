@@ -19,11 +19,13 @@ package dev.frostlake.features;
 import dev.frostlake.DatabaseEngine;
 import dev.frostlake.config.EngineConfig;
 import dev.frostlake.metastore.Catalog;
+import dev.frostlake.metastore.model.ConstraintNames;
 import dev.frostlake.metastore.model.Privilege;
 import dev.frostlake.metastore.model.Role;
 import dev.frostlake.metastore.model.ScalingPolicy;
 import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.metastore.model.Table;
+import dev.frostlake.metastore.model.UniqueConstraint;
 import dev.frostlake.metastore.model.User;
 import dev.frostlake.metastore.model.Warehouse;
 
@@ -156,6 +158,82 @@ public class PersistenceFieldFidelityTest {
         assertFalse(schema(engine2).getTable("c2").getForeignKeys().isEmpty(),
             "table-level FOREIGN KEY must survive");
         engine2.shutdown();
+    }
+
+    @Test
+    public void constraintNamesSurviveReload() {
+        final DatabaseEngine engine1 = freshEngine();
+        engine1.execute("""
+            CREATE TABLE named_c (
+                a INTEGER,
+                b INTEGER,
+                c VARCHAR,
+                d VARCHAR UNIQUE,
+                CONSTRAINT my_pk PRIMARY KEY (a, b),
+                CONSTRAINT my_uq UNIQUE (c)
+            )
+            """);
+        final Table before = schema(engine1).getTable("named_c");
+        final String generatedUniqueName = before.uniqueConstraintName("d");
+        assertEquals("MY_PK", before.primaryKeyConstraintName(), "precondition: explicit PK name is kept");
+        assertTrue(generatedUniqueName.startsWith(ConstraintNames.PREFIX),
+            "precondition: a column-level UNIQUE auto-names itself");
+        engine1.shutdown();
+
+        final DatabaseEngine engine2 = reopenEngine();
+        final Table after = schema(engine2).getTable("named_c");
+        assertEquals("MY_PK", after.primaryKeyConstraintName(),
+            "an explicit PRIMARY KEY name must survive a snapshot round-trip");
+        assertEquals(generatedUniqueName, after.uniqueConstraintName("d"),
+            "a generated UNIQUE name must be restored, not re-generated");
+        assertEquals(2, after.getUniqueConstraints().size(),
+            "the table-level UNIQUE and the column-level one are two constraints");
+        assertEquals("MY_UQ", uniqueConstraintNameCovering(after, "c"),
+            "an explicit UNIQUE name must survive a snapshot round-trip");
+        engine2.shutdown();
+    }
+
+    @Test
+    public void multiColumnUniqueStaysOneConstraintAcrossReload() {
+        final DatabaseEngine engine1 = freshEngine();
+        engine1.execute("CREATE TABLE mc_uq (a INTEGER, b INTEGER, CONSTRAINT uq_ab UNIQUE (a, b))");
+        engine1.shutdown();
+
+        final DatabaseEngine engine2 = reopenEngine();
+        final Table after = schema(engine2).getTable("mc_uq");
+        assertEquals(1, after.getUniqueConstraints().size(),
+            "UNIQUE (a, b) must not split into one constraint per column on reload");
+        assertEquals("UQ_AB", after.getUniqueConstraints().get(0).getConstraintName());
+        assertEquals(2, after.getUniqueConstraints().get(0).getColumnNames().size(),
+            "both columns must still belong to the restored constraint");
+        engine2.shutdown();
+    }
+
+    @Test
+    public void generatedForeignKeyConstraintNameSurvivesReload() {
+        final DatabaseEngine engine1 = freshEngine();
+        engine1.execute("CREATE TABLE fk_p (id INTEGER PRIMARY KEY)");
+        engine1.execute("CREATE TABLE fk_c (pid INTEGER REFERENCES fk_p(id))");
+        final String generatedName = schema(engine1).getTable("fk_c").columnForeignKeyConstraintName("pid");
+        final String parentKeyName = schema(engine1).getTable("fk_p").primaryKeyConstraintName();
+        engine1.shutdown();
+
+        final DatabaseEngine engine2 = reopenEngine();
+        assertEquals(generatedName, schema(engine2).getTable("fk_c").columnForeignKeyConstraintName("pid"),
+            "an inline REFERENCES keeps the constraint name it was given across a reload");
+        assertEquals(parentKeyName, schema(engine2).getTable("fk_p").primaryKeyConstraintName(),
+            "a generated PRIMARY KEY name must be restored, not re-generated");
+        engine2.shutdown();
+    }
+
+    /** The name of the restored UNIQUE constraint spanning one column — constraint names are opaque. */
+    private String uniqueConstraintNameCovering(final Table table, final String columnName) {
+        for (final UniqueConstraint unique : table.getUniqueConstraints()) {
+            if (unique.covers(columnName)) {
+                return unique.getConstraintName();
+            }
+        }
+        return null;
     }
 
     @Test

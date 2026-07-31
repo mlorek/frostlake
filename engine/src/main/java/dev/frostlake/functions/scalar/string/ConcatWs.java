@@ -16,13 +16,13 @@
 
 package dev.frostlake.functions.scalar.string;
 
-import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.functions.TextArgumentFunction;
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.types.StringType;
 
 import java.util.List;
 
-public class ConcatWs extends BuiltInFunction {
+public class ConcatWs extends TextArgumentFunction {
     public ConcatWs() { super("CONCAT_WS", StringType.VARCHAR); }
 
     @Override

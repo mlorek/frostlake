@@ -16,14 +16,14 @@
 
 package dev.frostlake.functions.scalar.semistructured;
 
-import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.functions.StructuredArgumentFunction;
 import dev.frostlake.functions.scalar.JsonTypeHelper;
 import dev.frostlake.types.StringType;
 import tools.jackson.databind.JsonNode;
 
 import java.util.List;
 
-public class AsVarchar extends BuiltInFunction {
+public class AsVarchar extends StructuredArgumentFunction {
     public AsVarchar() { super("AS_VARCHAR", StringType.VARCHAR); }
 
     @Override

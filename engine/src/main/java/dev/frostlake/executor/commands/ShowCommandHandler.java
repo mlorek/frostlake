@@ -23,7 +23,9 @@ import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
+import dev.frostlake.types.StringType;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -57,24 +59,49 @@ public class ShowCommandHandler implements CommandHandler {
     public ResultSet handleShowStatement(final FrostlakeParser.ShowStatementContext ctx) {
         ResultSet result = handleShowStatementInternal(ctx);
         result = applyLikeFilter(result, getLikePattern(ctx));
+        final ShowModifierProfile profile = ShowModifierProfile.forStatement(ctx);
+        if (profile.sortsByName()) {
+            result = sortByName(result);
+        }
         final FrostlakeParser.ShowTailContext tail = ctx.showTail();
         if (tail != null) {
             int literalIndex = 0;
             if (tail.STARTS() != null) {
-                result = applyStartsWith(result, stripQuotes(tail.STRING_LITERAL(literalIndex++).getText()));
+                final String prefix = stripQuotes(tail.STRING_LITERAL(literalIndex++).getText());
+                if (profile.honorsStartsWith()) {
+                    result = applyStartsWith(result, prefix);
+                }
             }
             if (tail.LIMIT() != null) {
                 final int limit = Integer.parseInt(tail.INTEGER_LITERAL().getText());
+                requirePositiveLimit(limit);
                 final String fromName = tail.FROM() != null
                     ? stripQuotes(tail.STRING_LITERAL(literalIndex).getText()) : null;
-                result = applyLimitFrom(result, limit, fromName);
+                if (profile.honorsLimit()) {
+                    result = applyLimitFrom(result, limit, fromName);
+                }
             }
             // WITH PRIVILEGES p1, p2 is accepted but the listing is not privilege-filtered.
         }
         if (ctx.TERSE() != null) {
-            result = applyTerse(result);
+            result = applyTerse(result, profile);
         }
         return result;
+    }
+
+    /**
+     * {@code LIMIT 0} is rejected, and rejected before the listing is even scoped.
+     *
+     * <p>Live-verified on a real account: every one of the twenty listings probed answers
+     * {@code SHOW ... LIMIT 0} with "page size "0" must be greater than 0 in limit clause" — including
+     * STAGES, SEQUENCES, WAREHOUSES and FILE FORMATS, which go on to ignore a positive LIMIT entirely.
+     * The check is therefore on the clause, not on whether the listing paginates, so it lives here
+     * rather than behind {@link ShowModifierProfile#honorsLimit()}.
+     */
+    private static void requirePositiveLimit(final int limit) {
+        if (limit <= 0) {
+            throw new RuntimeException("page size \"" + limit + "\" must be greater than 0 in limit clause");
+        }
     }
 
     private ResultSet handleShowStatementInternal(final FrostlakeParser.ShowStatementContext ctx) {
@@ -143,11 +170,19 @@ public class ShowCommandHandler implements CommandHandler {
         } else if (ctx.ROLES() != null) {
             return showExecutor.showRoles();
         } else if (ctx.FUNCTIONS() != null) {
+            if (ctx.BUILTIN() != null) {
+                // SHOW BUILTIN FUNCTIONS never lists user functions and ignores the IN scope entirely —
+                // live-verified: IN SCHEMA / IN DATABASE / IN ACCOUNT all return the same 1134
+                // rows the bare form does, and the one UDF in the current schema is in none of them.
+                return showExecutor.showBuiltinFunctions();
+            }
             if (ctx.CLASS() != null) {
                 return withoutRows(showExecutor.showFunctions(null, true));
             }
             if (ctx.DATABASE() != null && ctx.qualifiedName() != null) {
-                return showExecutor.showFunctionsInDatabase(getText(ctx.qualifiedName()));
+                return ctx.USER() != null
+                    ? showExecutor.showUserFunctionsInDatabase(getText(ctx.qualifiedName()))
+                    : showExecutor.showFunctionsInDatabase(getText(ctx.qualifiedName()));
             }
             String schemaName = null;
             if (ctx.qualifiedName() != null) {
@@ -155,11 +190,20 @@ public class ShowCommandHandler implements CommandHandler {
             }
             return showExecutor.showFunctions(schemaName, ctx.USER() != null);
         } else if (ctx.PROCEDURES() != null) {
+            if (ctx.BUILTIN() != null) {
+                // SHOW BUILTIN PROCEDURES never lists user procedures and ignores the IN scope, exactly
+                // as SHOW BUILTIN FUNCTIONS does — live-verified: with one user procedure in
+                // the current schema it returns 32 rows to SHOW PROCEDURES' 33, and IN SCHEMA /
+                // IN DATABASE return that same 32 without the user procedure.
+                return showExecutor.showBuiltinProcedures();
+            }
             if (ctx.APPLICATION() != null) {
                 return withoutRows(showExecutor.showProcedures(null, true));
             }
             if (ctx.DATABASE() != null && ctx.qualifiedName() != null) {
-                return showExecutor.showProceduresInDatabase(getText(ctx.qualifiedName()));
+                return ctx.USER() != null
+                    ? showExecutor.showUserProceduresInDatabase(getText(ctx.qualifiedName()))
+                    : showExecutor.showProceduresInDatabase(getText(ctx.qualifiedName()));
             }
             String schemaName = null;
             if (ctx.qualifiedName() != null) {
@@ -329,8 +373,10 @@ public class ShowCommandHandler implements CommandHandler {
             return showExecutor.describeDynamicTable(dtName);
         }
         if (ctx.TABLE() != null || ctx.VIEW() != null || (ctx.MATERIALIZED() != null && ctx.VIEW() != null)) {
+            // DESCRIBE has its own column shape (name|type|kind|null?|default|primary key|…) —
+            // NOT the SHOW COLUMNS shape, which leads with table_name/schema_name.
             String tableName = getText(ctx.qualifiedName());
-            return showExecutor.showColumns(tableName);
+            return showExecutor.describeTable(tableName);
         } else if (ctx.PIPE() != null) {
             String pipeName = getText(ctx.identifier());
             return showExecutor.describePipe(pipeName);
@@ -353,8 +399,10 @@ public class ShowCommandHandler implements CommandHandler {
             String tagName = getText(ctx.identifier());
             return showExecutor.describeTag(tagName);
         } else if (ctx.FUNCTION() != null) {
+            requireRoutineArgumentTypes(ctx, getText(ctx.qualifiedName()));
             return showExecutor.describeFunction(getText(ctx.qualifiedName()));
         } else if (ctx.PROCEDURE() != null) {
+            requireRoutineArgumentTypes(ctx, getText(ctx.qualifiedName()));
             return showExecutor.describeProcedure(getText(ctx.qualifiedName()));
         } else if (ctx.USER() != null) {
             return showExecutor.describeUser(getText(ctx.identifier()));
@@ -400,6 +448,24 @@ public class ShowCommandHandler implements CommandHandler {
             ? raw.substring(1, raw.length() - 1) : raw;
     }
 
+    /**
+     * Order an object listing by name, byte-wise, the way a real account returns it.
+     *
+     * <p>Byte-wise and not case-insensitively: live, a schema holding DT_A, T_A…T_D and a quoted
+     * "t_lower" lists the lowercase name last, which is {@link String#compareTo}'s order and not
+     * {@code CASE_INSENSITIVE_ORDER}'s. Nulls sort first so a listing with an unnamed row cannot throw.
+     *
+     * <p>This is also what makes {@code LIMIT}/{@code FROM} deterministic, so it runs before them.
+     */
+    private ResultSet sortByName(final ResultSet rs) {
+        if (rs == null) return rs;
+        final int nameIdx = columnIndexOrMissing(rs, "name");
+        if (nameIdx < 0) return rs;
+        final List<Row> sorted = new ArrayList<>(rs.getRows());
+        Collections.sort(sorted, new ShowNameComparator(nameIdx));
+        return new ResultSet(rs.getColumns(), sorted);
+    }
+
     /** SHOW ... STARTS WITH 'prefix': case-sensitive prefix filter on the name column (Snowflake semantics). */
     private ResultSet applyStartsWith(final ResultSet rs, final String prefix) {
         if (prefix == null || rs == null) return rs;
@@ -435,29 +501,82 @@ public class ShowCommandHandler implements CommandHandler {
         return new ResultSet(rs.getColumns(), kept);
     }
 
-    /** SHOW TERSE ...: project to Snowflake's terse column subset (whichever of them the listing has). */
-    private ResultSet applyTerse(final ResultSet rs) {
-        if (rs == null) return rs;
-        final List<Integer> keep = new ArrayList<>();
+    /**
+     * SHOW TERSE ...: project onto the column shape the profile prescribes for this listing.
+     *
+     * <p>The target list is a shape to produce, not a subset to keep. A column absent from the untrimmed
+     * listing still appears — Snowflake's own TERSE output does that, and it is why the previous
+     * keep-what-we-have projection came out wrong: {@code SHOW TERSE SCHEMAS} lost {@code kind} and
+     * {@code schema_name} (3 columns instead of 5), {@code SHOW TERSE DATABASES} lost three of its five,
+     * and {@code SHOW TERSE USERS} answered 2 columns where a real account answers 14.
+     *
+     * <p>An empty target list means TERSE is inert for this listing and the result is returned whole.
+     */
+    private ResultSet applyTerse(final ResultSet rs, final ShowModifierProfile profile) {
+        if (rs == null || profile.terseColumns().isEmpty()) return rs;
+        final List<Integer> sourceIndex = new ArrayList<>();
         final List<ResultSetColumn> cols = new ArrayList<>();
-        for (final String col : new String[]{"created_on", "name", "kind", "database_name", "schema_name"}) {
-            try {
-                final int idx = rs.getColumnIndex(col);
-                keep.add(idx);
-                cols.add(rs.getColumns().get(idx));
-            } catch (final RuntimeException ignored) {
-            }
+        for (final String col : profile.terseColumns()) {
+            final int idx = columnIndexOrMissing(rs, col);
+            sourceIndex.add(idx);
+            cols.add(idx >= 0 ? rs.getColumns().get(idx) : new ResultSetColumn(col, StringType.VARCHAR));
         }
-        if (keep.isEmpty()) return rs;
+        final int materializedIdx = columnIndexOrMissing(rs, "is_materialized");
+        final int tableNameIdx = columnIndexOrMissing(rs, "table_name");
         final List<Row> rows = new ArrayList<>();
         for (final Row row : rs.getRows()) {
             final List<Object> values = new ArrayList<>();
-            for (final Integer idx : keep) {
-                values.add(row.getValue(idx));
+            for (int i = 0; i < sourceIndex.size(); i++) {
+                final int idx = sourceIndex.get(i);
+                if (idx >= 0) {
+                    values.add(row.getValue(idx));
+                } else {
+                    values.add(terseFallback(profile.terseColumns().get(i), profile, row,
+                        materializedIdx, tableNameIdx));
+                }
             }
             rows.add(new Row(values));
         }
         return new ResultSet(cols, rows);
+    }
+
+    /**
+     * The value for a TERSE column the untrimmed listing does not carry.
+     *
+     * <p>Only three of them are ever anything but null. {@code kind} is the listing's own object kind —
+     * the literal STANDARD for DATABASES and DELTA for STREAMS, or VIEW / MATERIALIZED_VIEW decided per
+     * row from {@code is_materialized} for VIEWS, which is the one case where two kinds share a listing.
+     * {@code tableOn} is the stream's base table, which the untrimmed SHOW STREAMS calls
+     * {@code table_name}.
+     */
+    private Object terseFallback(final String column, final ShowModifierProfile profile, final Row row,
+                                 final int materializedIdx, final int tableNameIdx) {
+        if ("kind".equals(column)) {
+            if (profile.terseKindFromMaterializedFlag() && materializedIdx >= 0) {
+                return isTruthy(row.getValue(materializedIdx)) ? "MATERIALIZED_VIEW" : "VIEW";
+            }
+            return profile.terseKind();
+        }
+        if ("tableOn".equals(column) && tableNameIdx >= 0) {
+            return row.getValue(tableNameIdx);
+        }
+        return null;
+    }
+
+    /** Whether a listing's yes/no cell reads as set, however the listing spells it. */
+    private static boolean isTruthy(final Object value) {
+        if (value == null) return false;
+        final String text = value.toString();
+        return "Y".equalsIgnoreCase(text) || "true".equalsIgnoreCase(text);
+    }
+
+    /** {@code getColumnIndex} but answering -1 instead of throwing when the listing has no such column. */
+    private static int columnIndexOrMissing(final ResultSet rs, final String column) {
+        try {
+            return rs.getColumnIndex(column);
+        } catch (final RuntimeException absent) {
+            return -1;
+        }
     }
 
     /** The same columns with no rows — for accepted scopes that list nothing (ICEBERG, APPLICATION, CLASS). */
@@ -496,5 +615,20 @@ public class ShowCommandHandler implements CommandHandler {
             return showExecutor.showGrantsTo(targetType, targetName);
         }
         throw new RuntimeException("Invalid SHOW GRANTS syntax");
+    }
+
+    /**
+     * A routine name is not enough to describe it — routines overload, so Snowflake insists on the
+     * argument-type list. Live-verified on a real account: {@code DESCRIBE PROCEDURE qr}
+     * and {@code DESCRIBE FUNCTION dfn} both fail "Argument types of function '&lt;NAME&gt;' must be
+     * specified.", while {@code DESCRIBE FUNCTION dfn(INTEGER)} and {@code DESCRIBE PROCEDURE qr()}
+     * describe. The list itself may be empty for a no-argument routine.
+     */
+    private void requireRoutineArgumentTypes(final FrostlakeParser.DescribeStatementContext ctx,
+                                             final String routineName) {
+        if (ctx.LPAREN() == null) {
+            throw new RuntimeException("Argument types of function '"
+                + routineName.toUpperCase() + "' must be specified.");
+        }
     }
 }

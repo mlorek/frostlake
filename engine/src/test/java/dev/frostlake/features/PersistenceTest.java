@@ -238,7 +238,7 @@ public class PersistenceTest {
         RuntimeException exception = assertThrows(RuntimeException.class, () -> {
             engine2.execute("USE DATABASE test_db");
         });
-        assertTrue(exception.getMessage().contains("Database does not exist"));
+        assertTrue(exception.getMessage().contains("Database 'TEST_DB' does not exist or not authorized."));
 
         engine2.shutdown();
     }

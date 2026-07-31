@@ -20,8 +20,9 @@ public abstract class Statement {
 
     private final StatementType type;
 
-    // Optional Snowflake Scripting loop label: on a loop statement it is the loop's OWN label; on a
-    // BREAK / CONTINUE it is the TARGET label (which loop to break/continue). Null when unlabeled.
+    // A Snowflake Scripting loop label. On a loop statement it is the loop's OWN label, taken from the
+    // TRAILING `END LOOP <label>` / `END FOR <label>` / `END WHILE <label>`; on a BREAK / CONTINUE it is
+    // the TARGET label. Null when unlabeled. (Snowflake has no LEADING `<label>:` declaration.)
     private String label;
 
     protected Statement(final StatementType type) {

@@ -18,14 +18,16 @@ package dev.frostlake.functions;
 
 import dev.frostlake.BaseDatabaseTest;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /**
- * TO_DATE / TRY_TO_DATE parsing: an explicit Snowflake format is honored, a numeric argument is a
- * Unix epoch (its date part), and an ISO string still parses without a format. Previously the format
- * argument was ignored (ISO-only parsing).
+ * TO_DATE / TRY_TO_DATE parsing: an explicit Snowflake format is honored and an ISO string parses
+ * without one. A numeric argument is a Unix epoch only under the {@code DATE()} spelling — TO_DATE and
+ * TRY_TO_DATE reject it. Previously the format argument was ignored (ISO-only parsing).
  */
 public class ToDateTest extends BaseDatabaseTest {
 
@@ -44,8 +46,25 @@ public class ToDateTest extends BaseDatabaseTest {
     }
 
     @Test
-    public void numericArgumentIsEpochSeconds() {
-        assertEquals("2021-09-15", date("SELECT TO_DATE(1631711999)"));
+    public void numericArgumentIsEpochSecondsOnlyForTheDateSpelling() {
+        // Live-verified on a real account: TO_DATE(1631711999) and TRY_TO_DATE(1631711999)
+        // both fail "invalid type [TO_DATE(1631711999)] for parameter 'TO_DATE'", while the DATE() alias
+        // of the very same function reads the epoch and answers 2021-09-15 — and a numeric STRING is
+        // fine either way.
+        assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                date("SELECT TO_DATE(1631711999)");
+            }
+        });
+        assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                date("SELECT TRY_TO_DATE(1631711999)");
+            }
+        });
+        assertEquals("2021-09-15", date("SELECT DATE(1631711999)"));
+        assertEquals("2021-09-15", date("SELECT TO_DATE('1631711999')"));
     }
 
     @Test

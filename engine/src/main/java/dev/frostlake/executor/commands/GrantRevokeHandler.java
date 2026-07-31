@@ -18,6 +18,7 @@ package dev.frostlake.executor.commands;
 
 import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.executor.SQLCommandVisitor;
+import dev.frostlake.executor.StatementErrors;
 import dev.frostlake.executor.procedural.ProceduralException;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.parser.FrostlakeParser;
@@ -156,10 +157,11 @@ public class GrantRevokeHandler implements CommandHandler {
                 }
 
                 if (ctx.OWNERSHIP() != null) {
-                    // Grant ownership
+                    // Ownership belongs to ROLES only. Live-verified on a real account:
+                    // GRANT OWNERSHIP ON TABLE t TO USER u fails "SQL execution error: Cannot grant
+                    // OWNERSHIP to users." while the same statement TO ROLE succeeds.
                     if (isUser) {
-                        catalog.grantPrivilegeToUser("OWNERSHIP", objectType, objectName, targetName);
-                        logger.trace("Granted OWNERSHIP on {} {} to user {}", objectType, objectName, targetName);
+                        throw new RuntimeException("SQL execution error: Cannot grant OWNERSHIP to users.");
                     } else {
                         catalog.grantPrivilegeToRole("OWNERSHIP", objectType, objectName, targetName);
                         logger.trace("Granted OWNERSHIP on {} {} to role {}", objectType, objectName, targetName);
@@ -179,6 +181,15 @@ public class GrantRevokeHandler implements CommandHandler {
                         // Grant specific privileges
                         for (final FrostlakeParser.PrivilegeContext privCtx : ctx.privilegeList().privilege()) {
                             String privilege = privilegeName(privCtx);
+                            rejectInvalidPrivilegeForObjectType(privilege, objectType);
+                            // OWNERSHIP also matches the generic privilegeList alternative, which the
+                            // parser prefers over the dedicated GRANT OWNERSHIP one — so the ROLES-only
+                            // rule has to be enforced here too. Live-verified: GRANT OWNERSHIP
+                            // ON TABLE t TO USER u fails "SQL execution error: Cannot grant OWNERSHIP to
+                            // users." while the same statement TO ROLE succeeds.
+                            if (isUser && "OWNERSHIP".equals(privilege)) {
+                                throw new RuntimeException("SQL execution error: Cannot grant OWNERSHIP to users.");
+                            }
                             if (isUser) {
                                 catalog.grantPrivilegeToUser(privilege, objectType, objectName, targetName);
                                 logger.trace("Granted {} on {} {} to user {}", privilege, objectType, objectName, targetName);
@@ -196,7 +207,7 @@ public class GrantRevokeHandler implements CommandHandler {
         } catch (final Exception e) {
             if (e instanceof SecurityException) throw (SecurityException) e;
             if (e instanceof ProceduralException) throw (ProceduralException) e;
-            throw new RuntimeException("Failed to execute GRANT statement: " + e.getMessage(), e);
+            throw StatementErrors.propagate(e);
         }
     }
 
@@ -305,7 +316,7 @@ public class GrantRevokeHandler implements CommandHandler {
         } catch (final Exception e) {
             if (e instanceof SecurityException) throw (SecurityException) e;
             if (e instanceof ProceduralException) throw (ProceduralException) e;
-            throw new RuntimeException("Failed to execute REVOKE statement: " + e.getMessage(), e);
+            throw StatementErrors.propagate(e);
         }
     }
 
@@ -316,6 +327,33 @@ public class GrantRevokeHandler implements CommandHandler {
      * {@code Privilege.valueOf(...)}; joining the child tokens with '_' yields the enum-matching
      * "CREATE_VIEW" (and "CREATE_MASKING_POLICY", "MONITOR_USAGE", …).
      */
+    /**
+     * Snowflake checks that a privilege is defined for the object type it is granted on. Live-verified
+     * on a real account: {@code GRANT SELECT ON DATABASE d TO ROLE r} fails "Invalid object
+     * type 'DATABASE' for privilege 'SELECT'", as do SELECT on SCHEMA and on WAREHOUSE, INSERT on
+     * DATABASE and CREATE TABLE on DATABASE — while SELECT on TABLE / VIEW, USAGE on DATABASE / SCHEMA,
+     * CREATE TABLE on SCHEMA, MODIFY on WAREHOUSE and GRANT ALL on DATABASE all succeed. Conversely
+     * {@code GRANT USAGE ON TABLE t} fails "Invalid object type 'TABLE' for privilege 'USAGE'". A
+     * database holds SCHEMAS, so CREATE SCHEMA ON DATABASE is legal while CREATE VIEW / CREATE TABLE ON
+     * DATABASE are not. Only the pairs probed are enforced; anything else keeps passing.
+     */
+    private void rejectInvalidPrivilegeForObjectType(final String privilege, final String objectType) {
+        final boolean rowPrivilege = "SELECT".equals(privilege) || "INSERT".equals(privilege)
+            || "UPDATE".equals(privilege) || "DELETE".equals(privilege)
+            || "TRUNCATE".equals(privilege) || "REFERENCES".equals(privilege);
+        final boolean container = "DATABASE".equals(objectType) || "SCHEMA".equals(objectType)
+            || "WAREHOUSE".equals(objectType);
+        final boolean relation = "TABLE".equals(objectType) || "VIEW".equals(objectType);
+        final boolean schemaLevelCreate = privilege.startsWith("CREATE_")
+            && !"CREATE_SCHEMA".equals(privilege) && !"CREATE_DATABASE_ROLE".equals(privilege);
+        if ((rowPrivilege && container)
+                || ("USAGE".equals(privilege) && relation)
+                || (schemaLevelCreate && "DATABASE".equals(objectType))) {
+            throw new RuntimeException("SQL compilation error:\nInvalid object type '" + objectType
+                + "' for privilege '" + privilege.replace('_', ' ') + "'.");
+        }
+    }
+
     private String privilegeName(final ParserRuleContext privCtx) {
         final StringBuilder sb = new StringBuilder();
         for (int i = 0; i < privCtx.getChildCount(); i++) {

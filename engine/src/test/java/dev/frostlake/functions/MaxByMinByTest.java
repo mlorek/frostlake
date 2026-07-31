@@ -25,7 +25,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 
 /**
  * MAX_BY(value, sort_key) / MIN_BY(value, sort_key) — return the value from the row with the max / min key,
- * ignoring NULL keys, with the latest row winning a tie.
+ * ignoring NULL keys, with the FIRST-encountered row winning a tie (live-verified).
  */
 public class MaxByMinByTest extends BaseDatabaseTest {
 
@@ -54,10 +54,11 @@ public class MaxByMinByTest extends BaseDatabaseTest {
     }
 
     @Test
-    public void tieIsResolvedByLatestRow() {
+    public void tieIsResolvedByFirstRow() {
+        // Live-verified: on ties of the ordering value Snowflake keeps the FIRST-encountered row.
         engine.execute("CREATE TABLE tie (name VARCHAR, score INTEGER)");
         engine.execute("INSERT INTO tie VALUES ('first',10),('second',10)");
-        assertEquals("second",
+        assertEquals("first",
             engine.executeQuery("SELECT MAX_BY(name, score) FROM tie").getRows().get(0).getValue(0).toString());
     }
 

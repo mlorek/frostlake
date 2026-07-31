@@ -57,7 +57,7 @@ public class NestedBeginEndBlockTest {
         engine.execute("""
             DECLARE x INTEGER := 10;
             BEGIN
-                INSERT INTO results VALUES (x);
+                INSERT INTO results VALUES (:x);
             END;
             """);
 
@@ -75,15 +75,15 @@ public class NestedBeginEndBlockTest {
         engine.execute("""
             DECLARE x INTEGER := 5;
             BEGIN
-                INSERT INTO results VALUES (x);
+                INSERT INTO results VALUES (:x);
 
                 DECLARE y INTEGER := 10;
                 BEGIN
-                    INSERT INTO results VALUES (y);
-                    INSERT INTO results VALUES (x);
+                    INSERT INTO results VALUES (:y);
+                    INSERT INTO results VALUES (:x);
                 END;
 
-                INSERT INTO results VALUES (x);
+                INSERT INTO results VALUES (:x);
             END;
             """);
 
@@ -104,14 +104,14 @@ public class NestedBeginEndBlockTest {
         engine.execute("""
             DECLARE x INTEGER := 5;
             BEGIN
-                INSERT INTO results VALUES (x);
+                INSERT INTO results VALUES (:x);
 
                 DECLARE x INTEGER := 20;
                 BEGIN
-                    INSERT INTO results VALUES (x);
+                    INSERT INTO results VALUES (:x);
                 END;
 
-                INSERT INTO results VALUES (x);
+                INSERT INTO results VALUES (:x);
             END;
             """);
 
@@ -136,13 +136,14 @@ public class NestedBeginEndBlockTest {
         engine.execute("CREATE TABLE results (id INTEGER, value INTEGER)");
 
         engine.execute("""
-            DECLARE x INTEGER := 1;
-            DECLARE y INTEGER := 2;
-            DECLARE z INTEGER := 3;
+            DECLARE
+                x INTEGER := 1;
+                y INTEGER := 2;
+                z INTEGER := 3;
             BEGIN
-                INSERT INTO results VALUES (x, y);
-                INSERT INTO results VALUES (y, z);
-                INSERT INTO results VALUES (z, x);
+                INSERT INTO results VALUES (:x, :y);
+                INSERT INTO results VALUES (:y, :z);
+                INSERT INTO results VALUES (:z, :x);
             END;
             """);
 
@@ -165,11 +166,11 @@ public class NestedBeginEndBlockTest {
         engine.execute("""
             DECLARE x INTEGER := 100;
             BEGIN
-                INSERT INTO results VALUES (x);
+                INSERT INTO results VALUES (:x);
 
                 DECLARE y INTEGER := 200;
                 BEGIN
-                    INSERT INTO results VALUES (y);
+                    INSERT INTO results VALUES (:y);
                     -- This will cause an error
                     INSERT INTO nonexistent_table VALUES (1);
                 EXCEPTION
@@ -177,7 +178,7 @@ public class NestedBeginEndBlockTest {
                         INSERT INTO results VALUES (999);
                 END;
 
-                INSERT INTO results VALUES (x);
+                INSERT INTO results VALUES (:x);
             END;
             """);
 
@@ -216,16 +217,17 @@ public class NestedBeginEndBlockTest {
         engine.execute("CREATE TABLE results (id INTEGER, name VARCHAR)");
 
         engine.execute("""
-            DECLARE cur1 CURSOR FOR SELECT id, name FROM source;
-            DECLARE rec_id INTEGER;
-            DECLARE rec_name VARCHAR;
+            DECLARE
+                cur1 CURSOR FOR SELECT id, name FROM source;
+                rec_id INTEGER;
+                rec_name VARCHAR;
             BEGIN
                 OPEN cur1;
                 FETCH cur1 INTO rec_id, rec_name;
 
                 DECLARE x INTEGER := rec_id;
                 BEGIN
-                    INSERT INTO results VALUES (x, rec_name);
+                    INSERT INTO results VALUES (:x, :rec_name);
                 END;
 
                 CLOSE cur1;
@@ -247,16 +249,16 @@ public class NestedBeginEndBlockTest {
         engine.execute("""
             DECLARE a INTEGER := 1;
             BEGIN
-                INSERT INTO results VALUES (1, a);
+                INSERT INTO results VALUES (1, :a);
 
                 DECLARE b INTEGER := 2;
                 BEGIN
-                    INSERT INTO results VALUES (2, b);
+                    INSERT INTO results VALUES (2, :b);
 
                     DECLARE c INTEGER := 3;
                     BEGIN
-                        INSERT INTO results VALUES (3, c);
-                        INSERT INTO results VALUES (3, a);
+                        INSERT INTO results VALUES (3, :c);
+                        INSERT INTO results VALUES (3, :a);
                     END;
                 END;
             END;

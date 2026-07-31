@@ -21,10 +21,15 @@ import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.types.NumericType;
 
 import java.time.LocalDate;
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.util.List;
 
 public class MonthsBetween extends BuiltInFunction {
-    public MonthsBetween() { super("MONTHS_BETWEEN", NumericType.DOUBLE); }
+    /** Snowflake's result type is NUMBER(27,6) — a fixed six-decimal scale, not a raw double. */
+    private static final int RESULT_SCALE = 6;
+
+    public MonthsBetween() { super("MONTHS_BETWEEN", NumericType.NUMBER); }
 
     @Override
     public Object evaluate(final List<Object> args) {
@@ -40,9 +45,17 @@ public class MonthsBetween extends BuiltInFunction {
         final int day2 = d2.getDayOfMonth();
         final boolean bothMonthEnd = day1 == d1.lengthOfMonth() && day2 == d2.lengthOfMonth();
         if (day1 == day2 || bothMonthEnd) {
-            return wholeMonths;
+            return scaled(wholeMonths);
         }
-        return wholeMonths + (day1 - day2) / 31.0;
+        return scaled(wholeMonths + (day1 - day2) / 31.0);
+    }
+
+    /**
+     * The result at Snowflake's NUMBER(27,6) scale (live-verified: MONTHS_BETWEEN of 2021-04-15 and
+     * 2021-02-28 is 1.580645, not the raw 1.5806451612903225; a whole result renders 1.000000).
+     */
+    private static BigDecimal scaled(final double months) {
+        return BigDecimal.valueOf(months).setScale(RESULT_SCALE, RoundingMode.HALF_UP);
     }
 
     @Override public int getMinArgCount() { return 2; }

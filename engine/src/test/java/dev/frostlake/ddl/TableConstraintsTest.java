@@ -42,13 +42,17 @@ public class TableConstraintsTest extends BaseJdbcTest {
         assertTrue(rs.next(), "Should have PRIMARY KEY constraint");
         assertEquals("TEST_DB", rs.getString("CONSTRAINT_CATALOG"));
         assertEquals("PUBLIC", rs.getString("CONSTRAINT_SCHEMA"));
-        assertTrue(rs.getString("CONSTRAINT_NAME").contains("PK"), "Constraint name should contain PK");
+        assertTrue(rs.getString("CONSTRAINT_NAME").startsWith("SYS_CONSTRAINT_"),
+                   "an unnamed PRIMARY KEY is auto-named SYS_CONSTRAINT_<uuid>, as in Snowflake");
         assertEquals("TEST_DB", rs.getString("TABLE_CATALOG"));
         assertEquals("PUBLIC", rs.getString("TABLE_SCHEMA"));
         assertEquals("USERS", rs.getString("TABLE_NAME"));
         assertEquals("PRIMARY KEY", rs.getString("CONSTRAINT_TYPE"));
         assertEquals("NO", rs.getString("IS_DEFERRABLE"));
-        assertEquals("NO", rs.getString("INITIALLY_DEFERRED"));
+        // Live-verified on a real account: Snowflake reports INITIALLY_DEFERRED = YES for
+        // PRIMARY KEY, UNIQUE and FOREIGN KEY alike, and ENFORCED is a constant NO (a PRIMARY KEY RELY
+        // still shows ENFORCED = NO with RELY = YES).
+        assertEquals("YES", rs.getString("INITIALLY_DEFERRED"));
         assertEquals("NO", rs.getString("ENFORCED"));
 
         assertFalse(rs.next(), "Should have only one PRIMARY KEY constraint");
@@ -67,7 +71,8 @@ public class TableConstraintsTest extends BaseJdbcTest {
 
         assertTrue(rs.next(), "Should have UNIQUE constraint");
         assertEquals("PUBLIC", rs.getString("CONSTRAINT_SCHEMA"));
-        assertTrue(rs.getString("CONSTRAINT_NAME").contains("UNIQUE"), "Constraint name should contain UNIQUE");
+        assertTrue(rs.getString("CONSTRAINT_NAME").startsWith("SYS_CONSTRAINT_"),
+                   "an unnamed UNIQUE constraint is auto-named SYS_CONSTRAINT_<uuid>, as in Snowflake");
         assertEquals("PRODUCTS", rs.getString("TABLE_NAME"));
         assertEquals("UNIQUE", rs.getString("CONSTRAINT_TYPE"));
 
@@ -88,7 +93,8 @@ public class TableConstraintsTest extends BaseJdbcTest {
 
         assertTrue(rs.next(), "Should have FOREIGN KEY constraint");
         assertEquals("PUBLIC", rs.getString("CONSTRAINT_SCHEMA"));
-        assertTrue(rs.getString("CONSTRAINT_NAME").contains("FK"), "Constraint name should contain FK");
+        assertTrue(rs.getString("CONSTRAINT_NAME").startsWith("SYS_CONSTRAINT_"),
+                   "an unnamed FOREIGN KEY is auto-named SYS_CONSTRAINT_<uuid>, as in Snowflake");
         assertEquals("EMPLOYEES", rs.getString("TABLE_NAME"));
         assertEquals("FOREIGN KEY", rs.getString("CONSTRAINT_TYPE"));
 
@@ -235,8 +241,8 @@ public class TableConstraintsTest extends BaseJdbcTest {
         logger.info("Testing DROP PRIMARY KEY on a composite key, then ADD PRIMARY KEY");
 
         statement.execute("CREATE TABLE dp2 (a INTEGER, b INTEGER, PRIMARY KEY (a, b))");
-        // TABLE_CONSTRAINTS reports one row per PRIMARY KEY column, so a composite key is two rows.
-        assertEquals(2, primaryKeyConstraintCount("dp2"));
+        // TABLE_CONSTRAINTS reports one row per CONSTRAINT, so a composite key is a single row.
+        assertEquals(1, primaryKeyConstraintCount("dp2"));
 
         statement.execute("ALTER TABLE dp2 DROP PRIMARY KEY");
         assertEquals(0, primaryKeyConstraintCount("dp2"), "DROP PRIMARY KEY clears every column of a composite key");
@@ -288,13 +294,127 @@ public class TableConstraintsTest extends BaseJdbcTest {
         statement.execute("CREATE TABLE rc_parent (id INTEGER PRIMARY KEY)");
         statement.execute("CREATE TABLE rc_child (a INTEGER, FOREIGN KEY (a) REFERENCES rc_parent(id))");
 
+        // Constraint names are opaque SYS_CONSTRAINT_<uuid> values, so the FK is looked up through
+        // TABLE_CONSTRAINTS and the referenced key is matched against the parent's own PK name.
+        final String fkName = constraintName("rc_child", "FOREIGN KEY");
+        final String parentPkName = constraintName("rc_parent", "PRIMARY KEY");
+
         final ResultSet rs = statement.executeQuery(
             "SELECT UNIQUE_CONSTRAINT_NAME FROM INFORMATION_SCHEMA.REFERENTIAL_CONSTRAINTS "
-            + "WHERE CONSTRAINT_NAME = 'RC_CHILD_A_FK'");
+            + "WHERE CONSTRAINT_NAME = '" + fkName + "'");
         assertTrue(rs.next(), "table-level FK should appear in REFERENTIAL_CONSTRAINTS");
-        assertEquals("RC_PARENT_PK", rs.getString("UNIQUE_CONSTRAINT_NAME"));
+        assertEquals(parentPkName, rs.getString("UNIQUE_CONSTRAINT_NAME"),
+                     "the referenced constraint is the parent table's PRIMARY KEY");
         assertFalse(rs.next(), "exactly one referential row for the FK");
         rs.close();
+    }
+
+    @Test
+    public void testExplicitlyNamedConstraintKeepsItsName() throws SQLException {
+        logger.info("Testing that CONSTRAINT <name> FOREIGN KEY keeps the given name");
+
+        statement.execute("CREATE TABLE nc_parent (id INTEGER PRIMARY KEY)");
+        statement.execute("CREATE TABLE nc_child (a INTEGER, "
+            + "CONSTRAINT my_fk FOREIGN KEY (a) REFERENCES nc_parent(id))");
+
+        assertEquals("MY_FK", constraintName("nc_child", "FOREIGN KEY"),
+                     "an explicitly named constraint is never auto-named");
+    }
+
+    @Test
+    public void testCompositePrimaryKeyIsOneConstraint() throws SQLException {
+        logger.info("Testing that a composite PRIMARY KEY is ONE row in TABLE_CONSTRAINTS");
+
+        // The live-Snowflake shape: one row per CONSTRAINT, so the two-column key is a single row and the
+        // single-column UNIQUE is another — each under the name its CONSTRAINT clause gave it.
+        statement.execute("""
+            CREATE TABLE ck (a INTEGER, b INTEGER, c VARCHAR,
+                             CONSTRAINT my_pk PRIMARY KEY (a, b), CONSTRAINT my_uq UNIQUE (c))
+            """);
+
+        assertEquals(1, primaryKeyConstraintCount("ck"),
+                     "a PRIMARY KEY over (a, b) is one constraint, not one per column");
+        assertEquals("MY_PK", constraintName("ck", "PRIMARY KEY"));
+        assertEquals(1, constraintCount("ck", "UNIQUE"));
+        assertEquals("MY_UQ", constraintName("ck", "UNIQUE"));
+    }
+
+    @Test
+    public void testMultiColumnUniqueIsOneConstraint() throws SQLException {
+        logger.info("Testing that a multi-column UNIQUE is ONE constraint with ONE name");
+
+        statement.execute("CREATE TABLE mu (a INTEGER, b INTEGER, CONSTRAINT uq_ab UNIQUE (a, b))");
+
+        assertEquals(1, constraintCount("mu", "UNIQUE"),
+                     "UNIQUE (a, b) is a single constraint, not one per column");
+        assertEquals("UQ_AB", constraintName("mu", "UNIQUE"));
+    }
+
+    @Test
+    public void testUnnamedTableLevelConstraintsAreAutoNamed() throws SQLException {
+        logger.info("Testing that constraints declared without CONSTRAINT <name> keep auto-naming");
+
+        statement.execute("CREATE TABLE ck2 (a INTEGER, b VARCHAR, PRIMARY KEY (a), UNIQUE (b))");
+
+        assertTrue(constraintName("ck2", "PRIMARY KEY").startsWith("SYS_CONSTRAINT_"),
+                   "an unnamed table-level PRIMARY KEY is still auto-named SYS_CONSTRAINT_<uuid>");
+        assertTrue(constraintName("ck2", "UNIQUE").startsWith("SYS_CONSTRAINT_"),
+                   "an unnamed table-level UNIQUE is still auto-named SYS_CONSTRAINT_<uuid>");
+    }
+
+    @Test
+    public void testAlterTableAddNamedConstraints() throws SQLException {
+        logger.info("Testing that ALTER TABLE ADD CONSTRAINT <name> keeps the given name");
+
+        statement.execute("CREATE TABLE anc (a INTEGER, b INTEGER, c VARCHAR)");
+        statement.execute("ALTER TABLE anc ADD CONSTRAINT anc_pk PRIMARY KEY (a, b)");
+        statement.execute("ALTER TABLE anc ADD CONSTRAINT anc_uq UNIQUE (c)");
+
+        assertEquals(1, primaryKeyConstraintCount("anc"), "the added composite key is one constraint");
+        assertEquals("ANC_PK", constraintName("anc", "PRIMARY KEY"));
+        assertEquals("ANC_UQ", constraintName("anc", "UNIQUE"));
+    }
+
+    @Test
+    public void testReferentialConstraintsUseExplicitNames() throws SQLException {
+        logger.info("Testing that REFERENTIAL_CONSTRAINTS reports explicit constraint names");
+
+        statement.execute("CREATE TABLE erc_parent (id INTEGER, CONSTRAINT erc_pk PRIMARY KEY (id))");
+        statement.execute("CREATE TABLE erc_child (a INTEGER, "
+            + "CONSTRAINT erc_fk FOREIGN KEY (a) REFERENCES erc_parent(id))");
+
+        final ResultSet rs = statement.executeQuery(
+            "SELECT CONSTRAINT_NAME, UNIQUE_CONSTRAINT_NAME FROM INFORMATION_SCHEMA.REFERENTIAL_CONSTRAINTS "
+            + "WHERE CONSTRAINT_NAME = 'ERC_FK'");
+        assertTrue(rs.next(), "the named FK should appear in REFERENTIAL_CONSTRAINTS");
+        assertEquals("ERC_FK", rs.getString("CONSTRAINT_NAME"));
+        assertEquals("ERC_PK", rs.getString("UNIQUE_CONSTRAINT_NAME"),
+                     "the referenced constraint is the parent's explicitly named PRIMARY KEY");
+        assertFalse(rs.next(), "exactly one referential row for the FK");
+        rs.close();
+    }
+
+    @Test
+    public void testDroppedPrimaryKeyLosesItsExplicitName() throws SQLException {
+        logger.info("Testing that a re-added PRIMARY KEY is a new constraint with a new name");
+
+        statement.execute("CREATE TABLE dpn (a INTEGER, CONSTRAINT dpn_pk PRIMARY KEY (a))");
+        assertEquals("DPN_PK", constraintName("dpn", "PRIMARY KEY"));
+
+        statement.execute("ALTER TABLE dpn DROP PRIMARY KEY");
+        statement.execute("ALTER TABLE dpn ADD PRIMARY KEY (a)");
+        assertTrue(constraintName("dpn", "PRIMARY KEY").startsWith("SYS_CONSTRAINT_"),
+                   "the dropped constraint's name goes with it; the new unnamed one auto-names itself");
+    }
+
+    private String constraintName(final String tableName, final String type) throws SQLException {
+        final ResultSet rs = statement.executeQuery(
+            "SELECT CONSTRAINT_NAME FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS "
+            + "WHERE TABLE_NAME = '" + tableName.toUpperCase() + "' AND CONSTRAINT_TYPE = '" + type + "'");
+        assertTrue(rs.next(), "expected a " + type + " constraint on " + tableName);
+        final String name = rs.getString("CONSTRAINT_NAME");
+        rs.close();
+        return name;
     }
 
     @Test

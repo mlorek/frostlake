@@ -17,12 +17,22 @@
 package dev.frostlake.functions.scalar.conditional;
 
 import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.types.VariantType;
 
 import java.util.List;
 
 public class Least extends BuiltInFunction {
     public Least() { super("LEAST", VariantType.VARIANT); }
+
+    /**
+     * {@code LEAST} orders its arguments and so refuses a GEOSPATIAL one, where it takes an OBJECT —
+     * see {@link Greatest#geoRejection} for the measurement.
+     */
+    @Override
+    public SemiStructuredRejection geoRejection(final int position) {
+        return SemiStructuredRejection.ARGUMENT_TYPES;
+    }
 
     @Override
     @SuppressWarnings("unchecked")

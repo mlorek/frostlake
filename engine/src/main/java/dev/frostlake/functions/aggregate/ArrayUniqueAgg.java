@@ -17,7 +17,8 @@
 package dev.frostlake.functions.aggregate;
 
 import dev.frostlake.functions.AggregateFunction;
-import dev.frostlake.types.VariantType;
+import dev.frostlake.functions.SemiStructuredRejection;
+import dev.frostlake.types.ArrayType;
 
 import java.util.List;
 
@@ -28,7 +29,18 @@ import java.util.List;
  */
 public class ArrayUniqueAgg extends AggregateFunction {
     public ArrayUniqueAgg() {
-        super("ARRAY_UNIQUE_AGG", VariantType.VARIANT);
+        super("ARRAY_UNIQUE_AGG", ArrayType.ARRAY);
+    }
+
+    /**
+     * The same divergence {@code ARRAY_AGG} has: live, {@code ARRAY_UNIQUE_AGG(o)} and
+     * {@code ARRAY_UNIQUE_AGG(a)} collect their values while {@code ARRAY_UNIQUE_AGG(so)},
+     * {@code (sa)} and {@code (sm)} are "Invalid argument types for function 'ARRAY_UNIQUE_AGG'"
+     * naming the whole structured type.
+     */
+    @Override
+    public SemiStructuredRejection structuredRejection(final int position) {
+        return SemiStructuredRejection.ARGUMENT_TYPES;
     }
 
     @Override

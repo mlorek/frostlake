@@ -20,6 +20,7 @@ import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.Row;
 
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 
 import java.util.HashSet;
@@ -32,6 +33,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 public class ExplainTest extends BaseDatabaseTest {
 
+    private static final String PLAN_SHAPE =
+        "asserts Frostlake's operator names (TableScan / Filter / Aggregate / …); an EXPLAIN plan on a real "
+        + "account is Snowflake's own internal plan shape, with different rows, columns and operator names";
+
     private Set<String> operations(final String sql) {
         final ResultSet rs = engine.executeQuery(sql);
         final Set<String> ops = new HashSet<>();
@@ -43,6 +48,7 @@ public class ExplainTest extends BaseDatabaseTest {
 
     @Test
     public void explainSelectShowsOperators() {
+        Assumptions.assumeFalse(isLiveSnowflake(), PLAN_SHAPE);
         engine.execute("CREATE TABLE t (id INTEGER, region VARCHAR, amount INTEGER)");
         final Set<String> ops = operations(
             "EXPLAIN SELECT region, SUM(amount) FROM t WHERE id > 0 GROUP BY region ORDER BY region LIMIT 5");
@@ -56,6 +62,7 @@ public class ExplainTest extends BaseDatabaseTest {
 
     @Test
     public void explainJoinShowsJoin() {
+        Assumptions.assumeFalse(isLiveSnowflake(), PLAN_SHAPE);
         engine.execute("CREATE TABLE a (id INTEGER)");
         engine.execute("CREATE TABLE b (id INTEGER)");
         final Set<String> ops = operations("EXPLAIN SELECT * FROM a JOIN b ON a.id = b.id");
@@ -65,6 +72,7 @@ public class ExplainTest extends BaseDatabaseTest {
 
     @Test
     public void explainUsingTabular() {
+        Assumptions.assumeFalse(isLiveSnowflake(), PLAN_SHAPE);
         engine.execute("CREATE TABLE t2 (id INTEGER)");
         final Set<String> ops = operations("EXPLAIN USING TABULAR SELECT * FROM t2");
         assertTrue(ops.contains("Result"), ops.toString());

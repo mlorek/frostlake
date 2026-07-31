@@ -16,14 +16,14 @@
 
 package dev.frostlake.functions.scalar.string;
 
-import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.functions.TextArgumentFunction;
 import dev.frostlake.types.StringType;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.regex.Pattern;
 
-public class Strtok extends BuiltInFunction {
+public class Strtok extends TextArgumentFunction {
     public Strtok() { super("STRTOK", StringType.VARCHAR); }
 
     @Override

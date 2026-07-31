@@ -17,15 +17,35 @@
 package dev.frostlake.functions.scalar.semistructured;
 
 import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.functions.scalar.ArrayFunctionHelper;
 import dev.frostlake.types.VariantType;
+import dev.frostlake.values.VariantValue;
 
 import java.util.List;
 
+/**
+ * TO_VARIANT(expr) — wraps a value as a typed VARIANT. A VARCHAR becomes a variant STRING and is
+ * NEVER parsed (live-verified: {@code TO_VARIANT('{"a":1}')} is a string, not an object — it does
+ * not equal {@code PARSE_JSON} of the same text); an already semi-structured value passes through;
+ * scalars wrap as their typed variant counterpart. NULL stays NULL.
+ */
 public class ToVariant extends BuiltInFunction {
     public ToVariant() { super("TO_VARIANT", VariantType.VARIANT); }
 
     @Override
-    public Object evaluate(final List<Object> args) { return args.get(0); }
+    public Object evaluate(final List<Object> args) {
+        final Object value = args.get(0);
+        if (value == null || value instanceof VariantValue) {
+            return value;
+        }
+        if (value instanceof CharSequence) {
+            return VariantValue.ofNode(
+                ArrayFunctionHelper.MAPPER.getNodeFactory().textNode(value.toString()));
+        }
+        // Canonicalized, so a whole-valued decimal wraps as an integral variant (TYPEOF = INTEGER).
+        return ArrayFunctionHelper.toCanonicalVariant(
+            ArrayFunctionHelper.toNode(ArrayFunctionHelper.MAPPER, value));
+    }
 
     @Override public int getMinArgCount() { return 1; }
     @Override public int getMaxArgCount() { return 1; }

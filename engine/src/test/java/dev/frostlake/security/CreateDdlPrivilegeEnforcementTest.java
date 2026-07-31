@@ -229,11 +229,14 @@ public class CreateDdlPrivilegeEnforcementTest {
     @Test
     public void grantMultiWordGlobalPrivilegeNoLongerThrows() {
         // Global (account-level) multi-word privileges were broken by the same concatenation bug.
+        // An account-level privilege names its scope: live-verified, the bare
+        // `GRANT CREATE DATABASE TO ROLE r` is a syntax error on a real account ("unexpected 'TO'"),
+        // while `GRANT CREATE DATABASE ON ACCOUNT TO ROLE r` succeeds.
         assertDoesNotThrow(new Executable() {
             @Override
             public void execute() {
-                engine.execute("GRANT CREATE DATABASE TO ROLE app_role");
-                engine.execute("GRANT MONITOR USAGE TO ROLE app_role");
+                engine.execute("GRANT CREATE DATABASE ON ACCOUNT TO ROLE app_role");
+                engine.execute("GRANT MONITOR USAGE ON ACCOUNT TO ROLE app_role");
             }
         });
     }

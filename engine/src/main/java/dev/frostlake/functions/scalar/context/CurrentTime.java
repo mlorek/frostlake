@@ -29,5 +29,7 @@ public class CurrentTime extends BuiltInFunction {
     public Object evaluate(final List<Object> args) { return LocalTime.now(); }
 
     @Override public int getMinArgCount() { return 0; }
-    @Override public int getMaxArgCount() { return 0; }
+    // Snowflake accepts an optional fractional-seconds precision argument (CURRENT_TIMESTAMP(3));
+    // the engine renders full precision regardless, so the argument is accepted and ignored.
+    @Override public int getMaxArgCount() { return 1; }
 }

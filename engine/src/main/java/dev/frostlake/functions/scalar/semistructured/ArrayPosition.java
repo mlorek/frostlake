@@ -33,7 +33,11 @@ public class ArrayPosition extends BuiltInFunction {
         final Object value = args.get(0);
         final ArrayNode arr = ArrayFunctionHelper.parseArray(args.get(1));
         if (arr == null) return null;
-        final JsonNode target = ArrayFunctionHelper.toNode(ArrayFunctionHelper.MAPPER, value);
+        // A SQL NULL needle looks for the VARIANT `undefined` element — live:
+        // ARRAY_POSITION(NULL::VARIANT, ARRAY_CONSTRUCT(1,NULL,2)) is 1, while over
+        // PARSE_JSON('[1,null,2]') and over ARRAY_CONSTRUCT(1,2) it is SQL NULL. A JSON null needle
+        // matches only a JSON null: ARRAY_POSITION(PARSE_JSON('null'), PARSE_JSON('[1,null,2]')) is 1.
+        final JsonNode target = ArrayFunctionHelper.toElementNode(ArrayFunctionHelper.MAPPER, value);
         for (int i = 0; i < arr.size(); i++) {
             final JsonNode el = arr.get(i);
             if (ArrayFunctionHelper.nodesEqual(el, target)) return (long) i;

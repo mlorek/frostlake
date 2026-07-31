@@ -128,6 +128,15 @@ public class User {
         return roleGrantors.getOrDefault(roleName.toUpperCase(), "SYSADMIN");
     }
 
+    /**
+     * True when the role reached this user through an explicit {@code GRANT ROLE} (which records its
+     * grantor) rather than implicitly at user creation (PUBLIC, granted without a grantor entry).
+     * SHOW GRANTS TO USER lists only explicit grants — live Snowflake shows zero rows for a fresh user.
+     */
+    public boolean hasExplicitRoleGrant(final String roleName) {
+        return roleGrantors.containsKey(roleName.toUpperCase());
+    }
+
     public void revokePrivilege(final String objectType, final String objectName, final Privilege privilege) {
         String key = objectType.toUpperCase() + ":" + objectName.toUpperCase();
         Set<Privilege> privileges = objectPrivileges.get(key);

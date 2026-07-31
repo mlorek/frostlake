@@ -16,12 +16,15 @@
 
 package dev.frostlake.functions.scalar.string;
 
-import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.functions.TextArgumentFunction;
+import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.types.NumericType;
+import dev.frostlake.values.BinaryValue;
 
 import java.util.List;
 
-public class CharIndex extends BuiltInFunction {
+/** CHARINDEX(needle, haystack [, start]) — POSITION's argument order; BINARY pairs search by BYTE. */
+public class CharIndex extends TextArgumentFunction {
     public CharIndex() { super("CHARINDEX", NumericType.INTEGER); }
 
     @Override
@@ -33,10 +36,14 @@ public class CharIndex extends BuiltInFunction {
             }
         }
         if (args.get(0) == null || args.get(1) == null) return 0L;
-        String needle = args.get(0).toString();
-        String haystack = args.get(1).toString();
         int startPos = args.size() > 2 && args.get(2) != null ? ((Number) args.get(2)).intValue() - 1 : 0;
         startPos = Math.max(0, startPos);
+        if (args.get(0) instanceof BinaryValue && args.get(1) instanceof BinaryValue) {
+            return SharedFunctionHelpers.indexOfBytes(((BinaryValue) args.get(1)).bytes(),
+                ((BinaryValue) args.get(0)).bytes(), startPos);
+        }
+        String needle = args.get(0).toString();
+        String haystack = args.get(1).toString();
         int idx = haystack.indexOf(needle, startPos);
         return idx < 0 ? 0L : (long) (idx + 1);
     }

@@ -34,18 +34,19 @@ public class ParseUrlTest extends BaseDatabaseTest {
 
     @Test
     public void parsesDocumentedExample() {
-        // Matches the object shown in the Snowflake PARSE_URL documentation.
+        // Matches the object shown in the Snowflake PARSE_URL documentation; keys arrive in
+        // ALPHABETICAL order (live-verified).
         assertEquals(
-            "{\"scheme\":\"http\",\"host\":\"USER:PASS@EXAMPLE.INT\",\"port\":\"4345\","
-                + "\"path\":\"HELLO.PHP\",\"query\":\"USER=1\",\"parameters\":{\"USER\":\"1\"},\"fragment\":null}",
+            "{\"fragment\":null,\"host\":\"USER:PASS@EXAMPLE.INT\",\"parameters\":{\"USER\":\"1\"},"
+                + "\"path\":\"HELLO.PHP\",\"port\":\"4345\",\"query\":\"USER=1\",\"scheme\":\"http\"}",
             scalar("SELECT PARSE_URL('http://USER:PASS@EXAMPLE.INT:4345/HELLO.PHP?USER=1')"));
     }
 
     @Test
     public void parsesQueryParametersAndFragment() {
         assertEquals(
-            "{\"scheme\":\"https\",\"host\":\"example.com\",\"port\":null,\"path\":\"a/b\","
-                + "\"query\":\"x=1&y=2\",\"parameters\":{\"x\":\"1\",\"y\":\"2\"},\"fragment\":\"frag\"}",
+            "{\"fragment\":\"frag\",\"host\":\"example.com\",\"parameters\":{\"x\":\"1\",\"y\":\"2\"},"
+                + "\"path\":\"a/b\",\"port\":null,\"query\":\"x=1&y=2\",\"scheme\":\"https\"}",
             scalar("SELECT PARSE_URL('https://example.com/a/b?x=1&y=2#frag')"));
     }
 

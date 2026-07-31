@@ -16,12 +16,21 @@
 
 package dev.frostlake.functions.scalar.string;
 
-import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.functions.TextArgumentFunction;
+import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.types.NumericType;
+import dev.frostlake.values.BinaryValue;
 
 import java.util.List;
 
-public class Position extends BuiltInFunction {
+/**
+ * POSITION(needle, haystack [, start]) — the 1-based position of needle, or 0 when absent.
+ *
+ * <p>Two BINARY arguments are searched BYTE-wise:
+ * {@code POSITION(TO_BINARY('45','HEX'), TO_BINARY('48454C','HEX'))} is 2 — the second byte — where
+ * searching the hex renderings found the digit pair at character 3.
+ */
+public class Position extends TextArgumentFunction {
     public Position() { super("POSITION", NumericType.INTEGER); }
 
     @Override
@@ -33,10 +42,14 @@ public class Position extends BuiltInFunction {
             }
         }
         if (args.get(0) == null || args.get(1) == null) return 0L;
-        String needle = args.get(0).toString();
-        String haystack = args.get(1).toString();
         int startPos = args.size() > 2 && args.get(2) != null ? ((Number) args.get(2)).intValue() - 1 : 0;
         startPos = Math.max(0, startPos);
+        if (args.get(0) instanceof BinaryValue && args.get(1) instanceof BinaryValue) {
+            return SharedFunctionHelpers.indexOfBytes(((BinaryValue) args.get(1)).bytes(),
+                ((BinaryValue) args.get(0)).bytes(), startPos);
+        }
+        String needle = args.get(0).toString();
+        String haystack = args.get(1).toString();
         int idx = haystack.indexOf(needle, startPos);
         return idx < 0 ? 0L : (long) (idx + 1);
     }

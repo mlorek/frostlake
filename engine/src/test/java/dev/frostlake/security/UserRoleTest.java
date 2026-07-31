@@ -19,8 +19,11 @@ package dev.frostlake.security;
 import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -143,20 +146,30 @@ public class UserRoleTest extends BaseDatabaseTest {
     public void testGrantPrivilegeToRole() {
         engine.execute("CREATE DATABASE priv_test_db");
         engine.execute("CREATE ROLE data_reader");
-        engine.execute("GRANT SELECT ON DATABASE priv_test_db TO ROLE data_reader");
+        // A privilege must be defined for the object type it is granted on. Live-verified on a real
+        // account: GRANT SELECT ON DATABASE fails "Invalid object type 'DATABASE' for
+        // privilege 'SELECT'" (as do SELECT on SCHEMA / WAREHOUSE and INSERT on DATABASE), while USAGE
+        // ON DATABASE is exactly how a database is shared.
+        assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.execute("GRANT SELECT ON DATABASE priv_test_db TO ROLE data_reader");
+            }
+        });
+        engine.execute("GRANT USAGE ON DATABASE priv_test_db TO ROLE data_reader");
 
         ResultSet grants = engine.executeQuery("SHOW GRANTS TO ROLE data_reader");
         assertTrue(grants.getRowCount() >= 1);
 
         boolean found = false;
         for (int i = 0; i < grants.getRowCount(); i++) {
-            if ("SELECT".equals(grants.getRows().get(i).getValue(1)) &&
+            if ("USAGE".equals(grants.getRows().get(i).getValue(1)) &&
                 "PRIV_TEST_DB".equals(grants.getRows().get(i).getValue(3))) {
                 found = true;
                 break;
             }
         }
-        assertTrue(found, "SELECT privilege on priv_test_db should be granted to data_reader");
+        assertTrue(found, "USAGE privilege on priv_test_db should be granted to data_reader");
     }
 
     @Test
@@ -241,40 +254,47 @@ public class UserRoleTest extends BaseDatabaseTest {
     }
 
     @Test
-    public void testPublicRoleAutomaticallyGrantedToNewUsers() {
+    public void testImplicitPublicRoleNotListedForNewUsers() {
         // Create a new user
         engine.execute("CREATE USER test_public_user");
 
-        // Verify PUBLIC role is automatically granted
+        // Live Snowflake does not list the implicit PUBLIC membership: a fresh user shows 0 grants.
         ResultSet grants = engine.executeQuery("SHOW GRANTS TO USER test_public_user");
-        assertTrue(grants.getRowCount() >= 1, "User should have at least PUBLIC role");
+        assertEquals(0, grants.getRowCount(), "a fresh user must show no grants");
 
-        boolean hasPublicRole = false;
+        // Not even an EXPLICIT grant surfaces it — re-probed on a real account: after
+        // GRANT ROLE PUBLIC TO USER u the listing is still empty, while granting any OTHER role shows a
+        // row immediately. Every user is in PUBLIC, so the grant has nothing to report.
+        engine.execute("GRANT ROLE PUBLIC TO USER test_public_user");
+        grants = engine.executeQuery("SHOW GRANTS TO USER test_public_user");
+        assertEquals(0, grants.getRowCount(), "PUBLIC is never listed, explicit grant or not");
+
+        engine.execute("CREATE ROLE listed_role");
+        engine.execute("GRANT ROLE listed_role TO USER test_public_user");
+        grants = engine.executeQuery("SHOW GRANTS TO USER test_public_user");
+        boolean hasListedRole = false;
         for (int i = 0; i < grants.getRowCount(); i++) {
-            if ("PUBLIC".equals(grants.getRows().get(i).getValue(3))) {
-                hasPublicRole = true;
-                break;
+            if ("LISTED_ROLE".equals(grants.getRows().get(i).getValue(3))) {
+                hasListedRole = true;
             }
+            assertNotEquals("PUBLIC", grants.getRows().get(i).getValue(3));
         }
-        assertTrue(hasPublicRole, "PUBLIC role should be automatically granted to all new users");
+        assertTrue(hasListedRole, "a non-PUBLIC role grant is listed");
     }
 
     @Test
-    public void testPublicRoleGrantedToUserWithPassword() {
+    public void testExplicitPublicGrantListedForUserWithPassword() {
         // Create a new user with password and default role
         engine.execute("CREATE USER test_public_user2 PASSWORD = 'pass123' DEFAULT_ROLE = 'PUBLIC'");
 
-        // Verify PUBLIC role is automatically granted
+        // The implicit at-creation PUBLIC membership is not surfaced (live-verified: 0 rows).
         ResultSet grants = engine.executeQuery("SHOW GRANTS TO USER test_public_user2");
-        assertTrue(grants.getRowCount() >= 1, "User should have at least PUBLIC role");
+        assertEquals(0, grants.getRowCount(), "a fresh user must show no grants");
 
-        boolean hasPublicRole = false;
-        for (int i = 0; i < grants.getRowCount(); i++) {
-            if ("PUBLIC".equals(grants.getRows().get(i).getValue(3))) {
-                hasPublicRole = true;
-                break;
-            }
-        }
-        assertTrue(hasPublicRole, "PUBLIC role should be automatically granted to user created with password");
+        // Same for a user created WITH a password and DEFAULT_ROLE = 'PUBLIC': the explicit grant adds
+        // no row (live-verified).
+        engine.execute("GRANT ROLE PUBLIC TO USER test_public_user2");
+        grants = engine.executeQuery("SHOW GRANTS TO USER test_public_user2");
+        assertEquals(0, grants.getRowCount(), "PUBLIC is never listed, explicit grant or not");
     }
 }

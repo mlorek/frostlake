@@ -21,6 +21,7 @@ import dev.frostlake.executor.expressions.Expression;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.TableColumn;
 import dev.frostlake.parser.FrostlakeParser;
+import dev.frostlake.security.SecurityManager;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
@@ -221,6 +222,37 @@ final class MergeExecutor {
                 }
             }
 
+            // Snowflake refuses a merge-UPDATE whose target row joins MORE THAN ONE source row: the
+            // update would be non-deterministic. Live-verified on a real account: a target
+            // (1,'x') joined by two sources fails "Duplicate row detected during DML action Row Values:
+            // [1, \"x\"]", while the same duplicate join with only WHEN MATCHED THEN DELETE, or with only
+            // WHEN NOT MATCHED THEN INSERT, succeeds — so the rule is UPDATE-specific. A WHEN MATCHED AND
+            // <cond> that narrows the duplicates back to one is fine, so the count is taken over the source
+            // rows whose clause actually resolves to an UPDATE. SHOW PARAMETERS reports
+            // ERROR_ON_NONDETERMINISTIC_MERGE = true by default; setting it FALSE picks one source
+            // arbitrarily instead.
+            if (errorOnNondeterministicMerge() && !matchedClauses.isEmpty()) {
+                for (int targetIdx = 0; targetIdx < targetRows.size(); targetIdx++) {
+                    final Row targetRow = targetRows.get(targetIdx);
+                    int updatingSources = 0;
+                    for (int sourceIdx = 0; sourceIdx < sourceRows.size(); sourceIdx++) {
+                        final Row sourceRow = sourceRows.get(sourceIdx);
+                        if (!evaluateMergeCondition(onCondition, targetRow, sourceRow, targetTable,
+                                sourceTable, targetAlias, sourceAlias)) {
+                            continue;
+                        }
+                        if (firstMatchedClauseIsUpdate(matchedClauses, targetRow, sourceRow, targetTable,
+                                sourceTable, targetAlias, sourceAlias)) {
+                            updatingSources++;
+                        }
+                    }
+                    if (updatingSources > 1) {
+                        throw new RuntimeException("Duplicate row detected during DML action Row Values: "
+                            + renderRowValues(targetRow));
+                    }
+                }
+            }
+
             // First pass: Process matched rows
             // Track rows to delete (can't delete while iterating)
             List<Integer> rowsToDelete = new ArrayList<>();
@@ -250,8 +282,7 @@ final class MergeExecutor {
                                 if (matchedClause.UPDATE() != null) {
                                     for (final FrostlakeParser.AssignmentContext assign : matchedClause.assignmentList().assignment()) {
                                         // Handle qualified identifiers (table.column) or simple identifiers
-                                        List<FrostlakeParser.IdentifierContext> identifiers = assign.identifier();
-                                        String colName = executor.getIdentifier(identifiers.get(identifiers.size() - 1));
+                                        String colName = ParseTreeText.namePartText(assign.namePart());
                                         String valueExpr = executor.getOriginalText(assign.expression());
 
                                         int colIndex = targetTable.getColumnIndex(colName);
@@ -262,7 +293,7 @@ final class MergeExecutor {
                                         List<Object> newValues = new ArrayList<>(targetRow.getValues());
                                         newValues.set(colIndex, newValue);
                                         Row updatedRow = new Row(newValues);
-                                        executor.enforceColumnConstraints(targetTable, updatedRow);
+                                        executor.enforceColumnConstraintsForDml(targetTable, updatedRow);
 
                                         if (executor.isDeferredApply()) {
                                             final Long targetRowId = targetRowIds.get(targetIdx);
@@ -380,7 +411,7 @@ final class MergeExecutor {
                         }
 
                         final Row newRow = new Row(orderedValues);
-                        executor.enforceColumnConstraints(targetTable, newRow);
+                        executor.enforceColumnConstraintsForDml(targetTable, newRow);
                         if (executor.isDeferredApply()) {
                             mergeWriteSet.recordInsert(fullyQualifiedTargetName, newRow);
                         } else {
@@ -399,12 +430,10 @@ final class MergeExecutor {
             return mergeCountResult(mergeInserted, mergeUpdated, rowsToDelete.size());
 
         } catch (final Exception e) {
-            String msg = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
-            // Include first relevant stack frame for easier diagnosis
-            StackTraceElement[] st = e.getStackTrace();
-            String frame = st != null && st.length > 0 ? " at " + st[0] : "";
+            // The frame that used to be appended to the message is diagnosis, not part of what Snowflake
+            // reports, so it goes to the log and the failure propagates with its own message.
             logger.error("MERGE failed", e);
-            throw new RuntimeException("Failed to execute MERGE: " + msg + frame, e);
+            throw StatementErrors.propagate(e);
         }
     }
 
@@ -423,6 +452,64 @@ final class MergeExecutor {
         final List<Row> rows = new ArrayList<>();
         rows.add(new Row(values));
         return new ResultSet(columns, rows);
+    }
+
+    /**
+     * ERROR_ON_NONDETERMINISTIC_MERGE, as reported by a live account's {@code SHOW PARAMETERS}: a
+     * BOOLEAN whose default is TRUE. Setting it FALSE lets a duplicate join pick one source row.
+     */
+    private boolean errorOnNondeterministicMerge() {
+        final SecurityManager securityManager = executor.getSecurityManager();
+        final Object configured = securityManager == null ? null
+            : securityManager.getSessionContext().getSessionParameter("ERROR_ON_NONDETERMINISTIC_MERGE");
+        if (configured == null) {
+            return true;
+        }
+        if (configured instanceof Boolean) {
+            return ((Boolean) configured).booleanValue();
+        }
+        return !"FALSE".equalsIgnoreCase(String.valueOf(configured));
+    }
+
+    /**
+     * Whether the FIRST WHEN MATCHED clause whose optional {@code AND} predicate holds for this
+     * target/source pair is an UPDATE — the only matched action Snowflake calls non-deterministic.
+     */
+    private boolean firstMatchedClauseIsUpdate(final List<FrostlakeParser.MergeClauseContext> matchedClauses,
+                                               final Row targetRow, final Row sourceRow,
+                                               final Table targetTable, final Table sourceTable,
+                                               final String targetAlias, final String sourceAlias) {
+        for (final FrostlakeParser.MergeClauseContext clause : matchedClauses) {
+            if (clause.booleanExpr() != null
+                    && !evaluateMergeCondition(executor.getOriginalText(clause.booleanExpr()), targetRow,
+                        sourceRow, targetTable, sourceTable, targetAlias, sourceAlias)) {
+                continue;
+            }
+            return clause.UPDATE() != null;
+        }
+        return false;
+    }
+
+    /**
+     * The offending target row as Snowflake prints it in the duplicate-row error: a bracketed list with
+     * strings double-quoted and everything else in its plain text form.
+     */
+    private String renderRowValues(final Row row) {
+        final StringBuilder text = new StringBuilder("[");
+        for (int i = 0; i < row.getValues().size(); i++) {
+            if (i > 0) {
+                text.append(", ");
+            }
+            final Object value = row.getValues().get(i);
+            if (value == null) {
+                text.append("NULL");
+            } else if (value instanceof Number || value instanceof Boolean) {
+                text.append(value);
+            } else {
+                text.append('"').append(value).append('"');
+            }
+        }
+        return text.append(']').toString();
     }
 
     private boolean evaluateMergeCondition(final String condition, final Row targetRow, final Row sourceRow,

@@ -16,7 +16,7 @@
 
 package dev.frostlake.functions.scalar.math;
 
-import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.functions.NumericArgumentFunction;
 import dev.frostlake.types.NumericType;
 
 import java.util.List;
@@ -25,7 +25,7 @@ import java.util.List;
  * ACOSH(x) — inverse hyperbolic cosine, computed as {@code ln(x + sqrt(x*x - 1))} since {@link Math} has no
  * {@code acosh}. The domain is {@code x >= 1}; NULL yields NULL.
  */
-public class Acosh extends BuiltInFunction {
+public class Acosh extends NumericArgumentFunction {
     public Acosh() { super("ACOSH", NumericType.DOUBLE); }
 
     @Override

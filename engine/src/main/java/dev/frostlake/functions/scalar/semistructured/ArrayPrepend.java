@@ -18,7 +18,8 @@ package dev.frostlake.functions.scalar.semistructured;
 
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
-import dev.frostlake.types.VariantType;
+import dev.frostlake.types.ArrayType;
+import dev.frostlake.values.VariantValue;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.node.ArrayNode;
 
@@ -26,16 +27,17 @@ import java.util.List;
 
 /** ARRAY_PREPEND(array, value) — prepends value to the front of the array. */
 public class ArrayPrepend extends BuiltInFunction {
-    public ArrayPrepend() { super("ARRAY_PREPEND", VariantType.VARIANT); }
+    public ArrayPrepend() { super("ARRAY_PREPEND", ArrayType.ARRAY); }
 
     @Override
     public Object evaluate(final List<Object> args) {
         ArrayNode src = ArrayFunctionHelper.parseArray(args.get(0));
         if (src == null) return null;
         ArrayNode result = ArrayFunctionHelper.MAPPER.createArrayNode();
-        result.add(ArrayFunctionHelper.toNode(ArrayFunctionHelper.MAPPER, args.get(1)));
+        // Live: ARRAY_PREPEND([1], NULL) is [undefined,1].
+        result.add(ArrayFunctionHelper.toElementNode(ArrayFunctionHelper.MAPPER, args.get(1)));
         for (final JsonNode el : src) result.add(el);
-        return result.toString();
+        return VariantValue.ofNode(result);
     }
 
     @Override public int getMinArgCount() { return 2; }
