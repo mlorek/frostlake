@@ -103,6 +103,9 @@ public class CreateNamespaceHandler implements CommandHandler {
             Database db = catalog.getDatabase(dbName);
             String comment = ddl.extractCommentFromList(ctx.commentClause());
             if (comment != null) db.setComment(comment);
+            // Snowflake activates a newly created database: it becomes the session's current
+            // database, with PUBLIC as the current schema (live-verified).
+            catalog.useDatabase(dbName);
         } catch (final RuntimeException e) {
             ddl.handleIfNotExists(ifNotExists, e, "object");
             logger.debug("Database already exists (IF NOT EXISTS): {}", dbName);
@@ -208,6 +211,10 @@ public class CreateNamespaceHandler implements CommandHandler {
             if (comment != null) {
                 schema.setComment(comment);
             }
+            // Snowflake activates a newly created schema: it becomes the session's current schema,
+            // in its containing database (live-verified: CURRENT_SCHEMA() changes right after).
+            final String activatedDb = parts.length == 2 ? parts[0] : catalog.getCurrentDatabase();
+            catalog.restoreContext(activatedDb, parts.length == 2 ? parts[1] : parts[0]);
         } catch (final RuntimeException e) {
             ddl.handleIfNotExists(ifNotExists, e, "object");
             logger.debug("Schema already exists (IF NOT EXISTS): {}", schemaName);

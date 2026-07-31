@@ -56,7 +56,7 @@ public class AlterColumnSyntaxTest {
     public void testAlterColumnWithSetDataType() {
         logger.info("Testing ALTER COLUMN with SET DATA TYPE");
 
-        engine.execute("CREATE TABLE test1 (id INTEGER, col1 INTEGER)");
+        engine.execute("CREATE TABLE test1 (id INTEGER, col1 VARCHAR(10))");
         engine.execute("ALTER TABLE test1 ALTER COLUMN col1 SET DATA TYPE VARCHAR");
 
         Table table = engine.getCatalog().resolveTable("test1");
@@ -72,7 +72,7 @@ public class AlterColumnSyntaxTest {
     public void testAlterColumnWithTypeOnly() {
         logger.info("Testing ALTER COLUMN with TYPE keyword");
 
-        engine.execute("CREATE TABLE test2 (id INTEGER, col1 INTEGER)");
+        engine.execute("CREATE TABLE test2 (id INTEGER, col1 VARCHAR(10))");
         engine.execute("ALTER TABLE test2 ALTER COLUMN col1 TYPE VARCHAR");
 
         Table table = engine.getCatalog().resolveTable("test2");
@@ -88,7 +88,7 @@ public class AlterColumnSyntaxTest {
     public void testAlterColumnWithoutTypeKeyword() {
         logger.info("Testing ALTER COLUMN without TYPE keyword (minimal form)");
 
-        engine.execute("CREATE TABLE test3 (id INTEGER, col1 INTEGER)");
+        engine.execute("CREATE TABLE test3 (id INTEGER, col1 VARCHAR(10))");
         engine.execute("ALTER TABLE test3 ALTER COLUMN col1 VARCHAR");
 
         Table table = engine.getCatalog().resolveTable("test3");
@@ -104,7 +104,7 @@ public class AlterColumnSyntaxTest {
     public void testAlterColumnWithSetDataTypeAndParameters() {
         logger.info("Testing ALTER COLUMN with SET DATA TYPE and type parameters");
 
-        engine.execute("CREATE TABLE test4 (id INTEGER, col1 INTEGER)");
+        engine.execute("CREATE TABLE test4 (id INTEGER, col1 VARCHAR(10))");
         engine.execute("ALTER TABLE test4 ALTER COLUMN col1 SET DATA TYPE VARCHAR(100)");
 
         Table table = engine.getCatalog().resolveTable("test4");
@@ -136,7 +136,7 @@ public class AlterColumnSyntaxTest {
     public void testAlterColumnWithoutTypeKeywordAndParameters() {
         logger.info("Testing ALTER COLUMN without TYPE keyword and type parameters");
 
-        engine.execute("CREATE TABLE test6 (id INTEGER, col1 INTEGER)");
+        engine.execute("CREATE TABLE test6 (id INTEGER, col1 VARCHAR(100))");
         engine.execute("ALTER TABLE test6 ALTER COLUMN col1 VARCHAR(500)");
 
         Table table = engine.getCatalog().resolveTable("test6");
@@ -152,7 +152,7 @@ public class AlterColumnSyntaxTest {
     public void testMultipleColumnsWithDifferentSyntax() {
         logger.info("Testing multiple columns altered with different syntax variations");
 
-        engine.execute("CREATE TABLE test7 (id INTEGER, col1 INTEGER, col2 INTEGER, col3 INTEGER)");
+        engine.execute("CREATE TABLE test7 (id INTEGER, col1 VARCHAR(10), col2 DATE, col3 TIMESTAMP)");
 
         engine.execute("ALTER TABLE test7 ALTER COLUMN col1 SET DATA TYPE VARCHAR");
         engine.execute("ALTER TABLE test7 ALTER COLUMN col2 TYPE DATE");
@@ -172,7 +172,7 @@ public class AlterColumnSyntaxTest {
     public void testAlterColumnWithIfExists() {
         logger.info("Testing ALTER COLUMN with IF EXISTS");
 
-        engine.execute("CREATE TABLE test8 (id INTEGER, col1 INTEGER)");
+        engine.execute("CREATE TABLE test8 (id INTEGER, col1 VARCHAR(10))");
         engine.execute("ALTER TABLE IF EXISTS test8 ALTER COLUMN col1 TYPE VARCHAR");
 
         Table table = engine.getCatalog().resolveTable("test8");
@@ -189,7 +189,7 @@ public class AlterColumnSyntaxTest {
         logger.info("Testing ALTER COLUMN with schema-qualified table name");
 
         engine.execute("CREATE SCHEMA test_schema");
-        engine.execute("CREATE TABLE test_schema.test9 (id INTEGER, col1 INTEGER)");
+        engine.execute("CREATE TABLE test_schema.test9 (id INTEGER, col1 VARCHAR(10))");
 
         engine.execute("ALTER TABLE test_schema.test9 ALTER COLUMN col1 TYPE VARCHAR");
 
@@ -206,7 +206,7 @@ public class AlterColumnSyntaxTest {
     public void testAlterColumnWithComplexDataType() {
         logger.info("Testing ALTER COLUMN with complex data type");
 
-        engine.execute("CREATE TABLE test10 (id INTEGER, col1 INTEGER)");
+        engine.execute("CREATE TABLE test10 (id INTEGER, col1 TIMESTAMP)");
         engine.execute("ALTER TABLE test10 ALTER COLUMN col1 TYPE TIMESTAMP_LTZ");
 
         Table table = engine.getCatalog().resolveTable("test10");
@@ -222,7 +222,7 @@ public class AlterColumnSyntaxTest {
     public void testAllSyntaxVariationsProduceSameResult() {
         logger.info("Testing that all syntax variations produce the same result");
 
-        engine.execute("CREATE TABLE test11 (id INTEGER, col1 INTEGER, col2 INTEGER, col3 INTEGER)");
+        engine.execute("CREATE TABLE test11 (id INTEGER, col1 VARCHAR(10), col2 VARCHAR(10), col3 VARCHAR(10))");
 
         engine.execute("ALTER TABLE test11 ALTER COLUMN col1 SET DATA TYPE VARCHAR");
         engine.execute("ALTER TABLE test11 ALTER COLUMN col2 TYPE VARCHAR");

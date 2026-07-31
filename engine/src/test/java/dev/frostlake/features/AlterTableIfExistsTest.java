@@ -56,12 +56,12 @@ public class AlterTableIfExistsTest {
 
     @Test
     public void testAlterTableRenameWithoutIfExists() {
-        logger.info("Testing ALTER TABLE RENAME without IF EXISTS on non-existent table");
+        logger.info("Testing ALTER TABLE RENAME TO without IF EXISTS on non-existent table");
 
         assertThrows(RuntimeException.class, new Executable() {
             @Override
             public void execute() throws Throwable {
-                engine.execute("ALTER TABLE non_existent_table RENAME new_table");
+                engine.execute("ALTER TABLE non_existent_table RENAME TO new_table");
             }
         });
 
@@ -70,9 +70,9 @@ public class AlterTableIfExistsTest {
 
     @Test
     public void testAlterTableRenameWithIfExists() {
-        logger.info("Testing ALTER TABLE RENAME with IF EXISTS on non-existent table");
+        logger.info("Testing ALTER TABLE RENAME TO with IF EXISTS on non-existent table");
 
-        engine.execute("ALTER TABLE IF EXISTS non_existent_table RENAME new_table");
+        engine.execute("ALTER TABLE IF EXISTS non_existent_table RENAME TO new_table");
 
         logger.info("ALTER TABLE IF EXISTS on non-existent table succeeds without error");
     }
@@ -113,7 +113,7 @@ public class AlterTableIfExistsTest {
     public void testAlterTableRenameColumnWithIfExists() {
         logger.info("Testing ALTER TABLE RENAME COLUMN with IF EXISTS on non-existent table");
 
-        engine.execute("ALTER TABLE IF EXISTS non_existent_table RENAME COLUMN old_col new_col");
+        engine.execute("ALTER TABLE IF EXISTS non_existent_table RENAME COLUMN old_col TO new_col");
 
         logger.info("ALTER TABLE IF EXISTS RENAME COLUMN on non-existent table succeeds without error");
     }
@@ -144,10 +144,10 @@ public class AlterTableIfExistsTest {
 
     @Test
     public void testAlterTableRenameIfExistsOnExistingTable() {
-        logger.info("Testing ALTER TABLE RENAME IF EXISTS on existing table");
+        logger.info("Testing ALTER TABLE RENAME TO IF EXISTS on existing table");
 
         engine.execute("CREATE TABLE old_name (id INTEGER)");
-        engine.execute("ALTER TABLE IF EXISTS old_name RENAME new_name");
+        engine.execute("ALTER TABLE IF EXISTS old_name RENAME TO new_name");
 
         assertThrows(RuntimeException.class, new Executable() {
             @Override
@@ -159,7 +159,7 @@ public class AlterTableIfExistsTest {
         Table table = engine.getCatalog().resolveTable("new_name");
         assertNotNull(table);
 
-        logger.info("ALTER TABLE RENAME IF EXISTS on existing table works correctly");
+        logger.info("ALTER TABLE RENAME TO IF EXISTS on existing table works correctly");
     }
 
     @Test
@@ -181,7 +181,7 @@ public class AlterTableIfExistsTest {
         logger.info("Testing ALTER TABLE RENAME COLUMN IF EXISTS on existing table");
 
         engine.execute("CREATE TABLE test_table (id INTEGER, old_name VARCHAR)");
-        engine.execute("ALTER TABLE IF EXISTS test_table RENAME COLUMN old_name new_name");
+        engine.execute("ALTER TABLE IF EXISTS test_table RENAME COLUMN old_name TO new_name");
 
         Table table = engine.getCatalog().resolveTable("test_table");
         assertNotNull(table);
@@ -209,7 +209,7 @@ public class AlterTableIfExistsTest {
         logger.info("Testing ALTER TABLE IF EXISTS with schema-qualified name");
 
         engine.execute("CREATE SCHEMA test_schema");
-        engine.execute("ALTER TABLE IF EXISTS test_schema.non_existent RENAME new_table");
+        engine.execute("ALTER TABLE IF EXISTS test_schema.non_existent RENAME TO new_table");
 
         logger.info("ALTER TABLE IF EXISTS with qualified name on non-existent table succeeds");
     }
@@ -220,8 +220,8 @@ public class AlterTableIfExistsTest {
 
         engine.execute("ALTER TABLE IF EXISTS table1 ADD COLUMN col1 VARCHAR");
         engine.execute("ALTER TABLE IF EXISTS table2 DROP COLUMN col2");
-        engine.execute("ALTER TABLE IF EXISTS table3 RENAME table4");
-        engine.execute("ALTER TABLE IF EXISTS table5 RENAME COLUMN old new");
+        engine.execute("ALTER TABLE IF EXISTS table3 RENAME TO table4");
+        engine.execute("ALTER TABLE IF EXISTS table5 RENAME COLUMN old TO new");
         engine.execute("ALTER TABLE IF EXISTS table6 SET COMMENT = 'Comment'");
 
         logger.info("Multiple ALTER TABLE IF EXISTS operations on non-existent tables succeed");

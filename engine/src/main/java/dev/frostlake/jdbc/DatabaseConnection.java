@@ -20,12 +20,9 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.sql.*;
-import java.util.ArrayList;
-import java.util.List;
 import java.util.Map;
 import java.util.Properties;
 import java.util.concurrent.Executor;
-import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * JDBC Connection implementation for Frostlake SQL Engine
@@ -39,8 +36,6 @@ public class DatabaseConnection implements Connection {
     private boolean closed;
     private boolean autoCommit;
     private String catalog;
-    private final List<DatabaseSavepoint> savepoints;
-    private final AtomicInteger savepointIdCounter;
 
     public DatabaseConnection(final String baseUrl, final String database, final String schema, final Properties info) throws SQLException {
         String sessionId = info.getProperty("sessionId");
@@ -49,8 +44,6 @@ public class DatabaseConnection implements Connection {
         this.schema = schema;
         this.closed = false;
         this.autoCommit = true;
-        this.savepoints = new ArrayList<>();
-        this.savepointIdCounter = new AtomicInteger(0);
 
         // Verify connection
         if (!httpClient.isHealthy()) {
@@ -96,11 +89,10 @@ public class DatabaseConnection implements Connection {
     public void setAutoCommit(final boolean autoCommit) throws SQLException {
         checkClosed();
         this.autoCommit = autoCommit;
-        if (autoCommit) {
-            execute("SET autocommit = true");
-        } else {
-            execute("SET autocommit = false");
-        }
+        // ALTER SESSION drives the engine's real per-session autocommit flag; a plain SET would only
+        // create a session VARIABLE named "autocommit" and leave every statement auto-committing.
+        // Must propagate failures — a silently ignored toggle breaks transaction semantics.
+        httpClient.execute("ALTER SESSION SET AUTOCOMMIT = " + (autoCommit ? "TRUE" : "FALSE"));
     }
 
     @Override
@@ -115,8 +107,8 @@ public class DatabaseConnection implements Connection {
         if (autoCommit) {
             throw new SQLException("Cannot commit when autocommit is enabled");
         }
-        execute("COMMIT");
-        savepoints.clear(); // Clear all savepoints after commit
+        // Direct call, not the lenient execute(): a failed COMMIT must surface to the caller.
+        httpClient.execute("COMMIT");
     }
 
     @Override
@@ -125,8 +117,8 @@ public class DatabaseConnection implements Connection {
         if (autoCommit) {
             throw new SQLException("Cannot rollback when autocommit is enabled");
         }
-        execute("ROLLBACK");
-        savepoints.clear(); // Clear all savepoints after rollback
+        // Direct call, not the lenient execute(): a failed ROLLBACK must surface to the caller.
+        httpClient.execute("ROLLBACK");
     }
 
     @Override

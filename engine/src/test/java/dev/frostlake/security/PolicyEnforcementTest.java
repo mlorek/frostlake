@@ -204,9 +204,9 @@ public class PolicyEnforcementTest {
 
     @Test
     public void testRenameMaskingPolicyBareSyntax() {
-        // The engine also accepts the bare RENAME <name> form (no TO), matching its other ALTER ... RENAME actions.
+        // The engine also accepts the bare RENAME TO <name> form (no TO), matching its other ALTER ... RENAME TO actions.
         engine.execute("CREATE MASKING POLICY mp_bare AS (v VARCHAR) RETURNS VARCHAR -> 'x'");
-        engine.execute("ALTER MASKING POLICY mp_bare RENAME mp_bare2");
+        engine.execute("ALTER MASKING POLICY mp_bare RENAME TO mp_bare2");
         var schema = engine.getCatalog().getDatabase("TEST_DB").getSchema("PUBLIC");
         assertNull(schema.getMaskingPolicy("MP_BARE"));
         assertNotNull(schema.getMaskingPolicy("MP_BARE2"));

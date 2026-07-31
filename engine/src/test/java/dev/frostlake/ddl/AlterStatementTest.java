@@ -51,7 +51,7 @@ public class AlterStatementTest {
     @Test
     public void testAlterDatabaseRename() {
         engine.execute("CREATE DATABASE old_db");
-        engine.execute("ALTER DATABASE old_db RENAME new_db");
+        engine.execute("ALTER DATABASE old_db RENAME TO new_db");
 
         ResultSet rs = engine.executeQuery("SHOW DATABASES");
         assertTrue(containsValue(rs, "new_db"), "Database should be renamed to new_db");
@@ -70,7 +70,7 @@ public class AlterStatementTest {
     @Test
     public void testAlterSchemaRename() {
         engine.execute("CREATE SCHEMA old_schema");
-        engine.execute("ALTER SCHEMA old_schema RENAME new_schema");
+        engine.execute("ALTER SCHEMA old_schema RENAME TO new_schema");
 
         ResultSet rs = engine.executeQuery("SHOW SCHEMAS");
         assertTrue(containsValue(rs, "new_schema"), "Schema should be renamed to new_schema");
@@ -88,7 +88,7 @@ public class AlterStatementTest {
     @Test
     public void testAlterTableRename() {
         engine.execute("CREATE TABLE old_table (id INT, name VARCHAR)");
-        engine.execute("ALTER TABLE old_table RENAME new_table");
+        engine.execute("ALTER TABLE old_table RENAME TO new_table");
 
         ResultSet rs = engine.executeQuery("SHOW TABLES");
         assertTrue(containsValue(rs, "new_table"), "Table should be renamed to new_table");
@@ -126,7 +126,7 @@ public class AlterStatementTest {
     public void testAlterTableRenameColumn() {
         engine.execute("CREATE TABLE users (id INT, name VARCHAR)");
         engine.execute("INSERT INTO users VALUES (1, 'Alice')");
-        engine.execute("ALTER TABLE users RENAME COLUMN name full_name");
+        engine.execute("ALTER TABLE users RENAME COLUMN name TO full_name");
 
         ResultSet rs = engine.executeQuery("SELECT * FROM users");
         assertEquals("FULL_NAME", rs.getColumns().get(1).getName().toUpperCase(),
@@ -150,7 +150,7 @@ public class AlterStatementTest {
     public void testAlterViewRename() {
         engine.execute("CREATE TABLE users (id INT, name VARCHAR)");
         engine.execute("CREATE VIEW old_view AS SELECT * FROM users");
-        engine.execute("ALTER VIEW old_view RENAME new_view");
+        engine.execute("ALTER VIEW old_view RENAME TO new_view");
 
         ResultSet rs = engine.executeQuery("SHOW VIEWS");
         assertTrue(containsValue(rs, "new_view"), "View should be renamed to new_view");
@@ -170,7 +170,7 @@ public class AlterStatementTest {
     @Test
     public void testAlterUserRename() {
         engine.execute("CREATE USER old_user PASSWORD = 'pass123'");
-        engine.execute("ALTER USER old_user RENAME new_user");
+        engine.execute("ALTER USER old_user RENAME TO new_user");
 
         ResultSet rs = engine.executeQuery("SHOW USERS");
         assertTrue(containsValue(rs, "new_user"), "User should be renamed to new_user");
@@ -208,7 +208,7 @@ public class AlterStatementTest {
     @Test
     public void testAlterRoleRename() {
         engine.execute("CREATE ROLE old_role");
-        engine.execute("ALTER ROLE old_role RENAME new_role");
+        engine.execute("ALTER ROLE old_role RENAME TO new_role");
 
         ResultSet rs = engine.executeQuery("SHOW ROLES");
         assertTrue(containsValue(rs, "new_role"), "Role should be renamed to new_role");
@@ -227,7 +227,7 @@ public class AlterStatementTest {
     @Test
     public void testAlterWarehouseRename() {
         engine.execute("CREATE WAREHOUSE old_wh");
-        engine.execute("ALTER WAREHOUSE old_wh RENAME new_wh");
+        engine.execute("ALTER WAREHOUSE old_wh RENAME TO new_wh");
 
         ResultSet rs = engine.executeQuery("SHOW WAREHOUSES");
         assertTrue(containsValue(rs, "new_wh"), "Warehouse should be renamed to new_wh");
@@ -271,21 +271,21 @@ public class AlterStatementTest {
     @Test
     public void testAlterDatabaseRenameUppercasesName() {
         engine.execute("CREATE DATABASE old_db2");
-        engine.execute("ALTER DATABASE old_db2 RENAME new_db2");
+        engine.execute("ALTER DATABASE old_db2 RENAME TO new_db2");
         assertEquals("NEW_DB2", engine.getCatalog().getDatabase("new_db2").getName());
     }
 
     @Test
     public void testAlterUserRenameUppercasesName() {
         engine.execute("CREATE USER old_user2 PASSWORD = 'p'");
-        engine.execute("ALTER USER old_user2 RENAME new_user2");
+        engine.execute("ALTER USER old_user2 RENAME TO new_user2");
         assertEquals("NEW_USER2", engine.getCatalog().getUser("new_user2").getName());
     }
 
     @Test
     public void testAlterRoleRenameUppercasesName() {
         engine.execute("CREATE ROLE old_role2");
-        engine.execute("ALTER ROLE old_role2 RENAME new_role2");
+        engine.execute("ALTER ROLE old_role2 RENAME TO new_role2");
         assertEquals("NEW_ROLE2", engine.getCatalog().getRole("new_role2").getName());
     }
 
@@ -305,7 +305,7 @@ public class AlterStatementTest {
     public void testAlterMaterializedViewRenameRekeys() {
         engine.execute("CREATE TABLE mv_src (id INTEGER, val INTEGER)");
         engine.execute("CREATE MATERIALIZED VIEW mv_old AS SELECT id, val FROM mv_src");
-        engine.execute("ALTER MATERIALIZED VIEW mv_old RENAME mv_new");
+        engine.execute("ALTER MATERIALIZED VIEW mv_old RENAME TO mv_new");
 
         final var schema = engine.getCatalog().getDatabase("TEST_DB").getSchema("TEST_SCHEMA");
         // Re-keyed: findable by the new name (MV names are stored verbatim, so no upper-casing here)...
@@ -367,14 +367,24 @@ public class AlterStatementTest {
     }
 
     @Test
-    public void testAlterColumnSetDefaultDecodesTheLiteral() {
-        // ALTER COLUMN ... SET DEFAULT must store the default like CREATE TABLE does: an insert that
-        // omits the column gets the decoded value X, not the literal text 'X' with its quotes.
-        engine.execute("CREATE TABLE def_tbl (id INT, region VARCHAR(50) NOT NULL)");
-        engine.execute("ALTER TABLE def_tbl ALTER COLUMN region SET DEFAULT 'EU'");
+    public void testAlterColumnSetDefaultIsRestrictedToSequences() {
+        // Live-Snowflake verified: only a SEQUENCE default may be set after creation; a literal
+        // default raises "Unsupported feature 'Alter Column Set Default'". DROP DEFAULT still works
+        // against a CREATE-time default.
+        engine.execute("CREATE TABLE def_tbl (id INT, region VARCHAR(50) NOT NULL DEFAULT 'EU')");
         engine.execute("INSERT INTO def_tbl(id) VALUES (1)");
         ResultSet rs = engine.executeQuery("SELECT region FROM def_tbl");
         assertEquals("EU", rs.getRows().get(0).getValue(0));
+
+        assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.execute("ALTER TABLE def_tbl ALTER COLUMN region SET DEFAULT 'US'");
+            }
+        });
+
+        engine.execute("CREATE SEQUENCE def_seq");
+        engine.execute("ALTER TABLE def_tbl ALTER COLUMN id SET DEFAULT def_seq.NEXTVAL");
 
         engine.execute("ALTER TABLE def_tbl ALTER COLUMN region DROP DEFAULT");
         assertThrows(RuntimeException.class, new Executable() {

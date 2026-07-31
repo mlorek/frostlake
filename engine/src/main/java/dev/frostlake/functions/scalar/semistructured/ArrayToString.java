@@ -33,10 +33,12 @@ public class ArrayToString extends BuiltInFunction {
     public Object evaluate(final List<Object> args) {
         ArrayNode arr = ArrayFunctionHelper.parseArray(args.get(0));
         if (arr == null) return null;
-        String delimiter = args.get(1) != null ? args.get(1).toString() : "";
+        if (args.get(1) == null) return null;
+        String delimiter = args.get(1).toString();
         List<String> parts = new ArrayList<>();
         for (final JsonNode el : arr) {
-            if (!el.isNull()) parts.add(el.isTextual() ? el.asText() : el.toString());
+            // Snowflake renders NULL elements as empty strings, keeping their separators.
+            parts.add(el.isNull() ? "" : el.isTextual() ? el.asText() : el.toString());
         }
         return String.join(delimiter, parts);
     }

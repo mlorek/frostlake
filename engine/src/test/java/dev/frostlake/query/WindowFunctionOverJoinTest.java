@@ -59,7 +59,7 @@ public class WindowFunctionOverJoinTest extends BaseDatabaseTest {
 
     @Test
     public void qualifyRowNumberLatestPerKeyAfterLeftJoin() {
-        // The latest row per container: exactly one per cid, choosing the max effective_date.
+        // The latest row per key: exactly one per cid, choosing the max ed.
         final List<String> ids = col0("""
             SELECT f.cid
             FROM f LEFT JOIN dim d ON f.cid = d.cid

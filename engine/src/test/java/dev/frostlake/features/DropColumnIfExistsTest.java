@@ -337,7 +337,7 @@ public class DropColumnIfExistsTest {
         engine.execute("ALTER TABLE test17 DROP COLUMN IF EXISTS col1");
         engine.execute("ALTER TABLE test17 ADD COLUMN col4 INTEGER");
         engine.execute("ALTER TABLE test17 DROP COLUMN IF EXISTS col2");
-        engine.execute("ALTER TABLE test17 RENAME COLUMN col3 col3_renamed");
+        engine.execute("ALTER TABLE test17 RENAME COLUMN col3 TO col3_renamed");
         engine.execute("ALTER TABLE test17 DROP COLUMN IF EXISTS nonexistent");
 
         Table table = engine.getCatalog().resolveTable("test17");

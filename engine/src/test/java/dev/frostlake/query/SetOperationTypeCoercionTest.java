@@ -118,11 +118,13 @@ public class SetOperationTypeCoercionTest extends BaseDatabaseTest {
     }
 
     @Test
-    public void exceptAllRespectsCoercedCounts() {
+    public void exceptCoercesTimestampComparison() {
+        // EXCEPT ALL is not Snowflake syntax (only UNION takes ALL); plain EXCEPT with the
+        // coerced timestamp comparison removes the matching value.
         engine.execute("CREATE TABLE ea_ts (ts TIMESTAMP_NTZ(3))");
         engine.execute("INSERT INTO ea_ts VALUES ('2025-09-29 14:49:57.461')");
-        assertEquals(1, count("""
+        assertEquals(0, count("""
             SELECT '2025-09-29 14:49:57.461' UNION ALL SELECT '2025-09-29 14:49:57.461'
-            EXCEPT ALL SELECT ts FROM ea_ts"""));
+            EXCEPT SELECT ts FROM ea_ts"""));
     }
 }

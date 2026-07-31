@@ -103,7 +103,7 @@ public class CreateFunctionJdbcTest extends BaseJdbcTest {
         rs.close();
 
         // Drop function
-        statement.execute("DROP FUNCTION test_func");
+        statement.execute("DROP FUNCTION test_func(INTEGER)");
 
         // Verify it's gone by showing functions
         ResultSet rs2 = statement.executeQuery("SHOW FUNCTIONS");
@@ -117,7 +117,7 @@ public class CreateFunctionJdbcTest extends BaseJdbcTest {
         rs2.close();
 
         // Drop with IF EXISTS should not throw
-        assertDoesNotThrow(() -> statement.execute("DROP FUNCTION IF EXISTS test_func"));
+        assertDoesNotThrow(() -> statement.execute("DROP FUNCTION IF EXISTS test_func(INTEGER)"));
     }
 
     @Test

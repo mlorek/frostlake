@@ -46,6 +46,9 @@ public interface CommandHandler {
             if (i > 0) sb.append(".");
             sb.append(getText(identifiers.get(i)));
         }
+        if (ctx.TABLE() != null) {
+            sb.append(sb.length() > 0 ? ".TABLE" : "TABLE");   // db.table — trailing part named "table"
+        }
         return sb.toString();
     }
 
@@ -53,9 +56,13 @@ public interface CommandHandler {
      *  by splitting its flattened text on '.' — correct even for a quoted identifier containing a dot. */
     default String[] qualifiedNameParts(final FrostlakeParser.QualifiedNameContext ctx) {
         final List<FrostlakeParser.IdentifierContext> ids = ctx.identifier();
-        final String[] parts = new String[ids.size()];
+        final boolean trailingTable = ctx.TABLE() != null;   // db.table — a part literally named "table"
+        final String[] parts = new String[ids.size() + (trailingTable ? 1 : 0)];
         for (int i = 0; i < ids.size(); i++) {
             parts[i] = getText(ids.get(i));
+        }
+        if (trailingTable) {
+            parts[parts.length - 1] = "TABLE";
         }
         return parts;
     }
@@ -64,7 +71,12 @@ public interface CommandHandler {
      * Extract comment from comment clause
      */
     default String extractComment(final FrostlakeParser.CommentClauseContext ctx) {
-        if (ctx == null || ctx.STRING_LITERAL() == null) return null;
+        if (ctx == null) return null;
+        if (ctx.DOLLAR_QUOTED_STRING() != null) {
+            final String raw = ctx.DOLLAR_QUOTED_STRING().getText();
+            return raw.substring(2, raw.length() - 2);
+        }
+        if (ctx.STRING_LITERAL() == null) return null;
         String comment = ctx.STRING_LITERAL().getText();
         // Remove quotes
         if (comment.startsWith("'") && comment.endsWith("'")) {

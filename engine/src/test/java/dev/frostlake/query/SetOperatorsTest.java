@@ -22,8 +22,10 @@ import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -121,19 +123,14 @@ public class SetOperatorsTest {
 
     @Test
     public void testIntersectAll() {
-        ResultSet result = engine.executeQuery("""
-            SELECT id, value FROM set1
-            INTERSECT ALL
-            SELECT id, value FROM set2
-            ORDER BY id
-            """);
-
-        // set1 has: (3,C) twice, (4,D) once
-        // set2 has: (3,C) once, (4,D) once
-        // Result should have: (3,C) once (min of 2,1), (4,D) once (min of 1,1)
-        assertEquals(2, result.getRows().size());
-        assertEquals(3L, result.getRows().get(0).getValue(0));
-        assertEquals(4L, result.getRows().get(1).getValue(0));
+        // Live-Snowflake verified: ALL applies only to UNION ("Unsupported feature 'INTERSECT ALL'").
+        final RuntimeException e = assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.executeQuery("SELECT id, value FROM set1 INTERSECT ALL SELECT id, value FROM set2");
+            }
+        });
+        assertTrue(e.getMessage().contains("Unsupported feature"), "unexpected: " + e.getMessage());
     }
 
     @Test
@@ -168,20 +165,14 @@ public class SetOperatorsTest {
 
     @Test
     public void testExceptAll() {
-        ResultSet result = engine.executeQuery("""
-            SELECT id, value FROM set1
-            EXCEPT ALL
-            SELECT id, value FROM set2
-            ORDER BY id
-            """);
-
-        // set1 has: (1,A), (2,B), (3,C) twice, (4,D)
-        // set2 has: (3,C), (4,D)
-        // Result: (1,A), (2,B), (3,C) once (2-1=1)
-        assertEquals(3, result.getRows().size());
-        assertEquals(1L, result.getRows().get(0).getValue(0));
-        assertEquals(2L, result.getRows().get(1).getValue(0));
-        assertEquals(3L, result.getRows().get(2).getValue(0));
+        // Live-Snowflake verified: ALL applies only to UNION ("Unsupported feature 'MINUS ALL'").
+        final RuntimeException e = assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.executeQuery("SELECT id, value FROM set1 EXCEPT ALL SELECT id, value FROM set2");
+            }
+        });
+        assertTrue(e.getMessage().contains("Unsupported feature"), "unexpected: " + e.getMessage());
     }
 
     @Test
@@ -284,63 +275,25 @@ public class SetOperatorsTest {
 
     @Test
     public void testIntersectAllWithMultipleDuplicates() {
-        // Create tables with more duplicates
-        engine.execute("DROP TABLE IF EXISTS dupes1");
-        engine.execute("DROP TABLE IF EXISTS dupes2");
-
-        engine.execute("CREATE TABLE dupes1 (val INT)");
-        engine.execute("INSERT INTO dupes1 VALUES (1)");
-        engine.execute("INSERT INTO dupes1 VALUES (1)");
-        engine.execute("INSERT INTO dupes1 VALUES (1)");
-        engine.execute("INSERT INTO dupes1 VALUES (2)");
-
-        engine.execute("CREATE TABLE dupes2 (val INT)");
-        engine.execute("INSERT INTO dupes2 VALUES (1)");
-        engine.execute("INSERT INTO dupes2 VALUES (1)");
-        engine.execute("INSERT INTO dupes2 VALUES (3)");
-
-        ResultSet result = engine.executeQuery("""
-            SELECT val FROM dupes1
-            INTERSECT ALL
-            SELECT val FROM dupes2
-            """);
-
-        // dupes1 has 1 three times, dupes2 has 1 twice
-        // Result should have 1 twice (min of 3,2)
-        assertEquals(2, result.getRows().size());
-        assertEquals(1L, result.getRows().get(0).getValue(0));
-        assertEquals(1L, result.getRows().get(1).getValue(0));
+        // Live-Snowflake verified: ALL applies only to UNION ("Unsupported feature 'INTERSECT ALL'").
+        final RuntimeException e = assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.executeQuery("SELECT id, value FROM set1 INTERSECT ALL SELECT id, value FROM set2");
+            }
+        });
+        assertTrue(e.getMessage().contains("Unsupported feature"), "unexpected: " + e.getMessage());
     }
 
     @Test
     public void testExceptAllWithMultipleDuplicates() {
-        // Create tables with more duplicates
-        engine.execute("DROP TABLE IF EXISTS dupes1");
-        engine.execute("DROP TABLE IF EXISTS dupes2");
-
-        engine.execute("CREATE TABLE dupes1 (val INT)");
-        engine.execute("INSERT INTO dupes1 VALUES (1)");
-        engine.execute("INSERT INTO dupes1 VALUES (1)");
-        engine.execute("INSERT INTO dupes1 VALUES (1)");
-        engine.execute("INSERT INTO dupes1 VALUES (2)");
-
-        engine.execute("CREATE TABLE dupes2 (val INT)");
-        engine.execute("INSERT INTO dupes2 VALUES (1)");
-        engine.execute("INSERT INTO dupes2 VALUES (1)");
-        engine.execute("INSERT INTO dupes2 VALUES (3)");
-
-        ResultSet result = engine.executeQuery("""
-            SELECT val FROM dupes1
-            EXCEPT ALL
-            SELECT val FROM dupes2
-            ORDER BY val
-            """);
-
-        // dupes1 has 1 three times and 2 once
-        // dupes2 has 1 twice and 3 once
-        // Result should have 1 once (3-2=1) and 2 once (1-0=1)
-        assertEquals(2, result.getRows().size());
-        assertEquals(1L, result.getRows().get(0).getValue(0));
-        assertEquals(2L, result.getRows().get(1).getValue(0));
+        // Live-Snowflake verified: ALL applies only to UNION ("Unsupported feature 'MINUS ALL'").
+        final RuntimeException e = assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.executeQuery("SELECT id, value FROM set1 EXCEPT ALL SELECT id, value FROM set2");
+            }
+        });
+        assertTrue(e.getMessage().contains("Unsupported feature"), "unexpected: " + e.getMessage());
     }
 }

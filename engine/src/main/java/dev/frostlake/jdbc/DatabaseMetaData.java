@@ -672,17 +672,21 @@ public class DatabaseMetaData implements java.sql.DatabaseMetaData {
 
     @Override
     public ResultSet getSchemas() throws SQLException {
-        throw new SQLFeatureNotSupportedException("getSchemas not implemented");
+        return connection.createStatement().executeQuery(
+            "SELECT SCHEMA_NAME AS TABLE_SCHEM, CATALOG_NAME AS TABLE_CATALOG"
+                + " FROM INFORMATION_SCHEMA.SCHEMATA ORDER BY SCHEMA_NAME");
     }
 
     @Override
     public ResultSet getCatalogs() throws SQLException {
-        throw new SQLFeatureNotSupportedException("getCatalogs not implemented");
+        return connection.createStatement().executeQuery(
+            "SELECT DATABASE_NAME AS TABLE_CAT FROM INFORMATION_SCHEMA.DATABASES ORDER BY DATABASE_NAME");
     }
 
     @Override
     public ResultSet getTableTypes() throws SQLException {
-        throw new SQLFeatureNotSupportedException("getTableTypes not implemented");
+        return connection.createStatement().executeQuery(
+            "SELECT 'TABLE' AS TABLE_TYPE UNION ALL SELECT 'VIEW' ORDER BY TABLE_TYPE");
     }
 
     @Override

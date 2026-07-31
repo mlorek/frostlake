@@ -23,8 +23,11 @@ import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /**
  * MINUS is Snowflake's synonym for the EXCEPT set operator. Verifies MINUS / MINUS ALL behave exactly like
@@ -87,20 +90,15 @@ public class MinusSetOperatorTest {
     }
 
     @Test
-    public void minusAllKeepsMultiplicity() {
-        final ResultSet result = engine.executeQuery("""
-            SELECT id, value FROM set1
-            MINUS ALL
-            SELECT id, value FROM set2
-            ORDER BY id
-            """);
-
-        // set1: (1,A), (2,B), (3,C) x2, (4,D); set2: (3,C), (4,D).
-        // MINUS ALL subtracts multiplicities: (1,A), (2,B), (3,C) once (2-1).
-        assertEquals(3, result.getRows().size());
-        assertEquals(1L, result.getRows().get(0).getValue(0));
-        assertEquals(2L, result.getRows().get(1).getValue(0));
-        assertEquals(3L, result.getRows().get(2).getValue(0));
+    public void minusAllIsRejected() {
+        // Live-Snowflake verified: ALL applies only to UNION ("Unsupported feature 'MINUS ALL'").
+        final RuntimeException e = assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.executeQuery("SELECT id, value FROM set1 MINUS ALL SELECT id, value FROM set2");
+            }
+        });
+        assertTrue(e.getMessage().contains("Unsupported feature"), "unexpected: " + e.getMessage());
     }
 
     @Test

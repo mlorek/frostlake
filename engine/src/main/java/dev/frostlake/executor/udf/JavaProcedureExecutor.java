@@ -142,6 +142,7 @@ public class JavaProcedureExecutor {
         Method target = findMethod(clazz, methodName, args.length);
 
         Object instance = clazz.getDeclaredConstructor().newInstance();
+        UdfConsoleCapture.enter();
         try {
             return target.invoke(instance, args);
         } catch (final InvocationTargetException e) {
@@ -153,6 +154,8 @@ public class JavaProcedureExecutor {
                 throw new RuntimeException(cause.getMessage(), cause);
             }
             throw e;
+        } finally {
+            UdfConsoleCapture.exit();
         }
     }
 

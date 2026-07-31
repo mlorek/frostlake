@@ -29,15 +29,17 @@ public class DropFunctionWithParametersTest extends BaseJdbcTest {
     private static final Logger logger = LoggerFactory.getLogger(DropFunctionWithParametersTest.class);
 
     @Test
-    public void testDropFunctionWithoutParameters() throws SQLException {
-        logger.info("Testing DROP FUNCTION without parameter types (backward compatible)");
+    public void testDropFunctionRequiresTheSignature() throws SQLException {
+        logger.info("Testing DROP FUNCTION requires the argument-type signature (Snowflake-verified)");
 
         statement.execute("CREATE FUNCTION add_one(x INTEGER) RETURNS INTEGER LANGUAGE SQL AS 'SELECT x + 1'");
 
-        // Drop without specifying parameters - should work
-        statement.execute("DROP FUNCTION add_one");
+        // Snowflake requires the signature — the bare form is a syntax error.
+        assertThrows(SQLException.class, () -> {
+            statement.execute("DROP FUNCTION add_one");
+        });
 
-        // Verify function is dropped
+        statement.execute("DROP FUNCTION add_one(INTEGER)");
         assertThrows(SQLException.class, () -> {
             statement.executeQuery("SELECT add_one(5)");
         });

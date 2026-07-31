@@ -141,7 +141,12 @@ public class JavaFunctionCompiler {
             }
 
             method.setAccessible(true);
-            return method.invoke(null, adaptArgs(method.getParameterTypes(), args));
+            UdfConsoleCapture.enter();
+            try {
+                return method.invoke(null, adaptArgs(method.getParameterTypes(), args));
+            } finally {
+                UdfConsoleCapture.exit();
+            }
 
         } catch (final InvocationTargetException e) {
             // Surface the handler's own exception, not the reflection wrapper (whose message is null).

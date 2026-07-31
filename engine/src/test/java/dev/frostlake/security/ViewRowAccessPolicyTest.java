@@ -90,6 +90,7 @@ public class ViewRowAccessPolicyTest extends BaseDatabaseTest {
     public void schemaQualifiedPolicyNameResolvesFromTheViewAttachment() {
         createOrdersAndView();
         engine.execute("CREATE SCHEMA util_schema");
+        engine.execute("USE SCHEMA test_schema");   // CREATE SCHEMA activates the new schema (Snowflake semantics)
         engine.execute("""
             CREATE ROW ACCESS POLICY util_schema.region_rap AS (r VARCHAR) RETURNS BOOLEAN
             -> CURRENT_ROLE() = 'SYSADMIN' OR r = 'US'""");

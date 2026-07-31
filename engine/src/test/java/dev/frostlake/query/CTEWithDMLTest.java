@@ -48,10 +48,11 @@ public class CTEWithDMLTest extends BaseDatabaseTest {
 
         // Using CTE in INSERT...SELECT statement
         engine.execute("""
+            INSERT INTO target 
             WITH filtered AS (
                 SELECT * FROM source WHERE id > 1
             )
-            INSERT INTO target SELECT * FROM filtered
+            SELECT * FROM filtered
             """);
 
         ResultSet result = engine.executeQuery("SELECT * FROM target ORDER BY id");
@@ -70,6 +71,7 @@ public class CTEWithDMLTest extends BaseDatabaseTest {
         logger.info("Testing multiple CTEs with INSERT");
 
         engine.execute("""
+            INSERT INTO target 
             WITH
                 filtered AS (
                     SELECT * FROM source WHERE id <= 2
@@ -77,7 +79,7 @@ public class CTEWithDMLTest extends BaseDatabaseTest {
                 renamed AS (
                     SELECT id, value FROM filtered
                 )
-            INSERT INTO target SELECT * FROM renamed
+            SELECT * FROM renamed
             """);
 
         ResultSet result = engine.executeQuery("SELECT COUNT(*) FROM target");
@@ -96,12 +98,13 @@ public class CTEWithDMLTest extends BaseDatabaseTest {
         engine.execute("INSERT INTO lookup VALUES (2, 'Cat2')");
 
         engine.execute("""
+            INSERT INTO target 
             WITH enriched AS (
                 SELECT s.id, s.value
                 FROM source s
                 JOIN lookup l ON s.id = l.id
             )
-            INSERT INTO target SELECT * FROM enriched
+            SELECT * FROM enriched
             """);
 
         ResultSet result = engine.executeQuery("SELECT COUNT(*) FROM target");
@@ -118,10 +121,11 @@ public class CTEWithDMLTest extends BaseDatabaseTest {
         engine.execute("CREATE TABLE summary (total INTEGER, description VARCHAR)");
 
         engine.execute("""
+            INSERT INTO summary 
             WITH stats AS (
                 SELECT COUNT(*) as cnt FROM source WHERE id > 0
             )
-            INSERT INTO summary SELECT cnt, 'Total records' FROM stats
+            SELECT cnt, 'Total records' FROM stats
             """);
 
         ResultSet result = engine.executeQuery("SELECT total FROM summary");
@@ -139,12 +143,13 @@ public class CTEWithDMLTest extends BaseDatabaseTest {
         // Test RECURSIVE keyword parsing (even if not fully supported)
         try {
             engine.execute("""
+            INSERT INTO target 
                 WITH RECURSIVE numbers AS (
                     SELECT 1 as n
                     UNION ALL
                     SELECT n + 1 FROM numbers WHERE n < 5
                 )
-                INSERT INTO target SELECT n, 'num' FROM numbers
+            SELECT n, 'num' FROM numbers
                 """);
             logger.info("RECURSIVE keyword parsed successfully");
         } catch (final Exception e) {
@@ -154,10 +159,11 @@ public class CTEWithDMLTest extends BaseDatabaseTest {
         // Test CTE with explicit column list parsing
         try {
             engine.execute("""
+            INSERT INTO target 
                 WITH filtered (id, val) AS (
                     SELECT id, value FROM source WHERE id = 1
                 )
-                INSERT INTO target SELECT * FROM filtered
+            SELECT * FROM filtered
                 """);
             logger.info("CTE with column list parsed successfully");
         } catch (final Exception e) {

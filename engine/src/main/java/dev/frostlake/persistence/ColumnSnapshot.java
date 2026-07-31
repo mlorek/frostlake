@@ -26,6 +26,12 @@ public class ColumnSnapshot implements Serializable {
 
     public String name;
     public String dataType;
+    // Type parameters, so NUMBER(38,10) / VARCHAR(16777216) survive a checkpoint round-trip — the
+    // bare dataType NAME loses them and a restored engine then computed with the wrong scale.
+    // Boxed → old snapshots deserialize them as null and fall back to the name's defaults.
+    public Integer precision;
+    public Integer scale;
+    public Integer maxLength;
     public boolean nullable;
     public boolean primaryKey;
     public String defaultValue;

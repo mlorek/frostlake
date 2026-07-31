@@ -40,6 +40,9 @@
         <module>engine</module>
         <module>formats</module>
         <module>perf-tests</module>
+        <module>rt-js</module>
+        <module>rt-py</module>
+        <module>rt-scala</module>
     </modules>
 
     <properties>
@@ -54,6 +57,18 @@
         <!-- Perf harnesses are @Tag("perf"); excluded by default, included via the perf/perf-mem
              profiles defined in the perf-tests module. -->
         <perf.excludedGroups>perf</perf.excludedGroups>
+        <!-- One RAT (license-header audit) version for every module. NOTE: RAT 0.17+ changed scan
+             semantics — module configs must use <inputExclude> (see the engine pom for the details). -->
+        <apache-rat-plugin.version>0.18</apache-rat-plugin.version>
+        <!-- One Truffle line for every polyglot language. 25.0.2 keeps Java 17 base classes AND is the
+             version downstream builds (e.g. the vendor test harness) already put on the classpath — a
+             consumer resolving "newest wins" must not end up with our Python on a different Truffle
+             than its JS, which breaks Truffle library initialization at context startup.
+             DO NOT bump to 25.1.x while the build targets Java 17: 25.1 expects JDK 21+, loses native
+             access on 17 (TruffleAttach "unsupported JNI version" warning) and GraalPy datetime interop
+             NPEs ("moduleState is null" — see PythonSemiStructuredArgumentTest). The GraalPy venv used
+             for numpy/pandas (python.venv) is also built with GraalPy 25.0.2 and must match. -->
+        <graalvm.version>25.0.2</graalvm.version>
         <!-- Publishing (see the release profile below): the aggregator parent and the perf-tests harness are
              NOT published to Central; the two library jars (frostlake-db, frostlake-formats) override this to
              false. The central-publishing-maven-plugin honours maven.deploy.skip, so a skipped module is left

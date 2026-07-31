@@ -138,7 +138,9 @@ public class TransactionManager {
             // autocommit must not commit — the enclosing INSERT/MERGE still owns the write set.
             return;
         }
-        if (autoCommit && hasActiveTransaction() && !isExplicitTransaction()) {
+        // isAutoCommit(), not the global field: a JDBC session's autocommit=false lives in the
+        // per-thread scope, and reading the field directly committed its statements regardless.
+        if (isAutoCommit() && hasActiveTransaction() && !isExplicitTransaction()) {
             commit();
         }
     }

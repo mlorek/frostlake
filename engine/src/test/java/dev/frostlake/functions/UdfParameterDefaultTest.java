@@ -121,16 +121,18 @@ public class UdfParameterDefaultTest extends BaseDatabaseTest {
     @Test
     public void defaultsApplyToANonSqlLanguageToo() {
         engine.execute("""
-            CREATE OR REPLACE FUNCTION py_tag(name VARCHAR, kind VARCHAR DEFAULT 'str')
-            RETURNS ARRAY
-            LANGUAGE PYTHON
-            RUNTIME_VERSION = '3.10'
-            HANDLER = 'h'
+            CREATE OR REPLACE FUNCTION jv_tag(name VARCHAR, kind VARCHAR DEFAULT 'str')
+            RETURNS VARCHAR
+            LANGUAGE JAVA
+            HANDLER = 'Tag.h'
             AS $$
-def h(name, kind):
-    return [name, kind]
+            class Tag {
+              public static String h(String name, String kind) {
+                return name + "|" + kind;
+              }
+            }
             $$""");
-        assertEquals("[\"n\",\"str\"]", String.valueOf(scalar("SELECT py_tag('n')")));
+        assertEquals("n|str", String.valueOf(scalar("SELECT jv_tag('n')")));
     }
 
     // ── the body of a SQL UDF is already unquoted when stored ────────────────

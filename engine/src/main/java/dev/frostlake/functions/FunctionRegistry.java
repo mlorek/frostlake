@@ -106,6 +106,7 @@ public class FunctionRegistry {
         register(new Translate());
         register(new RegexpReplace());
         register(new RegexpLike());
+        register(new Search());
         functions.put("RLIKE", new RegexpLike());   // RLIKE(subject, pattern) is a synonym for REGEXP_LIKE
         register(new Like());                        // LIKE(subject, pattern) — function-call form of the LIKE operator
         register(new Ilike());                       // ILIKE(subject, pattern) — function-call form of the ILIKE operator

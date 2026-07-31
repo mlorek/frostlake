@@ -288,6 +288,18 @@ final class ShowPipelineExecutor {
     }
 
     /** SHOW SEQUENCES IN DATABASE &lt;db&gt;: sequences across all schemas of the database. */
+    /** SHOW SEQUENCES IN ACCOUNT: the sequences of every database, in database order. */
+    public ResultSet showSequencesInAccount() {
+        List<ResultSetColumn> cols = null;
+        final List<Row> rows = new ArrayList<>();
+        for (final Database db : catalog.getAllDatabases()) {
+            final ResultSet part = showSequencesInDatabase(db.getName());
+            cols = part.getColumns();
+            rows.addAll(part.getRows());
+        }
+        return cols != null ? new ResultSet(cols, rows) : showSequences(null);
+    }
+
     public ResultSet showSequencesInDatabase(final String databaseName) {
         final String dbName = databaseName != null ? databaseName : catalog.getCurrentDatabase();
         if (dbName == null) throw new RuntimeException("No database specified");

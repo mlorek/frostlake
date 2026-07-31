@@ -127,12 +127,14 @@ public class DefaultInitializationTest {
     }
 
     @Test
-    public void testCannotDropPublicSchema() {
-        // Attempt to drop PUBLIC schema should fail
+    public void testCanDropPublicSchema() {
+        // Live-Snowflake verified: PUBLIC is droppable like any other schema.
+        engine.execute("DROP SCHEMA PUBLIC");
+        // INFORMATION_SCHEMA stays protected.
         RuntimeException exception = assertThrows(RuntimeException.class, () -> {
-            engine.execute("DROP SCHEMA PUBLIC");
+            engine.execute("DROP SCHEMA INFORMATION_SCHEMA");
         });
-        assertTrue(exception.getMessage().contains("Cannot drop PUBLIC schema"));
+        assertTrue(exception.getMessage().contains("INFORMATION_SCHEMA"));
     }
 
     @Test

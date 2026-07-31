@@ -29,15 +29,17 @@ public class DropProcedureWithParametersTest extends BaseJdbcTest {
     private static final Logger logger = LoggerFactory.getLogger(DropProcedureWithParametersTest.class);
 
     @Test
-    public void testDropProcedureWithoutParameters() throws SQLException {
-        logger.info("Testing DROP PROCEDURE without parameter types (backward compatible)");
+    public void testDropProcedureRequiresTheSignature() throws SQLException {
+        logger.info("Testing DROP PROCEDURE requires the argument-type signature (Snowflake-verified)");
 
         statement.execute("CREATE PROCEDURE increment_proc(x INTEGER) RETURNS INTEGER LANGUAGE SQL AS 'SELECT x + 1'");
 
-        // Drop without specifying parameters - should work
-        statement.execute("DROP PROCEDURE increment_proc");
+        // Snowflake requires the signature — the bare form is a syntax error.
+        assertThrows(SQLException.class, () -> {
+            statement.execute("DROP PROCEDURE increment_proc");
+        });
 
-        // Verify procedure is dropped - trying to call it should fail
+        statement.execute("DROP PROCEDURE increment_proc(INTEGER)");
         assertThrows(SQLException.class, () -> {
             statement.execute("CALL increment_proc(5)");
         });

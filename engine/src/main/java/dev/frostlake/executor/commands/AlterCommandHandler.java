@@ -220,14 +220,24 @@ public class AlterCommandHandler implements CommandHandler {
                             queryExecutor.moveTableStorage(tableName, targetDb, targetSchema, newName);
                             logger.trace("Moved table {} to {}.{}.{}", tableName, targetDb, targetSchema, newName);
                         }
-                    } else if (ctx.tableAction().ADD() != null && !ctx.tableAction().columnDef().isEmpty()) {
+                    } else if (ctx.tableAction().ADD() != null && ctx.tableAction().columnDef() != null) {
                         // ADD COLUMN — one or more comma-separated columns (Snowflake: ADD col1 t1, col2 t2).
-                        // Build each column (data type + DEFAULT / NOT NULL / …) via the shared parser, then
-                        // backfill existing rows so their width matches the new schema.
-                        final boolean ifNotExists = ctx.tableAction().if_not_exists() != null;
-                        for (final FrostlakeParser.ColumnDefContext colDef : ctx.tableAction().columnDef()) {
+                        // The first column sits directly on the action; the rest arrive as
+                        // alterAddColumnItem entries, each with its OWN optional IF NOT EXISTS. Build each
+                        // column via the shared parser, then backfill existing rows to the new width.
+                        final boolean firstIfNotExists = ctx.tableAction().if_not_exists() != null;
+                        final List<FrostlakeParser.ColumnDefContext> defs = new ArrayList<>();
+                        final List<Boolean> defIfNotExists = new ArrayList<>();
+                        defs.add(ctx.tableAction().columnDef());
+                        defIfNotExists.add(firstIfNotExists);
+                        for (final FrostlakeParser.AlterAddColumnItemContext item : ctx.tableAction().alterAddColumnItem()) {
+                            defs.add(item.columnDef());
+                            defIfNotExists.add(firstIfNotExists || item.if_not_exists() != null);
+                        }
+                        for (int i = 0; i < defs.size(); i++) {
+                            final FrostlakeParser.ColumnDefContext colDef = defs.get(i);
                             final String colName = visitor.getText(colDef.identifier());
-                            if (ifNotExists && table.hasColumn(colName)) {
+                            if (defIfNotExists.get(i) && table.hasColumn(colName)) {
                                 logger.debug("Column already exists (IF NOT EXISTS): {}", colName);
                                 continue;
                             }
@@ -291,6 +301,24 @@ public class AlterCommandHandler implements CommandHandler {
                             col.setMaskingPolicyName(null);
                         } else {
                             String policyName = visitor.getText(ctx.tableAction().qualifiedName());
+                            if (col.getMaskingPolicyName() != null) {
+                                // Snowflake: one masking policy per column — UNSET the current one first.
+                                throw new RuntimeException("Column '" + colName.toUpperCase()
+                                    + "' is already attached to a masking policy");
+                            }
+                            if (ctx.tableAction().identifierList() != null) {
+                                // Conditional policy: a USING argument column that is itself masked is
+                                // rejected (live-verified error shape).
+                                for (final FrostlakeParser.IdentifierContext argCtx
+                                        : ctx.tableAction().identifierList().identifier()) {
+                                    final String argName = visitor.getText(argCtx);
+                                    final TableColumn argCol = table.hasColumn(argName) ? table.getColumn(argName) : null;
+                                    if (argCol != null && argCol != col && argCol.getMaskingPolicyName() != null) {
+                                        throw new RuntimeException("Column '" + argName.toUpperCase()
+                                            + "' cannot be used as policy argument because it is masked by another policy");
+                                    }
+                                }
+                            }
                             col.setMaskingPolicyName(policyName.toUpperCase());
                         }
                         logger.trace("Set/unset masking policy on column {}.{}", tableName, colName);
@@ -304,14 +332,29 @@ public class AlterCommandHandler implements CommandHandler {
                         // parser CREATE TABLE uses: raw getText() stored the literal WITH its quotes, so an
                         // insert that omitted the column got the text 'X' (quotes included) instead of X.
                         String colName = visitor.getText(ctx.tableAction().identifier(0));
+                        if (ctx.tableAction().SET() != null) {
+                            // Snowflake only allows setting a SEQUENCE default after creation
+                            // (live-verified: "Unsupported feature 'Alter Column Set Default'").
+                            final String defaultText =
+                                visitor.getOriginalText(ctx.tableAction().defaultExpression()).trim().toUpperCase();
+                            if (!defaultText.endsWith(".NEXTVAL")) {
+                                throw new RuntimeException("Unsupported feature 'Alter Column Set Default'.");
+                            }
+                        }
                         table.getColumn(colName).setDefaultValue(ctx.tableAction().SET() != null
                             ? ddlHandler.getColumnParser().parseDefaultExpression(ctx.tableAction().defaultExpression())
                             : null);
                         logger.trace("Set/drop default on column {}.{}", tableName, colName);
                     } else if (ctx.tableAction().ALTER() != null) {
-                        // ALTER COLUMN data type
+                        // ALTER COLUMN data type — Snowflake only allows same-family changes
+                        // (live-verified: "cannot change column COL from type NUMBER(38,0) to VARCHAR").
                         String colName = visitor.getText(ctx.tableAction().identifier(0));
                         DataType newDataType = visitor.parseDataType(ctx.tableAction().dataTypeName(), ctx.tableAction().typeParameters());
+                        final DataType oldDataType = table.getColumn(colName).getDataType();
+                        if (!oldDataType.getClass().equals(newDataType.getClass())) {
+                            throw new RuntimeException("cannot change column " + colName.toUpperCase()
+                                + " from type " + oldDataType.getName() + " to " + newDataType.getName());
+                        }
                         table.alterColumnType(colName, newDataType);
                         logger.trace("Altered column {} type in table {}", colName, tableName);
                     } else if (ctx.tableAction().COMMENT() != null) {
@@ -374,6 +417,13 @@ public class AlterCommandHandler implements CommandHandler {
                                 }
                             }
 
+                            // Snowflake validates the constraint's local columns exist
+                            // (live-verified: "invalid identifier '<COL>'").
+                            for (final String fkColumn : columns) {
+                                if (!table.hasColumn(fkColumn)) {
+                                    throw new RuntimeException("invalid identifier '" + fkColumn.toUpperCase() + "'");
+                                }
+                            }
                             ForeignKeyConstraint fk = new ForeignKeyConstraint(
                                 constraintName != null ? constraintName : "FK_" + tableName + "_" + System.currentTimeMillis(),
                                 columns,
@@ -421,6 +471,10 @@ public class AlterCommandHandler implements CommandHandler {
                     } else if (ctx.tableAction().tagUnset() != null) {
                         applyTagUnset(table, ctx.tableAction().tagUnset());
                         logger.trace("Unset tag(s) on table {}", tableName);
+                    } else if (ctx.tableAction().tableUnsetProperties() != null) {
+                        // UNSET DATA_RETENTION_TIME_IN_DAYS, CHANGE_TRACKING, ... — the properties are
+                        // not modeled, so unsetting them is a no-op.
+                        logger.trace("Ignored UNSET of table properties on {}", tableName);
                     }
                 } catch (final RuntimeException e) {
                     if (!ifExists) {
@@ -560,13 +614,7 @@ public class AlterCommandHandler implements CommandHandler {
                 checkAlter(SecurableObjectType.PIPE, pipeName);
                 final FrostlakeParser.PipeActionContext action = ctx.pipeAction();
 
-                if (action.RESUME() != null) {                  // alias for SET PIPE_EXECUTION_PAUSED = FALSE
-                    pipe.setPaused(false);
-                    logger.trace("Resumed pipe: {}", pipeName);
-                } else if (action.PAUSE() != null) {            // alias for SET PIPE_EXECUTION_PAUSED = TRUE
-                    pipe.setPaused(true);
-                    logger.trace("Paused pipe: {}", pipeName);
-                } else if (action.SET() != null) {
+                if (action.SET() != null) {
                     for (final FrostlakeParser.PipeSetOptionContext opt : action.pipeSetOption()) {
                         String optName = visitor.getText(opt.identifier()).toUpperCase();
                         if ("PIPE_EXECUTION_PAUSED".equals(optName) && opt.booleanValue() != null) {
@@ -682,18 +730,27 @@ public class AlterCommandHandler implements CommandHandler {
 
             } else if (ctx.SESSION() != null) {
                 if (ctx.sessionAction().SET() != null) {
-                    String paramName;
-                    if (ctx.sessionAction().sessionParameter(0).MULTI_STATEMENT_COUNT() != null) {
-                        paramName = "MULTI_STATEMENT_COUNT";
-                    } else {
-                        paramName = visitor.getText(ctx.sessionAction().sessionParameter(0).identifier());
-                    }
+                    // ALTER SESSION SET p1 = v1 [, p2 = v2 ...] — apply each assignment.
+                    for (final FrostlakeParser.SessionAssignmentContext assignment
+                            : ctx.sessionAction().sessionAssignment()) {
+                        final String paramName = assignment.sessionParameter().MULTI_STATEMENT_COUNT() != null
+                            ? "MULTI_STATEMENT_COUNT"
+                            : visitor.getText(assignment.sessionParameter().identifier());
 
-                    Object value = visitor.parseLiteral(ctx.sessionAction().literal());
+                        Object value = visitor.parseLiteral(assignment.literal());
 
-                    if (queryExecutor.getDatabaseEngine() != null) {
-                        queryExecutor.getDatabaseEngine().getSessionContext().setSessionParameter(paramName, value);
-                        logger.trace("Set session parameter {} = {}", paramName, value);
+                        if (queryExecutor.getDatabaseEngine() != null) {
+                            queryExecutor.getDatabaseEngine().getSessionContext().setSessionParameter(paramName, value);
+                            // AUTOCOMMIT is not just a parameter: ALTER SESSION SET AUTOCOMMIT is
+                            // Snowflake's way to drive the real transaction mode, so toggle it too.
+                            if ("AUTOCOMMIT".equalsIgnoreCase(paramName)) {
+                                final String text = String.valueOf(value);
+                                final boolean autoCommitValue = Boolean.TRUE.equals(value)
+                                    || "TRUE".equalsIgnoreCase(text) || "1".equals(text);
+                                queryExecutor.getDatabaseEngine().setAutoCommit(autoCommitValue);
+                            }
+                            logger.trace("Set session parameter {} = {}", paramName, value);
+                        }
                     }
                 } else if (ctx.sessionAction().UNSET() != null) {
                     // ALTER SESSION UNSET <param> [, <param> ...] — clear each named session parameter.

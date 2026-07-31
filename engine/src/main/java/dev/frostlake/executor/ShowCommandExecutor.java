@@ -284,6 +284,26 @@ public class ShowCommandExecutor {
         return routineExecutor.showRowAccessPoliciesInDatabase(databaseName);
     }
 
+    public ResultSet showKeysScoped(final boolean primary, final String scopeKind, final String scopeName) {
+        return sessionExecutor.showKeysScoped(primary, scopeKind, scopeName);
+    }
+
+    public ResultSet showImportedKeys(final String scopeKind, final String scopeName) {
+        return sessionExecutor.showImportedKeys(scopeKind, scopeName);
+    }
+
+    public ResultSet showColumnsScoped(final String name, final boolean view) {
+        return relationalExecutor.showColumnsScoped(name, view);
+    }
+
+    public ResultSet showViewsInAccount() {
+        return relationalExecutor.showViewsInAccount();
+    }
+
+    public ResultSet showSequencesInAccount() {
+        return pipelineExecutor.showSequencesInAccount();
+    }
+
     public ResultSet showPrimaryKeys(final String tableName) {
         return sessionExecutor.showPrimaryKeys(tableName);
     }

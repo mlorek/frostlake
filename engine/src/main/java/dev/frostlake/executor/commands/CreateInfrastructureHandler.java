@@ -114,6 +114,23 @@ public class CreateInfrastructureHandler implements CommandHandler {
                         schedule = ddl.extractStringLiteral(opt.scheduleClause().STRING_LITERAL());
                         scheduleType = schedule.toUpperCase().contains("CRON")
                             ? ScheduleType.CRON : ScheduleType.MINUTES;
+                        if (scheduleType == ScheduleType.CRON) {
+                            // Snowflake validates the expression: USING CRON <5 fields> <time zone>.
+                            final String[] cronTokens = schedule.trim().split("\\s+");
+                            final boolean shaped = cronTokens.length >= 8
+                                && "USING".equalsIgnoreCase(cronTokens[0]) && "CRON".equalsIgnoreCase(cronTokens[1]);
+                            if (!shaped) {
+                                throw new RuntimeException("Invalid schedule: expected 'USING CRON "
+                                    + "<minute> <hour> <day-of-month> <month> <day-of-week> <time zone>', got '"
+                                    + schedule + "'");
+                            }
+                            for (int fieldIndex = 2; fieldIndex < 7; fieldIndex++) {
+                                if (!cronTokens[fieldIndex].matches("[0-9*,/\\-LW#?A-Za-z]+")) {
+                                    throw new RuntimeException("Invalid CRON field '" + cronTokens[fieldIndex]
+                                        + "' in task schedule '" + schedule + "'");
+                                }
+                            }
+                        }
                     } else if (opt.ALLOW_OVERLAPPING_EXECUTION() != null) {
                         allowOverlapping = "TRUE".equalsIgnoreCase(opt.booleanValue().getText());
                     } else if (opt.USER_TASK_TIMEOUT_MS() != null) {
@@ -271,6 +288,14 @@ public class CreateInfrastructureHandler implements CommandHandler {
             }
 
             String comment = ddl.extractCommentFromList(ctx.commentClause());
+            if (comment == null && ctx.sequenceOptions() != null) {
+                // COMMENT may sit inline among the options (CREATE SEQUENCE s START=5 COMMENT 'x' INCREMENT=10).
+                for (final FrostlakeParser.SequenceOptionContext optionCtx : ctx.sequenceOptions().sequenceOption()) {
+                    if (optionCtx.commentClause() != null) {
+                        comment = ddl.extractComment(optionCtx.commentClause());
+                    }
+                }
+            }
             Sequence sequence = new Sequence(sequenceName, startValue, increment, order, comment);
 
             Schema schema = ddl.resolveSchemaFromQualifiedName(sequenceQualifiedName);
@@ -327,7 +352,8 @@ public class CreateInfrastructureHandler implements CommandHandler {
             // A URL-less CREATE STAGE makes an internal named stage (Snowflake's default when URL is omitted);
             // a URL (except file://) denotes an external stage.
             final boolean hasProps = ctx.stageProperties() != null;
-            String url = hasProps ? ddl.extractStringLiteral(ctx.stageProperties().STRING_LITERAL()) : null;
+            String url = hasProps && ctx.stageProperties().URL() != null
+                ? ddl.extractStringLiteral(ctx.stageProperties().STRING_LITERAL()) : null;
             String fileFormat = "CSV";
             boolean encryption = false;
             String comment = null;
@@ -335,12 +361,20 @@ public class CreateInfrastructureHandler implements CommandHandler {
             if (hasProps) {
                 for (final FrostlakeParser.StageOptionContext option : ctx.stageProperties().stageOption()) {
                     if (option.FILE_FORMAT() != null) {
-                        fileFormat = ddl.extractStringLiteral(option.STRING_LITERAL());
+                        // FILE_FORMAT = 'name' | db.schema.name | (TYPE=X ... | FORMAT_NAME=...)
+                        if (option.STRING_LITERAL() != null) {
+                            fileFormat = ddl.extractStringLiteral(option.STRING_LITERAL());
+                        } else if (option.qualifiedName() != null) {
+                            fileFormat = getText(option.qualifiedName());
+                        } else if (option.parenOptionList() != null) {
+                            fileFormat = formatFromOptions(option.parenOptionList(), fileFormat);
+                        }
                     } else if (option.ENCRYPTION() != null) {
-                        encryption = option.booleanValue().TRUE() != null;
+                        encryption = option.booleanValue() != null && option.booleanValue().TRUE() != null;
                     } else if (option.COMMENT() != null) {
                         comment = ddl.extractStringLiteral(option.STRING_LITERAL());
                     }
+                    // The generic identifier-keyed options (CREDENTIALS=(...), ...) are accepted and inert.
                 }
             }
 
@@ -456,6 +490,30 @@ public class CreateInfrastructureHandler implements CommandHandler {
             return null;
         }
         return v.STRING_LITERAL() != null ? ddl.extractStringLiteral(v.STRING_LITERAL()) : v.getText();
+    }
+
+
+    /** The format a parenthesized FILE_FORMAT group names: FORMAT_NAME wins, else TYPE, else the default. */
+    private String formatFromOptions(final FrostlakeParser.ParenOptionListContext options, final String fallback) {
+        String result = fallback;
+        for (final FrostlakeParser.ParenOptionContext option : options.parenOption()) {
+            final String key = option.optionKey().getText().toUpperCase();
+            if (!"FORMAT_NAME".equals(key) && !"TYPE".equals(key)) {
+                continue;
+            }
+            String value = option.copyOptionValue() != null ? option.copyOptionValue().getText() : null;
+            if (value == null) {
+                continue;
+            }
+            if (value.startsWith("'") && value.endsWith("'") && value.length() >= 2) {
+                value = value.substring(1, value.length() - 1);
+            }
+            result = value;
+            if ("FORMAT_NAME".equals(key)) {
+                return result;
+            }
+        }
+        return result;
     }
 
 }

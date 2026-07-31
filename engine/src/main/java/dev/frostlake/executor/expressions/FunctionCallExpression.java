@@ -30,6 +30,8 @@ public class FunctionCallExpression implements Expression {
     // Parallel to arguments: the caller-supplied name for each argument (f(x => 1)), or null for a
     // positional argument. The whole list is null when the call uses only positional arguments.
     private final List<String> argumentNames;
+    // IDENTIFIER('fn')/IDENTIFIER($var) as the function name: resolved per evaluation (null otherwise).
+    private final Expression nameExpression;
     // Uppercase column names to omit when a `*` argument is expanded — e.g. OBJECT_CONSTRUCT(* EXCLUDE src).
     private List<String> starExcludes = new ArrayList<>();
 
@@ -43,6 +45,7 @@ public class FunctionCallExpression implements Expression {
         this.distinct = distinct;
         this.star = star;
         this.argumentNames = null;
+        this.nameExpression = null;
     }
 
     public FunctionCallExpression(final String functionName, final List<Expression> arguments,
@@ -52,6 +55,7 @@ public class FunctionCallExpression implements Expression {
         this.distinct = false;
         this.star = false;
         this.argumentNames = argumentNames;
+        this.nameExpression = null;
     }
 
     public String getFunctionName() {
@@ -109,4 +113,21 @@ public class FunctionCallExpression implements Expression {
         sb.append(")");
         return sb.toString();
     }
+
+    /** A dynamically named call — IDENTIFIER('fn')(args): {@code displayName} keeps the source text
+     *  (for printing/HAVING matching); {@code nameExpression} yields the actual function name. */
+    public FunctionCallExpression(final String displayName, final Expression nameExpression,
+                                  final List<Expression> arguments) {
+        this.functionName = displayName;
+        this.arguments = arguments;
+        this.distinct = false;
+        this.star = false;
+        this.argumentNames = null;
+        this.nameExpression = nameExpression;
+    }
+
+    public Expression getNameExpression() {
+        return nameExpression;
+    }
+
 }

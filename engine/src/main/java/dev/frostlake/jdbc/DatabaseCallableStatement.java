@@ -31,6 +31,7 @@ import java.util.Map;
  */
 public class DatabaseCallableStatement extends DatabasePreparedStatement implements CallableStatement {
     private final Map<Integer, Object> outParameters;
+    private boolean lastReadWasNull;
     private final Map<String, Integer> namedParameters;
 
     public DatabaseCallableStatement(final DatabaseConnection connection, final HttpClient httpClient, final String sql) {
@@ -64,13 +65,20 @@ public class DatabaseCallableStatement extends DatabasePreparedStatement impleme
 
     @Override
     public boolean wasNull() throws SQLException {
-        return false;
+        return lastReadWasNull;
+    }
+
+    /** Read an OUT parameter and record its nullness for {@link #wasNull()}. */
+    private Object out(final int parameterIndex) {
+        final Object value = outParameters.get(parameterIndex);
+        lastReadWasNull = value == null;
+        return value;
     }
 
     @Override
     public String getString(final int parameterIndex) throws SQLException {
         checkClosed();
-        Object value = outParameters.get(parameterIndex);
+        Object value = out(parameterIndex);
         if (value == null) {
             return null;
         }
@@ -80,7 +88,7 @@ public class DatabaseCallableStatement extends DatabasePreparedStatement impleme
     @Override
     public boolean getBoolean(final int parameterIndex) throws SQLException {
         checkClosed();
-        Object value = outParameters.get(parameterIndex);
+        Object value = out(parameterIndex);
         if (value == null) {
             return false;
         }
@@ -93,7 +101,7 @@ public class DatabaseCallableStatement extends DatabasePreparedStatement impleme
     @Override
     public byte getByte(final int parameterIndex) throws SQLException {
         checkClosed();
-        Object value = outParameters.get(parameterIndex);
+        Object value = out(parameterIndex);
         if (value == null) {
             return 0;
         }
@@ -106,7 +114,7 @@ public class DatabaseCallableStatement extends DatabasePreparedStatement impleme
     @Override
     public short getShort(final int parameterIndex) throws SQLException {
         checkClosed();
-        Object value = outParameters.get(parameterIndex);
+        Object value = out(parameterIndex);
         if (value == null) {
             return 0;
         }
@@ -119,7 +127,7 @@ public class DatabaseCallableStatement extends DatabasePreparedStatement impleme
     @Override
     public int getInt(final int parameterIndex) throws SQLException {
         checkClosed();
-        Object value = outParameters.get(parameterIndex);
+        Object value = out(parameterIndex);
         if (value == null) {
             return 0;
         }
@@ -132,7 +140,7 @@ public class DatabaseCallableStatement extends DatabasePreparedStatement impleme
     @Override
     public long getLong(final int parameterIndex) throws SQLException {
         checkClosed();
-        Object value = outParameters.get(parameterIndex);
+        Object value = out(parameterIndex);
         if (value == null) {
             return 0;
         }
@@ -145,7 +153,7 @@ public class DatabaseCallableStatement extends DatabasePreparedStatement impleme
     @Override
     public float getFloat(final int parameterIndex) throws SQLException {
         checkClosed();
-        Object value = outParameters.get(parameterIndex);
+        Object value = out(parameterIndex);
         if (value == null) {
             return 0;
         }
@@ -158,7 +166,7 @@ public class DatabaseCallableStatement extends DatabasePreparedStatement impleme
     @Override
     public double getDouble(final int parameterIndex) throws SQLException {
         checkClosed();
-        Object value = outParameters.get(parameterIndex);
+        Object value = out(parameterIndex);
         if (value == null) {
             return 0;
         }
@@ -181,52 +189,64 @@ public class DatabaseCallableStatement extends DatabasePreparedStatement impleme
     @Override
     public Date getDate(final int parameterIndex) throws SQLException {
         checkClosed();
-        Object value = outParameters.get(parameterIndex);
+        Object value = out(parameterIndex);
         if (value == null) {
             return null;
         }
         if (value instanceof Date) {
             return (Date) value;
         }
-        return Date.valueOf(value.toString());
+        // Engine temporal text may be a full timestamp ("2026-01-15 10:30:00" or ISO with 'T');
+        // a DATE conversion takes the leading date part.
+        final String text = value.toString();
+        return Date.valueOf(text.length() > 10 ? text.substring(0, 10) : text);
     }
 
     @Override
     public Time getTime(final int parameterIndex) throws SQLException {
         checkClosed();
-        Object value = outParameters.get(parameterIndex);
+        Object value = out(parameterIndex);
         if (value == null) {
             return null;
         }
         if (value instanceof Time) {
             return (Time) value;
         }
-        return Time.valueOf(value.toString());
+        // A full timestamp (ISO 'T' or space separated) converts by its time-of-day part; trim
+        // fractional seconds, which Time.valueOf does not accept.
+        String text = value.toString();
+        final int sep = Math.max(text.indexOf('T'), text.indexOf(' '));
+        if (sep >= 0) {
+            text = text.substring(sep + 1);
+        }
+        final int dot = text.indexOf('.');
+        return Time.valueOf(dot >= 0 ? text.substring(0, dot) : text);
     }
 
     @Override
     public Timestamp getTimestamp(final int parameterIndex) throws SQLException {
         checkClosed();
-        Object value = outParameters.get(parameterIndex);
+        Object value = out(parameterIndex);
         if (value == null) {
             return null;
         }
         if (value instanceof Timestamp) {
             return (Timestamp) value;
         }
-        return Timestamp.valueOf(value.toString());
+        // Timestamp.valueOf requires the space-separated form; engine values may arrive ISO ('T').
+        return Timestamp.valueOf(value.toString().replace('T', ' '));
     }
 
     @Override
     public Object getObject(final int parameterIndex) throws SQLException {
         checkClosed();
-        return outParameters.get(parameterIndex);
+        return out(parameterIndex);
     }
 
     @Override
     public BigDecimal getBigDecimal(final int parameterIndex) throws SQLException {
         checkClosed();
-        Object value = outParameters.get(parameterIndex);
+        Object value = out(parameterIndex);
         if (value == null) {
             return null;
         }

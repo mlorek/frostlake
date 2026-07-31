@@ -70,9 +70,9 @@ public class ShowDescribeExample {
             printResultSet(views);
 
             // 5. SHOW COLUMNS
-            logger.info("\n5. SHOW COLUMNS FROM customers:");
+            logger.info("\n5. SHOW COLUMNS IN customers:");
             logger.info("   {}", "-".repeat(60));
-            ResultSet columns = engine.executeQuery("SHOW COLUMNS FROM customers");
+            ResultSet columns = engine.executeQuery("SHOW COLUMNS IN customers");
             printResultSet(columns);
 
             // 6. SHOW STREAMS

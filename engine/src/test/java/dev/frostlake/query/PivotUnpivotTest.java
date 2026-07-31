@@ -39,6 +39,42 @@ public class PivotUnpivotTest extends BaseDatabaseTest {
     // handed back the whole pivoted relation.
 
     @Test
+    public void dynamicPivotWithAnyUsesDistinctValues() {
+        seedQuarterlySales();
+        final ResultSet rs = engine.executeQuery(
+            "SELECT * FROM qs PIVOT(SUM(amount) FOR quarter IN (ANY)) ORDER BY empid");
+        assertEquals(2, rs.getRowCount());
+        assertEquals(3, rs.getColumns().size(), "empid + one column per distinct quarter");
+        assertEquals("'Q1'", rs.getColumns().get(1).getName());
+        assertEquals("'Q2'", rs.getColumns().get(2).getName());
+        assertEquals(10L, ((Number) rs.getRows().get(0).getValue(1)).longValue());
+        engine.executeQuery("SELECT * FROM qs PIVOT(SUM(amount) FOR quarter IN (ANY ORDER BY quarter)) ORDER BY empid");
+    }
+
+    @Test
+    public void subqueryDrivenPivotColumns() {
+        seedQuarterlySales();
+        engine.execute("CREATE TABLE wanted (q VARCHAR)");
+        engine.execute("INSERT INTO wanted VALUES ('Q2')");
+        final ResultSet rs = engine.executeQuery(
+            "SELECT * FROM qs PIVOT(SUM(amount) FOR quarter IN (SELECT DISTINCT q FROM wanted)) ORDER BY empid");
+        assertEquals(2, rs.getColumns().size(), "empid + only the subquery-selected quarter");
+        assertEquals("'Q2'", rs.getColumns().get(1).getName());
+        assertEquals(20L, ((Number) rs.getRows().get(0).getValue(1)).longValue());
+    }
+
+    @Test
+    public void defaultOnNullFillsEmptyCells() {
+        seedQuarterlySales();
+        engine.execute("INSERT INTO qs VALUES (3, 7, 'Q1')");   // empid 3 has no Q2 rows
+        final ResultSet rs = engine.executeQuery(
+            "SELECT * FROM qs PIVOT(SUM(amount) FOR quarter IN ('Q1', 'Q2') DEFAULT ON NULL (0)) ORDER BY empid");
+        assertEquals(3, rs.getRowCount());
+        assertEquals(0L, ((Number) rs.getRows().get(2).getValue(2)).longValue(),
+            "the empty Q2 cell must take the DEFAULT ON NULL value");
+    }
+
+    @Test
     public void theSelectListAppliesToThePivotOutput() {
         seedQuarterlySales();
         final ResultSet rs = engine.executeQuery("SELECT eid, q2 FROM " + PIVOTED + " ORDER BY eid");
@@ -410,6 +446,39 @@ public class PivotUnpivotTest extends BaseDatabaseTest {
         assertEquals("W", rs.getRows().get(1).getValue(0));
         assertEquals(30L, rs.getRows().get(1).getValue(1));
         assertEquals(40L, rs.getRows().get(1).getValue(2));
+    }
+
+    @Test
+    public void numericPivotValueColumnsAreReadableByQuotedReference() {
+        // PIVOT ... FOR sev IN (1, 2, 3, 4) names its output columns "1".."4"; reading them back
+        // (ZEROIFNULL("1") in the vendor recommended-actions loader) must resolve the COLUMN — the
+        // numeric-literal fallback in column resolution silently returned 1/2/3/4 for every row.
+        engine.execute("CREATE TABLE wk (aid VARCHAR, sev INTEGER, wc INTEGER)");
+        engine.execute("INSERT INTO wk VALUES ('a', 1, 2), ('b', 1, 7), ('b', 2, 4), ('b', 3, 1)");
+
+        final ResultSet rs = engine.executeQuery(
+            "SELECT aid, ZEROIFNULL(\"1\") AS low, ZEROIFNULL(\"2\") AS med, ZEROIFNULL(\"3\") AS high"
+            + " FROM (SELECT aid, sev, SUM(wc) w FROM wk GROUP BY aid, sev)"
+            + " PIVOT(SUM(w) FOR sev IN (1, 2, 3, 4)) ORDER BY aid");
+
+        assertEquals(2, rs.getRowCount());
+        assertEquals(2L, rs.getRows().get(0).getValue(1));
+        assertEquals(0L, rs.getRows().get(0).getValue(2));
+        assertEquals(0L, rs.getRows().get(0).getValue(3));
+        assertEquals(7L, rs.getRows().get(1).getValue(1));
+        assertEquals(4L, rs.getRows().get(1).getValue(2));
+        assertEquals(1L, rs.getRows().get(1).getValue(3));
+    }
+
+    @Test
+    public void quotedNumericNamedColumnResolvesAsColumn() {
+        // The general shape: a derived column whose (quoted) name is numeric text must be read as
+        // the column everywhere — projection, expressions, WHERE — never as a number literal.
+        final ResultSet rs = engine.executeQuery("SELECT \"1\" + 0 FROM (SELECT 42 AS \"1\")");
+        assertEquals(42L, ((Number) rs.getRows().get(0).getValue(0)).longValue());
+        final ResultSet where = engine.executeQuery(
+            "SELECT COUNT(*) FROM (SELECT 42 AS \"1\") WHERE \"1\" = 42");
+        assertEquals(1L, where.getRows().get(0).getValue(0));
     }
 
     @Test

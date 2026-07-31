@@ -107,7 +107,7 @@ public class CreateProcedureJdbcTest extends BaseJdbcTest {
         rs.close();
 
         // Drop procedure
-        statement.execute("DROP PROCEDURE test_proc");
+        statement.execute("DROP PROCEDURE test_proc(INTEGER)");
 
         // Verify it's gone by showing procedures
         ResultSet rs2 = statement.executeQuery("SHOW PROCEDURES");
@@ -121,7 +121,7 @@ public class CreateProcedureJdbcTest extends BaseJdbcTest {
         rs2.close();
 
         // Drop with IF EXISTS should not throw
-        assertDoesNotThrow(() -> statement.execute("DROP PROCEDURE IF EXISTS test_proc"));
+        assertDoesNotThrow(() -> statement.execute("DROP PROCEDURE IF EXISTS test_proc(INTEGER)"));
     }
 
     @Test

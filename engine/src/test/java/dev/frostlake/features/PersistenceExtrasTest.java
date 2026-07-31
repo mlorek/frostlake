@@ -296,7 +296,7 @@ public class PersistenceExtrasTest {
     }
 
     private long nextval(final DatabaseEngine engine) {
-        final ResultSet rs = engine.executeQuery("SELECT NEXTVAL('seq')");
+        final ResultSet rs = engine.executeQuery("SELECT seq.NEXTVAL");
         return ((Number) rs.getRows().get(0).getValue(0)).longValue();
     }
 

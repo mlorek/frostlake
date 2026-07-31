@@ -141,7 +141,7 @@ public class CreateProcedureTest {
         Schema schema = engine.getCatalog().getDatabase("TEST_DB").getSchema("PUBLIC");
         assertNotNull(schema.getProcedure("test_proc"), "Procedure should exist");
 
-        engine.execute("DROP PROCEDURE test_proc");
+        engine.execute("DROP PROCEDURE test_proc(INTEGER)");
 
         // Verify procedure was dropped
         RuntimeException exception = assertThrows(RuntimeException.class, () -> {

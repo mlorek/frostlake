@@ -163,7 +163,7 @@ public class ReturnTypeParametersTest extends BaseJdbcTest {
         """);
 
         // Procedures can be called but we just verify creation succeeded
-        statement.execute("DROP PROCEDURE get_message");
+        statement.execute("DROP PROCEDURE get_message()");
     }
 
     @Test
@@ -185,7 +185,7 @@ public class ReturnTypeParametersTest extends BaseJdbcTest {
         """);
 
         // Verify procedure was created successfully
-        statement.execute("DROP PROCEDURE calculate_total");
+        statement.execute("DROP PROCEDURE calculate_total()");
     }
 
     @Test

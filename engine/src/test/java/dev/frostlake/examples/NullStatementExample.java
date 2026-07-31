@@ -49,7 +49,7 @@ public class NullStatementExample {
             // Example 2: NULL statement in a sequence
             logger.info("Example 2: NULL in a sequence of statements");
             engine.execute("INSERT INTO employees VALUES (1, 'Alice', true)");
-            engine.execute("NULL"); // Does nothing
+            engine.execute("NULL;"); // Does nothing
             engine.execute("INSERT INTO employees VALUES (2, 'Bob', true)");
             logger.info("Inserted 2 employees with NULL statement in between\n");
 
@@ -79,7 +79,7 @@ public class NullStatementExample {
             logger.info("Example 5: NULL without semicolon");
             engine.execute("""
                 BEGIN
-                    NULL
+                    NULL;
                 END;
                 """);
             logger.info("NULL statement without semicolon executed\n");
@@ -117,7 +117,7 @@ public class NullStatementExample {
             logger.info("Record 1: Action taken");
 
             // Record 2: Do nothing (NULL statement)
-            engine.execute("NULL");
+            engine.execute("NULL;");
             logger.info("Record 2: No action needed (NULL statement)");
 
             // Record 3: Do something

@@ -309,12 +309,20 @@ public class DirectConnection implements Connection {
 
     @Override
     public boolean isWrapperFor(final Class<?> iface) throws SQLException {
-        return false;
+        return iface == DatabaseEngine.class || iface.isInstance(this);
     }
 
     @Override
     public <T> T unwrap(final Class<T> iface) throws SQLException {
-        throw new SQLException("Not a wrapper");
+        // The embedded engine behind this connection — how in-process harnesses reach engine-level
+        // APIs (checkpointStateTo/restoreStateFrom) that have no SQL surface.
+        if (iface == DatabaseEngine.class) {
+            return iface.cast(engine);
+        }
+        if (iface.isInstance(this)) {
+            return iface.cast(this);
+        }
+        throw new SQLException("Not a wrapper for " + iface.getName());
     }
 
     @Override

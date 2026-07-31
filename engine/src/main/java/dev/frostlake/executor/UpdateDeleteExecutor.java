@@ -68,9 +68,8 @@ final class UpdateDeleteExecutor {
                 executor.getTransactionManager().beginTransaction();
             }
 
-            // Handle WITH clause CTEs if present
-            final Map<String, ResultSet> cteResults = ctx.withClause() != null
-                ? executor.executeCTEs(ctx.withClause(), null) : null;
+            // WITH-prefixed DML is not Snowflake syntax (live-verified).
+            final Map<String, ResultSet> cteResults = null;
 
             String tableName = ctx.objectName().KW_IDENTIFIER() != null
                 ? executor.resolveObjectName(ctx.objectName())
@@ -189,9 +188,8 @@ final class UpdateDeleteExecutor {
                 executor.getTransactionManager().beginTransaction();
             }
 
-            // Handle WITH clause CTEs if present
-            final Map<String, ResultSet> cteResults = ctx.withClause() != null
-                ? executor.executeCTEs(ctx.withClause(), null) : null;
+            // WITH-prefixed DML is not Snowflake syntax (live-verified).
+            final Map<String, ResultSet> cteResults = null;
 
             String tableName = ctx.objectName().KW_IDENTIFIER() != null
                 ? executor.resolveObjectName(ctx.objectName())

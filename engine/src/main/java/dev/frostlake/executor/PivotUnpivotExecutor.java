@@ -30,6 +30,7 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.TreeSet;
 
 /**
  * PIVOT / UNPIVOT query stage extracted from {@link QueryExecutor}. Both operations are pure
@@ -56,28 +57,59 @@ final class PivotUnpivotExecutor {
         String aggColumn = pivotCtx.aggregateFunction().expression().getText();
         String pivotColumn = ParseTreeText.getIdentifier(pivotCtx.identifier());
 
-        // Get pivot values
-        List<String> pivotValues = new ArrayList<>();
-        Map<String, String> pivotAliases = new HashMap<>();
-        for (final FrostlakeParser.PivotValueContext pvCtx : pivotCtx.pivotValueList().pivotValue()) {
-            // The value used to MATCH rows is the literal's value (q1), but the output column is NAMED after
-            // the literal AS WRITTEN — Snowflake keeps the quotes inside the identifier, so a string pivot
-            // value 'q1' produces a column called 'q1' that is referenced as "'q1'" (which is exactly how
-            // real queries write it, e.g. MAX("'q1'")). Naming it `q1` instead made "'q1'" unresolvable and,
-            // worse, made MAX("'q1'") silently return the STRING q1. An explicit alias still wins.
-            final String value = pvCtx.literal().getText().replace("'", "");
-            pivotValues.add(value);
-
-            String alias = pvCtx.literal().getText();
-            if (pvCtx.identifier() != null) {
-                alias = ParseTreeText.getIdentifier(pvCtx.identifier());
-            }
-            pivotAliases.put(value, alias);
-        }
-
         // Get column indices
         int aggColIndex = table.getColumnIndex(aggColumn);
         int pivotColIndex = table.getColumnIndex(pivotColumn);
+
+        // Get pivot values: an explicit list, ANY (dynamic: the distinct FOR-column values), or a subquery.
+        List<String> pivotValues = new ArrayList<>();
+        Map<String, String> pivotAliases = new HashMap<>();
+        final FrostlakeParser.PivotInListContext inList = pivotCtx.pivotInList();
+        if (inList.pivotValueList() != null) {
+            for (final FrostlakeParser.PivotValueContext pvCtx : inList.pivotValueList().pivotValue()) {
+                // The value used to MATCH rows is the literal's value (q1), but the output column is NAMED after
+                // the literal AS WRITTEN — Snowflake keeps the quotes inside the identifier, so a string pivot
+                // value 'q1' produces a column called 'q1' that is referenced as "'q1'" (which is exactly how
+                // real queries write it, e.g. MAX("'q1'")). Naming it `q1` instead made "'q1'" unresolvable and,
+                // worse, made MAX("'q1'") silently return the STRING q1. An explicit alias still wins.
+                final String value = pvCtx.literal().getText().replace("'", "");
+                pivotValues.add(value);
+
+                String alias = pvCtx.literal().getText();
+                if (pvCtx.identifier() != null) {
+                    alias = ParseTreeText.getIdentifier(pvCtx.identifier());
+                }
+                pivotAliases.put(value, alias);
+            }
+        } else if (inList.ANY() != null) {
+            // Dynamic pivot: the distinct values of the FOR column, ascending for a deterministic
+            // column order (an ORDER BY inside ANY parses; the natural value order is used).
+            final TreeSet<String> distinct = new TreeSet<>();
+            for (final Row row : rows) {
+                final Object value = row.getValue(pivotColIndex);
+                if (value != null) {
+                    distinct.add(value.toString());
+                }
+            }
+            for (final String value : distinct) {
+                pivotValues.add(value);
+                pivotAliases.put(value, "'" + value + "'");
+            }
+        } else if (inList.selectStatement() != null) {
+            // Subquery-driven pivot columns: the first column of the subquery result, in result order.
+            final ResultSet sub = executor.executeSelectFromContext(inList.selectStatement());
+            for (final Row row : sub.getRows()) {
+                final Object value = row.getValue(0);
+                if (value != null && !pivotValues.contains(value.toString())) {
+                    pivotValues.add(value.toString());
+                    pivotAliases.put(value.toString(), "'" + value + "'");
+                }
+            }
+        }
+
+        // DEFAULT ON NULL (expr): the constant substituted for empty pivot cells.
+        final Object defaultOnNull = pivotCtx.DEFAULT() != null
+            ? evaluateConstant(pivotCtx.expression()) : null;
 
         // Get all non-pivot/non-agg columns for grouping
         List<Integer> groupByColIndices = new ArrayList<>();
@@ -140,6 +172,9 @@ final class PivotUnpivotExecutor {
             for (final String pivotValue : pivotValues) {
                 List<Object> values = entry.getValue().getOrDefault(pivotValue, new ArrayList<>());
                 Object aggResult = AggregateFunctions.applyAggregateFunction(aggFuncName, values);
+                if (aggResult == null && defaultOnNull != null) {
+                    aggResult = defaultOnNull;
+                }
                 rowValues.add(aggResult);
             }
 
@@ -223,4 +258,13 @@ final class PivotUnpivotExecutor {
 
         return new ResultSet(resultColumns, resultRows);
     }
+
+    /** Evaluate a constant expression (the PIVOT DEFAULT ON NULL value) with no row context. */
+    private Object evaluateConstant(final FrostlakeParser.ExpressionContext expr) {
+        final Table dummyTable = new Table("DUMMY", new ArrayList<>(), false);
+        final ExpressionEvaluator evaluator = new ExpressionEvaluator(
+            dummyTable, executor.getFunctionRegistry(), executor.getCatalog(), executor);
+        return evaluator.evaluate(ParseTreeText.getOriginalText(expr), new Row(new ArrayList<>()));
+    }
+
 }

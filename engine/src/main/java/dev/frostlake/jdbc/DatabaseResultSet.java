@@ -52,6 +52,8 @@ public class DatabaseResultSet implements ResultSet {
             currentRow++;
             return true;
         }
+        // Advance past the last row so isAfterLast() reports the exhausted position correctly.
+        currentRow = data.getRowCount();
         return false;
     }
 

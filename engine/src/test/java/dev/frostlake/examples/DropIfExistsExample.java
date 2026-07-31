@@ -77,11 +77,11 @@ public class DropIfExistsExample {
             logger.info("   DROP VIEW IF EXISTS old_view -> Success");
 
             // Function
-            engine.execute("DROP FUNCTION IF EXISTS old_func");
+            engine.execute("DROP FUNCTION IF EXISTS old_func()");
             logger.info("   DROP FUNCTION IF EXISTS old_func -> Success");
 
             // Procedure
-            engine.execute("DROP PROCEDURE IF EXISTS old_proc");
+            engine.execute("DROP PROCEDURE IF EXISTS old_proc()");
             logger.info("   DROP PROCEDURE IF EXISTS old_proc -> Success");
 
             // Task

@@ -148,8 +148,9 @@ public class CompressionFunctionsTest {
 
     @Test
     public void testUnsupportedMethodThrows() {
+        // snappy is supported (Snowflake's default method); a genuinely unknown method still throws.
         assertThrows(RuntimeException.class, () ->
-            q("SELECT COMPRESS('hello', 'snappy')"));
+            q("SELECT COMPRESS('hello', 'lz77-nonsense')"));
     }
 
     // ── different methods produce different output ────────────────────────────

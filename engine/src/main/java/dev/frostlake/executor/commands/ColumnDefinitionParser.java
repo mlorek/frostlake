@@ -96,9 +96,20 @@ public class ColumnDefinitionParser implements CommandHandler {
                 // Seed + step from either (start, step) or START <n> INCREMENT <n> (both yield two
                 // INTEGER_LITERALs under identityProperties). ORDER/NOORDER parse but don't change values.
                 final FrostlakeParser.IdentityPropertiesContext props = constraint.identityProperties();
-                if (props != null && props.INTEGER_LITERAL().size() == 2) {
-                    identityStart = Long.parseLong(props.INTEGER_LITERAL(0).getText());
-                    identityIncrement = Long.parseLong(props.INTEGER_LITERAL(1).getText());
+                if (props != null) {
+                    if (props.signedInteger().size() == 2) {
+                        // (start, step) paren form
+                        identityStart = parseSignedInteger(props.signedInteger(0));
+                        identityIncrement = parseSignedInteger(props.signedInteger(1));
+                    }
+                    for (final FrostlakeParser.IdentityWordOptionContext opt : props.identityWordOption()) {
+                        if (opt.START() != null) {
+                            identityStart = parseSignedInteger(opt.signedInteger());
+                        } else if (opt.INCREMENT() != null) {
+                            identityIncrement = parseSignedInteger(opt.signedInteger());
+                        }
+                        // ORDER / NOORDER parse but don't change values.
+                    }
                 }
             } else if (constraint.DEFAULT() != null) {
                 defaultValue = parseDefaultExpression(constraint.defaultExpression());
@@ -296,6 +307,17 @@ public class ColumnDefinitionParser implements CommandHandler {
             precision = Integer.parseInt(typeParams.INTEGER_LITERAL(0).getText());
         }
 
+        // VECTOR(FLOAT|INT, n) must be classified BEFORE the plain numeric checks: its element-type
+        // token (FLOAT / INT) lives in the same context, so the FLOAT/INT branches would shadow it.
+        if (ctx.VECTOR() != null) {
+            final VectorType.ElementType vectorElem = ctx.INT() != null
+                ? VectorType.ElementType.INT
+                : VectorType.ElementType.FLOAT;
+            final int vectorDim = ctx.INTEGER_LITERAL() != null
+                ? Integer.parseInt(ctx.INTEGER_LITERAL().getText())
+                : 1;
+            return new VectorType(vectorElem, vectorDim);
+        }
         if (ctx.INTEGER() != null || ctx.INT() != null) return NumericType.INTEGER;
         if (ctx.BIGINT() != null) return NumericType.BIGINT;
         if (ctx.SMALLINT() != null) return NumericType.SMALLINT;
@@ -308,6 +330,9 @@ public class ColumnDefinitionParser implements CommandHandler {
             }
             return NumericType.NUMBER;
         }
+        // DECFLOAT (decimal floating point) is approximated by DOUBLE — the engine has no
+        // arbitrary-exponent decimal representation.
+        if (ctx.DECFLOAT() != null) return NumericType.DOUBLE;
         if (ctx.FLOAT() != null || ctx.FLOAT4() != null || ctx.FLOAT8() != null || ctx.REAL() != null) return NumericType.FLOAT;
         if (ctx.DOUBLE() != null) return NumericType.DOUBLE;   // DOUBLE and DOUBLE PRECISION
         if (ctx.VARCHAR() != null || ctx.STRING() != null || ctx.TEXT() != null) {
@@ -318,6 +343,7 @@ public class ColumnDefinitionParser implements CommandHandler {
         }
         if (ctx.BOOLEAN() != null) return BooleanType.BOOLEAN;
         if (ctx.DATE() != null) return DateTimeType.DATE;
+        if (ctx.TIME() != null) return DateTimeType.TIME;
         if (ctx.DATETIME() != null) return new DateTimeType("TIMESTAMP_NTZ", precision, false);
         if (ctx.TIMESTAMP() != null) return new DateTimeType("TIMESTAMP", precision, false);
         if (ctx.TIMESTAMP_NTZ() != null || ctx.TIMESTAMPNTZ() != null) return new DateTimeType("TIMESTAMP_NTZ", precision, false);
@@ -327,16 +353,6 @@ public class ColumnDefinitionParser implements CommandHandler {
         if (ctx.ARRAY() != null) return ArrayType.ARRAY;
         if (ctx.OBJECT() != null) return ObjectType.OBJECT;
         if (ctx.UUID() != null) return new StringType("UUID", 36);
-        if (ctx.VECTOR() != null) {
-            VectorType.ElementType elemType =
-                ctx.INT() != null
-                    ? VectorType.ElementType.INT
-                    : VectorType.ElementType.FLOAT;
-            int dim = ctx.INTEGER_LITERAL() != null
-                ? Integer.parseInt(ctx.INTEGER_LITERAL().getText())
-                : 1;
-            return new VectorType(elemType, dim);
-        }
         return StringType.VARCHAR;
     }
 
@@ -519,4 +535,11 @@ public class ColumnDefinitionParser implements CommandHandler {
             new Interval(ctx.start.getStartIndex(), ctx.stop.getStopIndex())
         );
     }
+
+    /** The value of a signedInteger context ({@code MINUS? INTEGER_LITERAL}). */
+    private static long parseSignedInteger(final FrostlakeParser.SignedIntegerContext ctx) {
+        final long value = Long.parseLong(ctx.INTEGER_LITERAL().getText());
+        return ctx.MINUS() != null ? -value : value;
+    }
+
 }

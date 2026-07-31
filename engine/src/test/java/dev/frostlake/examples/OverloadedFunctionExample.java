@@ -153,10 +153,10 @@ public class OverloadedFunctionExample {
             engine.execute("DROP FUNCTION calculate(INTEGER)");
             logger.info("calculate(INTEGER, INTEGER) still exists!");
 
-            // Example 4: DROP all overloads
-            logger.info("\n4. Dropping all overloads:");
-            logger.info("DROP FUNCTION calculate - drops all overloads without signature");
-            engine.execute("DROP FUNCTION calculate");
+            // Example 4: DROP the remaining overload (the signature is always required)
+            logger.info("\n4. Dropping the remaining overload:");
+            logger.info("DROP FUNCTION calculate(INTEGER, INTEGER)");
+            engine.execute("DROP FUNCTION calculate(INTEGER, INTEGER)");
             logger.info("All calculate() overloads removed");
 
             // Example 5: CREATE OR REPLACE specific overload

@@ -65,19 +65,15 @@ public class Database extends SqlObject {
 
     public void dropSchema(final String name, final boolean cascade) {
         String upperName = name.toUpperCase();
-        if ("PUBLIC".equals(upperName)) {
-            throw new RuntimeException("Cannot drop PUBLIC schema");
-        }
         if ("INFORMATION_SCHEMA".equals(upperName)) {
             throw new RuntimeException("Cannot drop INFORMATION_SCHEMA schema");
         }
         if (!schemas.containsKey(upperName)) {
             throw new RuntimeException("Schema does not exist: " + name);
         }
-        Schema schema = schemas.get(upperName);
-        if (!cascade && (!schema.getTables().isEmpty() || !schema.getViews().isEmpty())) {
-            throw new RuntimeException("Schema is not empty. Use CASCADE to drop.");
-        }
+        // Live-verified Snowflake semantics: PUBLIC is droppable like any schema, and
+        // DROP SCHEMA ... RESTRICT drops a NON-EMPTY schema too (the callers snapshot and
+        // release the contained tables' storage before this removal either way).
         schemas.remove(upperName);
     }
 

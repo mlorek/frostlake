@@ -40,6 +40,7 @@ final class ValueCaster {
         if (parenIndex > 0) {
             baseType = baseType.substring(0, parenIndex).trim();
         }
+        baseType = normalizeTypeAlias(baseType);
 
         final CastTargetCategory category = CastTargetCategory.fromTypeName(baseType);
         if (category == null) {
@@ -166,4 +167,21 @@ final class ValueCaster {
         }
         return data;
     }
+
+    /** Fold spelled-out type aliases onto their canonical names, so every downstream stage —
+     *  the category classifier and the temporal by-name paths — sees one spelling. */
+    private static String normalizeTypeAlias(final String baseType) {
+        switch (baseType) {
+            case "NVARCHAR": case "NCHAR": case "CHARACTER":
+            case "CHARVARYING": case "CHARACTERVARYING": case "NCHARVARYING":
+                return "VARCHAR";
+            case "TIMESTAMPLTZ": case "TIMESTAMPWITHLOCALTIMEZONE":
+                return "TIMESTAMP_LTZ";
+            case "TIMESTAMPTZ":
+                return "TIMESTAMP_TZ";
+            default:
+                return baseType;
+        }
+    }
+
 }

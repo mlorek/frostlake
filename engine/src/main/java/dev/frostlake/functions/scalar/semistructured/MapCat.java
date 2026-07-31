@@ -53,7 +53,8 @@ public class MapCat extends BuiltInFunction {
                 result.set(e.getKey(), e.getValue());   // map2 overrides map1 on a shared key
             }
         }
-        return result.toString();
+        // Snowflake serializes OBJECT members key-sorted; raw insertion order leaked map1-then-map2.
+        return ArrayFunctionHelper.toCanonicalJson(result);
     }
 
     @Override public int getMinArgCount() { return 2; }

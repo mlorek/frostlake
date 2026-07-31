@@ -19,9 +19,7 @@ package dev.frostlake.executor;
 import dev.frostlake.executor.commands.*;
 import dev.frostlake.executor.procedural.*;
 import dev.frostlake.executor.udf.JavaProcedureExecutor;
-import dev.frostlake.executor.udf.JavaScriptProcedureExecutor;
-import dev.frostlake.executor.udf.PythonProcedureExecutor;
-import dev.frostlake.executor.udf.ScalaProcedureExecutor;
+import dev.frostlake.executor.udf.UdfRuntimes;
 import dev.frostlake.jdbc.JdbcMarshaling;
 import dev.frostlake.metastore.*;
 import dev.frostlake.metastore.model.*;
@@ -1081,6 +1079,10 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
                     if (boundFlags[idx]) {
                         throw new RuntimeException("Argument '" + argName + "' specified more than once for procedure: " + qualifiedName);
                     }
+                    if (argCtx.namedArgument().expression() == null) {
+                        throw new RuntimeException(
+                            "A bare subquery CALL argument is not supported; parenthesize it: (SELECT ...)");
+                    }
                     boundValues[idx] = evaluateExpression(argCtx.namedArgument().expression());
                     boundFlags[idx] = true;
                 } else {
@@ -1112,18 +1114,13 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
         final UdfLanguage language = procedure.getUdfLanguage();
         Object returnValue;
 
-        if (language == UdfLanguage.JAVASCRIPT) {
-            returnValue = JavaScriptProcedureExecutor
-                .executeJavaScriptProcedure(procedure, arguments, queryExecutor.getDatabaseEngine());
-        } else if (language == UdfLanguage.PYTHON) {
-            returnValue = PythonProcedureExecutor
-                .executePythonProcedure(procedure, arguments, queryExecutor.getDatabaseEngine());
+        if (language == UdfLanguage.JAVASCRIPT || language == UdfLanguage.PYTHON
+                || language == UdfLanguage.SCALA) {
+            returnValue = UdfRuntimes.require(language)
+                .executeProcedure(procedure, arguments, queryExecutor.getDatabaseEngine());
         } else if (language == UdfLanguage.JAVA) {
             returnValue = JavaProcedureExecutor
                 .executeJavaProcedure(procedure, arguments, queryExecutor.getDatabaseEngine());
-        } else if (language == UdfLanguage.SCALA) {
-            returnValue = ScalaProcedureExecutor
-                .executeScalaProcedure(procedure, arguments, queryExecutor.getDatabaseEngine());
         } else {
             // SQL procedural language: bind the call arguments to the parameter names, execute the body
             // on the shared procedural executor (so its RETURN / control flow / statements actually
@@ -1165,7 +1162,7 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
                 errorListener.throwIfErrors();
 
                 Object bodyResult = null;
-                for (final FrostlakeParser.StatementContext stmtCtx : tree.statement()) {
+                for (final FrostlakeParser.StatementContext stmtCtx : flattenedStatements(tree)) {
                     bodyResult = visit(stmtCtx);
                     // Per-statement autocommit, as inside BEGIN…END bodies (Snowflake procedures do
                     // not wrap their statements in one transaction).
@@ -1290,7 +1287,7 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
             // Variables are scoped naturally by BEGIN...END, so only transient state needs clearing.
             // Determined from the parse tree, not a string prefix.
             boolean isProcedural = false;
-            for (final FrostlakeParser.StatementContext s : sqlScriptCtx.statement()) {
+            for (final FrostlakeParser.StatementContext s : flattenedStatements(sqlScriptCtx)) {
                 final FrostlakeParser.ProceduralStatementContext p = s.proceduralStatement();
                 if (p != null && (p.beginEndBlock() != null || p.declareStatement() != null)) {
                     isProcedural = true;
@@ -1308,7 +1305,7 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
 
             // Execute each statement in the dynamic SQL
             Object lastResult = null;
-            for (final FrostlakeParser.StatementContext stmtCtx : sqlScriptCtx.statement()) {
+            for (final FrostlakeParser.StatementContext stmtCtx : flattenedStatements(sqlScriptCtx)) {
                 lastResult = visit(stmtCtx);
                 // Cache result sets so RESULT_SCAN(LAST_QUERY_ID()) works after SHOW / SELECT statements
                 if (lastResult instanceof ResultSet) {
@@ -1365,6 +1362,9 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
         for (final FrostlakeParser.IdentifierContext id : ctx.identifier()) {
             parts.add(getText(id));
         }
+        if (ctx.TABLE() != null) {
+            parts.add("TABLE");   // db.table — a trailing part literally named "table"
+        }
         return String.join(".", parts);
     }
 
@@ -1376,9 +1376,13 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
      */
     public String[] qualifiedNameParts(final FrostlakeParser.QualifiedNameContext ctx) {
         final List<FrostlakeParser.IdentifierContext> ids = ctx.identifier();
-        final String[] parts = new String[ids.size()];
+        final boolean trailingTable = ctx.TABLE() != null;   // db.table — a part literally named "table"
+        final String[] parts = new String[ids.size() + (trailingTable ? 1 : 0)];
         for (int i = 0; i < ids.size(); i++) {
             parts[i] = getText(ids.get(i));
+        }
+        if (trailingTable) {
+            parts[parts.length - 1] = "TABLE";
         }
         return parts;
     }
@@ -1569,5 +1573,16 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
 
     public ProceduralExecutor getProceduralExecutor() {
         return proceduralExecutor;
+    }
+
+    /** All statements of a parsed script in order, chains flattened (a ->> chain contributes each
+     *  of its stages; $n references need the executor's chain loop and are not resolved here). */
+    private static List<FrostlakeParser.StatementContext> flattenedStatements(
+            final FrostlakeParser.SqlScriptContext script) {
+        final List<FrostlakeParser.StatementContext> statements = new ArrayList<>();
+        for (final FrostlakeParser.FlowChainContext chain : script.flowChain()) {
+            statements.addAll(chain.statement());
+        }
+        return statements;
     }
 }

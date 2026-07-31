@@ -22,9 +22,7 @@ import dev.frostlake.executor.SqlIdentifierSubstitution;
 import dev.frostlake.executor.SqlStringLiterals;
 import dev.frostlake.executor.udf.JarHandlerLoader;
 import dev.frostlake.executor.udf.JavaFunctionCompiler;
-import dev.frostlake.executor.udf.JavaScriptExecutor;
-import dev.frostlake.executor.udf.PythonExecutor;
-import dev.frostlake.executor.udf.ScalaFunctionExecutor;
+import dev.frostlake.executor.udf.UdfRuntimes;
 import dev.frostlake.functions.FunctionRegistry;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.model.Function;
@@ -328,12 +326,9 @@ final class UdfInvoker {
             return evaluateJavaFunction(function, args);
         } else if (language == UdfLanguage.SQL) {
             return evaluateSqlFunction(function, args);
-        } else if (language == UdfLanguage.JAVASCRIPT) {
-            return JavaScriptExecutor.executeJavaScriptFunction(function, args);
-        } else if (language == UdfLanguage.PYTHON) {
-            return PythonExecutor.executePythonFunction(function, args);
-        } else if (language == UdfLanguage.SCALA) {
-            return ScalaFunctionExecutor.executeScalaFunction(function, args, catalog,
+        } else if (language == UdfLanguage.JAVASCRIPT || language == UdfLanguage.PYTHON
+                || language == UdfLanguage.SCALA) {
+            return UdfRuntimes.require(language).executeFunction(function, args, catalog,
                 queryExecutor != null ? queryExecutor.getS3PathResolver() : null);
         } else {
             throw new RuntimeException("Unsupported function language: " + language);

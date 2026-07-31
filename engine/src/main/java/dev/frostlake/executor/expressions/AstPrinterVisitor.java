@@ -273,6 +273,11 @@ public class AstPrinterVisitor implements ExpressionVisitor<String> {
         return expr.getCallText();
     }
 
+    @Override
+    public String visitSpread(final SpreadExpression expr) {
+        return "** " + expr.getInner().accept(this);
+    }
+
     private String symbol(final BinaryOperator op) {
         switch (op) {
             case ADD: return "+";

@@ -79,6 +79,22 @@ public class ArrayFunctionHelper {
         if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
             try { return mapper.readTree(trimmed); } catch (final Exception ignored) {}
         }
+        // A path access over {"v": "[]"} or {"v": "null"} yields the QUOTED carrier form ("\"[]\"") so
+        // a string whose content merely LOOKS structural — or IS the JSON-null marker text — stays
+        // distinguishable from a real array/object/null (see JsonPathExtractor). Embedding the carrier
+        // must restore the plain STRING member — without this it double-encoded, e.g. OBJECT_AGG stored
+        // {"plans":"\"[]\""} instead of {"plans":"[]"}.
+        if (trimmed.startsWith("\"")) {
+            try {
+                final JsonNode parsed = mapper.readTree(trimmed);
+                if (parsed.isTextual()) {
+                    final String content = parsed.asText().trim();
+                    if (content.startsWith("{") || content.startsWith("[") || "null".equals(content)) {
+                        return parsed;
+                    }
+                }
+            } catch (final Exception ignored) {}
+        }
         return mapper.getNodeFactory().textNode(s);
     }
 

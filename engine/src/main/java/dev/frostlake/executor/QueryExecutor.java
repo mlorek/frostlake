@@ -33,7 +33,7 @@ import dev.frostlake.executor.streaming.LimitRowStream;
 import dev.frostlake.executor.streaming.ListRowStream;
 import dev.frostlake.executor.streaming.RowPredicate;
 import dev.frostlake.executor.streaming.RowStream;
-import dev.frostlake.executor.udf.PythonTableFunctionExecutor;
+import dev.frostlake.executor.udf.UdfRuntimes;
 import dev.frostlake.functions.FunctionRegistry;
 import dev.frostlake.functions.TableFunction;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
@@ -233,7 +233,8 @@ public class QueryExecutor {
         functionRegistry.register(new LastQueryId(resultCache));
 
         // Register NEXTVAL and CURRVAL sequence functions
-        functionRegistry.register(new NextVal(catalog));
+        // NEXTVAL('seq') as a FUNCTION is not Snowflake syntax (live-verified: "Unknown function
+        // NEXTVAL") — only the member form seq.NEXTVAL exists, handled by the evaluator directly.
         functionRegistry.register(new CurrVal(catalog));
 
         // Register CURRENT_ACCOUNT() function with access to config
@@ -369,7 +370,8 @@ public class QueryExecutor {
         boolean result;
         try {
             final FrostlakeParser.SqlScriptContext tree = parseScript(sql, true);
-            result = !tree.statement().isEmpty() && tree.statement().get(0).queryStatement() != null;
+            result = !tree.flowChain().isEmpty()
+                && tree.flowChain().get(0).statement().get(0).queryStatement() != null;
         } catch (final RuntimeException e) {
             result = false;   // not a parseable statement → treat as a scalar expression body
         }
@@ -401,23 +403,43 @@ public class QueryExecutor {
             // Parse once and cache (correlated subqueries re-enter with identical SQL per outer row).
             FrostlakeParser.SqlScriptContext tree = parseScript(sql);
 
-            // Visit each statement
-            for (final FrostlakeParser.StatementContext stmtCtx : tree.statement()) {
+            // Visit each flow chain (a chain is usually a single statement; with the ->> flow
+            // operator it is several, executed in order — each stage may read a prior stage's
+            // result via $n, and only the LAST stage's result is the chain's result).
+            for (final FrostlakeParser.FlowChainContext chainCtx : tree.flowChain()) {
+                final List<FrostlakeParser.StatementContext> stages = chainCtx.statement();
+                final List<ResultSet> priorFlowResults = flowChainResults;
                 Object result;
+                try {
+                    if (stages.size() > 1) {
+                        flowChainResults = new ArrayList<>();
+                        for (int stage = 0; stage < stages.size() - 1; stage++) {
+                            final Object stageResult = visitor.visit(stages.get(stage));
+                            flowChainResults.add(stageResult instanceof ResultSet ? (ResultSet) stageResult : null);
+                            // Time-travel snapshots per stage, mirroring the per-statement behavior below.
+                            if (lateralContext == null) {
+                                storageEngine.snapshotDirtyTables();
+                            }
+                        }
+                    }
+                    final FrostlakeParser.StatementContext stmtCtx = stages.get(stages.size() - 1);
 
-                // If we have lateral context and this is a query statement (SELECT), pass it along.
-                // (The stream-consuming DML window and DDL's implicit pre-commit both live in the
-                // visitor's visitDmlStatement/visitDdlStatement, so procedural bodies that dispatch
-                // through the visitor directly are covered too.)
-                if (lateralContext != null && stmtCtx.queryStatement() != null) {
-                    FrostlakeParser.QueryStatementContext queryCtx = stmtCtx.queryStatement();
-                    if (queryCtx.selectStatement() != null) {
-                        result = executeSelectFromContext(queryCtx.selectStatement(), lateralContext);
+                    // If we have lateral context and this is a query statement (SELECT), pass it along.
+                    // (The stream-consuming DML window and DDL's implicit pre-commit both live in the
+                    // visitor's visitDmlStatement/visitDdlStatement, so procedural bodies that dispatch
+                    // through the visitor directly are covered too.)
+                    if (lateralContext != null && stmtCtx.queryStatement() != null) {
+                        FrostlakeParser.QueryStatementContext queryCtx = stmtCtx.queryStatement();
+                        if (queryCtx.selectStatement() != null) {
+                            result = executeSelectFromContext(queryCtx.selectStatement(), lateralContext);
+                        } else {
+                            result = visitor.visit(stmtCtx);
+                        }
                     } else {
                         result = visitor.visit(stmtCtx);
                     }
-                } else {
-                    result = visitor.visit(stmtCtx);
+                } finally {
+                    flowChainResults = priorFlowResults;
                 }
 
                 if (result instanceof ResultSet) {
@@ -727,10 +749,11 @@ public class QueryExecutor {
      */
     /** Returns true for procedural control-flow statements that should not update LAST_QUERY_ID. */
     private boolean isProceduralControlFlow(final FrostlakeParser.SqlScriptContext tree) {
-        if (tree == null || tree.statement().isEmpty()) {
+        if (tree == null || tree.flowChain().isEmpty()) {
             return false;
         }
-        final FrostlakeParser.ProceduralStatementContext p = tree.statement().get(0).proceduralStatement();
+        final FrostlakeParser.ProceduralStatementContext p =
+            tree.flowChain().get(0).statement().get(0).proceduralStatement();
         return p != null && (
                p.letStatement() != null
             || p.declareStatement() != null
@@ -903,6 +926,11 @@ public class QueryExecutor {
         for (int i = 1; i < operands.size(); i++) {
             final ResultSet nextResult = executeSelectOperand(ctx, operands.get(i), lateralContext, cteResults);
             final FrostlakeParser.SetOperatorContext operator = setOperators.get(i - 1);
+            // ALL applies only to UNION in Snowflake (live-verified error shapes below).
+            if (operator.ALL() != null && operator.UNION() == null) {
+                throw new RuntimeException("Unsupported feature '"
+                    + (operator.INTERSECT() != null ? "INTERSECT ALL" : "MINUS ALL") + "'.");
+            }
             // BY NAME aligns columns by name and so allows different column counts; every other operator
             // requires matching column counts.
             if (!isUnionByName(operator) && nextResult.getColumns().size() != columnCount) {
@@ -952,13 +980,16 @@ public class QueryExecutor {
             allRows = orderByAfterGroupBy(allRows, ctx);
         }
         if (ctx.limitClause() != null) {
-            final int limit = Integer.parseInt(ctx.limitClause().INTEGER_LITERAL(0).getText());
+            // LIMIT NULL means no limit; its INTEGER_LITERAL list then holds only the OFFSET (if any).
+            final boolean unlimited = ctx.limitClause().NULL() != null;
+            final List<TerminalNode> limitInts = ctx.limitClause().INTEGER_LITERAL();
+            final int limit = unlimited ? Integer.MAX_VALUE : Integer.parseInt(limitInts.get(0).getText());
             int offset = 0;
-            if (ctx.limitClause().INTEGER_LITERAL().size() > 1) {
-                offset = Integer.parseInt(ctx.limitClause().INTEGER_LITERAL(1).getText());
+            if (limitInts.size() > (unlimited ? 0 : 1)) {
+                offset = Integer.parseInt(limitInts.get(limitInts.size() - 1).getText());
             }
-            allRows = allRows.subList(Math.min(offset, allRows.size()),
-                                     Math.min(offset + limit, allRows.size()));
+            final int subListEnd = (int) Math.min((long) offset + (long) limit, (long) allRows.size());
+            allRows = allRows.subList(Math.min(offset, allRows.size()), subListEnd);
         }
         if (ctx.fetchClause() != null) {
             final int fetch = Integer.parseInt(ctx.fetchClause().INTEGER_LITERAL().getText());
@@ -1193,6 +1224,12 @@ public class QueryExecutor {
                 // (vendor loaders use exactly this shape, with no ON clause). Only the CONDITION-LESS
                 // form goes lateral — the lateral path performs no ON filtering, so a non-correlated
                 // JOIN TABLE(GENERATOR(...)) g ON t.id = g.seq must keep the regular join path.
+                if (isImplicitlyLateral(rightTableRef) && joinCtx.ON() != null) {
+                    // Live-verified Snowflake restriction on lateral table FUNCTIONS — even ON TRUE is
+                    // rejected. A lateral SUBQUERY joined with ON stays valid.
+                    throw new RuntimeException("Unsupported feature 'lateral table function called with "
+                        + "OUTER JOIN syntax or a join predicate (ON clause)'.");
+                }
                 boolean isLateral = joinCtx.LATERAL() != null
                     || (isImplicitlyLateral(rightTableRef) && joinCtx.ON() == null && joinCtx.USING() == null);
 
@@ -1205,6 +1242,14 @@ public class QueryExecutor {
                     aliasToTable.put(lateralData.alias != null ? lateralData.alias : lateralData.table.getName(),
                                     lateralData.table);
                     allTables.add(lateralData.table);
+                } else if (isParenthesizedJoin(rightTableRef.tableSource())) {
+                    // A join group on the RIGHT side — x JOIN (a JOIN b ON ...) ON ... : execute the
+                    // inner chain first; its aliases join the outer scope so the outer ON can see them.
+                    final TableData groupData =
+                        executeJoinGroup(rightTableRef.tableSource(), aliasToTable, allTables, ctx, cteResults);
+                    rows = applyJoin(rows, table, groupData.rows, groupData.table, joinCtx, aliasToTable, allTables, ctx);
+                    table = mergeTableMetadata(table, groupData.table,
+                        usingJoinColumnNames(joinCtx, table, groupData.table));
                 } else {
                     // Regular join
                     TableData rightData = executeTableReference(rightTableRef, null, cteResults);
@@ -1221,7 +1266,8 @@ public class QueryExecutor {
                     rows = applyJoin(rows, table, rightData.rows, rightJoinTable, joinCtx, aliasToTable, allTables, ctx);
 
                     // Update table metadata to include both tables
-                    table = mergeTableMetadata(table, rightJoinTable);
+                    table = mergeTableMetadata(table, rightJoinTable,
+                        usingJoinColumnNames(joinCtx, table, rightJoinTable));
                 }
             }
 
@@ -1462,19 +1508,17 @@ public class QueryExecutor {
                     int offset = 0;
                     int limit;
 
+                    // LIMIT NULL means no limit; the INTEGER_LITERAL list then holds only the OFFSET.
+                    final boolean unlimited = stmtCtx.limitClause().NULL() != null;
                     List<TerminalNode> intLiterals = stmtCtx.limitClause().INTEGER_LITERAL();
-                    if (intLiterals.size() == 2) {
-                        // LIMIT n OFFSET m
-                        limit = Integer.parseInt(intLiterals.get(0).getText());
-                        offset = Integer.parseInt(intLiterals.get(1).getText());
-                    } else {
-                        // LIMIT n
-                        limit = Integer.parseInt(intLiterals.get(0).getText());
+                    limit = unlimited ? Integer.MAX_VALUE : Integer.parseInt(intLiterals.get(0).getText());
+                    if (intLiterals.size() > (unlimited ? 0 : 1)) {
+                        offset = Integer.parseInt(intLiterals.get(intLiterals.size() - 1).getText());
                     }
 
                     // Apply offset and limit
                     int start = Math.min(offset, rows.size());
-                    int end = Math.min(start + limit, rows.size());
+                    int end = (int) Math.min((long) start + (long) limit, (long) rows.size());
                     rows = rows.subList(start, end);
                 }
 
@@ -1507,6 +1551,18 @@ public class QueryExecutor {
                             break;
                         }
                     }
+                } else if (SelectItemAccessors.isSpreadExprItem(item)) {
+                    // SELECT ** <array>: one output column per element, labeled '<item text>[N]' —
+                    // mirrors the projection expansion in applyProjection.
+                    final FrostlakeParser.SpreadExprItemContext spread =
+                        (FrostlakeParser.SpreadExprItemContext) item;
+                    final List<Object> spreadValues = spreadElements(new ExpressionEvaluator(
+                        new Table("DUMMY", new ArrayList<>(), false), functionRegistry, catalog, this)
+                        .evaluate(getOriginalText(spread.expression()), new Row(new ArrayList<>())));
+                    final String itemText = getOriginalText(item);
+                    for (int i = 0; i < spreadValues.size(); i++) {
+                        columns.add(new ResultSetColumn(itemText + "[" + (i + 1) + "]", StringType.VARCHAR, null));
+                    }
                 } else {
                     // Handle expression select item — the output name/type come from the parse tree.
                     final FrostlakeParser.ExpressionContext valueExpr = SelectItemAccessors.getItemValueExpr(item);
@@ -1538,6 +1594,12 @@ public class QueryExecutor {
 
                     columns.add(new ResultSetColumn(colName, colType, null));
                 }
+            }
+
+            if (columns.isEmpty()) {
+                // A star over a zero-column source (e.g. GENERATOR) — Snowflake's error shape; the
+                // pass-through star path skips applyProjection, so the guard lives here too.
+                throw new RuntimeException("SELECT with no columns");
             }
 
             // Apply DISTINCT if specified
@@ -1584,6 +1646,21 @@ public class QueryExecutor {
             for (final FrostlakeParser.SelectItemContext item : selectList.selectItem()) {
                 if (SelectItemAccessors.isStarItem(item)) {
                     throw new RuntimeException("SELECT * requires a FROM clause");
+                }
+                if (SelectItemAccessors.isSpreadExprItem(item)) {
+                    // SELECT ** <array>: one output column per element, labeled '<item text>[N]' (1-based).
+                    final FrostlakeParser.SpreadExprItemContext spread =
+                        (FrostlakeParser.SpreadExprItemContext) item;
+                    final List<Object> spreadValues = spreadElements(evaluator.evaluate(
+                        getOriginalText(spread.expression()), new Row(values)));
+                    final String itemText = getOriginalText(item);
+                    int elementIndex = 1;
+                    for (final Object element : spreadValues) {
+                        columns.add(new ResultSetColumn(itemText + "[" + elementIndex + "]", StringType.VARCHAR));
+                        values.add(element);
+                        elementIndex++;
+                    }
+                    continue;
                 }
 
                 String exprText = getOriginalText(SelectItemAccessors.getItemExpression(item)).trim();
@@ -1886,7 +1963,8 @@ public class QueryExecutor {
         if (stageDir == null) {
             throw new RuntimeException("PUT target stage has no local directory");
         }
-        final String localPath = stripFileScheme(extractStringLiteral(ctx.STRING_LITERAL()));
+        final String localPath = stripFileScheme(ctx.STRING_LITERAL() != null
+            ? extractStringLiteral(ctx.STRING_LITERAL()) : ctx.FILE_URL().getText());
         final List<ResultSetColumn> cols = Arrays.asList(
             new ResultSetColumn("source", StringType.VARCHAR),
             new ResultSetColumn("target", StringType.VARCHAR),
@@ -1910,9 +1988,15 @@ public class QueryExecutor {
     }
 
     /** GET @stage 'file://localdir' — copy staged files into a local directory. */
+    /** GET's local destination: a quoted string, or an unquoted file URL. */
+    private static String stripTargetUrl(final FrostlakeParser.GetStatementContext ctx) {
+        return ctx.STRING_LITERAL() != null
+            ? ParseTreeText.extractStringLiteral(ctx.STRING_LITERAL()) : ctx.FILE_URL().getText();
+    }
+
     public ResultSet executeGetFromContext(final FrostlakeParser.GetStatementContext ctx) {
         final Path stageDir = resolveCopyBaseDir(stageRefToLocation(ctx.stageRef()));
-        final String localDir = stripFileScheme(extractStringLiteral(ctx.STRING_LITERAL()));
+        final String localDir = stripFileScheme(stripTargetUrl(ctx));
         final List<ResultSetColumn> cols = Arrays.asList(
             new ResultSetColumn("file", StringType.VARCHAR),
             new ResultSetColumn("size", NumericType.INTEGER),
@@ -2051,9 +2135,27 @@ public class QueryExecutor {
             return "@~" + path;
         }
         if (ctx.PERCENT() != null) {
-            return "@%" + getIdentifier(ctx.identifier()) + path;
+            // @%table or @namespace.%table_name — with the TABLE token, every identifier is namespace;
+            // otherwise the LAST identifier is the table name and the rest the namespace.
+            final List<FrostlakeParser.IdentifierContext> ids = ctx.identifier();
+            final int namespaceCount = ctx.TABLE() != null ? ids.size() : ids.size() - 1;
+            final StringBuilder location = new StringBuilder("@");
+            for (int i = 0; i < namespaceCount; i++) {
+                location.append(getIdentifier(ids.get(i))).append('.');
+            }
+            location.append('%')
+                .append(ctx.TABLE() != null ? "TABLE" : getIdentifier(ids.get(ids.size() - 1)));
+            return location.append(path).toString();
         }
-        return "@" + getIdentifier(ctx.identifier()) + path;
+        // A stage name may be schema- or database-qualified: @stage, @schema.stage, @db.schema.stage.
+        final StringBuilder name = new StringBuilder();
+        for (final FrostlakeParser.IdentifierContext part : ctx.identifier()) {
+            if (name.length() > 0) {
+                name.append('.');
+            }
+            name.append(getIdentifier(part));
+        }
+        return "@" + name + path;
     }
 
     /** Local directory for an implicit internal stage: {@code <internalRoot>/<kind>/<name>[/subPath]}. */
@@ -2618,12 +2720,12 @@ public class QueryExecutor {
                                         final FrostlakeParser.LimitClauseContext limitClause) {
         long limit;
         long offset = 0;
+        // LIMIT NULL means no limit; the INTEGER_LITERAL list then holds only the OFFSET (if any).
+        final boolean unlimited = limitClause.NULL() != null;
         List<TerminalNode> intLiterals = limitClause.INTEGER_LITERAL();
-        if (intLiterals.size() == 2) {
-            limit = Long.parseLong(intLiterals.get(0).getText());
-            offset = Long.parseLong(intLiterals.get(1).getText());
-        } else {
-            limit = Long.parseLong(intLiterals.get(0).getText());
+        limit = unlimited ? Long.MAX_VALUE : Long.parseLong(intLiterals.get(0).getText());
+        if (intLiterals.size() > (unlimited ? 0 : 1)) {
+            offset = Long.parseLong(intLiterals.get(intLiterals.size() - 1).getText());
         }
 
         RowStream stream = new ListRowStream(rows);
@@ -2912,8 +3014,10 @@ public class QueryExecutor {
         // Expand USING (col1, col2, ...) into an equi-join on those columns.
         if (joinCtx.USING() != null) {
             final List<String> usingCols = new ArrayList<>();
-            for (final FrostlakeParser.IdentifierContext id : joinCtx.identifierList().identifier()) {
-                usingCols.add(id.getText().toUpperCase());
+            // A USING column may arrive qualified (USING (t2.c)); only the column part joins.
+            for (final FrostlakeParser.QualifiedNameContext qn : joinCtx.usingColumnList().qualifiedName()) {
+                final List<FrostlakeParser.IdentifierContext> parts = qn.identifier();
+                usingCols.add(SqlIdentifiers.canonical(parts.get(parts.size() - 1)));
             }
             return executeUsingJoin(leftRows, leftTable, rightRows, rightTable, joinType, usingCols);
         }
@@ -3137,6 +3241,21 @@ public class QueryExecutor {
                     projectionExpressions.add(qualifier + "." + col.getName());
                     columnAliases.add(null);
                 }
+            } else if (SelectItemAccessors.isSpreadExprItem(item)) {
+                // SELECT ** <array>: expand to one projection per element (the array must be constant —
+                // the element COUNT fixes the column list before any row is seen). Each projection is
+                // the 0-based element access; the label is '<item text>[N]' (1-based).
+                final FrostlakeParser.SpreadExprItemContext spread =
+                    (FrostlakeParser.SpreadExprItemContext) item;
+                final String innerText = getOriginalText(spread.expression());
+                final List<Object> spreadValues = spreadElements(new ExpressionEvaluator(
+                    new Table("DUMMY", new ArrayList<>(), false), functionRegistry, catalog, this)
+                    .evaluate(innerText, new Row(new ArrayList<>())));
+                final String itemText = getOriginalText(item);
+                for (int i = 0; i < spreadValues.size(); i++) {
+                    projectionExpressions.add("(" + innerText + ")[" + i + "]");
+                    columnAliases.add(itemText + "[" + (i + 1) + "]");
+                }
             } else {
                 // Regular expression select item
                 String exprText = getOriginalText(SelectItemAccessors.getItemExpression(item));
@@ -3149,6 +3268,11 @@ public class QueryExecutor {
                 }
                 columnAliases.add(alias);
             }
+        }
+
+        if (projectionExpressions.isEmpty()) {
+            // A star over a zero-column source (e.g. GENERATOR) — Snowflake's error shape.
+            throw new RuntimeException("SELECT with no columns");
         }
 
         // Apply masking policy substitution — wrap masked column expressions with policy body
@@ -3238,6 +3362,15 @@ public class QueryExecutor {
         for (final TableColumn col : columns) {
             final String name = col.getName();
             final String key = name.toUpperCase();
+            // Staged-file metadata columns resolve by name but never expand from * (Snowflake keeps
+            // them out of SELECT * over a stage). Only these two: STREAM metadata (METADATA$ACTION,
+            // METADATA$ISUPDATE, METADATA$ROW_ID) legitimately DOES appear in star expansion.
+            if (key.equals("METADATA$FILENAME") || key.equals("METADATA$FILE_ROW_NUMBER")) {
+                continue;
+            }
+            if (col.isHiddenFromStar()) {
+                continue;   // the right-side duplicate of a USING / NATURAL join column
+            }
             if (excluded.contains(key) || (ilike != null && !ilike.matcher(name).matches())) {
                 continue;
             }
@@ -3904,6 +4037,56 @@ public class QueryExecutor {
         return src != null && src.tableReference() != null && !src.tableReference().isEmpty();
     }
 
+    /** Execute a parenthesized join group — {@code ( a JOIN b ON ... )} — standalone: the inner chain
+     *  runs first and its tables/aliases are registered into the CALLER's scope (so an outer ON
+     *  condition can reference them); the returned {@link TableData} carries the combined rows and
+     *  merged metadata. The combined row layout is the inner tables in join order, matching the
+     *  per-table offsets the qualified-column resolver derives from {@code allTables}. */
+    private TableData executeJoinGroup(final FrostlakeParser.TableSourceContext src,
+                                       final Map<String, Table> aliasToTable, final List<Table> allTables,
+                                       final FrostlakeParser.SelectClauseContext ctx,
+                                       final Map<String, ResultSet> cteResults) {
+        final List<FrostlakeParser.TableReferenceContext> innerRefs = new ArrayList<>();
+        final List<FrostlakeParser.JoinClauseContext> innerJoins = new ArrayList<>();
+        for (final FrostlakeParser.TableReferenceContext inner : src.tableReference()) {
+            flattenParenthesizedJoin(inner, innerRefs, innerJoins);
+        }
+        for (final FrostlakeParser.JoinClauseContext join : src.joinClause()) {
+            innerJoins.add(join);
+            flattenParenthesizedJoin(join.tableReference(), innerRefs, innerJoins);
+        }
+
+        // The inner chain evaluates in its OWN scope: its combined rows contain only the group's
+        // tables, so the offset-based qualified-column resolution must not see the outer tables.
+        final Map<String, Table> groupAliases = new HashMap<>();
+        final List<Table> groupTables = new ArrayList<>();
+
+        final TableData firstData = executeTableReference(innerRefs.get(0), null, cteResults);
+        Table groupTable = distinctJoinTable(firstData.table, allTables);
+        List<Row> groupRows = firstData.rows;
+        groupAliases.put(firstData.alias != null ? firstData.alias : groupTable.getName(), groupTable);
+        groupTables.add(groupTable);
+
+        int refIndex = 1;
+        for (final FrostlakeParser.JoinClauseContext join : innerJoins) {
+            final TableData rightData = executeTableReference(innerRefs.get(refIndex), null, cteResults);
+            refIndex++;
+            final Table rightJoinTable = distinctJoinTable(rightData.table, groupTables);
+            groupAliases.put(rightData.alias != null ? rightData.alias : rightJoinTable.getName(), rightJoinTable);
+            groupTables.add(rightJoinTable);
+            groupRows = applyJoin(groupRows, groupTable, rightData.rows, rightJoinTable, join,
+                groupAliases, groupTables, ctx);
+            groupTable = mergeTableMetadata(groupTable, rightJoinTable,
+                usingJoinColumnNames(join, groupTable, rightJoinTable));
+        }
+
+        // Now expose the group's tables/aliases to the caller — the outer ON references them, and the
+        // outer combined-row layout is (left tables..., group tables in join order).
+        aliasToTable.putAll(groupAliases);
+        allTables.addAll(groupTables);
+        return new TableData(groupTable, groupRows, null);
+    }
+
     /** Expand a (possibly parenthesized-join) table reference into flat tableReference + joinClause lists: a
      *  parenthesized join contributes its inner references and joins (recursively, so grouped nesting like
      *  {@code ((a JOIN b) JOIN c)} flattens); an ordinary reference contributes itself. A join nested on the
@@ -3968,8 +4151,21 @@ public class QueryExecutor {
         if (rows.isEmpty()) {
             return rows;
         }
-        final String sizeText = (sample.INTEGER_LITERAL() != null ? sample.INTEGER_LITERAL() : sample.FLOAT_LITERAL()).getText();
-        final double sizeVal = Double.parseDouble(sizeText);
+        final double sizeVal;
+        if (sample.SESSION_VAR_REF() != null) {
+            // SAMPLE BERNOULLI ($s): the size comes from a session variable set with SET s = ...
+            final String varName = sample.SESSION_VAR_REF().getText().substring(1).toUpperCase();
+            final Object varValue = securityManager != null
+                ? securityManager.getSessionContext().getSessionParameter(varName)
+                : sessionVariables.get(varName);
+            if (varValue == null) {
+                throw new RuntimeException("Session variable not defined: $" + varName.toLowerCase());
+            }
+            sizeVal = Double.parseDouble(String.valueOf(varValue));
+        } else {
+            final String sizeText = (sample.INTEGER_LITERAL() != null ? sample.INTEGER_LITERAL() : sample.FLOAT_LITERAL()).getText();
+            sizeVal = Double.parseDouble(sizeText);
+        }
         final Random random = sample.sampleSeed() != null
             ? new Random(Long.parseLong(sample.sampleSeed().INTEGER_LITERAL().getText()))
             : new Random();
@@ -3990,6 +4186,10 @@ public class QueryExecutor {
         }
         return kept;
     }
+
+    /** The results of the current ->> flow chain's already-executed stages (in order), or null when
+     *  no chain is executing. A stage's $n table reference counts n statements BACK from itself. */
+    private List<ResultSet> flowChainResults;
 
     private TableData resolveTableReference(final FrostlakeParser.TableReferenceContext ctx, final Map<String, Object> lateralContext, final Map<String, ResultSet> cteResults) {
         FrostlakeParser.TableSourceContext source = ctx.tableSource();
@@ -4047,7 +4247,7 @@ public class QueryExecutor {
                 // All named: FLATTEN(INPUT => expr, OUTER => true, ...)
                 for (final FrostlakeParser.NamedArgumentContext argCtx : fal.namedArgumentList().namedArgument()) {
                     String argName = argCtx.identifier().getText().toUpperCase();
-                    String argValueExpr = getOriginalText(argCtx.expression());
+                    String argValueExpr = namedArgumentText(argCtx);
                     Object argValue = lateralContext != null && !lateralContext.isEmpty()
                         ? evaluateExpressionWithLateralContextSimple(argValueExpr, lateralContext)
                         : evaluateExpression(argValueExpr, null, (Table) null);
@@ -4062,7 +4262,7 @@ public class QueryExecutor {
                 namedArgs.put("INPUT", inputValue);
                 for (final FrostlakeParser.NamedArgumentContext argCtx : fal.namedArgument()) {
                     String argName = argCtx.identifier().getText().toUpperCase();
-                    String argValueExpr = getOriginalText(argCtx.expression());
+                    String argValueExpr = namedArgumentText(argCtx);
                     Object argValue = lateralContext != null && !lateralContext.isEmpty()
                         ? evaluateExpressionWithLateralContextSimple(argValueExpr, lateralContext)
                         : evaluateExpression(argValueExpr, null, (Table) null);
@@ -4106,8 +4306,53 @@ public class QueryExecutor {
             return new TableData(virtualTable, subqueryResult.getRows(), alias);
         }
 
+        // $n — a prior flow-chain stage's result (n statements back from the current stage).
+        if (source.POSITIONAL_PARAMETER() != null) {
+            final int back = Integer.parseInt(source.POSITIONAL_PARAMETER().getText().substring(1));
+            if (flowChainResults == null) {
+                throw new RuntimeException(
+                    "$" + back + " table references are only valid after ->> in a flow chain");
+            }
+            if (back < 1 || back > flowChainResults.size()) {
+                throw new RuntimeException("$" + back
+                    + " does not reference a previous statement in the flow chain");
+            }
+            final ResultSet stageResult = flowChainResults.get(flowChainResults.size() - back);
+            if (stageResult == null) {
+                throw new RuntimeException("$" + back
+                    + " references a flow-chain statement that produced no result set");
+            }
+            final Table stageTable = resultSetToTable(stageResult, alias != null ? alias : "$" + back);
+            return new TableData(stageTable, stageResult.getRows(), alias);
+        }
+
         // Handle VALUES clause
+        if (source.DIRECTORY() != null && source.stageRef() != null) {
+            // DIRECTORY(@stage): the directory table of file-level stage metadata.
+            return new StageQueryExecutor(this).directoryTable(source.stageRef(), alias);
+        }
+        if (source.stageRef() != null) {
+            // FROM @stage[/path] [(FILE_FORMAT => ..., PATTERN => ...)]: query the staged files.
+            return new StageQueryExecutor(this).queryStage(
+                stageRefToLocation(source.stageRef()), source.stageQueryParams(), alias);
+        }
         if (source.VALUES() != null && source.valueTupleList() != null) {
+            // (VALUES ... [AS] v (c1, c2)) — Snowflake allows the alias inside the parens; an outer
+            // alias (after the closing paren) wins when both are present.
+            if (alias == null && source.identifier() != null) {
+                alias = source.identifier().getText();
+            }
+            if (columnAliases == null && source.columnListOptional() != null) {
+                columnAliases = new ArrayList<>();
+                for (final FrostlakeParser.IdentifierContext idCtx
+                        : source.columnListOptional().identifierList().identifier()) {
+                    String colName = getIdentifier(idCtx);
+                    if (idCtx.QUOTED_IDENTIFIER() == null) {
+                        colName = colName.toUpperCase();
+                    }
+                    columnAliases.add(colName);
+                }
+            }
             List<Row> rows = new ArrayList<>();
             List<TableColumn> columns = new ArrayList<>();
 
@@ -4749,11 +4994,39 @@ public class QueryExecutor {
                 return qh.getStartTime().toInstant(ZoneOffset.UTC).toEpochMilli();
             }
             throw new RuntimeException("Query ID not found in history: " + queryId);
+        } else if (ctx.STREAM() != null) {
+            throw new RuntimeException(
+                "Time travel AT (STREAM => ...) is not supported; query the stream object directly");
         }
         throw new RuntimeException("Unknown time travel point type");
     }
 
     /** Execute CHANGES clause — returns inserted/updated/deleted rows between two snapshots. */
+    /** The elements of a SELECT-list spread (** <array>) value; the engine's ARRAY values are
+     *  canonical JSON text, so both the native-List and JSON-text forms are accepted. */
+    private List<Object> spreadElements(final Object value) {
+        if (value instanceof List) {
+            return new ArrayList<Object>((List<?>) value);
+        }
+        final JsonNode node = ArrayFunctionHelper.parseNode(value);
+        if (node != null && node.isArray()) {
+            final List<Object> elements = new ArrayList<>();
+            for (final JsonNode element : node) {
+                elements.add(ArrayFunctionHelper.fromNode(element));
+            }
+            return elements;
+        }
+        throw new RuntimeException("The spread operator (**) in the SELECT list requires an ARRAY value");
+    }
+
+    /** The evaluable source text of a named argument's value; a bare subquery value
+     *  ({@code INPUT => SELECT ...}) is parenthesized into the scalar-subquery expression form. */
+    private String namedArgumentText(final FrostlakeParser.NamedArgumentContext argCtx) {
+        return argCtx.expression() != null
+            ? getOriginalText(argCtx.expression())
+            : "(" + getOriginalText(argCtx.selectStatement()) + ")";
+    }
+
     private List<Row> executeChangesClause(final FrostlakeParser.ChangesClauseContext ctx,
                                             final StorageEngine.TableStorage storage,
                                             final Table table) {
@@ -4925,7 +5198,7 @@ public class QueryExecutor {
             TableFunction tableFunc = functionRegistry.getTableFunction(functionName);
             if (tableFunc == null) throw new RuntimeException("Unknown table function: " + rawName);
             Map<String, Object> namedArgs = new HashMap<>();
-            String posExpr = getOriginalText(mixCtx.expression());
+            String posExpr = getOriginalText(mixCtx.expression(0));   // table functions take one positional INPUT
             Object posVal = lateralContext != null && !lateralContext.isEmpty()
                 ? evaluateExpressionWithLateralContextSimple(posExpr, lateralContext)
                 : evaluateExpression(posExpr, null, (Table) null);
@@ -4959,7 +5232,7 @@ public class QueryExecutor {
             if (funcCtx.namedArgumentList() != null) {
                 for (final FrostlakeParser.NamedArgumentContext argCtx : funcCtx.namedArgumentList().namedArgument()) {
                     String argName = argCtx.identifier().getText().toUpperCase();
-                    String argValueExpr = getOriginalText(argCtx.expression());
+                    String argValueExpr = namedArgumentText(argCtx);
 
                     // If lateral context is provided, try to resolve column references from it
                     Object argValue;
@@ -5055,8 +5328,8 @@ public class QueryExecutor {
                     }
                 }
                 if (udtf.getUdfLanguage() == UdfLanguage.PYTHON) {
-                    return PythonTableFunctionExecutor
-                        .executePythonTableFunction(udtf, callArgs);
+                    return UdfRuntimes.require(UdfLanguage.PYTHON)
+                        .executeTableFunction(udtf, callArgs);
                 }
                 String sql = substituteSqlParams(udtf.getBody(), udtf.getParameters(), callArgs);
                 List<ResultSet> results = execute(sql);
@@ -5352,9 +5625,35 @@ public class QueryExecutor {
      * Merge metadata from two tables for join result
      */
     Table mergeTableMetadata(final Table left, final Table right) {
+        return mergeTableMetadata(left, right, Collections.emptySet());
+    }
+
+    /** Merge metadata for a join result; the right-side columns named in {@code mergedNames} (a USING /
+     *  NATURAL join's key columns, upper-cased) stay resolvable but are hidden from {@code SELECT *} —
+     *  Snowflake outputs one merged column, in the left table's position. */
+    Table mergeTableMetadata(final Table left, final Table right, final Set<String> mergedNames) {
         List<TableColumn> allColumns = new ArrayList<>(left.getColumns());
-        allColumns.addAll(right.getColumns());
+        for (final TableColumn col : right.getColumns()) {
+            allColumns.add(mergedNames.contains(col.getName().toUpperCase()) ? col.starHiddenCopy() : col);
+        }
         return new Table("joined", allColumns, false);
+    }
+
+    /** The upper-cased key column names of a USING / NATURAL join, or an empty set for ON / CROSS. */
+    private Set<String> usingJoinColumnNames(final FrostlakeParser.JoinClauseContext joinCtx,
+                                             final Table leftTable, final Table rightTable) {
+        if (joinCtx.NATURAL() != null) {
+            return new HashSet<>(commonColumnNames(leftTable, rightTable));
+        }
+        if (joinCtx.USING() == null) {
+            return Collections.emptySet();
+        }
+        final Set<String> names = new HashSet<>();
+        for (final FrostlakeParser.QualifiedNameContext qn : joinCtx.usingColumnList().qualifiedName()) {
+            final List<FrostlakeParser.IdentifierContext> parts = qn.identifier();
+            names.add(SqlIdentifiers.canonical(parts.get(parts.size() - 1)));
+        }
+        return names;
     }
 
     /**
@@ -5634,7 +5933,10 @@ public class QueryExecutor {
 
         // Try to parse as a numeric literal — only when it actually looks numeric, so column names
         // (which start with a letter/underscore) don't pay a thrown-and-caught exception per access.
-        if (!qualifiedName.isEmpty()) {
+        // Guarded like the string-literal branch above: a numeric PIVOT value (FOR sev IN (1, 2))
+        // names its output column "1", and reading it must win over the literal interpretation —
+        // otherwise ZEROIFNULL("1") silently returned 1 for every row.
+        if (!qualifiedName.isEmpty() && !namesAColumnOf(tables, qualifiedName)) {
             final char c0 = qualifiedName.charAt(0);
             if (c0 == '-' || c0 == '+' || c0 == '.' || (c0 >= '0' && c0 <= '9')) {
                 try {

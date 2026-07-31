@@ -106,7 +106,13 @@ public class CreateSecurityHandler implements CommandHandler {
                 : catalog.getDatabase(parts[0]).getSchema(parts[1]);
             String policyName = parts[parts.length - 1].toUpperCase();
             ddl.checkCreatePrivilege(Privilege.CREATE_MASKING_POLICY, ContainerType.SCHEMA, schema.getName());
-            if (orReplace) { try { schema.dropMaskingPolicy(policyName); } catch (final RuntimeException ignored) {} }
+            if (orReplace) {
+                if (catalog.isPolicyInUse(policyName, true)) {
+                    throw new RuntimeException("Policy " + policyName.toUpperCase()
+                        + " cannot be dropped/replaced as it is associated with one or more entities.");
+                }
+                try { schema.dropMaskingPolicy(policyName); } catch (final RuntimeException ignored) {}
+            }
             List<Parameter> params = new ArrayList<>();
             if (ctx.parameterList() != null) {
                 for (final FrostlakeParser.ParameterDefContext p : ctx.parameterList().parameterDef()) {

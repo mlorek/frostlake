@@ -100,6 +100,14 @@ public class CreateTableHandler implements CommandHandler {
 
             ddl.checkCreatePrivilege(Privilege.CREATE_TABLE, ContainerType.SCHEMA, schema.getName());
 
+            // CTAS evaluates its source BEFORE any OR REPLACE drop: Snowflake's replace is an atomic
+            // swap, so CREATE OR REPLACE TABLE t AS SELECT ... FROM t reads the OLD table — and a
+            // failing source SELECT must leave the existing table untouched.
+            ResultSet ctasSnapshot = null;
+            if (ctx.AS() != null && ctx.selectStatement() != null) {
+                ctasSnapshot = queryExecutor.executeCtasSourceSelect(ctx.selectStatement());
+            }
+
             // Handle OR REPLACE - drop table if it exists
             if (orReplace) {
                 try {
@@ -153,11 +161,12 @@ public class CreateTableHandler implements CommandHandler {
                 // Extract comment from either position (after table name or at end)
                 // If specified, override the cloned comment
                 String comment = null;
-                if (ctx.commentClause().size() > 0) {
-                    comment = ddl.extractComment(ctx.commentClause(0));
+                final List<FrostlakeParser.CommentClauseContext> comments = tailComments(ctx);
+                if (comments.size() > 0) {
+                    comment = ddl.extractComment(comments.get(0));
                 }
-                if (comment == null && ctx.commentClause().size() > 1) {
-                    comment = ddl.extractComment(ctx.commentClause(1));
+                if (comment == null && comments.size() > 1) {
+                    comment = ddl.extractComment(comments.get(1));
                 }
                 if (comment != null) {
                     table.setComment(comment);
@@ -168,6 +177,7 @@ public class CreateTableHandler implements CommandHandler {
                 table.setClusterKeys(sourceTable.getClusterKeys());
                 table.setOwner(catalog.currentRoleForOwner());
                 table.setHybrid(isHybrid);
+                attachRowAccessPolicy(ctx, table);
                 schema.addTable(table);
 
                 String fullyQualifiedName = databaseName.toUpperCase() + "." + schema.getName().toUpperCase() + "." + tableName.toUpperCase();
@@ -204,11 +214,12 @@ public class CreateTableHandler implements CommandHandler {
                 table = new Table(tableName, likeColumns, tableIsTemporary, tableIsTransient);
 
                 String comment = null;
-                if (ctx.commentClause().size() > 0) {
-                    comment = ddl.extractComment(ctx.commentClause(0));
+                final List<FrostlakeParser.CommentClauseContext> comments = tailComments(ctx);
+                if (comments.size() > 0) {
+                    comment = ddl.extractComment(comments.get(0));
                 }
-                if (comment == null && ctx.commentClause().size() > 1) {
-                    comment = ddl.extractComment(ctx.commentClause(1));
+                if (comment == null && comments.size() > 1) {
+                    comment = ddl.extractComment(comments.get(1));
                 }
                 if (comment != null) {
                     table.setComment(comment);
@@ -217,6 +228,7 @@ public class CreateTableHandler implements CommandHandler {
                 table.setClusterKeys(sourceTable.getClusterKeys());
                 table.setOwner(catalog.currentRoleForOwner());
                 table.setHybrid(isHybrid);
+                attachRowAccessPolicy(ctx, table);
                 schema.addTable(table);
 
                 String fullyQualifiedName = databaseName.toUpperCase() + "." + schema.getName().toUpperCase() + "." + tableName.toUpperCase();
@@ -224,9 +236,10 @@ public class CreateTableHandler implements CommandHandler {
 
                 logger.trace("Created table: {} LIKE {}", qualifiedName, sourceTableName);
             } else if (ctx.AS() != null && ctx.selectStatement() != null) {
-                // CREATE TABLE AS SELECT (CTAS). A stream read by the source is consumed once the table is
-                // created + populated (consumeCtasStreams below), like a consuming DML.
-                ResultSet resultSet = queryExecutor.executeCtasSourceSelect(ctx.selectStatement());
+                // CREATE TABLE AS SELECT (CTAS). The source was evaluated above, before any OR REPLACE
+                // drop. A stream read by the source is consumed once the table is created + populated
+                // (consumeCtasStreams below), like a consuming DML.
+                ResultSet resultSet = ctasSnapshot;
 
                 // Columns come from an explicit list before AS, in two forms:
                 //   • a fully typed column list — CREATE TABLE t (id NUMBER, name VARCHAR) AS SELECT … —
@@ -260,11 +273,12 @@ public class CreateTableHandler implements CommandHandler {
 
                 // Extract comment from either position
                 String comment = null;
-                if (ctx.commentClause().size() > 0) {
-                    comment = ddl.extractComment(ctx.commentClause(0));
+                final List<FrostlakeParser.CommentClauseContext> comments = tailComments(ctx);
+                if (comments.size() > 0) {
+                    comment = ddl.extractComment(comments.get(0));
                 }
-                if (comment == null && ctx.commentClause().size() > 1) {
-                    comment = ddl.extractComment(ctx.commentClause(1));
+                if (comment == null && comments.size() > 1) {
+                    comment = ddl.extractComment(comments.get(1));
                 }
                 if (comment != null) {
                     table.setComment(comment);
@@ -278,6 +292,7 @@ public class CreateTableHandler implements CommandHandler {
 
                 table.setOwner(catalog.currentRoleForOwner());
                 table.setHybrid(isHybrid);
+                attachRowAccessPolicy(ctx, table);
                 schema.addTable(table);
 
                 String fullyQualifiedName = databaseName.toUpperCase() + "." + schema.getName().toUpperCase() + "." + tableName.toUpperCase();
@@ -299,8 +314,12 @@ public class CreateTableHandler implements CommandHandler {
                 queryExecutor.consumeCtasStreams();
                 logger.trace("Created table from SELECT: {}", qualifiedName);
             } else {
-                List<TableColumn> columns = columnParser.parseColumnList(ctx.columnList());
-                List<ForeignKeyConstraint> foreignKeys = columnParser.parseForeignKeys(ctx.columnList());
+                // A body-less CREATE TABLE (only tail options like TAG / CLUSTER BY) makes an empty
+                // table — lenient acceptance; columns arrive later via ALTER TABLE ... ADD.
+                List<TableColumn> columns = ctx.columnList() != null
+                    ? columnParser.parseColumnList(ctx.columnList()) : new ArrayList<>();
+                List<ForeignKeyConstraint> foreignKeys = ctx.columnList() != null
+                    ? columnParser.parseForeignKeys(ctx.columnList()) : new ArrayList<>();
                 table = new Table(tableName, columns, isTemporary, isTransient);
 
                 // Add foreign key constraints (final metadata only, final not enforced)
@@ -311,11 +330,12 @@ public class CreateTableHandler implements CommandHandler {
                 // Extract comment from either position (after table name or at end)
                 // Prioritize the one right after table name if both are specified
                 String comment = null;
-                if (ctx.commentClause().size() > 0) {
-                    comment = ddl.extractComment(ctx.commentClause(0));
+                final List<FrostlakeParser.CommentClauseContext> comments = tailComments(ctx);
+                if (comments.size() > 0) {
+                    comment = ddl.extractComment(comments.get(0));
                 }
-                if (comment == null && ctx.commentClause().size() > 1) {
-                    comment = ddl.extractComment(ctx.commentClause(1));
+                if (comment == null && comments.size() > 1) {
+                    comment = ddl.extractComment(comments.get(1));
                 }
                 if (comment != null) {
                     table.setComment(comment);
@@ -329,6 +349,7 @@ public class CreateTableHandler implements CommandHandler {
 
                 table.setOwner(catalog.currentRoleForOwner());
                 table.setHybrid(isHybrid);
+                attachRowAccessPolicy(ctx, table);
                 schema.addTable(table);
 
                 String fullyQualifiedName = databaseName.toUpperCase() + "." + schema.getName().toUpperCase() + "." + tableName.toUpperCase();
@@ -384,9 +405,45 @@ public class CreateTableHandler implements CommandHandler {
         return declared;
     }
 
+    /** CREATE TABLE ... ROW ACCESS POLICY p ON (cols): attach it like the ALTER form does. */
+    private void attachRowAccessPolicy(final FrostlakeParser.CreateStatementContext ctx, final Table table) {
+        for (final FrostlakeParser.TableTailOptionContext tail : ctx.tableTailOption()) {
+            if (tail.rowAccessPolicyClause() == null) {
+                continue;
+            }
+            table.setRowAccessPolicyName(getText(tail.rowAccessPolicyClause().qualifiedName()).toUpperCase());
+            final List<String> policyCols = new ArrayList<>();
+            for (final FrostlakeParser.IdentifierContext id : tail.rowAccessPolicyClause().identifierList().identifier()) {
+                policyCols.add(getText(id));
+            }
+            table.setRowAccessPolicyColumns(policyCols);
+        }
+    }
+
+    /** The comment clauses of a CREATE TABLE, in order — they arrive inside the tableTailOption groups. */
+    private static List<FrostlakeParser.CommentClauseContext> tailComments(final FrostlakeParser.CreateStatementContext ctx) {
+        final List<FrostlakeParser.CommentClauseContext> comments = new ArrayList<>(ctx.commentClause());
+        for (final FrostlakeParser.TableTailOptionContext tail : ctx.tableTailOption()) {
+            if (tail.commentClause() != null) {
+                comments.add(tail.commentClause());
+            }
+        }
+        return comments;
+    }
+
+    private static List<FrostlakeParser.ClusterByClauseContext> tailClusterBy(final FrostlakeParser.CreateStatementContext ctx) {
+        final List<FrostlakeParser.ClusterByClauseContext> clauses = new ArrayList<>();
+        for (final FrostlakeParser.TableTailOptionContext tail : ctx.tableTailOption()) {
+            if (tail.clusterByClause() != null) {
+                clauses.add(tail.clusterByClause());
+            }
+        }
+        return clauses;
+    }
+
     private static List<String> extractClusterKeys(final FrostlakeParser.CreateStatementContext ctx) {
         List<String> clusterKeys = new ArrayList<>();
-        List<FrostlakeParser.ClusterByClauseContext> clauses = ctx.clusterByClause();
+        List<FrostlakeParser.ClusterByClauseContext> clauses = tailClusterBy(ctx);
         if (!clauses.isEmpty()) {
             for (final FrostlakeParser.ExpressionContext exprCtx : clauses.get(0).expressionList().expression()) {
                 clusterKeys.add(exprCtx.getText());

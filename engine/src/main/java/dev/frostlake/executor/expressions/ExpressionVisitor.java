@@ -45,4 +45,5 @@ public interface ExpressionVisitor<T> {
     T visitIsNull(final IsNullExpression expr);
     T visitTupleIn(final TupleInExpression expr);
     T visitWindowFunction(final WindowFunctionExpression expr);
+    T visitSpread(final SpreadExpression expr);
 }

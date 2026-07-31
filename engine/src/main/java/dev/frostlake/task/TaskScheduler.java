@@ -255,7 +255,7 @@ public class TaskScheduler {
                     int rowsAffected = taskExecutor.execute(task.getSqlStatement());
 
                     task.recordExecution(new TaskExecution(
-                        scheduledTime, startTime, LocalDateTime.now(), TaskExecutionState.SUCCESS, null, rowsAffected));
+                        scheduledTime, startTime, LocalDateTime.now(), TaskExecutionState.SUCCEEDED, null, rowsAffected));
 
                     // Calculate next run time (only for scheduled tasks)
                     if (task.getSchedule() != null) {

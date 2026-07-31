@@ -32,7 +32,9 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Loads a pre-compiled handler class from the JAR(s) named in a UDF/procedure's {@code IMPORTS} clause — the
@@ -55,12 +57,21 @@ import java.util.Set;
  * classpath (imports first, then siblings sorted by name). Handler JARs are usually thin — on Snowflake
  * their dependencies arrive via the {@code PACKAGES} transitive closure, which the engine cannot resolve
  * from Maven — so the stage directory doubles as the function's dependency set: drop the missing
- * dependency JARs beside the handler JAR and they link. The parent classloader is the engine's, so
- * handlers can reference engine/Snowpark classes. See docs/functions.md.
+ * dependency JARs beside the handler JAR and they link. Loading is child-first (see
+ * {@link ChildFirstUdfClassLoader}): the jar's own dependency versions win over the engine's classpath,
+ * while JDK/engine/Snowpark/SLF4J classes stay shared so handlers can reference them. See docs/functions.md.
  */
 public final class JarHandlerLoader {
 
     private static final Logger logger = LoggerFactory.getLogger(JarHandlerLoader.class);
+
+    /**
+     * Loaded handler classes keyed by class name + each jar's path/size/mtime. A UDF handler is
+     * invoked once per ROW, and building a fresh classloader per call re-scanned the jars and
+     * re-defined every class each time — the vendor ANTLR-parser UDFs spent more time class-loading
+     * than parsing. A replaced jar (new size/mtime) naturally misses the cache and reloads.
+     */
+    private static final Map<String, Class<?>> HANDLER_CACHE = new ConcurrentHashMap<>();
 
     /** Load {@code className} (trying the Scala {@code object} singleton {@code className$} first) from the IMPORTS jar(s). */
     public static Class<?> load(final List<String> imports, final String className,
@@ -102,6 +113,16 @@ public final class JarHandlerLoader {
                 }
             }
         }
+        final StringBuilder cacheKey = new StringBuilder(className);
+        for (final String localPath : localPaths) {
+            final File jar = new File(localPath);
+            cacheKey.append('|').append(localPath).append(':').append(jar.length()).append(':').append(jar.lastModified());
+        }
+        final Class<?> cached = HANDLER_CACHE.get(cacheKey.toString());
+        if (cached != null) {
+            return cached;
+        }
+
         final List<URL> urls = new ArrayList<>();
         for (final String localPath : localPaths) {
             try {
@@ -110,13 +131,17 @@ public final class JarHandlerLoader {
                 throw new RuntimeException("Invalid IMPORTS path: " + localPath, e);
             }
         }
-        final URLClassLoader loader = new URLClassLoader(
+        final URLClassLoader loader = new ChildFirstUdfClassLoader(
             urls.toArray(new URL[0]), Thread.currentThread().getContextClassLoader());
         try {
-            return loader.loadClass(className + "$");   // Scala object singleton, if present
+            final Class<?> scalaObject = loader.loadClass(className + "$");   // Scala object singleton, if present
+            HANDLER_CACHE.put(cacheKey.toString(), scalaObject);
+            return scalaObject;
         } catch (final ClassNotFoundException e) {
             try {
-                return loader.loadClass(className);      // plain Java/Scala class
+                final Class<?> plainClass = loader.loadClass(className);      // plain Java/Scala class
+                HANDLER_CACHE.put(cacheKey.toString(), plainClass);
+                return plainClass;
             } catch (final ClassNotFoundException e2) {
                 // Spell out how each entry resolved — a stage lookup that silently fell back to a
                 // relative local path is otherwise indistinguishable from a jar that lacks the class.

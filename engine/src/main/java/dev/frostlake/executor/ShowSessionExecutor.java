@@ -19,6 +19,8 @@ package dev.frostlake.executor;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.QueryHistory;
 import dev.frostlake.metastore.QueryHistoryTracker;
+import dev.frostlake.metastore.model.Database;
+import dev.frostlake.metastore.model.ForeignKeyConstraint;
 import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.TableColumn;
@@ -321,15 +323,19 @@ final class ShowSessionExecutor {
     }
 
     public ResultSet showPrimaryKeys(final String tableName) {
-        return showKeys(tableName, true);
+        return showKeysScoped(true, "TABLE", tableName);
     }
 
     public ResultSet showUniqueKeys(final String tableName) {
-        return showKeys(tableName, false);
+        return showKeysScoped(false, "TABLE", tableName);
     }
 
-    /** SHOW PRIMARY/UNIQUE KEYS: one row per key column of the target table, or of every table in the current schema. */
-    private ResultSet showKeys(final String tableName, final boolean primary) {
+    /**
+     * SHOW PRIMARY/UNIQUE KEYS with a scope: one row per key column of every table in the scope —
+     * TABLE name (or a bare qualified name), a SCHEMA, a DATABASE, or the whole ACCOUNT; a null
+     * scope name means the current one (a nameless TABLE scope lists the current schema's tables).
+     */
+    public ResultSet showKeysScoped(final boolean primary, final String scopeKind, final String scopeName) {
         final List<ResultSetColumn> cols = Arrays.asList(
             new ResultSetColumn("schema_name", StringType.VARCHAR),
             new ResultSetColumn("table_name", StringType.VARCHAR),
@@ -337,23 +343,90 @@ final class ShowSessionExecutor {
             new ResultSetColumn("key_sequence", NumericType.INTEGER),
             new ResultSetColumn("constraint_name", StringType.VARCHAR));
         final List<Row> rows = new ArrayList<>();
-        final Schema schema = resolveDescribeSchema();
-        final List<Table> tables = new ArrayList<>();
-        if (tableName != null) {
-            tables.add(catalog.resolveTable(tableName));
-        } else {
-            tables.addAll(schema.getTables());
-        }
-        for (final Table table : tables) {
-            int seq = 1;
-            for (final TableColumn col : table.getColumns()) {
-                if (primary ? col.isPrimaryKey() : col.isUnique()) {
-                    rows.add(new Row(Arrays.asList(schema.getName(), table.getName(), col.getName(),
-                        seq++, "SYS_CONSTRAINT_" + table.getName() + "_" + (primary ? "PK" : "UK"))));
+        for (final Schema schema : schemasInScope(scopeKind, scopeName)) {
+            for (final Table table : tablesInScope(schema, scopeKind, scopeName)) {
+                int seq = 1;
+                for (final TableColumn col : table.getColumns()) {
+                    if (primary ? col.isPrimaryKey() : col.isUnique()) {
+                        rows.add(new Row(Arrays.asList(schema.getName(), table.getName(), col.getName(),
+                            seq++, "SYS_CONSTRAINT_" + table.getName() + "_" + (primary ? "PK" : "UK"))));
+                    }
                 }
             }
         }
         return new ResultSet(cols, rows);
+    }
+
+    /** SHOW IMPORTED KEYS: one row per foreign-key column of every table in the scope (see showKeysScoped). */
+    public ResultSet showImportedKeys(final String scopeKind, final String scopeName) {
+        final List<ResultSetColumn> cols = Arrays.asList(
+            new ResultSetColumn("pk_schema_name", StringType.VARCHAR),
+            new ResultSetColumn("pk_table_name", StringType.VARCHAR),
+            new ResultSetColumn("pk_column_name", StringType.VARCHAR),
+            new ResultSetColumn("fk_schema_name", StringType.VARCHAR),
+            new ResultSetColumn("fk_table_name", StringType.VARCHAR),
+            new ResultSetColumn("fk_column_name", StringType.VARCHAR),
+            new ResultSetColumn("key_sequence", NumericType.INTEGER),
+            new ResultSetColumn("update_rule", StringType.VARCHAR),
+            new ResultSetColumn("delete_rule", StringType.VARCHAR),
+            new ResultSetColumn("fk_name", StringType.VARCHAR),
+            new ResultSetColumn("pk_name", StringType.VARCHAR));
+        final List<Row> rows = new ArrayList<>();
+        for (final Schema schema : schemasInScope(scopeKind, scopeName)) {
+            for (final Table table : tablesInScope(schema, scopeKind, scopeName)) {
+                for (final ForeignKeyConstraint fk : table.getForeignKeys()) {
+                    final List<String> fkColumns = fk.getColumnNames();
+                    final List<String> pkColumns = fk.getReferencedColumns();
+                    for (int i = 0; i < fkColumns.size(); i++) {
+                        rows.add(new Row(Arrays.asList(
+                            schema.getName(),
+                            fk.getReferencedTable(),
+                            i < pkColumns.size() ? pkColumns.get(i) : null,
+                            schema.getName(),
+                            table.getName(),
+                            fkColumns.get(i),
+                            i + 1,
+                            fk.getOnUpdate() != null ? fk.getOnUpdate() : "NO ACTION",
+                            fk.getOnDelete() != null ? fk.getOnDelete() : "NO ACTION",
+                            fk.getConstraintName(),
+                            "SYS_CONSTRAINT_" + fk.getReferencedTable() + "_PK")));
+                    }
+                }
+            }
+        }
+        return new ResultSet(cols, rows);
+    }
+
+    /** The schemas a keys listing spans: current schema, a named schema, a database's schemas, or all. */
+    private List<Schema> schemasInScope(final String scopeKind, final String scopeName) {
+        final List<Schema> schemas = new ArrayList<>();
+        if ("ACCOUNT".equals(scopeKind)) {
+            for (final Database db : catalog.getAllDatabases()) {
+                schemas.addAll(db.getAllSchemas());
+            }
+        } else if ("DATABASE".equals(scopeKind)) {
+            final Database db = scopeName != null
+                ? catalog.getDatabase(scopeName)
+                : catalog.getDatabase(catalog.getCurrentDatabase());
+            if (db != null) {
+                schemas.addAll(db.getAllSchemas());
+            }
+        } else if ("SCHEMA".equals(scopeKind) && scopeName != null) {
+            schemas.add(catalog.resolveSchema(scopeName));
+        } else {
+            schemas.add(resolveDescribeSchema());
+        }
+        return schemas;
+    }
+
+    /** The tables of one scope schema — the single named table for a TABLE scope, else all of them. */
+    private List<Table> tablesInScope(final Schema schema, final String scopeKind, final String scopeName) {
+        if ("TABLE".equals(scopeKind) && scopeName != null) {
+            final List<Table> one = new ArrayList<>();
+            one.add(catalog.resolveTable(scopeName));
+            return one;
+        }
+        return schema.getTables();
     }
 
     /** Current database.schema for describe lookups. */

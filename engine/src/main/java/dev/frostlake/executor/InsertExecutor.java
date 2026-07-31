@@ -65,11 +65,9 @@ final class InsertExecutor {
                 executor.getTransactionManager().beginTransaction();
             }
 
-            // Handle CTEs (WITH clause) if present
-            Map<String, ResultSet> cteResults = null;
-            if (ctx.withClause() != null) {
-                cteResults = executor.executeCTEs(ctx.withClause(), null);
-            }
+            // WITH-prefixed DML is not Snowflake syntax (live-verified); CTEs reach a DML statement
+            // only inside its subqueries.
+            final Map<String, ResultSet> cteResults = null;
 
             String tableName = ctx.objectName().KW_IDENTIFIER() != null
                 ? executor.resolveObjectName(ctx.objectName())
@@ -104,7 +102,10 @@ final class InsertExecutor {
                 for (final FrostlakeParser.ValueTupleContext tuple : ctx.valueTupleList().valueTuple()) {
                     List<Object> values = new ArrayList<>();
                     // Parse each value as an expression (supports literals, JSON objects, arrays, etc.)
+                    int valuePosition = 0;
                     for (final FrostlakeParser.ExpressionContext expr : tuple.valueList().expression()) {
+                        rejectStringLiteralIntoSemiStructured(table, columnNames, valuePosition, expr);
+                        valuePosition++;
                         String exprText = executor.getOriginalText(expr);
                         // Create dummy table/row for expression evaluation
                         Table dummyTable = new Table("DUMMY", new ArrayList<>(), false);
@@ -157,14 +158,49 @@ final class InsertExecutor {
     }
 
     /** Build a row in table-column order from positional or column-listed values (auto-increment + defaults applied). */
+    /** Snowflake rejects a VARCHAR string literal for a VARIANT/OBJECT/ARRAY column in a VALUES
+     *  clause (live-verified: "Expression type does not match column data type, expecting VARIANT
+     *  but got VARCHAR"); use INSERT ... SELECT with PARSE_JSON/TO_VARIANT instead. The check is on
+     *  the EXPRESSION (a string literal), because the engine's VARIANT values are JSON text and a
+     *  legitimate PARSE_JSON result is indistinguishable from a raw string by value. */
+    private void rejectStringLiteralIntoSemiStructured(final Table table, final List<String> columnNames,
+                                                       final int valuePosition,
+                                                       final FrostlakeParser.ExpressionContext expr) {
+        if (!(expr instanceof FrostlakeParser.LiteralExprContext)
+                || ((FrostlakeParser.LiteralExprContext) expr).literal().STRING_LITERAL() == null) {
+            return;
+        }
+        final TableColumn col;
+        if (columnNames != null) {
+            if (valuePosition >= columnNames.size() || !table.hasColumn(columnNames.get(valuePosition))) {
+                return;
+            }
+            col = table.getColumn(columnNames.get(valuePosition));
+        } else {
+            if (valuePosition >= table.getColumns().size()) {
+                return;
+            }
+            col = table.getColumns().get(valuePosition);
+        }
+        final String typeName = col.getDataType().getName();
+        if ("VARIANT".equals(typeName) || "OBJECT".equals(typeName) || "ARRAY".equals(typeName)) {
+            throw new RuntimeException("Expression type does not match column data type, expecting "
+                + typeName + " but got VARCHAR for column " + col.getName());
+        }
+    }
+
     Row buildInsertRow(final Table table, final String fullyQualifiedName,
                                final List<String> columnNames, final List<Object> values) {
-        // With an explicit column list, surface a value/column-count mismatch as a clean error rather than an
-        // IndexOutOfBounds (too few) or a silent drop (too many); Snowflake requires the counts to match.
-        // (The positional path stays lenient — it fills missing trailing columns with defaults.)
+        // Snowflake requires the value count to match exactly — both with an explicit column list
+        // and positionally (live-verified: "Insert value list does not match column list"); defaults
+        // apply only to columns omitted from an explicit list.
         if (columnNames != null && values.size() != columnNames.size()) {
             throw new RuntimeException("INSERT value count (" + values.size()
                 + ") does not match the number of target columns (" + columnNames.size() + ")");
+        }
+        if (columnNames == null && values.size() != table.getColumns().size()) {
+            throw new RuntimeException("Insert value list does not match column list expecting "
+                + table.getColumns().size() + " but got " + values.size());
         }
         final List<Object> rowValues = new ArrayList<>();
         if (columnNames != null) {
