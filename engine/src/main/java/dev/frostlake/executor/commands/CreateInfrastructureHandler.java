@@ -17,6 +17,7 @@
 package dev.frostlake.executor.commands;
 
 import dev.frostlake.executor.QueryExecutor;
+import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.metastore.*;
 import dev.frostlake.metastore.model.*;
 import dev.frostlake.parser.FrostlakeParser;
@@ -91,8 +92,6 @@ public class CreateInfrastructureHandler implements CommandHandler {
                 sqlText = ddl.getOriginalText(ctx.taskBody().callStatement());
             } else if (ctx.taskBody().executeImmediateStatement() != null) {
                 sqlText = ddl.getOriginalText(ctx.taskBody().executeImmediateStatement());
-            } else if (ctx.taskBody().bodyDefinition() != null) {
-                sqlText = ddl.extractBodyDefinition(ctx.taskBody().bodyDefinition());
             } else {
                 throw new RuntimeException("Task body is required");
             }
@@ -160,7 +159,8 @@ public class CreateInfrastructureHandler implements CommandHandler {
             // Snowflake: a task is scheduled OR a DAG child, never both.
             if (!predecessors.isEmpty() && schedule != null) {
                 throw new RuntimeException(
-                    "Cannot specify both SCHEDULE and AFTER for task " + taskName);
+                    "Task " + taskName.toUpperCase()
+                        + " cannot have both a schedule and a predecessor.");
             }
 
             Task task = new Task(taskName, schedule, scheduleType, sqlText, warehouse);
@@ -435,7 +435,7 @@ public class CreateInfrastructureHandler implements CommandHandler {
             if (ctx.if_exists() != null) {
                 return null;
             }
-            throw new RuntimeException("File format does not exist: " + name);
+            throw new RuntimeException(SqlCompilationError.doesNotExist("File format", name));
         }
         final FrostlakeParser.FileFormatActionContext action = ctx.fileFormatAction();
         if (action.RENAME() != null) {

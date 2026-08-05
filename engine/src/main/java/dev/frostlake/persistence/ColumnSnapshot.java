@@ -53,4 +53,9 @@ public class ColumnSnapshot implements Serializable {
     public String onDelete;
     public String onUpdate;
     public Boolean rely;  // null = unspecified, TRUE = RELY, FALSE = NORELY
+    // Names of the constraints this column carries as flags — its single-column UNIQUE constraint and the
+    // FOREIGN KEY an inline REFERENCES declares. Null on old snapshots (and whenever the column has no such
+    // constraint), in which case the name regenerates on first use as it always did.
+    public String uniqueConstraintName;
+    public String foreignKeyConstraintName;
 }

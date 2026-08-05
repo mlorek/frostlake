@@ -25,8 +25,10 @@ import dev.frostlake.parser.SyntaxErrorListener;
 import org.antlr.v4.runtime.CharStreams;
 import org.antlr.v4.runtime.CommonTokenStream;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /**
  * Parses expression strings through the real ANTLR grammar and verifies
@@ -191,10 +193,13 @@ public class ExpressionAstBuilderTest {
 
     @Test
     public void testInterval() {
-        assertEquals("(INTERVAL 5 DAY)", ast("INTERVAL 5 DAY"));
-        // String form: INTERVAL '<n> <unit>'.
+        // Snowflake forms only (live-verified): quoted string (plural units inside, multi-part,
+        // bare number = seconds) and quoted number + SINGULAR unit suffix. Unquoted amounts and
+        // plural suffixes are not interval syntax.
+        assertEquals("(INTERVAL 5 DAY)", ast("INTERVAL '5' DAY"));
         assertEquals("(INTERVAL 10 DAYS)", ast("INTERVAL '10 days'"));
         assertEquals("(INTERVAL 3 MONTHS)", ast("INTERVAL '3 months'"));
+        assertEquals("(INTERVAL 10 SECOND)", ast("INTERVAL '10'"));
     }
 
     @Test
@@ -233,11 +238,22 @@ public class ExpressionAstBuilderTest {
         assertEquals("SUM(x) OVER (ORDER BY y)", ast("SUM(x) OVER (ORDER BY y)"));
     }
 
-    // EXECUTE IMMEDIATE now builds an ExecuteImmediateExpression (evaluated as a scalar at run time).
+    // EXECUTE IMMEDIATE is a statement, not an expression — the expression grammar rejects it
+    // outright (it previously built an ExecuteImmediateExpression).
     @Test
-    public void testExecuteImmediate() {
-        assertEquals("EXECUTE IMMEDIATE 'select 1'", ast("EXECUTE IMMEDIATE 'select 1'"));
-        assertEquals("EXECUTE IMMEDIATE :s USING (1, 2)", ast("EXECUTE IMMEDIATE :s USING (1, 2)"));
+    public void testExecuteImmediateIsNotAnExpression() {
+        assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                ast("EXECUTE IMMEDIATE 'select 1'");
+            }
+        });
+        assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                ast("EXECUTE IMMEDIATE :s USING (1, 2)");
+            }
+        });
     }
 
     // Named function arguments (f(name => value)) now build a FunctionCallExpression that carries the

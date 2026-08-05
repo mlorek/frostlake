@@ -17,7 +17,7 @@
 package dev.frostlake.functions.aggregate;
 
 import dev.frostlake.functions.AggregateFunction;
-import dev.frostlake.types.VariantType;
+import dev.frostlake.types.ArrayType;
 
 import java.util.List;
 
@@ -28,7 +28,7 @@ import java.util.List;
  */
 public class ArrayUnionAgg extends AggregateFunction {
     public ArrayUnionAgg() {
-        super("ARRAY_UNION_AGG", VariantType.VARIANT);
+        super("ARRAY_UNION_AGG", ArrayType.ARRAY);
     }
 
     @Override

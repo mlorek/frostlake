@@ -98,8 +98,8 @@ public class BeginEndReturnTest {
         logger.info("Testing BEGIN...END block with RETURN using variable");
 
         ResultSet rs = engine.executeQuery("""
+            DECLARE x INTEGER DEFAULT 42;
             BEGIN
-                DECLARE x INTEGER DEFAULT 42;
                 RETURN x;
             END;
             """);
@@ -134,7 +134,9 @@ public class BeginEndReturnTest {
         logger.info("Testing BEGIN...END block without RETURN");
 
         // This should not return a result set
-        engine.execute("BEGIN DECLARE x INTEGER DEFAULT 1; END;");
+        // The declaration belongs in the DECLARE section that precedes BEGIN — Snowflake has no
+        // DECLARE-as-a-statement inside a block body.
+        engine.execute("DECLARE x INTEGER DEFAULT 1; BEGIN x := 2; END;");
 
         // Should complete without error
         logger.info("Block executed successfully without return value");
@@ -145,9 +147,9 @@ public class BeginEndReturnTest {
         logger.info("Testing BEGIN...END block with RETURN array built from cursor iteration");
 
         ResultSet rs = engine.executeQuery("""
+            DECLARE c1 CURSOR FOR SELECT 1 as c UNION SELECT 2 as c;
             BEGIN
                 LET a ARRAY := [];
-                DECLARE c1 CURSOR FOR SELECT 1 as c UNION SELECT 2 as c;
 
                 FOR rec IN c1 DO
                     a := array_append(a, rec.c);
@@ -173,9 +175,9 @@ public class BeginEndReturnTest {
         logger.info("Testing BEGIN...END block with RETURN object built from cursor iteration");
 
         ResultSet rs = engine.executeQuery("""
+            DECLARE c1 CURSOR FOR SELECT 1 as c;
             BEGIN
                 LET o OBJECT := {};
-                DECLARE c1 CURSOR FOR SELECT 1 as c;
 
                 FOR rec IN c1 DO
                     o := object_insert(o, 'k', rec.c);

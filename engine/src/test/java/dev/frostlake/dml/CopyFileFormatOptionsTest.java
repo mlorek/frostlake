@@ -94,7 +94,9 @@ public class CopyFileFormatOptionsTest {
         writeStageFile("t.csv", "1,\\N\n2,NULL\n3,real\n");
         engine.execute("CREATE TABLE t (id INTEGER, name VARCHAR)");
 
-        engine.execute("COPY INTO t FROM @data_stage FILE_FORMAT = (TYPE = 'CSV', NULL_IF = ('\\N', 'NULL'))");
+        // The two-character token \N must be written as the SQL literal '\\N' — a single '\N'
+        // decodes to plain N (the string decode drops an unrecognized backslash), as in Snowflake.
+        engine.execute("COPY INTO t FROM @data_stage FILE_FORMAT = (TYPE = 'CSV', NULL_IF = ('\\\\N', 'NULL'))");
 
         assertNull(value("SELECT name FROM t WHERE id = 1"));
         assertNull(value("SELECT name FROM t WHERE id = 2"));
@@ -128,7 +130,7 @@ public class CopyFileFormatOptionsTest {
     public void namedFileFormatCarriesTrimSpaceAndNullIf() throws IOException {
         writeStageFile("t.csv", "1,  \\N  \n2,  Bob  \n");
         engine.execute("CREATE TABLE t (id INTEGER, name VARCHAR)");
-        engine.execute("CREATE FILE FORMAT ff TYPE = 'CSV' TRIM_SPACE = TRUE NULL_IF = ('\\N')");
+        engine.execute("CREATE FILE FORMAT ff TYPE = 'CSV' TRIM_SPACE = TRUE NULL_IF = ('\\\\N')");
 
         engine.execute("COPY INTO t FROM @data_stage FILE_FORMAT = (FORMAT_NAME = 'ff')");
 

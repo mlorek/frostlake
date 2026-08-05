@@ -18,7 +18,6 @@ package dev.frostlake.functions.scalar.semistructured;
 
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
-import dev.frostlake.types.VariantType;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.node.ObjectNode;
 
@@ -26,37 +25,48 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * MAP_CAT(map1, map2) — the concatenation (merge) of two MAPs. frostlake models a MAP as an OBJECT, so the
- * result is the object holding every key of both inputs; on a key present in both, {@code map2}'s value wins.
- * A NULL input is treated as an empty map; if both are NULL (or non-objects) the result is NULL.
+ * MAP_CAT(map1, map2) — the concatenation (merge) of two MAPs. Frostlake models a MAP as an OBJECT, so
+ * the result is the object holding every key of both inputs; on a key present in both, {@code map2}'s
+ * value wins.
+ *
+ * <p>A NULL on EITHER side makes the whole result NULL — it is not treated as an empty map. Frostlake
+ * used to merge the other side through and answer it, which is the plausible reading and the wrong one:
+ * live, {@code MAP_CAT(<{'a':1}>, NULL::MAP(VARCHAR,INT))} is NULL, and so is the same call
+ * over two MAP COLUMNS where one row's second map is NULL — measured both ways round, and on columns as
+ * well as literals, because a single spelling could not tell a NULL-propagating function from a
+ * NULL-tolerant one.
  */
 public class MapCat extends BuiltInFunction {
-    public MapCat() { super("MAP_CAT", VariantType.VARIANT); }
+
+    public MapCat() {
+        super("MAP_CAT", MapFunctionHelper.MAP);
+    }
 
     @Override
     public Object evaluate(final List<Object> args) {
-        final JsonNode a = ArrayFunctionHelper.parseNode(args.get(0));
-        final JsonNode b = ArrayFunctionHelper.parseNode(args.get(1));
-        final boolean aObj = a != null && a.isObject();
-        final boolean bObj = b != null && b.isObject();
-        if (!aObj && !bObj) {
+        final JsonNode left = MapFunctionHelper.body(args.get(0));
+        final JsonNode right = MapFunctionHelper.body(args.get(1));
+        if (left == null || right == null) {
             return null;
         }
         final ObjectNode result = ArrayFunctionHelper.MAPPER.createObjectNode();
-        if (aObj) {
-            for (final Map.Entry<String, JsonNode> e : a.properties()) {
-                result.set(e.getKey(), e.getValue());
-            }
+        for (final Map.Entry<String, JsonNode> entry : left.properties()) {
+            result.set(entry.getKey(), entry.getValue());
         }
-        if (bObj) {
-            for (final Map.Entry<String, JsonNode> e : b.properties()) {
-                result.set(e.getKey(), e.getValue());   // map2 overrides map1 on a shared key
-            }
+        for (final Map.Entry<String, JsonNode> entry : right.properties()) {
+            result.set(entry.getKey(), entry.getValue());   // map2 overrides map1 on a shared key
         }
         // Snowflake serializes OBJECT members key-sorted; raw insertion order leaked map1-then-map2.
-        return ArrayFunctionHelper.toCanonicalJson(result);
+        return ArrayFunctionHelper.toCanonicalVariant(result);
     }
 
-    @Override public int getMinArgCount() { return 2; }
-    @Override public int getMaxArgCount() { return 2; }
+    @Override
+    public int getMinArgCount() {
+        return 2;
+    }
+
+    @Override
+    public int getMaxArgCount() {
+        return 2;
+    }
 }

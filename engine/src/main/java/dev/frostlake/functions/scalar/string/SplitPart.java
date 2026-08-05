@@ -16,13 +16,13 @@
 
 package dev.frostlake.functions.scalar.string;
 
-import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.functions.TextArgumentFunction;
 import dev.frostlake.types.StringType;
 
 import java.util.List;
 import java.util.regex.Pattern;
 
-public class SplitPart extends BuiltInFunction {
+public class SplitPart extends TextArgumentFunction {
     public SplitPart() { super("SPLIT_PART", StringType.VARCHAR); }
 
     @Override

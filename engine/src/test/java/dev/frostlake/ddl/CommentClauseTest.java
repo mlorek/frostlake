@@ -132,7 +132,8 @@ public class CommentClauseTest {
         engine.execute("CREATE DATABASE test_db");
         engine.execute("USE DATABASE test_db");
         engine.execute("CREATE TABLE users (id INTEGER, name VARCHAR)");
-        engine.execute("CREATE VIEW active_users AS SELECT * FROM users COMMENT = 'Active users view'");
+        // Live-verified: the COMMENT property goes BEFORE AS (after the query it is a syntax error).
+        engine.execute("CREATE VIEW active_users COMMENT = 'Active users view' AS SELECT * FROM users");
 
         View view = engine.getCatalog()
             .getDatabase("TEST_DB")
@@ -162,12 +163,13 @@ public class CommentClauseTest {
         engine.execute("CREATE DATABASE test_db");
         engine.execute("USE DATABASE test_db");
         engine.execute("CREATE WAREHOUSE test_wh");
+        // Live-verified: COMMENT goes BEFORE AS, and the body after AS is a bare statement (not a string).
         engine.execute("""
             CREATE TASK daily_task
             WAREHOUSE = 'test_wh'
             SCHEDULE = 'USING CRON 0 9 * * * UTC'
-            AS 'SELECT 1'
             COMMENT = 'Daily processing task'
+            AS SELECT 1
             """);
 
         Task task = engine.getCatalog()

@@ -69,14 +69,21 @@ public class GrantRevokeBreadthTest extends BaseDatabaseTest {
 
     @Test
     public void accountLevelAndRoleToUserGrants() {
-        engine.execute("GRANT CREATE DATABASE TO ROLE breadth_role");
+        // An account-level privilege must name its container. Live-verified:
+        // GRANT CREATE DATABASE TO ROLE r      -> "syntax error line 1 at position 22 unexpected 'TO'"
+        // GRANT CREATE DATABASE ON ACCOUNT TO ROLE r   -> succeeds
+        // REVOKE CREATE DATABASE FROM ROLE r   -> "syntax error line 1 at position 23 unexpected 'FROM'"
+        // REVOKE CREATE DATABASE ON ACCOUNT FROM ROLE r -> succeeds
+        engine.execute("GRANT CREATE DATABASE ON ACCOUNT TO ROLE breadth_role");
+        // GRANT ROLE r TO USER u succeeds live, and SHOW GRANTS TO USER u then lists it as a row with
+        // privilege USAGE, granted_on ROLE.
         engine.execute("GRANT ROLE breadth_role TO USER breadth_user");
         final ResultSet userGrants = engine.executeQuery("SHOW GRANTS TO USER breadth_user");
         assertNotNull(userGrants);
         assertTrue(userGrants.getRows().size() >= 1, "role grant must be listed for the user");
 
         engine.execute("REVOKE ROLE breadth_role FROM USER breadth_user");
-        engine.execute("REVOKE CREATE DATABASE FROM ROLE breadth_role");
+        engine.execute("REVOKE CREATE DATABASE ON ACCOUNT FROM ROLE breadth_role");
         logger.info("Account-level and role-to-user grant cycle verified");
     }
 

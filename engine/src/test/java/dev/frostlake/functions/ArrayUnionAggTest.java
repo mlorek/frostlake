@@ -30,18 +30,20 @@ import java.util.List;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
- * ARRAY_UNION_AGG(array) — aggregates ARRAY-valued rows into their duplicate-free union. Element order is
- * not guaranteed by Snowflake, so assertions compare the sorted set of numeric elements.
+ * ARRAY_UNION_AGG(array) — Snowflake's MULTISET union (live-verified): each element keeps the
+ * MAXIMUM multiplicity it has in any single input array ({@code [2,2,2] UNION [2,2]} is
+ * {@code [2,2,2]}, and a lone {@code [5,5]} keeps both fives). Element order is not guaranteed by
+ * Snowflake, so assertions compare sorted numeric elements.
  */
 public class ArrayUnionAggTest extends BaseDatabaseTest {
 
     @Override
     protected void setupTest() {
         engine.execute("CREATE TABLE arr_t (g INTEGER, a ARRAY)");
-        engine.execute("INSERT INTO arr_t VALUES (1, ARRAY_CONSTRUCT(1, 2, 3))");
-        engine.execute("INSERT INTO arr_t VALUES (1, ARRAY_CONSTRUCT(3, 4))");   // overlaps 3
+        engine.execute("INSERT INTO arr_t SELECT 1, ARRAY_CONSTRUCT(1, 2, 3)");
+        engine.execute("INSERT INTO arr_t SELECT 1, ARRAY_CONSTRUCT(3, 4)");   // overlaps 3
         engine.execute("INSERT INTO arr_t VALUES (1, NULL)");                    // contributes nothing
-        engine.execute("INSERT INTO arr_t VALUES (2, ARRAY_CONSTRUCT(5, 5))");   // dup within one array
+        engine.execute("INSERT INTO arr_t SELECT 2, ARRAY_CONSTRUCT(5, 5)");   // dup within one array
     }
 
     private List<Double> sortedElems(final Object arrayResult) {
@@ -61,8 +63,19 @@ public class ArrayUnionAggTest extends BaseDatabaseTest {
         assertEquals(2, rs.getRowCount());
         // g = 1: union of [1,2,3] and [3,4] with the NULL row ignored → {1,2,3,4}
         assertEquals(List.of(1.0, 2.0, 3.0, 4.0), sortedElems(rs.getRows().get(0).getValue(1)));
-        // g = 2: [5,5] collapses to {5}
-        assertEquals(List.of(5.0), sortedElems(rs.getRows().get(1).getValue(1)));
+        // g = 2: [5,5] keeps its multiplicity (live-verified multiset union)
+        assertEquals(List.of(5.0, 5.0), sortedElems(rs.getRows().get(1).getValue(1)));
+    }
+
+    @Test
+    public void multisetUnionKeepsMaxMultiplicity() {
+        engine.execute("CREATE TABLE arr_m (a ARRAY)");
+        engine.execute("INSERT INTO arr_m SELECT ARRAY_CONSTRUCT(2, 2, 2)");
+        engine.execute("INSERT INTO arr_m SELECT ARRAY_CONSTRUCT(2, 2)");
+        final Object result = engine.executeQuery(
+            "SELECT ARRAY_UNION_AGG(a) FROM arr_m").getRows().get(0).getValue(0);
+        assertEquals(List.of(2.0, 2.0, 2.0), sortedElems(result),
+            "the max multiplicity across input arrays wins (live-verified)");
     }
 
     @Test

@@ -23,7 +23,7 @@ import java.time.LocalTime;
 import java.util.List;
 
 public class TimeFromParts extends BuiltInFunction {
-    public TimeFromParts() { super("TIME_FROM_PARTS", DateTimeType.TIMESTAMP_NTZ); }
+    public TimeFromParts() { super("TIME_FROM_PARTS", DateTimeType.TIME); }
 
     @Override
     public Object evaluate(final List<Object> args) {

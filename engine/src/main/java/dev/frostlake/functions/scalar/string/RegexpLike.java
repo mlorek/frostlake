@@ -16,7 +16,7 @@
 
 package dev.frostlake.functions.scalar.string;
 
-import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.functions.TextArgumentFunction;
 import dev.frostlake.types.BooleanType;
 
 import java.util.List;
@@ -26,7 +26,7 @@ import java.util.List;
  * (implicitly anchored, as in Snowflake). The optional {@code parameters} string supplies i/m/s flags.
  * NULL subject or pattern yields NULL; an invalid pattern is an error.
  */
-public class RegexpLike extends BuiltInFunction {
+public class RegexpLike extends TextArgumentFunction {
     public RegexpLike() { super("REGEXP_LIKE", new BooleanType()); }
 
     @Override

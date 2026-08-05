@@ -18,6 +18,7 @@ package dev.frostlake.functions;
 
 import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.BuildInfo;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -37,6 +38,7 @@ public class CurrentVersionTest extends BaseDatabaseTest {
 
     @Test
     public void matchesBuildInfoVersion() {
+        Assumptions.assumeFalse(isLiveSnowflake(), "the version identity differs on live Snowflake");
         assertEquals(BuildInfo.version(), scalar("SELECT CURRENT_VERSION()"));
     }
 }

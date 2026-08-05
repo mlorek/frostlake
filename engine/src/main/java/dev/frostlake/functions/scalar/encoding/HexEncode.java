@@ -17,19 +17,26 @@
 package dev.frostlake.functions.scalar.encoding;
 
 import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.types.StringType;
 
-import java.nio.charset.StandardCharsets;
 import java.util.List;
 
+/**
+ * HEX_ENCODE(expr) — the uppercase hex encoding of the input's bytes.
+ *
+ * <p>A BINARY argument contributes its OWN bytes: {@code HEX_ENCODE(TO_BINARY('48454C','HEX'))} is
+ * {@code 48454C}. Encoding {@code toString()} instead would encode the hex RENDERING and yield
+ * {@code 343834353443} — valid-looking hex, entirely wrong.
+ */
 public class HexEncode extends BuiltInFunction {
     public HexEncode() { super("HEX_ENCODE", StringType.VARCHAR); }
 
     @Override
     public Object evaluate(final List<Object> args) {
         if (args.get(0) == null) return null;
-        byte[] bytes = args.get(0).toString().getBytes(StandardCharsets.UTF_8);
-        StringBuilder sb = new StringBuilder();
+        final byte[] bytes = SharedFunctionHelpers.toUtf8(args.get(0));
+        final StringBuilder sb = new StringBuilder(bytes.length * 2);
         for (final byte b : bytes) sb.append(String.format("%02X", b));
         return sb.toString();
     }

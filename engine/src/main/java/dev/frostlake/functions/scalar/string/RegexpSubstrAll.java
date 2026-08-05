@@ -16,8 +16,8 @@
 
 package dev.frostlake.functions.scalar.string;
 
-import dev.frostlake.functions.BuiltInFunction;
-import dev.frostlake.types.VariantType;
+import dev.frostlake.functions.TextArgumentFunction;
+import dev.frostlake.types.ArrayType;
 
 import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.node.ArrayNode;
@@ -33,11 +33,11 @@ import java.util.regex.Matcher;
  * whole match. No matches yields an empty array; any NULL argument yields NULL. REGEXP_EXTRACT_ALL is an
  * exact alias.
  */
-public class RegexpSubstrAll extends BuiltInFunction {
+public class RegexpSubstrAll extends TextArgumentFunction {
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
-    public RegexpSubstrAll() { super("REGEXP_SUBSTR_ALL", VariantType.VARIANT); }
+    public RegexpSubstrAll() { super("REGEXP_SUBSTR_ALL", ArrayType.ARRAY); }
 
     @Override
     public Object evaluate(final List<Object> args) {

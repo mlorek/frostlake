@@ -53,8 +53,10 @@ public class SimpleNestedBlockTest {
 
         engine.execute("""
             DECLARE x INTEGER;
-            SET x = 10;
-            INSERT INTO results VALUES (x);
+            BEGIN
+                x := 10;
+                INSERT INTO results VALUES (:x);
+            END;
             """);
 
         ResultSet rs = engine.executeQuery("SELECT * FROM results");
@@ -76,7 +78,9 @@ public class SimpleNestedBlockTest {
 
         engine.execute("""
             DECLARE x INTEGER DEFAULT 20;
-            INSERT INTO results VALUES (x);
+            BEGIN
+                INSERT INTO results VALUES (:x);
+            END;
             """);
 
         ResultSet rs = engine.executeQuery("SELECT * FROM results");

@@ -138,7 +138,9 @@ public class CurrentAccountTest {
 
     @Test
     public void testCurrentAccountWithComplexQuery() {
-        engine.execute("CREATE TABLE transactions (id INTEGER, account_id VARCHAR, amount DECIMAL)");
+        // DECIMAL(10,2), not bare DECIMAL: bare DECIMAL is NUMBER(38,0) and rounds fractional
+        // writes (live-verified), which would turn these amounts into whole numbers.
+        engine.execute("CREATE TABLE transactions (id INTEGER, account_id VARCHAR, amount DECIMAL(10,2))");
         engine.execute("INSERT INTO transactions VALUES (1, 'ABC12345', 100.50)");
         engine.execute("INSERT INTO transactions VALUES (2, 'ABC12345', 200.75)");
         engine.execute("INSERT INTO transactions VALUES (3, 'OTHER123', 150.00)");

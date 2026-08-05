@@ -93,79 +93,82 @@ public class DateTimeFunctionsExtTest {
 
     // ---- DATE_PART / EXTRACT ----
     @Test public void testDatePartYear() {
-        assertEquals(2024L, ql("SELECT DATE_PART('year', '2024-06-15')"));
+        assertEquals(2024L, ql("SELECT DATE_PART('year', '2024-06-15'::DATE)"));
     }
     @Test public void testDatePartMonth() {
-        assertEquals(6L, ql("SELECT DATE_PART('month', '2024-06-15')"));
+        assertEquals(6L, ql("SELECT DATE_PART('month', '2024-06-15'::DATE)"));
     }
     @Test public void testDatePartDay() {
-        assertEquals(15L, ql("SELECT DATE_PART('day', '2024-06-15')"));
+        assertEquals(15L, ql("SELECT DATE_PART('day', '2024-06-15'::DATE)"));
     }
     @Test public void testDatePartQuarter() {
-        assertEquals(2L, ql("SELECT DATE_PART('quarter', '2024-06-15')"));
+        assertEquals(2L, ql("SELECT DATE_PART('quarter', '2024-06-15'::DATE)"));
     }
     @Test public void testDatePartHour() {
-        assertEquals(10L, ql("SELECT DATE_PART('hour', '2024-06-15T10:30:45')"));
+        assertEquals(10L, ql("SELECT DATE_PART('hour', '2024-06-15T10:30:45'::TIMESTAMP)"));
     }
     @Test public void testDatePartMinute() {
-        assertEquals(30L, ql("SELECT DATE_PART('minute', '2024-06-15T10:30:45')"));
+        assertEquals(30L, ql("SELECT DATE_PART('minute', '2024-06-15T10:30:45'::TIMESTAMP)"));
     }
     @Test public void testDatePartSecond() {
-        assertEquals(45L, ql("SELECT DATE_PART('second', '2024-06-15T10:30:45')"));
+        assertEquals(45L, ql("SELECT DATE_PART('second', '2024-06-15T10:30:45'::TIMESTAMP)"));
     }
     @Test public void testExtract() {
-        assertEquals(2024L, ql("SELECT EXTRACT('year', '2024-06-15')"));
+        assertEquals(2024L, ql("SELECT EXTRACT('year', '2024-06-15'::DATE)"));
     }
 
     // ---- DATE_TRUNC ----
     @Test public void testDateTruncYear() {
-        assertTrue(q("SELECT DATE_TRUNC('year', '2024-06-15')").toString().startsWith("2024-01-01"));
+        assertTrue(q("SELECT DATE_TRUNC('year', '2024-06-15'::DATE)").toString().startsWith("2024-01-01"));
     }
     @Test public void testDateTruncMonth() {
-        assertTrue(q("SELECT DATE_TRUNC('month', '2024-06-15')").toString().startsWith("2024-06-01"));
+        assertTrue(q("SELECT DATE_TRUNC('month', '2024-06-15'::DATE)").toString().startsWith("2024-06-01"));
     }
     @Test public void testDateTruncDay() {
-        assertTrue(q("SELECT DATE_TRUNC('day', '2024-06-15T10:30:00')").toString().startsWith("2024-06-15T00:00"));
+        assertTrue(q("SELECT DATE_TRUNC('day', '2024-06-15T10:30:00'::TIMESTAMP)").toString().startsWith("2024-06-15T00:00"));
     }
     @Test public void testDateTruncHour() {
-        assertTrue(q("SELECT DATE_TRUNC('hour', '2024-06-15T10:30:45')").toString().contains("10:00"));
+        assertTrue(q("SELECT DATE_TRUNC('hour', '2024-06-15T10:30:45'::TIMESTAMP)").toString().contains("10:00"));
     }
     @Test public void testDateTruncQuarter() {
-        assertTrue(q("SELECT DATE_TRUNC('quarter', '2024-06-15')").toString().startsWith("2024-04-01"));
+        assertTrue(q("SELECT DATE_TRUNC('quarter', '2024-06-15'::DATE)").toString().startsWith("2024-04-01"));
     }
 
     // ---- LAST_DAY ----
     @Test public void testLastDayJanuary() {
-        assertEquals(LocalDate.of(2024, 1, 31), q("SELECT LAST_DAY('2024-01-15')"));
+        assertEquals(LocalDate.of(2024, 1, 31), q("SELECT LAST_DAY('2024-01-15'::DATE)"));
     }
     @Test public void testLastDayFebruaryLeap() {
-        assertEquals(LocalDate.of(2024, 2, 29), q("SELECT LAST_DAY('2024-02-01')"));
+        assertEquals(LocalDate.of(2024, 2, 29), q("SELECT LAST_DAY('2024-02-01'::DATE)"));
     }
     @Test public void testLastDayFebruaryNonLeap() {
-        assertEquals(LocalDate.of(2023, 2, 28), q("SELECT LAST_DAY('2023-02-01')"));
+        assertEquals(LocalDate.of(2023, 2, 28), q("SELECT LAST_DAY('2023-02-01'::DATE)"));
     }
 
     // ---- NEXT_DAY / PREVIOUS_DAY ----
     @Test public void testNextDay() {
         // 2024-01-01 is a Monday; next Tuesday
-        assertEquals(LocalDate.of(2024, 1, 2), q("SELECT NEXT_DAY('2024-01-01', 'Tuesday')"));
+        assertEquals(LocalDate.of(2024, 1, 2), q("SELECT NEXT_DAY('2024-01-01'::DATE, 'Tuesday')"));
     }
     @Test public void testPreviousDay() {
         // 2024-01-05 is a Friday; previous Monday
-        assertEquals(LocalDate.of(2024, 1, 1), q("SELECT PREVIOUS_DAY('2024-01-05', 'Monday')"));
+        assertEquals(LocalDate.of(2024, 1, 1), q("SELECT PREVIOUS_DAY('2024-01-05'::DATE, 'Monday')"));
     }
 
     // ---- ADD_MONTHS ----
+    // A VARCHAR input is implicitly cast to TIMESTAMP_NTZ (live-verified), so the result is a
+    // timestamp at midnight; only a DATE input yields a DATE (see AddMonthsTest).
     @Test public void testAddMonths() {
-        assertEquals(LocalDate.of(2024, 3, 15), q("SELECT ADD_MONTHS('2024-01-15', 2)"));
+        assertEquals(LocalDateTime.of(2024, 3, 15, 0, 0), q("SELECT ADD_MONTHS('2024-01-15', 2)"));
     }
     @Test public void testAddMonthsNegative() {
-        assertEquals(LocalDate.of(2023, 11, 15), q("SELECT ADD_MONTHS('2024-01-15', -2)"));
+        assertEquals(LocalDateTime.of(2023, 11, 15, 0, 0), q("SELECT ADD_MONTHS('2024-01-15', -2)"));
     }
 
     // ---- MONTHS_BETWEEN ----
+    // VARCHAR arguments (even literals) are rejected — MONTHS_BETWEEN needs temporal inputs.
     @Test public void testMonthsBetween() {
-        double v = ((Number) q("SELECT MONTHS_BETWEEN('2024-03-15', '2024-01-15')")).doubleValue();
+        double v = ((Number) q("SELECT MONTHS_BETWEEN('2024-03-15'::DATE, '2024-01-15'::DATE)")).doubleValue();
         assertEquals(2.0, v, 0.01);
     }
 
@@ -182,34 +185,34 @@ public class DateTimeFunctionsExtTest {
 
     // ---- Accessor functions ----
     @Test public void testYear() {
-        assertEquals(2024L, ql("SELECT YEAR('2024-06-15')"));
+        assertEquals(2024L, ql("SELECT YEAR('2024-06-15'::DATE)"));
     }
     @Test public void testMonth() {
-        assertEquals(6L, ql("SELECT MONTH('2024-06-15')"));
+        assertEquals(6L, ql("SELECT MONTH('2024-06-15'::DATE)"));
     }
     @Test public void testDay() {
-        assertEquals(15L, ql("SELECT DAY('2024-06-15')"));
+        assertEquals(15L, ql("SELECT DAY('2024-06-15'::DATE)"));
     }
     @Test public void testHour() {
-        assertEquals(10L, ql("SELECT HOUR('2024-06-15T10:30:45')"));
+        assertEquals(10L, ql("SELECT HOUR('2024-06-15T10:30:45'::TIMESTAMP)"));
     }
     @Test public void testMinute() {
-        assertEquals(30L, ql("SELECT MINUTE('2024-06-15T10:30:45')"));
+        assertEquals(30L, ql("SELECT MINUTE('2024-06-15T10:30:45'::TIMESTAMP)"));
     }
     @Test public void testSecond() {
-        assertEquals(45L, ql("SELECT SECOND('2024-06-15T10:30:45')"));
+        assertEquals(45L, ql("SELECT SECOND('2024-06-15T10:30:45'::TIMESTAMP)"));
     }
     @Test public void testQuarter() {
-        assertEquals(2L, ql("SELECT QUARTER('2024-06-15')"));
-        assertEquals(1L, ql("SELECT QUARTER('2024-01-01')"));
-        assertEquals(4L, ql("SELECT QUARTER('2024-12-31')"));
+        assertEquals(2L, ql("SELECT QUARTER('2024-06-15'::DATE)"));
+        assertEquals(1L, ql("SELECT QUARTER('2024-01-01'::DATE)"));
+        assertEquals(4L, ql("SELECT QUARTER('2024-12-31'::DATE)"));
     }
     @Test public void testWeekOfYear() {
-        assertEquals(1L, ql("SELECT WEEKOFYEAR('2024-01-01')"));
+        assertEquals(1L, ql("SELECT WEEKOFYEAR('2024-01-01'::DATE)"));
     }
     @Test public void testDayOfYear() {
-        assertEquals(1L, ql("SELECT DAYOFYEAR('2024-01-01')"));
-        assertEquals(366L, ql("SELECT DAYOFYEAR('2024-12-31')")); // 2024 is leap
+        assertEquals(1L, ql("SELECT DAYOFYEAR('2024-01-01'::DATE)"));
+        assertEquals(366L, ql("SELECT DAYOFYEAR('2024-12-31'::DATE)")); // 2024 is leap
     }
 
     // ---- CURRENT_TIME returns non-null ----

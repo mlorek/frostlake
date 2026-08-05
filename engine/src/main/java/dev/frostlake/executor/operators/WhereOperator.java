@@ -16,6 +16,8 @@
 
 package dev.frostlake.executor.operators;
 
+import dev.frostlake.executor.AmbiguousColumnException;
+import dev.frostlake.executor.InvalidQualifierException;
 import dev.frostlake.executor.ExpressionEvaluator;
 import dev.frostlake.executor.expressions.SqlTruth;
 import dev.frostlake.executor.expressions.Expression;
@@ -122,6 +124,7 @@ public class WhereOperator implements Operator {
         }
         // Parse the predicate once, then evaluate the AST per row.
         final Expression parsed = ExpressionEvaluator.parse(whereExpression);
+        evaluator.validatePredicate(parsed);
         List<Row> filtered = new ArrayList<>();
 
         for (final Row row : rows) {
@@ -139,9 +142,24 @@ public class WhereOperator implements Operator {
      * Alias-aware filtering for multi-table queries with JOINs.
      * Falls back to simple evaluation if alias resolution fails.
      */
+    /** One-shot predicate-type validation (Snowflake rejects VARCHAR/NUMBER-typed conditions). */
+    private void validatePredicateOnce(final Expression parsed, final OperatorContext context) {
+        final ExpressionEvaluator typeChecker = new ExpressionEvaluator(
+            context.getTable(),
+            context.getFunctionRegistry(),
+            getCatalog(context),
+            context.getQueryExecutor()
+        );
+        if (context.getAliasToTable() != null && !context.getAliasToTable().isEmpty()) {
+            typeChecker.setMultiTableContext(context.getAliasToTable(), context.getAllTables());
+        }
+        typeChecker.validatePredicate(parsed);
+    }
+
     private List<Row> filterWithAliases(final List<Row> rows, final OperatorContext context) {
         List<Row> filtered = new ArrayList<>();
         final Expression parsed = ExpressionEvaluator.parse(whereExpression);
+        validatePredicateOnce(parsed, context);
 
         for (final Row row : rows) {
             try {
@@ -150,6 +168,13 @@ public class WhereOperator implements Operator {
                 if (SqlTruth.isTrue(result)) {
                     filtered.add(row);
                 }
+            } catch (final AmbiguousColumnException ambiguous) {
+                // Definitive — live compiles this to "ambiguous column name": no lenient retry.
+                throw ambiguous;
+            } catch (final InvalidQualifierException invalidQualifier) {
+                // Also definitive — an alias REPLACES the table name; the keyless fallback below
+                // would quietly resolve what live rejects.
+                throw invalidQualifier;
             } catch (final Exception e) {
                 logger.warn("Failed to evaluate WHERE clause with aliases: {}, trying simple evaluation",
                     e.getMessage());
@@ -187,6 +212,7 @@ public class WhereOperator implements Operator {
 
         List<Row> filtered = new ArrayList<>();
         final Expression parsed = ExpressionEvaluator.parse(whereExpression);
+        validatePredicateOnce(parsed, context);
 
         for (final Row row : rows) {
             try {
@@ -196,6 +222,10 @@ public class WhereOperator implements Operator {
                 if (SqlTruth.isTrue(result)) {
                     filtered.add(row);
                 }
+            } catch (final AmbiguousColumnException ambiguous) {
+                throw ambiguous;
+            } catch (final InvalidQualifierException invalidQualifier) {
+                throw invalidQualifier;
             } catch (final Exception e) {
                 logger.warn("Failed to evaluate WHERE clause with lateral context: {}", e.getMessage());
             }

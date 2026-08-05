@@ -17,6 +17,7 @@
 package dev.frostlake.jdbc;
 
 import dev.frostlake.BaseJdbcTest;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 
 import java.nio.charset.StandardCharsets;
@@ -86,8 +87,11 @@ public class JdbcMarshalingTest extends BaseJdbcTest {
 
     @Test
     public void arrayColumnExposesJavaSqlArray() throws SQLException {
+        Assumptions.assumeFalse(isLiveSnowflake(),
+            "asserts the FROSTLAKE driver's own marshaling — Snowflake's JDBC driver reports an ARRAY "
+            + "column as Types.VARCHAR (12) and hands back its JSON text, not a java.sql.Array");
         statement.execute("CREATE TABLE arr (a ARRAY)");
-        statement.execute("INSERT INTO arr VALUES (ARRAY_CONSTRUCT(1, 2, 3))");
+        statement.execute("INSERT INTO arr SELECT ARRAY_CONSTRUCT(1, 2, 3)");
         try (ResultSet rs = statement.executeQuery("SELECT a FROM arr")) {
             assertTrue(rs.next());
             assertEquals(Types.ARRAY, rs.getMetaData().getColumnType(1));

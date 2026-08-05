@@ -16,12 +16,12 @@
 
 package dev.frostlake.functions.scalar.math;
 
-import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.functions.NumericArgumentFunction;
 import dev.frostlake.types.NumericType;
 
 import java.util.List;
 
-public class Bitxor extends BuiltInFunction {
+public class Bitxor extends NumericArgumentFunction {
     public Bitxor() { super("BITXOR", NumericType.INTEGER); }
 
     @Override

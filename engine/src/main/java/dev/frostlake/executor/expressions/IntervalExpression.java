@@ -22,10 +22,17 @@ package dev.frostlake.executor.expressions;
 public class IntervalExpression implements Expression {
     private final Expression valueExpression;
     private final IntervalUnit unit;
+    // Further parts of a multi-part interval literal ('1 day, 2 hours'), applied in order after this one.
+    private final IntervalExpression rest;
 
     public IntervalExpression(final Expression valueExpression, final IntervalUnit unit) {
+        this(valueExpression, unit, null);
+    }
+
+    public IntervalExpression(final Expression valueExpression, final IntervalUnit unit, final IntervalExpression rest) {
         this.valueExpression = valueExpression;
         this.unit = unit;
+        this.rest = rest;
     }
 
     public Expression getValueExpression() {
@@ -36,6 +43,10 @@ public class IntervalExpression implements Expression {
         return unit;
     }
 
+    public IntervalExpression getRest() {
+        return rest;
+    }
+
     @Override
     public <T> T accept(final ExpressionVisitor<T> visitor) {
         return visitor.visitInterval(this);
@@ -43,6 +54,6 @@ public class IntervalExpression implements Expression {
 
     @Override
     public String toString() {
-        return "INTERVAL " + valueExpression + " " + unit;
+        return "INTERVAL " + valueExpression + " " + unit + (rest == null ? "" : ", " + rest);
     }
 }

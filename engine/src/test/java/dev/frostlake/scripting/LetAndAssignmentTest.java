@@ -57,7 +57,7 @@ public class LetAndAssignmentTest {
         engine.execute("""
             LET x INTEGER := 42;
             BEGIN
-                INSERT INTO results VALUES (x);
+                INSERT INTO results VALUES (:x);
             END;
             """);
 
@@ -74,8 +74,10 @@ public class LetAndAssignmentTest {
 
         engine.execute("""
             DECLARE x INTEGER := 10;
-            x := 20;
-            INSERT INTO results VALUES (x);
+            BEGIN
+                x := 20;
+                INSERT INTO results VALUES (:x);
+            END;
             """);
 
         ResultSet rs = engine.executeQuery("SELECT * FROM results");
@@ -91,8 +93,10 @@ public class LetAndAssignmentTest {
 
         engine.execute("""
             DECLARE x INTEGER := 10;
-            SET x := 30;
-            INSERT INTO results VALUES (x);
+            BEGIN
+                SET x := 30;
+                INSERT INTO results VALUES (:x);
+            END;
             """);
 
         ResultSet rs = engine.executeQuery("SELECT * FROM results");
@@ -113,7 +117,7 @@ public class LetAndAssignmentTest {
                 BEGIN
                     LET k INTEGER := 3;
                     i := i + j + k;
-                    INSERT INTO results VALUES (i);
+                    INSERT INTO results VALUES (:i);
                 END;
             END;
             """);
@@ -130,11 +134,14 @@ public class LetAndAssignmentTest {
         engine.execute("CREATE TABLE results (id INTEGER, value INTEGER)");
 
         engine.execute("""
-            DECLARE x INTEGER := 5;
-            DECLARE y INTEGER := 10;
-            x := x + 1;
-            y := y * 2;
-            INSERT INTO results VALUES (x, y);
+            DECLARE
+                x INTEGER := 5;
+                y INTEGER := 10;
+            BEGIN
+                x := x + 1;
+                y := y * 2;
+                INSERT INTO results VALUES (:x, :y);
+            END;
             """);
 
         ResultSet rs = engine.executeQuery("SELECT * FROM results");
@@ -152,11 +159,11 @@ public class LetAndAssignmentTest {
         engine.execute("""
             DECLARE x INTEGER := 1;
             BEGIN
-                INSERT INTO results VALUES (x);
+                INSERT INTO results VALUES (:x);
             END;
             LET x INTEGER := 100;
             BEGIN
-                INSERT INTO results VALUES (x);
+                INSERT INTO results VALUES (:x);
             END;
             """);
 
@@ -181,7 +188,7 @@ public class LetAndAssignmentTest {
                     a := a + b;
                     b := b + c;
                     c := a + b + c;
-                    INSERT INTO results VALUES (c);
+                    INSERT INTO results VALUES (:c);
                 END;
             END;
             """);
@@ -202,12 +209,13 @@ public class LetAndAssignmentTest {
         engine.execute("CREATE TABLE results (value INTEGER)");
 
         engine.execute("""
-            DECLARE x INTEGER := 10;
-            DECLARE y INTEGER := 5;
+            DECLARE
+                x INTEGER := 10;
+                y INTEGER := 5;
             BEGIN
                 LET result INTEGER := 0;
                 result := (x + y) * 2 - 10;
-                INSERT INTO results VALUES (result);
+                INSERT INTO results VALUES (:result);
             END;
             """);
 

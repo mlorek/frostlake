@@ -19,14 +19,21 @@ package dev.frostlake.scripting;
 import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * CALL of a stored procedure nested inside procedural control flow (IF / WHILE / FOR bodies).
  * Previously such a CALL was a silent no-op; it now executes the procedure — with arguments
  * evaluated in the enclosing procedural scope — via the same multi-language CALL dispatch used at
  * top level. A bare CALL statement discards the callee's return value.
+ *
+ * <p>A scripting name reaches the CALL, and the callee's own DML, only through the {@code :name} bind
+ * form: Snowflake dispatches CALL as SQL, so a bare name there is an identifier
+ * ({@code invalid identifier 'V'}, live-verified).
  */
 public class NestedCallStatementTest extends BaseDatabaseTest {
 
@@ -35,7 +42,7 @@ public class NestedCallStatementTest extends BaseDatabaseTest {
         engine.execute("CREATE TABLE call_log (v VARCHAR)");
         engine.execute(
             "CREATE OR REPLACE PROCEDURE log_it(v VARCHAR) RETURNS VARCHAR LANGUAGE SQL "
-            + "AS $$ BEGIN INSERT INTO call_log VALUES (v); RETURN 'logged'; END $$");
+            + "AS $$ BEGIN INSERT INTO call_log VALUES (:v); RETURN 'logged'; END $$");
     }
 
     private long logCount() {
@@ -65,7 +72,7 @@ public class NestedCallStatementTest extends BaseDatabaseTest {
     public void callInsideForLoopRunsPerIterationWithCounter() {
         createLogger();
         engine.executeQuery(
-            "BEGIN FOR i IN 1 TO 3 DO CALL log_it(i); END FOR; RETURN 'done'; END");
+            "BEGIN FOR i IN 1 TO 3 DO CALL log_it(:i); END FOR; RETURN 'done'; END");
         assertEquals(3L, logCount());
         final ResultSet rs = engine.executeQuery("SELECT v FROM call_log ORDER BY v");
         assertEquals("1", rs.getRows().get(0).getValue(0));
@@ -102,5 +109,47 @@ public class NestedCallStatementTest extends BaseDatabaseTest {
         assertEquals(1, rs.getRowCount());
         assertEquals("caller", rs.getRows().get(0).getValue(0));
         assertEquals(1L, logCount());
+    }
+
+    // A CALL argument is a SQL expression: a scripting name must be bound with :name, and a bare one
+    // is an identifier — live: `LET v VARCHAR := 'x'; CALL log_it(v);` fails with invalid identifier 'V'.
+    @Test
+    public void bareScriptingNameAsCallArgumentIsRejected() {
+        createLogger();
+        final RuntimeException nested = assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.executeQuery(
+                    "BEGIN LET v VARCHAR := 'x'; IF (1 = 1) THEN CALL log_it(v); END IF; RETURN 'done'; END");
+            }
+        });
+        assertTrue(String.valueOf(nested.getMessage()).contains("invalid identifier 'V'"),
+            "expected Snowflake's identifier error, got: " + nested.getMessage());
+        assertEquals(0L, logCount());
+
+        final RuntimeException topLevel = assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.executeQuery("CALL log_it(some_name)");
+            }
+        });
+        assertTrue(String.valueOf(topLevel.getMessage()).contains("invalid identifier 'SOME_NAME'"),
+            "expected Snowflake's identifier error, got: " + topLevel.getMessage());
+    }
+
+    // The same rule inside the callee: its parameter is visible to the body's DML only as :v.
+    @Test
+    public void bareParameterInProcedureBodyIsRejected() {
+        engine.execute("CREATE TABLE call_log (v VARCHAR)");
+        engine.execute(
+            "CREATE OR REPLACE PROCEDURE log_bare(v VARCHAR) RETURNS VARCHAR LANGUAGE SQL "
+            + "AS $$ BEGIN INSERT INTO call_log VALUES (v); RETURN 'logged'; END $$");
+        assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.executeQuery("CALL log_bare('x')");
+            }
+        });
+        assertEquals(0L, logCount());
     }
 }

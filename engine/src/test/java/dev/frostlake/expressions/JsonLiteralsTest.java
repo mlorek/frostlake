@@ -50,8 +50,11 @@ public class JsonLiteralsTest extends BaseJdbcTest {
         // over it silently returned NULL — an ingest row whose file path contained a newline vanished
         // from a loader's output entirely.
         ResultSet rs = statement.executeQuery(
-            "SELECT {'a': 'x\ny'}:a AS v, {'q': 'he said \"hi\"'}:q AS w, {'deep': {'p': 'l1\nl2'}}:deep:p AS d");
+            "SELECT {'a': 'x\ny'}:a::VARCHAR AS v, {'q': 'he said \"hi\"'}:q::VARCHAR AS w,"
+            + " {'deep': {'p': 'l1\nl2'}}:deep:p::VARCHAR AS d");
         assertTrue(rs.next());
+        // Engine leniency: the string path result arrives unwrapped (live Snowflake shows the
+        // QUOTED variant text "x\ny" — recorded as an open display-fidelity lead).
         assertEquals("x\ny", rs.getString("v"));
         assertEquals("he said \"hi\"", rs.getString("w"));
         assertEquals("l1\nl2", rs.getString("d"));
@@ -60,7 +63,7 @@ public class JsonLiteralsTest extends BaseJdbcTest {
 
     @Test
     public void arrayLiteralElementsAreJsonEscapedToo() throws SQLException {
-        ResultSet rs = statement.executeQuery("SELECT ['a\nb', 'c']::VARIANT AS arr, ['a\nb'][0] AS el");
+        ResultSet rs = statement.executeQuery("SELECT ['a\nb', 'c']::VARIANT AS arr, ['a\nb'][0]::VARCHAR AS el");
         assertTrue(rs.next());
         assertEquals("a\nb", rs.getString("el"));
         rs.close();
@@ -83,8 +86,15 @@ public class JsonLiteralsTest extends BaseJdbcTest {
         // Create table with VARIANT column
         statement.execute("CREATE TABLE users (id INTEGER, profile VARIANT)");
 
-        // Insert JSON object
-        statement.execute("INSERT INTO users VALUES (1, {'name': 'Alice', 'email': 'alice@example.com'})");
+        // A semi-structured literal in a VALUES clause is rejected (live-verified Snowflake rule);
+        // INSERT ... SELECT is the supported route.
+        try {
+            statement.execute("INSERT INTO users VALUES (1, {'name': 'Alice', 'email': 'alice@example.com'})");
+            fail("expected rejection of a JSON literal in VALUES");
+        } catch (final SQLException rejected) {
+            assertTrue(rejected.getMessage().contains("in VALUES clause"), rejected.getMessage());
+        }
+        statement.execute("INSERT INTO users SELECT 1, {'name': 'Alice', 'email': 'alice@example.com'}");
 
         // Verify
         ResultSet rs = statement.executeQuery("SELECT * FROM users");
@@ -101,8 +111,14 @@ public class JsonLiteralsTest extends BaseJdbcTest {
         // Create table with VARIANT column
         statement.execute("CREATE TABLE tags_table (id INTEGER, tag_list VARIANT)");
 
-        // Insert JSON array
-        statement.execute("INSERT INTO tags_table VALUES (1, ['java', 'sql', 'database'])");
+        // Same VALUES-clause rejection applies to array literals; load via SELECT.
+        try {
+            statement.execute("INSERT INTO tags_table VALUES (1, ['java', 'sql', 'database'])");
+            fail("expected rejection of an array literal in VALUES");
+        } catch (final SQLException rejected) {
+            assertTrue(rejected.getMessage().contains("in VALUES clause"), rejected.getMessage());
+        }
+        statement.execute("INSERT INTO tags_table SELECT 1, ['java', 'sql', 'database']");
 
         // Verify
         ResultSet rs = statement.executeQuery("SELECT * FROM tags_table");
@@ -197,7 +213,7 @@ public class JsonLiteralsTest extends BaseJdbcTest {
     @Test
     public void testJsonArrayWithColumnReferences() throws SQLException {
         // Create table
-        statement.execute("CREATE TABLE products (id INTEGER, price DECIMAL)");
+        statement.execute("CREATE TABLE products (id INTEGER, price DECIMAL(10,2))");
         statement.execute("INSERT INTO products VALUES (1, 10.99)");
         statement.execute("INSERT INTO products VALUES (2, 20.50)");
         statement.execute("INSERT INTO products VALUES (3, 15.75)");

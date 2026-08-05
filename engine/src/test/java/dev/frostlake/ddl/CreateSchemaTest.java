@@ -18,6 +18,7 @@ package dev.frostlake.ddl;
 
 import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -52,6 +53,10 @@ public class CreateSchemaTest extends BaseDatabaseTest {
 
         // Switch to new schema to verify table exists
         engine.execute("USE SCHEMA other_schema");
+        Assumptions.assumeFalse(isLiveSnowflake(),
+            "counts through engine.showTables(), an engine accessor that under SF_LIVE still reads the "
+            + "embedded catalog — only execute()/executeQuery() are rerouted, so the CREATE TABLE went "
+            + "to Snowflake and the embedded schema is empty");
         ResultSet tables = engine.showTables();
         assertEquals(1, tables.getRowCount(), "Should have one table in new schema");
     }

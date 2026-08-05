@@ -16,8 +16,8 @@
 
 package dev.frostlake.functions.scalar.string;
 
-import dev.frostlake.functions.BuiltInFunction;
-import dev.frostlake.types.VariantType;
+import dev.frostlake.functions.TextArgumentFunction;
+import dev.frostlake.types.ArrayType;
 
 import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.node.ArrayNode;
@@ -31,11 +31,11 @@ import java.util.regex.Pattern;
  * non-empty tokens. Consecutive delimiters produce no empty elements. When tokenization yields nothing the
  * result is an empty array; a NULL string or NULL delimiter argument yields NULL.
  */
-public class StrtokToArray extends BuiltInFunction {
+public class StrtokToArray extends TextArgumentFunction {
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
-    public StrtokToArray() { super("STRTOK_TO_ARRAY", VariantType.VARIANT); }
+    public StrtokToArray() { super("STRTOK_TO_ARRAY", ArrayType.ARRAY); }
 
     @Override
     public Object evaluate(final List<Object> args) {

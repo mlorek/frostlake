@@ -18,7 +18,7 @@ package dev.frostlake.functions.scalar.semistructured;
 
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
-import dev.frostlake.types.VariantType;
+import dev.frostlake.types.ObjectType;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.node.ObjectNode;
 
@@ -30,7 +30,7 @@ import java.util.Set;
 
 /** OBJECT_DELETE(object, key1 [, key2, ...]) — removes one or more keys from an object. */
 public class ObjectDelete extends BuiltInFunction {
-    public ObjectDelete() { super("OBJECT_DELETE", VariantType.VARIANT); }
+    public ObjectDelete() { super("OBJECT_DELETE", ObjectType.OBJECT); }
 
     @Override
     public Object evaluate(final List<Object> args) {
@@ -45,7 +45,7 @@ public class ObjectDelete extends BuiltInFunction {
         for(final Map.Entry<String, JsonNode> e:  fields) {
             if (!toRemove.contains(e.getKey())) result.set(e.getKey(), e.getValue());
         }
-        return ArrayFunctionHelper.toCanonicalJson(result);
+        return ArrayFunctionHelper.toCanonicalVariant(result);
     }
 
     @Override public int getMinArgCount() { return 2; }

@@ -17,6 +17,7 @@
 package dev.frostlake.udf;
 
 import dev.frostlake.BaseJdbcTest;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -28,6 +29,15 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 
 public class ReturnTypeParametersTest extends BaseJdbcTest {
     private static final Logger logger = LoggerFactory.getLogger(ReturnTypeParametersTest.class);
+
+    private static final String HANDLER_SIGNATURE =
+        "Snowflake validates a Java UDF handler's signature against the declared SQL type far more strictly "
+        + "than Frostlake: NUMBER/DECIMAL will not accept a double handler and TIMESTAMP will not accept a "
+        + "String one, so these handlers are rejected outright on a real account";
+
+    private static final String JAVA_PROCEDURE_SESSION =
+        "a Java stored procedure on Snowflake must take a com.snowflake.snowpark_java.Session as its first "
+        + "handler argument; Frostlake does not require it, so this handler will not compile on an account";
 
     @Test
     public void testFunctionReturnsVarcharWithLength() throws SQLException {
@@ -54,6 +64,7 @@ public class ReturnTypeParametersTest extends BaseJdbcTest {
 
     @Test
     public void testFunctionReturnsDecimalWithPrecisionAndScale() throws SQLException {
+        Assumptions.assumeFalse(isLiveSnowflake(), HANDLER_SIGNATURE);
         logger.info("Testing function with DECIMAL(10,2) return type");
 
         statement.execute("""
@@ -100,6 +111,7 @@ public class ReturnTypeParametersTest extends BaseJdbcTest {
 
     @Test
     public void testFunctionReturnsTimestampWithPrecision() throws SQLException {
+        Assumptions.assumeFalse(isLiveSnowflake(), HANDLER_SIGNATURE);
         logger.info("Testing function with TIMESTAMP(9) return type");
 
         statement.execute("""
@@ -123,6 +135,7 @@ public class ReturnTypeParametersTest extends BaseJdbcTest {
 
     @Test
     public void testFunctionReturnsTimestampNtzWithPrecision() throws SQLException {
+        Assumptions.assumeFalse(isLiveSnowflake(), HANDLER_SIGNATURE);
         logger.info("Testing function with TIMESTAMP_NTZ(6) return type");
 
         statement.execute("""
@@ -146,6 +159,7 @@ public class ReturnTypeParametersTest extends BaseJdbcTest {
 
     @Test
     public void testProcedureReturnsVarcharWithLength() throws SQLException {
+        Assumptions.assumeFalse(isLiveSnowflake(), JAVA_PROCEDURE_SESSION);
         logger.info("Testing procedure with VARCHAR(50) return type");
 
         statement.execute("""
@@ -168,6 +182,7 @@ public class ReturnTypeParametersTest extends BaseJdbcTest {
 
     @Test
     public void testProcedureReturnsDecimalWithPrecisionAndScale() throws SQLException {
+        Assumptions.assumeFalse(isLiveSnowflake(), JAVA_PROCEDURE_SESSION);
         logger.info("Testing procedure with DECIMAL(15,4) return type");
 
         statement.execute("""

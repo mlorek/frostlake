@@ -17,18 +17,34 @@
 package dev.frostlake.scripting;
 
 import dev.frostlake.BaseJdbcTest;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 
 import java.sql.ResultSet;
 import java.sql.SQLException;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Tests for dollar-quoted string literals ($$...$$) in procedure and function definitions
  */
 public class DollarQuotedTest extends BaseJdbcTest {
+
+    /**
+     * Whether {@code SHOW FUNCTIONS} / {@code SHOW PROCEDURES} lists a routine with this name. The rows are
+     * scanned rather than read positionally: both backends list the whole built-in library alongside the
+     * user-defined routines, so the routine just created is not necessarily the first row.
+     */
+    private boolean listed(final String showSql, final String name) throws SQLException {
+        try (final ResultSet rs = statement.executeQuery(showSql)) {
+            while (rs.next()) {
+                if (name.equalsIgnoreCase(rs.getString("name"))) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
 
     @Test
     public void testCreateProcedureWithDollarQuotes() throws SQLException {
@@ -38,10 +54,7 @@ public class DollarQuotedTest extends BaseJdbcTest {
                 """);
 
         // Verify procedure was created
-        ResultSet rs = statement.executeQuery("SHOW PROCEDURES");
-        assertTrue(rs.next());
-        assertEquals("TEST_PROC", rs.getString("name"));
-        rs.close();
+        assertTrue(listed("SHOW PROCEDURES", "TEST_PROC"), "TEST_PROC should be listed by SHOW PROCEDURES");
     }
 
     @Test
@@ -50,10 +63,7 @@ public class DollarQuotedTest extends BaseJdbcTest {
         statement.execute("CREATE FUNCTION add_ten(n INTEGER) RETURNS INTEGER AS $$n + 10$$");
 
         // Verify function was created
-        ResultSet rs = statement.executeQuery("SHOW FUNCTIONS");
-        assertTrue(rs.next());
-        assertEquals("ADD_TEN", rs.getString("name"));
-        rs.close();
+        assertTrue(listed("SHOW FUNCTIONS", "ADD_TEN"), "ADD_TEN should be listed by SHOW FUNCTIONS");
     }
 
     @Test
@@ -64,10 +74,7 @@ public class DollarQuotedTest extends BaseJdbcTest {
                 """);
 
         // Verify procedure was created
-        ResultSet rs = statement.executeQuery("SHOW PROCEDURES");
-        assertTrue(rs.next());
-        assertEquals("QUOTE_TEST", rs.getString("name"));
-        rs.close();
+        assertTrue(listed("SHOW PROCEDURES", "QUOTE_TEST"), "QUOTE_TEST should be listed by SHOW PROCEDURES");
     }
 
     @Test
@@ -87,10 +94,8 @@ public class DollarQuotedTest extends BaseJdbcTest {
                 """);
 
         // Verify procedure was created
-        ResultSet rs = statement.executeQuery("SHOW PROCEDURES");
-        assertTrue(rs.next());
-        assertEquals("MULTI_LINE_TEST", rs.getString("name"));
-        rs.close();
+        assertTrue(listed("SHOW PROCEDURES", "MULTI_LINE_TEST"),
+            "MULTI_LINE_TEST should be listed by SHOW PROCEDURES");
     }
 
     @Test
@@ -99,14 +104,15 @@ public class DollarQuotedTest extends BaseJdbcTest {
         statement.execute("CREATE FUNCTION double_value(x INTEGER) RETURNS INTEGER AS 'x * 2'");
 
         // Verify function was created
-        ResultSet rs = statement.executeQuery("SHOW FUNCTIONS");
-        assertTrue(rs.next());
-        assertEquals("DOUBLE_VALUE", rs.getString("name"));
-        rs.close();
+        assertTrue(listed("SHOW FUNCTIONS", "DOUBLE_VALUE"), "DOUBLE_VALUE should be listed by SHOW FUNCTIONS");
     }
 
     @Test
     public void testDollarQuotesWithComplexLogic() throws SQLException {
+        Assumptions.assumeFalse(isLiveSnowflake(),
+            "the body's IF / ELSEIF chain takes an UNPARENTHESIZED condition (`IF n > 10 THEN`), a "
+            + "scripting-dialect leniency of Frostlake's; a real account requires `IF (<condition>) THEN` "
+            + "and rejects the procedure at CREATE time");
         // Test complex procedure with IF/WHILE using dollar quotes
         statement.execute("""
                 CREATE PROCEDURE complex_proc(n INTEGER) RETURNS VARCHAR AS $$
@@ -117,13 +123,13 @@ public class DollarQuotedTest extends BaseJdbcTest {
                   SET counter = 0;
                   IF n > 10 THEN
                     SET result = 'Large number';
-                  ELSIF n > 5 THEN
+                  ELSEIF n > 5 THEN
                     SET result = 'Medium number';
                   ELSE
                     SET result = 'Small number';
                   END IF;
                  \s
-                  WHILE counter < n DO
+                  WHILE (counter < n) DO
                     SET counter = counter + 1;
                   END WHILE;
                  \s
@@ -133,10 +139,7 @@ public class DollarQuotedTest extends BaseJdbcTest {
                 """);
 
         // Verify procedure was created
-        ResultSet rs = statement.executeQuery("SHOW PROCEDURES");
-        assertTrue(rs.next());
-        assertEquals("COMPLEX_PROC", rs.getString("name"));
-        rs.close();
+        assertTrue(listed("SHOW PROCEDURES", "COMPLEX_PROC"), "COMPLEX_PROC should be listed by SHOW PROCEDURES");
     }
 
     @Test
@@ -154,15 +157,15 @@ public class DollarQuotedTest extends BaseJdbcTest {
                 """);
 
         // Verify procedure was created
-        ResultSet rs = statement.executeQuery("SHOW PROCEDURES");
-        assertTrue(rs.next());
-        assertEquals("CREATE_OBJECT", rs.getString("name"));
-        rs.close();
+        assertTrue(listed("SHOW PROCEDURES", "CREATE_OBJECT"), "CREATE_OBJECT should be listed by SHOW PROCEDURES");
     }
 
     @Test
     public void testTableFunctionWithDollarQuotes() throws SQLException {
-        // Test table function with dollar quotes
+        // A table UDF's body is COMPILED at CREATE, so the table it reads must already exist —
+        // live-verified on a real account: without it, CREATE fails "Object
+        // 'TEST_DB.PUBLIC.NUMBERS' does not exist or not authorized."
+        statement.execute("CREATE TABLE numbers (n INTEGER)");
         statement.execute("""
                 CREATE FUNCTION get_numbers(max_val INTEGER)
                 RETURNS TABLE(num INTEGER, squared INTEGER)
@@ -170,9 +173,6 @@ public class DollarQuotedTest extends BaseJdbcTest {
                 """);
 
         // Verify function was created
-        ResultSet rs = statement.executeQuery("SHOW FUNCTIONS");
-        assertTrue(rs.next());
-        assertEquals("GET_NUMBERS", rs.getString("name"));
-        rs.close();
+        assertTrue(listed("SHOW FUNCTIONS", "GET_NUMBERS"), "GET_NUMBERS should be listed by SHOW FUNCTIONS");
     }
 }

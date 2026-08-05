@@ -16,12 +16,12 @@
 
 package dev.frostlake.functions.scalar.math;
 
-import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.functions.NumericArgumentFunction;
 import dev.frostlake.types.NumericType;
 
 import java.util.List;
 
-public class Sqrt extends BuiltInFunction {
+public class Sqrt extends NumericArgumentFunction {
     public Sqrt() { super("SQRT", NumericType.DOUBLE); }
 
     @Override

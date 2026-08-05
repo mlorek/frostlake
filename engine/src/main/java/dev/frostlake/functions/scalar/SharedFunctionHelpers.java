@@ -16,8 +16,8 @@
 
 package dev.frostlake.functions.scalar;
 
-import java.io.ByteArrayInputStream;
-import java.io.ByteArrayOutputStream;
+import dev.frostlake.values.BinaryValue;
+
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
@@ -33,18 +33,7 @@ import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.time.temporal.IsoFields;
 import java.time.temporal.TemporalAccessor;
-import io.airlift.compress.snappy.SnappyCompressor;
-import io.airlift.compress.snappy.SnappyDecompressor;
-
-import java.util.Arrays;
-import java.util.Base64;
 import java.util.Locale;
-import java.util.zip.Deflater;
-import java.util.zip.DeflaterOutputStream;
-import java.util.zip.GZIPInputStream;
-import java.util.zip.GZIPOutputStream;
-import java.util.zip.Inflater;
-import java.util.zip.InflaterInputStream;
 
 public final class SharedFunctionHelpers {
 
@@ -54,11 +43,14 @@ public final class SharedFunctionHelpers {
      * Divide with Snowflake's result scale: {@code max(S1, min(S1 + 6, 12))} where S1 is the dividend's
      * scale (docs: "Arithmetic operators — division"), rounding half away from zero. Integer / integer
      * therefore yields six fractional digits — {@code 1/3 = 0.333333} — matching Snowflake output.
-     * Runtime values carry no declared column scale, so S1 is read off the value with trailing zeros
-     * stripped (a whole-number {@code Double} like {@code SUM} output renders as 1.0 but is scale 0).
+     * Runtime values carry no declared column scale, so S1 is the value's carried scale, UNSTRIPPED —
+     * {@code 10/2} keeps its six digits ({@code 5.000000}) exactly as Snowflake renders it.
      */
     public static BigDecimal divideWithSnowflakeScale(final BigDecimal dividend, final BigDecimal divisor) {
-        final int dividendScale = Math.max(dividend.stripTrailingZeros().scale(), 0);
+        // Snowflake: quotient scale = MIN(s1 + 6, 12) where s1 is the DIVIDEND's scale (live-verified:
+        // 10/3 → NUMBER(8,6) 3.333333, 10.5/2 → NUMBER(9,7), NUMBER(20,11)/2 → scale 12). The scale is
+        // the value's carried scale, unstripped — 10/2 stays 5.000000.
+        final int dividendScale = Math.max(dividend.scale(), 0);
         final int resultScale = Math.max(dividendScale, Math.min(dividendScale + 6, 12));
         return dividend.divide(divisor, resultScale, RoundingMode.HALF_UP);
     }
@@ -77,8 +69,81 @@ public final class SharedFunctionHelpers {
         return sb.toString();
     }
 
+    /**
+     * A temporal value as a type-preserving SQL literal ({@code '2026-01-03'::DATE}), so a value
+     * inlined into regenerated SQL re-enters the engine as a temporal rather than a VARCHAR.
+     * Returns null for non-temporal values.
+     */
+    public static String temporalSqlLiteral(final Object value) {
+        if (value instanceof LocalDate) {
+            return "'" + value + "'::DATE";
+        }
+        // ISO toString text, NOT the FF3 display form: the literal must round-trip LOSSLESSLY.
+        // CURRENT_TIMESTAMP() variables carry nanosecond precision, and a value stored through this
+        // literal must later compare EQUAL to the same in-memory variable (delta-watermark flows
+        // re-match rows by exact equality); truncating to milliseconds silently broke that.
+        if (value instanceof LocalTime) {
+            return "'" + value + "'::TIME";
+        }
+        if (value instanceof LocalDateTime) {
+            return "'" + value + "'::TIMESTAMP_NTZ";
+        }
+        return null;
+    }
+
+    /**
+     * The byte payload a function should hash, digest or encode: a BINARY value contributes its OWN
+     * bytes (never its hex rendering — {@link BinaryValue#toString()} is the display form, so
+     * {@code toString().getBytes()} would silently encode the ASCII hex digits and double the length),
+     * and everything else contributes the UTF-8 encoding of its Snowflake output text.
+     *
+     * <p>The text is {@link #textOf} rather than {@code toString()} so a TIMESTAMP contributes
+     * {@code 2024-01-02 03:04:05.000} — what Snowflake hashes — instead of java.time's
+     * {@code 2024-01-02T03:04:05}.
+     */
     public static byte[] toUtf8(final Object v) {
-        return v.toString().getBytes(StandardCharsets.UTF_8);
+        if (v instanceof BinaryValue) {
+            return ((BinaryValue) v).bytes();
+        }
+        return textOf(v).getBytes(StandardCharsets.UTF_8);
+    }
+
+    /**
+     * The 1-based position of {@code needle} in {@code haystack} at or after the 0-based
+     * {@code fromIndex}, or 0 when absent — the byte-wise counterpart of {@code String.indexOf} used
+     * by POSITION / CHARINDEX over BINARY values. An empty needle matches at {@code fromIndex}.
+     */
+    public static long indexOfBytes(final byte[] haystack, final byte[] needle, final int fromIndex) {
+        final int start = Math.max(fromIndex, 0);
+        for (int i = start; i <= haystack.length - needle.length; i++) {
+            boolean matched = true;
+            for (int j = 0; j < needle.length; j++) {
+                if (haystack[i + j] != needle[j]) {
+                    matched = false;
+                    break;
+                }
+            }
+            if (matched) {
+                return i + 1L;
+            }
+        }
+        return 0L;
+    }
+
+    /**
+     * The byte payload of a BINARY-typed argument. Snowflake rejects a VARCHAR where BINARY is
+     * expected (no implicit text-to-binary coercion for these functions), so anything that is not
+     * an actual binary runtime value is an argument-type error.
+     */
+    public static byte[] binaryArgBytes(final Object value, final String functionName) {
+        if (value instanceof BinaryValue) {
+            return ((BinaryValue) value).bytes();
+        }
+        if (value instanceof byte[]) {
+            return (byte[]) value;
+        }
+        throw new RuntimeException("Invalid argument types for function '" + functionName
+            + "': expected BINARY, got " + (value instanceof Number ? "NUMBER" : "VARCHAR"));
     }
 
     public static boolean isTruthy(final Object v) {
@@ -89,110 +154,6 @@ public final class SharedFunctionHelpers {
             return s.equals("TRUE") || s.equals("1");
         }
         return false;
-    }
-
-    public static String compressToBase64(final byte[] input, final String method) {
-        try {
-            byte[] compressed;
-            String m = method.toLowerCase();
-            switch (m) {
-                case "deflate":
-                case "raw_deflate": {
-                    Deflater def = new Deflater(
-                        Deflater.DEFAULT_COMPRESSION, m.equals("raw_deflate"));
-                    def.setInput(input);
-                    def.finish();
-                    ByteArrayOutputStream bos = new ByteArrayOutputStream(input.length);
-                    byte[] buf = new byte[1024];
-                    while (!def.finished()) { int n = def.deflate(buf); bos.write(buf, 0, n); }
-                    def.end();
-                    compressed = bos.toByteArray();
-                    break;
-                }
-                case "zlib": {
-                    ByteArrayOutputStream bos = new ByteArrayOutputStream();
-                    try (DeflaterOutputStream dos =
-                             new DeflaterOutputStream(bos)) {
-                        dos.write(input);
-                    }
-                    compressed = bos.toByteArray();
-                    break;
-                }
-                case "gzip": {
-                    ByteArrayOutputStream bos = new ByteArrayOutputStream();
-                    try (GZIPOutputStream gos = new GZIPOutputStream(bos)) {
-                        gos.write(input);
-                    }
-                    compressed = bos.toByteArray();
-                    break;
-                }
-                case "snappy": {
-                    final SnappyCompressor snappy = new SnappyCompressor();
-                    final byte[] out = new byte[snappy.maxCompressedLength(input.length)];
-                    final int n = snappy.compress(input, 0, input.length, out, 0, out.length);
-                    compressed = Arrays.copyOf(out, n);
-                    break;
-                }
-                default:
-                    throw new RuntimeException("Unsupported compression method: " + method
-                        + ". Supported: snappy, deflate, raw_deflate, zlib, gzip");
-            }
-            return Base64.getEncoder().encodeToString(compressed);
-        } catch (final RuntimeException e) {
-            throw e;
-        } catch (final Exception e) {
-            throw new RuntimeException("COMPRESS failed: " + e.getMessage());
-        }
-    }
-
-    public static byte[] decompressFromBase64(final String b64Input, final String method) {
-        try {
-            byte[] compressed = Base64.getDecoder().decode(b64Input);
-            String m = method.toLowerCase();
-            switch (m) {
-                case "deflate":
-                case "raw_deflate": {
-                    Inflater inf = new Inflater(m.equals("raw_deflate"));
-                    inf.setInput(compressed);
-                    ByteArrayOutputStream bos = new ByteArrayOutputStream();
-                    byte[] buf = new byte[1024];
-                    while (!inf.finished()) { int n = inf.inflate(buf); bos.write(buf, 0, n); }
-                    inf.end();
-                    return bos.toByteArray();
-                }
-                case "zlib": {
-                    ByteArrayOutputStream bos = new ByteArrayOutputStream();
-                    try (InflaterInputStream iis =
-                             new InflaterInputStream(new ByteArrayInputStream(compressed))) {
-                        byte[] buf = new byte[1024]; int n;
-                        while ((n = iis.read(buf)) != -1) bos.write(buf, 0, n);
-                    }
-                    return bos.toByteArray();
-                }
-                case "gzip": {
-                    ByteArrayOutputStream bos = new ByteArrayOutputStream();
-                    try (GZIPInputStream gis =
-                             new GZIPInputStream(new ByteArrayInputStream(compressed))) {
-                        byte[] buf = new byte[1024]; int n;
-                        while ((n = gis.read(buf)) != -1) bos.write(buf, 0, n);
-                    }
-                    return bos.toByteArray();
-                }
-                case "snappy": {
-                    final int length = SnappyDecompressor.getUncompressedLength(compressed, 0);
-                    final byte[] out = new byte[length];
-                    new SnappyDecompressor().decompress(compressed, 0, compressed.length, out, 0, length);
-                    return out;
-                }
-                default:
-                    throw new RuntimeException("Unsupported decompression method: " + method
-                        + ". Supported: snappy, deflate, raw_deflate, zlib, gzip");
-            }
-        } catch (final RuntimeException e) {
-            throw e;
-        } catch (final Exception e) {
-            throw new RuntimeException("DECOMPRESS failed: " + e.getMessage());
-        }
     }
 
     /**
@@ -333,9 +294,11 @@ public final class SharedFunctionHelpers {
     }
 
     /**
-     * Interpret a numeric value as a Unix-epoch instant, picking the unit by magnitude the way
-     * Snowflake does: |v| &lt; 31,536,000,000 → seconds, else milliseconds, else microseconds, else
-     * nanoseconds. Returns the wall-clock time at UTC.
+     * Interpret a value as a Unix-epoch instant, picking the unit by magnitude the way Snowflake does
+     * for a STRING argument containing an integer: |v| &lt; 31,536,000,000 → seconds, else milliseconds,
+     * else microseconds, else nanoseconds. Returns the wall-clock time at UTC. A NUMERIC TO_TIMESTAMP
+     * argument must NOT go through this detection — it is always seconds (see
+     * {@link #parseTimestampWithFormatOrScale}).
      */
     public static LocalDateTime epochToLocalDateTime(final long epoch) {
         final long magnitude = Math.abs(epoch);
@@ -353,13 +316,51 @@ public final class SharedFunctionHelpers {
     }
 
     /**
-     * Parse a value to a {@link LocalDateTime} for TO_TIMESTAMP: a numeric value is a Unix epoch (see
-     * {@link #epochToLocalDateTime}); a string is parsed with the given Snowflake format when one is
-     * supplied, otherwise flexibly via {@link #toLocalDateTime}.
+     * Interpret a numeric TO_TIMESTAMP argument at an explicit scale: the value counts
+     * 10<sup>-scale</sup>-second units since the Unix epoch (scale 0 = seconds — Snowflake's default
+     * for a NUMERIC argument, however large — 3 = milliseconds, 9 = nanoseconds). Returns the
+     * wall-clock time at UTC.
+     */
+    public static LocalDateTime epochAtScaleToLocalDateTime(final long epoch, final int scale) {
+        if (scale < 0 || scale > 9) {
+            throw new RuntimeException("Invalid TO_TIMESTAMP scale: " + scale + " (expected 0 to 9)");
+        }
+        long unitsPerSecond = 1L;
+        for (int i = 0; i < scale; i++) {
+            unitsPerSecond *= 10L;
+        }
+        final long seconds = Math.floorDiv(epoch, unitsPerSecond);
+        final long nanos = Math.floorMod(epoch, unitsPerSecond) * (1_000_000_000L / unitsPerSecond);
+        return LocalDateTime.ofInstant(Instant.ofEpochSecond(seconds, nanos), ZoneOffset.UTC);
+    }
+
+    /**
+     * Parse the TO_TIMESTAMP* argument pair (value [, format-or-scale]) to a {@link LocalDateTime},
+     * faithful to live Snowflake about the epoch unit: a NUMERIC value is ALWAYS a seconds epoch —
+     * TO_TIMESTAMP_NTZ(1631711999000) is year 53676, not a millisecond epoch — unless the second
+     * argument is a numeric scale (TO_TIMESTAMP_NTZ(1631711999000, 3) is 2021-09-15). Everything else
+     * goes through {@link #parseTimestampWithFormat}, where a STRING of digits keeps the
+     * magnitude-based unit detection.
+     */
+    public static LocalDateTime parseTimestampWithFormatOrScale(final Object value, final Object formatOrScale) {
+        if (value instanceof Number) {
+            final int scale = formatOrScale instanceof Number ? ((Number) formatOrScale).intValue() : 0;
+            return epochAtScaleToLocalDateTime(((Number) value).longValue(), scale);
+        }
+        return parseTimestampWithFormat(value, formatOrScale != null ? formatOrScale.toString() : null);
+    }
+
+    /**
+     * Parse a value to a {@link LocalDateTime} for TO_TIMESTAMP: a numeric value is a Unix epoch in
+     * SECONDS (magnitude-based unit detection applies only to a string of digits — live:
+     * TO_TIMESTAMP_NTZ(1631711999000) is year 53676 while TO_TIMESTAMP_NTZ('1631711999000') is
+     * 2021-09-15); a string is parsed with the given Snowflake format when one is supplied, a string
+     * of digits as a magnitude-detected epoch ({@link #epochToLocalDateTime}), and any other string
+     * flexibly via {@link #toLocalDateTime}.
      */
     public static LocalDateTime parseTimestampWithFormat(final Object value, final String format) {
         if (value instanceof Number) {
-            return epochToLocalDateTime(((Number) value).longValue());
+            return epochAtScaleToLocalDateTime(((Number) value).longValue(), 0);
         }
         if (format != null && !format.isEmpty()) {
             final TemporalAccessor parsed = SnowflakeDateFormat.formatterFor(format).parse(value.toString().trim());
@@ -370,7 +371,30 @@ public final class SharedFunctionHelpers {
                 return LocalDate.from(parsed).atStartOfDay();
             }
         }
+        final String text = value.toString().trim();
+        if (isIntegerText(text)) {
+            try {
+                return epochToLocalDateTime(Long.parseLong(text));
+            } catch (final NumberFormatException tooLarge) {
+                throw new RuntimeException("Cannot parse date/time: " + text);
+            }
+        }
         return toLocalDateTime(value);
+    }
+
+    /** Whether the text is an (optionally signed) run of digits — a string epoch for TO_TIMESTAMP. */
+    private static boolean isIntegerText(final String s) {
+        final int start = s.startsWith("-") || s.startsWith("+") ? 1 : 0;
+        if (start >= s.length()) {
+            return false;
+        }
+        for (int i = start; i < s.length(); i++) {
+            final char c = s.charAt(i);
+            if (c < '0' || c > '9') {
+                return false;
+            }
+        }
+        return true;
     }
 
     /**
@@ -382,8 +406,15 @@ public final class SharedFunctionHelpers {
         if (value instanceof Number) {
             return epochToLocalDateTime(((Number) value).longValue()).toLocalDate();
         }
+        // An all-digit STRING is an epoch too, and unlike a numeric argument it is legal under every
+        // spelling — live-verified on a real account: TO_DATE('1631711999') and
+        // TO_DATE('1631711999','AUTO') are both 2021-09-15, while TO_DATE(1631711999) is rejected.
+        final String digits = value.toString().trim();
+        if (digits.matches("-?\\d+")) {
+            return epochToLocalDateTime(Long.parseLong(digits)).toLocalDate();
+        }
         if (format != null && !format.isEmpty()) {
-            return LocalDate.from(SnowflakeDateFormat.formatterFor(format).parse(value.toString().trim()));
+            return LocalDate.from(SnowflakeDateFormat.formatterFor(format).parse(digits));
         }
         return toLocalDate(value);
     }

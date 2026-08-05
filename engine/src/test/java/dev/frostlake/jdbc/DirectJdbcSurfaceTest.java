@@ -17,6 +17,7 @@
 package dev.frostlake.jdbc;
 
 import dev.frostlake.BaseJdbcTest;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 import org.slf4j.Logger;
@@ -46,6 +47,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 public class DirectJdbcSurfaceTest extends BaseJdbcTest {
 
     private static final Logger logger = LoggerFactory.getLogger(DirectJdbcSurfaceTest.class);
+
+    private static final String CALLABLE_GETTERS =
+        "reads a procedure's result through DirectCallableStatement's OUT-parameter getters, a Frostlake "
+        + "driver surface: the Snowflake driver returns the procedure's value as a result set instead";
 
     @Test
     public void directResultSetTypedGetterMatrix() throws SQLException {
@@ -98,6 +103,7 @@ public class DirectJdbcSurfaceTest extends BaseJdbcTest {
 
     @Test
     public void directCallableNumericGetterChain() throws SQLException {
+        Assumptions.assumeFalse(isLiveSnowflake(), CALLABLE_GETTERS);
         statement.execute("""
             CREATE OR REPLACE PROCEDURE D_ADD_ONE(N FLOAT) RETURNS FLOAT LANGUAGE SQL AS
             $$ BEGIN RETURN N + 1; END $$
@@ -120,6 +126,7 @@ public class DirectJdbcSurfaceTest extends BaseJdbcTest {
 
     @Test
     public void directCallableVarcharBooleanNullAndTemporal() throws SQLException {
+        Assumptions.assumeFalse(isLiveSnowflake(), CALLABLE_GETTERS);
         statement.execute("""
             CREATE OR REPLACE PROCEDURE D_TAG() RETURNS VARCHAR LANGUAGE SQL AS
             $$ BEGIN RETURN 'frost'; END $$

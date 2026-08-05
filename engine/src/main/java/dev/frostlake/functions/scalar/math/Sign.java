@@ -16,13 +16,13 @@
 
 package dev.frostlake.functions.scalar.math;
 
-import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.functions.NumericArgumentFunction;
 import dev.frostlake.types.NumericType;
 
 import java.math.BigDecimal;
 import java.util.List;
 
-public class Sign extends BuiltInFunction {
+public class Sign extends NumericArgumentFunction {
     public Sign() { super("SIGN", NumericType.INTEGER); }
 
     @Override

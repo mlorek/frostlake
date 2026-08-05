@@ -38,6 +38,7 @@ import dev.frostlake.task.TaskScheduler;
 import dev.frostlake.types.*;
 import org.antlr.v4.runtime.CharStreams;
 import org.antlr.v4.runtime.CommonTokenStream;
+import org.antlr.v4.runtime.Token;
 import org.antlr.v4.runtime.tree.ParseTree;
 import org.antlr.v4.runtime.tree.TerminalNode;
 import org.slf4j.Logger;
@@ -123,7 +124,37 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
 
     @Override
     public Object visitStatement(final FrostlakeParser.StatementContext ctx) {
+        rejectUnknownTagReferences(ctx);
         return visitChildren(ctx);
+    }
+
+    /**
+     * A {@code TAG (k='v')} clause names a tag that must ALREADY EXIST. Live-verified on a real account
+     *: with no such tag, {@code CREATE TABLE t(id INTEGER) TAG (x='v')},
+     * {@code CREATE TABLE t(id INTEGER TAG (x='v'), …)} and
+     * {@code ALTER TABLE t ADD c VARCHAR TAG (x='v')} each fail with
+     * "Tag 'X' does not exist or not authorized."; after {@code CREATE TAG x} every one of them
+     * succeeds — as does the materialized-view form. Frostlake used to accept the clause inertly, so
+     * scripts referencing a tag they never created passed here and failed on a real account.
+     *
+     * <p>Checked once per statement over the whole parse tree rather than in each DDL handler, because
+     * {@code tagList} hangs off five different rules (table tail options, column constraints, views and
+     * materialized views).
+     */
+    private void rejectUnknownTagReferences(final ParseTree node) {
+        if (node instanceof FrostlakeParser.TagListContext) {
+            final FrostlakeParser.TagListContext tags = (FrostlakeParser.TagListContext) node;
+            for (final FrostlakeParser.TagAssignmentContext assignment : tags.tagAssignment()) {
+                final String tagName = getText(assignment.qualifiedName());
+                if (catalog != null && !catalog.hasTag(tagName)) {
+                    throw new RuntimeException(
+                        "Tag '" + tagName.toUpperCase() + "' does not exist or not authorized.");
+                }
+            }
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            rejectUnknownTagReferences(node.getChild(i));
+        }
     }
 
     // ==================== DDL STATEMENTS ====================
@@ -135,7 +166,7 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
         } catch (final Exception e) {
             if (e instanceof SecurityException) throw (SecurityException) e;
             if (e instanceof ProceduralException) throw (ProceduralException) e;
-            throw new RuntimeException("Failed to execute CREATE statement: " + e.getMessage(), e);
+            throw StatementErrors.propagate(e);
         }
     }
 
@@ -146,7 +177,7 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
         } catch (final Exception e) {
             if (e instanceof SecurityException) throw (SecurityException) e;
             if (e instanceof ProceduralException) throw (ProceduralException) e;
-            throw new RuntimeException("Failed to execute DROP statement: " + e.getMessage(), e);
+            throw StatementErrors.propagate(e);
         }
     }
 
@@ -162,7 +193,7 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
         } catch (final Exception e) {
             if (e instanceof SecurityException) throw (SecurityException) e;
             if (e instanceof ProceduralException) throw (ProceduralException) e;
-            throw new RuntimeException("Failed to execute USE statement: " + e.getMessage(), e);
+            throw StatementErrors.propagate(e);
         }
     }
 
@@ -228,8 +259,8 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
     private void collectScannedTables(final ParserRuleContext ctx, final List<String> out) {
         if (ctx instanceof FrostlakeParser.TableSourceContext) {
             final FrostlakeParser.TableSourceContext ts = (FrostlakeParser.TableSourceContext) ctx;
-            if (ts.qualifiedName() != null) {
-                out.add(getText(ts.qualifiedName()));
+            if (ts.tableQualifiedName() != null) {
+                out.add(ParseTreeText.getQualifiedName(ts.tableQualifiedName()));
             }
         }
         for (int i = 0; i < ctx.getChildCount(); i++) {
@@ -259,7 +290,7 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
         } catch (final Exception e) {
             if (e instanceof SecurityException) throw (SecurityException) e;
             if (e instanceof ProceduralException) throw (ProceduralException) e;
-            throw new RuntimeException("Failed to execute TRUNCATE statement: " + e.getMessage(), e);
+            throw StatementErrors.propagate(e);
         }
     }
 
@@ -310,7 +341,7 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
         } catch (final Exception e) {
             if (e instanceof SecurityException) throw (SecurityException) e;
             if (e instanceof ProceduralException) throw (ProceduralException) e;
-            throw new RuntimeException("Failed to execute task: " + e.getMessage(), e);
+            throw StatementErrors.propagate(e);
         }
     }
 
@@ -461,7 +492,7 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
         } catch (final Exception e) {
             if (e instanceof SecurityException) throw (SecurityException) e;
             if (e instanceof ProceduralException) throw (ProceduralException) e;
-            throw new RuntimeException("Failed to execute SHOW statement: " + e.getMessage(), e);
+            throw StatementErrors.propagate(e);
         }
     }
 
@@ -472,7 +503,7 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
         } catch (final Exception e) {
             if (e instanceof SecurityException) throw (SecurityException) e;
             if (e instanceof ProceduralException) throw (ProceduralException) e;
-            throw new RuntimeException("Failed to execute DESCRIBE statement: " + e.getMessage(), e);
+            throw StatementErrors.propagate(e);
         }
     }
 
@@ -481,15 +512,6 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
     @Override
     public Object visitProceduralStatement(final FrostlakeParser.ProceduralStatementContext ctx) {
         return visitChildren(ctx);
-    }
-
-    @Override
-    public Object visitDeclareStatement(final FrostlakeParser.DeclareStatementContext ctx) {
-        for (final FrostlakeParser.DeclarationItemContext itemCtx : ctx.declarationItem()) {
-            visit(itemCtx);
-        }
-        logger.trace("Processed DECLARE statement");
-        return null;
     }
 
     @Override
@@ -658,6 +680,8 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
 
     @Override
     public Object visitSessionSetStatement(final FrostlakeParser.SessionSetStatementContext ctx) {
+        // Session-level SET is a SQL command (scripting assigns with := / LET), so its right-hand side is
+        // a SQL expression: session variables and literals resolve, a bare scripting name does not.
         SecurityManager sm = queryExecutor.getSecurityManager();
         if (ctx.identifierList() != null) {
             // SET (var1, var2, ...) = (expr1, expr2, ...)
@@ -665,13 +689,13 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
             List<FrostlakeParser.ExpressionContext> exprs = ctx.expressionList().expression();
             for (int i = 0; i < ids.size(); i++) {
                 String name = getText(ids.get(i)).toUpperCase();
-                Object value = i < exprs.size() ? evaluateExpression(exprs.get(i)) : null;
+                Object value = i < exprs.size() ? evaluateSqlExpression(exprs.get(i)) : null;
                 setSessionVar(sm, name, value);
             }
         } else {
             // SET var = expr
             String name = getText(ctx.identifier()).toUpperCase();
-            Object value = evaluateExpression(ctx.expression());
+            Object value = evaluateSqlExpression(ctx.expression());
             setSessionVar(sm, name, value);
         }
         return null;
@@ -751,6 +775,23 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
             proceduralExecutor.executeStatement(new SetStatement(varName,
                 new LiteralExpression(value)));
             logger.trace("Assigned variable {} from procedure call", varName);
+            return null;
+        }
+
+        // Handle: rs := (EXECUTE IMMEDIATE :stmt [USING (...)]) — the documented Snowflake
+        // RESULTSET-assignment form; the dynamic SQL runs when the assignment executes.
+        if (ctx.executeImmediateStatement() != null) {
+            final FrostlakeParser.ExecuteImmediateStatementContext ei = ctx.executeImmediateStatement();
+            final BaseExpression sqlExpr = buildExpression(ei.expression());
+            final List<BaseExpression> usingBinds = new ArrayList<>();
+            if (ei.expressionList() != null) {
+                for (final FrostlakeParser.ExpressionContext bind : ei.expressionList().expression()) {
+                    usingBinds.add(buildExpression(bind));
+                }
+            }
+            proceduralExecutor.executeStatement(new SetStatement(varName,
+                new ExecuteImmediateExpression(sqlExpr, usingBinds)));
+            logger.trace("Assigned variable {} from EXECUTE IMMEDIATE", varName);
             return null;
         }
 
@@ -1037,6 +1078,24 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
         return -1;
     }
 
+    /**
+     * Enforces Snowflake's scoped-transaction rule at a stored procedure's normal completion: a
+     * transaction the procedure STARTED (none was open at CALL time) and left open is rolled back
+     * and the call fails with Snowflake's exact wording (live-verified). A transaction that was
+     * already open when the CALL began is the caller's and passes through untouched.
+     */
+    private void rejectOpenScopedTransaction(final boolean txnOpenBeforeCall) {
+        if (!txnOpenBeforeCall && queryExecutor.getTransactionManager().isExplicitTransaction()) {
+            try {
+                queryExecutor.getTransactionManager().rollback();
+            } catch (final RuntimeException rollbackFailure) {
+                // the error below is the primary signal
+            }
+            throw new RuntimeException("Stored procedure execution error: "
+                + "Scoped transaction started in stored procedure is incomplete and it was rolled back.");
+        }
+    }
+
     @Override
     public Object visitCallStatement(final FrostlakeParser.CallStatementContext ctx) {
         String qualifiedName = getText(ctx.qualifiedName());
@@ -1063,12 +1122,31 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
         // Evaluate call arguments — positional and/or named (name => value). Positional args bind to
         // parameters left-to-right; a named arg binds to the parameter whose name it matches; any
         // parameter left unbound falls back to its DEFAULT (Snowflake semantics), so a named arg may
-        // legitimately skip an earlier defaulted parameter.
+        // legitimately skip an earlier defaulted parameter. Snowflake dispatches CALL as SQL, so an
+        // argument is a SQL expression: a scripting name must be written :name, and a bare one is an
+        // identifier ("invalid identifier 'V'", live-verified) — hence evaluateSqlExpression.
         List<Parameter> params = procedure.getParameters();
         final Object[] boundValues = new Object[params.size()];
         final boolean[] boundFlags = new boolean[params.size()];
         int positionalIndex = 0;
         if (ctx.callArguments() != null) {
+            // A CALL is all-named or all-positional. Live-verified on a real account:
+            // CALL p_ab(1, b => 2) fails "illegal mixing of named and positional arguments for function
+            // P_AB", while the all-named CALL p_ab(b => 2, a => 1) works — and the restriction is
+            // CALL's alone: the very same mixed shape on a UDF, SELECT f_ab(1, b => 2), returns 12.
+            boolean sawNamed = false;
+            boolean sawPositional = false;
+            for (final FrostlakeParser.CallArgumentContext argCtx : ctx.callArguments().callArgument()) {
+                if (argCtx.namedArgument() != null) {
+                    sawNamed = true;
+                } else {
+                    sawPositional = true;
+                }
+            }
+            if (sawNamed && sawPositional) {
+                throw new RuntimeException("SQL compilation error:\n"
+                    + "illegal mixing of named and positional arguments for function " + procName);
+            }
             for (final FrostlakeParser.CallArgumentContext argCtx : ctx.callArguments().callArgument()) {
                 if (argCtx.namedArgument() != null) {
                     final String argName = getText(argCtx.namedArgument().identifier());
@@ -1083,13 +1161,13 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
                         throw new RuntimeException(
                             "A bare subquery CALL argument is not supported; parenthesize it: (SELECT ...)");
                     }
-                    boundValues[idx] = evaluateExpression(argCtx.namedArgument().expression());
+                    boundValues[idx] = evaluateSqlExpression(argCtx.namedArgument().expression());
                     boundFlags[idx] = true;
                 } else {
                     if (positionalIndex >= params.size()) {
                         throw new RuntimeException("Too many arguments for procedure: " + qualifiedName);
                     }
-                    boundValues[positionalIndex] = evaluateExpression(argCtx.expression());
+                    boundValues[positionalIndex] = evaluateSqlExpression(argCtx.expression());
                     boundFlags[positionalIndex] = true;
                     positionalIndex++;
                 }
@@ -1113,14 +1191,19 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
 
         final UdfLanguage language = procedure.getUdfLanguage();
         Object returnValue;
+        // Snowflake's scoped-transaction rule (live-verified): a transaction STARTED inside a stored
+        // procedure must be completed inside it — returning with it open rolls it back and errors.
+        final boolean txnOpenBeforeCall = queryExecutor.getTransactionManager().isExplicitTransaction();
 
         if (language == UdfLanguage.JAVASCRIPT || language == UdfLanguage.PYTHON
                 || language == UdfLanguage.SCALA) {
             returnValue = UdfRuntimes.require(language)
                 .executeProcedure(procedure, arguments, queryExecutor.getDatabaseEngine());
+            rejectOpenScopedTransaction(txnOpenBeforeCall);
         } else if (language == UdfLanguage.JAVA) {
             returnValue = JavaProcedureExecutor
                 .executeJavaProcedure(procedure, arguments, queryExecutor.getDatabaseEngine());
+            rejectOpenScopedTransaction(txnOpenBeforeCall);
         } else {
             // SQL procedural language: bind the call arguments to the parameter names, execute the body
             // on the shared procedural executor (so its RETURN / control flow / statements actually
@@ -1171,6 +1254,7 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
                         break; // a bare (non-BEGIN…END) RETURN statement stops the body
                     }
                 }
+                rejectOpenScopedTransaction(txnOpenBeforeCall);
                 // A BEGIN…END body surfaces its RETURN as a single-row ResultSet (bodyResult, with the
                 // return state already cleared by visitBeginEndBlock); a bare-statement body leaves the
                 // value in the return state. Handle both, and clear the state so it can't leak.
@@ -1214,7 +1298,7 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
             } catch (final ProceduralException e) {
                 throw e;
             } catch (final Exception e) {
-                throw new RuntimeException("Failed to execute procedure: " + e.getMessage(), e);
+                throw StatementErrors.propagate(e);
             } finally {
                 proceduralExecutor.exitScope();
                 if (savedDb != null) {
@@ -1248,6 +1332,9 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
                 // EXECUTE IMMEDIATE FROM @stage/file | '<location>' — run the SQL script in that file.
                 sqlString = readImmediateScript(ctx);
             } else {
+                if (!proceduralExecutor.isExecutingBlock()) {
+                    rejectTopLevelExecuteImmediateForms(ctx);
+                }
                 // Evaluate the expression using the CURRENT executor (needed for :variable references)
                 Object sqlObj = evaluateExpression(ctx.expression());
 
@@ -1289,7 +1376,7 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
             boolean isProcedural = false;
             for (final FrostlakeParser.StatementContext s : flattenedStatements(sqlScriptCtx)) {
                 final FrostlakeParser.ProceduralStatementContext p = s.proceduralStatement();
-                if (p != null && (p.beginEndBlock() != null || p.declareStatement() != null)) {
+                if (p != null && p.beginEndBlock() != null) {
                     isProcedural = true;
                     break;
                 }
@@ -1319,8 +1406,72 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
         } catch (final Exception e) {
             if (e instanceof SecurityException) throw (SecurityException) e;
             if (e instanceof ProceduralException) throw (ProceduralException) e;
-            throw new RuntimeException("Failed to execute EXECUTE IMMEDIATE: " + e.getMessage(), e);
+            throw StatementErrors.propagate(e);
         }
+    }
+
+    /**
+     * Session-level EXECUTE IMMEDIATE is far narrower than the in-block form (live-verified):
+     * <ul>
+     *   <li>its source must be a string literal, a {@code $$…$$} literal or a session variable —
+     *       {@code EXECUTE IMMEDIATE 'SELECT ' || '1'} and {@code EXECUTE IMMEDIATE my_sql} are both
+     *       syntax errors, while {@code $my_sql} is fine;</li>
+     *   <li>a {@code USING} clause is refused outright with "Unsupported statement type 'EXECUTE'".</li>
+     * </ul>
+     * Both forms stay legal inside a {@code BEGIN…END} block ({@code LET s := 'SELECT ' || '1';
+     * EXECUTE IMMEDIATE s;} and {@code res := (EXECUTE IMMEDIATE 'SELECT ?' USING (v))} run there), so
+     * this is a top-level-only guard rather than a change to the shared {@code executeImmediateStatement}
+     * grammar rule that the procedural and task-body paths also use.
+     */
+    private void rejectTopLevelExecuteImmediateForms(final FrostlakeParser.ExecuteImmediateStatementContext ctx) {
+        if (ctx.USING() != null) {
+            // Live rejects a session-level USING in two shapes: an argument that is not a bare
+            // name fails as a SYNTAX error at that argument's own position ('USING (1)' →
+            // "unexpected '1'"), while a list of names parses and then fails "Unsupported
+            // statement type 'EXECUTE'." — both measured verbatim.
+            if (ctx.expressionList() != null) {
+                for (final FrostlakeParser.ExpressionContext arg : ctx.expressionList().expression()) {
+                    if (!(arg instanceof FrostlakeParser.QualifiedNameExprContext)
+                            && !(arg instanceof FrostlakeParser.SessionVarExprContext)) {
+                        final Token start = arg.getStart();
+                        throw new RuntimeException("SQL compilation error:\nsyntax error line "
+                            + start.getLine() + " at position " + start.getCharPositionInLine()
+                            + " unexpected '" + start.getText() + "'.");
+                    }
+                }
+            }
+            throw new RuntimeException("SQL compilation error:\nUnsupported statement type 'EXECUTE'.");
+        }
+        final FrostlakeParser.ExpressionContext source = ctx.expression();
+        if (source instanceof FrostlakeParser.SessionVarExprContext) {
+            return;
+        }
+        if (source instanceof FrostlakeParser.LiteralExprContext) {
+            final FrostlakeParser.LiteralContext literal = ((FrostlakeParser.LiteralExprContext) source).literal();
+            if (literal.STRING_LITERAL() != null || literal.DOLLAR_QUOTED_STRING() != null) {
+                return;
+            }
+        }
+        throw new RuntimeException("SQL compilation error:\nsyntax error line 1 at position 0 unexpected '"
+            + unexpectedExecuteImmediateToken(source) + "'.");
+    }
+
+    /**
+     * The token Snowflake names in its "unexpected" error for a rejected session-level EXECUTE IMMEDIATE
+     * source: an operator root reports its operator ({@code 'SELECT ' || '1'} → {@code ||}), anything
+     * else reports its own text (a bare identifier → that identifier).
+     */
+    private static String unexpectedExecuteImmediateToken(final FrostlakeParser.ExpressionContext source) {
+        if (source instanceof FrostlakeParser.ConcatExprContext) {
+            return ((FrostlakeParser.ConcatExprContext) source).PIPE_PIPE().getText();
+        }
+        if (source instanceof FrostlakeParser.AdditiveExprContext) {
+            return ((FrostlakeParser.AdditiveExprContext) source).op.getText();
+        }
+        if (source instanceof FrostlakeParser.MultiplicativeExprContext) {
+            return ((FrostlakeParser.MultiplicativeExprContext) source).op.getText();
+        }
+        return source.getText();
     }
 
     /** Read the SQL script referenced by {@code EXECUTE IMMEDIATE FROM} — a stage file (@stg/file) or a
@@ -1358,14 +1509,7 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
     }
 
     public String getText(final FrostlakeParser.QualifiedNameContext ctx) {
-        List<String> parts = new ArrayList<>();
-        for (final FrostlakeParser.IdentifierContext id : ctx.identifier()) {
-            parts.add(getText(id));
-        }
-        if (ctx.TABLE() != null) {
-            parts.add("TABLE");   // db.table — a trailing part literally named "table"
-        }
-        return String.join(".", parts);
+        return ParseTreeText.getQualifiedName(ctx);
     }
 
     /**
@@ -1375,16 +1519,7 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
      * getText(qn).split("\\.")} would mis-split).
      */
     public String[] qualifiedNameParts(final FrostlakeParser.QualifiedNameContext ctx) {
-        final List<FrostlakeParser.IdentifierContext> ids = ctx.identifier();
-        final boolean trailingTable = ctx.TABLE() != null;   // db.table — a part literally named "table"
-        final String[] parts = new String[ids.size() + (trailingTable ? 1 : 0)];
-        for (int i = 0; i < ids.size(); i++) {
-            parts[i] = getText(ids.get(i));
-        }
-        if (trailingTable) {
-            parts[parts.length - 1] = "TABLE";
-        }
-        return parts;
+        return ParseTreeText.qualifiedNameParts(ctx);
     }
 
     public String extractStringLiteral(final TerminalNode node) {
@@ -1433,7 +1568,7 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
         for (final FrostlakeParser.ColumnOrConstraintContext item : ctx.columnOrConstraint()) {
             if (item.columnDef() != null) {
                 FrostlakeParser.ColumnDefContext colDef = item.columnDef();
-                String colName = getText(colDef.identifier());
+                String colName = ParseTreeText.namePartText(colDef.namePart());
                 DataType dataType = parseDataType(colDef.dataTypeName(), colDef.typeParameters());
 
                 boolean primaryKey = false;
@@ -1567,12 +1702,93 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
         return expressionBuilder.buildExpression(ctx);
     }
 
+    /** Scripting-expression evaluation: a bare name may resolve to a scripting variable. */
     private Object evaluateExpression(final FrostlakeParser.ExpressionContext ctx) {
         return expressionBuilder.evaluateExpression(ctx);
     }
 
+    /**
+     * Evaluation inside an EMBEDDED SQL statement: a bare name is an identifier, never a
+     * stored-procedure parameter / DECLAREd / LET variable (Snowflake requires {@code :name} there).
+     */
+    private Object evaluateSqlExpression(final FrostlakeParser.ExpressionContext ctx) {
+        return expressionBuilder.evaluateSqlExpression(ctx);
+    }
+
     public ProceduralExecutor getProceduralExecutor() {
         return proceduralExecutor;
+    }
+
+    /**
+     * Execute a {@code LANGUAGE SQL} scalar UDF whose body is a Snowflake-Scripting block and yield the
+     * value its RETURN produced — live-verified: {@code CREATE FUNCTION f() RETURNS INT AS $$
+     * BEGIN RETURN 1; END $$} then {@code SELECT f()} is 1, and the block really runs (a body of
+     * {@code BEGIN RETURN 1; RETURN 2; END} yields 1, {@code BEGIN LET x INT := 5; RETURN x * 2; END}
+     * yields 10, and a body with no RETURN at all yields NULL).
+     *
+     * <p>Shares every mechanism with the stored-procedure CALL path above — bind the arguments as declared
+     * variables, parse the body with the engine's own lexer/parser, visit its statements, read the RETURN —
+     * but differs in the two ways a FUNCTION differs from a PROCEDURE:
+     * <ul>
+     *   <li>the scope is ISOLATED, because a function is its own execution context: it cannot see a calling
+     *       procedure's variables, and its own must not touch them (live-verified both ways);</li>
+     *   <li>the shared return state is saved and put back, because this body runs in the MIDDLE of
+     *       evaluating an enclosing block's expression — consuming its own RETURN must not look to that
+     *       block like a RETURN of its own.</li>
+     * </ul>
+     */
+    public Object executeScriptingFunctionBody(final Function function, final List<Object> args) {
+        final boolean callerReturned = proceduralExecutor.hasReturned();
+        final Object callerReturnValue = proceduralExecutor.getReturnValue();
+        proceduralExecutor.clearReturnState();
+        proceduralExecutor.enterIsolatedScope();
+        // The body runs in the MIDDLE of the statement that called the function, so its block's
+        // per-statement autocommit must not commit that statement's write set — the same guard a
+        // procedure called from a FROM clause needs. A UDF cannot run DML at all (the CREATE-time check
+        // refuses it), so this only ever protects the CALLER's transaction.
+        queryExecutor.getTransactionManager().beginAtomicSection();
+        try {
+            final List<Parameter> params = function.getParameters();
+            for (int i = 0; i < params.size() && i < args.size(); i++) {
+                proceduralExecutor.markDeclaredInCurrentScope(params.get(i).getName());
+                proceduralExecutor.setVariable(params.get(i).getName(), args.get(i));
+            }
+
+            final String body = function.getBody();
+            final FrostlakeLexer lexer = new FrostlakeLexer(CharStreams.fromString(body));
+            final SyntaxErrorListener errorListener = new SyntaxErrorListener(body);
+            lexer.removeErrorListeners();
+            lexer.addErrorListener(errorListener);
+            final CommonTokenStream tokens = new CommonTokenStream(lexer);
+            final FrostlakeParser parser = new FrostlakeParser(tokens);
+            parser.removeErrorListeners();
+            parser.addErrorListener(errorListener);
+            final FrostlakeParser.SqlScriptContext tree = parser.sqlScript();
+            errorListener.throwIfErrors();
+
+            Object bodyResult = null;
+            for (final FrostlakeParser.StatementContext stmtCtx : flattenedStatements(tree)) {
+                bodyResult = visit(stmtCtx);
+                if (proceduralExecutor.hasReturned()) {
+                    break;
+                }
+            }
+            // The body's BEGIN…END surfaces its RETURN either as the single-row ResultSet the outermost
+            // block builds, or — when this UDF was called from inside another block, which makes the
+            // body's block a NESTED one — by leaving the value in the return state. Both happen.
+            if (proceduralExecutor.hasReturned()) {
+                return proceduralExecutor.getReturnValue();
+            }
+            if (bodyResult instanceof ResultSet) {
+                final ResultSet bodyRs = (ResultSet) bodyResult;
+                return bodyRs.getRowCount() > 0 ? bodyRs.getRows().get(0).getValue(0) : null;
+            }
+            return null;   // a body that never RETURNs yields NULL (live-verified)
+        } finally {
+            queryExecutor.getTransactionManager().endAtomicSection();
+            proceduralExecutor.exitScope();
+            proceduralExecutor.restoreReturnState(callerReturned, callerReturnValue);
+        }
     }
 
     /** All statements of a parsed script in order, chains flattened (a ->> chain contributes each

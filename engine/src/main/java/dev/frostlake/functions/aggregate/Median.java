@@ -17,6 +17,7 @@
 package dev.frostlake.functions.aggregate;
 
 import dev.frostlake.functions.AggregateFunction;
+import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.types.NumericType;
 
 import java.math.BigDecimal;
@@ -35,6 +36,18 @@ public class Median extends AggregateFunction {
 
     @Override public int getMinArgCount() { return 1; }
     @Override public int getMaxArgCount() { return 1; }
+
+    /**
+     * MEDIAN orders its input against a numeric accumulator, and refuses a semi-structured value with
+     * a message shape of its own: live, {@code MEDIAN(o)} is "incompatible types: [OBJECT]
+     * and [NUMBER(9,0)]" (SQLSTATE 42846, vendor code 1010 — not the 42P13 argument-type list SUM
+     * uses), {@code MEDIAN(a)} names ARRAY and a structured column names its whole type. It fires on
+     * an EMPTY input and inside a GROUP BY alike, while {@code MEDIAN(v)} over a VARIANT is accepted.
+     */
+    @Override
+    public SemiStructuredRejection semiStructuredRejection(final int position) {
+        return SemiStructuredRejection.INCOMPATIBLE_TYPES;
+    }
 
     private static class MedianAccumulator implements Accumulator {
         private final List<Double> values = new ArrayList<>();

@@ -25,7 +25,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
  * Hex binary literals — {@code x'A1B2'} / {@code X'a1b2'} — carrying the engine's BINARY value form
- * (an uppercase hex string), usable in expressions, functions and INSERTs.
+ * (a real BINARY value, displayed as uppercase hex), usable in expressions, functions and INSERTs.
  */
 public class HexBinaryLiteralTest extends BaseDatabaseTest {
 
@@ -36,14 +36,14 @@ public class HexBinaryLiteralTest extends BaseDatabaseTest {
 
     @Test
     public void hexLiteralYieldsTheUppercaseHexValue() {
-        assertEquals("A1B2", scalar("SELECT x'A1B2'"));
-        assertEquals("A1B2", scalar("SELECT X'a1b2'"), "lowercase digits and X both normalize");
+        assertEquals("A1B2", String.valueOf(scalar("SELECT x'A1B2'")));
+        assertEquals("A1B2", String.valueOf(scalar("SELECT X'a1b2'")),
+            "lowercase digits and X both normalize");
     }
 
     @Test
     public void hexLiteralMatchesTheEngineBinaryForm() {
-        // The engine's BINARY values are hex strings, so the literal equals TO_BINARY of the same hex
-        // (byte-count semantics like BIT_LENGTH follow the hex-string representation engine-wide).
+        // BINARY values are real byte values; the literal equals TO_BINARY of the same hex.
         assertEquals(Boolean.TRUE, scalar("SELECT x'A1B2' = TO_BINARY('A1B2', 'HEX')"));
     }
 
@@ -51,6 +51,6 @@ public class HexBinaryLiteralTest extends BaseDatabaseTest {
     public void hexLiteralInsertsIntoBinaryColumns() {
         engine.execute("CREATE TABLE hx (b BINARY)");
         engine.execute("INSERT INTO hx VALUES (x'48FAF43B0AFCEF9B63EE3A93EE2AC2')");
-        assertEquals("48FAF43B0AFCEF9B63EE3A93EE2AC2", scalar("SELECT b FROM hx"));
+        assertEquals("48FAF43B0AFCEF9B63EE3A93EE2AC2", String.valueOf(scalar("SELECT b FROM hx")));
     }
 }

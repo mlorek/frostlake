@@ -104,8 +104,9 @@ public class VariableShadowingTest {
         // block that scopes `result` to itself (Snowflake semantics), leaving `:result` out of scope
         // at RETURN. The inner block reads the outer `msg` and writes the outer `result`.
         assertEquals("hello", exec(
-            "DECLARE msg VARCHAR DEFAULT 'hello';\n" +
-            "DECLARE result VARCHAR DEFAULT '';\n" +
+            "DECLARE\n" +
+            "    msg VARCHAR DEFAULT 'hello';\n" +
+            "    result VARCHAR DEFAULT '';\n" +
             "BEGIN\n" +
             "    BEGIN\n" +
             "        result := :msg;\n" +
@@ -155,8 +156,9 @@ public class VariableShadowingTest {
     @Test
     public void testOnlyAssignedVariablePropagates() {
         assertEquals("20,99", exec(
-            "DECLARE a INT DEFAULT 10;\n" +
-            "DECLARE b INT DEFAULT 99;\n" +
+            "DECLARE\n" +
+            "    a INT DEFAULT 10;\n" +
+            "    b INT DEFAULT 99;\n" +
             "BEGIN\n" +
             "    BEGIN\n" +
             "        a := 20;\n" +
@@ -173,8 +175,9 @@ public class VariableShadowingTest {
     public void testShadowOneAssignOther() {
         // a=1 (shadowed inside, outer stays 1); b=2 (assigned inside → becomes 20)
         assertEquals("1,20", exec(
-            "DECLARE a INT DEFAULT 1;\n" +
-            "DECLARE b INT DEFAULT 2;\n" +
+            "DECLARE\n" +
+            "    a INT DEFAULT 1;\n" +
+            "    b INT DEFAULT 2;\n" +
             "BEGIN\n" +
             "    BEGIN\n" +
             "        LET a INT := 99;\n" +
@@ -281,8 +284,9 @@ public class VariableShadowingTest {
         // outer x=0; level-2 shadows x; level-3 declares y and assigns outer z;
         // after all blocks exit: x=0 (shadowed), z=99
         assertEquals("0,99", exec(
-            "DECLARE x INT DEFAULT 0;\n" +
-            "DECLARE z INT DEFAULT 0;\n" +
+            "DECLARE\n" +
+            "    x INT DEFAULT 0;\n" +
+            "    z INT DEFAULT 0;\n" +
             "BEGIN\n" +
             "    BEGIN\n" +
             "        LET x INT := 50;\n" +

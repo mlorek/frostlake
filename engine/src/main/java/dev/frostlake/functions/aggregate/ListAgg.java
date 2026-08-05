@@ -17,6 +17,7 @@
 package dev.frostlake.functions.aggregate;
 
 import dev.frostlake.functions.AggregateFunction;
+import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.types.StringType;
 
 import java.util.List;
@@ -41,4 +42,19 @@ public class ListAgg extends AggregateFunction {
 
     @Override public int getMinArgCount() { return 1; }
     @Override public int getMaxArgCount() { return 2; }
+
+    /**
+     * LISTAGG joins its input as text, so neither position takes a semi-structured value. Live
+     * {@code LISTAGG(o)} is "Invalid argument types for function 'LISTAGG': (OBJECT)",
+     * {@code LISTAGG(a)} names ARRAY, {@code LISTAGG(s, o)} names the DELIMITER position, and the
+     * {@code DISTINCT} and {@code WITHIN GROUP (ORDER BY …)} forms reject identically — while
+     * {@code LISTAGG(v)} over a VARIANT is accepted even when the VARIANT holds an object.
+     *
+     * <p>Declared here rather than by extending {@code TextArgumentFunction} only because an
+     * aggregate already extends {@link AggregateFunction}; the rule is the same one.
+     */
+    @Override
+    public SemiStructuredRejection semiStructuredRejection(final int position) {
+        return SemiStructuredRejection.ARGUMENT_TYPES;
+    }
 }

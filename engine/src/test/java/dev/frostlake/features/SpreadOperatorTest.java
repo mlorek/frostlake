@@ -21,9 +21,14 @@ import dev.frostlake.storage.ResultSet;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+/**
+ * Qualified star projection ({@code t.*}) versus the {@code **} spread, which does not exist in
+ * Snowflake — live-verified: {@code t.**} is a syntax error in every position.
+ */
 public class SpreadOperatorTest {
 
     private DatabaseEngine engine;
@@ -57,24 +62,25 @@ public class SpreadOperatorTest {
     }
 
     @Test
-    public void testSpreadOperator() {
-        // SELECT e.** FROM table AS e — same as e.*
-        ResultSet rs = engine.executeQuery("SELECT e.** FROM employees e ORDER BY e.id");
-        assertNotNull(rs);
-        assertEquals(2, rs.getRowCount());
-        assertEquals(3, rs.getColumns().size());
-        assertEquals("Alice", rs.getRows().get(0).getValue(1).toString());
+    public void testSpreadOperatorIsRejected() {
+        // SELECT e.** — the ** spread is not Snowflake syntax; e.* is the supported projection.
+        assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.executeQuery("SELECT e.** FROM employees e ORDER BY e.id");
+            }
+        });
     }
 
     @Test
-    public void testSpreadOperatorWithAdditionalColumn() {
-        // SELECT e.**, extra_expr alongside spread
-        ResultSet rs = engine.executeQuery(
-            "SELECT e.**, UPPER(e.name) AS upper_name FROM employees e ORDER BY e.id");
-        assertNotNull(rs);
-        assertEquals(2, rs.getRowCount());
-        assertEquals(4, rs.getColumns().size()); // id, name, dept, upper_name
-        assertEquals("ALICE", rs.getRows().get(0).getValue(3).toString());
+    public void testSpreadOperatorWithAdditionalColumnIsRejected() {
+        // SELECT e.**, extra_expr — rejected in a mixed select list too.
+        assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.executeQuery("SELECT e.**, UPPER(e.name) AS upper_name FROM employees e ORDER BY e.id");
+            }
+        });
     }
 
     @Test

@@ -127,7 +127,10 @@ public class MissingScalarFunctionsTest {
         assertNull(q("SELECT TRY_TO_TIMESTAMP_NTZ('not-a-ts')"));
     }
     @Test public void testTryToNumberValid() {
-        assertEquals(123.45, ((Number) q("SELECT TRY_TO_NUMBER('123.45')")).doubleValue(), 0.001);
+        // TRY_TO_NUMBER carries TO_NUMBER's NUMBER(38,0) default — no scale rounds to a whole
+        // number; an explicit (precision, scale) keeps the fraction.
+        assertEquals(123.0, ((Number) q("SELECT TRY_TO_NUMBER('123.45')")).doubleValue(), 0.001);
+        assertEquals(123.45, ((Number) q("SELECT TRY_TO_NUMBER('123.45', 10, 2)")).doubleValue(), 0.001);
     }
     @Test public void testTryToNumberInvalid() {
         assertNull(q("SELECT TRY_TO_NUMBER('abc')"));
@@ -181,7 +184,7 @@ public class MissingScalarFunctionsTest {
     }
     @Test public void testTypeOfString() {
         // Snowflake reports strings as VARCHAR (never "TEXT").
-        assertEquals("VARCHAR", q("SELECT TYPEOF('hello')"));
+        assertEquals("VARCHAR", q("SELECT TYPEOF(TO_VARIANT('hello'))"));
     }
     @Test public void testIsObject() {
         assertEquals(true, q("SELECT IS_OBJECT(PARSE_JSON('{\"a\":1}'))"));

@@ -18,9 +18,11 @@ package dev.frostlake.functions;
 
 import dev.frostlake.BaseDatabaseTest;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /** TRY_TO_BINARY(expr [, format]) — non-throwing TO_BINARY: NULL instead of an error on undecodable input. */
 public class TryToBinaryTest extends BaseDatabaseTest {
@@ -46,7 +48,16 @@ public class TryToBinaryTest extends BaseDatabaseTest {
     }
 
     @Test
-    public void nullInputYieldsNull() {
-        assertNull(scalar("SELECT TRY_TO_BINARY(NULL)"));
+    public void untypedNullIsRejectedAndCastNullYieldsNull() {
+        // TRY_TO_* is TRY_CAST under the hood and needs a VARCHAR source: an UNTYPED NULL errors
+        // "Function TRY_CAST cannot be used with arguments of types NULL and BINARY(67108864)"
+        // (live-verified), while NULL::VARCHAR converts to NULL.
+        assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                scalar("SELECT TRY_TO_BINARY(NULL)");
+            }
+        });
+        assertNull(scalar("SELECT TRY_TO_BINARY(NULL::VARCHAR)"));
     }
 }

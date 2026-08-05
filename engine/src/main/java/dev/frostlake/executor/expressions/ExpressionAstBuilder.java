@@ -18,16 +18,24 @@ package dev.frostlake.executor.expressions;
 
 import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.executor.SqlStringLiterals;
+import dev.frostlake.executor.commands.DataTypeParser;
 import dev.frostlake.parser.FrostlakeBaseVisitor;
+import dev.frostlake.executor.ParseTreeText;
 import dev.frostlake.parser.FrostlakeParser;
+import dev.frostlake.types.DataType;
+import dev.frostlake.types.StructuredTypes;
+import dev.frostlake.types.VectorType;
+import dev.frostlake.values.BinaryValue;
 
 import org.antlr.v4.runtime.ParserRuleContext;
 import org.antlr.v4.runtime.Token;
 import org.antlr.v4.runtime.misc.Interval;
 import org.antlr.v4.runtime.tree.RuleNode;
+import org.antlr.v4.runtime.tree.TerminalNode;
 
 import java.math.BigDecimal;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -98,9 +106,10 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
             return new LiteralExpression(unquoteDollar(lit.getText()), LiteralType.STRING);
         }
         if (lit.HEX_LITERAL() != null) {
-            // x'a1b2' — the engine's BINARY representation is the uppercase hex string.
+            // x'a1b2' — a BINARY literal, carried as a real BinaryValue.
             final String hex = lit.getText();
-            return new LiteralExpression(hex.substring(2, hex.length() - 1).toUpperCase(), LiteralType.STRING);
+            return new LiteralExpression(
+                BinaryValue.fromHex(hex.substring(2, hex.length() - 1)), LiteralType.BINARY);
         }
         if (lit.TRUE() != null) {
             return new LiteralExpression(Boolean.TRUE, LiteralType.BOOLEAN);
@@ -124,18 +133,45 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
         return buildColumnReference(ctx.qualifiedName());
     }
 
-    private Expression buildColumnReference(final FrostlakeParser.QualifiedNameContext qn) {
-        final List<FrostlakeParser.IdentifierContext> parts = qn.identifier();
-        if (parts.size() == 1) {
-            return new ColumnReferenceExpression(SqlIdentifiers.canonical(parts.get(0)));
+    /** {@code PRIOR <column>} — the parent-row side of a CONNECT BY step. Snowflake resolves only the bare
+     *  column here (live-verified: a qualified {@code PRIOR e.id} fails with "invalid identifier"), so any
+     *  qualifier is dropped and the reference binds to the parent row's copy of that column. */
+    @Override
+    public Expression visitPriorExpr(final FrostlakeParser.PriorExprContext ctx) {
+        final String[] parts = ParseTreeText.qualifiedNameParts(ctx.qualifiedName());
+        return new PriorExpression(parts[parts.length - 1]);
+    }
+
+    /** {@code CONNECT_BY_ROOT <column>} — the hierarchy root row's value of that column. */
+    @Override
+    public Expression visitConnectByRootExpr(final FrostlakeParser.ConnectByRootExprContext ctx) {
+        final String[] parts = ParseTreeText.qualifiedNameParts(ctx.qualifiedName());
+        final String column = parts[parts.length - 1];
+        if (parts.length == 1) {
+            return new ConnectByRootExpression(null, column);
         }
-        final String column = SqlIdentifiers.canonical(parts.get(parts.size() - 1));
         final StringBuilder table = new StringBuilder();
-        for (int i = 0; i < parts.size() - 1; i++) {
+        for (int i = 0; i < parts.length - 1; i++) {
             if (i > 0) {
                 table.append('.');
             }
-            table.append(SqlIdentifiers.canonical(parts.get(i)));
+            table.append(parts[i]);
+        }
+        return new ConnectByRootExpression(table.toString(), column);
+    }
+
+    private Expression buildColumnReference(final FrostlakeParser.QualifiedNameContext qn) {
+        final String[] parts = ParseTreeText.qualifiedNameParts(qn);
+        if (parts.length == 1) {
+            return new ColumnReferenceExpression(parts[0]);
+        }
+        final String column = parts[parts.length - 1];
+        final StringBuilder table = new StringBuilder();
+        for (int i = 0; i < parts.length - 1; i++) {
+            if (i > 0) {
+                table.append('.');
+            }
+            table.append(parts[i]);
         }
         return new ColumnReferenceExpression(table.toString(), column);
     }
@@ -281,19 +317,19 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
 
     @Override
     public Expression visitLikeAnyAllExpr(final FrostlakeParser.LikeAnyAllExprContext ctx) {
-        // Snowflake's multi-pattern matching — `x [NOT] LIKE/ILIKE ANY|ALL (p1, p2, …)` — is defined as the
-        // OR (ANY) / AND (ALL) expansion of the single-pattern predicate, so build exactly that tree and
-        // inherit the existing LIKE evaluation and its three-valued NULL semantics.
-        final BinaryOperator op = ctx.ILIKE() != null ? BinaryOperator.ILIKE : BinaryOperator.LIKE;
-        final BinaryOperator combiner = ctx.q.getType() == FrostlakeParser.ALL ? BinaryOperator.AND : BinaryOperator.OR;
-        final Expression subject = visit(ctx.expression(0));
-        final Expression escape = ctx.esc != null ? visit(ctx.esc) : null;
-        Expression combined = null;
+        // Snowflake's multi-pattern matching is NOT the OR/AND expansion of the single-pattern
+        // predicate: NULL patterns are skipped rather than propagated as UNKNOWN (live-verified), so
+        // a dedicated node carries the pattern list and the shared ESCAPE.
+        final List<Expression> patterns = new ArrayList<>();
         for (final FrostlakeParser.ExpressionContext patternCtx : ctx.patterns) {
-            final Expression one = new BinaryOperationExpression(subject, op, visit(patternCtx), escape);
-            combined = combined == null ? one : new BinaryOperationExpression(combined, combiner, one);
+            patterns.add(visit(patternCtx));
         }
-        return ctx.NOT() != null ? new UnaryOperationExpression(UnaryOperator.NOT, combined) : combined;
+        return new LikeAnyAllExpression(
+            visit(ctx.expression(0)),
+            patterns,
+            ctx.q.getType() == FrostlakeParser.ALL,
+            ctx.ILIKE() != null,
+            ctx.esc != null ? visit(ctx.esc) : null);
     }
 
     @Override
@@ -358,13 +394,29 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
 
     @Override
     public Expression visitCastExpr(final FrostlakeParser.CastExprContext ctx) {
-        return new CastExpression(visit(ctx.expression()), typeText(ctx.dataTypeName(), ctx.typeParameters()));
+        rejectFileTarget(ctx.dataTypeName(), "CAST(" + originalText(ctx.expression()) + " AS FILE)");
+        return new CastExpression(visit(ctx.expression()), typeText(ctx.dataTypeName(), ctx.typeParameters()),
+            false, declaredTarget(ctx.dataTypeName(), ctx.typeParameters()),
+            fieldsModifier(ctx.RENAME(), ctx.ADD()));
     }
 
     @Override
     public Expression visitTryCastExpr(final FrostlakeParser.TryCastExprContext ctx) {
         // TRY_CAST(expr AS type): same as CAST but a failed conversion yields NULL instead of erroring.
-        return new CastExpression(visit(ctx.expression()), typeText(ctx.dataTypeName(), ctx.typeParameters()), true);
+        // The field modifiers are a CAST-only feature — live, TRY_CAST(<structured> AS
+        // OBJECT(y VARCHAR) RENAME FIELDS) fails "Function RENAME FIELDS modifier is not supported with
+        // TRY_CAST" even though the very same CAST succeeds. Rejected here, on the parse tree, so the
+        // error does not depend on evaluating a row.
+        final CastFieldsModifier modifier = fieldsModifier(ctx.RENAME(), ctx.ADD());
+        if (modifier != CastFieldsModifier.NONE) {
+            throw new RuntimeException("Function " + modifier.getSql()
+                + " modifier is not supported with TRY_CAST");
+        }
+        // TRY_CAST renders WITHOUT the target in the live message: `TRY_CAST(NULL AS FILE)` fails
+        // "invalid type [TRY_CAST(NULL)] for parameter 'TO_FILE'".
+        rejectFileTarget(ctx.dataTypeName(), "TRY_CAST(" + originalText(ctx.expression()) + ")");
+        return new CastExpression(visit(ctx.expression()), typeText(ctx.dataTypeName(), ctx.typeParameters()),
+            true, declaredTarget(ctx.dataTypeName(), ctx.typeParameters()), CastFieldsModifier.NONE);
     }
 
     @Override
@@ -377,7 +429,13 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
 
     @Override
     public Expression visitCastExpr2(final FrostlakeParser.CastExpr2Context ctx) {
-        return new CastExpression(visit(ctx.expression()), typeText(ctx.dataTypeName(), ctx.typeParameters()));
+        // The `::` shorthand has no modifier slot in the grammar, matching Snowflake — live,
+        // `<expr>::OBJECT(y VARCHAR) RENAME FIELDS` is a SYNTAX error there, not a semantic one.
+        // The `::` form reports itself as CAST(...) live: `NULL::FILE` fails with
+        // "invalid type [CAST(NULL AS FILE)] for parameter 'TO_FILE'".
+        rejectFileTarget(ctx.dataTypeName(), "CAST(" + originalText(ctx.expression()) + " AS FILE)");
+        return new CastExpression(visit(ctx.expression()), typeText(ctx.dataTypeName(), ctx.typeParameters()),
+            false, declaredTarget(ctx.dataTypeName(), ctx.typeParameters()), CastFieldsModifier.NONE);
     }
 
     @Override
@@ -447,27 +505,6 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
 
     @Override
     public Expression visitJsonObjectExpr(final FrostlakeParser.JsonObjectExprContext ctx) {
-        boolean hasSpread = false;
-        for (final FrostlakeParser.JsonObjectEntryContext entry : ctx.jsonObjectLiteral().jsonObjectEntry()) {
-            if (entry.DOUBLE_STAR() != null) {
-                hasSpread = true;
-            }
-        }
-        if (hasSpread) {
-            // {'a': 1, **obj}: desugar to OBJECT_CONSTRUCT with the spread merged into the
-            // alternating key/value argument list (last key wins, as in the plain constructor).
-            final List<Expression> args = new ArrayList<>();
-            for (final FrostlakeParser.JsonObjectEntryContext entry : ctx.jsonObjectLiteral().jsonObjectEntry()) {
-                if (entry.DOUBLE_STAR() != null) {
-                    args.add(new SpreadExpression(visit(entry.expression())));
-                } else {
-                    args.add(new LiteralExpression(
-                        unquoteString(entry.jsonKeyValuePair().STRING_LITERAL().getText()), LiteralType.STRING));
-                    args.add(visit(entry.jsonKeyValuePair().expression()));
-                }
-            }
-            return new FunctionCallExpression("OBJECT_CONSTRUCT", args);
-        }
         final Map<String, Expression> props = new LinkedHashMap<>();
         for (final FrostlakeParser.JsonObjectEntryContext entry : ctx.jsonObjectLiteral().jsonObjectEntry()) {
             final FrostlakeParser.JsonKeyValuePairContext pair = entry.jsonKeyValuePair();
@@ -478,59 +515,88 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
 
     @Override
     public Expression visitJsonArrayExpr(final FrostlakeParser.JsonArrayExprContext ctx) {
-        boolean hasSpread = false;
-        for (final FrostlakeParser.ArrayElementContext element : ctx.jsonArrayLiteral().arrayElement()) {
-            if (element.DOUBLE_STAR() != null) {
-                hasSpread = true;
-            }
-        }
-        if (hasSpread) {
-            // [1, **arr]: desugar to ARRAY_CONSTRUCT with the spread spliced into the arguments.
-            final List<Expression> args = new ArrayList<>();
-            for (final FrostlakeParser.ArrayElementContext element : ctx.jsonArrayLiteral().arrayElement()) {
-                args.add(element.DOUBLE_STAR() != null
-                    ? new SpreadExpression(visit(element.expression()))
-                    : visit(element.expression()));
-            }
-            return new FunctionCallExpression("ARRAY_CONSTRUCT", args);
-        }
+        return new JsonArrayExpression(arrayLiteralElements(ctx));
+    }
+
+    /** The elements of an array literal, with any {@code ** …} element spliced in place. */
+    private List<Expression> arrayLiteralElements(final FrostlakeParser.JsonArrayExprContext ctx) {
         final List<Expression> elements = new ArrayList<>();
         for (final FrostlakeParser.ArrayElementContext element : ctx.jsonArrayLiteral().arrayElement()) {
-            elements.add(visit(element.expression()));
+            if (element.spreadArgument() != null) {
+                elements.addAll(spreadElements(element.spreadArgument()));
+            } else {
+                elements.add(visit(element.expression()));
+            }
         }
-        return new JsonArrayExpression(elements);
+        return elements;
     }
 
     @Override
     public Expression visitIntervalExpr(final FrostlakeParser.IntervalExprContext ctx) {
-        return new IntervalExpression(visit(ctx.expression()),
-            IntervalUnit.valueOf(ctx.intervalUnit().getText().toUpperCase()));
+        // INTERVAL '<n>' <singular-unit> (live-verified: the amount must be quoted, and only the
+        // singular unit keywords act as a suffix — a plural word after the string is an alias).
+        final String amount = unquoteString(ctx.STRING_LITERAL().getText()).trim();
+        try {
+            return new IntervalExpression(
+                new LiteralExpression(Long.parseLong(amount), LiteralType.INTEGER),
+                IntervalUnit.valueOf(ctx.intervalUnitSingular().getText().toUpperCase()));
+        } catch (final NumberFormatException badNumber) {
+            throw notPorted("INTERVAL literal (non-integer amount '" + amount + "')", ctx);
+        }
     }
 
     @Override
     public Expression visitIntervalStringExpr(final FrostlakeParser.IntervalStringExprContext ctx) {
-        // INTERVAL '<n> <unit>' — split the string literal into numeric value + unit (mirrors the
-        // legacy parser). A non-integer value throws here and is caught as a fall back to legacy.
-        final String inner = unquoteString(ctx.STRING_LITERAL().getText()).trim();
-        final String upper = inner.toUpperCase();
-        for (final IntervalUnit unit : IntervalUnit.values()) {
-            final String name = unit.name();
-            final boolean spaced = upper.endsWith(" " + name);
-            if (spaced || upper.endsWith(name)) {
-                final int cut = inner.length() - (spaced ? name.length() + 1 : name.length());
-                final String numStr = inner.substring(0, cut).trim();
-                return new IntervalExpression(
-                    new LiteralExpression(Long.parseLong(numStr), LiteralType.INTEGER), unit);
+        // Snowflake's quoted interval literal (live-verified): comma-separated `<n> [<unit>]` parts,
+        // singular or plural unit words, and a bare number defaulting to SECONDS
+        // (CURRENT_DATE + INTERVAL '10' adds ten seconds). Parts apply in order via the rest chain.
+        final String inner = unquoteString(ctx.STRING_LITERAL().getText());
+        final String[] parts = inner.split(",");
+        IntervalExpression chain = null;
+        for (int i = parts.length - 1; i >= 0; i--) {
+            final String part = parts[i].trim();
+            if (part.isEmpty()) {
+                throw notPorted("INTERVAL string literal (empty part)", ctx);
+            }
+            int digitEnd = 0;
+            if (digitEnd < part.length() && (part.charAt(0) == '-' || part.charAt(0) == '+')) {
+                digitEnd = 1;
+            }
+            while (digitEnd < part.length() && Character.isDigit(part.charAt(digitEnd))) {
+                digitEnd++;
+            }
+            final String numStr = part.substring(0, digitEnd).trim();
+            final String unitStr = part.substring(digitEnd).trim().toUpperCase();
+            final IntervalUnit unit;
+            if (unitStr.isEmpty()) {
+                unit = IntervalUnit.SECOND;
+            } else {
+                try {
+                    unit = IntervalUnit.valueOf(unitStr);
+                } catch (final IllegalArgumentException unknownUnit) {
+                    throw notPorted("INTERVAL string literal (unrecognized unit '" + unitStr + "')", ctx);
+                }
+            }
+            try {
+                chain = new IntervalExpression(
+                    new LiteralExpression(Long.parseLong(numStr), LiteralType.INTEGER), unit, chain);
+            } catch (final NumberFormatException badNumber) {
+                throw notPorted("INTERVAL string literal (non-integer amount '" + numStr + "')", ctx);
             }
         }
-        throw notPorted("INTERVAL string literal (unrecognized unit)", ctx);
+        return chain;
     }
 
     @Override
     public Expression visitExtractFromExpr(final FrostlakeParser.ExtractFromExprContext ctx) {
         // ANSI EXTRACT(<part> FROM <expr>) — desugar to the two-argument function form the engine already
         // supports, EXTRACT('<part>', <expr>), with the date-part identifier carried as a string literal.
-        // DATE_PART also allows a quoted part: DATE_PART('month' FROM d).
+        // Only EXTRACT has the FROM form: Snowflake rejects DATE_PART('month' FROM d) as a syntax error.
+        final String fromFunction = ctx.functionName().getText().toUpperCase();
+        if (!fromFunction.equals("EXTRACT")) {
+            throw new RuntimeException("SQL compilation error:\nsyntax error: '" + fromFunction
+                + "' does not accept a FROM argument form (only EXTRACT does)");
+        }
         final List<Expression> args = new ArrayList<>();
         final String part = ctx.identifier() != null
             ? ctx.identifier().getText()
@@ -543,9 +609,6 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
     @Override
     public Expression visitFunctionCallExpr(final FrostlakeParser.FunctionCallExprContext ctx) {
         if (ctx.overClause() != null) {
-            if (ctx.filterClause() != null) {
-                throw new RuntimeException("FILTER (WHERE ...) combined with OVER (...) is not supported");
-            }
             // A window call nested in an expression stays in the AST as a node keyed by its source text;
             // the window stage precomputes its per-row value and supplies it through the result context.
             return new WindowFunctionExpression(originalText(ctx));
@@ -560,85 +623,9 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
         }
         return new FunctionCallExpression(
             ctx.functionName().getText().toUpperCase(),
-            filteredArgs(argList(ctx.functionArgList()), ctx.filterClause()),
+            argList(ctx.functionArgList()),
             ctx.DISTINCT() != null,
             false);
-    }
-
-    /**
-     * FILTER (WHERE cond) — conditional aggregation: every argument is wrapped as
-     * CASE WHEN cond THEN arg END, so rows failing the condition contribute NULL, which
-     * aggregates ignore. This matches the clause's semantics for NULL-skipping aggregates.
-     */
-    private List<Expression> filteredArgs(final List<Expression> args,
-                                          final FrostlakeParser.FilterClauseContext filter) {
-        if (filter == null) {
-            return args;
-        }
-        if (args.isEmpty()) {
-            throw new RuntimeException("FILTER (WHERE ...) requires an aggregate with arguments");
-        }
-        final Expression condition = visit(filter.booleanExpr());
-        final List<Expression> wrapped = new ArrayList<>();
-        for (final Expression arg : args) {
-            final List<CaseExpression.WhenClause> whens = new ArrayList<>();
-            whens.add(new CaseExpression.WhenClause(condition, arg));
-            wrapped.add(new CaseExpression(whens, null));
-        }
-        return wrapped;
-    }
-
-    @Override
-    public Expression visitFunctionCallStarExpr(final FrostlakeParser.FunctionCallStarExprContext ctx) {
-        final FunctionCallExpression call = new FunctionCallExpression(
-            ctx.functionName().getText().toUpperCase(),
-            new ArrayList<>(),
-            ctx.DISTINCT() != null,
-            true);
-        // Column-list modifiers on a `*` argument — currently EXCLUDE (e.g. OBJECT_CONSTRUCT(* EXCLUDE src)).
-        final List<String> excludes = new ArrayList<>();
-        for (final FrostlakeParser.StarModifierContext mod : ctx.starModifier()) {
-            if (mod.EXCLUDE() != null) {
-                for (final FrostlakeParser.IdentifierContext id : mod.identifier()) {
-                    excludes.add(id.getText().toUpperCase());
-                }
-            }
-        }
-        call.setStarExcludes(excludes);
-        return call;
-    }
-
-    @Override
-    public Expression visitSystemFuncExpr(final FrostlakeParser.SystemFuncExprContext ctx) {
-        return new FunctionCallExpression(ctx.SYSTEM_FUNC().getText().toUpperCase(), argList(ctx.expressionList()));
-    }
-
-    @Override
-    public Expression visitSystemStreamHasDataExpr(final FrostlakeParser.SystemStreamHasDataExprContext ctx) {
-        return new SystemStreamHasDataExpression(visit(ctx.expression()));
-    }
-
-    @Override
-    public Expression visitSystemUserTaskCancelExpr(final FrostlakeParser.SystemUserTaskCancelExprContext ctx) {
-        return new SystemUserTaskCancelExpression(visit(ctx.expression()));
-    }
-
-    // ------------------------------------------------------------------
-    // Not yet ported (richer than the current node model) — fail loudly
-    // ------------------------------------------------------------------
-
-    @Override
-    public Expression visitFunctionCallNamedArgsExpr(final FrostlakeParser.FunctionCallNamedArgsExprContext ctx) {
-        if (ctx.overClause() != null) {
-            throw notPorted("window function (OVER) with named arguments", ctx);
-        }
-        final List<Expression> args = new ArrayList<>();
-        final List<String> names = new ArrayList<>();
-        for (final FrostlakeParser.NamedArgumentContext na : ctx.namedArgumentList().namedArgument()) {
-            names.add(na.identifier().getText());
-            args.add(namedArgumentValue(na));
-        }
-        return new FunctionCallExpression(ctx.functionName().getText().toUpperCase(), args, names);
     }
 
     /** A named argument's value expression; a bare subquery value (INPUT => SELECT ...) becomes a
@@ -698,10 +685,50 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
     }
 
     @Override
-    public Expression visitExecuteImmediateExpr(final FrostlakeParser.ExecuteImmediateExprContext ctx) {
-        final List<Expression> bindings = ctx.expressionList() != null
-            ? argList(ctx.expressionList()) : new ArrayList<>();
-        return new ExecuteImmediateExpression(visit(ctx.expression()), bindings);
+    public Expression visitFunctionCallStarExpr(final FrostlakeParser.FunctionCallStarExprContext ctx) {
+        // COUNT(*) / COUNT(DISTINCT *) — a star call, with EXCLUDE columns carried for star-aware callers.
+        final FunctionCallExpression call = new FunctionCallExpression(
+            ctx.functionName().getText().toUpperCase(), new ArrayList<>(), ctx.DISTINCT() != null, true);
+        final List<String> excludes = new ArrayList<>();
+        for (final FrostlakeParser.StarModifierContext mod : ctx.starModifier()) {
+            if (mod.EXCLUDE() == null) {
+                continue;
+            }
+            for (final FrostlakeParser.IdentifierContext id : mod.identifier()) {
+                excludes.add(id.getText().toUpperCase());
+            }
+        }
+        call.setStarExcludes(excludes);
+        return call;
+    }
+
+    @Override
+    public Expression visitFunctionCallNamedArgsExpr(final FrostlakeParser.FunctionCallNamedArgsExprContext ctx) {
+        if (ctx.overClause() != null) {
+            throw notPorted("window function (OVER) with named arguments", ctx);
+        }
+        final List<Expression> args = new ArrayList<>();
+        final List<String> names = new ArrayList<>();
+        for (final FrostlakeParser.NamedArgumentContext na : ctx.namedArgumentList().namedArgument()) {
+            names.add(na.identifier().getText());
+            args.add(namedArgumentValue(na));
+        }
+        return new FunctionCallExpression(ctx.functionName().getText().toUpperCase(), args, names);
+    }
+
+    @Override
+    public Expression visitSystemFuncExpr(final FrostlakeParser.SystemFuncExprContext ctx) {
+        return new FunctionCallExpression(ctx.SYSTEM_FUNC().getText().toUpperCase(), argList(ctx.expressionList()));
+    }
+
+    @Override
+    public Expression visitSystemStreamHasDataExpr(final FrostlakeParser.SystemStreamHasDataExprContext ctx) {
+        return new SystemStreamHasDataExpression(visit(ctx.expression()));
+    }
+
+    @Override
+    public Expression visitSystemUserTaskCancelExpr(final FrostlakeParser.SystemUserTaskCancelExprContext ctx) {
+        return new SystemUserTaskCancelExpression(visit(ctx.expression()));
     }
 
     // ------------------------------------------------------------------
@@ -728,45 +755,160 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
         return args;
     }
 
-    /** Function-call arguments — each a lambda (for higher-order functions) or a {@code booleanExpr}. */
+    /** The arguments of a function call, each mapped through {@link #functionArgument}. */
     private List<Expression> argList(final FrostlakeParser.FunctionArgListContext list) {
         final List<Expression> args = new ArrayList<>();
         if (list != null) {
             for (final FrostlakeParser.FunctionArgContext arg : list.functionArg()) {
-                if (arg.lambdaFunction() != null) {
-                    args.add(buildLambda(arg.lambdaFunction()));
-                } else if (arg.DOUBLE_STAR() != null) {
-                    // f(**arr) — the array's elements become positional arguments at evaluation.
-                    args.add(new SpreadExpression(visit(arg.booleanExpr())));
-                } else if (arg.STAR() != null) {
-                    // A star argument (MINHASH(5, *)) — carried as a '*' column reference.
-                    args.add(new ColumnReferenceExpression("*"));
-                } else if (arg.exprTuple() != null) {
-                    // A parenthesized tuple argument — SEARCH((play, line), 'q') — arrives as an array.
-                    final List<Expression> elements = new ArrayList<>();
-                    for (final FrostlakeParser.ExpressionContext element : arg.exprTuple().expression()) {
-                        elements.add(visit(element));
-                    }
-                    args.add(new FunctionCallExpression("ARRAY_CONSTRUCT", elements));
+                if (arg.spreadArgument() != null) {
+                    args.addAll(spreadElements(arg.spreadArgument()));
                 } else {
-                    args.add(visit(arg.booleanExpr()));
+                    args.add(functionArgument(arg));
                 }
             }
         }
         return args;
     }
 
-    private Expression buildLambda(final FrostlakeParser.LambdaFunctionContext ctx) {
-        final List<String> params = new ArrayList<>();
-        for (final FrostlakeParser.LambdaParamContext p : ctx.lambdaParams().lambdaParam()) {
-            params.add(p.identifier().getText().toUpperCase());
+    /**
+     * The argument expressions a {@code ** <array>} spread contributes to the enclosing list.
+     *
+     * <p>Snowflake requires the operand to be a CONSTANT array, and decides that STRUCTURALLY rather than
+     * by evaluating: an array literal or an {@code ARRAY_CONSTRUCT} call qualifies, but a runtime
+     * expression does not — {@code [** PARSE_JSON('[1,2]')]} is rejected live even though its value is an
+     * array, as are a column reference, a scalar, a string and an OBJECT. A bare {@code NULL} is the one
+     * non-array operand Snowflake accepts, splicing as a single element ({@code [** NULL]} → {@code
+     * [undefined]}).
+     *
+     * <p>Splicing here, at build time, is what makes the constant requirement fall out for free — and it
+     * gives every function argument splatting without per-function work, which is what Snowflake does
+     * ({@code GREATEST(** [1,5,3])} → 5, {@code CONCAT(** ['a','b'])} → 'ab').
+     */
+    private List<Expression> spreadElements(final FrostlakeParser.SpreadArgumentContext spread) {
+        final FrostlakeParser.ExpressionContext operand = spread.expression();
+        if (operand instanceof FrostlakeParser.JsonArrayExprContext) {
+            return arrayLiteralElements((FrostlakeParser.JsonArrayExprContext) operand);
         }
-        return new LambdaExpression(params, visit(ctx.booleanExpr()));
+        if (isArrayConstructCall(operand)) {
+            return argList(((FrostlakeParser.FunctionCallExprContext) operand).functionArgList());
+        }
+        if (isNullLiteral(operand)) {
+            return Collections.singletonList(visit(operand));
+        }
+        throw new RuntimeException("Unsupported feature 'spread argument with non-constant array input'.");
+    }
+
+    /** Whether the expression is literally an {@code ARRAY_CONSTRUCT(…)} call — the other constant-array form. */
+    private static boolean isArrayConstructCall(final FrostlakeParser.ExpressionContext operand) {
+        if (!(operand instanceof FrostlakeParser.FunctionCallExprContext)) {
+            return false;
+        }
+        final FrostlakeParser.FunctionCallExprContext call = (FrostlakeParser.FunctionCallExprContext) operand;
+        return "ARRAY_CONSTRUCT".equalsIgnoreCase(call.functionName().getText());
+    }
+
+    /** Whether the expression is the bare {@code NULL} literal. */
+    private static boolean isNullLiteral(final FrostlakeParser.ExpressionContext operand) {
+        if (!(operand instanceof FrostlakeParser.LiteralExprContext)) {
+            return false;
+        }
+        return ((FrostlakeParser.LiteralExprContext) operand).literal().NULL() != null;
+    }
+
+    /**
+     * One function argument: a lambda (higher-order functions), a parenthesized tuple — carried as the
+     * array of its members, the {@code SEARCH((c1, c2), …)} form — a star argument (kept as a {@code *}
+     * column reference, only meaningful to star-aware callers), or a plain boolean expression.
+     */
+    private Expression functionArgument(final FrostlakeParser.FunctionArgContext arg) {
+        if (arg.lambdaFunction() != null) {
+            return lambda(arg.lambdaFunction());
+        }
+        if (arg.exprTuple() != null) {
+            final List<Expression> members = new ArrayList<>();
+            for (final FrostlakeParser.ExpressionContext member : arg.exprTuple().expression()) {
+                members.add(visit(member));
+            }
+            return new FunctionCallExpression("ARRAY_CONSTRUCT", members);
+        }
+        if (arg.STAR() != null) {
+            return new ColumnReferenceExpression("*");
+        }
+        return visit(arg.booleanExpr());
+    }
+
+    /** A lambda argument: parameter names with their declared types (if any), plus the visited body. */
+    private Expression lambda(final FrostlakeParser.LambdaFunctionContext fn) {
+        final List<String> params = new ArrayList<>();
+        final List<String> paramTypes = new ArrayList<>();
+        for (final FrostlakeParser.LambdaParamContext param : fn.lambdaParams().lambdaParam()) {
+            params.add(param.identifier().getText());
+            paramTypes.add(param.dataTypeName() == null ? null
+                : typeText(param.dataTypeName(), param.typeParameters()));
+        }
+        return new LambdaExpression(params, paramTypes, visit(fn.booleanExpr()));
     }
 
     private String typeText(final FrostlakeParser.DataTypeNameContext type, final FrostlakeParser.TypeParametersContext params) {
-        final String base = type.getText();
+        final String base = writtenBaseType(type);
         return params != null ? base + originalText(params) : base;
+    }
+
+    /**
+     * The cast target's base type AS WRITTEN, with the two spellings that carry no meaning of their own
+     * folded onto the name Snowflake itself reports for them. {@code DEC} is a plain {@code NUMBER}
+     * synonym and {@code NVARCHAR2} a plain {@code VARCHAR} one (live: {@code 1.5::DEC(8,4)}
+     * is {@code 1.5000} and {@code 'ab'::NVARCHAR2} is a VARCHAR). Folding them HERE, where the written
+     * target text is first captured, is what keeps them out of the several downstream tables that are
+     * keyed by that text — the cast-value classifier, the static-type inferencer and the error-message
+     * namer — instead of adding a synonym row to each.
+     */
+    private String writtenBaseType(final FrostlakeParser.DataTypeNameContext type) {
+        if (type.DEC() != null) {
+            return "NUMBER";
+        }
+        if (type.NVARCHAR2() != null) {
+            return "VARCHAR";
+        }
+        return type.getText();
+    }
+
+    /**
+     * The cast target as a parsed type when its PARAMETERS carry meaning — a STRUCTURED type or a
+     * {@code VECTOR(FLOAT|INT, n)} — and null for a plain type. These cannot be recovered from
+     * {@link #typeText}: {@code getText()} concatenates tokens without whitespace, so
+     * {@code OBJECT(x VARCHAR)} flattens to {@code OBJECT(xVARCHAR)}. The parse tree is the definitive
+     * form, so both the field structure and the vector's element type / dimension are read off it.
+     */
+    private static DataType declaredTarget(final FrostlakeParser.DataTypeNameContext type,
+                                           final FrostlakeParser.TypeParametersContext params) {
+        final DataType parsed = DataTypeParser.parse(type, params, DataTypeParser.CAST_STRING_DEFAULT);
+        return StructuredTypes.isStructured(parsed) || parsed instanceof VectorType ? parsed : null;
+    }
+
+    /**
+     * FILE is a COLUMN type but not a CAST target: live, {@code NULL::FILE},
+     * {@code CAST(NULL AS FILE)} and {@code TRY_CAST(NULL AS FILE)} all fail at COMPILE time (no row is
+     * needed) with "invalid type [&lt;rendered cast&gt;] for parameter 'TO_FILE'" — Snowflake routes a
+     * cast to FILE through TO_FILE, so the message is that function's argument-type error. Rejected on
+     * the parse tree, in the one position that reads a cast's target type.
+     */
+    private static void rejectFileTarget(final FrostlakeParser.DataTypeNameContext type,
+                                         final String renderedCast) {
+        if (type.FILE() != null) {
+            throw new RuntimeException("SQL compilation error:\ninvalid type [" + renderedCast
+                + "] for parameter 'TO_FILE'");
+        }
+    }
+
+    private static CastFieldsModifier fieldsModifier(final TerminalNode rename, final TerminalNode add) {
+        if (rename != null) {
+            return CastFieldsModifier.RENAME;
+        }
+        if (add != null) {
+            return CastFieldsModifier.ADD;
+        }
+        return CastFieldsModifier.NONE;
     }
 
     private BinaryOperator comparisonOperator(final Token op) {
@@ -787,7 +929,7 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
     }
 
     private String unquoteString(final String raw) {
-        // Canonical decode: '' -> ', \' -> ', \\ -> \, \n/\t/\r -> control chars; other backslashes kept.
+        // The one canonical string-literal decoder (quote stripping + escape handling).
         return SqlStringLiterals.decode(raw);
     }
 

@@ -22,12 +22,30 @@ import org.junit.jupiter.api.Test;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Tests for EXECUTE IMMEDIATE with dollar-quoted strings
  */
 public class ExecuteImmediateDollarQuotedTest extends BaseJdbcTest {
+
+    /**
+     * Whether {@code SHOW FUNCTIONS} / {@code SHOW PROCEDURES} lists a routine with this name. The rows are
+     * scanned rather than read positionally: both backends list the whole built-in library alongside the
+     * user-defined routines, so the routine just created is not necessarily the first row.
+     */
+    private boolean listed(final String showSql, final String name) throws SQLException {
+        try (final ResultSet rs = statement.executeQuery(showSql)) {
+            while (rs.next()) {
+                if (name.equalsIgnoreCase(rs.getString("name"))) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
 
     @Test
     public void testExecuteImmediateWithDollarQuotedString() throws SQLException {
@@ -81,16 +99,14 @@ public class ExecuteImmediateDollarQuotedTest extends BaseJdbcTest {
         // Create procedure with EXECUTE IMMEDIATE using dollar-quoted string
         // Note: Using $$ in EXECUTE IMMEDIATE, but single quotes for procedure body
         String sql = """
-            EXECUTE IMMEDIATE $$CREATE PROCEDURE calculate_bonus(emp_salary INTEGER) RETURNS INTEGER AS 'emp_salary * 0.10'$$
+            EXECUTE IMMEDIATE $$CREATE PROCEDURE calculate_bonus(emp_salary INTEGER) RETURNS INTEGER AS 'BEGIN RETURN emp_salary * 0.10; END'$$
             """;
 
         statement.execute(sql);
 
         // Verify procedure was created
-        ResultSet rs = statement.executeQuery("SHOW PROCEDURES");
-        assertTrue(rs.next(), "Procedure should be created");
-        assertEquals("CALCULATE_BONUS", rs.getString("name"));
-        rs.close();
+        assertTrue(listed("SHOW PROCEDURES", "CALCULATE_BONUS"),
+            "CALCULATE_BONUS should be listed by SHOW PROCEDURES");
     }
 
     @Test
@@ -142,10 +158,7 @@ public class ExecuteImmediateDollarQuotedTest extends BaseJdbcTest {
         statement.execute("EXECUTE IMMEDIATE $$CREATE FUNCTION triple(x INTEGER) RETURNS INTEGER AS 'x * 3'$$");
 
         // Verify function was created
-        ResultSet rs = statement.executeQuery("SHOW FUNCTIONS");
-        assertTrue(rs.next(), "Function should be created");
-        assertEquals("TRIPLE", rs.getString("name"));
-        rs.close();
+        assertTrue(listed("SHOW FUNCTIONS", "TRIPLE"), "TRIPLE should be listed by SHOW FUNCTIONS");
     }
 
     @Test

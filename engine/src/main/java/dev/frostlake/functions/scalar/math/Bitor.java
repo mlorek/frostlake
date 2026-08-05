@@ -16,12 +16,12 @@
 
 package dev.frostlake.functions.scalar.math;
 
-import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.functions.NumericArgumentFunction;
 import dev.frostlake.types.NumericType;
 
 import java.util.List;
 
-public class Bitor extends BuiltInFunction {
+public class Bitor extends NumericArgumentFunction {
     public Bitor() { super("BITOR", NumericType.INTEGER); }
 
     @Override

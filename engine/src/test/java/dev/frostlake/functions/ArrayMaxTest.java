@@ -22,7 +22,7 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 
-/** ARRAY_MAX(array) — largest non-null element. */
+/** ARRAY_MAX(array) — largest non-null element, returned as a VARIANT (live-verified). */
 public class ArrayMaxTest extends BaseDatabaseTest {
 
     private Object scalar(final String sql) {
@@ -31,12 +31,15 @@ public class ArrayMaxTest extends BaseDatabaseTest {
 
     @Test
     public void largestNumericElement() {
-        assertEquals(20L, scalar("SELECT ARRAY_MAX(ARRAY_CONSTRUCT(20, 0, 10))"));
+        assertEquals("20", String.valueOf(scalar("SELECT ARRAY_MAX(ARRAY_CONSTRUCT(20, 0, 10))")));
     }
 
     @Test
     public void largestTextElementIgnoringNulls() {
-        assertEquals("c", scalar("SELECT ARRAY_MAX(ARRAY_CONSTRUCT('a', NULL, 'c', 'b'))"));
+        // The result is a VARIANT, so its raw display keeps the JSON quotes ("c") — cast it to VARCHAR to
+        // compare the element itself, which reads the same whichever backend serves the query.
+        assertEquals("c", String.valueOf(
+            scalar("SELECT ARRAY_MAX(ARRAY_CONSTRUCT('a', NULL, 'c', 'b'))::VARCHAR")));
     }
 
     @Test

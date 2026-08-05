@@ -18,6 +18,8 @@ package dev.frostlake.executor.commands;
 
 import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.executor.SQLCommandVisitor;
+import dev.frostlake.executor.SqlCompilationError;
+import dev.frostlake.executor.StatementErrors;
 import dev.frostlake.executor.procedural.ProceduralException;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.QualifiedName;
@@ -103,7 +105,7 @@ public class CommentCommandHandler implements CommandHandler {
                         logger.debug("Database does not exist (IF EXISTS): {}", dbName);
                         return null;
                     }
-                    throw new RuntimeException("Database does not exist: " + dbName);
+                    throw new RuntimeException(SqlCompilationError.doesNotExist("Database", dbName));
                 }
                 db.setComment(comment);
                 logger.trace("Set comment on database: {}", dbName);
@@ -138,7 +140,7 @@ public class CommentCommandHandler implements CommandHandler {
                         logger.debug("Schema does not exist (IF EXISTS): {}", schemaName);
                         return null;
                     }
-                    throw new RuntimeException("Schema does not exist: " + schemaName);
+                    throw new RuntimeException(SqlCompilationError.doesNotExist("Schema", schemaName));
                 }
                 schema.setComment(comment);
                 logger.trace("Set comment on schema: {}", schemaName);
@@ -161,7 +163,7 @@ public class CommentCommandHandler implements CommandHandler {
                         logger.debug("Table does not exist (IF EXISTS): {}", tableName);
                         return null;
                     }
-                    throw new RuntimeException("Table does not exist: " + tableName);
+                    throw new RuntimeException(SqlCompilationError.doesNotExist("Table", tableName));
                 }
                 table.setComment(comment);
                 logger.trace("Set comment on table: {}", tableName);
@@ -195,18 +197,19 @@ public class CommentCommandHandler implements CommandHandler {
                         logger.debug("Table does not exist for column comment (IF EXISTS): {}", tableName);
                         return null;
                     }
-                    throw new RuntimeException("Table does not exist: " + tableName);
+                    throw new RuntimeException(SqlCompilationError.doesNotExist("Table", tableName));
                 }
 
-                TableColumn column;
-                try {
-                    column = table.getColumn(columnName);
-                } catch (final RuntimeException e) {
+                // COMMENT ON COLUMN reports a missing column as an OBJECT, the way RENAME COLUMN does —
+                // live: "Object 'NONEXISTENT' does not exist or not authorized." — rather than
+                // the "invalid identifier" a query would answer with.
+                final TableColumn column = table.findColumn(columnName);
+                if (column == null) {
                     if (ifExists) {
                         logger.debug("Column does not exist (IF EXISTS): {}", columnName);
                         return null;
                     }
-                    throw e;
+                    throw new RuntimeException(SqlCompilationError.doesNotExist("Object", columnName));
                 }
                 column.setComment(comment);
                 logger.trace("Set comment on column: {}", qualifiedColumn);
@@ -229,7 +232,7 @@ public class CommentCommandHandler implements CommandHandler {
                         logger.debug("View does not exist (IF EXISTS): {}", viewName);
                         return null;
                     }
-                    throw new RuntimeException("View does not exist: " + viewName);
+                    throw new RuntimeException(SqlCompilationError.doesNotExist("View", viewName));
                 }
                 view.setComment(comment);
                 logger.trace("Set comment on view: {}", viewName);
@@ -446,7 +449,7 @@ public class CommentCommandHandler implements CommandHandler {
                         logger.debug("Warehouse does not exist (IF EXISTS): {}", warehouseName);
                         return null;
                     }
-                    throw new RuntimeException("Warehouse does not exist: " + warehouseName);
+                    throw new RuntimeException(SqlCompilationError.doesNotExist("Warehouse", warehouseName));
                 }
                 warehouse.setComment(comment);
                 logger.trace("Set comment on warehouse: {}", warehouseName);
@@ -469,7 +472,7 @@ public class CommentCommandHandler implements CommandHandler {
                         logger.debug("Stage does not exist (IF EXISTS): {}", stageName);
                         return null;
                     }
-                    throw new RuntimeException("Stage does not exist: " + stageName);
+                    throw new RuntimeException(SqlCompilationError.doesNotExist("Stage", stageName));
                 }
                 stage.setComment(comment);
                 logger.trace("Set comment on stage: {}", stageName);
@@ -492,7 +495,7 @@ public class CommentCommandHandler implements CommandHandler {
                         logger.debug("User does not exist (IF EXISTS): {}", userName);
                         return null;
                     }
-                    throw new RuntimeException("User does not exist: " + userName);
+                    throw new RuntimeException(SqlCompilationError.doesNotExist("User", userName));
                 }
                 user.setComment(comment);
                 logger.trace("Set comment on user: {}", userName);
@@ -515,7 +518,7 @@ public class CommentCommandHandler implements CommandHandler {
                         logger.debug("Role does not exist (IF EXISTS): {}", roleName);
                         return null;
                     }
-                    throw new RuntimeException("Role does not exist: " + roleName);
+                    throw new RuntimeException(SqlCompilationError.doesNotExist("Role", roleName));
                 }
                 role.setComment(comment);
                 logger.trace("Set comment on role: {}", roleName);
@@ -538,7 +541,7 @@ public class CommentCommandHandler implements CommandHandler {
                         logger.debug("Tag does not exist (IF EXISTS): {}", tagName);
                         return null;
                     }
-                    throw new RuntimeException("Tag does not exist: " + tagName);
+                    throw new RuntimeException(SqlCompilationError.doesNotExist("Tag", tagName));
                 }
                 tag.setComment(comment);
                 logger.trace("Set comment on tag: {}", tagName);
@@ -562,7 +565,7 @@ public class CommentCommandHandler implements CommandHandler {
                 if (p != null) {
                     p.setComment(comment);
                 } else if (!ifExists) {
-                    throw new RuntimeException("Masking policy does not exist: " + n);
+                    throw new RuntimeException(SqlCompilationError.doesNotExist("Masking policy", n));
                 }
             } else if (ctx.ROW() != null && ctx.ACCESS() != null && ctx.POLICY() != null) {
                 final String n = visitor.getText(ctx.qualifiedName());
@@ -570,7 +573,7 @@ public class CommentCommandHandler implements CommandHandler {
                 if (p != null) {
                     p.setComment(comment);
                 } else if (!ifExists) {
-                    throw new RuntimeException("Row access policy does not exist: " + n);
+                    throw new RuntimeException(SqlCompilationError.doesNotExist("Row access policy", n));
                 }
             } else if (ctx.FILE() != null && ctx.FORMAT() != null) {
                 final String n = visitor.getText(ctx.qualifiedName());
@@ -578,7 +581,7 @@ public class CommentCommandHandler implements CommandHandler {
                 if (ff != null) {
                     ff.setComment(comment);
                 } else if (!ifExists) {
-                    throw new RuntimeException("File format does not exist: " + n);
+                    throw new RuntimeException(SqlCompilationError.doesNotExist("File format", n));
                 }
             }
 
@@ -587,7 +590,7 @@ public class CommentCommandHandler implements CommandHandler {
         } catch (final Exception e) {
             if (e instanceof SecurityException) throw (SecurityException) e;
             if (e instanceof ProceduralException) throw (ProceduralException) e;
-            throw new RuntimeException("Failed to execute COMMENT statement: " + e.getMessage(), e);
+            throw StatementErrors.propagate(e);
         }
     }
 

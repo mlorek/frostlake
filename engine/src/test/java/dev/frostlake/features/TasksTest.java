@@ -17,7 +17,6 @@
 package dev.frostlake.features;
 
 import dev.frostlake.BaseDatabaseTest;
-import dev.frostlake.metastore.*;
 import dev.frostlake.metastore.model.ScheduleType;
 import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.metastore.model.Stream;
@@ -25,17 +24,27 @@ import dev.frostlake.metastore.model.Task;
 import dev.frostlake.metastore.model.TaskExecution;
 import dev.frostlake.metastore.model.TaskState;
 import dev.frostlake.storage.ResultSet;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Tests for TASK feature
  */
 public class TasksTest extends BaseDatabaseTest {
 
+    private static final String TASK_MODEL =
+        "asserts the parsed task straight off the in-memory catalog (engine.getCatalog()), which live "
+        + "Snowflake never populates, and names warehouse COMPUTE_WH which need not exist on the account";
+
     @Test
     public void testCreateTask() {
+        Assumptions.assumeFalse(isLiveSnowflake(), TASK_MODEL);
         engine.execute("""
             CREATE TASK daily_cleanup
             WAREHOUSE = 'COMPUTE_WH'
@@ -55,6 +64,7 @@ public class TasksTest extends BaseDatabaseTest {
 
     @Test
     public void testCreateTaskWithCronSchedule() {
+        Assumptions.assumeFalse(isLiveSnowflake(), TASK_MODEL);
         engine.execute("""
             CREATE TASK hourly_job
             WAREHOUSE = 'COMPUTE_WH'
@@ -70,6 +80,7 @@ public class TasksTest extends BaseDatabaseTest {
 
     @Test
     public void testAlterTaskResume() {
+        Assumptions.assumeFalse(isLiveSnowflake(), TASK_MODEL);
         engine.execute("""
             CREATE TASK test_task
             WAREHOUSE = 'COMPUTE_WH'
@@ -87,6 +98,7 @@ public class TasksTest extends BaseDatabaseTest {
 
     @Test
     public void testAlterTaskSuspend() {
+        Assumptions.assumeFalse(isLiveSnowflake(), TASK_MODEL);
         engine.execute("""
             CREATE TASK test_task
             WAREHOUSE = 'COMPUTE_WH'
@@ -105,6 +117,7 @@ public class TasksTest extends BaseDatabaseTest {
 
     @Test
     public void testDropTask() {
+        Assumptions.assumeFalse(isLiveSnowflake(), TASK_MODEL);
         engine.execute("""
             CREATE TASK test_task
             WAREHOUSE = 'COMPUTE_WH'
@@ -114,15 +127,19 @@ public class TasksTest extends BaseDatabaseTest {
 
         engine.execute("DROP TASK test_task");
 
-        Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
+        final Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
 
-        assertThrows(RuntimeException.class, () -> {
-            schema.getTask("test_task");
+        assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                schema.getTask("test_task");
+            }
         });
     }
 
     @Test
     public void testTaskExecution() {
+        Assumptions.assumeFalse(isLiveSnowflake(), TASK_MODEL);
         engine.execute("CREATE TABLE task_log (execution_time VARCHAR, message VARCHAR)");
 
         engine.execute("""
@@ -145,6 +162,7 @@ public class TasksTest extends BaseDatabaseTest {
 
     @Test
     public void testStreamWithTaskIntegration() {
+        Assumptions.assumeFalse(isLiveSnowflake(), TASK_MODEL);
         engine.execute("CREATE TABLE orders (id INTEGER, amount INTEGER, status VARCHAR)");
         engine.execute("CREATE STREAM order_stream ON TABLE orders");
 
@@ -173,6 +191,7 @@ public class TasksTest extends BaseDatabaseTest {
 
     @Test
     public void testCreateTaskWithCallBodyExecutesProcedure() {
+        Assumptions.assumeFalse(isLiveSnowflake(), TASK_MODEL);
         // A task whose body is just CALL <procedure>() — a very common Snowflake pattern.
         engine.execute("CREATE TABLE ran_marker (v VARCHAR)");
         engine.execute("""

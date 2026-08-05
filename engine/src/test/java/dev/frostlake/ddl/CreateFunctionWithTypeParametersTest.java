@@ -33,7 +33,7 @@ public class CreateFunctionWithTypeParametersTest extends BaseJdbcTest {
     public void testCreateFunctionWithVarcharParameter() throws SQLException {
         logger.info("Testing CREATE FUNCTION with VARCHAR(size) parameter");
 
-        statement.execute("CREATE FUNCTION greet(name VARCHAR(100)) RETURNS VARCHAR LANGUAGE SQL AS 'BEGIN RETURN name; END'");
+        statement.execute("CREATE FUNCTION greet(name VARCHAR(100)) RETURNS VARCHAR LANGUAGE SQL AS 'name'");
 
         // Function should be created successfully
         // Note: We can't easily test function calls with VARCHAR in this simplified engine
@@ -46,7 +46,7 @@ public class CreateFunctionWithTypeParametersTest extends BaseJdbcTest {
     public void testCreateFunctionWithDecimalParameter() throws SQLException {
         logger.info("Testing CREATE FUNCTION with DECIMAL(precision, scale) parameter");
 
-        statement.execute("CREATE FUNCTION calculate_tax(amount DECIMAL(10, 2)) RETURNS DECIMAL LANGUAGE SQL AS 'BEGIN RETURN amount; END'");
+        statement.execute("CREATE FUNCTION calculate_tax(amount DECIMAL(10, 2)) RETURNS DECIMAL LANGUAGE SQL AS 'amount'");
 
         // Verify function was created
         assertFunctionExists("calculate_tax");
@@ -58,7 +58,11 @@ public class CreateFunctionWithTypeParametersTest extends BaseJdbcTest {
     public void testCreateFunctionWithTimestampParameter() throws SQLException {
         logger.info("Testing CREATE FUNCTION with TIMESTAMP(precision) parameter");
 
-        statement.execute("CREATE FUNCTION format_time(ts TIMESTAMP(9)) RETURNS VARCHAR LANGUAGE SQL AS 'BEGIN RETURN ts; END'");
+        // The declared return type must match the body's actual one — live-verified:
+        // RETURNS VARCHAR over a bare TIMESTAMP body fails "Declared return type 'VARCHAR(134217728)' is
+        // incompatible with actual return type 'TIMESTAMP_NTZ(9)'".
+        statement.execute(
+            "CREATE FUNCTION format_time(ts TIMESTAMP(9)) RETURNS VARCHAR LANGUAGE SQL AS 'ts::VARCHAR'");
 
         // Verify function was created
         assertFunctionExists("format_time");
@@ -70,7 +74,7 @@ public class CreateFunctionWithTypeParametersTest extends BaseJdbcTest {
     public void testCreateFunctionWithMultipleTypedParameters() throws SQLException {
         logger.info("Testing CREATE FUNCTION with multiple parameters with type parameters");
 
-        statement.execute("CREATE FUNCTION format_record(id INTEGER, name VARCHAR(50), amount DECIMAL(10, 2)) RETURNS VARCHAR LANGUAGE SQL AS 'BEGIN RETURN name; END'");
+        statement.execute("CREATE FUNCTION format_record(id INTEGER, name VARCHAR(50), amount DECIMAL(10, 2)) RETURNS VARCHAR LANGUAGE SQL AS 'name'");
 
         // Verify function was created
         assertFunctionExists("format_record");
@@ -82,7 +86,7 @@ public class CreateFunctionWithTypeParametersTest extends BaseJdbcTest {
     public void testCreateFunctionMixedParameters() throws SQLException {
         logger.info("Testing CREATE FUNCTION with mixed typed and untyped parameters");
 
-        statement.execute("CREATE FUNCTION process_data(id INTEGER, description VARCHAR(255), count INTEGER, price DECIMAL(8, 2)) RETURNS VARCHAR LANGUAGE SQL AS 'BEGIN RETURN description; END'");
+        statement.execute("CREATE FUNCTION process_data(id INTEGER, description VARCHAR(255), count INTEGER, price DECIMAL(8, 2)) RETURNS VARCHAR LANGUAGE SQL AS 'description'");
 
         // Verify function was created
         assertFunctionExists("process_data");
@@ -94,19 +98,22 @@ public class CreateFunctionWithTypeParametersTest extends BaseJdbcTest {
     public void testCreateFunctionWithCharParameter() throws SQLException {
         logger.info("Testing CREATE FUNCTION with CHAR(size) parameter");
 
-        statement.execute("CREATE FUNCTION validate_code(code CHAR(10)) RETURNS INTEGER LANGUAGE SQL AS 'BEGIN RETURN 1; END'");
+        statement.execute("CREATE FUNCTION validate_code(code CHAR(10)) RETURNS INTEGER LANGUAGE SQL AS '1'");
 
         // Verify function was created
         assertFunctionExists("validate_code");
 
-        statement.execute("DROP FUNCTION validate_code(CHAR)");
+        // A routine's signature is stored under its CANONICAL type FAMILY, so the DROP names the
+        // family, not the declared alias — live-verified on a real account:
+        // DROP FUNCTION f(VARCHAR) drops a CHAR(10) parameter while DROP FUNCTION f(CHAR) does not.
+        statement.execute("DROP FUNCTION validate_code(VARCHAR)");
     }
 
     @Test
     public void testCreateFunctionWithNumberParameter() throws SQLException {
         logger.info("Testing CREATE FUNCTION with NUMBER(precision) parameter");
 
-        statement.execute("CREATE FUNCTION compute_total(value NUMBER(12)) RETURNS NUMBER LANGUAGE SQL AS 'BEGIN RETURN value; END'");
+        statement.execute("CREATE FUNCTION compute_total(value NUMBER(12)) RETURNS NUMBER LANGUAGE SQL AS 'value'");
 
         // Verify function was created
         assertFunctionExists("compute_total");
@@ -118,7 +125,7 @@ public class CreateFunctionWithTypeParametersTest extends BaseJdbcTest {
     public void testCreateFunctionWithNumberPrecisionScale() throws SQLException {
         logger.info("Testing CREATE FUNCTION with NUMBER(precision, scale) parameter");
 
-        statement.execute("CREATE FUNCTION calculate_interest(principal NUMBER(15, 2), rate NUMBER(5, 4)) RETURNS NUMBER LANGUAGE SQL AS 'BEGIN RETURN principal; END'");
+        statement.execute("CREATE FUNCTION calculate_interest(principal NUMBER(15, 2), rate NUMBER(5, 4)) RETURNS NUMBER LANGUAGE SQL AS 'principal'");
 
         // Verify function was created
         assertFunctionExists("calculate_interest");
@@ -130,10 +137,10 @@ public class CreateFunctionWithTypeParametersTest extends BaseJdbcTest {
     public void testCreateOrReplaceFunctionWithTypedParameters() throws SQLException {
         logger.info("Testing CREATE OR REPLACE FUNCTION with typed parameters");
 
-        statement.execute("CREATE FUNCTION update_record(id INTEGER, data VARCHAR(200)) RETURNS VARCHAR LANGUAGE SQL AS 'BEGIN RETURN data; END'");
+        statement.execute("CREATE FUNCTION update_record(id INTEGER, data VARCHAR(200)) RETURNS VARCHAR LANGUAGE SQL AS 'data'");
 
         // Replace with same signature
-        statement.execute("CREATE OR REPLACE FUNCTION update_record(id INTEGER, data VARCHAR(200)) RETURNS VARCHAR LANGUAGE SQL AS 'BEGIN RETURN data; END'");
+        statement.execute("CREATE OR REPLACE FUNCTION update_record(id INTEGER, data VARCHAR(200)) RETURNS VARCHAR LANGUAGE SQL AS 'data'");
 
         // Verify function exists
         assertFunctionExists("update_record");
@@ -145,19 +152,22 @@ public class CreateFunctionWithTypeParametersTest extends BaseJdbcTest {
     public void testCreateFunctionWithAllTypedParameters() throws SQLException {
         logger.info("Testing CREATE FUNCTION with all parameters having type parameters");
 
-        statement.execute("CREATE FUNCTION full_typed(str VARCHAR(100), dec DECIMAL(10, 2), num NUMBER(15, 3), ch CHAR(5)) RETURNS VARCHAR LANGUAGE SQL AS 'BEGIN RETURN str; END'");
+        statement.execute("CREATE FUNCTION full_typed(str VARCHAR(100), dec DECIMAL(10, 2), num NUMBER(15, 3), ch CHAR(5)) RETURNS VARCHAR LANGUAGE SQL AS 'str'");
 
         // Verify function was created
         assertFunctionExists("full_typed");
 
-        statement.execute("DROP FUNCTION full_typed(VARCHAR, DECIMAL, NUMBER, CHAR)");
+        // A routine's signature is stored under its CANONICAL type FAMILY, so the DROP names the
+        // family, not the declared alias — live-verified on a real account:
+        // DROP FUNCTION f(VARCHAR) drops a CHAR(10) parameter while DROP FUNCTION f(CHAR) does not.
+        statement.execute("DROP FUNCTION full_typed(VARCHAR, NUMBER, NUMBER, VARCHAR)");
     }
 
     @Test
     public void testDropFunctionWithTypedParametersMatch() throws SQLException {
         logger.info("Testing DROP FUNCTION matches typed parameters correctly");
 
-        statement.execute("CREATE FUNCTION typed_func(amount DECIMAL(10, 2)) RETURNS DECIMAL LANGUAGE SQL AS 'BEGIN RETURN amount; END'");
+        statement.execute("CREATE FUNCTION typed_func(amount DECIMAL(10, 2)) RETURNS DECIMAL LANGUAGE SQL AS 'amount'");
 
         // Verify function was created
         assertFunctionExists("typed_func");
@@ -168,7 +178,7 @@ public class CreateFunctionWithTypeParametersTest extends BaseJdbcTest {
         // Verify it was dropped
         assertFunctionNotExists("typed_func");
 
-        statement.execute("CREATE FUNCTION typed_func(amount DECIMAL(10, 2)) RETURNS DECIMAL LANGUAGE SQL AS 'BEGIN RETURN amount; END'");
+        statement.execute("CREATE FUNCTION typed_func(amount DECIMAL(10, 2)) RETURNS DECIMAL LANGUAGE SQL AS 'amount'");
         assertFunctionExists("typed_func");
         statement.execute("DROP FUNCTION typed_func(DECIMAL)");
     }
@@ -178,7 +188,7 @@ public class CreateFunctionWithTypeParametersTest extends BaseJdbcTest {
         logger.info("Testing CREATE FUNCTION schema-qualified with typed parameters");
 
         statement.execute("CREATE SCHEMA func_schema");
-        statement.execute("CREATE FUNCTION func_schema.process(name VARCHAR(100), value DECIMAL(8, 2)) RETURNS VARCHAR LANGUAGE SQL AS 'BEGIN RETURN name; END'");
+        statement.execute("CREATE FUNCTION func_schema.process(name VARCHAR(100), value DECIMAL(8, 2)) RETURNS VARCHAR LANGUAGE SQL AS 'name'");
 
         // Verify function was created in schema
         assertFunctionExistsInSchema("process", "func_schema");

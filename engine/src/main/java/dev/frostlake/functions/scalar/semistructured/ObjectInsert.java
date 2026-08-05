@@ -16,9 +16,9 @@
 
 package dev.frostlake.functions.scalar.semistructured;
 
-import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.functions.VariantAccessorFunction;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
-import dev.frostlake.types.VariantType;
+import dev.frostlake.types.ObjectType;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.node.ObjectNode;
 
@@ -33,14 +33,14 @@ import java.util.Set;
  * already-present key is removed), while a JSON null ({@code PARSE_JSON('null')}) is stored as a
  * real null member. Without the update flag, inserting a key that already exists is an error.
  */
-public class ObjectInsert extends BuiltInFunction {
-    public ObjectInsert() { super("OBJECT_INSERT", VariantType.VARIANT); }
+public class ObjectInsert extends VariantAccessorFunction {
+    public ObjectInsert() { super("OBJECT_INSERT", ObjectType.OBJECT); }
 
     @Override
     public Object evaluate(final List<Object> args) {
         JsonNode src = ArrayFunctionHelper.parseNode(args.get(0));
         if (src == null || !src.isObject()) return null;
-        if (args.get(1) == null) return ArrayFunctionHelper.toCanonicalJson(src);
+        if (args.get(1) == null) return ArrayFunctionHelper.toCanonicalVariant(src);
         String key = args.get(1).toString();
         final Object value = args.size() > 2 ? args.get(2) : null;
         final boolean update = args.size() > 3 && args.get(3) != null
@@ -65,7 +65,7 @@ public class ObjectInsert extends BuiltInFunction {
         if (value != null) {
             result.set(key, ArrayFunctionHelper.toNode(ArrayFunctionHelper.MAPPER, value));
         }
-        return ArrayFunctionHelper.toCanonicalJson(result);
+        return ArrayFunctionHelper.toCanonicalVariant(result);
     }
 
     @Override public int getMinArgCount() { return 3; }

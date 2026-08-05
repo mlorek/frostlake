@@ -18,6 +18,7 @@ package dev.frostlake.jdbc;
 
 import dev.frostlake.BaseJdbcTest;
 
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 
 import java.io.StringReader;
@@ -56,6 +57,9 @@ public class PreparedStatementGapsTest extends BaseJdbcTest {
 
     @Test
     public void getMetaDataNullForDml() throws SQLException {
+        Assumptions.assumeFalse(isLiveSnowflake(),
+            "asserts the FROSTLAKE driver's own contract — Snowflake's JDBC driver returns a non-null "
+            + "SnowflakeResultSetMetaDataV1 from PreparedStatement.getMetaData() even for an INSERT");
         statement.execute("CREATE TABLE dm (id INTEGER)");
         try (final PreparedStatement ps = connection.prepareStatement("INSERT INTO dm VALUES (?)")) {
             assertNull(ps.getMetaData());
@@ -64,6 +68,10 @@ public class PreparedStatementGapsTest extends BaseJdbcTest {
 
     @Test
     public void setCharacterStreamBindsText() throws SQLException {
+        Assumptions.assumeFalse(isLiveSnowflake(),
+            "binds through PreparedStatement.setCharacterStream(int, Reader); Snowflake's own driver "
+            + "throws SnowflakeLoggedFeatureNotSupportedException for that overload — it is a "
+            + "Frostlake driver capability, not an account feature");
         statement.execute("CREATE TABLE cs (txt VARCHAR)");
         try (final PreparedStatement ps = connection.prepareStatement("INSERT INTO cs VALUES (?)")) {
             ps.setCharacterStream(1, new StringReader("hello"));

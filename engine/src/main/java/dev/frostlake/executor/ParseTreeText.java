@@ -65,27 +65,47 @@ public final class ParseTreeText {
     }
 
     public static String getQualifiedName(final FrostlakeParser.QualifiedNameContext ctx) {
-        List<String> parts = new ArrayList<>();
-        for (final FrostlakeParser.IdentifierContext id : ctx.identifier()) {
-            parts.add(getIdentifier(id));
-        }
-        if (ctx.TABLE() != null) {
-            parts.add("TABLE");   // db.table — a trailing part literally named "table"
-        }
-        return String.join(".", parts);
+        return String.join(".", qualifiedNameParts(ctx));
     }
 
-    /** The identifier parts of a qualified name, read from the parse tree instead of splitting its
+    /** The canonical text of one name part: a regular identifier folds through
+     *  {@link SqlIdentifiers#canonical}; a keyword-as-name part (INNER, JOIN, LEFT, CROSS, CASE)
+     *  is unquoted by construction and upper-cases directly. */
+    public static String namePartText(final FrostlakeParser.NameStartPartContext part) {
+        return part.identifier() != null ? getIdentifier(part.identifier())
+            : part.getText().toUpperCase();
+    }
+
+    /** See {@link #namePartText(FrostlakeParser.NameStartPartContext)} — the after-dot flavour. */
+    public static String namePartText(final FrostlakeParser.NamePartContext part) {
+        return part.identifier() != null ? getIdentifier(part.identifier())
+            : part.getText().toUpperCase();
+    }
+
+    /** The FROM-position flavour: a {@code tableQualifiedName}'s parts. */
+    public static String[] qualifiedNameParts(final FrostlakeParser.TableQualifiedNameContext ctx) {
+        final List<FrostlakeParser.NamePartContext> rest = ctx.namePart();
+        final String[] parts = new String[1 + rest.size()];
+        parts[0] = getIdentifier(ctx.identifier());
+        for (int i = 0; i < rest.size(); i++) {
+            parts[1 + i] = namePartText(rest.get(i));
+        }
+        return parts;
+    }
+
+    /** The FROM-position flavour of {@link #getQualifiedName}. */
+    public static String getQualifiedName(final FrostlakeParser.TableQualifiedNameContext ctx) {
+        return String.join(".", qualifiedNameParts(ctx));
+    }
+
+    /** The name parts of a qualified name, read from the parse tree instead of splitting its
      *  flattened text on '.' — correct even for a quoted identifier containing a dot. */
     public static String[] qualifiedNameParts(final FrostlakeParser.QualifiedNameContext ctx) {
-        final List<FrostlakeParser.IdentifierContext> ids = ctx.identifier();
-        final boolean trailingTable = ctx.TABLE() != null;   // db.table — a part literally named "table"
-        final String[] parts = new String[ids.size() + (trailingTable ? 1 : 0)];
-        for (int i = 0; i < ids.size(); i++) {
-            parts[i] = getIdentifier(ids.get(i));
-        }
-        if (trailingTable) {
-            parts[parts.length - 1] = "TABLE";
+        final List<FrostlakeParser.NamePartContext> rest = ctx.namePart();
+        final String[] parts = new String[1 + rest.size()];
+        parts[0] = namePartText(ctx.nameStartPart());
+        for (int i = 0; i < rest.size(); i++) {
+            parts[1 + i] = namePartText(rest.get(i));
         }
         return parts;
     }

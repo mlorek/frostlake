@@ -16,12 +16,12 @@
 
 package dev.frostlake.functions.scalar.string;
 
-import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.functions.TextArgumentFunction;
 import dev.frostlake.types.StringType;
 
 import java.util.List;
 
-public class Repeat extends BuiltInFunction {
+public class Repeat extends TextArgumentFunction {
     public Repeat() { super("REPEAT", StringType.VARCHAR); }
 
     @Override

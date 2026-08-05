@@ -155,7 +155,8 @@ final class ShowPipelineExecutor {
                     : "[" + task.getPredecessors().stream()
                         .map((final var p) -> "\"" + p + "\"")
                         .collect(Collectors.joining(",")) + "]",
-                task.getState() != null ? task.getState().toString() : null,
+                // Snowflake's SHOW TASKS state column is lowercase: "started" / "suspended" (live-verified).
+                task.getState() != null ? task.getState().toString().toLowerCase() : null,
                 task.getSqlStatement(),
                 task.getCondition(),
                 String.valueOf(task.isAllowOverlappingExecution()),
@@ -223,7 +224,7 @@ final class ShowPipelineExecutor {
                 continue;
             }
             rows.add(new Row(Arrays.asList(
-                pipe.getCreatedTime().toString(),
+                ShowResultHelpers.createdOnText(pipe.getCreatedTime()),
                 pipe.getName(),
                 dbName, scName,
                 pipe.getOwner(),
@@ -283,7 +284,7 @@ final class ShowPipelineExecutor {
         final String scName = schemaName != null ? schemaName : catalog.getCurrentSchema();
         if (dbName == null || scName == null) throw new RuntimeException("No database or schema selected");
         final List<Row> rows = new ArrayList<>();
-        appendSequenceRows(catalog.getDatabase(dbName).getSchema(scName), rows);
+        appendSequenceRows(dbName, catalog.getDatabase(dbName).getSchema(scName), rows);
         return new ResultSet(sequenceColumns(), rows);
     }
 
@@ -305,47 +306,42 @@ final class ShowPipelineExecutor {
         if (dbName == null) throw new RuntimeException("No database specified");
         final List<Row> rows = new ArrayList<>();
         for (final Schema schema : catalog.getDatabase(dbName).getAllSchemas()) {
-            appendSequenceRows(schema, rows);
+            appendSequenceRows(dbName, schema, rows);
         }
         return new ResultSet(sequenceColumns(), rows);
     }
 
-    private void appendSequenceRows(final Schema schema, final List<Row> rows) {
-        final String scName = schema.getName();
+    private void appendSequenceRows(final String databaseName, final Schema schema, final List<Row> rows) {
         for (final Sequence seq : schema.getSequences()) {
             rows.add(new Row(Arrays.asList(
-                null,
                 seq.getName(),
-                scName,
-                "NUMBER",
-                seq.getStartValue(),
-                1L,
-                Long.MAX_VALUE,
+                databaseName,
+                schema.getName(),
+                seq.getCurrentValueRaw() + seq.getIncrement(),
                 seq.getIncrement(),
-                "N",
-                seq.getCurrentValueRaw(),
+                null,
                 seq.getOwner(),
-                seq.getComment(),
-                seq.isOrder() ? "Y" : "N"
+                seq.getComment()
             )));
         }
     }
 
+    /**
+     * SHOW SEQUENCES' output shape, taken verbatim from a live account: unlike most SHOW
+     * listings it leads with {@code name}, carries {@code database_name}, and calls the two numbers
+     * {@code next_value} (the value the next NEXTVAL hands out — the START value for a fresh sequence)
+     * and {@code interval} rather than start_value / increment.
+     */
     private List<ResultSetColumn> sequenceColumns() {
         return Arrays.asList(
-            new ResultSetColumn("created_on", StringType.VARCHAR),
             new ResultSetColumn("name", StringType.VARCHAR),
+            new ResultSetColumn("database_name", StringType.VARCHAR),
             new ResultSetColumn("schema_name", StringType.VARCHAR),
-            new ResultSetColumn("data_type", StringType.VARCHAR),
-            new ResultSetColumn("start_value", NumericType.BIGINT),
-            new ResultSetColumn("minimum", NumericType.BIGINT),
-            new ResultSetColumn("maximum", NumericType.BIGINT),
-            new ResultSetColumn("increment", NumericType.BIGINT),
-            new ResultSetColumn("cycle_option", StringType.VARCHAR),
             new ResultSetColumn("next_value", NumericType.BIGINT),
+            new ResultSetColumn("interval", NumericType.BIGINT),
+            new ResultSetColumn("created_on", StringType.VARCHAR),
             new ResultSetColumn("owner", StringType.VARCHAR),
-            new ResultSetColumn("comment", StringType.VARCHAR),
-            new ResultSetColumn("ordered", StringType.VARCHAR)
+            new ResultSetColumn("comment", StringType.VARCHAR)
         );
     }
 
@@ -411,7 +407,7 @@ final class ShowPipelineExecutor {
         );
         List<Row> rows = new ArrayList<>();
         rows.add(new Row(Arrays.asList(
-            pipe.getCreatedTime().toString(),
+            ShowResultHelpers.createdOnText(pipe.getCreatedTime()),
             pipe.getName(),
             dbName, scName,
             pipe.getCopyStatement(),
@@ -426,10 +422,18 @@ final class ShowPipelineExecutor {
     }
 
     public ResultSet describeSequence(final String sequenceName) {
-        List<Row> rows = new ArrayList<>();
+        // Snowflake DESC SEQUENCE returns a single columnar row, not property/value rows (live-verified).
         List<ResultSetColumn> columns = Arrays.asList(
-            new ResultSetColumn("property", StringType.VARCHAR),
-            new ResultSetColumn("value", StringType.VARCHAR)
+            new ResultSetColumn("name", StringType.VARCHAR),
+            new ResultSetColumn("database_name", StringType.VARCHAR),
+            new ResultSetColumn("schema_name", StringType.VARCHAR),
+            new ResultSetColumn("next_value", NumericType.BIGINT),
+            new ResultSetColumn("interval", NumericType.BIGINT),
+            new ResultSetColumn("created_on", StringType.VARCHAR),
+            new ResultSetColumn("owner", StringType.VARCHAR),
+            new ResultSetColumn("comment", StringType.VARCHAR),
+            new ResultSetColumn("owner_role_type", StringType.VARCHAR),
+            new ResultSetColumn("ordered", StringType.VARCHAR)
         );
 
         String dbName = catalog.getCurrentDatabase();
@@ -437,12 +441,18 @@ final class ShowPipelineExecutor {
         Schema schema = catalog.getDatabase(dbName).getSchema(scName);
         Sequence sequence = schema.getSequence(sequenceName);
 
-        rows.add(new Row(Arrays.asList("name", sequence.getName())));
-        rows.add(new Row(Arrays.asList("start_value", String.valueOf(sequence.getStartValue()))));
-        rows.add(new Row(Arrays.asList("increment", String.valueOf(sequence.getIncrement()))));
-        if (sequence.getComment() != null) {
-            rows.add(new Row(Arrays.asList("comment", sequence.getComment())));
-        }
+        List<Row> rows = new ArrayList<>();
+        rows.add(new Row(Arrays.asList(
+            sequence.getName(),
+            dbName, scName,
+            sequence.getCurrentValueRaw() + sequence.getIncrement(), // the next value NEXTVAL would serve
+            sequence.getIncrement(),
+            null,                                                    // created_on — not modeled
+            sequence.getOwner(),
+            sequence.getComment(),
+            "ROLE",
+            sequence.isOrder() ? "Y" : "N"
+        )));
 
         return new ResultSet(columns, rows);
     }
@@ -471,7 +481,7 @@ final class ShowPipelineExecutor {
         final String scName = schema.getName();
         for (final DynamicTable dt : schema.getDynamicTables()) {
             rows.add(new Row(Arrays.asList(
-                dt.getCreatedTime().toString(),
+                ShowResultHelpers.createdOnText(dt.getCreatedTime()),
                 dt.getName(), dbName, scName,
                 null, 0L, 0L,
                 dt.getOwner(),

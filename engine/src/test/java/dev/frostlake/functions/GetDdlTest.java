@@ -70,8 +70,10 @@ public class GetDdlTest extends BaseDatabaseTest {
         engine.execute("CREATE TABLE base (x INTEGER, y INTEGER)");
         engine.execute("CREATE VIEW v AS SELECT x FROM base WHERE y > 0");
         final String ddl = getDdl("VIEW", "v");
-        assertTrue(ddl.toLowerCase().startsWith("create or replace view v as "), ddl);
-        assertTrue(ddl.toUpperCase().contains("SELECT"), ddl);
+        // Live Snowflake always renders the parenthesized output column list, one tab-indented
+        // column per line.
+        assertEquals("create or replace view V(\n\tX\n) as SELECT x FROM base WHERE y > 0;", ddl);
+        // The reconstructed DDL must be valid (re-executable) and stable (idempotent).
         engine.execute(ddl);
         assertEquals(ddl, getDdl("VIEW", "v"));
     }
@@ -81,8 +83,9 @@ public class GetDdlTest extends BaseDatabaseTest {
         engine.execute("CREATE SEQUENCE seq1 START 5 INCREMENT 2");
         final String ddl = getDdl("SEQUENCE", "seq1");
         assertTrue(ddl.startsWith("create or replace sequence "), ddl);
-        assertTrue(ddl.contains("start 5"), ddl);
-        assertTrue(ddl.contains("increment 2"), ddl);
+        // Live Snowflake wording: "start with N increment by N".
+        assertTrue(ddl.contains("start with 5"), ddl);
+        assertTrue(ddl.contains("increment by 2"), ddl);
         engine.execute(ddl);
         assertEquals(ddl, getDdl("SEQUENCE", "seq1"));
     }

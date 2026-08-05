@@ -61,8 +61,8 @@ public class ScriptResultSetAndRowCountTest extends BaseDatabaseTest {
     public void resultsetFromCursor() {
         // price > 15 → {20,30,40,50} = 4 rows returned as a table.
         final ResultSet rs = engine.executeQuery("""
+            DECLARE c1 CURSOR FOR SELECT price FROM invoices WHERE price > 15;
             BEGIN
-              DECLARE c1 CURSOR FOR SELECT price FROM invoices WHERE price > 15;
               OPEN c1;
               RETURN TABLE(RESULTSET_FROM_CURSOR(c1));
             END;""");
@@ -73,9 +73,9 @@ public class ScriptResultSetAndRowCountTest extends BaseDatabaseTest {
     public void resultsetAssignmentFromSelect() {
         // rs := (SELECT price FROM invoices); FOR-iterate → sum 150.
         assertEquals(150L, ret("""
+            DECLARE rs RESULTSET;
             BEGIN
               LET total INTEGER := 0;
-              DECLARE rs RESULTSET;
               rs := (SELECT price FROM invoices);
               FOR r IN rs DO
                 total := total + r.price;

@@ -59,7 +59,7 @@ public class DeclareBeforeBeginTest {
         engine.execute("""
             DECLARE x INTEGER := 100;
             BEGIN
-                INSERT INTO results VALUES (x);
+                INSERT INTO results VALUES (:x);
             END;
             """);
 
@@ -70,16 +70,19 @@ public class DeclareBeforeBeginTest {
 
     @Test
     public void testMultipleDeclareBeforeBegin() {
-        logger.info("Testing multiple DECLARE statements before BEGIN");
+        // Snowflake takes ONE DECLARE keyword followed by every declaration item; repeating the
+        // keyword per item is not a spelling it accepts.
+        logger.info("Testing multiple declaration items in one DECLARE section before BEGIN");
 
         engine.execute("CREATE TABLE results (a INTEGER, b INTEGER, c INTEGER)");
 
         engine.execute("""
-            DECLARE x INTEGER := 1;
-            DECLARE y INTEGER := 2;
-            DECLARE z INTEGER := 3;
+            DECLARE
+                x INTEGER := 1;
+                y INTEGER := 2;
+                z INTEGER := 3;
             BEGIN
-                INSERT INTO results VALUES (x, y, z);
+                INSERT INTO results VALUES (:x, :y, :z);
             END;
             """);
 
@@ -100,7 +103,7 @@ public class DeclareBeforeBeginTest {
         engine.execute("""
             DECLARE outer INTEGER := 1;
             BEGIN
-                INSERT INTO results VALUES (1, outer);
+                INSERT INTO results VALUES (1, :outer);
             END;
             """);
 
@@ -108,7 +111,7 @@ public class DeclareBeforeBeginTest {
         engine.execute("""
             DECLARE value2 INTEGER := 2;
             BEGIN
-                INSERT INTO results VALUES (2, value2);
+                INSERT INTO results VALUES (2, :value2);
             END;
             """);
 
@@ -129,13 +132,14 @@ public class DeclareBeforeBeginTest {
         engine.execute("CREATE TABLE results (id INTEGER, name VARCHAR)");
 
         engine.execute("""
-            DECLARE cur CURSOR FOR SELECT id, name FROM source;
-            DECLARE rec_id INTEGER;
-            DECLARE rec_name VARCHAR;
+            DECLARE
+                cur CURSOR FOR SELECT id, name FROM source;
+                rec_id INTEGER;
+                rec_name VARCHAR;
             BEGIN
                 OPEN cur;
                 FETCH cur INTO rec_id, rec_name;
-                INSERT INTO results VALUES (rec_id, rec_name);
+                INSERT INTO results VALUES (:rec_id, :rec_name);
                 CLOSE cur;
             END;
             """);
@@ -160,7 +164,7 @@ public class DeclareBeforeBeginTest {
                 BEGIN
                     LET k INTEGER := 3;
                     i := i + j + k;
-                    INSERT INTO results VALUES (i);
+                    INSERT INTO results VALUES (:i);
                 END;
             END;
             """);
@@ -179,7 +183,7 @@ public class DeclareBeforeBeginTest {
         engine.execute("""
             DECLARE x INTEGER := 42;
             BEGIN
-                INSERT INTO results VALUES (x);
+                INSERT INTO results VALUES (:x);
                 INSERT INTO nonexistent_table VALUES (1);
             EXCEPTION
                 WHEN OTHER THEN

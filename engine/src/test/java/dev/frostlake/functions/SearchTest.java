@@ -21,9 +21,11 @@ import dev.frostlake.storage.ResultSet;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /**
  * SEARCH(data, query [, ANALYZER =&gt; ...] [, SEARCH_MODE =&gt; 'OR'|'AND']) — token-based full-text
@@ -72,7 +74,16 @@ public class SearchTest extends BaseDatabaseTest {
         assertEquals(Boolean.TRUE,
             scalar("SELECT SEARCH('the king', 'king', ANALYZER => 'UNICODE_ANALYZER', SEARCH_MODE => 'OR')"));
         assertEquals(Boolean.FALSE,
-            scalar("SELECT SEARCH('the king', 'king queen', SEARCH_MODE => 'AND', ANALYZER => 'PATTERN_ANALYZER')"));
+            scalar("SELECT SEARCH('the king', 'king queen', SEARCH_MODE => 'AND', ANALYZER => 'DEFAULT_ANALYZER')"));
+        // Snowflake ships exactly three analyzers. Live-verified on a real account:
+        // ANALYZER => 'PATTERN_ANALYZER' (and any other name) fails "Object 'PATTERN_ANALYZER' does not
+        // exist or not authorized.", while NO_OP_ANALYZER and DEFAULT_ANALYZER resolve.
+        assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                scalar("SELECT SEARCH('the king', 'king', ANALYZER => 'PATTERN_ANALYZER')");
+            }
+        });
     }
 
     @Test

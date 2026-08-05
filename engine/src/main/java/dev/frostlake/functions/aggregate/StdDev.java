@@ -17,6 +17,7 @@
 package dev.frostlake.functions.aggregate;
 
 import dev.frostlake.functions.AggregateFunction;
+import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.types.NumericType;
 
 import java.util.ArrayList;
@@ -37,6 +38,18 @@ public class StdDev extends AggregateFunction {
 
     @Override public int getMinArgCount() { return 1; }
     @Override public int getMaxArgCount() { return 1; }
+
+    /**
+     * The moment aggregates reach their internal sum of SQUARES before they reach any type check, so
+     * live never names them: {@code STDDEV(o)} over an OBJECT column is "Invalid argument types for
+     * function '*': (OBJECT, OBJECT)", listing the one argument twice. {@code STDDEV(a)}
+     * is "(ARRAY, ARRAY)" and a structured column names its whole type on both sides. The DISTINCT
+     * and windowed forms reject identically; {@code STDDEV(v)} over a VARIANT is accepted.
+     */
+    @Override
+    public SemiStructuredRejection semiStructuredRejection(final int position) {
+        return SemiStructuredRejection.MULTIPLY_OPERANDS;
+    }
 
     public static class StdDevAccumulator implements Accumulator {
         final List<Double> values = new ArrayList<>();

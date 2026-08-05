@@ -17,26 +17,25 @@
 package dev.frostlake.functions.scalar.hash;
 
 import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.types.StringType;
 
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.util.List;
 
+/**
+ * SHA1(msg) — the lowercase hex SHA-1 digest of the message bytes.
+ *
+ * <p>A BINARY message is digested as its OWN bytes, so {@code SHA1(TO_BINARY('61','HEX'))} equals
+ * {@code SHA1('a')}.
+ */
 public class Sha1 extends BuiltInFunction {
     public Sha1() { super("SHA1", StringType.VARCHAR); }
 
     @Override
     public Object evaluate(final List<Object> args) {
         if (args.get(0) == null) return null;
-        try {
-            MessageDigest md = MessageDigest.getInstance("SHA-1");
-            byte[] digest = md.digest(args.get(0).toString().getBytes(StandardCharsets.UTF_8));
-            StringBuilder sb = new StringBuilder();
-            for (final byte b : digest) sb.append(String.format("%02x", b));
-            return sb.toString();
-        } catch (final NoSuchAlgorithmException e) { throw new RuntimeException("SHA-1 not available"); }
+        return SharedFunctionHelpers.toHex(
+            SharedFunctionHelpers.digest("SHA-1", SharedFunctionHelpers.toUtf8(args.get(0))));
     }
 
     @Override public int getMinArgCount() { return 1; }

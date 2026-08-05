@@ -85,7 +85,7 @@ final class ShowRelationalExecutor {
         List<Row> rows = new ArrayList<>();
         for (final Database db : catalog.getAllDatabases()) {
             rows.add(new Row(Arrays.asList(
-                db.getCreatedTime().toString(),
+                ShowResultHelpers.createdOnText(db.getCreatedTime()),
                 db.getName(),
                 "N",
                 db.getName().equals(cur) ? "Y" : "N",
@@ -117,7 +117,7 @@ final class ShowRelationalExecutor {
         List<Row> rows = new ArrayList<>();
         for (final Schema schema : catalog.getDatabase(dbName).getAllSchemas()) {
             rows.add(new Row(Arrays.asList(
-                schema.getCreatedTime().toString(),
+                ShowResultHelpers.createdOnText(schema.getCreatedTime()),
                 schema.getName(),
                 "N",
                 // Schema names are stored verbatim but the current schema is tracked upper-cased,
@@ -153,6 +153,10 @@ final class ShowRelationalExecutor {
 
     private ResultSet showTablesScoped(final String schemaName, final String databaseName,
                                        final boolean hybridOnly) {
+        // Live's full SHOW TABLES layout, measured column for column on a real account — the tail
+        // (search_optimization*, is_hybrid, is_iceberg, …) is read back through
+        // TABLE(RESULT_SCAN(LAST_QUERY_ID())) by real migration scripts, so the names must exist
+        // even where the feature is a constant here.
         List<ResultSetColumn> columns = Arrays.asList(
             new ResultSetColumn("created_on", StringType.VARCHAR),
             new ResultSetColumn("name", StringType.VARCHAR),
@@ -167,7 +171,20 @@ final class ShowRelationalExecutor {
             new ResultSetColumn("retention_time", NumericType.INTEGER),
             new ResultSetColumn("automatic_clustering", StringType.VARCHAR),
             new ResultSetColumn("change_tracking", StringType.VARCHAR),
-            new ResultSetColumn("is_external", StringType.VARCHAR)
+            new ResultSetColumn("search_optimization", StringType.VARCHAR),
+            new ResultSetColumn("search_optimization_progress", StringType.VARCHAR),
+            new ResultSetColumn("search_optimization_bytes", NumericType.BIGINT),
+            new ResultSetColumn("is_external", StringType.VARCHAR),
+            new ResultSetColumn("enable_schema_evolution", StringType.VARCHAR),
+            new ResultSetColumn("owner_role_type", StringType.VARCHAR),
+            new ResultSetColumn("is_event", StringType.VARCHAR),
+            new ResultSetColumn("is_hybrid", StringType.VARCHAR),
+            new ResultSetColumn("is_iceberg", StringType.VARCHAR),
+            new ResultSetColumn("is_dynamic", StringType.VARCHAR),
+            new ResultSetColumn("is_immutable", StringType.VARCHAR),
+            new ResultSetColumn("is_interactive", StringType.VARCHAR),
+            new ResultSetColumn("row_timestamp", StringType.VARCHAR),
+            new ResultSetColumn("error_logging", StringType.VARCHAR)
         );
         final String dbName = databaseName != null ? databaseName : catalog.getCurrentDatabase();
         final List<Row> rows = new ArrayList<>();
@@ -181,7 +198,7 @@ final class ShowRelationalExecutor {
                     : table.isTemporary() ? "TEMPORARY TABLE"
                     : table.isTransient() ? "TRANSIENT TABLE" : "TABLE";
                 rows.add(new Row(Arrays.asList(
-                    table.getCreatedTime().toString(),
+                    ShowResultHelpers.createdOnText(table.getCreatedTime()),
                     table.getName(),
                     dbName, scName, kind,
                     table.getComment(),
@@ -190,7 +207,11 @@ final class ShowRelationalExecutor {
                     0L,
                     table.getOwner(),
                     1,
-                    "OFF", "OFF", "N"
+                    "OFF", "OFF",
+                    "OFF", null, null,
+                    "N", "N", "ROLE", "N",
+                    table.isHybrid() ? "Y" : "N",
+                    "N", "N", "N", "N", "OFF", "OFF"
                 )));
             }
         }
@@ -243,7 +264,7 @@ final class ShowRelationalExecutor {
             final String scName = schema.getName();
             for (final View view : schema.getViews()) {
                 rows.add(new Row(Arrays.asList(
-                    view.getCreatedTime().toString(),
+                    ShowResultHelpers.createdOnText(view.getCreatedTime()),
                     view.getName(),
                     "",
                     dbName, scName,
@@ -284,7 +305,7 @@ final class ShowRelationalExecutor {
             final String scName = schema.getName();
             for (final MaterializedView mv : schema.getMaterializedViews()) {
                 rows.add(new Row(Arrays.asList(
-                    mv.getCreatedTime().toString(),
+                    ShowResultHelpers.createdOnText(mv.getCreatedTime()),
                     mv.getName(),
                     dbName, scName,
                     mv.getOwner(),
@@ -310,26 +331,35 @@ final class ShowRelationalExecutor {
      * contributes no rows (deriving them would mean executing the definition).
      */
     public ResultSet showColumnsScoped(final String name, final boolean view) {
+        // Snowflake's SHOW COLUMNS shape, live-captured in this exact order.
         final List<ResultSetColumn> columns = Arrays.asList(
+            new ResultSetColumn("table_name", StringType.VARCHAR),
+            new ResultSetColumn("schema_name", StringType.VARCHAR),
             new ResultSetColumn("column_name", StringType.VARCHAR),
             new ResultSetColumn("data_type", StringType.VARCHAR),
-            new ResultSetColumn("kind", StringType.VARCHAR),
             new ResultSetColumn("null?", StringType.VARCHAR),
             new ResultSetColumn("default", StringType.VARCHAR),
-            new ResultSetColumn("primary key", StringType.VARCHAR),
-            new ResultSetColumn("unique key", StringType.VARCHAR),
-            new ResultSetColumn("check", StringType.VARCHAR),
+            new ResultSetColumn("kind", StringType.VARCHAR),
             new ResultSetColumn("expression", StringType.VARCHAR),
             new ResultSetColumn("comment", StringType.VARCHAR),
-            new ResultSetColumn("policy name", StringType.VARCHAR),
-            new ResultSetColumn("table_name", StringType.VARCHAR),
-            new ResultSetColumn("schema_name", StringType.VARCHAR)
+            new ResultSetColumn("database_name", StringType.VARCHAR),
+            new ResultSetColumn("autoincrement", StringType.VARCHAR),
+            new ResultSetColumn("schema_evolution_record", StringType.VARCHAR),
+            new ResultSetColumn("write_default", StringType.VARCHAR)
         );
         final Schema schema = ShowResultHelpers.resolveDescribeSchema(catalog);
         final List<Row> rows = new ArrayList<>();
         if (view) {
             final List<View> views = new ArrayList<>();
             if (name != null) {
+                // Snowflake requires a VIEW to be named by its FULL search path here — the
+                // unqualified form is rejected outright (live-verified: "Must specify the full
+                // search path starting from database for CV"), while SHOW COLUMNS IN TABLE takes
+                // an unqualified name. Mirror that rather than resolving against the current schema.
+                if (QualifiedName.parse(name).size() < 3) {
+                    throw new RuntimeException("Must specify the full search path starting from database for "
+                        + QualifiedName.parse(name).last().toUpperCase());
+                }
                 views.add(catalog.resolveView(name));
             } else {
                 views.addAll(schema.getViews());
@@ -340,8 +370,9 @@ final class ShowRelationalExecutor {
                     continue;
                 }
                 for (final String colName : colNames) {
-                    rows.add(new Row(Arrays.asList(colName, null, "COLUMN", "Y", null, "N", "N",
-                        null, null, null, null, v.getName(), schema.getName())));
+                    rows.add(new Row(Arrays.asList(v.getName(), schema.getName(), colName, null,
+                        "true", null, "COLUMN", null, null, catalog.getCurrentDatabase(), null,
+                        null, null)));
                 }
             }
             return new ResultSet(columns, rows);
@@ -355,18 +386,21 @@ final class ShowRelationalExecutor {
         for (final Table table : tables) {
             for (final TableColumn col : table.getColumns()) {
                 rows.add(new Row(Arrays.asList(
+                    table.getName(),
+                    schema.getName(),
                     col.getName(),
                     col.getDataType().getName(),
-                    "COLUMN",
-                    col.isNullable() ? "Y" : "N",
+                    // Snowflake reports NOT_NULL for a non-nullable column and the text "true" for a
+                    // nullable one (live-captured), not Y/N.
+                    col.isNullable() ? "true" : "NOT_NULL",
                     col.getDefaultValue() != null ? col.getDefaultValue().toString() : null,
-                    col.isPrimaryKey() ? "Y" : "N",
-                    col.isUnique() ? "Y" : "N",
-                    null, null,
-                    col.getComment(),
+                    "COLUMN",
                     null,
-                    table.getName(),
-                    schema.getName()
+                    col.getComment(),
+                    catalog.getCurrentDatabase(),
+                    col.isAutoIncrement() ? "Y" : null,
+                    null,
+                    null
                 )));
             }
         }
@@ -410,20 +444,20 @@ final class ShowRelationalExecutor {
         for (final Schema schema : resolveScopeSchemas(schemaName, databaseName)) {
             final String scName = schema.getName();
             for (final Table t : schema.getTables()) {
-                rows.add(new Row(Arrays.asList(t.getCreatedTime().toString(), t.getName(), scName,
+                rows.add(new Row(Arrays.asList(ShowResultHelpers.createdOnText(t.getCreatedTime()), t.getName(), scName,
                     t.isTemporary() ? "TEMPORARY TABLE" : t.isTransient() ? "TRANSIENT TABLE" : "TABLE",
                     dbName, t.getOwner(), t.getComment())));
             }
             for (final View v : schema.getViews()) {
-                rows.add(new Row(Arrays.asList(v.getCreatedTime().toString(), v.getName(), scName,
+                rows.add(new Row(Arrays.asList(ShowResultHelpers.createdOnText(v.getCreatedTime()), v.getName(), scName,
                     "VIEW", dbName, v.getOwner(), v.getComment())));
             }
             for (final Function f : schema.getFunctions()) {
-                rows.add(new Row(Arrays.asList(f.getCreatedTime().toString(), f.getName(), scName,
+                rows.add(new Row(Arrays.asList(ShowResultHelpers.createdOnText(f.getCreatedTime()), f.getName(), scName,
                     f.isTableFunction() ? "TABLE FUNCTION" : "FUNCTION", dbName, f.getOwner(), f.getComment())));
             }
             for (final Procedure p : schema.getProcedures()) {
-                rows.add(new Row(Arrays.asList(p.getCreatedTime().toString(), p.getName(), scName,
+                rows.add(new Row(Arrays.asList(ShowResultHelpers.createdOnText(p.getCreatedTime()), p.getName(), scName,
                     "PROCEDURE", dbName, p.getOwner(), p.getComment())));
             }
             for (final Sequence s : schema.getSequences()) {
@@ -439,15 +473,53 @@ final class ShowRelationalExecutor {
                     t.getName(), scName, "TASK", dbName, t.getOwner(), t.getComment())));
             }
             for (final DynamicTable dt : schema.getDynamicTables()) {
-                rows.add(new Row(Arrays.asList(dt.getCreatedTime().toString(),
+                rows.add(new Row(Arrays.asList(ShowResultHelpers.createdOnText(dt.getCreatedTime()),
                     dt.getName(), scName, "DYNAMIC TABLE", dbName, dt.getOwner(), dt.getComment())));
             }
         }
         return new ResultSet(columns, rows);
     }
 
+    /**
+     * DESCRIBE TABLE has its OWN shape in Snowflake — {@code name, type, kind, null?, default,
+     * primary key, unique key, check, expression, comment, policy name} — which is NOT the
+     * SHOW COLUMNS shape (that one leads with table_name/schema_name and carries no key columns).
+     * The two commands are deliberately rendered separately.
+     */
     public ResultSet describeTable(final String tableName) {
-        return showColumns(tableName);
+        final List<ResultSetColumn> columns = Arrays.asList(
+            new ResultSetColumn("name", StringType.VARCHAR),
+            new ResultSetColumn("type", StringType.VARCHAR),
+            new ResultSetColumn("kind", StringType.VARCHAR),
+            new ResultSetColumn("null?", StringType.VARCHAR),
+            new ResultSetColumn("default", StringType.VARCHAR),
+            new ResultSetColumn("primary key", StringType.VARCHAR),
+            new ResultSetColumn("unique key", StringType.VARCHAR),
+            new ResultSetColumn("check", StringType.VARCHAR),
+            new ResultSetColumn("expression", StringType.VARCHAR),
+            new ResultSetColumn("comment", StringType.VARCHAR),
+            new ResultSetColumn("policy name", StringType.VARCHAR)
+        );
+        final List<Row> rows = new ArrayList<>();
+        // DESCRIBE echoes the name as written — live: DESCRIBE TABLE nosuch answers
+        // "Table 'NOSUCH' …", not the fully qualified form a DROP would report.
+        for (final TableColumn col
+                : catalog.resolveTableAsWritten(tableName, "Table").getColumns()) {
+            rows.add(new Row(Arrays.asList(
+                col.getName(),
+                col.getDataType().getName(),
+                "COLUMN",
+                col.isNullable() ? "Y" : "N",
+                col.getDefaultValue() != null ? col.getDefaultValue().toString() : null,
+                col.isPrimaryKey() ? "Y" : "N",
+                col.isUnique() ? "Y" : "N",
+                null,
+                null,
+                col.getComment(),
+                null
+            )));
+        }
+        return new ResultSet(columns, rows);
     }
 
     public ResultSet describeView(final String viewName) {

@@ -21,6 +21,7 @@ import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.View;
 import dev.frostlake.storage.ResultSet;
 
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -35,6 +36,25 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 public class DdlOptionBreadthTest extends BaseDatabaseTest {
 
+    private static final String ATTACH_METADATA =
+        "reads the attached policy/comment straight off the in-memory catalog (engine.getCatalog()), which "
+        + "live Snowflake never populates (it fails there with 'Database does not exist: TEST_DB'); the DDL "
+        + "under test still runs against the account";
+
+    @Override
+    protected void setupTest() {
+        // The dynamic tables below name a warehouse explicitly, so the warehouse has to exist: a real
+        // account rejects the CREATE with "Warehouse 'MY_WH' does not exist." (same pattern as
+        // AlterTaskStreamActionsTest, which creates the warehouses its tasks name).
+        engine.execute("CREATE WAREHOUSE IF NOT EXISTS my_wh WITH WAREHOUSE_SIZE = 'XSMALL' "
+            + "AUTO_SUSPEND = 60 INITIALLY_SUSPENDED = TRUE");
+    }
+
+    @Override
+    protected void teardownTest() {
+        engine.execute("DROP WAREHOUSE IF EXISTS my_wh");
+    }
+
     private long count(final String sql) {
         final ResultSet rs = engine.executeQuery(sql);
         return ((Number) rs.getRows().get(0).getValue(0)).longValue();
@@ -42,6 +62,11 @@ public class DdlOptionBreadthTest extends BaseDatabaseTest {
 
     @Test
     public void cloneAcceptsTimeTravelAndClonesCurrentState() {
+        Assumptions.assumeFalse(isLiveSnowflake(),
+            "Frostlake keeps no time-travel history — it PARSES the AT/BEFORE clause and clones the "
+            + "current state. A real account really does time-travel and fails "
+            + "\"Time travel data is not available for table TT_SRC\" for any offset before the table's "
+            + "own creation (live-verified 2026-08-02, even OFFSET => -1 on a just-created table)");
         engine.execute("CREATE TABLE tt_src (id INTEGER)");
         engine.execute("INSERT INTO tt_src VALUES (1), (2)");
         engine.execute("CREATE TABLE tt_at CLONE tt_src AT (OFFSET => -3600)");
@@ -54,6 +79,13 @@ public class DdlOptionBreadthTest extends BaseDatabaseTest {
 
     @Test
     public void tagClausesAreAcceptedEverywhere() {
+        // A TAG (…) clause names a tag that must already exist — live-verified: without the
+        // CREATE TAG, the table-level, column-level, ALTER-ADD-COLUMN and materialized-view forms all
+        // fail "Tag 'KEY1' does not exist or not authorized."; with it, every one of them succeeds.
+        engine.execute("CREATE TAG IF NOT EXISTS key1");
+        engine.execute("CREATE TAG IF NOT EXISTS key2");
+        engine.execute("CREATE TAG IF NOT EXISTS k");
+        engine.execute("CREATE TAG IF NOT EXISTS a");
         engine.execute("CREATE TABLE tagged (id INTEGER) TAG (key1='value_1', key2='value_2')");
         engine.execute("ALTER TABLE tagged ADD col1 VARCHAR NOT NULL TAG (key1='value_1'), col2 VARCHAR TAG (key2='v2')");
         assertEquals(0, count("SELECT COUNT(*) FROM tagged"));
@@ -72,13 +104,15 @@ public class DdlOptionBreadthTest extends BaseDatabaseTest {
         // BYPASSES row-access filtering (Snowflake semantics), so filtered counts can't be used here.
         engine.execute("CREATE ROW ACCESS POLICY eu_only AS (r VARCHAR) RETURNS BOOLEAN -> r = 'EU'");
         engine.execute("CREATE TABLE regions (r VARCHAR) ROW ACCESS POLICY eu_only ON (r)");
+        engine.execute("CREATE VIEW eu_view WITH ROW ACCESS POLICY eu_only ON (r) AS SELECT r FROM regions");
+
+        Assumptions.assumeFalse(isLiveSnowflake(), ATTACH_METADATA);
         final Table table =
             engine.getCatalog().getDatabase("TEST_DB").getSchema("TEST_SCHEMA").getTable("REGIONS");
         assertTrue(table.hasRowAccessPolicy(), "CREATE TABLE ... ROW ACCESS POLICY must attach");
         assertEquals("EU_ONLY", table.getRowAccessPolicyName());
         assertEquals(1, table.getRowAccessPolicyColumns().size());
 
-        engine.execute("CREATE VIEW eu_view WITH ROW ACCESS POLICY eu_only ON (r) AS SELECT r FROM regions");
         final View view =
             engine.getCatalog().getDatabase("TEST_DB").getSchema("TEST_SCHEMA").getView("EU_VIEW");
         assertTrue(view.hasRowAccessPolicy(), "CREATE VIEW ... WITH ROW ACCESS POLICY must attach");
@@ -180,6 +214,7 @@ public class DdlOptionBreadthTest extends BaseDatabaseTest {
         engine.execute("CREATE VIEW vp_rap (region COMMENT 'per-column comment') "
             + "WITH ROW ACCESS POLICY test_db.test_schema.policy ON (region) "
             + "COMMENT='view comment' AS (SELECT region FROM vp_src)");
+        Assumptions.assumeFalse(isLiveSnowflake(), ATTACH_METADATA);
         final View view =
             engine.getCatalog().getDatabase("TEST_DB").getSchema("TEST_SCHEMA").getView("VP_RAP");
         assertEquals("TEST_DB.TEST_SCHEMA.POLICY", view.getRowAccessPolicyName());
@@ -195,6 +230,7 @@ public class DdlOptionBreadthTest extends BaseDatabaseTest {
         assertEquals(15, count("SELECT seq_commas.NEXTVAL"));
         engine.execute("CREATE SEQUENCE seq_inline START=3 COMMENT = 'counts things' INCREMENT=2");
         assertEquals(3, count("SELECT seq_inline.NEXTVAL"));
+        Assumptions.assumeFalse(isLiveSnowflake(), ATTACH_METADATA);
         assertEquals("counts things", engine.getCatalog().getDatabase("TEST_DB").getSchema("TEST_SCHEMA")
             .getSequence("SEQ_INLINE").getComment());
     }

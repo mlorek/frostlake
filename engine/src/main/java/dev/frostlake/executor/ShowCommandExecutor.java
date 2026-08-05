@@ -174,12 +174,28 @@ public class ShowCommandExecutor {
         return routineExecutor.showFunctions(schemaName, userOnly);
     }
 
+    public ResultSet showBuiltinFunctions() {
+        return routineExecutor.showBuiltinFunctions();
+    }
+
+    public ResultSet showBuiltinProcedures() {
+        return routineExecutor.showBuiltinProcedures();
+    }
+
     public ResultSet showProceduresInDatabase(final String databaseName) {
         return routineExecutor.showProceduresInDatabase(databaseName);
     }
 
     public ResultSet showFunctionsInDatabase(final String databaseName) {
         return routineExecutor.showFunctionsInDatabase(databaseName);
+    }
+
+    public ResultSet showUserFunctionsInDatabase(final String databaseName) {
+        return routineExecutor.showUserFunctionsInDatabase(databaseName);
+    }
+
+    public ResultSet showUserProceduresInDatabase(final String databaseName) {
+        return routineExecutor.showUserProceduresInDatabase(databaseName);
     }
 
     // ==================== DESCRIBE STATEMENTS ====================

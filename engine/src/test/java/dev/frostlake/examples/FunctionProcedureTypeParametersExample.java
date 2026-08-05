@@ -36,25 +36,25 @@ public class FunctionProcedureTypeParametersExample {
 
             // Example 1: VARCHAR with size
             logger.info("\n1. Function with VARCHAR(size) parameter:");
-            engine.execute("CREATE FUNCTION format_name(first_name VARCHAR(50), last_name VARCHAR(50)) RETURNS VARCHAR LANGUAGE SQL AS 'BEGIN RETURN first_name; END'");
+            engine.execute("CREATE FUNCTION format_name(first_name VARCHAR(50), last_name VARCHAR(50)) RETURNS VARCHAR LANGUAGE SQL AS 'first_name'");
             logger.info("Created: format_name(first_name VARCHAR(50), last_name VARCHAR(50))");
             engine.execute("DROP FUNCTION format_name(VARCHAR, VARCHAR)");
 
             // Example 2: DECIMAL with precision and scale
             logger.info("\n2. Function with DECIMAL(precision, scale) parameters:");
-            engine.execute("CREATE FUNCTION calculate_total(price DECIMAL(10, 2), quantity DECIMAL(8, 2)) RETURNS DECIMAL LANGUAGE SQL AS 'BEGIN RETURN price; END'");
+            engine.execute("CREATE FUNCTION calculate_total(price DECIMAL(10, 2), quantity DECIMAL(8, 2)) RETURNS DECIMAL LANGUAGE SQL AS 'price'");
             logger.info("Created: calculate_total(price DECIMAL(10, 2), quantity DECIMAL(8, 2))");
             engine.execute("DROP FUNCTION calculate_total(DECIMAL, DECIMAL)");
 
             // Example 3: TIMESTAMP with precision
             logger.info("\n3. Function with TIMESTAMP(precision) parameter:");
-            engine.execute("CREATE FUNCTION format_timestamp(event_time TIMESTAMP(9)) RETURNS VARCHAR LANGUAGE SQL AS 'BEGIN RETURN event_time; END'");
+            engine.execute("CREATE FUNCTION format_timestamp(event_time TIMESTAMP(9)) RETURNS VARCHAR LANGUAGE SQL AS 'event_time'");
             logger.info("Created: format_timestamp(event_time TIMESTAMP(9))");
             engine.execute("DROP FUNCTION format_timestamp(TIMESTAMP)");
 
             // Example 4: Mixed parameter types
             logger.info("\n4. Function with mixed parameter types:");
-            engine.execute("CREATE FUNCTION process_order(order_id INTEGER, customer_name VARCHAR(100), total_amount DECIMAL(12, 2), order_date TIMESTAMP(6)) RETURNS VARCHAR LANGUAGE SQL AS 'BEGIN RETURN customer_name; END'");
+            engine.execute("CREATE FUNCTION process_order(order_id INTEGER, customer_name VARCHAR(100), total_amount DECIMAL(12, 2), order_date TIMESTAMP(6)) RETURNS VARCHAR LANGUAGE SQL AS 'customer_name'");
             logger.info("Created: process_order(");
             logger.info("  order_id INTEGER,");
             logger.info("  customer_name VARCHAR(100),");
@@ -65,19 +65,19 @@ public class FunctionProcedureTypeParametersExample {
 
             // Example 5: CHAR with size
             logger.info("\n5. Function with CHAR(size) parameter:");
-            engine.execute("CREATE FUNCTION validate_country_code(code CHAR(2)) RETURNS INTEGER LANGUAGE SQL AS 'BEGIN RETURN 1; END'");
+            engine.execute("CREATE FUNCTION validate_country_code(code CHAR(2)) RETURNS INTEGER LANGUAGE SQL AS '1'");
             logger.info("Created: validate_country_code(code CHAR(2))");
             engine.execute("DROP FUNCTION validate_country_code(CHAR)");
 
             // Example 6: NUMBER with precision
             logger.info("\n6. Function with NUMBER(precision) parameter:");
-            engine.execute("CREATE FUNCTION calculate_tax(amount NUMBER(15)) RETURNS NUMBER LANGUAGE SQL AS 'BEGIN RETURN amount; END'");
+            engine.execute("CREATE FUNCTION calculate_tax(amount NUMBER(15)) RETURNS NUMBER LANGUAGE SQL AS 'amount'");
             logger.info("Created: calculate_tax(amount NUMBER(15))");
             engine.execute("DROP FUNCTION calculate_tax(NUMBER)");
 
             // Example 7: NUMBER with precision and scale
             logger.info("\n7. Function with NUMBER(precision, scale) parameters:");
-            engine.execute("CREATE FUNCTION compound_interest(principal NUMBER(18, 2), rate NUMBER(5, 4), years NUMBER(3)) RETURNS NUMBER LANGUAGE SQL AS 'BEGIN RETURN principal; END'");
+            engine.execute("CREATE FUNCTION compound_interest(principal NUMBER(18, 2), rate NUMBER(5, 4), years NUMBER(3)) RETURNS NUMBER LANGUAGE SQL AS 'principal'");
             logger.info("Created: compound_interest(");
             logger.info("  principal NUMBER(18, 2),");
             logger.info("  rate NUMBER(5, 4),");
@@ -97,17 +97,17 @@ public class FunctionProcedureTypeParametersExample {
 
             // Example 9: CREATE OR REPLACE with typed parameters
             logger.info("\n9. CREATE OR REPLACE with typed parameters:");
-            engine.execute("CREATE FUNCTION calculate_discount(price DECIMAL(10, 2), discount_pct DECIMAL(5, 2)) RETURNS DECIMAL LANGUAGE SQL AS 'BEGIN RETURN price; END'");
+            engine.execute("CREATE FUNCTION calculate_discount(price DECIMAL(10, 2), discount_pct DECIMAL(5, 2)) RETURNS DECIMAL LANGUAGE SQL AS 'price'");
             logger.info("Created: calculate_discount(price DECIMAL(10, 2), discount_pct DECIMAL(5, 2))");
 
-            engine.execute("CREATE OR REPLACE FUNCTION calculate_discount(price DECIMAL(10, 2), discount_pct DECIMAL(5, 2)) RETURNS DECIMAL LANGUAGE SQL AS 'BEGIN RETURN price; END'");
+            engine.execute("CREATE OR REPLACE FUNCTION calculate_discount(price DECIMAL(10, 2), discount_pct DECIMAL(5, 2)) RETURNS DECIMAL LANGUAGE SQL AS 'price'");
             logger.info("Replaced with same signature");
             engine.execute("DROP FUNCTION calculate_discount(DECIMAL, DECIMAL)");
 
             // Example 10: Schema-qualified with typed parameters
             logger.info("\n10. Schema-qualified function with typed parameters:");
             engine.execute("CREATE SCHEMA financial");
-            engine.execute("CREATE FUNCTION financial.calculate_payment(loan_amount DECIMAL(15, 2), interest_rate DECIMAL(6, 4), term_months INTEGER) RETURNS DECIMAL LANGUAGE SQL AS 'BEGIN RETURN loan_amount; END'");
+            engine.execute("CREATE FUNCTION financial.calculate_payment(loan_amount DECIMAL(15, 2), interest_rate DECIMAL(6, 4), term_months INTEGER) RETURNS DECIMAL LANGUAGE SQL AS 'loan_amount'");
             logger.info("Created: financial.calculate_payment(");
             logger.info("  loan_amount DECIMAL(15, 2),");
             logger.info("  interest_rate DECIMAL(6, 4),");
@@ -117,7 +117,7 @@ public class FunctionProcedureTypeParametersExample {
 
             // Example 11: Complex signature
             logger.info("\n11. Complex function signature:");
-            engine.execute("CREATE FUNCTION generate_invoice(invoice_id INTEGER, customer_code CHAR(10), customer_name VARCHAR(100), billing_address VARCHAR(500), subtotal DECIMAL(12, 2), tax_amount DECIMAL(10, 2), total_amount DECIMAL(12, 2), invoice_date TIMESTAMP(6)) RETURNS VARCHAR LANGUAGE SQL AS 'BEGIN RETURN customer_name; END'");
+            engine.execute("CREATE FUNCTION generate_invoice(invoice_id INTEGER, customer_code CHAR(10), customer_name VARCHAR(100), billing_address VARCHAR(500), subtotal DECIMAL(12, 2), tax_amount DECIMAL(10, 2), total_amount DECIMAL(12, 2), invoice_date TIMESTAMP(6)) RETURNS VARCHAR LANGUAGE SQL AS 'customer_name'");
             logger.info("Created complex function with 8 typed parameters:");
             logger.info("  invoice_id INTEGER");
             logger.info("  customer_code CHAR(10)");

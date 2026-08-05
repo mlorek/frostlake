@@ -18,6 +18,7 @@ package dev.frostlake.ddl;
 
 import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -66,6 +67,10 @@ public class IdentityColumnFormsTest extends BaseDatabaseTest {
 
     @Test
     public void autoincrementWithParenSeedAndStep() {
+        Assumptions.assumeFalse(isLiveSnowflake(), "an AUTOINCREMENT column defaults to NOORDER on Snowflake, which allocates values in "
+            + "BATCHES per statement — a real account answers 100 then 600 (and 1 then 101 for step 1) "
+            + "for two single-row INSERTs, and the jump is not deterministic; only an explicit ORDER "
+            + "sequence is gapless. Frostlake models the gapless allocation");
         engine.execute("CREATE TABLE i1 (id NUMBER AUTOINCREMENT(100,5), n VARCHAR)");
         engine.execute("INSERT INTO i1 (n) VALUES ('a')");
         engine.execute("INSERT INTO i1 (n) VALUES ('b')");
@@ -75,6 +80,10 @@ public class IdentityColumnFormsTest extends BaseDatabaseTest {
 
     @Test
     public void identityStartIncrementForm() {
+        Assumptions.assumeFalse(isLiveSnowflake(), "an AUTOINCREMENT column defaults to NOORDER on Snowflake, which allocates values in "
+            + "BATCHES per statement — a real account answers 100 then 600 (and 1 then 101 for step 1) "
+            + "for two single-row INSERTs, and the jump is not deterministic; only an explicit ORDER "
+            + "sequence is gapless. Frostlake models the gapless allocation");
         engine.execute("CREATE TABLE i2 (id NUMBER IDENTITY START 50 INCREMENT 10, n VARCHAR)");
         engine.execute("INSERT INTO i2 (n) VALUES ('a')");
         engine.execute("INSERT INTO i2 (n) VALUES ('b')");

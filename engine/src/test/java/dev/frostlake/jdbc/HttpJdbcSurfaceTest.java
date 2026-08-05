@@ -41,6 +41,12 @@ import java.sql.Statement;
 import java.sql.Time;
 import java.sql.Timestamp;
 import java.sql.Types;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.TreeMap;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -356,6 +362,244 @@ public class HttpJdbcSurfaceTest {
         try (final ResultSet catalogs = md.getCatalogs()) {
             assertNotNull(catalogs);
         }
+    }
+
+    // ── getSchemas(catalog, schemaPattern) over HTTP ──────────────────────────────────────────
+    // This is the transport a desktop SQL client actually connects on, and the overload it calls to
+    // fill a catalog's schema list. It used to throw SQLFeatureNotSupportedException, leaving a
+    // freshly created database showing no schemas at all.
+
+    @Test
+    public void getSchemasForCatalogListsPublicAndInformationSchema() throws SQLException {
+        final java.sql.DatabaseMetaData md = connection.getMetaData();
+        try (final ResultSet rs = md.getSchemas("HTTP_SURFACE_DB", null)) {
+            final ResultSetMetaData rsMeta = rs.getMetaData();
+            assertEquals(2, rsMeta.getColumnCount());
+            assertEquals("TABLE_SCHEM", rsMeta.getColumnLabel(1).toUpperCase());
+            assertEquals("TABLE_CATALOG", rsMeta.getColumnLabel(2).toUpperCase());
+
+            boolean sawPublic = false;
+            boolean sawInformationSchema = false;
+            while (rs.next()) {
+                assertEquals("HTTP_SURFACE_DB", rs.getString("TABLE_CATALOG"));
+                final String schema = rs.getString("TABLE_SCHEM");
+                if ("PUBLIC".equals(schema)) {
+                    sawPublic = true;
+                } else if ("INFORMATION_SCHEMA".equals(schema)) {
+                    sawInformationSchema = true;
+                }
+            }
+            assertTrue(sawPublic, "a fresh database has PUBLIC");
+            assertTrue(sawInformationSchema, "a fresh database has INFORMATION_SCHEMA");
+        }
+    }
+
+    @Test
+    public void getSchemasOverHttpHonoursPatternAndUnknownCatalog() throws SQLException {
+        final java.sql.DatabaseMetaData md = connection.getMetaData();
+        try (final ResultSet rs = md.getSchemas("HTTP_SURFACE_DB", "PUB%")) {
+            assertTrue(rs.next());
+            assertEquals("PUBLIC", rs.getString("TABLE_SCHEM"));
+            assertFalse(rs.next());
+        }
+        try (final ResultSet rs = md.getSchemas("HTTP_SURFACE_DB", "%")) {
+            assertTrue(rs.next(), "a \"%\" pattern matches everything");
+        }
+        // Live Snowflake answers zero rows for a catalog no database has, rather than raising.
+        try (final ResultSet rs = md.getSchemas("NO_SUCH_DATABASE_FL160", null)) {
+            assertFalse(rs.next());
+        }
+    }
+
+    @Test
+    public void getSchemasOverHttpKeepsDatabasesApart() throws SQLException {
+        statement.execute("CREATE OR REPLACE DATABASE http_fl160_alpha");
+        statement.execute("CREATE SCHEMA http_fl160_alpha.alpha_only");
+        statement.execute("CREATE OR REPLACE DATABASE http_fl160_beta");
+        statement.execute("CREATE SCHEMA http_fl160_beta.beta_only");
+        try {
+            final java.sql.DatabaseMetaData md = connection.getMetaData();
+            assertEquals(List.of("ALPHA_ONLY", "INFORMATION_SCHEMA", "PUBLIC"),
+                schemasOf(md, "HTTP_FL160_ALPHA"));
+            assertEquals(List.of("BETA_ONLY", "INFORMATION_SCHEMA", "PUBLIC"),
+                schemasOf(md, "HTTP_FL160_BETA"));
+        } finally {
+            statement.execute("DROP DATABASE IF EXISTS http_fl160_alpha");
+            statement.execute("DROP DATABASE IF EXISTS http_fl160_beta");
+        }
+    }
+
+    /** The schema names one catalog reports, in the order the driver returned them. */
+    private List<String> schemasOf(final java.sql.DatabaseMetaData md, final String catalog) throws SQLException {
+        final List<String> names = new ArrayList<>();
+        try (final ResultSet rs = md.getSchemas(catalog, null)) {
+            while (rs.next()) {
+                assertEquals(catalog, rs.getString("TABLE_CATALOG"));
+                names.add(rs.getString("TABLE_SCHEM"));
+            }
+        }
+        return names;
+    }
+
+    @Test
+    public void getTablesOverHttpReadsNonCurrentCatalog() throws SQLException {
+        statement.execute("CREATE OR REPLACE DATABASE http_fl160_other");
+        statement.execute("CREATE TABLE http_fl160_other.public.other_probe (id INTEGER)");
+        try {
+            statement.execute("USE DATABASE http_surface_db");
+            statement.execute("USE SCHEMA PUBLIC");
+            final java.sql.DatabaseMetaData md = connection.getMetaData();
+            boolean sawProbe = false;
+            try (final ResultSet rs = md.getTables("HTTP_FL160_OTHER", "PUBLIC", "%", null)) {
+                while (rs.next()) {
+                    if ("OTHER_PROBE".equalsIgnoreCase(rs.getString("TABLE_NAME"))) {
+                        sawProbe = true;
+                    }
+                }
+            }
+            assertTrue(sawProbe, "getTables must see a table in a catalog other than the current one");
+        } finally {
+            statement.execute("DROP DATABASE IF EXISTS http_fl160_other");
+        }
+    }
+
+    // ── getTables / getColumns shape over HTTP ────────────────────────────────────────────────
+    // HTTP is the transport a desktop SQL client connects on, so the object types it can filter by
+    // and the column labels it reads have to be right here, not just in-process.
+
+    /** The TABLE_TYPE each object reports, keyed by name, for one getTables call. */
+    private Map<String, String> tableTypesOf(final java.sql.DatabaseMetaData md, final String[] types)
+            throws SQLException {
+        final Map<String, String> found = new TreeMap<>();
+        try (final ResultSet rs = md.getTables("HTTP_SURFACE_DB", "PUBLIC", "FL162%", types)) {
+            while (rs.next()) {
+                found.put(rs.getString("TABLE_NAME").toUpperCase(), rs.getString("TABLE_TYPE"));
+            }
+        }
+        return found;
+    }
+
+    /** The column labels of a result, upper-cased, in order. */
+    private List<String> labelsOf(final ResultSet rs) throws SQLException {
+        final ResultSetMetaData md = rs.getMetaData();
+        final List<String> labels = new ArrayList<>();
+        for (int i = 1; i <= md.getColumnCount(); i++) {
+            labels.add(md.getColumnLabel(i).toUpperCase());
+        }
+        return labels;
+    }
+
+    @Test
+    public void getTablesOverHttpMapsTypesAndListsViews() throws SQLException {
+        statement.execute("CREATE TABLE fl162_tbl (id INTEGER, name VARCHAR)");
+        statement.execute("CREATE VIEW fl162_vw AS SELECT id FROM fl162_tbl");
+        final java.sql.DatabaseMetaData md = connection.getMetaData();
+
+        final Map<String, String> unfiltered = tableTypesOf(md, null);
+        assertEquals("TABLE", unfiltered.get("FL162_TBL"),
+            "the catalog's own BASE TABLE is not a type getTableTypes() offers");
+        assertEquals("VIEW", unfiltered.get("FL162_VW"), "a view used to be absent entirely");
+
+        assertEquals(Set.of("FL162_TBL"), tableTypesOf(md, new String[] {"TABLE"}).keySet());
+        assertEquals(Set.of("FL162_VW"), tableTypesOf(md, new String[] {"VIEW"}).keySet());
+        assertEquals(Set.of("FL162_TBL", "FL162_VW"),
+            tableTypesOf(md, new String[] {"TABLE", "VIEW"}).keySet());
+        assertTrue(tableTypesOf(md, new String[0]).isEmpty(), "an empty array matches nothing");
+        assertTrue(tableTypesOf(md, new String[] {"BASE TABLE"}).isEmpty(),
+            "the raw catalog value is not part of the advertised vocabulary");
+    }
+
+    /** COLUMN_NAME → TYPE_NAME for one getColumns call over HTTP, in projection order. */
+    private Map<String, String> columnTypesOf(final java.sql.DatabaseMetaData md, final String table)
+            throws SQLException {
+        final Map<String, String> found = new LinkedHashMap<>();
+        try (final ResultSet rs = md.getColumns("HTTP_SURFACE_DB", "PUBLIC", table, "%")) {
+            while (rs.next()) {
+                found.put(rs.getString("COLUMN_NAME").toUpperCase(), rs.getString("TYPE_NAME"));
+            }
+        }
+        return found;
+    }
+
+    @Test
+    public void getColumnsOverHttpReportsAViewsColumns() throws SQLException {
+        // HTTP is the transport a desktop SQL client connects on, and expanding a view in its
+        // navigator is exactly this call. It used to come back empty for every view.
+        statement.execute("CREATE TABLE fl164_base (id INTEGER, label VARCHAR(30), amount NUMBER(12,4))");
+        statement.execute("CREATE VIEW fl164_star AS SELECT * FROM fl164_base");
+        statement.execute("CREATE VIEW fl164_named (k, v) AS SELECT id, label FROM fl164_base");
+        statement.execute("CREATE VIEW fl164_expr AS SELECT UPPER(label) AS shout, "
+            + "OBJECT_CONSTRUCT('k', label) AS obj FROM fl164_base");
+        final java.sql.DatabaseMetaData md = connection.getMetaData();
+
+        assertEquals(List.of("ID", "LABEL", "AMOUNT"),
+            new ArrayList<>(columnTypesOf(md, "FL164_STAR").keySet()));
+        assertEquals(Map.of("ID", "NUMBER", "LABEL", "VARCHAR", "AMOUNT", "NUMBER"),
+            columnTypesOf(md, "FL164_STAR"));
+        assertEquals(Map.of("K", "NUMBER", "V", "VARCHAR"), columnTypesOf(md, "FL164_NAMED"),
+            "an explicit column list renames the projection but keeps its types");
+        assertEquals(Map.of("SHOUT", "VARCHAR", "OBJ", "OBJECT"), columnTypesOf(md, "FL164_EXPR"));
+
+        // Size and scale survive the HTTP round trip, so the client's column grid is populated.
+        try (final ResultSet rs = md.getColumns("HTTP_SURFACE_DB", "PUBLIC", "FL164_STAR", "%")) {
+            while (rs.next()) {
+                final String column = rs.getString("COLUMN_NAME").toUpperCase();
+                if ("LABEL".equals(column)) {
+                    assertEquals(30, rs.getInt("COLUMN_SIZE"));
+                    assertEquals(Types.VARCHAR, rs.getInt("DATA_TYPE"));
+                } else if ("AMOUNT".equals(column)) {
+                    assertEquals(12, rs.getInt("COLUMN_SIZE"));
+                    assertEquals(4, rs.getInt("DECIMAL_DIGITS"));
+                }
+            }
+        }
+        // The table's own columns are untouched by any of this.
+        assertEquals(List.of("ID", "LABEL", "AMOUNT"),
+            new ArrayList<>(columnTypesOf(md, "FL164_BASE").keySet()));
+    }
+
+    @Test
+    public void getTablesAndGetColumnsOverHttpUseTheSpecifiedLabels() throws SQLException {
+        statement.execute("CREATE TABLE fl162_shape (id INTEGER)");
+        final java.sql.DatabaseMetaData md = connection.getMetaData();
+        try (final ResultSet rs = md.getTables("HTTP_SURFACE_DB", "PUBLIC", "%", null)) {
+            assertEquals(List.of("TABLE_CAT", "TABLE_SCHEM", "TABLE_NAME", "TABLE_TYPE", "REMARKS",
+                "TYPE_CAT", "TYPE_SCHEM", "TYPE_NAME", "SELF_REFERENCING_COL_NAME", "REF_GENERATION"),
+                labelsOf(rs));
+        }
+        try (final ResultSet rs = md.getColumns("HTTP_SURFACE_DB", "PUBLIC", "FL162_SHAPE", "%")) {
+            assertEquals(List.of("TABLE_CAT", "TABLE_SCHEM", "TABLE_NAME", "COLUMN_NAME", "DATA_TYPE",
+                "TYPE_NAME", "COLUMN_SIZE", "BUFFER_LENGTH", "DECIMAL_DIGITS", "NUM_PREC_RADIX",
+                "NULLABLE", "REMARKS", "COLUMN_DEF", "SQL_DATA_TYPE", "SQL_DATETIME_SUB",
+                "CHAR_OCTET_LENGTH", "ORDINAL_POSITION", "IS_NULLABLE", "SCOPE_CATALOG",
+                "SCOPE_SCHEMA", "SCOPE_TABLE", "SOURCE_DATA_TYPE", "IS_AUTOINCREMENT",
+                "IS_GENERATEDCOLUMN"), labelsOf(rs));
+        }
+    }
+
+    @Test
+    public void getColumnsOverHttpReportsDataTypeAsAJavaSqlTypesCode() throws SQLException {
+        statement.execute("""
+            CREATE TABLE fl162_types (
+                c_int INT, c_number NUMBER(10,2), c_varchar VARCHAR(50), c_bool BOOLEAN,
+                c_date DATE, c_ts TIMESTAMP_NTZ, c_bin BINARY(16))
+            """);
+        final Map<String, Integer> codes = new TreeMap<>();
+        final java.sql.DatabaseMetaData md = connection.getMetaData();
+        try (final ResultSet rs = md.getColumns("HTTP_SURFACE_DB", "PUBLIC", "FL162_TYPES", "%")) {
+            while (rs.next()) {
+                // rs.getInt is the point: DATA_TYPE used to be a type-name string, which no client
+                // could read as the int the JDBC contract promises.
+                codes.put(rs.getString("COLUMN_NAME").toUpperCase(), rs.getInt("DATA_TYPE"));
+            }
+        }
+        assertEquals(Types.BIGINT, codes.get("C_INT"));
+        assertEquals(Types.DECIMAL, codes.get("C_NUMBER"));
+        assertEquals(Types.VARCHAR, codes.get("C_VARCHAR"));
+        assertEquals(Types.BOOLEAN, codes.get("C_BOOL"));
+        assertEquals(Types.DATE, codes.get("C_DATE"));
+        assertEquals(Types.TIMESTAMP, codes.get("C_TS"));
+        assertEquals(Types.BINARY, codes.get("C_BIN"));
     }
 
     @Test

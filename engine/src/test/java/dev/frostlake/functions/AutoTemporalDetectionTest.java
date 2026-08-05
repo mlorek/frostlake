@@ -36,6 +36,10 @@ public class AutoTemporalDetectionTest extends BaseDatabaseTest {
         return engine.executeQuery(sql).getRows().get(0).getValue(0).toString();
     }
 
+    private String castAndRead(final String literal) {
+        return scalar("SELECT '" + literal + "'::TIMESTAMP_NTZ");
+    }
+
     private String insertAndRead(final String literal) {
         engine.execute("CREATE OR REPLACE TABLE ts_in (ts TIMESTAMP_NTZ(9))");
         engine.execute("INSERT INTO ts_in VALUES ('" + literal + "')");
@@ -70,9 +74,9 @@ public class AutoTemporalDetectionTest extends BaseDatabaseTest {
     }
 
     @Test
-    public void nonCanonicalDigitCountIsRangeCheckedNotWidthChecked() {
-        // A zero-padded seconds field reads as its value ...
-        assertEquals("9999-12-31T00:00:03", insertAndRead("9999-12-31 00:00:003"));
+    public void nonCanonicalDigitCountIsRangeCheckedNotWidthCheckedOnCast() {
+        // A zero-padded seconds field reads as its value when CAST ...
+        assertEquals("9999-12-31T00:00:03", castAndRead("9999-12-31 00:00:003"));
         // ... but a genuinely out-of-range value is still rejected.
         assertThrows(RuntimeException.class, new Executable() {
             @Override
@@ -80,6 +84,35 @@ public class AutoTemporalDetectionTest extends BaseDatabaseTest {
                 engine.executeQuery("SELECT '2024-01-01 00:00:599'::TIMESTAMP_NTZ");
             }
         });
+    }
+
+    @Test
+    public void theDmlWritePathIsWidthCheckedUnlikeTheCast() {
+        // Live-verified on a real account: INSERTing '9999-12-31 00:00:003' into a
+        // TIMESTAMP_NTZ column fails "DML operation to table … failed on column TS with error: Timestamp
+        // '9999-12-31 00:00:003' is not recognized", and so do an over-wide month, day, hour, minute and
+        // a 5-digit year — while the very same literals CAST fine. Fields NARROWER than canonical stay
+        // legal on the write path.
+        assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                insertAndRead("9999-12-31 00:00:003");
+            }
+        });
+        assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                insertAndRead("2024-001-01 00:00:03");
+            }
+        });
+        assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                insertAndRead("02024-01-01 00:00:03");
+            }
+        });
+        assertEquals("2024-01-01T00:00:03", insertAndRead("2024-1-01 00:00:3"));
+        assertEquals("2024-01-01T00:00:03", insertAndRead("2024-01-01 00:00:03"));
     }
 
     @Test
@@ -94,6 +127,43 @@ public class AutoTemporalDetectionTest extends BaseDatabaseTest {
             @Override
             public void execute() {
                 engine.executeQuery("SELECT '2024-13-45'::TIMESTAMP_NTZ");
+            }
+        });
+    }
+
+    @Test
+    public void overWideFieldsAreReadAsDigitRunsThenRangeChecked() {
+        // Snowflake's AUTO detection sizes each field by its DIGIT RUN and then range-checks the value —
+        // it does not require a canonical width. Live-verified on a real account: every
+        // literal below casts to the stated value, while the out-of-range ones are rejected.
+        assertEquals("9999-12-31", scalar("SELECT '9999-012-31'::DATE"));
+        assertEquals("9999-12-31", scalar("SELECT '9999-12-031'::DATE"));
+        assertEquals("2024-01-01", scalar("SELECT '2024-0001-01'::DATE"));
+        assertEquals("+99999-12-31", scalar("SELECT '99999-12-31'::DATE"));
+        assertEquals("+999999-12-31", scalar("SELECT '999999-12-31'::DATE"));
+        assertEquals("2024-01-01T01:00", castAndRead("2024-01-01 001:00:00"));
+        assertEquals("2024-01-01T00:03", castAndRead("2024-01-01 00:003:00"));
+        assertEquals("2024-01-01T00:00:03", castAndRead("2024-01-01 00:00:0003"));
+        assertEquals("2024-01-01T00:00:59", castAndRead("2024-01-01 00:00:059"));
+        assertEquals("2024-01-01T00:00:03.500", castAndRead("2024-01-01 00:00:003.5"));
+        assertEquals("9999-12-31", scalar("SELECT TO_DATE('9999-012-31')"));
+        // Out of range stays an error: month 13, day 32, hour 25.
+        assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.executeQuery("SELECT '9999-013-31'::DATE");
+            }
+        });
+        assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.executeQuery("SELECT '9999-12-032'::DATE");
+            }
+        });
+        assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.executeQuery("SELECT '2024-01-01 025:00:00'::TIMESTAMP_NTZ");
             }
         });
     }

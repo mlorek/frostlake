@@ -98,7 +98,10 @@ public class CreateProcedureWithTypeParametersTest extends BaseJdbcTest {
         // Verify procedure was created
         assertProcedureExists("code_proc");
 
-        statement.execute("DROP PROCEDURE code_proc(CHAR)");
+        // A routine's signature is stored under its CANONICAL type FAMILY, so the DROP names the
+        // family, not the declared alias — live-verified on a real account:
+        // DROP FUNCTION f(VARCHAR) drops a CHAR(10) parameter while DROP FUNCTION f(CHAR) does not.
+        statement.execute("DROP PROCEDURE code_proc(VARCHAR)");
     }
 
     @Test
@@ -149,7 +152,10 @@ public class CreateProcedureWithTypeParametersTest extends BaseJdbcTest {
         // Verify procedure was created
         assertProcedureExists("full_proc");
 
-        statement.execute("DROP PROCEDURE full_proc(VARCHAR, DECIMAL, NUMBER, CHAR)");
+        // A routine's signature is stored under its CANONICAL type FAMILY, so the DROP names the
+        // family, not the declared alias — live-verified on a real account:
+        // DROP FUNCTION f(VARCHAR) drops a CHAR(10) parameter while DROP FUNCTION f(CHAR) does not.
+        statement.execute("DROP PROCEDURE full_proc(VARCHAR, NUMBER, NUMBER, VARCHAR)");
     }
 
     @Test

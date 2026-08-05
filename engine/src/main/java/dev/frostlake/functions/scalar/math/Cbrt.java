@@ -16,12 +16,12 @@
 
 package dev.frostlake.functions.scalar.math;
 
-import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.functions.NumericArgumentFunction;
 import dev.frostlake.types.NumericType;
 
 import java.util.List;
 
-public class Cbrt extends BuiltInFunction {
+public class Cbrt extends NumericArgumentFunction {
     public Cbrt() { super("CBRT", NumericType.DOUBLE); }
 
     @Override

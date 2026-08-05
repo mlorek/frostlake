@@ -17,8 +17,9 @@
 package dev.frostlake.functions.scalar.semistructured;
 
 import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
-import dev.frostlake.types.VariantType;
+import dev.frostlake.types.ObjectType;
 import tools.jackson.databind.node.ObjectNode;
 
 import java.util.List;
@@ -28,16 +29,46 @@ import java.util.List;
  * Also supports OBJECT_CONSTRUCT(*) which is handled as no-args → empty object.
  */
 public class ObjectConstruct extends BuiltInFunction {
-    public ObjectConstruct() { super("OBJECT_CONSTRUCT", VariantType.VARIANT); }
+    public ObjectConstruct() { super("OBJECT_CONSTRUCT", ObjectType.OBJECT); }
 
-    protected ObjectConstruct(final String name) { super(name, VariantType.VARIANT); }
+    protected ObjectConstruct(final String name) { super(name, ObjectType.OBJECT); }
+
+    /**
+     * A STRUCTURED value is refused in either half of the alternating argument list, but with a
+     * different sentence in each. Live, {@code OBJECT_CONSTRUCT('a', so)} and
+     * {@code OBJECT_CONSTRUCT('a', 1, 'b', so)} are "Function OBJECT_CONSTRUCT does not support
+     * OBJECT(x VARCHAR(16777216)) argument type" (vendor code 2016) while {@code OBJECT_CONSTRUCT(so,
+     * 1)} — the same value used as a KEY — appends " for keys" and carries vendor code 2270 instead.
+     * The plain types are accepted in the value half ({@code OBJECT_CONSTRUCT('a', o)} nests the
+     * object), so this is a divergence and not a general semi-structured rule.
+     *
+     * <p>Inherited by {@code OBJECT_CONSTRUCT_KEEP_NULL}, which subclasses this and was measured to
+     * behave identically.
+     */
+    @Override
+    public SemiStructuredRejection structuredRejection(final int position) {
+        return position % 2 == 0 ? SemiStructuredRejection.UNSUPPORTED_KEY_ARGUMENT_TYPE
+            : SemiStructuredRejection.UNSUPPORTED_ARGUMENT_TYPE;
+    }
+
+    /**
+     * A FILE splits the two halves differently again: it NESTS as a value and is refused as a KEY.
+     * Live, {@code OBJECT_CONSTRUCT('a', f)} returns {@code {"a":{"CONTENT_TYPE":…}}} while
+     * {@code OBJECT_CONSTRUCT(f, 1)} is "Function OBJECT_CONSTRUCT does not support FILE argument type
+     * for keys" — the key sentence a structured value gets, with the value half left alone.
+     */
+    @Override
+    public SemiStructuredRejection fileRejection(final int position) {
+        return position % 2 == 0 ? SemiStructuredRejection.UNSUPPORTED_KEY_ARGUMENT_TYPE
+            : SemiStructuredRejection.NONE;
+    }
 
     @Override
     public Object evaluate(final List<Object> args) {
         return build(args, false);
     }
 
-    protected static String build(final List<Object> args, final boolean keepNull) {
+    protected static Object build(final List<Object> args, final boolean keepNull) {
         ObjectNode obj = ArrayFunctionHelper.MAPPER.createObjectNode();
         for (int i = 0; i + 1 < args.size(); i += 2) {
             if (args.get(i) == null) continue;
@@ -46,7 +77,7 @@ public class ObjectConstruct extends BuiltInFunction {
             String key = args.get(i).toString();
             obj.set(key, ArrayFunctionHelper.toNode(ArrayFunctionHelper.MAPPER, value));
         }
-        return ArrayFunctionHelper.toCanonicalJson(obj);
+        return ArrayFunctionHelper.toCanonicalVariant(obj);
     }
 
     @Override public int getMinArgCount() { return 0; }

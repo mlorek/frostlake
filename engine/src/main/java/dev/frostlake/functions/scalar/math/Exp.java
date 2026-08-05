@@ -16,12 +16,12 @@
 
 package dev.frostlake.functions.scalar.math;
 
-import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.functions.NumericArgumentFunction;
 import dev.frostlake.types.NumericType;
 
 import java.util.List;
 
-public class Exp extends BuiltInFunction {
+public class Exp extends NumericArgumentFunction {
     public Exp() { super("EXP", NumericType.DOUBLE); }
 
     @Override

@@ -17,7 +17,8 @@
 package dev.frostlake.functions.scalar.semistructured;
 
 import dev.frostlake.functions.BuiltInFunction;
-import dev.frostlake.types.VariantType;
+import dev.frostlake.functions.SemiStructuredRejection;
+import dev.frostlake.types.ArrayType;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -34,7 +35,19 @@ public class ArrayConstructCompact extends BuiltInFunction {
     private static final ArrayConstruct CONSTRUCT = new ArrayConstruct();
 
     public ArrayConstructCompact() {
-        super("ARRAY_CONSTRUCT_COMPACT", VariantType.VARIANT);
+        super("ARRAY_CONSTRUCT_COMPACT", ArrayType.ARRAY);
+    }
+
+    /**
+     * The same structured refusal {@link ArrayConstruct} declares, measured for this name too: live
+     * {@code ARRAY_CONSTRUCT_COMPACT(o)} builds its array while
+     * {@code ARRAY_CONSTRUCT_COMPACT(so)} is "Function ARRAY_CONSTRUCT_COMPACT does not support
+     * OBJECT(x VARCHAR(16777216)) argument type". It is declared again rather than inherited because
+     * this class delegates to an {@link ArrayConstruct} INSTANCE instead of extending it.
+     */
+    @Override
+    public SemiStructuredRejection structuredRejection(final int position) {
+        return SemiStructuredRejection.UNSUPPORTED_ARGUMENT_TYPE;
     }
 
     @Override

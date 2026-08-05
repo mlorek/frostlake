@@ -18,15 +18,16 @@ package dev.frostlake.functions.scalar.conversion;
 
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.types.BinaryType;
+import dev.frostlake.values.BinaryValue;
 
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 import java.util.List;
 
 /**
- * TO_BINARY(string [, format]) — decodes the input string into binary using {@code format} (default HEX),
- * returning the bytes as an uppercase hex string (the engine's BINARY display form, matching Snowflake).
- * HEX: the input is hexadecimal digits; BASE64: base64-decoded; UTF-8: the input's UTF-8 bytes. NULL → NULL.
+ * TO_BINARY(string [, format]) — decodes the input string into a {@link BinaryValue} using
+ * {@code format} (default HEX). HEX: the input is hexadecimal digits; BASE64: base64-decoded;
+ * UTF-8: the input's UTF-8 bytes. A binary input passes through unchanged. NULL → NULL.
  */
 public class ToBinary extends BuiltInFunction {
     public ToBinary() { super("TO_BINARY", BinaryType.BINARY); }
@@ -35,6 +36,9 @@ public class ToBinary extends BuiltInFunction {
     public Object evaluate(final List<Object> args) {
         if (args.get(0) == null) {
             return null;
+        }
+        if (args.get(0) instanceof BinaryValue) {
+            return args.get(0);
         }
         final String input = args.get(0).toString();
         final BinaryFormat format = args.size() > 1 && args.get(1) != null
@@ -57,11 +61,7 @@ public class ToBinary extends BuiltInFunction {
             default:
                 throw new IllegalStateException("Unhandled TO_BINARY format: " + format);
         }
-        final StringBuilder hex = new StringBuilder(bytes.length * 2);
-        for (final byte b : bytes) {
-            hex.append(String.format("%02X", b));
-        }
-        return hex.toString();
+        return BinaryValue.of(bytes);
     }
 
     private static byte[] hexToBytes(final String hex) {

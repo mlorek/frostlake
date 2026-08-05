@@ -196,8 +196,13 @@ public class ManualTaskTest {
             message = exception.getCause().getMessage();
         }
 
-        assertTrue(message != null && (message.contains("Task not found") || message.contains("Task does not exist")),
-                   "Should throw task not found error, but got: " + message);
+        // Live: EXECUTE TASK nosuch answers exactly
+        // "SQL compilation error:\nTask '<db>.<schema>.NOSUCH' does not exist or not authorized." —
+        // no preamble naming the statement.
+        assertTrue(message != null
+                && message.contains("Task 'TEST_DB.TEST_SCHEMA.NON_EXISTENT_TASK'"
+                    + " does not exist or not authorized."),
+                   "Should report the task as missing the way Snowflake does, but got: " + message);
     }
 
     @Test

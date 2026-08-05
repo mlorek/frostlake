@@ -18,6 +18,7 @@ package dev.frostlake.ddl;
 
 import dev.frostlake.BaseJdbcTest;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -72,18 +73,20 @@ public class CreateViewWithColumnsTest extends BaseJdbcTest {
 
     @Test
     public void testViewColumnCountMismatch() throws SQLException {
-        logger.info("Testing CREATE VIEW with mismatched column count - error on query");
+        logger.info("Testing CREATE VIEW with mismatched column count - error at create");
 
         statement.execute("CREATE TABLE items (a INTEGER, b INTEGER, c INTEGER)");
         statement.execute("INSERT INTO items VALUES (1, 2, 3)");
 
-        // 2 column names but 3 columns in SELECT - view creation succeeds but query fails
-        statement.execute("CREATE VIEW bad_view (col1, col2) AS SELECT a, b, c FROM items");
-
-        // Querying the view should fail due to column count mismatch
-        assertThrows(SQLException.class, () -> {
-            statement.executeQuery("SELECT * FROM bad_view");
+        // 2 column names but 3 columns in SELECT - live-verified: the CREATE itself fails
+        final SQLException exception = assertThrows(SQLException.class, new Executable() {
+            @Override
+            public void execute() throws SQLException {
+                statement.execute("CREATE VIEW bad_view (col1, col2) AS SELECT a, b, c FROM items");
+            }
         });
+        assertTrue(exception.getMessage().contains("Invalid column definition list"),
+            "unexpected message: " + exception.getMessage());
     }
 
     @Test

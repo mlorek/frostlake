@@ -16,12 +16,13 @@
 
 package dev.frostlake.functions.scalar.string;
 
-import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.functions.TextArgumentFunction;
 import dev.frostlake.types.NumericType;
+import dev.frostlake.values.BinaryValue;
 
 import java.util.List;
 
-public class Length extends BuiltInFunction {
+public class Length extends TextArgumentFunction {
     public Length() {
         super("LENGTH", NumericType.INTEGER);
     }
@@ -29,6 +30,10 @@ public class Length extends BuiltInFunction {
     @Override
     public Object evaluate(final List<Object> args) {
         if (args.get(0) == null) return null;
+        if (args.get(0) instanceof BinaryValue) {
+            // LENGTH of a BINARY value is its byte count, not the length of the hex rendering.
+            return ((BinaryValue) args.get(0)).length();
+        }
         return args.get(0).toString().length();
     }
 

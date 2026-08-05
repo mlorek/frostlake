@@ -24,9 +24,9 @@ import java.util.List;
 
 /**
  * TRY_TO_TIMESTAMP / _NTZ / _LTZ / _TZ — the non-throwing form of TO_TIMESTAMP: parses the input as a
- * timestamp (honoring an optional format), returning NULL instead of raising on unparseable input or NULL
- * input. The _LTZ / _TZ variants behave like _NTZ in this engine (no timezone materialization), matching how
- * {@code ToTimestamp} treats the TO_TIMESTAMP family.
+ * timestamp (honoring an optional format, or an epoch scale for a numeric input), returning NULL instead of
+ * raising on unparseable input or NULL input. The _LTZ / _TZ variants behave like _NTZ in this engine (no
+ * timezone materialization), matching how {@code ToTimestamp} treats the TO_TIMESTAMP family.
  */
 public class TryToTimestamp extends BuiltInFunction {
     public TryToTimestamp() { this("TRY_TO_TIMESTAMP_NTZ"); }
@@ -36,8 +36,9 @@ public class TryToTimestamp extends BuiltInFunction {
     @Override
     public Object evaluate(final List<Object> args) {
         if (args.get(0) == null) return null;
-        final String format = args.size() >= 2 && args.get(1) != null ? args.get(1).toString() : null;
-        try { return SharedFunctionHelpers.parseTimestampWithFormat(args.get(0), format); } catch (final Exception e) { return null; }
+        // The second argument is a format for a string input, or a scale (0-9) for a numeric epoch.
+        final Object formatOrScale = args.size() >= 2 ? args.get(1) : null;
+        try { return SharedFunctionHelpers.parseTimestampWithFormatOrScale(args.get(0), formatOrScale); } catch (final Exception e) { return null; }
     }
 
     @Override public int getMinArgCount() { return 1; }

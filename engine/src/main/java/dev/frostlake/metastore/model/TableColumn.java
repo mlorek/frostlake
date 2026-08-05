@@ -54,6 +54,11 @@ public class TableColumn implements Taggable {
     // JOIN ... USING / NATURAL JOIN column in a merged join view. Never set on catalog columns.
     private boolean hiddenFromStar;
 
+    // A DERIVED relation's column (subquery, CTE, view) whose declared type was inferred from the inner
+    // projection rather than guessed. Catalog columns leave this false — their table is trusted by
+    // identity instead — so the flag only ever ADDS a column the type rules may read, never removes one.
+    private boolean staticallyTyped;
+
     public TableColumn(final String name, final DataType dataType, final boolean nullable,
                  final Object defaultValue, final boolean primaryKey, final boolean unique,
                  final boolean autoIncrement) {
@@ -82,6 +87,20 @@ public class TableColumn implements Taggable {
         return hiddenFromStar;
     }
 
+    /**
+     * Whether {@link #getDataType()} is this column's STATICALLY KNOWN type. Set only on a derived
+     * relation's columns, where the inner projection's inferred type is carried out to the enclosing
+     * query so a type-based rule fires through a subquery, CTE or view exactly as it does over the base
+     * table. False on catalog columns, whose table is trusted by catalog identity.
+     */
+    public boolean isStaticallyTyped() {
+        return staticallyTyped;
+    }
+
+    public void setStaticallyTyped(final boolean staticallyTyped) {
+        this.staticallyTyped = staticallyTyped;
+    }
+
     /** A copy of this column marked hidden from {@code SELECT *} — used for the right-side duplicate
      *  of a USING / NATURAL join column in a merged join view (the shared catalog instance stays
      *  untouched). */
@@ -98,6 +117,7 @@ public class TableColumn implements Taggable {
         copy.maskingPolicyName = maskingPolicyName;
         copy.tags.putAll(tags);
         copy.hiddenFromStar = true;
+        copy.staticallyTyped = staticallyTyped;
         return copy;
     }
 

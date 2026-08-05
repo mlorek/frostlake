@@ -28,40 +28,32 @@ import java.util.List;
  * Summation is commutative and associative, so the accumulated hash is independent of the order in which
  * rows arrive and of how partial accumulators are {@link #merge(AggregateFunction.Accumulator) merged},
  * while each occurrence still contributes (duplicates are not cancelled out as they would be with XOR).
- * An empty group yields NULL.
+ * An empty group yields 0, not NULL (live-verified: HASH_AGG over zero rows is 0).
  */
 public class HashAggAccumulator implements AggregateFunction.Accumulator {
 
     private final HashFn hashFn = new HashFn();
     private long combined = 0L;
-    private long count = 0L;
 
     @Override
     public void accumulate(final Object value) {
         final List<Object> single = new ArrayList<>(1);
         single.add(value);
         combined += ((Number) hashFn.evaluate(single)).longValue();
-        count++;
     }
 
     @Override
     public Object getResult() {
-        if (count == 0) {
-            return null;
-        }
         return Long.valueOf(combined);
     }
 
     @Override
     public void reset() {
         combined = 0L;
-        count = 0L;
     }
 
     @Override
     public void merge(final AggregateFunction.Accumulator other) {
-        final HashAggAccumulator o = (HashAggAccumulator) other;
-        combined += o.combined;
-        count += o.count;
+        combined += ((HashAggAccumulator) other).combined;
     }
 }

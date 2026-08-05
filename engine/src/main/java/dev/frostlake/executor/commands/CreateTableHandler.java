@@ -16,6 +16,7 @@
 
 package dev.frostlake.executor.commands;
 
+import dev.frostlake.executor.ParseTreeText;
 import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.metastore.*;
 import dev.frostlake.metastore.model.*;
@@ -28,6 +29,7 @@ import dev.frostlake.types.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -253,8 +255,8 @@ public class CreateTableHandler implements CommandHandler {
                 } else {
                     final List<String> providedNames = new ArrayList<>();
                     if (ctx.columnListOptional() != null) {
-                        for (final FrostlakeParser.IdentifierContext id : ctx.columnListOptional().identifierList().identifier()) {
-                            providedNames.add(getText(id));
+                        for (final FrostlakeParser.NamePartContext id : ctx.columnListOptional().namePart()) {
+                            providedNames.add(ParseTreeText.namePartText(id));
                         }
                     }
                     columns = new ArrayList<>();
@@ -270,6 +272,7 @@ public class CreateTableHandler implements CommandHandler {
                 // Determine if table should be temporary/transient
                 boolean tableIsTemporary = isTemporary || isTransient;
                 table = new Table(tableName, columns, isTemporary, isTransient);
+                applyTableConstraints(ctx.columnList(), table);
 
                 // Extract comment from either position
                 String comment = null;
@@ -321,6 +324,7 @@ public class CreateTableHandler implements CommandHandler {
                 List<ForeignKeyConstraint> foreignKeys = ctx.columnList() != null
                     ? columnParser.parseForeignKeys(ctx.columnList()) : new ArrayList<>();
                 table = new Table(tableName, columns, isTemporary, isTransient);
+                applyTableConstraints(ctx.columnList(), table);
 
                 // Add foreign key constraints (final metadata only, final not enforced)
                 for (final ForeignKeyConstraint fk : foreignKeys) {
@@ -364,6 +368,22 @@ public class CreateTableHandler implements CommandHandler {
     }
 
     /**
+     * Applies the table-level constraint metadata a column list carries that the columns themselves cannot
+     * hold: the name an explicit {@code CONSTRAINT <name> PRIMARY KEY} gave the key, and every table-level
+     * UNIQUE constraint — one constraint per declaration, however many columns it spans, so a
+     * {@code UNIQUE (a, b)} reports as ONE constraint under ONE name rather than one per column.
+     */
+    private void applyTableConstraints(final FrostlakeParser.ColumnListContext columnList, final Table table) {
+        if (columnList == null) {
+            return;
+        }
+        table.setPrimaryKeyConstraintName(columnParser.parsePrimaryKeyConstraintName(columnList));
+        for (final UniqueConstraint unique : columnParser.parseUniqueConstraints(columnList)) {
+            table.addUniqueConstraint(unique);
+        }
+    }
+
+    /**
      * Collects the {@code CLUSTER BY} key expressions for a CREATE TABLE. Snowflake accepts the clause
      * either immediately after the table name (before the column list) or after the column list; the
      * grammar allows {@code clusterByClause} in both positions, so this reads whichever one was supplied.
@@ -379,6 +399,14 @@ public class CreateTableHandler implements CommandHandler {
         final DataType declared = rsCol.getDataType();
         if (!(declared instanceof StringType)) {
             return declared;
+        }
+        // A measured numeric STATIC — a literal's own (p,s), a set operation's supertype fold, a
+        // string branch's unification — is the live CTAS column type. The value scan below recovers
+        // only the widest SCALE from the rows; it cannot see the declared width, so it stored
+        // NUMBER(38,0) where live declares NUMBER(1,0) for {@code SELECT '5' UNION ALL SELECT 1}.
+        final DataType staticType = rsCol.getStaticType();
+        if (staticType instanceof NumericType && "NUMBER".equalsIgnoreCase(staticType.getName())) {
+            return staticType;
         }
         for (final Row row : resultSet.getRows()) {
             final Object value = colIdx < row.getValues().size() ? row.getValue(colIdx) : null;
@@ -397,12 +425,32 @@ public class CreateTableHandler implements CommandHandler {
             if (value instanceof Boolean) {
                 return BooleanType.BOOLEAN;
             }
+            if (value instanceof Double || value instanceof Float) {
+                // Approximate types never round on write.
+                return NumericType.FLOAT;
+            }
             if (value instanceof Number) {
-                return NumericType.NUMBER;
+                return numericCtasType(resultSet, colIdx);
             }
             return declared;
         }
         return declared;
+    }
+
+    /**
+     * NUMBER carrying the widest scale seen in the column — Snowflake's CTAS column types keep the
+     * literals' scale, and a bare scale-0 NUMBER would ROUND every fractional write into the new
+     * table (live-verified write behavior), silently corrupting CTAS-then-INSERT fixtures.
+     */
+    private DataType numericCtasType(final ResultSet resultSet, final int colIdx) {
+        int scale = 0;
+        for (final Row row : resultSet.getRows()) {
+            final Object value = colIdx < row.getValues().size() ? row.getValue(colIdx) : null;
+            if (value instanceof BigDecimal && ((BigDecimal) value).scale() > scale) {
+                scale = ((BigDecimal) value).scale();
+            }
+        }
+        return scale == 0 ? NumericType.NUMBER : new NumericType("NUMBER", 38, scale);
     }
 
     /** CREATE TABLE ... ROW ACCESS POLICY p ON (cols): attach it like the ALTER form does. */

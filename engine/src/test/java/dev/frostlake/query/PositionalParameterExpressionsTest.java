@@ -22,8 +22,6 @@ import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.math.BigDecimal;
-
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
@@ -37,6 +35,16 @@ public class PositionalParameterExpressionsTest extends BaseDatabaseTest {
         // No setup needed
     }
 
+    /**
+     * Asserts a numeric cell by VALUE, not by boxed class: the exact carrier of an integral result
+     * (Long / Integer / BigDecimal) is not part of the contract under test here, and it legitimately
+     * differs between the embedded engine and a real Snowflake account over JDBC.
+     */
+    private void assertNumericValue(final long expected, final Object actual) {
+        assertEquals(Long.valueOf(expected), Long.valueOf(((Number) actual).longValue()),
+            "numeric value (actual carrier: " + (actual == null ? "null" : actual.getClass().getName()) + ")");
+    }
+
     @Test
     public void testPositionalParameterWithAbsFunction() {
         logger.info("Testing SELECT $1, ABS($2) FROM VALUES");
@@ -45,8 +53,8 @@ public class PositionalParameterExpressionsTest extends BaseDatabaseTest {
 
         assertEquals(1, result.getRowCount());
         assertEquals(2, result.getColumnCount());
-        assertEquals(1L, result.getRows().get(0).getValue(0));
-        assertEquals(new BigDecimal("2"), result.getRows().get(0).getValue(1));
+        assertNumericValue(1L, result.getRows().get(0).getValue(0));
+        assertNumericValue(2L, result.getRows().get(0).getValue(1));
     }
 
     @Test
@@ -60,9 +68,9 @@ public class PositionalParameterExpressionsTest extends BaseDatabaseTest {
 
         assertEquals(1, result.getRowCount());
         assertEquals(3, result.getColumnCount());
-        assertEquals(new BigDecimal("5"), result.getRows().get(0).getValue(0));
+        assertNumericValue(5L, result.getRows().get(0).getValue(0));
         assertEquals("HELLO", result.getRows().get(0).getValue(1));
-        assertEquals(5, result.getRows().get(0).getValue(2));
+        assertNumericValue(5L, result.getRows().get(0).getValue(2));
     }
 
     @Test
@@ -77,7 +85,7 @@ public class PositionalParameterExpressionsTest extends BaseDatabaseTest {
         assertEquals(1, result.getRowCount());
         assertEquals(2, result.getColumnCount());
         assertEquals("TEST", result.getRows().get(0).getValue(0));
-        assertEquals(new BigDecimal("10"), result.getRows().get(0).getValue(1));
+        assertNumericValue(10L, result.getRows().get(0).getValue(1));
     }
 
     @Test
@@ -91,7 +99,7 @@ public class PositionalParameterExpressionsTest extends BaseDatabaseTest {
 
         assertEquals(1, result.getRowCount());
         assertEquals(1, result.getColumnCount());
-        assertEquals(new BigDecimal("7"), result.getRows().get(0).getValue(0));
+        assertNumericValue(7L, result.getRows().get(0).getValue(0));
     }
 
     @Test
@@ -106,7 +114,7 @@ public class PositionalParameterExpressionsTest extends BaseDatabaseTest {
         assertEquals(1, result.getRowCount());
         assertEquals(2, result.getColumnCount());
         assertEquals("123", result.getRows().get(0).getValue(0));
-        assertEquals(456L, result.getRows().get(0).getValue(1));
+        assertNumericValue(456L, result.getRows().get(0).getValue(1));
     }
 
     @Test
@@ -177,9 +185,9 @@ public class PositionalParameterExpressionsTest extends BaseDatabaseTest {
 
         assertEquals(1, result.getRowCount());
         assertEquals(4, result.getColumnCount());
-        assertEquals(10L, result.getRows().get(0).getValue(0));
-        assertEquals(new BigDecimal("20"), result.getRows().get(0).getValue(1));
-        assertEquals(10L, result.getRows().get(0).getValue(2));
+        assertNumericValue(10L, result.getRows().get(0).getValue(0));
+        assertNumericValue(20L, result.getRows().get(0).getValue(1));
+        assertNumericValue(10L, result.getRows().get(0).getValue(2));
         assertEquals("TEST", result.getRows().get(0).getValue(3));
     }
 }

@@ -18,13 +18,45 @@ package dev.frostlake.scripting;
 
 import dev.frostlake.BaseJdbcTest;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 
 import java.sql.ResultSet;
 import java.sql.SQLException;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class CreateFunctionJdbcTest extends BaseJdbcTest {
+
+    /**
+     * Whether {@code SHOW FUNCTIONS} lists a function with this name. The rows are scanned rather than read
+     * positionally: both backends list the whole built-in library alongside the user-defined functions, so
+     * the function just created is not necessarily the first row.
+     */
+    private boolean functionListed(final String name) throws SQLException {
+        try (final ResultSet rs = statement.executeQuery("SHOW FUNCTIONS")) {
+            while (rs.next()) {
+                if (name.equalsIgnoreCase(rs.getString("name"))) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /** How many of the listed functions are user-defined (is_builtin = 'N'). */
+    private int userFunctionCount() throws SQLException {
+        int count = 0;
+        try (final ResultSet rs = statement.executeQuery("SHOW FUNCTIONS")) {
+            while (rs.next()) {
+                if ("N".equals(rs.getString("is_builtin"))) {
+                    count++;
+                }
+            }
+        }
+        return count;
+    }
 
     @Test
     public void testCreateSimpleFunction() throws SQLException {
@@ -32,28 +64,19 @@ public class CreateFunctionJdbcTest extends BaseJdbcTest {
         statement.execute("CREATE FUNCTION add_numbers(x INTEGER, y INTEGER) RETURNS INTEGER AS 'x + y'");
 
         // Verify function was created by showing functions
-        ResultSet rs = statement.executeQuery("SHOW FUNCTIONS");
-        assertTrue(rs.next(), "Should have at least one function");
-
-        String functionName = rs.getString("name");
-        assertEquals("ADD_NUMBERS", functionName);
-
-        rs.close();
+        assertTrue(functionListed("ADD_NUMBERS"), "ADD_NUMBERS should be listed by SHOW FUNCTIONS");
     }
 
     @Test
     public void testCreateFunctionWithNoParameters() throws SQLException {
         // Create a function with no parameters
-        statement.execute("CREATE FUNCTION get_pi() RETURNS FLOAT AS '3.14159'");
+        // Snowflake checks a SQL UDF's DECLARED return type against the body's ACTUAL one at CREATE
+        // (RETURNS FLOAT over a decimal literal fails "Declared return type
+        // 'FLOAT' is incompatible with actual return type 'NUMBER(6,5)'"), so the body casts.
+        statement.execute("CREATE FUNCTION get_pi() RETURNS FLOAT AS '3.14159::FLOAT'");
 
         // Verify function was created
-        ResultSet rs = statement.executeQuery("SHOW FUNCTIONS");
-        assertTrue(rs.next(), "Function should be created");
-
-        String functionName = rs.getString("name");
-        assertEquals("GET_PI", functionName);
-
-        rs.close();
+        assertTrue(functionListed("GET_PI"), "GET_PI should be listed by SHOW FUNCTIONS");
     }
 
     @Test
@@ -66,13 +89,7 @@ public class CreateFunctionJdbcTest extends BaseJdbcTest {
 
         // Switch to the schema and verify
         statement.execute("USE SCHEMA my_schema");
-        ResultSet rs = statement.executeQuery("SHOW FUNCTIONS");
-        assertTrue(rs.next(), "Function should be created");
-
-        String functionName = rs.getString("name");
-        assertEquals("MULTIPLY", functionName);
-
-        rs.close();
+        assertTrue(functionListed("MULTIPLY"), "MULTIPLY should be listed by SHOW FUNCTIONS");
     }
 
     @Test
@@ -83,13 +100,7 @@ public class CreateFunctionJdbcTest extends BaseJdbcTest {
             """);
 
         // Verify function was created
-        ResultSet rs = statement.executeQuery("SHOW FUNCTIONS");
-        assertTrue(rs.next(), "Function should be created");
-
-        String functionName = rs.getString("name");
-        assertEquals("GET_VALUES", functionName);
-
-        rs.close();
+        assertTrue(functionListed("GET_VALUES"), "GET_VALUES should be listed by SHOW FUNCTIONS");
     }
 
     @Test
@@ -98,26 +109,21 @@ public class CreateFunctionJdbcTest extends BaseJdbcTest {
         statement.execute("CREATE FUNCTION test_func(x INTEGER) RETURNS INTEGER AS 'x * 2'");
 
         // Verify it exists
-        ResultSet rs = statement.executeQuery("SHOW FUNCTIONS");
-        assertTrue(rs.next(), "Function should exist");
-        rs.close();
+        assertTrue(functionListed("TEST_FUNC"), "TEST_FUNC should be listed by SHOW FUNCTIONS");
 
         // Drop function
         statement.execute("DROP FUNCTION test_func(INTEGER)");
 
         // Verify it's gone by showing functions
-        ResultSet rs2 = statement.executeQuery("SHOW FUNCTIONS");
-        int userFunctions = 0;
-        while (rs2.next()) {
-            if ("N".equals(rs2.getString("is_builtin"))) {
-                userFunctions++;
-            }
-        }
-        assertEquals(0, userFunctions, "Function should be dropped (built-ins remain)");
-        rs2.close();
+        assertEquals(0, userFunctionCount(), "Function should be dropped (built-ins remain)");
 
         // Drop with IF EXISTS should not throw
-        assertDoesNotThrow(() -> statement.execute("DROP FUNCTION IF EXISTS test_func(INTEGER)"));
+        assertDoesNotThrow(new Executable() {
+            @Override
+            public void execute() throws SQLException {
+                statement.execute("DROP FUNCTION IF EXISTS test_func(INTEGER)");
+            }
+        });
     }
 
     @Test
@@ -126,18 +132,7 @@ public class CreateFunctionJdbcTest extends BaseJdbcTest {
         statement.execute("CREATE FUNCTION func1(x INTEGER) RETURNS INTEGER AS 'x'");
         statement.execute("CREATE FUNCTION func2(x INTEGER, y INTEGER) RETURNS INTEGER AS 'x + y'");
 
-        // Show functions
-        ResultSet rs = statement.executeQuery("SHOW FUNCTIONS");
-
-        int userFunctions = 0;
-        while (rs.next()) {
-            if ("N".equals(rs.getString("is_builtin"))) {
-                userFunctions++;
-            }
-        }
-
-        assertEquals(2, userFunctions, "Should have 2 user-defined functions");
-        rs.close();
+        assertEquals(2, userFunctionCount(), "Should have 2 user-defined functions");
     }
 
     @Test
@@ -146,12 +141,6 @@ public class CreateFunctionJdbcTest extends BaseJdbcTest {
         statement.execute("CREATE FUNCTION double_val(x INTEGER) RETURNS INTEGER AS 'x * 2'");
 
         // Verify function was created
-        ResultSet rs = statement.executeQuery("SHOW FUNCTIONS");
-        assertTrue(rs.next(), "Function should be created");
-
-        String functionName = rs.getString("name");
-        assertEquals("DOUBLE_VAL", functionName);
-
-        rs.close();
+        assertTrue(functionListed("DOUBLE_VAL"), "DOUBLE_VAL should be listed by SHOW FUNCTIONS");
     }
 }

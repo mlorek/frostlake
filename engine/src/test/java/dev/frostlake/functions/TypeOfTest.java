@@ -40,14 +40,16 @@ public class TypeOfTest extends BaseDatabaseTest {
 
     @Test
     public void stringIsVarcharNotText() {
-        assertEquals("VARCHAR", typeOf("SELECT TYPEOF('hello')"));
+        assertEquals("VARCHAR", typeOf("SELECT TYPEOF(TO_VARIANT('hello'))"));
     }
 
     @Test
     public void fixedPointIsDecimal() {
         // A bare decimal literal is fixed-point NUMBER in Snowflake, hence DECIMAL.
         assertEquals("DECIMAL", typeOf("SELECT TYPEOF(3.14)"));
-        assertEquals("DECIMAL", typeOf("SELECT TYPEOF(3.14::NUMBER)"));
+        // live-verified: a bare NUMBER is NUMBER(38,0), so 3.14 rounds to a whole value -> INTEGER
+        assertEquals("INTEGER", typeOf("SELECT TYPEOF(3.14::NUMBER)"));
+        assertEquals("DECIMAL", typeOf("SELECT TYPEOF(3.14::NUMBER(10,2))"));
     }
 
     @Test
@@ -76,6 +78,9 @@ public class TypeOfTest extends BaseDatabaseTest {
 
     @Test
     public void jsonFloatingPointIsDouble() {
-        assertEquals("DOUBLE", typeOf("SELECT TYPEOF(PARSE_JSON('3.14'))"));
+        assertEquals("DECIMAL", typeOf("SELECT TYPEOF(PARSE_JSON('3.14'))"),
+            "a plain JSON fraction is DECIMAL; only scientific notation is DOUBLE (live-verified)");
+        assertEquals("DOUBLE", typeOf("SELECT TYPEOF(PARSE_JSON('1e5'))"));
+        assertEquals("DECIMAL", typeOf("SELECT TYPEOF(PARSE_JSON('1.50'))"));
     }
 }

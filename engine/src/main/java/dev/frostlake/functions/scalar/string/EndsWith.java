@@ -16,12 +16,12 @@
 
 package dev.frostlake.functions.scalar.string;
 
-import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.functions.TextArgumentFunction;
 import dev.frostlake.types.BooleanType;
 
 import java.util.List;
 
-public class EndsWith extends BuiltInFunction {
+public class EndsWith extends TextArgumentFunction {
     public EndsWith() { super("ENDSWITH", new BooleanType()); }
 
     @Override

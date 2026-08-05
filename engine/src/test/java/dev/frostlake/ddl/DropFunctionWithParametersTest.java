@@ -79,7 +79,7 @@ public class DropFunctionWithParametersTest extends BaseJdbcTest {
     public void testDropFunctionParameterMismatch() throws SQLException {
         logger.info("Testing DROP FUNCTION with wrong parameter types throws error");
 
-        statement.execute("CREATE FUNCTION calc_func(x INTEGER, y INTEGER) RETURNS INTEGER LANGUAGE SQL AS 'BEGIN RETURN x + y; END'");
+        statement.execute("CREATE FUNCTION calc_func(x INTEGER, y INTEGER) RETURNS INTEGER LANGUAGE SQL AS 'x + y'");
 
         // Try to drop with wrong parameter types - should fail
         assertThrows(SQLException.class, () -> {
@@ -91,7 +91,7 @@ public class DropFunctionWithParametersTest extends BaseJdbcTest {
     public void testDropFunctionParameterCountMismatch() throws SQLException {
         logger.info("Testing DROP FUNCTION with wrong parameter count throws error");
 
-        statement.execute("CREATE FUNCTION sum_func(x INTEGER, y INTEGER) RETURNS INTEGER LANGUAGE SQL AS 'BEGIN RETURN x + y; END'");
+        statement.execute("CREATE FUNCTION sum_func(x INTEGER, y INTEGER) RETURNS INTEGER LANGUAGE SQL AS 'x + y'");
 
         // Try to drop with wrong number of parameters - should fail
         assertThrows(SQLException.class, () -> {

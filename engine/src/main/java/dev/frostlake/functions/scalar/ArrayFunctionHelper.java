@@ -16,8 +16,14 @@
 
 package dev.frostlake.functions.scalar;
 
+import dev.frostlake.values.BinaryValue;
+import dev.frostlake.values.VariantUndefined;
+import dev.frostlake.values.VariantValue;
+
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.cfg.JsonNodeFeature;
+import tools.jackson.databind.json.JsonMapper;
 import tools.jackson.databind.node.ArrayNode;
 import tools.jackson.databind.node.ObjectNode;
 
@@ -33,13 +39,15 @@ import java.util.List;
 /** Shared helpers for array/object scalar functions. */
 public class ArrayFunctionHelper {
 
-    public static final ObjectMapper MAPPER = new ObjectMapper();
+    public static final ObjectMapper MAPPER = JsonMapper.builder().enable(JsonNodeFeature.USE_BIG_DECIMAL_FOR_FLOATS).build();
 
     /** Parse a value to JsonNode. Returns null if unparseable. */
     public static JsonNode parseNode(final Object value) {
         if (value == null) return null;
         if (value instanceof JsonNode) return (JsonNode) value;
-        try { return MAPPER.readTree(value.toString().trim()); }
+        if (value instanceof VariantValue) return ((VariantValue) value).node();
+        // Array text can carry Snowflake's bare `undefined` element token — see VariantUndefined.
+        try { return VariantUndefined.readTree(MAPPER, value.toString().trim()); }
         catch (final Exception e) { return null; }
     }
 
@@ -49,9 +57,23 @@ public class ArrayFunctionHelper {
         return (node != null && node.isArray()) ? (ArrayNode) node : null;
     }
 
+    /**
+     * The node a value takes as an ARRAY ELEMENT: a SQL NULL becomes the VARIANT {@code undefined} sentinel
+     * — live-verified {@code ARRAY_CONSTRUCT(1, NULL, 2)} is {@code [1,undefined,2]},
+     * {@code ARRAY_APPEND([1], NULL)} is {@code [1,undefined]} and {@code ARRAY_REPEAT(NULL, 3)} is
+     * {@code [undefined,undefined,undefined]}, while an OBJECT member keeps a JSON null
+     * ({@code OBJECT_CONSTRUCT_KEEP_NULL('k', NULL)} is {@code {"k":null}}). Every other value converts
+     * exactly as {@link #toNode(ObjectMapper, Object)} does.
+     */
+    public static JsonNode toElementNode(final ObjectMapper mapper, final Object value) {
+        if (value == null) return VariantUndefined.node();
+        return toNode(mapper, value);
+    }
+
     /** Convert a Java value to a JsonNode for insertion into arrays/objects. */
     public static JsonNode toNode(final ObjectMapper mapper, final Object value) {
         if (value == null) return mapper.nullNode();
+        if (value instanceof VariantValue) return ((VariantValue) value).node();
         if (value instanceof Boolean) return mapper.getNodeFactory().booleanNode((Boolean) value);
         if (value instanceof Long || value instanceof Integer)
             return mapper.getNodeFactory().numberNode(((Number) value).longValue());
@@ -64,6 +86,10 @@ public class ArrayFunctionHelper {
             // A temporal embedded in a VARIANT keeps Snowflake's default output text (space + FF3), not
             // java.time's T-separated form.
             return mapper.getNodeFactory().textNode(SharedFunctionHelpers.textOf(value));
+        }
+        if (value instanceof BinaryValue) {
+            // A BINARY embedded in a VARIANT becomes its hex text, Snowflake's JSON rendering of binary.
+            return mapper.getNodeFactory().textNode(((BinaryValue) value).toHex());
         }
         final String s = value.toString();
         // In this engine's value model a VARIANT JSON null IS the text "null" (path extraction of a
@@ -117,6 +143,15 @@ public class ArrayFunctionHelper {
      * otherwise a lexical comparison of their textual form. Used by ARRAY_SORT / ARRAY_MIN / ARRAY_MAX.
      */
     public static int compareNodes(final JsonNode a, final JsonNode b) {
+        // A JSON null is a VALUE that ranks ABOVE every other variant type — live-verified:
+        // ARRAY_SORT(['z', PARSE_JSON('null')]) is ["z",null], ARRAY_SORT([TRUE, null, 1]) is [true,1,null],
+        // ARRAY_SORT([{"a":1}, 1, null]) is [1,{"a":1},null] and ARRAY_MAX(PARSE_JSON('[1,null,2]')) is the
+        // JSON null. A lexical fallback ranked it by the text "null", which put it before 'z'.
+        final boolean aNull = a.isNull();
+        final boolean bNull = b.isNull();
+        if (aNull || bNull) {
+            return aNull && bNull ? 0 : aNull ? 1 : -1;
+        }
         if (a.isNumber() && b.isNumber()) {
             return a.decimalValue().compareTo(b.decimalValue());
         }
@@ -125,7 +160,26 @@ public class ArrayFunctionHelper {
         return sa.compareTo(sb);
     }
 
-    /** Convert a JsonNode back to a plain Java value. Objects/arrays stay as JSON strings. */
+    /**
+     * Convert a JsonNode back to a plain Java value, keeping a PRESENT JSON null as the typed VARIANT
+     * JSON null instead of collapsing it to SQL NULL. Use this wherever the distinction is observable —
+     * an extraction that found the key, as opposed to one that did not.
+     *
+     * <p>Live-verified: {@code TYPEOF(GET(PARSE_JSON('{"b":null}'),'b'))} is
+     * {@code 'NULL_VALUE'} and {@code GET(...) IS NULL} is FALSE, while a MISSING key —
+     * {@code GET(PARSE_JSON('{"a":1}'),'zz')} — is SQL NULL and its TYPEOF is SQL NULL.
+     */
+    public static Object fromNodeKeepingJsonNull(final JsonNode node) {
+        if (node == null) return null;
+        // An `undefined` ELEMENT is the exception: it reads as SQL NULL, never as a JSON null. Live
+        // TYPEOF(GET(ARRAY_CONSTRUCT(1,NULL,2),1)) is SQL NULL and GET(...) IS NULL is TRUE,
+        // while the same access over PARSE_JSON('[1,null,2]') reports 'NULL_VALUE' and IS NULL is FALSE.
+        if (VariantUndefined.isUndefined(node)) return null;
+        if (node.isNull()) return VariantValue.of("null");
+        return fromNode(node);
+    }
+
+    /** Convert a JsonNode back to a plain Java value. Objects/arrays become typed semi-structured values. */
     public static Object fromNode(final JsonNode node) {
         if (node == null || node.isNull()) return null;
         if (node.isTextual()) return node.asText();
@@ -133,7 +187,8 @@ public class ArrayFunctionHelper {
         if (node.isLong() || node.isInt()) return node.asLong();
         if (node.isBigInteger() || node.isBigDecimal()) return node.decimalValue();
         if (node.isNumber()) return node.asDouble();
-        return node.toString();
+        // Object or array: a typed semi-structured value carrying the node's JSON text.
+        return VariantValue.ofNode(node);
     }
 
     /**
@@ -169,9 +224,26 @@ public class ArrayFunctionHelper {
             return out;
         }
         if (node.isNumber() && !node.isIntegralNumber()) {
+            // Live-verified number families: a SCIENTIFIC-notation JSON literal is DOUBLE (TYPEOF of
+            // PARSE_JSON('1e5') and ('1.5e2') is DOUBLE) while a PLAIN fraction is DECIMAL with
+            // trailing zeros stripped (PARSE_JSON('1.5') is DECIMAL, '1.50' descales to 1.5, '1.0'
+            // to INTEGER); a programmatic double (a ::DOUBLE cast) keeps the DOUBLE family. After
+            // BigDecimal parsing the notation is only PARTLY recoverable: a negative scale means a
+            // positive exponent, and >15 significant digits is double-provenance in practice (a
+            // float widened to double, e.g. 8.999999761581421e-01 — the loader-hash shape that must
+            // keep Snowflake's 10-significant-digit FLOAT::VARCHAR rendering). A short negative
+            // exponent ('8.99e-1') is indistinguishable from its plain spelling and lands DECIMAL.
+            if (node.isBigDecimal()
+                    && (node.decimalValue().scale() < 0
+                        || (node.decimalValue().scale() > 0 && node.decimalValue().precision() > 15))) {
+                return MAPPER.getNodeFactory().numberNode(node.decimalValue().doubleValue());
+            }
             final BigDecimal stripped = new BigDecimal(node.asText()).stripTrailingZeros();
             if (stripped.scale() <= 0) {
                 return MAPPER.getNodeFactory().numberNode(stripped.toBigInteger());
+            }
+            if (node.isDouble() || node.isFloat()) {
+                return MAPPER.getNodeFactory().numberNode(stripped.doubleValue());
             }
             return MAPPER.getNodeFactory().numberNode(stripped);
         }
@@ -181,5 +253,13 @@ public class ArrayFunctionHelper {
     /** Canonical JSON text for an object/array value — see {@link #canonicalize(JsonNode)}. */
     public static String toCanonicalJson(final JsonNode node) {
         return canonicalize(node).toString();
+    }
+
+    /**
+     * Canonical semi-structured runtime value for a node — the typed counterpart of
+     * {@link #toCanonicalJson(JsonNode)}, carrying exactly that canonical text.
+     */
+    public static VariantValue toCanonicalVariant(final JsonNode node) {
+        return VariantValue.ofNode(canonicalize(node));
     }
 }

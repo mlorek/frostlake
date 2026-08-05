@@ -45,30 +45,71 @@ public class ParseIpTest extends BaseDatabaseTest {
     }
 
     @Test
-    public void plainAddressDefaultsToSlash32() {
-        // No CIDR suffix → netmask_prefix_length 32 and a single-address range.
+    public void plainAddressHasNullNetmaskAndNoRange() {
+        // Live-verified: a bare address is NOT /32 — the netmask is null and no range is reported.
         assertEquals(
             "{\"family\":4,\"host\":\"10.0.0.5\",\"ip_fields\":[167772165,0,0,0],"
-                + "\"ip_type\":\"inet\",\"ipv4\":167772165,\"ipv4_range_end\":167772165,"
-                + "\"ipv4_range_start\":167772165,\"netmask_prefix_length\":32,"
-                + "\"snowflake$type\":\"ip_address\"}",
+                + "\"ip_type\":\"inet\",\"ipv4\":167772165,"
+                + "\"netmask_prefix_length\":null,\"snowflake$type\":\"ip_address\"}",
             scalar("SELECT PARSE_IP('10.0.0.5', 'INET')"));
     }
 
     @Test
     public void typeArgumentIsEchoedAsIpType() {
-        // The 'CIDR' type is echoed lowercased in ip_type; the numeric fields are unchanged.
+        // The 'CIDR' type is echoed lowercased in ip_type. With CIDR the address must BE the
+        // network address (host bits zero) — live-verified.
         assertEquals(
-            "{\"family\":4,\"host\":\"192.168.242.188\",\"ip_fields\":[3232297660,0,0,0],"
-                + "\"ip_type\":\"cidr\",\"ipv4\":3232297660,\"ipv4_range_end\":3232297727,"
+            "{\"family\":4,\"host\":\"192.168.242.0\",\"ip_fields\":[3232297472,0,0,0],"
+                + "\"ip_type\":\"cidr\",\"ipv4\":3232297472,\"ipv4_range_end\":3232297727,"
                 + "\"ipv4_range_start\":3232297472,\"netmask_prefix_length\":24,"
                 + "\"snowflake$type\":\"ip_address\"}",
-            scalar("SELECT PARSE_IP('192.168.242.188/24', 'CIDR')"));
+            scalar("SELECT PARSE_IP('192.168.242.0/24', 'CIDR')"));
+    }
+
+    @Test
+    public void cidrRejectsHostBitsAndOversizedPrefixes() {
+        // Live-verified messages: host bits set beyond the prefix, and a prefix past /32.
+        final RuntimeException hostBits = assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.executeQuery("SELECT PARSE_IP('192.168.242.188/24', 'CIDR')");
+            }
+        });
+        assertTrue(hostBits.getMessage().contains("Address does not conform to cidr format"),
+            hostBits.getMessage());
+        final RuntimeException tooLarge = assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.executeQuery("SELECT PARSE_IP('192.168.242.0/33', 'CIDR')");
+            }
+        });
+        assertTrue(tooLarge.getMessage().contains("Network range prefix is too large"),
+            tooLarge.getMessage());
+    }
+
+    @Test
+    public void cidrWithoutAPrefixHasNullNetmaskAndNoRange() {
+        // Live-verified shape: netmask_prefix_length is null and no range members are reported.
+        assertEquals(
+            "{\"family\":4,\"host\":\"192.168.242.188\",\"ip_fields\":[3232297660,0,0,0],"
+                + "\"ip_type\":\"cidr\",\"ipv4\":3232297660,"
+                + "\"netmask_prefix_length\":null,\"snowflake$type\":\"ip_address\"}",
+            scalar("SELECT PARSE_IP('192.168.242.188', 'CIDR')"));
+    }
+
+    @Test
+    public void inetAcceptsHostBitsWithinThePrefix() {
+        assertEquals(
+            "{\"family\":4,\"host\":\"192.168.242.188\",\"ip_fields\":[3232297660,0,0,0],"
+                + "\"ip_type\":\"inet\",\"ipv4\":3232297660,\"ipv4_range_end\":3232297727,"
+                + "\"ipv4_range_start\":3232297472,\"netmask_prefix_length\":24,"
+                + "\"snowflake$type\":\"ip_address\"}",
+            scalar("SELECT PARSE_IP('192.168.242.188/24', 'INET')"));
     }
 
     @Test
     public void permissiveReturnsErrorObjectOnBadInput() {
-        assertEquals("{\"error\":\"IPv4 octet out of range: 999\"}",
+        assertEquals("{\"error\":\"Invalid IPv4 address. One or more fields is higher than 255.\"}",
             scalar("SELECT PARSE_IP('999.1.1.1', 'INET', 1)"));
     }
 

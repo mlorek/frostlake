@@ -18,14 +18,18 @@ package dev.frostlake.expressions;
 
 import dev.frostlake.BaseDatabaseTest;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * EXECUTE IMMEDIATE used as an expression — previously it parsed but the AST builder threw "not ported". The
- * SQL string (a literal, bind variable, or concatenation) is evaluated, USING values bind to its {@code ?}
- * placeholders, the dynamic statement runs, and its first column of the first row is returned as a scalar.
+ * EXECUTE IMMEDIATE as a STATEMENT — live-verified: it is not an expression, so {@code SELECT EXECUTE
+ * IMMEDIATE '...'} is a syntax error. At SESSION level its SQL source must be a string literal, a
+ * {@code $$…$$} literal or a variable, and it takes no USING clause; both restrictions lift inside a
+ * Snowflake Scripting block, where the source may be any expression and USING binds the {@code ?}
+ * placeholders. The statement runs the dynamic SQL and returns the inner query's result set.
  */
 public class ExecuteImmediateExpressionTest extends BaseDatabaseTest {
 
@@ -41,28 +45,83 @@ public class ExecuteImmediateExpressionTest extends BaseDatabaseTest {
 
     @Test
     public void literalSqlReturnsScalar() {
-        assertEquals(1L, ((Number) scalar("SELECT EXECUTE IMMEDIATE 'SELECT 1'")).longValue());
+        assertEquals(1L, ((Number) scalar("EXECUTE IMMEDIATE 'SELECT 1'")).longValue());
     }
 
     @Test
     public void dynamicQueryReturnsAggregate() {
-        assertEquals(60L, ((Number) scalar("SELECT EXECUTE IMMEDIATE 'SELECT SUM(v) FROM t'")).longValue());
+        assertEquals(60L, ((Number) scalar("EXECUTE IMMEDIATE 'SELECT SUM(v) FROM t'")).longValue());
     }
 
     @Test
-    public void usingBindingsSubstitutePlaceholders() {
-        assertEquals(20L, ((Number) scalar(
-            "SELECT EXECUTE IMMEDIATE 'SELECT v FROM t WHERE id = ?' USING (2)")).longValue());
+    public void topLevelUsingClauseIsRejected() {
+        // Live-verified: a session-level EXECUTE IMMEDIATE has no working USING clause at all. An
+        // argument that is not a bare name — the literal 2 here — is a SYNTAX error at the
+        // argument's own position; a list of names fails "Unsupported statement type 'EXECUTE'."
+        // instead (both wordings measured; the names cell is pinned in ExecuteImmediateUsingTest).
+        // USING is a Snowflake Scripting feature, legal only inside a BEGIN…END block, which the
+        // procedural tests cover.
+        final RuntimeException using = assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.executeQuery("EXECUTE IMMEDIATE 'SELECT v FROM t WHERE id = ?' USING (2)");
+            }
+        });
+        assertTrue(using.getMessage().contains("syntax error line 1 at position 56 unexpected '2'."),
+            "unexpected: " + using.getMessage());
     }
 
     @Test
-    public void sqlStringMayBeAConcatenation() {
-        assertEquals(30L, ((Number) scalar(
-            "SELECT EXECUTE IMMEDIATE 'SELECT v FROM t WHERE id = ' || '3'")).longValue());
+    public void topLevelSqlSourceMustBeALiteralOrVariable() {
+        // Live-verified: at session level the SQL source is a string literal, a $$…$$ literal or a
+        // variable — an arbitrary expression such as a `||` concatenation is a syntax error there.
+        final RuntimeException concat = assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.executeQuery("EXECUTE IMMEDIATE 'SELECT v FROM t WHERE id = ' || '3'");
+            }
+        });
+        assertTrue(concat.getMessage().contains("unexpected '||'"), "unexpected: " + concat.getMessage());
+        // The accepted spellings: a plain literal, a $$-quoted literal and a session variable.
+        assertEquals(30L, ((Number) scalar("EXECUTE IMMEDIATE 'SELECT v FROM t WHERE id = 3'")).longValue());
+        assertEquals(30L, ((Number) scalar("EXECUTE IMMEDIATE $$SELECT v FROM t WHERE id = 3$$")).longValue());
+        engine.execute("SET stmt = 'SELECT v FROM t WHERE id = 3'");
+        assertEquals(30L, ((Number) scalar("EXECUTE IMMEDIATE $stmt")).longValue());
     }
 
     @Test
-    public void emptyResultYieldsNull() {
-        assertNull(scalar("SELECT EXECUTE IMMEDIATE 'SELECT v FROM t WHERE id = 99'"));
+    public void inBlockSourceAndUsingStayLegal() {
+        // The very same forms the session level refuses are legal inside a scripting block.
+        assertEquals(30L, ((Number) engine.executeQuery("""
+            DECLARE s VARCHAR;
+            BEGIN
+              s := 'SELECT v FROM t WHERE id = ' || '3';
+              EXECUTE IMMEDIATE s;
+              RETURN 30;
+            END;""").getRows().get(0).getValue(0)).longValue());
+        assertEquals(2L, ((Number) engine.executeQuery("""
+            DECLARE
+              res RESULTSET;
+              v INTEGER DEFAULT 2;
+            BEGIN
+              res := (EXECUTE IMMEDIATE 'SELECT id FROM t WHERE id = ?' USING (v));
+              RETURN 2;
+            END;""").getRows().get(0).getValue(0)).longValue());
+    }
+
+    @Test
+    public void emptyResultYieldsNoRows() {
+        assertEquals(0, engine.executeQuery("EXECUTE IMMEDIATE 'SELECT v FROM t WHERE id = 99'").getRowCount());
+    }
+
+    @Test
+    public void selectEmbeddedFormIsRejected() {
+        // EXECUTE IMMEDIATE cannot appear inside a SELECT list — it is a statement, not an expression.
+        assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.executeQuery("SELECT EXECUTE IMMEDIATE 'SELECT 1'");
+            }
+        });
     }
 }

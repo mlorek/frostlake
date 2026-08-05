@@ -70,6 +70,11 @@ final class StageQueryExecutor {
         char delimiter = ',';
         Character enclosure = null;
         int skipHeader = 0;
+        // CSV's EMPTY_FIELD_AS_NULL reaches the stage-query path too, default TRUE and all: an unenclosed
+        // empty field reads as SQL NULL, not as the empty string. Live-verified with a control
+        // beside it — the same file read through a format carrying EMPTY_FIELD_AS_NULL = FALSE answered the
+        // empty string for the same field.
+        boolean emptyFieldAsNull = true;
 
         if (params != null) {
             for (final FrostlakeParser.StageQueryParamContext param : params.stageQueryParam()) {
@@ -98,6 +103,10 @@ final class StageQueryExecutor {
                         final String enclosed = named.getOption("FIELD_OPTIONALLY_ENCLOSED_BY");
                         if (enclosed != null && !enclosed.isEmpty() && !"NONE".equalsIgnoreCase(enclosed)) {
                             enclosure = enclosed.charAt(0);
+                        }
+                        if (named.getOption("EMPTY_FIELD_AS_NULL") != null) {
+                            emptyFieldAsNull =
+                                !"FALSE".equalsIgnoreCase(named.getOption("EMPTY_FIELD_AS_NULL"));
                         }
                     } else {
                         fileFormat = value.toUpperCase();
@@ -138,9 +147,21 @@ final class StageQueryExecutor {
                         if (lines.get(ln).isEmpty()) {
                             continue;
                         }
-                        final List<String> fields = CopyCommandExecutor.parseCsvLine(lines.get(ln), delimiter, enclosure);
+                        final List<Boolean> enclosedEmpty = new ArrayList<>();
+                        final List<String> fields = CopyCommandExecutor.parseCsvLine(
+                            lines.get(ln), delimiter, enclosure, enclosedEmpty);
                         width = Math.max(width, fields.size());
-                        fieldRows.add(new ArrayList<Object>(fields));
+                        final List<Object> values = new ArrayList<Object>(fields);
+                        if (emptyFieldAsNull) {
+                            for (int f = 0; f < values.size(); f++) {
+                                final boolean enclosedBlank = f < enclosedEmpty.size()
+                                    && enclosedEmpty.get(f).booleanValue();
+                                if ("".equals(values.get(f)) && !enclosedBlank) {
+                                    values.set(f, null);
+                                }
+                            }
+                        }
+                        fieldRows.add(values);
                         fileNames.add(relativeName);
                         rowNumbers.add(++rowNumber);
                     }

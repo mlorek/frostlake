@@ -19,6 +19,7 @@ package dev.frostlake.ddl;
 import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.Row;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 
 import java.util.HashSet;
@@ -37,10 +38,25 @@ public class ShowInDatabaseTest extends BaseDatabaseTest {
     private static final int NAME = 1;
     private static final int IS_BUILTIN = 3;
 
+    private static final String LISTS_EVERY_ROW =
+        "asserts is_builtin='N' for EVERY listed row, i.e. that the account holds no routines besides the "
+        + "ones this test created — a real account lists its own user-defined routines (and its built-in "
+        + "library) too, so only the presence of the created routines is portable";
+
     private Set<String> names(final ResultSet rs) {
         final Set<String> out = new HashSet<String>();
         for (final Row row : rs.getRows()) {
             out.add(String.valueOf(row.getValue(NAME)).toUpperCase());
+        }
+        return out;
+    }
+
+    /** Names read by the {@code name} COLUMN, for listings that do not share the usual column order. */
+    private Set<String> namesByColumn(final ResultSet rs) {
+        final Set<String> out = new HashSet<String>();
+        final int nameIndex = rs.getColumnIndex("name");
+        for (final Row row : rs.getRows()) {
+            out.add(String.valueOf(row.getValue(nameIndex)).toUpperCase());
         }
         return out;
     }
@@ -91,22 +107,42 @@ public class ShowInDatabaseTest extends BaseDatabaseTest {
         final Set<String> all = names(rs);
         assertTrue(all.contains("P1"), all.toString());
         assertTrue(all.contains("P2"), all.toString());
-        // Built-ins are not scoped to a user database.
+        // The listing appends the built-in catalog as SHOW FUNCTIONS IN DATABASE does; every row is
+        // is_builtin = N only because Frostlake dispatches no built-in PROCEDURES (a real account ships
+        // 32 and answers 34 here, live-verified with these same two user procedures).
+        Assumptions.assumeFalse(isLiveSnowflake(), LISTS_EVERY_ROW);
         for (final Row row : rs.getRows()) {
             assertEquals("N", row.getValue(IS_BUILTIN), "IN DATABASE should list only user procedures");
         }
     }
 
+    /**
+     * SHOW FUNCTIONS IN DATABASE lists the built-in catalog alongside the database's user functions —
+     * scoping the command narrows which user functions it reaches, not whether the system ones exist.
+     *
+     * <p>This test used to assert the opposite. Live-verified on a real account with three
+     * UDFs spread over two schemas of one database: {@code SHOW FUNCTIONS} answered 1136 for the schema
+     * holding two of them, {@code IN SCHEMA} the other schema 1135, and {@code IN DATABASE} 1137 — 1134
+     * built-ins plus whatever user functions are in scope, every time. Only {@code SHOW USER FUNCTIONS
+     * IN DATABASE} drops them, answering a bare 3.
+     */
     @Test
-    public void showFunctionsInDatabaseSpansSchemasAndOmitsBuiltins() {
+    public void showFunctionsInDatabaseSpansSchemasAndIncludesBuiltins() {
         engine.execute("CREATE SCHEMA s1");
         engine.execute("CREATE FUNCTION s1.f1(x INTEGER) RETURNS INTEGER AS 'x + 1'");
 
         final ResultSet rs = engine.executeQuery("SHOW FUNCTIONS IN DATABASE test_db");
         final Set<String> all = names(rs);
         assertTrue(all.contains("F1"), all.toString());
-        for (final Row row : rs.getRows()) {
-            assertEquals("N", row.getValue(IS_BUILTIN), "IN DATABASE should list only user functions");
+        assertTrue(all.contains("ABS"), "the built-in catalog is listed too");
+
+        final ResultSet userOnly = engine.executeQuery("SHOW USER FUNCTIONS IN DATABASE test_db");
+        final Set<String> userNames = names(userOnly);
+        assertTrue(userNames.contains("F1"), userNames.toString());
+        assertFalse(userNames.contains("ABS"), "SHOW USER FUNCTIONS drops the built-in half");
+        Assumptions.assumeFalse(isLiveSnowflake(), LISTS_EVERY_ROW);
+        for (final Row row : userOnly.getRows()) {
+            assertEquals("N", row.getValue(IS_BUILTIN), "USER ... IN DATABASE lists only user functions");
         }
     }
 
@@ -129,7 +165,9 @@ public class ShowInDatabaseTest extends BaseDatabaseTest {
         engine.execute("CREATE SEQUENCE s1.seq1");
         engine.execute("CREATE SEQUENCE s2.seq2");
 
-        final Set<String> all = names(engine.executeQuery("SHOW SEQUENCES IN DATABASE test_db"));
+        // SHOW SEQUENCES has its OWN column shape — it leads with `name`, not `created_on` (live-verified
+        // on a real account) — so the name is read by column NAME, not by the shared index.
+        final Set<String> all = namesByColumn(engine.executeQuery("SHOW SEQUENCES IN DATABASE test_db"));
         assertTrue(all.contains("SEQ1"), all.toString());
         assertTrue(all.contains("SEQ2"), all.toString());
     }

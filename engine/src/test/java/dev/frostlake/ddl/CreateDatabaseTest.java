@@ -21,6 +21,7 @@ import dev.frostlake.ExecutionResult;
 import dev.frostlake.storage.ResultSet;
 import org.junit.jupiter.api.Test;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -38,11 +39,22 @@ public class CreateDatabaseTest extends BaseDatabaseTest {
 
     @Test
     public void testMultipleDatabases() {
-        engine.execute("CREATE DATABASE db1");
-        engine.execute("CREATE DATABASE db2");
+        // Count only the databases this test creates, through SQL. The old form counted whatever
+        // engine.showDatabases() reported, which (a) assumed other databases were already there — on
+        // a clean account "Should have at least 2 databases" failed — and (b) reads the in-memory
+        // catalog, so under SF_LIVE it never saw the two CREATEs at all. A prefixed pair counted with
+        // SHOW DATABASES LIKE is deterministic on both backends.
+        engine.execute("CREATE DATABASE cdt_multi_1");
+        engine.execute("CREATE DATABASE cdt_multi_2");
 
-        ResultSet databases = engine.showDatabases();
-        assertTrue(databases.getRowCount() >= 2, "Should have at least 2 databases");
+        ResultSet databases = engine.executeQuery("SHOW DATABASES LIKE 'CDT_MULTI_%'");
+        assertEquals(2, databases.getRowCount(), "Both created databases should be listed");
+
+        // CREATE DATABASE activates the new database, so step back before dropping them.
+        engine.execute("USE DATABASE test_db");
+        engine.execute("USE SCHEMA test_schema");
+        engine.execute("DROP DATABASE IF EXISTS cdt_multi_1");
+        engine.execute("DROP DATABASE IF EXISTS cdt_multi_2");
     }
 
     @Test

@@ -16,9 +16,9 @@
 
 package dev.frostlake.functions.scalar.string;
 
-import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.functions.TextArgumentFunction;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
-import dev.frostlake.types.VariantType;
+import dev.frostlake.types.ObjectType;
 
 import tools.jackson.databind.node.ArrayNode;
 import tools.jackson.databind.node.ObjectNode;
@@ -51,9 +51,9 @@ import java.util.List;
  * <p>A malformed address (or bad {@code type}) raises; when {@code permissive} is 1 it instead returns
  * an object with only an {@code error} key. NULL address yields NULL.
  */
-public class ParseIp extends BuiltInFunction {
+public class ParseIp extends TextArgumentFunction {
 
-    public ParseIp() { super("PARSE_IP", VariantType.VARIANT); }
+    public ParseIp() { super("PARSE_IP", ObjectType.OBJECT); }
 
     @Override
     public Object evaluate(final List<Object> args) {
@@ -87,7 +87,8 @@ public class ParseIp extends BuiltInFunction {
                 throw new IllegalArgumentException("invalid netmask prefix '" + prefixStr + "'");
             }
             if (prefix < 0 || prefix > 32) {
-                throw new IllegalArgumentException("IPv4 netmask prefix out of range: " + prefix);
+                // Live-verified Snowflake wording for an oversized prefix.
+                throw new IllegalArgumentException("Invalid IPv4 address. Network range prefix is too large.");
             }
         }
         final String[] octets = addrPart.split("\\.", -1);
@@ -103,7 +104,8 @@ public class ParseIp extends BuiltInFunction {
                 throw new IllegalArgumentException("invalid IPv4 octet '" + octets[i] + "'");
             }
             if (octet < 0 || octet > 255) {
-                throw new IllegalArgumentException("IPv4 octet out of range: " + octet);
+                // Live-verified Snowflake wording.
+                throw new IllegalArgumentException("Invalid IPv4 address. One or more fields is higher than 255.");
             }
             ipv4 = (ipv4 << 8) | octet;
         }
@@ -111,6 +113,11 @@ public class ParseIp extends BuiltInFunction {
         final long mask = hostBits >= 32 ? 0L : (0xFFFFFFFFL << hostBits) & 0xFFFFFFFFL;
         final long rangeStart = ipv4 & mask;
         final long rangeEnd = rangeStart | (~mask & 0xFFFFFFFFL);
+        // Live-verified CIDR semantics: with an explicit prefix the address must BE the network
+        // address (host bits zero); without one the netmask is null and no range is reported.
+        if (type.equals("cidr") && slash >= 0 && (ipv4 & ~mask & 0xFFFFFFFFL) != 0) {
+            throw new IllegalArgumentException("Invalid IPv4 address. Address does not conform to cidr format.");
+        }
 
         final ObjectNode obj = ArrayFunctionHelper.MAPPER.createObjectNode();
         obj.put("family", 4);
@@ -122,9 +129,15 @@ public class ParseIp extends BuiltInFunction {
         fields.add(0);
         obj.put("ip_type", type);
         obj.put("ipv4", ipv4);
-        obj.put("ipv4_range_end", rangeEnd);
-        obj.put("ipv4_range_start", rangeStart);
-        obj.put("netmask_prefix_length", prefix);
+        if (slash < 0) {
+            // Live-verified for BOTH types: without an explicit prefix the netmask is null and no
+            // range is reported (a bare address is NOT treated as /32).
+            obj.putNull("netmask_prefix_length");
+        } else {
+            obj.put("ipv4_range_end", rangeEnd);
+            obj.put("ipv4_range_start", rangeStart);
+            obj.put("netmask_prefix_length", prefix);
+        }
         obj.put("snowflake$type", "ip_address");
         return obj.toString();
     }
@@ -187,7 +200,7 @@ public class ParseIp extends BuiltInFunction {
             err.put("error", message);
             return err.toString();
         }
-        throw new RuntimeException("Error parsing IP address: " + message);
+        throw new RuntimeException("Error parsing IP: " + message);
     }
 
     @Override public int getMinArgCount() { return 2; }

@@ -16,12 +16,12 @@
 
 package dev.frostlake.functions.scalar.string;
 
-import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.functions.TextArgumentFunction;
 import dev.frostlake.types.StringType;
 
 import java.util.List;
 
-public class Lower extends BuiltInFunction {
+public class Lower extends TextArgumentFunction {
     public Lower() {
         super("LOWER", StringType.VARCHAR);
     }

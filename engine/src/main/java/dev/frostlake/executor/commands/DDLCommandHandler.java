@@ -17,6 +17,7 @@
 package dev.frostlake.executor.commands;
 
 import dev.frostlake.executor.QueryExecutor;
+import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.SqlStringLiterals;
 import dev.frostlake.metastore.*;
 import dev.frostlake.metastore.model.*;
@@ -137,6 +138,10 @@ public class DDLCommandHandler implements CommandHandler {
 
     public Object handleCreateStatement(final FrostlakeParser.CreateStatementContext ctx) {
         boolean ifNotExists = ctx.if_not_exists() != null;
+        if (ifNotExists && ctx.or_replace() != null) {
+            // Live-verified Snowflake rejection, for every object type.
+            throw new RuntimeException("options IF NOT EXISTS and OR REPLACE are incompatible.");
+        }
 
         try {
             if (ctx.DATABASE() != null) {
@@ -240,14 +245,18 @@ public class DDLCommandHandler implements CommandHandler {
             // Check if table exists
             Table table = sourceSchema.getTable(sourceObjectName);
             if (table == null) {
-                throw new RuntimeException("Table does not exist: " + sourceName);
+                throw new RuntimeException(SqlCompilationError.doesNotExist("Table", sourceName));
             }
         } else {
-            // Check if view exists
-            sourceView = sourceSchema.getView(sourceObjectName);
-            if (sourceView == null) {
-                throw new RuntimeException("View does not exist: " + sourceName);
+            // Check if view exists. Snowflake words this one specifically — live-verified on a real
+            // account: CREATE STREAM s ON VIEW non_existent_view fails "SQL compilation
+            // error: View 'NON_EXISTENT_VIEW' does not exist or not authorized." — so the lookup is
+            // guarded rather than letting the catalog's generic "View does not exist: x" surface.
+            if (!sourceSchema.hasView(sourceObjectName)) {
+                throw new RuntimeException("SQL compilation error:\nView '"
+                    + sourceObjectName.toUpperCase() + "' does not exist or not authorized.");
             }
+            sourceView = sourceSchema.getView(sourceObjectName);
         }
 
         // Resolve a view stream's base table(s) up front (outside the creation try) so ineligible
@@ -484,18 +493,6 @@ public class DDLCommandHandler implements CommandHandler {
             long newIncrement = action.MINUS() != null ? -value : value;
             sequence.setIncrement(newIncrement);
             logger.trace("Set increment of sequence {} to {}", qualifiedName, newIncrement);
-        } else if (action.RESTART() != null) {
-            if (action.INTEGER_LITERAL() != null) {
-                long value = Long.parseLong(action.INTEGER_LITERAL().getText());
-                long newValue = action.MINUS() != null ? -value : value;
-                // Set to newValue - increment so that next NEXTVAL returns newValue
-                sequence.setCurrentValue(newValue - sequence.getIncrement());
-                logger.trace("Restarted sequence {} with value: {}", qualifiedName, newValue);
-            } else {
-                // Restart with original start value
-                sequence.setCurrentValue(sequence.getStartValue() - sequence.getIncrement());
-                logger.trace("Restarted sequence {} to original start value", qualifiedName);
-            }
         }
 
         return null;

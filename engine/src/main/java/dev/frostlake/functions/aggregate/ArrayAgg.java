@@ -17,6 +17,7 @@
 package dev.frostlake.functions.aggregate;
 
 import dev.frostlake.functions.AggregateFunction;
+import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.types.ArrayType;
 
 import java.util.List;
@@ -24,6 +25,21 @@ import java.util.List;
 public class ArrayAgg extends AggregateFunction {
     public ArrayAgg() {
         super("ARRAY_AGG", ArrayType.ARRAY);
+    }
+
+    /**
+     * A plain OBJECT or ARRAY collects perfectly well, a STRUCTURED one does not. Live over
+     * one table carrying both, {@code ARRAY_AGG(o)} returns
+     * {@code [{"k":"v1"},{"k":"v2"}]} while {@code ARRAY_AGG(so)} is "Invalid argument types for
+     * function 'ARRAY_AGG': (OBJECT(x VARCHAR(16777216)))" — and the same for
+     * {@code ARRAY_AGG(sa)} / {@code ARRAY_AGG(sm)}, for {@code DISTINCT}, for
+     * {@code WITHIN GROUP (ORDER BY …)}, for the windowed {@code OVER ()} form, under {@code GROUP BY}
+     * and on an EMPTY input. Only the aggregated VALUE is constrained: {@code ARRAY_AGG(n) WITHIN
+     * GROUP (ORDER BY so)} sorts by a structured key quite happily.
+     */
+    @Override
+    public SemiStructuredRejection structuredRejection(final int position) {
+        return SemiStructuredRejection.ARGUMENT_TYPES;
     }
 
     @Override

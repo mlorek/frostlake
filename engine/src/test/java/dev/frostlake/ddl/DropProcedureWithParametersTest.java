@@ -32,7 +32,7 @@ public class DropProcedureWithParametersTest extends BaseJdbcTest {
     public void testDropProcedureRequiresTheSignature() throws SQLException {
         logger.info("Testing DROP PROCEDURE requires the argument-type signature (Snowflake-verified)");
 
-        statement.execute("CREATE PROCEDURE increment_proc(x INTEGER) RETURNS INTEGER LANGUAGE SQL AS 'SELECT x + 1'");
+        statement.execute("CREATE PROCEDURE increment_proc(x INTEGER) RETURNS INTEGER LANGUAGE SQL AS 'BEGIN RETURN x + 1; END'");
 
         // Snowflake requires the signature — the bare form is a syntax error.
         assertThrows(SQLException.class, () -> {
@@ -49,7 +49,7 @@ public class DropProcedureWithParametersTest extends BaseJdbcTest {
     public void testDropProcedureWithParameters() throws SQLException {
         logger.info("Testing DROP PROCEDURE with parameter types");
 
-        statement.execute("CREATE PROCEDURE sum_proc(a INTEGER, b INTEGER) RETURNS INTEGER LANGUAGE SQL AS 'SELECT a + b'");
+        statement.execute("CREATE PROCEDURE sum_proc(a INTEGER, b INTEGER) RETURNS INTEGER LANGUAGE SQL AS 'BEGIN RETURN a + b; END'");
 
         // Drop with parameter types specified
         statement.execute("DROP PROCEDURE sum_proc(INTEGER, INTEGER)");
@@ -64,7 +64,7 @@ public class DropProcedureWithParametersTest extends BaseJdbcTest {
     public void testDropProcedureWithEmptyParameters() throws SQLException {
         logger.info("Testing DROP PROCEDURE with empty parameter list");
 
-        statement.execute("CREATE PROCEDURE no_args_proc() RETURNS INTEGER LANGUAGE SQL AS 'SELECT 100'");
+        statement.execute("CREATE PROCEDURE no_args_proc() RETURNS INTEGER LANGUAGE SQL AS 'BEGIN RETURN 100; END'");
 
         // Drop with empty parameter list
         statement.execute("DROP PROCEDURE no_args_proc()");
@@ -103,7 +103,7 @@ public class DropProcedureWithParametersTest extends BaseJdbcTest {
     public void testDropProcedureWithVarcharParameter() throws SQLException {
         logger.info("Testing DROP PROCEDURE with VARCHAR parameter type");
 
-        statement.execute("CREATE PROCEDURE string_proc(text VARCHAR) RETURNS VARCHAR LANGUAGE SQL AS 'SELECT text'");
+        statement.execute("CREATE PROCEDURE string_proc(text VARCHAR) RETURNS VARCHAR LANGUAGE SQL AS 'BEGIN RETURN text; END'");
 
         // Drop with VARCHAR parameter type
         statement.execute("DROP PROCEDURE string_proc(VARCHAR)");
@@ -118,7 +118,7 @@ public class DropProcedureWithParametersTest extends BaseJdbcTest {
     public void testDropProcedureIfExists() throws SQLException {
         logger.info("Testing DROP PROCEDURE IF EXISTS with parameters");
 
-        statement.execute("CREATE PROCEDURE test_proc(x INTEGER) RETURNS INTEGER LANGUAGE SQL AS 'SELECT x * 2'");
+        statement.execute("CREATE PROCEDURE test_proc(x INTEGER) RETURNS INTEGER LANGUAGE SQL AS 'BEGIN RETURN x * 2; END'");
 
         // Drop with IF EXISTS and parameters
         statement.execute("DROP PROCEDURE IF EXISTS test_proc(INTEGER)");
@@ -131,7 +131,7 @@ public class DropProcedureWithParametersTest extends BaseJdbcTest {
     public void testDropProcedureMixedDataTypes() throws SQLException {
         logger.info("Testing DROP PROCEDURE with mixed data types");
 
-        statement.execute("CREATE PROCEDURE mixed_proc(id INTEGER, name VARCHAR, count INTEGER) RETURNS VARCHAR LANGUAGE SQL AS 'SELECT name'");
+        statement.execute("CREATE PROCEDURE mixed_proc(id INTEGER, name VARCHAR, count INTEGER) RETURNS VARCHAR LANGUAGE SQL AS 'BEGIN RETURN name; END'");
 
         // Drop with mixed parameter types
         statement.execute("DROP PROCEDURE mixed_proc(INTEGER, VARCHAR, INTEGER)");
@@ -147,7 +147,7 @@ public class DropProcedureWithParametersTest extends BaseJdbcTest {
         logger.info("Testing DROP PROCEDURE with schema-qualified name and parameters");
 
         statement.execute("CREATE SCHEMA proc_schema");
-        statement.execute("CREATE PROCEDURE proc_schema.double_value(x INTEGER) RETURNS INTEGER LANGUAGE SQL AS 'SELECT x * 2'");
+        statement.execute("CREATE PROCEDURE proc_schema.double_value(x INTEGER) RETURNS INTEGER LANGUAGE SQL AS 'BEGIN RETURN x * 2; END'");
 
         // Drop schema-qualified procedure with parameters
         statement.execute("DROP PROCEDURE proc_schema.double_value(INTEGER)");

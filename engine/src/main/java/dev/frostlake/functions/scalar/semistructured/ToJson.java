@@ -16,16 +16,19 @@
 
 package dev.frostlake.functions.scalar.semistructured;
 
-import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.functions.StructuredArgumentFunction;
 import dev.frostlake.types.StringType;
+import dev.frostlake.values.VariantValue;
 import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.cfg.JsonNodeFeature;
+import tools.jackson.databind.json.JsonMapper;
 
 import java.util.List;
 import java.util.Map;
 
-public class ToJson extends BuiltInFunction {
+public class ToJson extends StructuredArgumentFunction {
 
-    private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final ObjectMapper MAPPER = JsonMapper.builder().enable(JsonNodeFeature.USE_BIG_DECIMAL_FOR_FLOATS).build();
 
     public ToJson() { super("TO_JSON", StringType.VARCHAR); }
 
@@ -33,6 +36,10 @@ public class ToJson extends BuiltInFunction {
     public Object evaluate(final List<Object> args) {
         final Object value = args.get(0);
         if (value == null) return null;
+        if (value instanceof VariantValue) {
+            // TO_JSON of a semi-structured value is its JSON text (a JSON null yields the text null).
+            return ((VariantValue) value).text();
+        }
         if (value instanceof String) {
             final String text = ((String) value).trim();
             if (!text.isEmpty()) {

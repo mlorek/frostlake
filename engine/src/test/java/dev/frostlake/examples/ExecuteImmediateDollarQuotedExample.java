@@ -75,7 +75,7 @@ public class ExecuteImmediateDollarQuotedExample {
             // 5. CREATE PROCEDURE with dollar-quoted string
             logger.info("5. CREATE PROCEDURE with Dollar-Quoted String:");
             logger.info("   {}", "-".repeat(60));
-            engine.execute("EXECUTE IMMEDIATE $$CREATE PROCEDURE apply_discount(item_id INTEGER) RETURNS INTEGER AS 'item_id'$$");
+            engine.execute("EXECUTE IMMEDIATE $$CREATE PROCEDURE apply_discount(item_id INTEGER) RETURNS INTEGER AS 'BEGIN RETURN item_id; END'$$");
             logger.info("   ✓ Procedure created using $$...$$\n");
 
             // 6. UPDATE with dollar-quoted string

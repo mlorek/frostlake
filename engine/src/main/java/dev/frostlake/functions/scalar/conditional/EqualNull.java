@@ -17,6 +17,7 @@
 package dev.frostlake.functions.scalar.conditional;
 
 import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.types.BooleanType;
 
 import java.math.BigDecimal;
@@ -25,6 +26,17 @@ import java.util.List;
 /** EQUAL_NULL(a, b) — NULL-safe equality: returns TRUE if both NULL, TRUE if equal, FALSE otherwise. */
 public class EqualNull extends BuiltInFunction {
     public EqualNull() { super("EQUAL_NULL", BooleanType.BOOLEAN); }
+
+    /**
+     * A GEOSPATIAL value does not COMPARE, where an OBJECT does. Live,
+     * {@code EQUAL_NULL(o, o)} returns TRUE while {@code EQUAL_NULL(g, g)} is "Invalid argument types
+     * for function 'EQUAL_NULL': (GEOGRAPHY, GEOGRAPHY)" (SQLSTATE 42P13) — the same refusal the bare
+     * {@code =} operator gives, and the sentence the {@code IS DISTINCT FROM} spelling reports too.
+     */
+    @Override
+    public SemiStructuredRejection geoRejection(final int position) {
+        return SemiStructuredRejection.ARGUMENT_TYPES;
+    }
 
     @Override
     public Object evaluate(final List<Object> args) {

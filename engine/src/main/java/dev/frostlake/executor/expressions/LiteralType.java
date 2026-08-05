@@ -20,5 +20,5 @@ package dev.frostlake.executor.expressions;
  * The kind of a {@link LiteralExpression} value.
  */
 public enum LiteralType {
-    STRING, INTEGER, DECIMAL, BOOLEAN, NULL
+    STRING, INTEGER, DECIMAL, BOOLEAN, BINARY, NULL
 }

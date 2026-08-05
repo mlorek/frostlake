@@ -22,12 +22,13 @@ import org.junit.jupiter.api.function.Executable;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * {@code CALL <proc>(name => value)} — Snowflake named arguments. A named argument binds to the parameter
- * whose name it matches (so order is free and a defaulted parameter may be skipped); positional and named
- * arguments may be mixed (positional first). Exercised for the top-level CALL, the {@code var := (CALL …)}
- * assignment form, and a bare CALL inside a procedure body.
+ * whose name it matches (so order is free and a defaulted parameter may be skipped); a CALL's arguments
+ * are all-named or all-positional — mixing them is an error. Exercised for the top-level CALL, the
+ * {@code var := (CALL …)} assignment form, and a bare CALL inside a procedure body.
  */
 public class CallNamedArgumentsTest extends BaseDatabaseTest {
 
@@ -48,7 +49,17 @@ public class CallNamedArgumentsTest extends BaseDatabaseTest {
         assertEquals(12, callInt("CALL p_ab(1, 2)"));                 // positional
         assertEquals(12, callInt("CALL p_ab(a => 1, b => 2)"));       // named
         assertEquals(12, callInt("CALL p_ab(b => 2, a => 1)"));       // named, out of order
-        assertEquals(12, callInt("CALL p_ab(1, b => 2)"));            // mixed positional + named
+        // A CALL is all-named or all-positional. Live-verified on a real account:
+        // CALL p_ab(1, b => 2) fails "illegal mixing of named and positional arguments for function
+        // P_AB". The restriction is CALL's alone — the same mixed shape on a UDF works there.
+        final RuntimeException mixed = assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                callInt("CALL p_ab(1, b => 2)");
+            }
+        });
+        assertTrue(mixed.getMessage().contains("illegal mixing of named and positional arguments"),
+            mixed.getMessage());
     }
 
     @Test

@@ -240,7 +240,7 @@ public class OverloadedFunctionTest extends BaseJdbcTest {
         CREATE FUNCTION multiply(x INTEGER)
         RETURNS INTEGER
         LANGUAGE JAVA
-        HANDLER = 'Multiplier1.mult'
+        HANDLER = 'Multiplier1.mult1'
         AS $$
         class Multiplier1 {
           public static int mult1(int x) {
@@ -378,9 +378,9 @@ public class OverloadedFunctionTest extends BaseJdbcTest {
     public void testDropNonExistentOverload() throws SQLException {
         logger.info("Testing DROP FUNCTION with non-existent signature");
 
-        // Create one overload
+        // Create one overload (SAMPLE is a reserved word, so the routine is named sample_fn)
         statement.execute("""
-        CREATE FUNCTION sample(x INTEGER)
+        CREATE FUNCTION sample_fn(x INTEGER)
         RETURNS INTEGER
         LANGUAGE JAVA
         HANDLER = 'Sample.method'
@@ -395,11 +395,11 @@ public class OverloadedFunctionTest extends BaseJdbcTest {
 
         // Try to drop non-existent overload - should fail
         assertThrows(SQLException.class, () -> {
-            statement.execute("DROP FUNCTION sample(STRING)");
+            statement.execute("DROP FUNCTION sample_fn(STRING)");
         });
 
         // Original overload should still exist
-        ResultSet rs = statement.executeQuery("SELECT sample(10)");
+        ResultSet rs = statement.executeQuery("SELECT sample_fn(10)");
         rs.next();
         assertEquals(10, rs.getInt(1));
     }

@@ -21,6 +21,7 @@ import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.TableColumn;
 import dev.frostlake.storage.ResultSet;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -31,6 +32,11 @@ import static org.junit.jupiter.api.Assertions.*;
  * Tests for composite (multi-column) PRIMARY KEY constraints
  */
 public class CompositePrimaryKeyTest extends BaseDatabaseTest {
+
+    private static final String CATALOG_ASSERTIONS =
+        "asserts through engine.getCatalog(), which under SF_LIVE still reads the embedded engine — "
+        + "the CREATE TABLE went to Snowflake, so the embedded catalog never saw the table; the DDL "
+        + "itself is still submitted to the account";
 
     @Test
     public void testCompositePrimaryKeyTwoColumns() {
@@ -43,6 +49,7 @@ public class CompositePrimaryKeyTest extends BaseDatabaseTest {
             )
             """);
 
+        Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_ASSERTIONS);
         Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
         Table table = schema.getTable("order_items");
 
@@ -84,6 +91,7 @@ public class CompositePrimaryKeyTest extends BaseDatabaseTest {
             )
             """);
 
+        Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_ASSERTIONS);
         Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
         Table table = schema.getTable("inventory");
 
@@ -112,6 +120,7 @@ public class CompositePrimaryKeyTest extends BaseDatabaseTest {
             )
             """);
 
+        Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_ASSERTIONS);
         Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
         Table table = schema.getTable("user_roles");
 
@@ -173,6 +182,7 @@ public class CompositePrimaryKeyTest extends BaseDatabaseTest {
             )
             """);
 
+        Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_ASSERTIONS);
         Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
         Table table = schema.getTable("test_mixed");
 
@@ -192,6 +202,7 @@ public class CompositePrimaryKeyTest extends BaseDatabaseTest {
             )
             """);
 
+        Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_ASSERTIONS);
         Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
         Table table = schema.getTable("test");
 
@@ -214,6 +225,7 @@ public class CompositePrimaryKeyTest extends BaseDatabaseTest {
             )
             """);
 
+        Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_ASSERTIONS);
         Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
         Table table = schema.getTable("users");
 
@@ -236,6 +248,7 @@ public class CompositePrimaryKeyTest extends BaseDatabaseTest {
             )
             """);
 
+        Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_ASSERTIONS);
         Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
         Table table = schema.getTable("multi_key");
 
@@ -255,6 +268,7 @@ public class CompositePrimaryKeyTest extends BaseDatabaseTest {
             )
             """);
 
+        Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_ASSERTIONS);
         Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
         Table table = schema.getTable("lookup");
 
@@ -278,6 +292,7 @@ public class CompositePrimaryKeyTest extends BaseDatabaseTest {
             )
             """);
 
+        Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_ASSERTIONS);
         Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
         Table table = schema.getTable("composite_test");
 

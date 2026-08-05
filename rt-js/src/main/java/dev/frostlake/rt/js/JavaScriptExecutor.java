@@ -19,6 +19,7 @@ package dev.frostlake.rt.js;
 import dev.frostlake.metastore.model.Function;
 import dev.frostlake.metastore.model.Parameter;
 import dev.frostlake.metastore.model.UdfLanguage;
+import dev.frostlake.values.BinaryValue;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -65,7 +66,9 @@ public class JavaScriptExecutor {
                 // Expose each argument under its canonical (upper-cased) name and its lower-cased form, so a
                 // body may reference the parameter in either case (Snowflake folds arg names to upper-case).
                 final String paramName = parameters.get(i).getName();
-                final Object argVal = arguments.get(i);
+                final Object argVal = arguments.get(i) instanceof BinaryValue
+                    ? ((BinaryValue) arguments.get(i)).bytes()   // BINARY surfaces as a JS byte array
+                    : arguments.get(i);
                 if (logger.isDebugEnabled()) {
                     final String preview = argVal == null ? "null" : argVal.toString();
                     logger.debug("JS arg {}={} ({})", paramName,

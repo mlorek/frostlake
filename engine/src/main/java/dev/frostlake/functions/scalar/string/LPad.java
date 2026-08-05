@@ -16,12 +16,21 @@
 
 package dev.frostlake.functions.scalar.string;
 
-import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.functions.TextArgumentFunction;
+import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.types.StringType;
+import dev.frostlake.values.BinaryValue;
 
+import java.util.Arrays;
 import java.util.List;
 
-public class LPad extends BuiltInFunction {
+/**
+ * LPAD(expr, len [, pad]) — a VARCHAR padded to len characters, or a BINARY padded to len BYTES.
+ *
+ * <p>{@code LPAD(TO_BINARY('4845','HEX'), 5, TO_BINARY('0102','HEX'))} is {@code 0102014845}: the pad
+ * pattern repeats byte-wise and the result is BINARY.
+ */
+public class LPad extends TextArgumentFunction {
     public LPad() {
         super("LPAD", StringType.VARCHAR);
     }
@@ -29,11 +38,16 @@ public class LPad extends BuiltInFunction {
     @Override
     public Object evaluate(final List<Object> args) {
         if (args.get(0) == null) return null;
+        if (args.get(0) instanceof BinaryValue) {
+            return padBytes((BinaryValue) args.get(0), args);
+        }
         String str = args.get(0).toString();
         int targetLength = ((Number) args.get(1)).intValue();
         String padStr = args.size() > 2 && args.get(2) != null ? args.get(2).toString() : " ";
 
-        if (str.length() >= targetLength) return str;
+        // Live-verified: an input longer than the target length is TRUNCATED to it (LPAD('world', 3, '*')
+        // is 'wor'), not returned unchanged.
+        if (str.length() >= targetLength) return str.substring(0, Math.max(targetLength, 0));
         if (padStr.isEmpty()) return str;
 
         int padLength = targetLength - str.length();
@@ -46,6 +60,27 @@ public class LPad extends BuiltInFunction {
         result.append(str);
 
         return result.toString();
+    }
+
+    /** The BINARY form: pad bytes on the left, truncating to the leading bytes when already longer. */
+    private Object padBytes(final BinaryValue value, final List<Object> args) {
+        final byte[] bytes = value.bytes();
+        final int targetLength = ((Number) args.get(1)).intValue();
+        if (bytes.length >= targetLength) {
+            return BinaryValue.of(Arrays.copyOfRange(bytes, 0, Math.max(targetLength, 0)));
+        }
+        final byte[] pad = args.size() > 2 && args.get(2) != null
+            ? SharedFunctionHelpers.toUtf8(args.get(2)) : new byte[] { (byte) ' ' };
+        if (pad.length == 0) {
+            return value;
+        }
+        final int padLength = targetLength - bytes.length;
+        final byte[] padded = new byte[targetLength];
+        for (int i = 0; i < padLength; i++) {
+            padded[i] = pad[i % pad.length];
+        }
+        System.arraycopy(bytes, 0, padded, padLength, bytes.length);
+        return BinaryValue.of(padded);
     }
 
     @Override

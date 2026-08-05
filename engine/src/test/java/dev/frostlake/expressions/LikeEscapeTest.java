@@ -25,7 +25,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /**
  * LIKE ... ESCAPE with a custom escape character: the escape makes the following %, _ (or the escape
  * char itself) a literal. Previously the ESCAPE clause was dropped and evaluation always assumed the
- * default backslash, so a custom escape silently did nothing. The default backslash still works.
+ * default backslash, so a custom escape silently did nothing. A backslash escape must arrive as SQL
+ * {@code '\\_'} with {@code ESCAPE '\\'} — a single {@code '\_'} is consumed by the string-literal
+ * decode ({@code \_} &rarr; {@code _}) before LIKE ever sees it, exactly as in Snowflake.
  */
 public class LikeEscapeTest extends BaseDatabaseTest {
 
@@ -56,11 +58,19 @@ public class LikeEscapeTest extends BaseDatabaseTest {
     }
 
     @Test
-    public void defaultBackslashEscapeStillWorks() {
-        // A single backslash string literal is '\\' in Snowflake (\' is an escaped quote, so '\' is not a
-        // one-backslash string). The escape character here is therefore ESCAPE '\\'.
-        assertTrue(like("'a_b' LIKE 'a\\_b' ESCAPE '\\\\'"));
-        assertFalse(like("'axb' LIKE 'a\\_b' ESCAPE '\\\\'"));
+    public void singleBackslashIsConsumedByTheLiteralDecode() {
+        // SQL 'a\_b' decodes to 'a_b' — the backslash never reaches LIKE, so _ stays a wildcard and
+        // BOTH candidates match.
+        assertTrue(like("'a_b' LIKE 'a\\_b'"));
+        assertTrue(like("'axb' LIKE 'a\\_b'"));
+    }
+
+    @Test
+    public void backslashEscapeNeedsTheDoubledForm() {
+        // A literal underscore needs SQL 'a\\_b' ESCAPE '\\' (Java source: four backslashes): the
+        // decode leaves pattern a\_b and escape \, so _ is literal.
+        assertTrue(like("'a_b' LIKE 'a\\\\_b' ESCAPE '\\\\'"));
+        assertFalse(like("'axb' LIKE 'a\\\\_b' ESCAPE '\\\\'"));
     }
 
     @Test

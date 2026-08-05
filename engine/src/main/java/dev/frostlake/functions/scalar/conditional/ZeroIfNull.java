@@ -16,12 +16,12 @@
 
 package dev.frostlake.functions.scalar.conditional;
 
-import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.functions.NumericArgumentFunction;
 import dev.frostlake.types.NumericType;
 
 import java.util.List;
 
-public class ZeroIfNull extends BuiltInFunction {
+public class ZeroIfNull extends NumericArgumentFunction {
     public ZeroIfNull() { super("ZEROIFNULL", NumericType.NUMBER); }
 
     @Override

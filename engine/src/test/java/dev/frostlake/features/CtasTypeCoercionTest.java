@@ -95,13 +95,14 @@ public class CtasTypeCoercionTest extends BaseDatabaseTest {
     }
 
     @Test
-    public void realVarcharDataStaysVarchar() {
+    public void realVarcharDataStaysText() {
         engine.execute("CREATE TABLE names_copy AS SELECT UPPER(grp) AS shout FROM events");
         final ResultSet typed = engine.executeQuery(
             """
             SELECT data_type FROM information_schema.columns
             WHERE table_name = 'NAMES_COPY' AND column_name = 'SHOUT'
             """);
-        assertEquals("VARCHAR", typed.getRows().get(0).getValue(0));
+        // INFORMATION_SCHEMA.COLUMNS reports the character family by its canonical name TEXT.
+        assertEquals("TEXT", typed.getRows().get(0).getValue(0));
     }
 }

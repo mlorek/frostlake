@@ -18,14 +18,18 @@ package dev.frostlake.functions;
 
 import dev.frostlake.BaseDatabaseTest;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * MONTHS_BETWEEN uses Snowflake's formula (y1-y2)*12 + (m1-m2) + (day1-day2)/31, with a whole-number
  * result when the day numbers match or both dates are their month's last day. The previous impl
  * double-counted the day difference (adding a day fraction on top of a Period that already accounted
- * for it), so a partial-month case returned the wrong magnitude.
+ * for it), so a partial-month case returned the wrong magnitude. Arguments must be temporal:
+ * VARCHAR inputs — including literals — are rejected at compile time, so every date is cast ::DATE.
  */
 public class MonthsBetweenTest extends BaseDatabaseTest {
 
@@ -35,26 +39,42 @@ public class MonthsBetweenTest extends BaseDatabaseTest {
 
     @Test
     public void partialMonthUses31DayDayFraction() {
-        assertEquals(1.8387096774193548, months("SELECT MONTHS_BETWEEN('2021-03-10', '2021-01-15')"), 1e-9);
+        // The result carries Snowflake's NUMBER(27,6) scale, so the 31-day fraction is rounded to
+        // six decimals (live-verified: 1.580645 for 2021-04-15 / 2021-02-28, never a raw double).
+        assertEquals(1.838710,
+            months("SELECT MONTHS_BETWEEN('2021-03-10'::DATE, '2021-01-15'::DATE)"), 1e-9);
     }
 
     @Test
     public void bothMonthEndIsWhole() {
-        assertEquals(1.0, months("SELECT MONTHS_BETWEEN('2021-03-31', '2021-02-28')"), 1e-9);
+        assertEquals(1.0, months("SELECT MONTHS_BETWEEN('2021-03-31'::DATE, '2021-02-28'::DATE)"), 1e-9);
     }
 
     @Test
     public void sameDayOfMonthIsWhole() {
-        assertEquals(2.0, months("SELECT MONTHS_BETWEEN('2024-03-15', '2024-01-15')"), 1e-9);
+        assertEquals(2.0, months("SELECT MONTHS_BETWEEN('2024-03-15'::DATE, '2024-01-15'::DATE)"), 1e-9);
     }
 
     @Test
     public void reversedArgumentsNegateTheResult() {
-        assertEquals(-1.8387096774193548, months("SELECT MONTHS_BETWEEN('2021-01-15', '2021-03-10')"), 1e-9);
+        assertEquals(-1.838710,
+            months("SELECT MONTHS_BETWEEN('2021-01-15'::DATE, '2021-03-10'::DATE)"), 1e-9);
     }
 
     @Test
     public void wholeMonthsSpanningYears() {
-        assertEquals(14.0, months("SELECT MONTHS_BETWEEN('2025-03-15', '2024-01-15')"), 1e-9);
+        assertEquals(14.0, months("SELECT MONTHS_BETWEEN('2025-03-15'::DATE, '2024-01-15'::DATE)"), 1e-9);
+    }
+
+    @Test
+    public void varcharArgumentsAreRejected() {
+        final RuntimeException rejected = assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                months("SELECT MONTHS_BETWEEN('2021-03-10', '2021-01-15')");
+            }
+        });
+        assertTrue(rejected.getMessage().contains("Function EXTRACT does not support VARCHAR(10) argument type"),
+            "unexpected: " + rejected.getMessage());
     }
 }

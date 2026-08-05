@@ -18,6 +18,7 @@ package dev.frostlake.functions.aggregate;
 
 import dev.frostlake.functions.AggregateFunction;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
+import dev.frostlake.values.VariantValue;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.node.ArrayNode;
 
@@ -55,7 +56,7 @@ public class ArrayUniqueAggAccumulator implements AggregateFunction.Accumulator 
         for (final JsonNode node : distinct.values()) {
             result.add(node);
         }
-        return result.toString();
+        return VariantValue.ofNode(result);
     }
 
     @Override

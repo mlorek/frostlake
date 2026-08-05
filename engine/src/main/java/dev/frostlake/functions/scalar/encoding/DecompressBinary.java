@@ -18,21 +18,27 @@ package dev.frostlake.functions.scalar.encoding;
 
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
-import dev.frostlake.types.StringType;
+import dev.frostlake.types.BinaryType;
+import dev.frostlake.values.BinaryValue;
 
 import java.util.List;
 
+/**
+ * DECOMPRESS_BINARY(input, method) — decompresses a BINARY input and returns the decompressed
+ * bytes as BINARY, matching Snowflake's signature. The method is mandatory, as in Snowflake ("not
+ * enough arguments … expected 2, got 1").
+ */
 public class DecompressBinary extends BuiltInFunction {
-    public DecompressBinary() { super("DECOMPRESS_BINARY", StringType.VARCHAR); }
+    public DecompressBinary() { super("DECOMPRESS_BINARY", BinaryType.BINARY); }
 
     @Override
     public Object evaluate(final List<Object> args) {
-        if (args.get(0) == null) return null;
-        String method = args.size() > 1 && args.get(1) != null ? args.get(1).toString() : "deflate";
-        byte[] plain = SharedFunctionHelpers.decompressFromBase64(args.get(0).toString(), method);
-        return SharedFunctionHelpers.toHex(plain);
+        if (args.get(0) == null || args.get(1) == null) return null;
+        final byte[] data = SharedFunctionHelpers.binaryArgBytes(args.get(0), "DECOMPRESS_BINARY");
+        final CompressionMethod method = CompressionMethod.parse(args.get(1).toString());
+        return BinaryValue.of(CompressionCodec.decompress(data, method));
     }
 
-    @Override public int getMinArgCount() { return 1; }
+    @Override public int getMinArgCount() { return 2; }
     @Override public int getMaxArgCount() { return 2; }
 }

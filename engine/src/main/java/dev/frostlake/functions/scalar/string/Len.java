@@ -16,17 +16,22 @@
 
 package dev.frostlake.functions.scalar.string;
 
-import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.functions.TextArgumentFunction;
 import dev.frostlake.types.NumericType;
+import dev.frostlake.values.BinaryValue;
 
 import java.util.List;
 
-public class Len extends BuiltInFunction {
+public class Len extends TextArgumentFunction {
     public Len() { super("LEN", NumericType.INTEGER); }
 
     @Override
     public Object evaluate(final List<Object> args) {
         if (args.get(0) == null) return null;
+        if (args.get(0) instanceof BinaryValue) {
+            // LEN of a BINARY value is its byte count, not the length of the hex rendering.
+            return (long) ((BinaryValue) args.get(0)).length();
+        }
         return (long) args.get(0).toString().length();
     }
 

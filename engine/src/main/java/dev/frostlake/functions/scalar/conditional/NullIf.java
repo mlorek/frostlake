@@ -17,12 +17,24 @@
 package dev.frostlake.functions.scalar.conditional;
 
 import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.types.VariantType;
 
 import java.util.List;
 
 public class NullIf extends BuiltInFunction {
     public NullIf() { super("NULLIF", VariantType.VARIANT); }
+
+    /**
+     * {@code NULLIF} compares its two arguments, and a GEOSPATIAL value does not compare: live
+     * {@code NULLIF(g, g)} is "Invalid argument types for function 'NULLIF': (GEOGRAPHY,
+     * GEOGRAPHY)" (SQLSTATE 42P13), while {@code COALESCE(g, NULL)} — which chooses without comparing
+     * — returns the geo value.
+     */
+    @Override
+    public SemiStructuredRejection geoRejection(final int position) {
+        return SemiStructuredRejection.ARGUMENT_TYPES;
+    }
 
     @Override
     public Object evaluate(final List<Object> args) {

@@ -16,7 +16,6 @@
 
 package dev.frostlake.jdbc;
 
-import dev.frostlake.DatabaseEngine;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.types.StringType;
@@ -32,69 +31,19 @@ import java.util.List;
 public class DirectDatabaseMetaData implements java.sql.DatabaseMetaData {
 
     private final Connection connection;
-    private final DatabaseEngine engine;
 
-    public DirectDatabaseMetaData(final Connection connection, final DatabaseEngine engine) {
+    public DirectDatabaseMetaData(final Connection connection) {
         this.connection = connection;
-        this.engine = engine;
     }
 
     @Override
     public java.sql.ResultSet getTables(final String catalog, final String schemaPattern, final String tableNamePattern, final String[] types) throws SQLException {
-        // Query INFORMATION_SCHEMA.TABLES
-        StringBuilder sql = new StringBuilder("SELECT TABLE_CATALOG, TABLE_SCHEMA, TABLE_NAME, TABLE_TYPE FROM INFORMATION_SCHEMA.TABLES WHERE 1=1");
-
-        if (catalog != null && !catalog.isEmpty()) {
-            sql.append(" AND UPPER(TABLE_CATALOG) = '").append(catalog.toUpperCase().replace("'", "''")).append("'");
-        }
-
-        if (schemaPattern != null && !schemaPattern.isEmpty() && !schemaPattern.equals("%")) {
-            sql.append(" AND UPPER(TABLE_SCHEMA) LIKE '").append(schemaPattern.toUpperCase().replace("'", "''")).append("'");
-        }
-
-        if (tableNamePattern != null && !tableNamePattern.isEmpty() && !tableNamePattern.equals("%")) {
-            sql.append(" AND UPPER(TABLE_NAME) LIKE '").append(tableNamePattern.toUpperCase().replace("'", "''")).append("'");
-        }
-
-        if (types != null && types.length > 0) {
-            sql.append(" AND TABLE_TYPE IN (");
-            for (int i = 0; i < types.length; i++) {
-                if (i > 0) sql.append(", ");
-                sql.append("'").append(types[i].replace("'", "''")).append("'");
-            }
-            sql.append(")");
-        }
-
-        dev.frostlake.storage.ResultSet engineResultSet = (connection instanceof DirectConnection ? ((DirectConnection) connection).executeScoped(sql.toString()) : engine.execute(sql.toString())).getResultSets().get(0);
-        return new DirectResultSet(connection.createStatement(), engineResultSet);
+        return JdbcMetadataQueries.tables(connection, catalog, schemaPattern, tableNamePattern, types);
     }
 
     @Override
     public java.sql.ResultSet getColumns(final String catalog, final String schemaPattern, final String tableNamePattern, final String columnNamePattern) throws SQLException {
-        // Query INFORMATION_SCHEMA.COLUMNS
-        StringBuilder sql = new StringBuilder("SELECT TABLE_CATALOG, TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME, DATA_TYPE, " +
-                "ORDINAL_POSITION, IS_NULLABLE, COLUMN_DEFAULT FROM INFORMATION_SCHEMA.COLUMNS WHERE 1=1");
-
-        if (catalog != null && !catalog.isEmpty()) {
-            sql.append(" AND UPPER(TABLE_CATALOG) = '").append(catalog.toUpperCase().replace("'", "''")).append("'");
-        }
-
-        if (schemaPattern != null && !schemaPattern.isEmpty() && !schemaPattern.equals("%")) {
-            sql.append(" AND UPPER(TABLE_SCHEMA) LIKE '").append(schemaPattern.toUpperCase().replace("'", "''")).append("'");
-        }
-
-        if (tableNamePattern != null && !tableNamePattern.isEmpty() && !tableNamePattern.equals("%")) {
-            sql.append(" AND UPPER(TABLE_NAME) LIKE '").append(tableNamePattern.toUpperCase().replace("'", "''")).append("'");
-        }
-
-        if (columnNamePattern != null && !columnNamePattern.isEmpty() && !columnNamePattern.equals("%")) {
-            sql.append(" AND UPPER(COLUMN_NAME) LIKE '").append(columnNamePattern.toUpperCase().replace("'", "''")).append("'");
-        }
-
-        sql.append(" ORDER BY TABLE_CATALOG, TABLE_SCHEMA, TABLE_NAME, ORDINAL_POSITION");
-
-        dev.frostlake.storage.ResultSet engineResultSet = (connection instanceof DirectConnection ? ((DirectConnection) connection).executeScoped(sql.toString()) : engine.execute(sql.toString())).getResultSets().get(0);
-        return new DirectResultSet(connection.createStatement(), engineResultSet);
+        return JdbcMetadataQueries.columns(connection, catalog, schemaPattern, tableNamePattern, columnNamePattern);
     }
 
     @Override
@@ -122,44 +71,9 @@ public class DirectDatabaseMetaData implements java.sql.DatabaseMetaData {
 
     @Override
     public java.sql.ResultSet getPrimaryKeys(final String catalog, final String schema, final String table) throws SQLException {
-        // Query INFORMATION_SCHEMA for primary key information
-        // Note: This is a simplified implementation
-        // A full implementation would require table constraint metadata
-        StringBuilder sql = new StringBuilder(
-                "SELECT TABLE_CATALOG, TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME, ORDINAL_POSITION AS KEY_SEQ, 'PRIMARY' AS PK_NAME " +
-                "FROM INFORMATION_SCHEMA.COLUMNS " +
-                "WHERE IS_PRIMARY_KEY = 'YES'");
-
-        if (catalog != null && !catalog.isEmpty()) {
-            sql.append(" AND UPPER(TABLE_CATALOG) = '").append(catalog.toUpperCase().replace("'", "''")).append("'");
-        }
-
-        if (schema != null && !schema.isEmpty()) {
-            sql.append(" AND UPPER(TABLE_SCHEMA) = '").append(schema.toUpperCase().replace("'", "''")).append("'");
-        }
-
-        if (table != null && !table.isEmpty()) {
-            sql.append(" AND UPPER(TABLE_NAME) = '").append(table.toUpperCase().replace("'", "''")).append("'");
-        }
-
-        sql.append(" ORDER BY ORDINAL_POSITION");
-
-        try {
-            dev.frostlake.storage.ResultSet engineResultSet = (connection instanceof DirectConnection ? ((DirectConnection) connection).executeScoped(sql.toString()) : engine.execute(sql.toString())).getResultSets().get(0);
-            return new DirectResultSet(connection.createStatement(), engineResultSet);
-        } catch (final Exception e) {
-            // Return empty result set if query fails
-            List<ResultSetColumn> columns = new ArrayList<>();
-            columns.add(new ResultSetColumn("TABLE_CAT", new StringType("VARCHAR", 256)));
-            columns.add(new ResultSetColumn("TABLE_SCHEM", new StringType("VARCHAR", 256)));
-            columns.add(new ResultSetColumn("TABLE_NAME", new StringType("VARCHAR", 256)));
-            columns.add(new ResultSetColumn("COLUMN_NAME", new StringType("VARCHAR", 256)));
-            columns.add(new ResultSetColumn("KEY_SEQ", new NumericType("INTEGER", 10, 0)));
-            columns.add(new ResultSetColumn("PK_NAME", new StringType("VARCHAR", 256)));
-            dev.frostlake.storage.ResultSet emptyResultSet =
-                    new dev.frostlake.storage.ResultSet(columns, new ArrayList<>());
-            return new DirectResultSet(connection.createStatement(), emptyResultSet);
-        }
+        // Note: This is a simplified implementation — a full one would read table constraint metadata
+        // rather than the IS_PRIMARY_KEY column flag.
+        return JdbcMetadataQueries.primaryKeys(connection, catalog, schema, table);
     }
 
     @Override
@@ -797,9 +711,9 @@ public class DirectDatabaseMetaData implements java.sql.DatabaseMetaData {
 
     @Override
     public java.sql.ResultSet getSchemas() throws SQLException {
-        return connection.createStatement().executeQuery(
-            "SELECT SCHEMA_NAME AS TABLE_SCHEM, CATALOG_NAME AS TABLE_CATALOG"
-                + " FROM INFORMATION_SCHEMA.SCHEMATA ORDER BY SCHEMA_NAME");
+        // Per the JDBC contract this is getSchemas(null, null): every catalog, with TABLE_CATALOG
+        // telling them apart. Live Snowflake returns exactly the same rows for both calls.
+        return getSchemas(null, null);
     }
 
     @Override
@@ -896,7 +810,9 @@ public class DirectDatabaseMetaData implements java.sql.DatabaseMetaData {
 
     @Override
     public java.sql.ResultSet getSchemas(final String catalog, final String schemaPattern) throws SQLException {
-        throw new SQLFeatureNotSupportedException("getSchemas not supported");
+        // Browsing tools populate their tree per catalog and call this overload, not the no-arg one;
+        // throwing here is what left a freshly created database showing no schemas at all.
+        return JdbcMetadataQueries.schemas(connection, catalog, schemaPattern);
     }
 
     @Override

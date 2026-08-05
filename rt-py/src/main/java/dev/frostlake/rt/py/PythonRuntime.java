@@ -18,6 +18,7 @@ package dev.frostlake.rt.py;
 
 import dev.frostlake.executor.udf.TruffleLogBridge;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
+import dev.frostlake.values.VariantValue;
 import java.io.File;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -303,6 +304,12 @@ public final class PythonRuntime {
      * text, so the caller binds it unchanged.
      */
     public static boolean bindJson(final String name, final Object value) {
+        if (value instanceof VariantValue) {
+            final String variantHolder = "__json_text_" + name;
+            bind(variantHolder, value.toString());
+            eval("import json\n" + name + " = json.loads(" + variantHolder + ")\n");
+            return true;
+        }
         if (!(value instanceof CharSequence)) {
             return false;
         }
@@ -314,6 +321,18 @@ public final class PythonRuntime {
         final String holder = "__json_text_" + name;
         bind(holder, value.toString());
         eval("import json\n" + name + " = json.loads(" + holder + ")\n");
+        return true;
+    }
+
+    /**
+     * Bind a BINARY argument (passed as its hex text) as a native Python {@code bytes} value, the
+     * type a Snowflake Python UDF receives for BINARY. Binding the host object instead would give
+     * the handler an opaque foreign value.
+     */
+    public static boolean bindBytes(final String name, final String hex) {
+        final String holder = "__hex_text_" + name;
+        bind(holder, hex);
+        eval(name + " = bytes.fromhex(" + holder + ")\n");
         return true;
     }
 

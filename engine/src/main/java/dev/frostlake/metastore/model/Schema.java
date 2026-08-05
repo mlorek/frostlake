@@ -16,6 +16,7 @@
 
 package dev.frostlake.metastore.model;
 
+import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.metastore.SqlObject;
 import dev.frostlake.types.DataType;
 
@@ -41,6 +42,30 @@ public class Schema extends SqlObject {
     private final Map<String, Tag> tags;
     private final Map<String, Stage> stages;
     private final Map<String, FileFormat> fileFormats;
+
+    /**
+     * The database this schema belongs to, stamped when {@link Database} registers it. Snowflake spells a
+     * missing object's name in full — {@code DROP TABLE nosuch} answers {@code Table 'DB.SCHEMA.NOSUCH'} —
+     * and a schema that did not know its database could only report the bare name.
+     */
+    private String databaseName;
+
+    public String getDatabaseName() {
+        return databaseName;
+    }
+
+    public void setDatabaseName(final String databaseName) {
+        this.databaseName = databaseName;
+    }
+
+    /**
+     * A member's name as Snowflake reports it: fully qualified, or as much of the path as is known when
+     * this schema has not been registered with a database (a detached clone, say).
+     */
+    private String qualified(final String memberName) {
+        final String prefix = databaseName != null ? databaseName + "." + getName() + "." : getName() + ".";
+        return prefix + memberName;
+    }
 
     public Schema(final String name) {
         super(name);
@@ -71,20 +96,41 @@ public class Schema extends SqlObject {
         if (tables.containsKey(upperName)) {
             throw new RuntimeException("Table already exists: " + table.getName());
         }
-        tables.put(upperName, table);
+        register(table);
+    }
+
+    /**
+     * Puts a table into this schema's map and marks it as the catalog's own — the ONE place a table
+     * becomes catalog-resident, so no registration path can forget to say so and leave the table
+     * looking like a derived relation to the type rules (see {@link Table#isCatalogResident()}).
+     * {@link #addTable} enforces the create-time checks first; {@code clone()} has its own and so
+     * calls straight through.
+     */
+    private void register(final Table table) {
+        table.markCatalogResident();
+        tables.put(table.getName().toUpperCase(), table);
     }
 
     public void dropTable(final String name) {
         if (!tables.containsKey(name.toUpperCase())) {
-            throw new RuntimeException("Table does not exist: " + name);
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Table", qualified(name)));
         }
         tables.remove(name.toUpperCase());
     }
 
     public Table getTable(final String name) {
+        return getTable(name, qualified(name), "Table");
+    }
+
+    /**
+     * The table, or a miss reported as {@code reportedKind 'reportedName'}. A DDL statement always spells
+     * the name in full, while a query or DML statement echoes what the writer wrote and calls a missing
+     * FROM-clause name an {@code Object} — so the caller, which knows the statement, chooses both.
+     */
+    public Table getTable(final String name, final String reportedName, final String reportedKind) {
         Table table = tables.get(name.toUpperCase());
         if (table == null) {
-            throw new RuntimeException("Table does not exist: " + name);
+            throw new RuntimeException(SqlCompilationError.doesNotExist(reportedKind, reportedName));
         }
         return table;
     }
@@ -110,7 +156,7 @@ public class Schema extends SqlObject {
     public void dropView(final String name) {
         String upperName = name.toUpperCase();
         if (!views.containsKey(upperName)) {
-            throw new RuntimeException("View does not exist: " + name);
+            throw new RuntimeException(SqlCompilationError.doesNotExist("View", qualified(name)));
         }
         // Protect system views from being dropped
         if (isSystemView(upperName)) {
@@ -130,9 +176,14 @@ public class Schema extends SqlObject {
     public View getView(final String name) {
         View view = views.get(name.toUpperCase());
         if (view == null) {
-            throw new RuntimeException("View does not exist: " + name);
+            throw new RuntimeException(SqlCompilationError.doesNotExist("View", qualified(name)));
         }
         return view;
+    }
+
+    /** Whether a view of this name exists, without the throwing lookup {@link #getView} performs. */
+    public boolean hasView(final String name) {
+        return views.containsKey(name.toUpperCase());
     }
 
     public List<View> getViews() {
@@ -151,7 +202,7 @@ public class Schema extends SqlObject {
     public void dropMaterializedView(final String name) {
         String upperName = name.toUpperCase();
         if (!materializedViews.containsKey(upperName)) {
-            throw new RuntimeException("Materialized view does not exist: " + name);
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Materialized view", qualified(name)));
         }
         materializedViews.remove(upperName);
     }
@@ -159,7 +210,7 @@ public class Schema extends SqlObject {
     public MaterializedView getMaterializedView(final String name) {
         MaterializedView mv = materializedViews.get(name.toUpperCase());
         if (mv == null) {
-            throw new RuntimeException("Materialized view does not exist: " + name);
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Materialized view", qualified(name)));
         }
         return mv;
     }
@@ -180,14 +231,14 @@ public class Schema extends SqlObject {
     public void dropDynamicTable(final String name) {
         String upperName = name.toUpperCase();
         if (!dynamicTables.containsKey(upperName)) {
-            throw new RuntimeException("Dynamic table does not exist: " + name);
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Dynamic table", qualified(name)));
         }
         dynamicTables.remove(upperName);
     }
 
     public DynamicTable getDynamicTable(final String name) {
         DynamicTable dt = dynamicTables.get(name.toUpperCase());
-        if (dt == null) throw new RuntimeException("Dynamic table does not exist: " + name);
+        if (dt == null) throw new RuntimeException(SqlCompilationError.doesNotExist("Dynamic table", qualified(name)));
         return dt;
     }
 
@@ -254,7 +305,7 @@ public class Schema extends SqlObject {
     public void dropProcedure(final String name) {
         String upperName = name.toUpperCase();
         if (!procedures.containsKey(upperName)) {
-            throw new RuntimeException("Procedure does not exist: " + name);
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Procedure", qualified(name)));
         }
         procedures.remove(upperName);
     }
@@ -263,7 +314,7 @@ public class Schema extends SqlObject {
         String upperName = name.toUpperCase();
         List<Procedure> overloads = procedures.get(upperName);
         if (overloads == null || overloads.isEmpty()) {
-            throw new RuntimeException("Procedure does not exist: " + name);
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Procedure", qualified(name)));
         }
 
         Procedure toRemove = null;
@@ -288,7 +339,7 @@ public class Schema extends SqlObject {
         String upperName = name.toUpperCase();
         List<Procedure> overloads = procedures.get(upperName);
         if (overloads == null || overloads.isEmpty()) {
-            throw new RuntimeException("Procedure does not exist: " + name);
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Procedure", qualified(name)));
         }
 
         if (overloads.size() > 1) {
@@ -302,7 +353,7 @@ public class Schema extends SqlObject {
         String upperName = name.toUpperCase();
         List<Procedure> overloads = procedures.get(upperName);
         if (overloads == null || overloads.isEmpty()) {
-            throw new RuntimeException("Procedure does not exist: " + name);
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Procedure", qualified(name)));
         }
 
         for (final Procedure proc : overloads) {
@@ -354,7 +405,7 @@ public class Schema extends SqlObject {
     public void dropFunction(final String name) {
         String upperName = name.toUpperCase();
         if (!functions.containsKey(upperName)) {
-            throw new RuntimeException("Function does not exist: " + name);
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Function", qualified(name)));
         }
         functions.remove(upperName);
     }
@@ -363,7 +414,7 @@ public class Schema extends SqlObject {
         String upperName = name.toUpperCase();
         List<Function> overloads = functions.get(upperName);
         if (overloads == null || overloads.isEmpty()) {
-            throw new RuntimeException("Function does not exist: " + name);
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Function", qualified(name)));
         }
 
         Function toRemove = null;
@@ -388,7 +439,7 @@ public class Schema extends SqlObject {
         String upperName = name.toUpperCase();
         List<Function> overloads = functions.get(upperName);
         if (overloads == null || overloads.isEmpty()) {
-            throw new RuntimeException("Function does not exist: " + name);
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Function", qualified(name)));
         }
 
         if (overloads.size() > 1) {
@@ -402,7 +453,7 @@ public class Schema extends SqlObject {
         String upperName = name.toUpperCase();
         List<Function> overloads = functions.get(upperName);
         if (overloads == null || overloads.isEmpty()) {
-            throw new RuntimeException("Function does not exist: " + name);
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Function", qualified(name)));
         }
 
         for (final Function func : overloads) {
@@ -456,12 +507,46 @@ public class Schema extends SqlObject {
         }
 
         for (int i = 0; i < params.size(); i++) {
-            if (!params.get(i).getDataType().equals(argumentTypes.get(i))) {
+            if (!signatureFamily(params.get(i).getDataType()).equals(signatureFamily(argumentTypes.get(i)))) {
                 return false;
             }
         }
 
         return true;
+    }
+
+    /**
+     * The CANONICAL type family a routine's signature is stored under: Snowflake normalizes a
+     * parameter's declared alias away, so a DROP / DESCRIBE names the FAMILY. Live-verified on a real
+     * account, each spelling re-creating the routine between attempts: an
+     * {@code x INTEGER} parameter is dropped by INTEGER, INT, BIGINT and NUMBER alike; a
+     * {@code x DECIMAL(10,2)} parameter by DECIMAL and by NUMBER; a {@code x DOUBLE} parameter by
+     * DOUBLE; and a {@code x CHAR(5)} parameter by STRING and by VARCHAR. Length is not compared —
+     * bare {@code VARCHAR} matches a {@code CHAR(10)} parameter.
+     *
+     * <p>ONE probed spelling is deliberately not emulated: {@code DROP FUNCTION f(CHAR)} against a
+     * {@code CHAR(5)} parameter fails on Snowflake even though STRING and VARCHAR succeed — an
+     * inconsistency in its own alias handling (bare CHAR appears to mean CHAR(1)). Frostlake accepts
+     * that spelling too rather than encoding the quirk.
+     */
+    private static String signatureFamily(final DataType type) {
+        final String name = type.getName().toUpperCase();
+        switch (name) {
+            case "CHAR": case "CHARACTER": case "NCHAR": case "NVARCHAR": case "NVARCHAR2":
+            case "CHAR VARYING": case "STRING": case "TEXT":
+                return "VARCHAR";
+            case "DECIMAL": case "NUMERIC": case "INT": case "INTEGER": case "BIGINT":
+            case "SMALLINT": case "TINYINT": case "BYTEINT":
+                return "NUMBER";
+            case "DOUBLE": case "DOUBLE PRECISION": case "REAL": case "FLOAT4": case "FLOAT8":
+                return "FLOAT";
+            case "VARBINARY":
+                return "BINARY";
+            case "DATETIME":
+                return "TIMESTAMP_NTZ";
+            default:
+                return name;
+        }
     }
 
     private String formatParameters(final List<Parameter> params) {
@@ -491,7 +576,7 @@ public class Schema extends SqlObject {
 
     public void dropStream(final String name) {
         if (!streams.containsKey(name.toUpperCase())) {
-            throw new RuntimeException("Stream does not exist: " + name);
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Stream", qualified(name)));
         }
         streams.remove(name.toUpperCase());
     }
@@ -499,7 +584,7 @@ public class Schema extends SqlObject {
     public Stream getStream(final String name) {
         Stream stream = streams.get(name.toUpperCase());
         if (stream == null) {
-            throw new RuntimeException("Stream does not exist: " + name);
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Stream", qualified(name)));
         }
         return stream;
     }
@@ -519,7 +604,7 @@ public class Schema extends SqlObject {
 
     public void dropTask(final String name) {
         if (!tasks.containsKey(name.toUpperCase())) {
-            throw new RuntimeException("Task does not exist: " + name);
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Task", qualified(name)));
         }
         tasks.remove(name.toUpperCase());
     }
@@ -527,7 +612,7 @@ public class Schema extends SqlObject {
     public Task getTask(final String name) {
         Task task = tasks.get(name.toUpperCase());
         if (task == null) {
-            throw new RuntimeException("Task does not exist: " + name);
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Task", qualified(name)));
         }
         return task;
     }
@@ -548,7 +633,7 @@ public class Schema extends SqlObject {
     public void dropPipe(final String name) {
         String upperName = name.toUpperCase();
         if (!pipes.containsKey(upperName)) {
-            throw new RuntimeException("Pipe does not exist: " + name);
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Pipe", qualified(name)));
         }
         pipes.remove(upperName);
     }
@@ -556,7 +641,7 @@ public class Schema extends SqlObject {
     public Pipe getPipe(final String name) {
         Pipe pipe = pipes.get(name.toUpperCase());
         if (pipe == null) {
-            throw new RuntimeException("Pipe does not exist: " + name);
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Pipe", qualified(name)));
         }
         return pipe;
     }
@@ -577,7 +662,7 @@ public class Schema extends SqlObject {
     public void dropSequence(final String name) {
         String upperName = name.toUpperCase();
         if (!sequences.containsKey(upperName)) {
-            throw new RuntimeException("Sequence does not exist: " + name);
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Sequence", qualified(name)));
         }
         sequences.remove(upperName);
     }
@@ -585,7 +670,7 @@ public class Schema extends SqlObject {
     public Sequence getSequence(final String name) {
         Sequence sequence = sequences.get(name.toUpperCase());
         if (sequence == null) {
-            throw new RuntimeException("Sequence does not exist: " + name);
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Sequence", qualified(name)));
         }
         return sequence;
     }
@@ -602,7 +687,7 @@ public class Schema extends SqlObject {
     public void dropFileFormat(final String name) {
         final String upperName = name.toUpperCase();
         if (!fileFormats.containsKey(upperName)) {
-            throw new RuntimeException("File format does not exist: " + name);
+            throw new RuntimeException(SqlCompilationError.doesNotExist("File format", qualified(name)));
         }
         fileFormats.remove(upperName);
     }
@@ -653,7 +738,7 @@ public class Schema extends SqlObject {
                 clonedTable.setRowAccessPolicyName(table.getRowAccessPolicyName());
                 clonedTable.setRowAccessPolicyColumns(table.getRowAccessPolicyColumns());
             }
-            clonedSchema.tables.put(table.getName().toUpperCase(), clonedTable);
+            clonedSchema.register(clonedTable);
         }
 
         // Clone views
@@ -826,13 +911,13 @@ public class Schema extends SqlObject {
 
     public void dropStage(final String name) {
         String upper = name.toUpperCase();
-        if (!stages.containsKey(upper)) throw new RuntimeException("Stage does not exist: " + name);
+        if (!stages.containsKey(upper)) throw new RuntimeException(SqlCompilationError.doesNotExist("Stage", qualified(name)));
         stages.remove(upper);
     }
 
     public Stage getStage(final String name) {
         Stage s = stages.get(name.toUpperCase());
-        if (s == null) throw new RuntimeException("Stage does not exist: " + name);
+        if (s == null) throw new RuntimeException(SqlCompilationError.doesNotExist("Stage", qualified(name)));
         return s;
     }
 
@@ -851,13 +936,13 @@ public class Schema extends SqlObject {
 
     public void dropTag(final String name) {
         String upper = name.toUpperCase();
-        if (!tags.containsKey(upper)) throw new RuntimeException("Tag does not exist: " + name);
+        if (!tags.containsKey(upper)) throw new RuntimeException(SqlCompilationError.doesNotExist("Tag", qualified(name)));
         tags.remove(upper);
     }
 
     public Tag getTag(final String name) {
         Tag tag = tags.get(name.toUpperCase());
-        if (tag == null) throw new RuntimeException("Tag does not exist: " + name);
+        if (tag == null) throw new RuntimeException(SqlCompilationError.doesNotExist("Tag", qualified(name)));
         return tag;
     }
 

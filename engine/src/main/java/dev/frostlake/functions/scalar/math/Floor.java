@@ -16,14 +16,14 @@
 
 package dev.frostlake.functions.scalar.math;
 
-import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.functions.NumericArgumentFunction;
 import dev.frostlake.types.NumericType;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.util.List;
 
-public class Floor extends BuiltInFunction {
+public class Floor extends NumericArgumentFunction {
     public Floor() { super("FLOOR", NumericType.INTEGER); }
 
     @Override

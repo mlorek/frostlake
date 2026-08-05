@@ -120,8 +120,11 @@ public class CreateSecurityHandler implements CommandHandler {
                 }
             }
             String returnType = ctx.dataTypeName() != null ? ctx.dataTypeName().getText().toUpperCase() : "STRING";
+            // The body is stored as EXPRESSION TEXT verbatim: a string-literal body keeps its
+            // quotes ('***') so DESCRIBE shows it as typed (live-verified) and policy application
+            // can inline it as an expression.
             String body = ctx.bodyDefinition() != null
-                ? ddl.extractBodyDefinition(ctx.bodyDefinition())
+                ? ddl.getOriginalText(ctx.bodyDefinition())
                 : ddl.getOriginalText(ctx.booleanExpr());
             MaskingPolicy policy = new MaskingPolicy(policyName, params, returnType, body);
             String comment = ddl.extractCommentFromList(ctx.commentClause());
@@ -151,7 +154,7 @@ public class CreateSecurityHandler implements CommandHandler {
                 }
             }
             String body = ctx.bodyDefinition() != null
-                ? ddl.extractBodyDefinition(ctx.bodyDefinition())
+                ? ddl.getOriginalText(ctx.bodyDefinition())
                 : ddl.getOriginalText(ctx.booleanExpr());
             RowAccessPolicy policy = new RowAccessPolicy(policyName, params, body);
             String comment = ddl.extractCommentFromList(ctx.commentClause());

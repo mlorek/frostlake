@@ -19,12 +19,15 @@ package dev.frostlake.metastore.model;
 import dev.frostlake.metastore.SqlObject;
 
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.List;
 
 public class MaterializedView extends SqlObject {
 
     private final String definition;
     private final List<String> columnNames;
+    /** The view's column list as resolved when it was created — see {@link #getResolvedColumns()}. */
+    private List<TableColumn> resolvedColumns;
     private String warehouse;
     private boolean suspended;
     private boolean secure = false;
@@ -54,6 +57,29 @@ public class MaterializedView extends SqlObject {
 
     public boolean hasExplicitColumnNames() {
         return columnNames != null && !columnNames.isEmpty();
+    }
+
+    /**
+     * The materialized view's columns — name and declared type — as its defining query resolved to at
+     * CREATE time, or null when they could not be resolved. What
+     * {@code INFORMATION_SCHEMA.COLUMNS} reports for it, and through that what
+     * {@code DatabaseMetaData.getColumns} answers.
+     *
+     * <p>Frozen at creation exactly as a plain {@link View}'s is — live-verified separately on a real
+     * account: after {@code ALTER TABLE t ALTER COLUMN c SET DATA TYPE VARCHAR(77)} the
+     * base table reports the new length while the materialized view over it still reports the old one,
+     * and a SUSPEND/RESUME refresh cycle does not move it either.
+     */
+    public List<TableColumn> getResolvedColumns() {
+        return resolvedColumns;
+    }
+
+    public void setResolvedColumns(final List<TableColumn> resolvedColumns) {
+        this.resolvedColumns = resolvedColumns != null ? new ArrayList<>(resolvedColumns) : null;
+    }
+
+    public boolean hasResolvedColumns() {
+        return resolvedColumns != null && !resolvedColumns.isEmpty();
     }
 
     public String getWarehouse() {
@@ -87,7 +113,23 @@ public class MaterializedView extends SqlObject {
      * {@code displayName} — the executable DDL Snowflake surfaces in SHOW MATERIALIZED VIEWS'
      * {@code text} column and GET_DDL.
      */
+    /** The CREATE statement exactly as typed (Snowflake surfaces it verbatim), or null pre-restore. */
+    private String originalDdl;
+
+    public String getOriginalDdl() {
+        return originalDdl;
+    }
+
+    public void setOriginalDdl(final String originalDdl) {
+        this.originalDdl = originalDdl;
+    }
+
     public String ddl(final String displayName) {
+        // Live-verified: SHOW MATERIALIZED VIEWS' text is the original statement as typed; the
+        // reconstruction below is the fallback for pre-capture snapshots.
+        if (originalDdl != null) {
+            return SqlObject.withoutTrailingSemicolon(originalDdl);
+        }
         final StringBuilder sb = new StringBuilder();
         sb.append("create or replace ");
         if (secure) {

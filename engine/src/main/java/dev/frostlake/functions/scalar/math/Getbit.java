@@ -16,7 +16,7 @@
 
 package dev.frostlake.functions.scalar.math;
 
-import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.functions.NumericArgumentFunction;
 import dev.frostlake.types.NumericType;
 
 import java.math.BigInteger;
@@ -28,7 +28,7 @@ import java.util.List;
  * (11 = binary 1011). A position beyond the value's set bits yields 0. Either NULL argument yields NULL;
  * a negative position is an error. Uses {@link BigInteger#testBit} so positions well past 64 bits are safe.
  */
-public class Getbit extends BuiltInFunction {
+public class Getbit extends NumericArgumentFunction {
     public Getbit() { super("GETBIT", NumericType.INTEGER); }
 
     @Override

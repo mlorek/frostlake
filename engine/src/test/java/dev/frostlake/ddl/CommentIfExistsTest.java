@@ -241,7 +241,7 @@ public class CommentIfExistsTest {
             CREATE TASK daily_task
             WAREHOUSE = 'test_wh'
             SCHEDULE = 'USING CRON 0 9 * * * UTC'
-            AS 'SELECT 1'
+            AS SELECT 1
             """);
         engine.execute("COMMENT IF EXISTS ON TASK daily_task IS 'Daily task'");
 

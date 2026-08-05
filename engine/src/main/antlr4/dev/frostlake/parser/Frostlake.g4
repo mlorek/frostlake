@@ -51,9 +51,12 @@ undropStatement
 createStatement
     : CREATE or_replace? DATABASE if_not_exists? identifier (CLONE identifier timeTravelClause?)? (DATA_RETENTION_TIME_IN_DAYS EQ INTEGER_LITERAL)? commentClause? SEMI?
     | CREATE or_replace? SCHEMA if_not_exists? qualifiedName (CLONE qualifiedName timeTravelClause?)? commentClause? SEMI?
-    | CREATE or_replace? (TRANSIENT | TEMPORARY | TEMP | HYBRID)? TABLE if_not_exists? objectName tableTailOption* (LPAREN columnList RPAREN tableTailOption* (AS selectStatement)? | CLONE qualifiedName timeTravelClause? | LIKE qualifiedName | columnListOptional? AS selectStatement)? tableTailOption* SEMI?
-    | CREATE or_replace? SECURE? VIEW if_not_exists? qualifiedName copyGrants? viewProperty* (LPAREN viewColumnList RPAREN)? copyGrants? viewProperty* rowAccessPolicyClause? commentClause? tagList? AS selectStatement commentClause? SEMI?
-    | CREATE or_replace? SECURE? MATERIALIZED VIEW if_not_exists? qualifiedName copyGrants? (LPAREN viewColumnList RPAREN)? copyGrants? commentClause? tagList? AS selectStatement commentClause? SEMI?
+    // A table must say what its columns ARE: an explicit column list, CLONE, LIKE, or CTAS. A body-less
+    // `CREATE TABLE t`, `CREATE TABLE t TAG (…)` or `CREATE TABLE t CLUSTER BY (…)` is a syntax error in
+    // Snowflake (live-verified), so the shape group below is NOT optional.
+    | CREATE or_replace? (TRANSIENT | TEMPORARY | TEMP | HYBRID)? TABLE if_not_exists? objectName tableTailOption* (LPAREN columnList RPAREN tableTailOption* (AS selectStatement)? | CLONE qualifiedName timeTravelClause? | LIKE qualifiedName | columnListOptional? AS selectStatement) tableTailOption* SEMI?
+    | CREATE or_replace? SECURE? VIEW if_not_exists? qualifiedName copyGrants? viewProperty* (LPAREN viewColumnList RPAREN)? copyGrants? viewProperty* rowAccessPolicyClause? commentClause? tagList? AS selectStatement SEMI?
+    | CREATE or_replace? SECURE? MATERIALIZED VIEW if_not_exists? qualifiedName copyGrants? (LPAREN viewColumnList RPAREN)? copyGrants? commentClause? tagList? AS selectStatement SEMI?
     | CREATE or_replace? DYNAMIC TABLE if_not_exists? qualifiedName (LPAREN identifierList RPAREN)? dynamicTableOptions (LPAREN identifierList RPAREN)? AS selectStatement commentClause? SEMI?
     | CREATE or_replace? STREAM if_not_exists? qualifiedName ON (TABLE | VIEW) qualifiedName streamOptions? commentClause? SEMI?
     | CREATE or_replace? TASK if_not_exists? qualifiedName warehouseClause? taskOptions? afterClause? commentClause? (WHEN booleanExpr)? AS taskBody commentClause? SEMI?
@@ -228,7 +231,11 @@ taskStatement
 
 grantStatement
     : GRANT ROLE identifier TO (USER | ROLE) identifier SEMI?  // GRANT ROLE role_name TO USER/ROLE target_name
-    | GRANT globalPrivilegeList TO ROLE identifier SEMI?  // GRANT global_privs TO ROLE role_name
+    // An ACCOUNT-level privilege names its scope: live-verified 2026-08-02, `GRANT CREATE DATABASE TO
+    // ROLE r` is a syntax error on a real account ("unexpected 'TO'") while `GRANT CREATE DATABASE ON
+    // ACCOUNT TO ROLE r` succeeds. Must precede the generic `privilegeList ON ACCOUNT` alternative so
+    // two-word privileges (CREATE DATABASE, MONITOR USAGE, APPLY TAG, …) bind as one globalPrivilege.
+    | GRANT globalPrivilegeList ON ACCOUNT TO ROLE identifier SEMI?  // GRANT global_privs ON ACCOUNT TO ROLE role_name
     | GRANT privilegeList ON objectType qualifiedName (LPAREN identifierList RPAREN)? TO (USER | ROLE) identifier SEMI?  // GRANT privs ON type name [(col1, col2)] TO USER/ROLE target_name
     | GRANT OWNERSHIP ON objectType qualifiedName TO (USER | ROLE) identifier SEMI?  // GRANT OWNERSHIP ON type name TO USER/ROLE target_name
     | GRANT privilegeList ON ACCOUNT TO (USER | ROLE) identifier SEMI?  // GRANT privs ON ACCOUNT TO USER/ROLE target_name
@@ -257,7 +264,9 @@ bulkScope
 
 revokeStatement
     : REVOKE ROLE identifier FROM (USER | ROLE) identifier SEMI?  // REVOKE ROLE role_name FROM USER/ROLE target_name
-    | REVOKE globalPrivilegeList FROM ROLE identifier SEMI?  // REVOKE global_privs FROM ROLE role_name
+    // Same ACCOUNT scoping as GRANT — live 2026-08-02: `REVOKE CREATE DATABASE FROM ROLE r` is a
+    // syntax error ("unexpected 'FROM'"), `REVOKE CREATE DATABASE ON ACCOUNT FROM ROLE r` succeeds.
+    | REVOKE globalPrivilegeList ON ACCOUNT FROM ROLE identifier SEMI?  // REVOKE global_privs ON ACCOUNT FROM ROLE role_name
     | REVOKE privilegeList ON objectType qualifiedName (LPAREN identifierList RPAREN)? FROM (USER | ROLE) identifier SEMI?  // REVOKE privs ON type name [(col1, col2)] FROM USER/ROLE target_name
     | REVOKE OWNERSHIP ON objectType qualifiedName FROM (USER | ROLE) identifier SEMI?  // REVOKE OWNERSHIP ON type name FROM USER/ROLE target_name
     | REVOKE privilegeList ON ACCOUNT FROM (USER | ROLE) identifier SEMI?  // REVOKE privs ON ACCOUNT FROM USER/ROLE target_name
@@ -395,7 +404,6 @@ taskBody
     : sqlStatement                // Raw SQL statement
     | callStatement               // CALL <procedure>(...) — a task that just invokes a stored procedure
     | executeImmediateStatement   // EXECUTE IMMEDIATE expression
-    | bodyDefinition              // String literal (single or dollar-quoted)
     ;
 
 warehouseClause
@@ -633,8 +641,7 @@ sequenceOption
 
 sequenceAction
     : SET INCREMENT (BY | EQ) MINUS? INTEGER_LITERAL
-    | RESTART (WITH MINUS? INTEGER_LITERAL)?
-    ;
+    ;                             // RESTART is not a Snowflake sequence action (live: invalid property)
 
 tagAssign
     : qualifiedName EQ STRING_LITERAL
@@ -845,7 +852,9 @@ columnOrConstraint
     ;
 
 columnDef
-    : identifier dataTypeName typeParameters?  columnConstraint* commentClause?
+    // namePart, not identifier: INNER/JOIN/LEFT/CROSS and CASE are live-legal column names in a
+    // column DEFINITION (measured — CREATE TABLE kw (inner INT, join INT, case INT, …) runs).
+    : namePart dataTypeName typeParameters?  columnConstraint* commentClause?
     ;
 
 typeParameters
@@ -899,29 +908,57 @@ structuredFieldList
     ;
 
 structuredField
-    : identifier dataTypeName typeParameters? (NOT? NULL)?
+    : structuredFieldName dataTypeName typeParameters? (NOT? NULL)?
+    ;
+
+// Live 2026-08-05 (field/column keyword matrix): INNER, JOIN, CASE, LEFT and CROSS are legal
+// unquoted structured-field names — they are legal COLUMN names too, but opening the general
+// identifier rule to them would have to disambiguate join parsing, so only the unambiguous field
+// position is opened here; the column half is tracked as a round-8 lead. SELECT/FROM/ORDER/GROUP/
+// TABLE/NOT/NULL/WHERE/AND were all measured rejected in both positions.
+structuredFieldName
+    : identifier
+    | INNER | JOIN | CASE | LEFT | CROSS
     ;
 
 dateTimeLiteralType
-    : DATE | DATETIME | TIME | TIMESTAMP | TIMESTAMP_NTZ | TIMESTAMPNTZ | TIMESTAMP_LTZ | TIMESTAMP_TZ
+    : DATE | TIME | TIMESTAMP    // only these three; TIMESTAMP_NTZ '...' etc are syntax errors in Snowflake
     ;
 
 dataTypeName
-    : INTEGER | INT | BIGINT | SMALLINT | TINYINT | BYTEINT | NUMBER | DECIMAL | NUMERIC | DECFLOAT | FLOAT | FLOAT4 | FLOAT8 | DOUBLE PRECISION? | REAL
+    : INTEGER | INT | BIGINT | SMALLINT | TINYINT | BYTEINT | NUMBER | DECIMAL | NUMERIC | DEC | DECFLOAT | FLOAT | FLOAT4 | FLOAT8 | DOUBLE PRECISION? | REAL
     | VARCHAR | STRING | TEXT | BOOLEAN | DATE | DATETIME | TIME | TIMESTAMP_NTZ | TIMESTAMPNTZ | TIMESTAMP_LTZ | TIMESTAMP_TZ | VARIANT
     | TIMESTAMPLTZ | TIMESTAMPTZ | TIMESTAMP WITH LOCAL TIME ZONE | TIMESTAMP     // TIMESTAMP last: the worded form must win the prediction
-    | (CHAR | CHARACTER | NCHAR) VARYING? | NVARCHAR
+    // `X VARYING` is only legal after the three FIXED-length spellings — live 2026-08-04,
+    // `VARCHAR VARYING`, `NVARCHAR VARYING` and `NVARCHAR2 VARYING` are all syntax errors.
+    | (CHAR | CHARACTER | NCHAR) VARYING? | NVARCHAR | NVARCHAR2
     | ARRAY (LPAREN dataTypeName typeParameters? RPAREN)?      // structured ARRAY(INT)
-    | OBJECT (LPAREN structuredFieldList RPAREN)?              // structured OBJECT(a CHAR NOT NULL, ...)
+    // Structured OBJECT(a CHAR NOT NULL, ...). The ZERO-FIELD spelling `OBJECT()` is legal and is its own
+    // type — live-verified: `SYSTEM$TYPEOF(CAST(OBJECT_CONSTRUCT() AS OBJECT()))` is `OBJECT()[LOB]`, an
+    // empty object casts to it, and a NON-empty one fails the schema check. OBJECT is the only one of the
+    // three with that form: `ARRAY()` and `MAP()` are syntax errors live. (`ARRAY()` still PARSES here as
+    // bare ARRAY plus an empty `typeParameters` — empty parentheses being a character-type leniency — so
+    // DataTypeParser rejects it there rather than in the grammar.)
+    | OBJECT (LPAREN structuredFieldList? RPAREN)?
     | BINARY | VARBINARY
     | UUID
     | VECTOR LPAREN (FLOAT | INT) COMMA INTEGER_LITERAL RPAREN
-    | MAP (LPAREN dataTypeName COMMA dataTypeName RPAREN)?   // MAP or MAP(keyType, valueType); backed by OBJECT
+    | GEOGRAPHY | GEOMETRY
+    // The FILE column type (a stage-file reference). `FILE` stays a plain identifier too — live-verified
+    // 2026-08-03: a column, an alias, a table and a scripting variable may all be named `file` — so this
+    // alternative only adds the TYPE position. FILE takes NO type parameters (`FILE(10)` and `FILE()` are
+    // both syntax errors live) and is not a legal structured element type (`ARRAY(FILE)`, `OBJECT(x FILE)`
+    // and `MAP(VARCHAR, FILE)` all fail "Unsupported data type 'FILE'."); `dataTypeName typeParameters?`
+    // and the nested-type positions are shared by every type, so DataTypeParser rejects both there.
+    | FILE
+    | MAP LPAREN dataTypeName COMMA dataTypeName RPAREN   // MAP(keyType, valueType); backed by OBJECT.
+                                                          // The bare `MAP` spelling is a syntax error in
+                                                          // Snowflake (live-verified: `NULL::MAP`).
     ;
 
 columnConstraint
     : PRIMARY KEY relyOption?
-    | NOT? NULL relyOption?
+    | NOT? NULL
     | UNIQUE relyOption?
     | tagList
     | AUTOINCREMENT identityProperties?
@@ -1022,8 +1059,8 @@ dmlStatement
     ;
 
 insertStatement
-    : INSERT (OVERWRITE TABLE | OVERWRITE? INTO) objectName columnListOptional? VALUES valueTupleList SEMI?
-    | INSERT (OVERWRITE TABLE | OVERWRITE? INTO) objectName columnListOptional? selectStatement SEMI?
+    : INSERT OVERWRITE? INTO objectName columnListOptional? VALUES valueTupleList SEMI?
+    | INSERT OVERWRITE? INTO objectName columnListOptional? selectStatement SEMI?
     ;
 
 // Snowflake multi-table INSERT: unconditional (INSERT [OVERWRITE] ALL INTO ...) and
@@ -1046,7 +1083,9 @@ multiInsertElse
     ;
 
 columnListOptional
-    : LPAREN identifierList RPAREN
+    // Column-NAME list: the keyword names (incl. CASE) are live-legal here — measured,
+    // INSERT INTO kw (inner, join, case, left, cross) VALUES (…) runs on a real account.
+    : LPAREN namePart (COMMA namePart)* RPAREN
     ;
 
 identifierList
@@ -1117,7 +1156,8 @@ assignmentList
     ;
 
 assignment
-    : (identifier '.')? identifier EQ expression
+    // namePart targets: UPDATE kw SET inner = 10 is live-legal (measured).
+    : (identifier '.')? namePart EQ expression
     ;
 
 queryStatement
@@ -1146,8 +1186,27 @@ cteDefinition
     : identifier columnListOptional? AS LPAREN selectStatement RPAREN   // AS is REQUIRED (live-Snowflake verified)
     ;
 
+// A hierarchical query replaces the grouping tail: Snowflake rejects GROUP BY, HAVING and QUALIFY after
+// a CONNECT BY (live-verified — all three are syntax errors), so the two tails are alternatives here.
 selectClause
-    : SELECT (DISTINCT | ALL)? topClause? selectList (FROM tableExpression whereClause? groupByClause? havingClause? qualifyClause?)? whereClause?
+    : SELECT (DISTINCT | ALL)? topClause? selectList
+      (FROM tableExpression whereClause? (connectByClause | groupByClause? havingClause? qualifyClause?))? whereClause?
+    ;
+
+// Snowflake hierarchical query: START WITH may come before or after CONNECT BY, but CONNECT BY is
+// mandatory — a lone `START WITH` is a syntax error (live-verified). Without START WITH every row seeds
+// its own tree. The condition is an ordinary predicate in which PRIOR marks the parent-row side.
+connectByClause
+    : startWithClause connectByPredicate
+    | connectByPredicate startWithClause?
+    ;
+
+startWithClause
+    : START WITH booleanExpr
+    ;
+
+connectByPredicate
+    : CONNECT BY booleanExpr
     ;
 
 setOperator
@@ -1199,7 +1258,7 @@ tableSource
     | FLATTEN LPAREN flattenArgList RPAREN  // LATERAL FLATTEN(expr [, name => val ...])
     | KW_IDENTIFIER LPAREN expression RPAREN  // IDENTIFIER(expr) — dynamic table name
     | POSITIONAL_PARAMETER              // $n — a prior flow-chain stage's result (n statements back)
-    | qualifiedName timeTravelClause?
+    | tableQualifiedName timeTravelClause?
     | LPAREN selectStatement RPAREN
     | LPAREN tableReference (COMMA tableReference | joinClause)+ RPAREN  // parenthesized FROM join: FROM (a JOIN b ON c ...) — pure grouping, keeps inner aliases in scope. The '+' (>=1 join/comma) disambiguates from (SELECT ...) and (single_table).
     | LPAREN VALUES valueTupleList (AS? identifier columnListOptional?)? RPAREN  // (VALUES (...) [AS] v (cols)) as subquery — Snowflake allows the alias inside the parens
@@ -1248,7 +1307,21 @@ changesClause
 joinClause
     // DIRECTED is an accepted no-op join modifier (e.g. INNER DIRECTED JOIN): a semantic annotation with no
     // effect on the row-level result, so it parses like a plain join of that type.
-    : NATURAL? joinType? DIRECTED? JOIN LATERAL? tableReference (ON booleanExpr | USING LPAREN usingColumnList RPAREN)?
+    // ASOF is its own modifier group: Snowflake accepts only the bare `ASOF JOIN` (live-verified — LEFT /
+    // RIGHT / INNER ASOF and NATURAL ASOF are syntax errors), and MATCH_CONDITION must come BEFORE the
+    // ON / USING clause (`ON … MATCH_CONDITION (…)` is a syntax error there).
+    : (NATURAL? joinType? DIRECTED? | ASOF) JOIN LATERAL? tableReference asofMatchCondition?
+      (ON booleanExpr | USING LPAREN usingColumnList RPAREN)?
+    ;
+
+// MATCH_CONDITION ( <left expr> {>= | > | <= | <} <right expr> ) — the closest-match predicate of an
+// ASOF JOIN. The optional alias in front exists because Snowflake accepts LIMIT as the right-hand
+// table's alias here (live-verified: `ASOF JOIN r LIMIT MATCH_CONDITION (q.t > LIMIT.t)` runs); LIMIT
+// is deliberately not a general bare alias in this grammar (it would shadow the LIMIT clause), so it is
+// admitted only in this position, where the following MATCH_CONDITION anchors it. OFFSET needs no
+// special case — it already reaches this position through the ordinary alias rule.
+asofMatchCondition
+    : (AS? LIMIT)? MATCH_CONDITION LPAREN booleanExpr RPAREN
     ;
 
 joinType
@@ -1302,14 +1375,13 @@ selectList
     ;
 
 selectItem
-    // Braces are Snowflake's wrapped-star form ({*}, {* EXCLUDE (c)}, {t.*}); the tokens are
-    // individually optional so the labels/accessors stay unchanged — an unbalanced brace is
-    // tolerated rather than modeled.
-    : LBRACE? STAR starModifier* RBRACE?                  # StarItem
-    | LBRACE? qualifiedName DOT STAR starModifier* RBRACE?  # QualifiedStarItem
-    | qualifiedName DOT DOUBLE_STAR                       # SpreadItem
-    | DOUBLE_STAR qualifiedName                           # SpreadPrefixItem
-    | DOUBLE_STAR expression                              # SpreadExprItem
+    : STAR starModifier*                                  # StarItem
+    | qualifiedName DOT STAR starModifier*                # QualifiedStarItem
+    // Snowflake's BRACED star is an OBJECT constructor over the row, not a star: {*} is
+    // OBJECT_CONSTRUCT(*) and projects ONE column whose keys are the star's effective column names
+    // ({* EXCLUDE (c)}, {t.*} pick which columns take part). It therefore needs its own alternative —
+    // treating the braces as optional decoration on the star above expanded it to N columns instead.
+    | LBRACE (qualifiedName DOT)? STAR starModifier* RBRACE (AS? identifier)?  # ObjectStarItem
     | booleanExpr (AS? identifier)?                       # ExprItem
     ;
 
@@ -1451,26 +1523,36 @@ showStatement
     | SHOW TERSE? TABLES HISTORY? (LIKE STRING_LITERAL)? (IN (DATABASE | SCHEMA)? qualifiedName)? showTail SEMI?
     | SHOW TERSE? ICEBERG TABLES (LIKE STRING_LITERAL)? (IN (DATABASE | SCHEMA)? qualifiedName)? showTail SEMI?
     | SHOW TERSE? VIEWS (LIKE STRING_LITERAL)? (IN (DATABASE | SCHEMA | ACCOUNT)? qualifiedName?)? showTail SEMI?
-    | SHOW MATERIALIZED VIEWS (LIKE STRING_LITERAL)? (IN (DATABASE | SCHEMA)? qualifiedName)? SEMI?
-    | SHOW DYNAMIC TABLES (LIKE STRING_LITERAL)? (IN (DATABASE | SCHEMA)? qualifiedName)? SEMI?
+    | SHOW TERSE? MATERIALIZED VIEWS (LIKE STRING_LITERAL)? (IN (DATABASE | SCHEMA)? qualifiedName)? showTail SEMI?
+    | SHOW TERSE? DYNAMIC TABLES (LIKE STRING_LITERAL)? (IN (DATABASE | SCHEMA)? qualifiedName)? showTail SEMI?
     | SHOW HYBRID TABLES (LIKE STRING_LITERAL)? (IN (DATABASE | SCHEMA)? qualifiedName)? SEMI?
     | SHOW TERSE? COLUMNS (LIKE STRING_LITERAL)? (IN (TABLE | VIEW)? qualifiedName?)? showTail SEMI?   // FROM is not Snowflake syntax (live-verified)
-    | SHOW STREAMS (LIKE STRING_LITERAL)? (IN (DATABASE | SCHEMA | ACCOUNT)? qualifiedName)? SEMI?
-    | SHOW TASKS (LIKE STRING_LITERAL)? (IN (DATABASE | SCHEMA | ACCOUNT)? qualifiedName)? SEMI?
-    | SHOW PIPES (LIKE STRING_LITERAL)? (IN (DATABASE | SCHEMA | ACCOUNT)? qualifiedName)? SEMI?
+    | SHOW TERSE? STREAMS (LIKE STRING_LITERAL)? (IN (DATABASE | SCHEMA | ACCOUNT)? qualifiedName)? showTail SEMI?
+    | SHOW TERSE? TASKS (LIKE STRING_LITERAL)? (IN (DATABASE | SCHEMA | ACCOUNT)? qualifiedName)? showTail SEMI?
+    | SHOW TERSE? PIPES (LIKE STRING_LITERAL)? (IN (DATABASE | SCHEMA | ACCOUNT)? qualifiedName)? showTail SEMI?
     | SHOW TERSE? SEQUENCES (LIKE STRING_LITERAL)? (IN (DATABASE | SCHEMA | ACCOUNT)? qualifiedName?)? showTail SEMI?
-    | SHOW WAREHOUSES (LIKE STRING_LITERAL)? showTail SEMI?
-    | SHOW STAGES (LIKE STRING_LITERAL)? (IN (DATABASE | SCHEMA | ACCOUNT)? qualifiedName)? SEMI?
-    | SHOW FILE FORMATS (LIKE STRING_LITERAL)? (IN (DATABASE | SCHEMA)? qualifiedName)? SEMI?
-    | SHOW TAGS (LIKE STRING_LITERAL)? (IN (DATABASE | SCHEMA | ACCOUNT)? qualifiedName)? SEMI?
-    | SHOW USER? PROCEDURES (LIKE STRING_LITERAL)? (IN (DATABASE | SCHEMA | APPLICATION PACKAGE?)? qualifiedName)? SEMI?
-    | SHOW USER? FUNCTIONS (LIKE STRING_LITERAL)? (IN (DATABASE | SCHEMA | CLASS)? qualifiedName)? SEMI?
+    | SHOW TERSE? WAREHOUSES (LIKE STRING_LITERAL)? showTail SEMI?
+    | SHOW TERSE? STAGES (LIKE STRING_LITERAL)? (IN (DATABASE | SCHEMA | ACCOUNT)? qualifiedName)? showTail SEMI?
+    | SHOW TERSE? FILE FORMATS (LIKE STRING_LITERAL)? (IN (DATABASE | SCHEMA)? qualifiedName)? showTail SEMI?
+    | SHOW TERSE? TAGS (LIKE STRING_LITERAL)? (IN (DATABASE | SCHEMA | ACCOUNT)? qualifiedName)? showTail SEMI?
+    // The routine listings take the same three modifiers, and TERSE must precede USER / BUILTIN.
+    // Live-verified on a real account (2026-08-03):
+    //   * USER and BUILTIN are mutually exclusive for BOTH families — `SHOW BUILTIN USER FUNCTIONS`,
+    //     `SHOW USER BUILTIN FUNCTIONS`, `SHOW BUILTIN USER PROCEDURES`, `SHOW USER BUILTIN PROCEDURES`
+    //     and `SHOW TERSE USER BUILTIN PROCEDURES` are all syntax errors, while `SHOW BUILTIN FUNCTIONS`
+    //     returns the 1134-row built-in catalog and `SHOW BUILTIN PROCEDURES` the 32-row one.
+    //   * TERSE only binds in front: `SHOW TERSE USER FUNCTIONS` / `SHOW TERSE BUILTIN PROCEDURES` run,
+    //     while `SHOW USER TERSE FUNCTIONS` and `SHOW BUILTIN TERSE PROCEDURES` are syntax errors.
+    // TERSE is accepted here but changes NOTHING — unlike SHOW TERSE TABLES it does not trim the column
+    // set (see ShowModifierProfile). Neither do STARTS WITH and LIMIT, which parse and are then ignored.
+    | SHOW TERSE? (USER | BUILTIN)? PROCEDURES (LIKE STRING_LITERAL)? (IN (DATABASE | SCHEMA | APPLICATION PACKAGE?)? qualifiedName)? showTail SEMI?
+    | SHOW TERSE? (USER | BUILTIN)? FUNCTIONS (LIKE STRING_LITERAL)? (IN (DATABASE | SCHEMA | CLASS)? qualifiedName)? showTail SEMI?
     | SHOW TERSE? USERS (LIKE STRING_LITERAL)? showTail SEMI?
-    | SHOW ROLES (LIKE STRING_LITERAL)? SEMI?
+    | SHOW TERSE? ROLES (LIKE STRING_LITERAL)? showTail SEMI?
     | SHOW GRANTS ON objectType identifier SEMI?
     | SHOW GRANTS TO (USER | ROLE) identifier SEMI?  // SHOW GRANTS TO USER/ROLE name
-    | SHOW MASKING POLICIES (LIKE STRING_LITERAL)? (IN (DATABASE | SCHEMA)? qualifiedName)? SEMI?
-    | SHOW ROW ACCESS POLICIES (LIKE STRING_LITERAL)? (IN (DATABASE | SCHEMA)? qualifiedName)? SEMI?
+    | SHOW TERSE? MASKING POLICIES (LIKE STRING_LITERAL)? (IN (DATABASE | SCHEMA)? qualifiedName)? showTail SEMI?
+    | SHOW TERSE? ROW ACCESS POLICIES (LIKE STRING_LITERAL)? (IN (DATABASE | SCHEMA)? qualifiedName)? showTail SEMI?
     | SHOW PARAMETERS (LIKE STRING_LITERAL)? (IN (SESSION | ACCOUNT | (DATABASE | SCHEMA | TABLE | WAREHOUSE | USER | ROLE) identifier))? SEMI?
     | SHOW SESSIONS (LIKE STRING_LITERAL)? SEMI?
     | SHOW TERSE? OBJECTS (LIKE STRING_LITERAL)? (IN (DATABASE | SCHEMA)? qualifiedName)? showTail SEMI?
@@ -1483,8 +1565,21 @@ showStatement
     ;
 
 // Trailing SHOW modifiers shared by the object listings (all optional; the rule may match empty):
-// STARTS WITH 'prefix' (case-sensitive name-prefix filter), LIMIT n [FROM 'name'] (pagination),
-// and WITH PRIVILEGES p1, p2 (accepted; the listing is not privilege-filtered).
+// STARTS WITH 'prefix' (case-sensitive name-prefix filter), LIMIT n [FROM 'name'] (pagination), and
+// WITH PRIVILEGES p1, p2. The privilege LIST is mandatory — bare `SHOW TABLES WITH PRIVILEGES` is a
+// syntax error live, while `SHOW WAREHOUSES WITH PRIVILEGES USAGE, MODIFY` runs. Which object types
+// honour the filter is a SEMANTIC matter (a real account answers `SHOW TABLES … WITH PRIVILEGES` with
+// "Unsupported feature", i.e. it parses), so the grammar accepts it everywhere.
+//
+// Parsing STARTS WITH / LIMIT is likewise NOT the same as acting on them: a real account accepts both
+// on nearly every listing and then ignores them on several. `SHOW STAGES STARTS WITH 'ZZZ'` returns
+// every stage, `SHOW SEQUENCES LIMIT 1` every sequence. ShowModifierProfile carries the measured
+// honour/ignore split per listing; this rule only decides what parses. The two listings that reject the
+// suffix outright are KEYS (`SHOW PRIMARY KEYS LIMIT 2` → "syntax error … unexpected 'LIMIT'") and
+// HYBRID TABLES (untested — no hybrid tables on a standard account), which is why neither carries it.
+// Ordering is by name, byte-wise, so uppercase sorts before lowercase; `FROM 'x'` keeps the rows
+// sorting strictly after x and is a syntax error without a preceding LIMIT; `LIMIT 0` is rejected
+// everywhere with "page size "0" must be greater than 0 in limit clause".
 showTail
     : (STARTS WITH STRING_LITERAL)? (LIMIT INTEGER_LITERAL (FROM STRING_LITERAL)?)? (WITH PRIVILEGES showPrivilege (COMMA showPrivilege)*)?
     ;
@@ -1522,18 +1617,17 @@ describeStatement
     | (DESCRIBE | DESC) ROW ACCESS POLICY qualifiedName SEMI?
     | (DESCRIBE | DESC) FILE FORMAT qualifiedName SEMI?
     | (DESCRIBE | DESC) RESULT (STRING_LITERAL | identifier LPAREN RPAREN) SEMI?
-    | (DESCRIBE | DESC) qualifiedName SEMI?   // bare DESCRIBE <name> — resolved as a table
+    // No bare `DESCRIBE <name>` alternative: Snowflake requires the object type (live-verified,
+    // `DESCRIBE t` is a syntax error there).
     ;
 
 // Procedural Language Statements
 proceduralStatement
-    // beginEndBlock is listed BEFORE declareStatement so that a `DECLARE … BEGIN … END` parses as a
-    // block whose DECLARE section is scoped to THAT block (Snowflake semantics), not as a standalone
-    // DECLARE in the enclosing scope followed by a declare-less block. A leading DECLARE not followed
-    // by BEGIN is not viable for beginEndBlock and falls through to declareStatement (Frostlake's
-    // DECLARE-as-statement extension), preserving existing behavior.
+    // There is no DECLARE-as-a-statement alternative: in Snowflake a DECLARE only ever opens a block's
+    // declaration section, so it must be followed by BEGIN (live-verified — `BEGIN … DECLARE c CURSOR
+    // FOR …; OPEN c; … END` is a syntax error, while the nested `DECLARE b INT; BEGIN … END;` form
+    // parses because that IS a block). beginEndBlock therefore carries every legal DECLARE.
     : beginEndBlock
-    | declareStatement
     | letStatement
     | assignmentStatement
     | setStatement
@@ -1558,10 +1652,6 @@ proceduralStatement
     | nullStatement
     ;
 
-declareStatement
-    : DECLARE declarationItem+
-    ;
-
 declarationItem
     : identifier (EXCEPTION LPAREN expression COMMA STRING_LITERAL RPAREN SEMI?
                  | CURSOR FOR cursorSource SEMI?
@@ -1570,10 +1660,8 @@ declarationItem
     ;
 
 // A DECLARE-section item with the type omitted — Snowflake infers it from the initializer
-// (e.g. `cid1 := UUID_STRING();`, `skey1 := 0;`). Kept OUT of `declarationItem` (and thus out of the
-// standalone `declareStatement` used inside a BEGIN…END body) because `x := expr` is syntactically an
-// assignment; allowing it there would let a mid-body `DECLARE`'s `declarationItem+` greedily swallow the
-// following assignment statement. It is only valid in the pre-BEGIN `declareSection`, which `BEGIN` ends.
+// (e.g. `cid1 := UUID_STRING();`, `skey1 := 0;`). Kept OUT of `declarationItem` because `x := expr` is
+// syntactically an assignment; it is only valid in the pre-BEGIN `declareSection`, which `BEGIN` ends.
 untypedDeclarationItem
     : identifier (DEFAULT | COLON_EQ) expression SEMI?
     ;
@@ -1610,6 +1698,7 @@ letStatement
 assignmentStatement
     : identifier COLON_EQ expression SEMI?
     | identifier COLON_EQ LPAREN callStatement RPAREN SEMI?
+    | identifier COLON_EQ LPAREN executeImmediateStatement RPAREN SEMI?   // rs := (EXECUTE IMMEDIATE :stmt) — documented Snowflake RESULTSET form
     ;
 
 setStatement
@@ -1642,9 +1731,12 @@ closeStatement
     : CLOSE identifier SEMI?
     ;
 
+// The IF / ELSEIF condition is PARENTHESIZED in Snowflake (live-verified: `IF 1 = 1 THEN` is a
+// syntax error, `IF (1 = 1) THEN` runs). CASE is deliberately not tightened the same way — there
+// both `CASE (n)` and `CASE n` are accepted live.
 ifStatement
-    : IF booleanExpr THEN statementList
-      (ELSEIF booleanExpr THEN statementList)*
+    : IF LPAREN booleanExpr RPAREN THEN statementList
+      (ELSEIF LPAREN booleanExpr RPAREN THEN statementList)*
       (ELSE statementList)?
       END IF SEMI?
     ;
@@ -1656,27 +1748,28 @@ caseStatement
       END CASE? SEMI?
     ;
 
-// An optional loop label: `<name>: LOOP … END LOOP <name>;`. The trailing END-label identifier is
-// accepted and ignored; only the leading label drives labeled BREAK / CONTINUE targeting.
-loopLabel
-    : identifier COLON
-    ;
-
+// A loop label is declared by the TRAILING label — `END LOOP my_loop` / `END FOR sum_loop` /
+// `END WHILE w` — and referenced by `BREAK <label>` / `CONTINUE <label>` (live-verified: a BREAK naming
+// no trailing label fails SEMANTICALLY with "Label 'MY_LOOP' not found", which is what proves the
+// syntax is real). The LEADING `my_loop:` declaration is NOT Snowflake — it is a syntax error at the
+// ':' — so there is deliberately no `loopLabel` rule.
 loopStatement
-    : loopLabel? LOOP statementList END LOOP identifier? SEMI?
+    : LOOP statementList END LOOP identifier? SEMI?
     ;
 
 whileStatement
-    : loopLabel? WHILE booleanExpr DO statementList END WHILE identifier? SEMI?
+    : WHILE LPAREN booleanExpr RPAREN DO statementList END WHILE identifier? SEMI?
     ;
 
 forStatement
-    : loopLabel? FOR identifier IN REVERSE? expression TO expression DO statementList END FOR identifier? SEMI?   // integer range
-    | loopLabel? FOR identifier IN expression DO statementList END FOR identifier? SEMI?                          // cursor / list
+    : FOR identifier IN REVERSE? expression TO expression DO statementList END FOR identifier? SEMI?   // integer range
+    | FOR identifier IN expression DO statementList END FOR identifier? SEMI?                          // cursor / list
     ;
 
+// UNTIL takes a PARENTHESIZED condition, like IF and WHILE (live-verified: `UNTIL i >= 3` is a
+// syntax error, `UNTIL (i >= 3)` runs).
 repeatStatement
-    : loopLabel? REPEAT statementList UNTIL booleanExpr END REPEAT identifier? SEMI?
+    : REPEAT statementList UNTIL LPAREN booleanExpr RPAREN END REPEAT identifier? SEMI?
     ;
 
 returnStatement
@@ -1719,8 +1812,10 @@ beginEndBlock
     : declareSection? BEGIN statementList exceptionSection? END SEMI?
     ;
 
+// Stray semicolons between (and after) the declarations are tolerated, as Snowflake tolerates them —
+// real deployment scripts end their DECLARE section with a lone `;` line before BEGIN.
 declareSection
-    : DECLARE (declarationItem | untypedDeclarationItem)+
+    : DECLARE SEMI* ((declarationItem | untypedDeclarationItem) SEMI*)+
     ;
 
 exceptionSection
@@ -1796,11 +1891,22 @@ expression
     | CURRENT_TIME                                               # CurrentTimeExpr
     | CURRENT_USER                                               # CurrentUserExpr
     | qualifiedName LPAREN PLUS RPAREN                           # OuterJoinColumnExpr
+    // Hierarchical-query pseudo-columns. Both take a bare (optionally qualified) column reference —
+    // live-verified: `CONNECT_BY_ROOT (sal + 1)` and `CONNECT_BY_ROOT nm || 'x'` are rejected by
+    // Snowflake with "Unsupported feature". They precede QualifiedNameExpr so the keyword wins over the
+    // same word used as a plain column name (Snowflake resolves it the same way).
+    | PRIOR qualifiedName                                        # PriorExpr
+    | CONNECT_BY_ROOT qualifiedName                              # ConnectByRootExpr
     | qualifiedName                                              # QualifiedNameExpr
     | jsonObjectLiteral                                          # JsonObjectExpr
     | jsonArrayLiteral                                           # JsonArrayExpr
     | caseExpression                                             # CaseExpr
-    | INTERVAL expression intervalUnit                           # IntervalExpr
+    // Snowflake interval literals (live-verified): the quoted-string form `INTERVAL '1 day, 2 hours'`
+    // (plural units and comma-separated parts INSIDE the string, bare numbers default to seconds), and
+    // `INTERVAL '<n>' <singular-unit>`. An unquoted amount (INTERVAL 10 DAY) is a syntax error there,
+    // and a PLURAL unit word after the string is NOT a unit — `INTERVAL '10' DAYS` is 10 seconds
+    // aliased DAYS — so only the singular keywords are part of this rule.
+    | INTERVAL STRING_LITERAL intervalUnitSingular               # IntervalExpr
     | INTERVAL STRING_LITERAL                                    # IntervalStringExpr
     | dateTimeLiteralType STRING_LITERAL                         # TypedDateTimeLiteralExpr
     | CAST LPAREN expression AS dataTypeName typeParameters? ((RENAME | ADD) FIELDS)? RPAREN  # CastExpr
@@ -1810,9 +1916,8 @@ expression
     | functionName LPAREN DISTINCT? STAR starModifier* RPAREN                  # FunctionCallStarExpr
     | functionName LPAREN expression (COMMA expression)* (COMMA namedArgument)+ RPAREN overClause?  # FunctionCallMixedArgsExpr
     | functionName LPAREN namedArgumentList RPAREN overClause?   # FunctionCallNamedArgsExpr
-    | functionName LPAREN DISTINCT? functionArgList? nullHandling? RPAREN withinGroupClause? filterClause?
+    | functionName LPAREN DISTINCT? functionArgList? nullHandling? RPAREN withinGroupClause?
           (FROM (FIRST | LAST) nullHandling? overClause | nullHandling? overClause?)     # FunctionCallExpr
-    | EXECUTE IMMEDIATE expression (USING LPAREN expressionList RPAREN)?  # ExecuteImmediateExpr
     | op=(PLUS | MINUS) expression                               # UnaryExpr
     | EXISTS LPAREN selectStatement RPAREN                       # ExistsExpr
     | LPAREN selectStatement RPAREN                              # ScalarSubqueryExpr
@@ -1825,7 +1930,9 @@ expression
     | expression op=(PLUS | MINUS) expression                    # AdditiveExpr
     | expression IS NOT? NULL                                    # IsNullExpr
     | expression IS NOT? DISTINCT FROM expression                # IsDistinctExpr
-    | expression NOT? (LIKE | ILIKE) q=(ANY | ALL) LPAREN patterns+=expression (COMMA patterns+=expression)* RPAREN (ESCAPE esc=expression)? # LikeAnyAllExpr
+    // Snowflake has LIKE ANY, LIKE ALL and ILIKE ANY only: NOT LIKE ANY/ALL and ILIKE ALL are
+    // compile errors there (live-verified), so the grammar deliberately omits them.
+    | expression (LIKE q=(ANY | ALL) | ILIKE q=ANY) LPAREN patterns+=expression (COMMA patterns+=expression)* RPAREN (ESCAPE esc=expression)? # LikeAnyAllExpr
     | expression NOT? (LIKE | ILIKE) expression (ESCAPE expression)? # LikeExpr
     | expression NOT? (RLIKE | REGEXP) expression                # RlikeExpr
     | expression NOT? BETWEEN expression AND expression          # BetweenExpr
@@ -1864,6 +1971,11 @@ intervalUnit
     | SECOND | SECONDS
     ;
 
+// Only the singular spellings act as an interval unit suffix (see the IntervalExpr alternative).
+intervalUnitSingular
+    : YEAR | MONTH | DAY | HOUR | MINUTE | SECOND
+    ;
+
 jsonObjectLiteral
     : LBRACE jsonObjectEntry (COMMA jsonObjectEntry)* RBRACE
     | LBRACE RBRACE
@@ -1871,7 +1983,6 @@ jsonObjectLiteral
 
 jsonObjectEntry
     : jsonKeyValuePair
-    | DOUBLE_STAR expression   // ** merges the object value's pairs into the surrounding object
     ;
 
 jsonKeyValuePair
@@ -1884,8 +1995,19 @@ jsonArrayLiteral
     ;
 
 arrayElement
-    : DOUBLE_STAR expression   // ** spreads the array value's elements into the surrounding array
+    : spreadArgument
     | expression
+    ;
+
+// The `**` spread splices the elements of a CONSTANT array into the enclosing argument list. It is
+// argument SPLATTING, not an array feature — `[…]` is sugar for ARRAY_CONSTRUCT, which is why the same
+// rule serves both (live-verified: `ARRAY_APPEND(** [[1,2], 3])` splices TWO arguments, and
+// `GREATEST(** [1,5,3])` → 5). The operand must be an array LITERAL or an ARRAY_CONSTRUCT call: a
+// runtime expression is rejected even over literals — `[** PARSE_JSON('[1,2]')]` fails live. There is
+// deliberately no spread in object literals (`{'a':1, ** {'b':2}}` is a syntax error in Snowflake) and
+// no bare `SELECT **`.
+spreadArgument
+    : DOUBLE_STAR expression
     ;
 
 expressionList
@@ -1899,17 +2021,12 @@ functionArgList
     : functionArg (COMMA functionArg)*
     ;
 
-// FILTER (WHERE cond) on an aggregate call — evaluated as conditional aggregation.
-filterClause
-    : FILTER LPAREN WHERE booleanExpr RPAREN
-    ;
-
 // A function argument is either a lambda (for higher-order functions like TRANSFORM/FILTER/REDUCE) or a
 // normal boolean expression.
 functionArg
     : lambdaFunction
     | exprTuple
-    | DOUBLE_STAR booleanExpr   // ** spreads an array's elements as positional arguments
+    | spreadArgument   // ** [a, b] — splices a constant array's elements as arguments
     | booleanExpr
     | STAR          // star argument: MINHASH(5, *), HASH_AGG(*)-style calls
     ;
@@ -1950,7 +2067,33 @@ functionName
     ;
 
 qualifiedName
-    : identifier (DOT identifier)* (DOT TABLE)?   // a trailing part literally named "table"
+    // The optional trailing TABLE keyword admits an object part literally named "table"
+    // (db.table / db.schema."table"-style references) without making TABLE a general identifier.
+    : nameStartPart (DOT namePart)*
+    ;
+
+// INNER, JOIN, LEFT and CROSS are live-legal unquoted NAMES in every name position — columns and
+// tables alike (live matrix: CREATE TABLE column defs, bare and qualified references, WHERE,
+// GROUP BY, ORDER BY, aggregate arguments, INSERT column lists, UPDATE SET targets, and even
+// CREATE TABLE inner). The general identifier rule cannot admit them, because a bare table alias
+// would then swallow the join keyword of `FROM a LEFT JOIN b` — so only the NAME positions gain
+// them. CASE additionally works only AFTER a dot (`kw.case` reads the column); a bare leading
+// CASE is live's syntax error — the CASE expression owns that spot.
+nameStartPart
+    : identifier
+    | INNER | JOIN | LEFT | CROSS
+    ;
+
+// The FROM position keeps the join keywords as KEYWORDS in the LEADING part — live, `FROM inner`
+// is "unexpected '<EOF>'" even though CREATE TABLE inner succeeds (both measured) — while a
+// qualified trailing part still reads (sch.inner).
+tableQualifiedName
+    : identifier (DOT namePart)*
+    ;
+
+namePart
+    : identifier
+    | INNER | JOIN | LEFT | CROSS | CASE
     ;
 
 identifier
@@ -1958,6 +2101,12 @@ identifier
     | KW_IDENTIFIER  // the literal word "identifier" as a plain name (it lexes as KW_IDENTIFIER now)
     | ACCOUNTS      // Allow ACCOUNTS as identifier
     | ACTION
+    | ASOF          // Allow ASOF as identifier (the ASOF JOIN modifier is anchored by the following JOIN);
+                    // live-verified: `CREATE TABLE kw (asof INT)` is accepted by Snowflake
+    | MATCH_CONDITION   // Allow MATCH_CONDITION as identifier (the ASOF clause is anchored by ASOF JOIN)
+    | PRIOR         // Allow PRIOR as identifier (the CONNECT BY operator is anchored by a following name);
+                    // live-verified: `CREATE TABLE kw (prior INT)` is accepted, unlike `connect`
+    | CONNECT_BY_ROOT   // Allow CONNECT_BY_ROOT as identifier (the pseudo-column needs a following name)
     | AFTER         // Allow AFTER as identifier
     | ALLOW_OVERLAPPING_EXECUTION
     | BEFORE        // Allow BEFORE as identifier
@@ -1971,7 +2120,6 @@ identifier
     | CURRENT_TIME  // Allow CURRENT_TIME as identifier (function name)
     | CURRENT_TIMESTAMP // Allow CURRENT_TIMESTAMP as identifier (function name)
     | CURRENT_USER      // Allow CURRENT_USER as identifier (function name)
-    | CURRVAL       // Allow CURRVAL as identifier (function name)
     | DATA          // Allow DATA as identifier
     | DATABASES     // Allow DATABASES as identifier (for INFORMATION_SCHEMA views)
     | CHAR          // Allow CHAR as identifier (function name)
@@ -1991,6 +2139,7 @@ identifier
     | FILE
     | FIRST         // Allow FIRST as identifier (also ORDER BY ... NULLS FIRST)
     | FLATTEN       // Allow FLATTEN as identifier (table function)
+    | BUILTIN       // Allow BUILTIN as identifier (also the SHOW BUILTIN FUNCTIONS modifier)
     | FUNCTIONS     // Allow FUNCTIONS as identifier (INFORMATION_SCHEMA view)
     | GENERATION    // Allow GENERATION as identifier (also a CREATE WAREHOUSE property)
     | GENERATOR     // Allow GENERATOR as identifier (table function)
@@ -2007,8 +2156,6 @@ identifier
     | NUMBER        // Allow NUMBER as identifier (the NUMBER type is anchored in dataTypeName)
     | RENAME        // Allow RENAME as identifier (star-modifier / ALTER ... RENAME are anchored)
     | REPLACE       // Allow REPLACE as identifier (CREATE OR REPLACE / star-modifier are anchored)
-    | GROUP         // Allow GROUP as identifier in expression positions (GROUP BY is anchored; bare
-                    // aliases deliberately EXCLUDE it via nonJoinKeywordIdentifier)
     | GROUPING      // Allow GROUPING as identifier (function name)
     | HOUR          // Allow HOUR as identifier (can be column name)
     | HOURS         // Allow HOURS as identifier (can be column name)
@@ -2065,7 +2212,6 @@ identifier
     | UNBOUNDED     // Allow UNBOUNDED as identifier (window-frame keyword)
     | PRECEDING     // Allow PRECEDING as identifier (window-frame keyword)
     | FOLLOWING     // Allow FOLLOWING as identifier (window-frame keyword)
-    | SAMPLE        // Allow SAMPLE as identifier (sampling keyword)
     | SYSTEM        // Allow SYSTEM as identifier (sampling method)
     | SEED          // Allow SEED as identifier (sampling keyword)
     | BERNOULLI     // Allow BERNOULLI as identifier (sampling method)
@@ -2104,11 +2250,10 @@ identifier
     | SUSPEND_TASK_AFTER_NUM_FAILURES
     | TABLES        // Allow TABLES as identifier (for INFORMATION_SCHEMA views)
     | RLIKE         // Allow RLIKE as identifier (also the RLIKE(subject, pattern) function form)
-    | REGEXP        // Allow REGEXP as identifier (function-name style usage)
     | TAG           // Allow TAG as identifier
     | DIRECTORY     // Allow DIRECTORY as identifier (also the DIRECTORY(@stage) table source)
     | FIELDS        // Allow FIELDS as identifier (also CAST ... RENAME/ADD FIELDS)
-    | NVARCHAR | NCHAR | CHARACTER | VARYING | TIMESTAMPLTZ | TIMESTAMPTZ | LOCAL | ZONE
+    | NVARCHAR | NVARCHAR2 | NCHAR | CHARACTER | VARYING | TIMESTAMPLTZ | TIMESTAMPTZ | LOCAL | ZONE
     | TERSE         // Allow TERSE as identifier (also the SHOW TERSE modifier)
     | STARTS        // Allow STARTS as identifier (also SHOW ... STARTS WITH)
     | HISTORY       // Allow HISTORY as identifier (also SHOW ... HISTORY)
@@ -2152,11 +2297,11 @@ identifier
     | REFERENCES
     | SQL
     | TRUNCATE      // Allow TRUNCATE as identifier (TRUNCATE() numeric function, alias of TRUNC)
-    | START         // reserved-ish keywords that are also valid as plain column/alias names
     | CLUSTER
     | IDENTITY
     | CHANGES
     | NUMERIC
+    | DEC           // Allow DEC as identifier (also the DEC(p,s) NUMBER alias)
     | STREAM
     | NETWORK
     | UNPIVOT
@@ -2194,7 +2339,7 @@ nonJoinKeywordIdentifier
     | NUMBER
     | RENAME
     | REPLACE
-    | NVARCHAR | NCHAR | CHARACTER | VARYING | TIMESTAMPLTZ | TIMESTAMPTZ | LOCAL | ZONE
+    | NVARCHAR | NVARCHAR2 | NCHAR | CHARACTER | VARYING | TIMESTAMPLTZ | TIMESTAMPTZ | LOCAL | ZONE
     | TERSE
     | STARTS
     | HISTORY
@@ -2203,7 +2348,12 @@ nonJoinKeywordIdentifier
     | CLASS
     | PACKAGE
     | RLIKE
-    | REGEXP
+    // Live-verified per word: `FROM h prior` and `FROM h connect_by_root` are accepted as bare table
+    // aliases by Snowflake, while `FROM h asof` and `FROM h match_condition` are syntax errors there —
+    // so ASOF and MATCH_CONDITION are deliberately NOT listed (ASOF would also make `FROM x asof JOIN y`
+    // ambiguous with the ASOF join it introduces).
+    | PRIOR
+    | CONNECT_BY_ROOT
     | QUOTED_IDENTIFIER
     | POSITIONAL_PARAMETER
     | DATE
@@ -2240,7 +2390,6 @@ nonJoinKeywordIdentifier
     | KEY
     | TAG
     | NEXTVAL
-    | CURRVAL
     | CURRENT_TIMESTAMP
     | CURRENT_DATE
     | CURRENT_TIME
@@ -2273,11 +2422,11 @@ nonJoinKeywordIdentifier
     | SECONDS
     | RESOURCE
     | SHOW_INITIAL_ROWS
-    | START         // reserved-ish keywords that are also valid as bare (no-AS) table aliases
     | CLUSTER
     | IDENTITY
     | CHANGES
     | NUMERIC
+    | DEC           // Allow DEC as identifier (also the DEC(p,s) NUMBER alias)
     | STREAM
     | NETWORK
     | UNPIVOT
@@ -2439,6 +2588,7 @@ SESSIONS: S E S S I O N S;
 OBJECTS: O B J E C T S;
 PROCEDURES: P R O C E D U R E S;
 FUNCTIONS: F U N C T I O N S;
+BUILTIN: B U I L T I N;
 
 // Stream, Task, Warehouse, Stage
 STREAM: S T R E A M;
@@ -2462,6 +2612,17 @@ FULL: F U L L;
 OUTER: O U T E R;
 CROSS: C R O S S;
 LATERAL: L A T E R A L;
+// Snowflake ASOF JOIN (closest-match time-series join) and its mandatory MATCH_CONDITION clause.
+// Live-verified: only the bare `ASOF JOIN` spelling exists — LEFT/RIGHT/INNER ASOF are syntax errors.
+ASOF: A S O F;
+MATCH_CONDITION: M A T C H UNDERSCORE C O N D I T I O N;
+// Hierarchical-query keywords: `[START WITH <pred>] CONNECT BY [PRIOR] c = [PRIOR] c` plus the
+// CONNECT_BY_ROOT pseudo-column. CONNECT is reserved in Snowflake (live-verified: a column named
+// `connect` is a syntax error) — ASOF / MATCH_CONDITION / PRIOR / CONNECT_BY_ROOT are not, so they
+// stay usable as identifiers via the `identifier` rule.
+CONNECT: C O N N E C T;
+PRIOR: P R I O R;
+CONNECT_BY_ROOT: C O N N E C T UNDERSCORE B Y UNDERSCORE R O O T;
 RESUME: R E S U M E;
 SUSPEND: S U S P E N D;
 PAUSE: P A U S E;
@@ -2609,6 +2770,7 @@ ICEBERG: I C E B E R G;
 APPLICATION: A P P L I C A T I O N;
 CLASS: C L A S S;
 PACKAGE: P A C K A G E;
+NVARCHAR2: N V A R C H A R '2';
 NVARCHAR: N V A R C H A R;
 NCHAR: N C H A R;
 CHARACTER: C H A R A C T E R;
@@ -2685,6 +2847,7 @@ BYTEINT: B Y T E I N T;
 NUMBER: N U M B E R;
 DECIMAL: D E C I M A L;
 NUMERIC: N U M E R I C;
+DEC: D E C;
 FLOAT: F L O A T;
 FLOAT4: F L O A T '4';
 FLOAT8: F L O A T '8';
@@ -2693,6 +2856,8 @@ REAL: R E A L;
 PRECISION: P R E C I S I O N;
 UUID: U U I D;
 VECTOR: V E C T O R;
+GEOGRAPHY: G E O G R A P H Y;
+GEOMETRY: G E O M E T R Y;
 VARCHAR: V A R C H A R;
 STRING: S T R I N G;
 TEXT: T E X T;

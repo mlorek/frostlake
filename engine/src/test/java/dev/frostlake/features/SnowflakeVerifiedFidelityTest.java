@@ -19,6 +19,7 @@ package dev.frostlake.features;
 import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
 
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
@@ -34,6 +35,11 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 public class SnowflakeVerifiedFidelityTest extends BaseDatabaseTest {
 
+    private static final String EMBEDDED_SESSION_CONTEXT =
+        "reads the active database/schema off engine.getCatalog(), which under SF_LIVE is still "
+        + "the EMBEDDED catalog — the CREATE DATABASE/SCHEMA moved the context of the SNOWFLAKE "
+        + "session, not of the embedded engine, so the accessor reports the embedded default";
+
     private Object scalar(final String sql) {
         final ResultSet rs = engine.executeQuery(sql);
         return rs.getRows().get(0).getValue(0);
@@ -41,6 +47,7 @@ public class SnowflakeVerifiedFidelityTest extends BaseDatabaseTest {
 
     @Test
     public void createSchemaActivatesTheNewSchema() {
+        Assumptions.assumeFalse(isLiveSnowflake(), EMBEDDED_SESSION_CONTEXT);
         engine.execute("CREATE TABLE ctx_t (id INTEGER)");
         engine.execute("CREATE SCHEMA ctx_other");
         assertEquals("CTX_OTHER", engine.getCatalog().getCurrentSchema());
@@ -51,6 +58,7 @@ public class SnowflakeVerifiedFidelityTest extends BaseDatabaseTest {
 
     @Test
     public void createDatabaseActivatesItWithPublicSchema() {
+        Assumptions.assumeFalse(isLiveSnowflake(), EMBEDDED_SESSION_CONTEXT);
         engine.execute("CREATE DATABASE ctx_db");
         assertEquals("CTX_DB", engine.getCatalog().getCurrentDatabase());
         assertEquals("PUBLIC", engine.getCatalog().getCurrentSchema());

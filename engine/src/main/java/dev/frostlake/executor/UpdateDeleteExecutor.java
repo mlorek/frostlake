@@ -74,7 +74,7 @@ final class UpdateDeleteExecutor {
             String tableName = ctx.objectName().KW_IDENTIFIER() != null
                 ? executor.resolveObjectName(ctx.objectName())
                 : executor.getQualifiedName(ctx.objectName().qualifiedName());
-            Table table = executor.getCatalog().resolveTable(tableName);
+            Table table = executor.getCatalog().resolveTableAsWritten(tableName, "Object");
 
             // Check UPDATE permission
             if (executor.getSecurityManager() != null) {
@@ -85,8 +85,7 @@ final class UpdateDeleteExecutor {
             Map<String, String> assignments = new HashMap<>();
             for (final FrostlakeParser.AssignmentContext assign : ctx.assignmentList().assignment()) {
                 // Handle qualified identifiers (table.column) or simple identifiers
-                List<FrostlakeParser.IdentifierContext> identifiers = assign.identifier();
-                String colName = executor.getIdentifier(identifiers.get(identifiers.size() - 1));
+                String colName = ParseTreeText.namePartText(assign.namePart());
                 // getOriginalText (not getText) so whitespace is preserved — a value like
                 // (SELECT MAX(value) FROM test) must stay parseable when re-evaluated.
                 String value = executor.getOriginalText(assign.expression());
@@ -149,7 +148,7 @@ final class UpdateDeleteExecutor {
                         Object newValue = executor.evaluateExpression(valueExpr, row, table);
                         row.setValue(colIndex, newValue);
                     }
-                    executor.enforceColumnConstraints(table, row);
+                    executor.enforceColumnConstraintsForDml(table, row);
 
                     // Log transaction
                     if (executor.getTransactionManager().hasActiveTransaction()) {
@@ -173,7 +172,7 @@ final class UpdateDeleteExecutor {
         } catch (final SecurityException e) {
             throw e; // Let security exceptions propagate
         } catch (final Exception e) {
-            throw new RuntimeException("Failed to execute UPDATE: " + e.getMessage(), e);
+            throw StatementErrors.propagate(e);
         }
     }
 
@@ -194,7 +193,7 @@ final class UpdateDeleteExecutor {
             String tableName = ctx.objectName().KW_IDENTIFIER() != null
                 ? executor.resolveObjectName(ctx.objectName())
                 : executor.getQualifiedName(ctx.objectName().qualifiedName());
-            Table table = executor.getCatalog().resolveTable(tableName);
+            Table table = executor.getCatalog().resolveTableAsWritten(tableName, "Object");
 
             // Check DELETE permission
             if (executor.getSecurityManager() != null) {
@@ -270,7 +269,7 @@ final class UpdateDeleteExecutor {
         } catch (final SecurityException e) {
             throw e; // Let security exceptions propagate
         } catch (final Exception e) {
-            throw new RuntimeException("Failed to execute DELETE: " + e.getMessage(), e);
+            throw StatementErrors.propagate(e);
         }
     }
 
@@ -423,7 +422,7 @@ final class UpdateDeleteExecutor {
             final Object newValue = executor.evaluateExpression(entry.getValue(), newRow, table);
             newRow.setValue(colIndex, newValue);
         }
-        executor.enforceColumnConstraints(table, newRow);
+        executor.enforceColumnConstraintsForDml(table, newRow);
         return newRow;
     }
 
@@ -625,6 +624,12 @@ final class UpdateDeleteExecutor {
         // Explicit JOINs. Register the right side BEFORE applyJoin so its ON condition can resolve.
         if (joinClauses != null) {
             for (final FrostlakeParser.JoinClauseContext jc : joinClauses) {
+                // The closest-match join is a SELECT-side operator; an UPDATE/DELETE source list would
+                // silently degrade it to a plain join here, so reject it outright instead.
+                if (jc.ASOF() != null || jc.asofMatchCondition() != null) {
+                    throw new RuntimeException(
+                        "ASOF JOIN is not supported in the FROM clause of an UPDATE or DELETE.");
+                }
                 final TableData r = executor.executeTableReference(jc.tableReference(), null, cteResults);
                 registerSource(r, allTables, aliasToTable, srcAllTables, srcAliasToTable);
                 srcRows = executor.applyJoin(srcRows, srcTable, r.rows, r.table, jc, srcAliasToTable, srcAllTables, null);
@@ -681,7 +686,7 @@ final class UpdateDeleteExecutor {
         for (final Map.Entry<Integer, Expression> s : setByColumn.entrySet()) {
             newRow.setValue(s.getKey(), ev.evaluate(s.getValue(), combinedRow));
         }
-        executor.enforceColumnConstraints(target, newRow);
+        executor.enforceColumnConstraintsForDml(target, newRow);
         return newRow;
     }
 

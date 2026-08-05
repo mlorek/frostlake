@@ -16,32 +16,34 @@
 
 package dev.frostlake.functions.scalar.math;
 
-import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.functions.NumericArgumentFunction;
 import dev.frostlake.types.NumericType;
 
 import java.util.List;
 
-public class Log extends BuiltInFunction {
+public class Log extends NumericArgumentFunction {
     public Log() { super("LOG", NumericType.DOUBLE); }
 
     @Override
     public Object evaluate(final List<Object> args) {
-        if (args.get(0) == null) return null;
-
-        if (args.size() == 1) {
-            double num = ((Number) args.get(0)).doubleValue();
-            if (num <= 0) throw new RuntimeException("LOG requires a positive number");
-            return Math.log10(num);
-        } else {
-            double base = ((Number) args.get(0)).doubleValue();
-            double num = ((Number) args.get(1)).doubleValue();
-            if (base <= 0 || base == 1 || num <= 0) {
-                throw new RuntimeException("LOG requires positive numbers and base != 1");
-            }
-            return Math.log(num) / Math.log(base);
+        // Snowflake's LOG is strictly two-argument: LOG(base, x) (live-verified — LOG(10) is
+        // "not enough arguments ... expected 2, got 1").
+        if (args.get(0) == null || args.get(1) == null) return null;
+        final double base = ((Number) args.get(0)).doubleValue();
+        final double num = ((Number) args.get(1)).doubleValue();
+        if (base <= 0 || base == 1 || num <= 0) {
+            // Live-verified wording: "Invalid floating point operation: log(10,-1)".
+            throw new RuntimeException("Invalid floating point operation: log("
+                + trimNumber(args.get(0)) + "," + trimNumber(args.get(1)) + ")");
         }
+        return Math.log(num) / Math.log(base);
     }
 
-    @Override public int getMinArgCount() { return 1; }
+    private static String trimNumber(final Object value) {
+        final String text = value.toString();
+        return text.endsWith(".0") ? text.substring(0, text.length() - 2) : text;
+    }
+
+    @Override public int getMinArgCount() { return 2; }
     @Override public int getMaxArgCount() { return 2; }
 }

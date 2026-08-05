@@ -17,13 +17,30 @@
 package dev.frostlake.metastore;
 
 import dev.frostlake.config.S3PathResolver;
-import dev.frostlake.metastore.model.*;
+import dev.frostlake.executor.SqlCompilationError;
+import dev.frostlake.metastore.model.Database;
+import dev.frostlake.metastore.model.FileFormat;
+import dev.frostlake.metastore.model.Pipe;
 import dev.frostlake.metastore.model.Privilege;
+import dev.frostlake.metastore.model.Role;
+import dev.frostlake.metastore.model.Schema;
+import dev.frostlake.metastore.model.Stage;
 import dev.frostlake.metastore.model.StageType;
+import dev.frostlake.metastore.model.Stream;
+import dev.frostlake.metastore.model.Table;
+import dev.frostlake.metastore.model.TableColumn;
+import dev.frostlake.metastore.model.Tag;
+import dev.frostlake.metastore.model.User;
+import dev.frostlake.metastore.model.View;
+import dev.frostlake.metastore.model.Warehouse;
 import dev.frostlake.metastore.model.WarehouseSize;
 import dev.frostlake.security.SessionContext;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 public class Catalog {
@@ -99,7 +116,7 @@ public class Catalog {
     public void dropDatabase(final String name, final boolean cascade) {
         String upperName = name.toUpperCase();
         if (!databases.containsKey(upperName)) {
-            throw new RuntimeException("Database does not exist: " + name);
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Database", name));
         }
         databases.remove(upperName);
     }
@@ -107,7 +124,7 @@ public class Catalog {
     public Database getDatabase(final String name) {
         Database db = databases.get(name.toUpperCase());
         if (db == null) {
-            throw new RuntimeException("Database does not exist: " + name);
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Database", name));
         }
         return db;
     }
@@ -274,6 +291,43 @@ public class Catalog {
         }
     }
 
+    /**
+     * The table a QUERY or DML statement named, with a miss reported the way Snowflake reports it there:
+     * the name exactly as the writer spelled it when they spelled it bare, expanded in full when they
+     * supplied any qualifier at all, and under {@code reportedKind} — {@code Object} for a FROM clause, an
+     * UPDATE or a DELETE, {@code Table} for INSERT and DESCRIBE. Measured on a real account:
+     * {@code SELECT 1 FROM nosuch} answers {@code Object 'NOSUCH' …} while {@code SELECT 1 FROM s.nosuch}
+     * answers {@code Object 'DB.S.NOSUCH' …}. DDL differs — it always spells the name in full — which is
+     * what plain {@link #resolveTable(QualifiedName)} does.
+     */
+    public Table resolveTableAsWritten(final String qualifiedName, final String reportedKind) {
+        return resolveTableAsWritten(QualifiedName.parse(qualifiedName), reportedKind);
+    }
+
+    public Table resolveTableAsWritten(final QualifiedName qn, final String reportedKind) {
+        if (qn.size() != 1) {
+            // Any qualifier at all and the reported name is the fully expanded one, which is exactly what
+            // the schema already spells — only the kind can differ.
+            if ("Table".equals(reportedKind)) {
+                return resolveTable(qn);
+            }
+            if (getCurrentDatabase() == null) {
+                throw new RuntimeException("No database selected");
+            }
+            final Schema schema = qn.size() == 2
+                ? getDatabase(getCurrentDatabase()).getSchema(qn.part(0))
+                : getDatabase(qn.part(0)).getSchema(qn.part(1));
+            final String last = qn.part(qn.size() - 1);
+            return schema.getTable(last, schema.getDatabaseName() + "." + schema.getName() + "." + last,
+                reportedKind);
+        }
+        if (getCurrentDatabase() == null || getCurrentSchema() == null) {
+            throw new RuntimeException("No database or schema selected");
+        }
+        return getDatabase(getCurrentDatabase()).getSchema(getCurrentSchema())
+            .getTable(qn.part(0), qn.part(0), reportedKind);
+    }
+
     public View resolveView(final String qualifiedName) {
         return resolveView(QualifiedName.parse(qualifiedName));
     }
@@ -335,7 +389,7 @@ public class Catalog {
     public void dropWarehouse(final String name) {
         String upperName = name.toUpperCase();
         if (!warehouses.containsKey(upperName)) {
-            throw new RuntimeException("Warehouse does not exist: " + name);
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Warehouse", name));
         }
         if ("COMPUTE_WH".equals(upperName)) {
             throw new RuntimeException("Cannot drop default warehouse");
@@ -346,7 +400,7 @@ public class Catalog {
     public Warehouse getWarehouse(final String name) {
         Warehouse wh = warehouses.get(name.toUpperCase());
         if (wh == null) {
-            throw new RuntimeException("Warehouse does not exist: " + name);
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Warehouse", name));
         }
         return wh;
     }
@@ -718,7 +772,7 @@ public class Catalog {
     public void dropUser(final String name) {
         String upperName = name.toUpperCase();
         if (!users.containsKey(upperName)) {
-            throw new RuntimeException("User does not exist: " + name);
+            throw new RuntimeException(SqlCompilationError.doesNotExist("User", name));
         }
         users.remove(upperName);
     }
@@ -726,7 +780,7 @@ public class Catalog {
     public User getUser(final String name) {
         User user = users.get(name.toUpperCase());
         if (user == null) {
-            throw new RuntimeException("User does not exist: " + name);
+            throw new RuntimeException(SqlCompilationError.doesNotExist("User", name));
         }
         return user;
     }
@@ -751,7 +805,7 @@ public class Catalog {
     public void dropRole(final String name) {
         String upperName = name.toUpperCase();
         if (!roles.containsKey(upperName)) {
-            throw new RuntimeException("Role does not exist: " + name);
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Role", name));
         }
         // Cannot drop system roles
         if (isSystemRole(upperName)) {
@@ -776,7 +830,7 @@ public class Catalog {
     public Role getRole(final String name) {
         Role role = roles.get(name.toUpperCase());
         if (role == null) {
-            throw new RuntimeException("Role does not exist: " + name);
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Role", name));
         }
         return role;
     }

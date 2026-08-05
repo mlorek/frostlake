@@ -17,6 +17,7 @@
 package dev.frostlake.functions.aggregate;
 
 import dev.frostlake.functions.AggregateFunction;
+import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.types.VariantType;
 
 import java.util.List;
@@ -35,6 +36,17 @@ public class MaxBy extends AggregateFunction {
     @Override
     public Accumulator createAccumulator() {
         return new MaxByMinByAccumulator(true);
+    }
+
+    /**
+     * Neither half takes a GEOSPATIAL value, where both take an OBJECT. Live,
+     * {@code MAX_BY(o, n)} returns the object while {@code MAX_BY(g, n)} is "Invalid argument types for
+     * function 'MAX_BY': (GEOGRAPHY, NUMBER(38,0))" and {@code MIN_BY(n, g)} names the SORT-KEY half —
+     * so the answer is the same for every position rather than only the value one.
+     */
+    @Override
+    public SemiStructuredRejection geoRejection(final int position) {
+        return SemiStructuredRejection.ARGUMENT_TYPES;
     }
 
     @Override

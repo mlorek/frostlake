@@ -18,13 +18,19 @@ package dev.frostlake.functions;
 
 import dev.frostlake.BaseDatabaseTest;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /**
  * TO_NUMBER (and its synonyms TO_DECIMAL / TO_NUMERIC): a (precision, scale) pair rounds the value to
- * the requested scale (HALF_AWAY_FROM_ZERO), and string inputs tolerate group separators, currency
- * symbols and whitespace. Previously all extra arguments were ignored and a formatted string threw.
+ * the requested scale (HALF_AWAY_FROM_ZERO). Decoration in a string input — group separators, a
+ * currency symbol — is accepted only when a FORMAT MODEL declares it; the bare call takes a plain
+ * numeric string. A format argument governs PARSING only — without an explicit (precision, scale) the
+ * result still defaults to NUMBER(38,0), i.e. rounds to a whole number (live-verified). Previously all
+ * extra arguments were ignored and a formatted string threw.
  */
 public class ToNumberTest extends BaseDatabaseTest {
 
@@ -45,19 +51,45 @@ public class ToNumberTest extends BaseDatabaseTest {
     }
 
     @Test
-    public void stripsGroupSeparators() {
-        // The comma group separator is stripped; the bare call then rounds to NUMBER(38,0): 1,234.56 -> 1235.
-        assertEquals(1235.0, num("SELECT TO_NUMBER('1,234.56')"), 1e-9);
+    public void groupSeparatorsNeedAFormatModel() {
+        // Live-verified on a real account: with NO format, TO_NUMBER('1,234.56') fails
+        // "Numeric value '1,234.56' is not recognized" — the comma is not stripped for free. Declare it
+        // in a format model and the same string parses, then rounds to NUMBER(38,0) -> 1235.
+        assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                num("SELECT TO_NUMBER('1,234.56')");
+            }
+        });
+        assertEquals(1235.0, num("SELECT TO_NUMBER('1,234.56', '9,999.99')"), 1e-9);
+        // TRY_TO_NUMBER turns the same rejection into NULL (live-verified).
+        assertNull(engine.executeQuery("SELECT TRY_TO_NUMBER('1,234.56')").getRows().get(0).getValue(0));
     }
 
     @Test
-    public void stripsCurrencyAndRoundsToScale() {
-        assertEquals(1234.57, num("SELECT TO_NUMBER('$1,234.567', 10, 2)"), 1e-9);
+    public void currencyNeedsAFormatModelToo() {
+        // Live: TO_NUMBER('$1,234.567', 10, 2) fails "Numeric value '$1,234.567' is not recognized" —
+        // a (precision, scale) pair is not a format model. With one, the value parses and scales.
+        assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                num("SELECT TO_NUMBER('$1,234.567', 10, 2)");
+            }
+        });
+        assertEquals(1234.57, num("SELECT TO_NUMBER('$1,234.567', '$9,999.000', 10, 2)"), 1e-9);
     }
 
     @Test
-    public void formatStringDoesNotBlockParsing() {
-        assertEquals(1234.56, num("SELECT TO_NUMBER('1,234.56', '9,999.99')"), 1e-9);
+    public void formatParsesButScaleStillDefaultsToZero() {
+        // A format governs PARSING only — with no explicit (precision, scale) the result still
+        // defaults to NUMBER(38,0) (live: TO_NUMBER('1,234.56', '9,999.99') → 1235).
+        assertEquals(1235.0, num("SELECT TO_NUMBER('1,234.56', '9,999.99')"), 1e-9);
+    }
+
+    @Test
+    public void formatWithExplicitPrecisionAndScale() {
+        // live: TO_NUMBER('1,234.56', '9,999.99', 10, 2) → 1234.56.
+        assertEquals(1234.56, num("SELECT TO_NUMBER('1,234.56', '9,999.99', 10, 2)"), 1e-9);
     }
 
     @Test

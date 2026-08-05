@@ -53,12 +53,14 @@ public class SimpleShadowingTest {
 
         engine.execute("""
             DECLARE x INTEGER := 5;
-            INSERT INTO results VALUES (x);
             BEGIN
+                INSERT INTO results VALUES (:x);
                 DECLARE x INTEGER := 20;
-                INSERT INTO results VALUES (x);
+                BEGIN
+                    INSERT INTO results VALUES (:x);
+                END;
+                INSERT INTO results VALUES (:x);
             END;
-            INSERT INTO results VALUES (x);
             """);
 
         ResultSet rs = engine.executeQuery("SELECT * FROM results ORDER BY value");
@@ -81,17 +83,19 @@ public class SimpleShadowingTest {
 
         engine.execute("""
             DECLARE x INTEGER := 5;
-            INSERT INTO results VALUES (x);
             BEGIN
+                INSERT INTO results VALUES (:x);
                 DECLARE x INTEGER := 20;
-                INSERT INTO results VALUES (x);
                 BEGIN
+                    INSERT INTO results VALUES (:x);
                     DECLARE x INTEGER := 100;
-                    INSERT INTO results VALUES (x);
+                    BEGIN
+                        INSERT INTO results VALUES (:x);
+                    END;
+                    INSERT INTO results VALUES (:x);
                 END;
-                INSERT INTO results VALUES (x);
+                INSERT INTO results VALUES (:x);
             END;
-            INSERT INTO results VALUES (x);
             """);
 
         ResultSet rs = engine.executeQuery("SELECT * FROM results");

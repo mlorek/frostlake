@@ -18,7 +18,10 @@ package dev.frostlake.features;
 
 import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
+import dev.frostlake.storage.Row;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -29,10 +32,20 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Tests for SEQUENCE object support
+  *
+ * <p>NOTE (live-verified): Snowflake sequences are NOT gap-free — NEXTVAL calls in separate
+ * statements allocate per-statement ranges (START 10 INCREMENT 10 returned 10, then 1010), so the
+ * exact values asserted here are Frostlake's deterministic gap-free behavior; on a real account
+ * only ordering/uniqueness/increment-within-a-statement hold.
  */
 public class SequencesTest extends BaseDatabaseTest {
 
     private static final Logger logger = LoggerFactory.getLogger(SequencesTest.class);
+
+    private static final String ALLOCATED_VALUES =
+        "asserts the ACTUAL values NEXTVAL hands out across separate statements; Snowflake allocates per "
+        + "statement out of nondeterministic ranges (a probe saw 1,2,3,4 then 101,102, then 104), so only "
+        + "ordering, uniqueness and the increment WITHIN one statement are portable";
 
     @Test
     public void testCreateSequence() {
@@ -57,8 +70,12 @@ public class SequencesTest extends BaseDatabaseTest {
         assertNotNull(sequences);
         assertEquals(1, sequences.getRowCount());
         assertEquals("SEQ_CUSTOM", sequences.getRows().get(0).getValue(sequences.getColumnIndex("name")));
-        assertEquals(100L, sequences.getRows().get(0).getValue(sequences.getColumnIndex("start_value")));
-        assertEquals(5L, sequences.getRows().get(0).getValue(sequences.getColumnIndex("increment")));
+        // SHOW SEQUENCES names the two numbers next_value / interval, not start_value / increment —
+        // live-verified on a real account; a fresh sequence's next_value is its START.
+        assertEquals(100L, sequences.getRows().get(0).getValue(sequences.getColumnIndex("next_value")));
+        assertEquals(5L, sequences.getRows().get(0).getValue(sequences.getColumnIndex("interval")));
+        assertEquals("TEST_DB",
+            sequences.getRows().get(0).getValue(sequences.getColumnIndex("database_name")));
         logger.info("Created sequence with START=100, INCREMENT=5");
     }
 
@@ -70,7 +87,11 @@ public class SequencesTest extends BaseDatabaseTest {
 
         ResultSet describe = engine.executeQuery("DESCRIBE SEQUENCE seq_comment");
         assertNotNull(describe);
-        assertTrue(describe.getRowCount() >= 3);
+        // Live Snowflake DESC SEQUENCE returns one columnar row; the comment lands in its own column.
+        assertEquals(1, describe.getRowCount());
+        final Row row = describe.getRows().get(0);
+        assertEquals("SEQ_COMMENT", row.getValue(describe.getColumnIndex("name")));
+        assertEquals("Test sequence", row.getValue(describe.getColumnIndex("comment")));
         logger.info("Created sequence with comment");
     }
 
@@ -134,6 +155,7 @@ public class SequencesTest extends BaseDatabaseTest {
 
     @Test
     public void testNextValFunction() {
+        Assumptions.assumeFalse(isLiveSnowflake(), ALLOCATED_VALUES);
         logger.info("Testing NEXTVAL function");
 
         engine.execute("CREATE SEQUENCE seq_nextval START WITH 1 INCREMENT BY 1");
@@ -152,6 +174,7 @@ public class SequencesTest extends BaseDatabaseTest {
 
     @Test
     public void testNextValWithCustomIncrement() {
+        Assumptions.assumeFalse(isLiveSnowflake(), ALLOCATED_VALUES);
         logger.info("Testing NEXTVAL with custom increment");
 
         engine.execute("CREATE SEQUENCE seq_inc START WITH 10 INCREMENT BY 10");
@@ -170,6 +193,7 @@ public class SequencesTest extends BaseDatabaseTest {
 
     @Test
     public void testNextValWithNegativeIncrement() {
+        Assumptions.assumeFalse(isLiveSnowflake(), ALLOCATED_VALUES);
         logger.info("Testing NEXTVAL with negative increment");
 
         engine.execute("CREATE SEQUENCE seq_neg START WITH 100 INCREMENT BY -5");
@@ -187,20 +211,21 @@ public class SequencesTest extends BaseDatabaseTest {
     }
 
     @Test
-    public void testCurrValFunction() {
-        logger.info("Testing CURRVAL function");
+    public void testCurrValFunctionIsRejected() {
+        logger.info("Testing that the CURRVAL function form is rejected");
 
         engine.execute("CREATE SEQUENCE seq_currval START WITH 1 INCREMENT BY 1");
-
         engine.executeQuery("SELECT seq_currval.NEXTVAL as val");
-        ResultSet current1 = engine.executeQuery("SELECT CURRVAL('seq_currval') as val");
-        assertEquals(1L, ((Number) current1.getRows().get(0).getValues().get(0)).longValue());
 
-        engine.executeQuery("SELECT seq_currval.NEXTVAL as val");
-        ResultSet current2 = engine.executeQuery("SELECT CURRVAL('seq_currval') as val");
-        assertEquals(2L, ((Number) current2.getRows().get(0).getValues().get(0)).longValue());
+        // Live-verified: Snowflake has no CURRVAL — the call form is a syntax error.
+        assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.executeQuery("SELECT CURRVAL('seq_currval') as val");
+            }
+        });
 
-        logger.info("CURRVAL returns correct current value");
+        logger.info("CURRVAL function form correctly rejected");
     }
 
     @Test
@@ -218,6 +243,7 @@ public class SequencesTest extends BaseDatabaseTest {
 
     @Test
     public void testSequenceInInsert() {
+        Assumptions.assumeFalse(isLiveSnowflake(), ALLOCATED_VALUES);
         logger.info("Testing sequence in INSERT statement");
 
         engine.execute("CREATE TABLE seq_table (id INTEGER, name VARCHAR)");
@@ -237,44 +263,40 @@ public class SequencesTest extends BaseDatabaseTest {
     }
 
     @Test
-    public void testAlterSequenceRestart() {
-        logger.info("Testing ALTER SEQUENCE RESTART");
+    public void testAlterSequenceRestartIsRejected() {
+        logger.info("Testing that ALTER SEQUENCE ... RESTART WITH is rejected");
 
         engine.execute("CREATE SEQUENCE seq_restart START WITH 1 INCREMENT BY 1");
 
         ResultSet val1 = engine.executeQuery("SELECT seq_restart.NEXTVAL as val");
         assertEquals(1L, ((Number) val1.getRows().get(0).getValues().get(0)).longValue());
 
-        ResultSet val2 = engine.executeQuery("SELECT seq_restart.NEXTVAL as val");
-        assertEquals(2L, ((Number) val2.getRows().get(0).getValues().get(0)).longValue());
+        // Live-verified: Snowflake ALTER SEQUENCE has no RESTART form.
+        assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.execute("ALTER SEQUENCE seq_restart RESTART WITH 10");
+            }
+        });
 
-        engine.execute("ALTER SEQUENCE seq_restart RESTART WITH 10");
-
-        ResultSet val3 = engine.executeQuery("SELECT seq_restart.NEXTVAL as val");
-        assertEquals(10L, ((Number) val3.getRows().get(0).getValues().get(0)).longValue());
-
-        ResultSet val4 = engine.executeQuery("SELECT seq_restart.NEXTVAL as val");
-        assertEquals(11L, ((Number) val4.getRows().get(0).getValues().get(0)).longValue());
-
-        logger.info("ALTER SEQUENCE RESTART works correctly");
+        logger.info("ALTER SEQUENCE RESTART WITH correctly rejected");
     }
 
     @Test
-    public void testAlterSequenceRestartWithoutValue() {
-        logger.info("Testing ALTER SEQUENCE RESTART without value");
+    public void testAlterSequenceRestartWithoutValueIsRejected() {
+        logger.info("Testing that ALTER SEQUENCE ... RESTART without a value is rejected");
 
         engine.execute("CREATE SEQUENCE seq_restart_orig START WITH 100 INCREMENT BY 1");
 
-        engine.executeQuery("SELECT seq_restart_orig.NEXTVAL as val");
-        engine.executeQuery("SELECT seq_restart_orig.NEXTVAL as val");
-        engine.executeQuery("SELECT seq_restart_orig.NEXTVAL as val");
+        // Live-verified: the bare RESTART form is a syntax error too.
+        assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.execute("ALTER SEQUENCE seq_restart_orig RESTART");
+            }
+        });
 
-        engine.execute("ALTER SEQUENCE seq_restart_orig RESTART");
-
-        ResultSet val = engine.executeQuery("SELECT seq_restart_orig.NEXTVAL as val");
-        assertEquals(100L, ((Number) val.getRows().get(0).getValues().get(0)).longValue());
-
-        logger.info("ALTER SEQUENCE RESTART resets to original start value");
+        logger.info("ALTER SEQUENCE RESTART correctly rejected");
     }
 
     @Test
@@ -297,28 +319,24 @@ public class SequencesTest extends BaseDatabaseTest {
 
         ResultSet describe = engine.executeQuery("DESCRIBE SEQUENCE seq_desc");
         assertNotNull(describe);
-        assertTrue(describe.getRowCount() >= 3);
+        // Live Snowflake DESC SEQUENCE returns ONE row with columns
+        // name | database_name | schema_name | next_value | interval | created_on | owner |
+        // comment | owner_role_type | ordered — not property/value rows.
+        assertEquals(1, describe.getRowCount());
+        final Row row = describe.getRows().get(0);
+        assertEquals("SEQ_DESC", row.getValue(describe.getColumnIndex("name")));
+        assertEquals("TEST_DB", row.getValue(describe.getColumnIndex("database_name")));
+        assertEquals("TEST_SCHEMA", row.getValue(describe.getColumnIndex("schema_name")));
+        assertEquals(50L, ((Number) row.getValue(describe.getColumnIndex("next_value"))).longValue());
+        assertEquals(5L, ((Number) row.getValue(describe.getColumnIndex("interval"))).longValue());
+        assertEquals("N", row.getValue(describe.getColumnIndex("ordered")));
 
-        boolean foundName = false;
-        boolean foundStart = false;
-        boolean foundIncrement = false;
-
-        for (int i = 0; i < describe.getRowCount(); i++) {
-            String property = (String) describe.getRows().get(i).getValues().get(0);
-            if (property.equals("name")) foundName = true;
-            if (property.equals("start_value")) foundStart = true;
-            if (property.equals("increment")) foundIncrement = true;
-        }
-
-        assertTrue(foundName);
-        assertTrue(foundStart);
-        assertTrue(foundIncrement);
-
-        logger.info("DESCRIBE SEQUENCE shows correct properties");
+        logger.info("DESCRIBE SEQUENCE returns the one-row column shape");
     }
 
     @Test
     public void testMultipleSequencesIndependent() {
+        Assumptions.assumeFalse(isLiveSnowflake(), ALLOCATED_VALUES);
         logger.info("Testing multiple sequences are independent");
 
         engine.execute("CREATE SEQUENCE seq_a START WITH 1 INCREMENT BY 1");
@@ -339,6 +357,7 @@ public class SequencesTest extends BaseDatabaseTest {
 
     @Test
     public void testSequenceCaseInsensitivity() {
+        Assumptions.assumeFalse(isLiveSnowflake(), ALLOCATED_VALUES);
         logger.info("Testing sequence name case insensitivity");
 
         engine.execute("CREATE SEQUENCE SeQ_CaSe START WITH 1");
@@ -356,6 +375,7 @@ public class SequencesTest extends BaseDatabaseTest {
 
     @Test
     public void testSequenceInMultipleTables() {
+        Assumptions.assumeFalse(isLiveSnowflake(), ALLOCATED_VALUES);
         logger.info("Testing same sequence used across multiple tables");
 
         engine.execute("CREATE SEQUENCE shared_seq START WITH 1 INCREMENT BY 1");
@@ -391,6 +411,7 @@ public class SequencesTest extends BaseDatabaseTest {
 
     @Test
     public void testSequenceWithLargeNumbers() {
+        Assumptions.assumeFalse(isLiveSnowflake(), ALLOCATED_VALUES);
         logger.info("Testing sequence with large numbers");
 
         engine.execute("CREATE SEQUENCE seq_large START WITH 1000000 INCREMENT BY 1000000");
@@ -423,6 +444,7 @@ public class SequencesTest extends BaseDatabaseTest {
 
     @Test
     public void testCreateSequenceWithNoOrder() {
+        Assumptions.assumeFalse(isLiveSnowflake(), ALLOCATED_VALUES);
         logger.info("Testing CREATE SEQUENCE with NOORDER");
 
         engine.execute("CREATE SEQUENCE seq_noorder START WITH 10 INCREMENT BY 2 NOORDER");
@@ -491,6 +513,7 @@ public class SequencesTest extends BaseDatabaseTest {
 
     @Test
     public void testCreateSequenceWithoutBy() {
+        Assumptions.assumeFalse(isLiveSnowflake(), ALLOCATED_VALUES);
         logger.info("Testing CREATE SEQUENCE INCREMENT without BY");
 
         engine.execute("CREATE SEQUENCE seq_no_by START 1 INCREMENT 10");
@@ -506,6 +529,7 @@ public class SequencesTest extends BaseDatabaseTest {
 
     @Test
     public void testCreateSequenceWithoutWithOrBy() {
+        Assumptions.assumeFalse(isLiveSnowflake(), ALLOCATED_VALUES);
         logger.info("Testing CREATE SEQUENCE without WITH or BY");
 
         engine.execute("CREATE SEQUENCE seq_no_keywords START 50 INCREMENT 5");
@@ -524,6 +548,7 @@ public class SequencesTest extends BaseDatabaseTest {
 
     @Test
     public void testCreateSequenceWithEquals() {
+        Assumptions.assumeFalse(isLiveSnowflake(), ALLOCATED_VALUES);
         logger.info("Testing CREATE SEQUENCE with = syntax");
 
         engine.execute("CREATE SEQUENCE seq_equals START = 1000 INCREMENT = 100");
@@ -539,6 +564,7 @@ public class SequencesTest extends BaseDatabaseTest {
 
     @Test
     public void testCreateSequenceMixedSyntax() {
+        Assumptions.assumeFalse(isLiveSnowflake(), ALLOCATED_VALUES);
         logger.info("Testing CREATE SEQUENCE with mixed syntax");
 
         engine.execute("CREATE SEQUENCE seq_mixed START WITH 10 INCREMENT 3");
@@ -554,6 +580,7 @@ public class SequencesTest extends BaseDatabaseTest {
 
     @Test
     public void testAlterSequenceSetIncrement() {
+        Assumptions.assumeFalse(isLiveSnowflake(), ALLOCATED_VALUES);
         logger.info("Testing ALTER SEQUENCE SET INCREMENT changes the NEXTVAL step");
         engine.execute("CREATE SEQUENCE seq_inc START WITH 1 INCREMENT BY 1");
 
@@ -569,6 +596,7 @@ public class SequencesTest extends BaseDatabaseTest {
 
     @Test
     public void testNextValDotSyntax() {
+        Assumptions.assumeFalse(isLiveSnowflake(), ALLOCATED_VALUES);
         logger.info("Testing the seq.NEXTVAL pseudo-column syntax");
         engine.execute("CREATE SEQUENCE dseq START WITH 5 INCREMENT BY 5");
         assertEquals(5L, ((Number) engine.executeQuery("SELECT dseq.NEXTVAL AS v")
@@ -578,16 +606,22 @@ public class SequencesTest extends BaseDatabaseTest {
     }
 
     @Test
-    public void testCurrValDotSyntax() {
-        logger.info("Testing the seq.CURRVAL pseudo-column syntax");
+    public void testCurrValDotSyntaxIsRejected() {
+        logger.info("Testing that the seq.CURRVAL pseudo-column syntax is rejected");
         engine.execute("CREATE SEQUENCE cseq START WITH 1 INCREMENT BY 1");
         engine.executeQuery("SELECT cseq.NEXTVAL AS v");
-        assertEquals(1L, ((Number) engine.executeQuery("SELECT cseq.CURRVAL AS v")
-            .getRows().get(0).getValue(0)).longValue());
+        // Live-verified: Snowflake has no CURRVAL pseudo-column either.
+        assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.executeQuery("SELECT cseq.CURRVAL AS v");
+            }
+        });
     }
 
     @Test
     public void testSequenceDefaultAppliedOnInsert() {
+        Assumptions.assumeFalse(isLiveSnowflake(), ALLOCATED_VALUES);
         logger.info("Testing a column DEFAULT of seq.NEXTVAL on plain INSERT");
         engine.execute("CREATE SEQUENCE iseq START WITH 100 INCREMENT BY 1");
         engine.execute("CREATE TABLE idef (id INTEGER DEFAULT iseq.NEXTVAL, name VARCHAR)");
@@ -618,5 +652,28 @@ public class SequencesTest extends BaseDatabaseTest {
         assertEquals(2, rs.getRowCount());
         assertEquals(100L, ((Number) rs.getRows().get(0).getValue(0)).longValue());
         assertEquals(101L, ((Number) rs.getRows().get(1).getValue(0)).longValue());
+    }
+
+    /**
+     * A schema-qualified {@code seq.NEXTVAL} inside a JOINED or ALIASED select must resolve through
+     * the sequence machinery, not be mistaken for a FROM-clause qualified column — the alias-shadowing
+     * rule ("an alias replaces the table name") must never swallow it. This is the integration-loader
+     * shape that broke when that rule first landed unscoped.
+     */
+    @Test
+    public void qualifiedNextvalResolvesInsideJoinedAndAliasedSelects() {
+        engine.execute("CREATE SEQUENCE test_schema.seq_join_shape");
+        engine.execute("CREATE TABLE sq_a (id INTEGER)");
+        engine.execute("CREATE TABLE sq_b (id INTEGER)");
+        engine.execute("INSERT INTO sq_a VALUES (1)");
+        engine.execute("INSERT INTO sq_b VALUES (1)");
+
+        final ResultSet joined = engine.executeQuery("SELECT test_schema.seq_join_shape.nextval"
+            + " FROM sq_a a JOIN sq_b b ON a.id = b.id");
+        assertEquals(1L, ((Number) joined.getRows().get(0).getValue(0)).longValue());
+
+        final ResultSet aliased = engine.executeQuery(
+            "SELECT test_schema.seq_join_shape.nextval FROM sq_a x");
+        assertEquals(2L, ((Number) aliased.getRows().get(0).getValue(0)).longValue());
     }
 }

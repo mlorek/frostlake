@@ -17,6 +17,7 @@
 package dev.frostlake.functions.aggregate;
 
 import dev.frostlake.functions.AggregateFunction;
+import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.types.NumericType;
 
 import java.util.List;
@@ -26,6 +27,22 @@ public class ApproxCountDistinct extends AggregateFunction {
 
     @Override
     public Accumulator createAccumulator() { return new HllAccumulator(); }
+
+    /**
+     * The sketch does not accumulate a GEOSPATIAL value, where it accumulates an OBJECT. Live
+     * {@code APPROX_COUNT_DISTINCT(o)} returns 2 while {@code APPROX_COUNT_DISTINCT(g)} and
+     * its {@code HLL(g)} synonym — the same registered object here — are argument-type errors
+     * (SQLSTATE 42P13). {@code COUNT(DISTINCT g)} is NOT affected and returned 2 live: only the
+     * approximate counter refuses.
+     *
+     * <p>Live names 'HLL_ACCUMULATE' rather than the function written, an internal desugaring
+     * Frostlake does not reproduce for the same reason it reports 'AVG' where live reports 'SUM' — the
+     * engine has no such plan to name.
+     */
+    @Override
+    public SemiStructuredRejection geoRejection(final int position) {
+        return SemiStructuredRejection.ARGUMENT_TYPES;
+    }
 
     @Override
     public Object evaluate(final List<Object> args) { return null; }

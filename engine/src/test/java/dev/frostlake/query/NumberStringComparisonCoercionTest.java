@@ -20,8 +20,11 @@ import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Snowflake implicitly coerces a VARCHAR compared against a NUMBER to a number — {@code 999001 =
@@ -30,6 +33,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
  * temp table and join it back to the numeric original. Both halves of the engine needed it: the
  * comparison itself ({@code ExpressionArithmetic}) and the hash-join key bucketing (a numeric-looking
  * string must land in the same bucket as its number, or the equi-join silently returns nothing).
+ * The coercion is not best-effort: a string that cannot be read as a number FAILS the statement.
  */
 public class NumberStringComparisonCoercionTest extends BaseDatabaseTest {
 
@@ -53,8 +57,21 @@ public class NumberStringComparisonCoercionTest extends BaseDatabaseTest {
     @Test
     public void whereCoercesVarcharAgainstANumberLiteral() {
         engine.execute("CREATE TABLE t (k VARCHAR)");
-        engine.execute("INSERT INTO t VALUES ('999001'), ('other')");
+        engine.execute("INSERT INTO t VALUES ('999001'), ('7')");
         assertEquals(1, engine.executeQuery("SELECT k FROM t WHERE k = 999001").getRowCount());
+
+        // A row whose text is NOT numeric fails the whole statement rather than simply not matching.
+        // Live-verified on a real account: the same WHERE over a table holding 'other'
+        // fails "Numeric value 'other' is not recognized".
+        engine.execute("INSERT INTO t VALUES ('other')");
+        final RuntimeException notNumeric = assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.executeQuery("SELECT k FROM t WHERE k = 999001");
+            }
+        });
+        assertTrue(notNumeric.getMessage().contains("Numeric value 'other' is not recognized"),
+            notNumeric.getMessage());
     }
 
     @Test
@@ -63,6 +80,28 @@ public class NumberStringComparisonCoercionTest extends BaseDatabaseTest {
         assertEquals(true, scalar("SELECT '01' = 1"));            // numeric coercion
         assertEquals(false, scalar("SELECT '01' = '1'"));         // two strings: no coercion
         assertEquals(true, scalar("SELECT '100' > 20"));          // ordering coerces too
-        assertEquals(false, scalar("SELECT 'abc' = 1"));          // non-numeric string: no match
+        assertEquals(true, scalar("SELECT '1.5' = 1.5"));         // fractions coerce as well
+
+        // A string that CANNOT be read as a number is an error, not a mismatch. Live-verified on a real
+        // account: SELECT 'abc' = 1 fails "Numeric value 'abc' is not recognized", and so
+        // do 'abc' <> 1, 'other' > 0 and '' = 1.
+        assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                scalar("SELECT 'abc' = 1");
+            }
+        });
+        assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                scalar("SELECT 'abc' <> 1");
+            }
+        });
+        assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                scalar("SELECT '' = 1");
+            }
+        });
     }
 }

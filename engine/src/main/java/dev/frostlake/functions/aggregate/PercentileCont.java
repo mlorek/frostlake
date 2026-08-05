@@ -17,6 +17,7 @@
 package dev.frostlake.functions.aggregate;
 
 import dev.frostlake.functions.AggregateFunction;
+import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.types.NumericType;
 
 import java.math.BigDecimal;
@@ -35,6 +36,18 @@ public class PercentileCont extends AggregateFunction {
 
     @Override public int getMinArgCount() { return 2; }
     @Override public int getMaxArgCount() { return 2; }
+
+    /**
+     * The FRACTION argument is a plain number, and refuses a semi-structured value with the ordinary
+     * argument-type list: live, {@code PERCENTILE_CONT(o) WITHIN GROUP (ORDER BY n)} is
+     * "Invalid argument types for function 'PERCENTILE_CONT': (OBJECT)". The value being ordered sits
+     * in the WITHIN GROUP clause rather than the argument list and refuses with a DIFFERENT sentence
+     * ("incompatible types: [OBJECT] and [NUMBER(9,0)]"), which is applied where that clause is read.
+     */
+    @Override
+    public SemiStructuredRejection semiStructuredRejection(final int position) {
+        return SemiStructuredRejection.ARGUMENT_TYPES;
+    }
 
     public static class PercentileContAccumulator implements Accumulator {
         private final List<Double> values = new ArrayList<>();

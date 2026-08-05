@@ -16,6 +16,7 @@
 
 package dev.frostlake.storage;
 
+import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.TableColumn;
 
@@ -79,7 +80,7 @@ public class StorageEngine {
 
     public void dropTable(final String qualifiedName) {
         if (!tables.containsKey(qualifiedName)) {
-            throw new RuntimeException("Table storage does not exist: " + qualifiedName);
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Table storage", qualifiedName));
         }
         tables.remove(qualifiedName);
     }
@@ -111,7 +112,7 @@ public class StorageEngine {
     public TableStorage getTableStorage(final String qualifiedName) {
         TableStorage storage = tables.get(qualifiedName);
         if (storage == null) {
-            throw new RuntimeException("Table storage does not exist: " + qualifiedName);
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Table storage", qualifiedName));
         }
         return storage;
     }

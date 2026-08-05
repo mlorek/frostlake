@@ -18,6 +18,7 @@ package dev.frostlake.functions.scalar.crypto;
 
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.types.BinaryType;
+import dev.frostlake.values.BinaryValue;
 
 import java.util.List;
 import javax.crypto.Cipher;
@@ -25,17 +26,15 @@ import javax.crypto.spec.GCMParameterSpec;
 import javax.crypto.spec.SecretKeySpec;
 
 /**
- * DECRYPT_RAW(value, key, iv [, [ [additional_authenticated_data,] encryption_method,] aead_tag]) — reverses
- * {@link EncryptRaw}. Following Snowflake's nested-optional signature the AEAD tag is the LAST argument, so
- * the argument list is disambiguated by count:
- * <ul>
- *   <li>4 args: value, key, iv, tag</li>
- *   <li>5 args: value, key, iv, method, tag</li>
- *   <li>6 args: value, key, iv, aad, method, tag</li>
- * </ul>
+ * DECRYPT_RAW(value, key, iv [, additional_authenticated_data [, encryption_method [, aead_tag]]]) —
+ * reverses {@link EncryptRaw}. The optionals nest from the LEFT (live-measured):
+ * the fourth argument is ALWAYS the AAD, the fifth the method, and the AEAD tag sits strictly SIXTH —
+ * a four-argument call putting the tag fourth fails "Decryption mode requires an AEAD tag as
+ * parameter", exactly as any GCM call that never reaches the sixth argument does, and a sixth argument
+ * of the wrong length fails "Wrong AEAD tag size. Expected 16, but got N" (both messages verbatim).
  * All BINARY arguments are hex strings; the returned decrypted value is BINARY (hex). Only AES-GCM is
- * supported, so the tag is required (a 3-argument call is rejected). A wrong key, IV, AAD or tag fails
- * authentication and raises, exactly as Snowflake's GCM verification does.
+ * supported. A wrong key, IV, AAD or tag fails authentication and raises, exactly as Snowflake's GCM
+ * verification does.
  */
 public class DecryptRaw extends BuiltInFunction {
 
@@ -47,31 +46,22 @@ public class DecryptRaw extends BuiltInFunction {
             return null;
         }
         final int n = args.size();
-        final Object aadArg;
-        final Object methodArg;
-        final Object tagArg;
-        switch (n) {
-            case 4:
-                aadArg = null; methodArg = null; tagArg = args.get(3);
-                break;
-            case 5:
-                aadArg = null; methodArg = args.get(3); tagArg = args.get(4);
-                break;
-            case 6:
-                aadArg = args.get(3); methodArg = args.get(4); tagArg = args.get(5);
-                break;
-            default:
-                throw new RuntimeException("DECRYPT_RAW: the AEAD tag argument is required for AES-GCM");
-        }
+        final Object aadArg = n >= 4 ? args.get(3) : null;
+        final Object methodArg = n >= 5 ? args.get(4) : null;
+        final Object tagArg = n >= 6 ? args.get(5) : null;
         RawCipherSupport.requireGcm("DECRYPT_RAW", methodArg);
         if (tagArg == null) {
-            throw new RuntimeException("DECRYPT_RAW: the AEAD tag argument is required for AES-GCM");
+            throw new RuntimeException("Decryption mode requires an AEAD tag as parameter");
+        }
+        final byte[] tag = RawCipherSupport.hexToBytes("DECRYPT_RAW", tagArg.toString());
+        if (tag.length != RawCipherSupport.GCM_TAG_BITS / 8) {
+            throw new RuntimeException("Wrong AEAD tag size. Expected "
+                + (RawCipherSupport.GCM_TAG_BITS / 8) + ", but got " + tag.length);
         }
         try {
             final byte[] ciphertext = RawCipherSupport.hexToBytes("DECRYPT_RAW", args.get(0).toString());
             final byte[] key = RawCipherSupport.hexToBytes("DECRYPT_RAW", args.get(1).toString());
             final byte[] iv = RawCipherSupport.hexToBytes("DECRYPT_RAW", args.get(2).toString());
-            final byte[] tag = RawCipherSupport.hexToBytes("DECRYPT_RAW", tagArg.toString());
             // Java's GCM cipher expects the tag appended to the ciphertext; reassemble the two.
             final byte[] combined = new byte[ciphertext.length + tag.length];
             System.arraycopy(ciphertext, 0, combined, 0, ciphertext.length);
@@ -82,7 +72,7 @@ public class DecryptRaw extends BuiltInFunction {
             if (aadArg != null) {
                 cipher.updateAAD(RawCipherSupport.hexToBytes("DECRYPT_RAW", aadArg.toString()));
             }
-            return RawCipherSupport.bytesToHex(cipher.doFinal(combined));
+            return BinaryValue.of(cipher.doFinal(combined));
         } catch (final Exception e) {
             throw new RuntimeException("DECRYPT_RAW failed: " + e.getMessage());
         }

@@ -17,7 +17,9 @@
 package dev.frostlake.jdbc;
 
 import dev.frostlake.BaseJdbcTest;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
@@ -30,6 +32,10 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class BatchUpdateTest extends BaseJdbcTest {
+
+    private static final String EMPTY_BATCH_SQL =
+        "asserts that the DRIVER rejects an empty / null batch statement, which is Frostlake's own "
+        + "contract; the Snowflake JDBC driver accepts it and only fails later, when the batch runs";
 
     // Statement batch tests
 
@@ -44,9 +50,9 @@ public class BatchUpdateTest extends BaseJdbcTest {
         int[] results = statement.executeBatch();
 
         assertEquals(3, results.length);
-        assertEquals(Statement.SUCCESS_NO_INFO, results[0]);
-        assertEquals(Statement.SUCCESS_NO_INFO, results[1]);
-        assertEquals(Statement.SUCCESS_NO_INFO, results[2]);
+        assertEquals(1, results[0]);
+        assertEquals(1, results[1]);
+        assertEquals(1, results[2]);
 
         ResultSet rs = statement.executeQuery("SELECT COUNT(*) FROM batch1");
         assertTrue(rs.next());
@@ -80,12 +86,24 @@ public class BatchUpdateTest extends BaseJdbcTest {
 
     @Test
     public void testStatementBatchWithNullSQL() throws SQLException {
-        assertThrows(SQLException.class, () -> statement.addBatch(null));
+        Assumptions.assumeFalse(isLiveSnowflake(), EMPTY_BATCH_SQL);
+        assertThrows(SQLException.class, new Executable() {
+            @Override
+            public void execute() throws SQLException {
+                statement.addBatch(null);
+            }
+        });
     }
 
     @Test
     public void testStatementBatchWithEmptySQL() throws SQLException {
-        assertThrows(SQLException.class, () -> statement.addBatch(""));
+        Assumptions.assumeFalse(isLiveSnowflake(), EMPTY_BATCH_SQL);
+        assertThrows(SQLException.class, new Executable() {
+            @Override
+            public void execute() throws SQLException {
+                statement.addBatch("");
+            }
+        });
     }
 
     // PreparedStatement batch tests
@@ -111,9 +129,9 @@ public class BatchUpdateTest extends BaseJdbcTest {
         int[] results = pstmt.executeBatch();
 
         assertEquals(3, results.length);
-        assertEquals(Statement.SUCCESS_NO_INFO, results[0]);
-        assertEquals(Statement.SUCCESS_NO_INFO, results[1]);
-        assertEquals(Statement.SUCCESS_NO_INFO, results[2]);
+        assertEquals(1, results[0]);
+        assertEquals(1, results[1]);
+        assertEquals(1, results[2]);
 
         ResultSet rs = statement.executeQuery("SELECT COUNT(*) FROM batch4");
         assertTrue(rs.next());
@@ -201,7 +219,7 @@ public class BatchUpdateTest extends BaseJdbcTest {
 
         assertEquals(10, results.length);
         for (int i = 0; i < 10; i++) {
-            assertEquals(Statement.SUCCESS_NO_INFO, results[i]);
+            assertEquals(1, results[i]);
         }
 
         ResultSet rs = statement.executeQuery("SELECT COUNT(*) FROM batch8");
@@ -257,8 +275,8 @@ public class BatchUpdateTest extends BaseJdbcTest {
         int[] results = pstmt.executeBatch();
 
         assertEquals(2, results.length);
-        assertEquals(Statement.SUCCESS_NO_INFO, results[0]);
-        assertEquals(Statement.SUCCESS_NO_INFO, results[1]);
+        assertEquals(1, results[0]);
+        assertEquals(1, results[1]);
 
         ResultSet rs = statement.executeQuery("SELECT COUNT(*) FROM batch10");
         assertTrue(rs.next());
@@ -284,7 +302,7 @@ public class BatchUpdateTest extends BaseJdbcTest {
 
         assertEquals(50, results.length);
         for (int i = 0; i < 50; i++) {
-            assertEquals(Statement.SUCCESS_NO_INFO, results[i]);
+            assertEquals(1, results[i]);
         }
 
         ResultSet rs = statement.executeQuery("SELECT COUNT(*) FROM batch11");

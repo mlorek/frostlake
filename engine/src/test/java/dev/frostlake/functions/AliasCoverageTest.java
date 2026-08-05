@@ -70,8 +70,8 @@ public class AliasCoverageTest extends BaseDatabaseTest {
 
     @Test
     public void testDayofmonthAliasesDay() {
-        assertEquals(15, ((Number) q("SELECT DAYOFMONTH('2024-03-15')")).intValue());
-        assertEquals(q("SELECT DAY('2024-03-15')"), q("SELECT DAYOFMONTH('2024-03-15')"));
+        assertEquals(15, ((Number) q("SELECT DAYOFMONTH('2024-03-15'::DATE)")).intValue());
+        assertEquals(q("SELECT DAY('2024-03-15'::DATE)"), q("SELECT DAYOFMONTH('2024-03-15'::DATE)"));
     }
 
     @Test

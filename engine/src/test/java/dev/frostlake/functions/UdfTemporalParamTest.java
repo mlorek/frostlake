@@ -31,9 +31,10 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
  */
 public class UdfTemporalParamTest extends BaseDatabaseTest {
 
-    private Object scalar(final String sql) {
+    private String scalar(final String sql) {
         final ResultSet result = engine.executeQuery(sql);
-        return result.getRows().get(0).getValue(0);
+        final Object v = result.getRows().get(0).getValue(0);
+        return v == null ? null : v.toString();
     }
 
     @Test

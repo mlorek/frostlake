@@ -18,15 +18,18 @@ package dev.frostlake.types;
 
 import dev.frostlake.DatabaseEngine;
 import dev.frostlake.storage.ResultSet;
+import dev.frostlake.values.BinaryValue;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class BinaryTypeTest {
@@ -78,7 +81,9 @@ public class BinaryTypeTest {
 
         engine.execute("""
             DECLARE binary_var BINARY := '0x48656C6C6F';
-            INSERT INTO results VALUES (binary_var);
+            BEGIN
+                INSERT INTO results VALUES (:binary_var);
+            END;
             """);
 
         ResultSet rs = engine.executeQuery("SELECT * FROM results");
@@ -97,7 +102,9 @@ public class BinaryTypeTest {
 
         engine.execute("""
             DECLARE varbinary_var VARBINARY := '0x576F726C64';
-            INSERT INTO results VALUES (varbinary_var);
+            BEGIN
+                INSERT INTO results VALUES (:varbinary_var);
+            END;
             """);
 
         ResultSet rs = engine.executeQuery("SELECT * FROM results");
@@ -112,7 +119,8 @@ public class BinaryTypeTest {
     public void testCastToBinary() {
         logger.info("Testing CAST to BINARY");
 
-        ResultSet rs = engine.executeQuery("SELECT CAST('Hello' AS BINARY) as result");
+        // Snowflake's VARCHAR-to-BINARY cast interprets the string as hex; non-hex text errors.
+        ResultSet rs = engine.executeQuery("SELECT CAST('48656C6C6F' AS BINARY) as result");
 
         assertNotNull(rs, "Result set should not be null");
         assertEquals(1, rs.getRowCount(), "Should return one row");
@@ -120,15 +128,24 @@ public class BinaryTypeTest {
         Object value = rs.getRows().get(0).getValue(0);
         logger.info("Cast result: {}", value);
 
-        assertTrue(value instanceof byte[] || value instanceof String,
-                   "Value should be byte array or string");
+        assertTrue(value instanceof BinaryValue, "Value should be a BINARY runtime value");
+        assertEquals("48656C6C6F", value.toString());
+
+        final RuntimeException e = assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.executeQuery("SELECT CAST('Hello' AS BINARY)");
+            }
+        });
+        assertTrue(e.getMessage().contains("not a legal hex-encoded value"),
+            "unexpected: " + e.getMessage());
     }
 
     @Test
     public void testCastToVarBinary() {
         logger.info("Testing CAST to VARBINARY");
 
-        ResultSet rs = engine.executeQuery("SELECT CAST('World' AS VARBINARY) as result");
+        ResultSet rs = engine.executeQuery("SELECT CAST('576F726C64' AS VARBINARY) as result");
 
         assertNotNull(rs, "Result set should not be null");
         assertEquals(1, rs.getRowCount(), "Should return one row");
@@ -136,8 +153,8 @@ public class BinaryTypeTest {
         Object value = rs.getRows().get(0).getValue(0);
         logger.info("Cast result: {}", value);
 
-        assertTrue(value instanceof byte[] || value instanceof String,
-                   "Value should be byte array or string");
+        assertTrue(value instanceof BinaryValue, "Value should be a BINARY runtime value");
+        assertEquals("576F726C64", value.toString());
     }
 
     @Test
@@ -171,11 +188,11 @@ public class BinaryTypeTest {
         logger.info("Testing BinaryType parse hex string");
 
         BinaryType binaryType = BinaryType.BINARY;
-        byte[] result = (byte[]) binaryType.parseValue("0x48656C6C6F");
+        BinaryValue result = (BinaryValue) binaryType.parseValue("0x48656C6C6F");
 
         assertNotNull(result, "Parsed value should not be null");
-        assertEquals(5, result.length, "Should have 5 bytes");
-        assertArrayEquals("Hello".getBytes(), result,
+        assertEquals(5, result.length(), "Should have 5 bytes");
+        assertArrayEquals("Hello".getBytes(), result.bytes(),
                           "Parsed bytes should match 'Hello'");
     }
 
@@ -187,10 +204,9 @@ public class BinaryTypeTest {
         String formatted = binaryType.formatValue("Hello".getBytes());
 
         assertNotNull(formatted, "Formatted value should not be null");
-        assertTrue(formatted.startsWith("0x"),
-                   "Formatted value should start with 0x");
-        assertEquals("0x48656C6C6F", formatted,
-                     "Formatted value should be hex string");
+        assertEquals("48656C6C6F", formatted,
+                     "BINARY formats as bare uppercase hex (the Snowflake display form)");
+        assertEquals("48656C6C6F", binaryType.formatValue(BinaryValue.fromHex("48656C6C6F")));
     }
 
     @Test
@@ -202,7 +218,7 @@ public class BinaryTypeTest {
         engine.execute("""
             BEGIN
                 LET bin_var BINARY := '0x414243';
-                INSERT INTO results VALUES (bin_var);
+                INSERT INTO results VALUES (:bin_var);
             END;
             """);
 

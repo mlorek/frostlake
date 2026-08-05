@@ -18,6 +18,7 @@ package dev.frostlake.executor.operators;
 
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.storage.Row;
+import dev.frostlake.values.VariantValue;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -252,6 +253,11 @@ public class JoinOperator implements Operator {
     private static Object normalizeKey(final Object value) {
         if (value == null) {
             return NULL_KEY;
+        }
+        if (value instanceof VariantValue) {
+            // A semi-structured value buckets by its JSON text so it meets a text-carried equal
+            // (legacy loaders and typed constructors must land in the same bucket).
+            return ((VariantValue) value).text();
         }
         if (value instanceof String) {
             // A numeric-looking string buckets like the number it denotes: Snowflake implicitly

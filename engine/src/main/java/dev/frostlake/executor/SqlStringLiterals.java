@@ -72,10 +72,12 @@ public final class SqlStringLiterals {
                 else if (next == 'f') { sb.append('\f'); i++; }
                 else if (next == 'x' || next == 'X') { i = appendHexEscape(sb, content, i, 2); }
                 else if (next == 'u' || next == 'U') { i = appendHexEscape(sb, content, i, 4); }
-                // A DIGIT after the backslash is deliberately NOT decoded (no octal escapes): a backslash
-                // followed by a digit is a regular-expression back-reference, which REGEXP_REPLACE's
-                // replacement string relies on — '[\2][\1]' must reach the regex engine intact.
-                else { sb.append(c); }
+                // OCTAL escapes, live-verified: '\2' is one character with code 2 (ASCII('\2') = 2), so a
+                // regex back-reference must be written '\\2' exactly as Snowflake's docs show.
+                else if (next >= '0' && next <= '7') { i = appendOctalEscape(sb, content, i); }
+                // Any other unknown escape DROPS the backslash and keeps the character —
+                // live-verified: 'x\dy' is "xdy" and LENGTH('\d') is 1.
+                else { sb.append(next); i++; }
             } else if (c == '\'' && i + 1 < content.length() && content.charAt(i + 1) == '\'') {
                 sb.append('\''); i++;
             } else {
@@ -103,6 +105,23 @@ public final class SqlStringLiterals {
             return backslashAt;
         }
         sb.append((char) Integer.parseInt(content.substring(start, end), 16));
+        return end - 1;
+    }
+
+    /**
+     * Append the character denoted by an octal escape (1–3 octal digits after the backslash),
+     * returning the index of its last consumed character. Live-verified for the single-digit form
+     * ({@code ASCII('\2') = 2}); multi-digit runs follow the conventional octal reading.
+     */
+    private static int appendOctalEscape(final StringBuilder sb, final String content,
+                                         final int backslashAt) {
+        final int start = backslashAt + 1;
+        int end = start;
+        while (end < content.length() && end < start + 3
+                && content.charAt(end) >= '0' && content.charAt(end) <= '7') {
+            end++;
+        }
+        sb.append((char) Integer.parseInt(content.substring(start, end), 8));
         return end - 1;
     }
 

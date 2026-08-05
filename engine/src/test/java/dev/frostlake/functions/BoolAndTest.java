@@ -19,8 +19,10 @@ package dev.frostlake.functions;
 import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertNull;
 
 public class BoolAndTest extends BaseDatabaseTest {
@@ -38,7 +40,14 @@ public class BoolAndTest extends BaseDatabaseTest {
     @Test
     public void testEitherFalse() {
         assertEquals(false, q("SELECT BOOLAND(1, 0)"));
-        assertEquals(false, q("SELECT BOOLAND(true, false)"));
+        // The BOOL* family is defined over NUMBER/VARCHAR/VARIANT truthiness, NOT over BOOLEAN:
+        // Snowflake rejects BOOLAND(TRUE, FALSE) outright (live-verified).
+        assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                q("SELECT BOOLAND(true, false)");
+            }
+        });
     }
 
     @Test

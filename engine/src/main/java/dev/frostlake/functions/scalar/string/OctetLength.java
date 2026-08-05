@@ -16,18 +16,22 @@
 
 package dev.frostlake.functions.scalar.string;
 
-import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.functions.TextArgumentFunction;
 import dev.frostlake.types.NumericType;
+import dev.frostlake.values.BinaryValue;
 
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 
-public class OctetLength extends BuiltInFunction {
+public class OctetLength extends TextArgumentFunction {
     public OctetLength() { super("OCTET_LENGTH", NumericType.INTEGER); }
 
     @Override
     public Object evaluate(final List<Object> args) {
         if (args.get(0) == null) return null;
+        if (args.get(0) instanceof BinaryValue) {
+            return (long) ((BinaryValue) args.get(0)).length();
+        }
         return (long) args.get(0).toString().getBytes(StandardCharsets.UTF_8).length;
     }
 

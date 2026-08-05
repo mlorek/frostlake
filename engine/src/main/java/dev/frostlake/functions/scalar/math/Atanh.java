@@ -16,7 +16,7 @@
 
 package dev.frostlake.functions.scalar.math;
 
-import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.functions.NumericArgumentFunction;
 import dev.frostlake.types.NumericType;
 
 import java.util.List;
@@ -25,7 +25,7 @@ import java.util.List;
  * ATANH(x) — inverse hyperbolic tangent, computed as {@code 0.5 * ln((1 + x) / (1 - x))} since {@link Math}
  * has no {@code atanh}. The domain is {@code -1 < x < 1}; NULL yields NULL.
  */
-public class Atanh extends BuiltInFunction {
+public class Atanh extends NumericArgumentFunction {
     public Atanh() { super("ATANH", NumericType.DOUBLE); }
 
     @Override

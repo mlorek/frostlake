@@ -257,8 +257,10 @@ public class BeginEndBlockHandler implements CommandHandler {
      * A user-defined / RAISEd exception carries its declared code and message and gets SQLSTATE
      * {@code 'P0001'} (Snowflake's value for user-defined exceptions); a SQL syntax error surfaces
      * as a compilation error ({@code 1003} / {@code '42000'}); division by zero maps to its
-     * Snowflake code ({@code 100051} / {@code '22012'}); any other engine error is exposed with a
-     * generic statement-error code (the engine has no per-error Snowflake code taxonomy).
+     * Snowflake code ({@code 100051} / {@code '22012'}); a wrong argument count, an unknown
+     * compression method and an undecodable compressed payload map to theirs; any other engine
+     * error is exposed with a generic statement-error code (the engine has no per-error Snowflake
+     * code taxonomy).
      */
     private void bindHandlerErrorVariables(final Exception e) {
         final String message = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
@@ -273,6 +275,24 @@ public class BeginEndBlockHandler implements CommandHandler {
         } else if (message.contains("Division by zero")) {
             code = 100051;
             state = "22012";
+        } else if (message.contains("does not exist")) {
+            // Live-verified: a missing table/object surfaces SQLSTATE 42S02, not the generic P0000.
+            code = 2003;
+            state = "42S02";
+        } else if (message.startsWith("not enough arguments for function")) {
+            // Live-verified across COMPRESS, LOG and SUBSTR: a wrong argument count is a compilation
+            // error carrying 938 / 22023, and 939 for the too-many form.
+            code = 938;
+            state = "22023";
+        } else if (message.startsWith("too many arguments for function")) {
+            code = 939;
+            state = "22023";
+        } else if (message.startsWith("Unknown compression method")) {
+            code = 100194;
+            state = "42P19";
+        } else if (message.startsWith("Can't compress data")) {
+            code = 100195;
+            state = "22000";
         } else {
             code = 100351;
             state = "P0000";

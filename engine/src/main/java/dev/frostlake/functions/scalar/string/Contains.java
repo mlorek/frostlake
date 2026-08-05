@@ -16,12 +16,12 @@
 
 package dev.frostlake.functions.scalar.string;
 
-import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.functions.TextArgumentFunction;
 import dev.frostlake.types.BooleanType;
 
 import java.util.List;
 
-public class Contains extends BuiltInFunction {
+public class Contains extends TextArgumentFunction {
     public Contains() { super("CONTAINS", new BooleanType()); }
 
     @Override

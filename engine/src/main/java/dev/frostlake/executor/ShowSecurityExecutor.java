@@ -73,7 +73,7 @@ final class ShowSecurityExecutor {
         for (final User user : catalog.getAllUsers()) {
             rows.add(new Row(Arrays.asList(
                 user.getName(),
-                user.getCreatedTime().toString(),
+                ShowResultHelpers.createdOnText(user.getCreatedTime()),
                 user.getName(),
                 user.getName(),
                 null, null, null,
@@ -110,7 +110,7 @@ final class ShowSecurityExecutor {
         List<Row> rows = new ArrayList<>();
         for (final Role role : catalog.getAllRoles()) {
             rows.add(new Row(Arrays.asList(
-                role.getCreatedTime().toString(),
+                ShowResultHelpers.createdOnText(role.getCreatedTime()),
                 role.getName(),
                 "N",
                 role.getName().equals(curRole) ? "Y" : "N",
@@ -126,7 +126,7 @@ final class ShowSecurityExecutor {
     public ResultSet describeUser(final String name) {
         final User user = catalog.getUser(name);
         if (user == null) {
-            throw new RuntimeException("User does not exist: " + name);
+            throw new RuntimeException(SqlCompilationError.doesNotExist("User", name));
         }
         final List<Row> rows = new ArrayList<>();
         rows.add(new Row(Arrays.asList("name", user.getName())));
@@ -157,7 +157,7 @@ final class ShowSecurityExecutor {
         for (final Role role : catalog.getAllRoles()) {
             for (final Privilege priv : role.getPrivileges(objectType, objectName)) {
                 rows.add(new Row(Arrays.asList(
-                    role.getCreatedTime().toString(),
+                    ShowResultHelpers.createdOnText(role.getCreatedTime()),
                     priv.toString(),
                     objectType, objectName,
                     "ROLE", role.getName(),
@@ -183,8 +183,16 @@ final class ShowSecurityExecutor {
         if ("USER".equals(targetType)) {
             User user = catalog.getUser(targetName);
             for (final String roleName : user.getGrantedRoles()) {
+                // Live Snowflake never surfaces PUBLIC membership here — re-probed on a real account
+                //: a fresh user shows zero grants, and after an EXPLICIT
+                // "GRANT ROLE PUBLIC TO USER u" the listing is STILL empty, while granting any other
+                // role immediately shows one row. Every user is in PUBLIC, so the grant is a no-op to
+                // report. The membership itself stays modeled — only this listing skips it.
+                if ("PUBLIC".equals(roleName)) {
+                    continue;
+                }
                 rows.add(new Row(Arrays.asList(
-                    user.getCreatedTime().toString(),
+                    ShowResultHelpers.createdOnText(user.getCreatedTime()),
                     "USAGE", "ROLE", roleName,
                     "USER", user.getName(),
                     "false", user.getRoleGrantor(roleName)
@@ -194,7 +202,7 @@ final class ShowSecurityExecutor {
             Role role = catalog.getRole(targetName);
             for (final String grantedRoleName : role.getGrantedRoles()) {
                 rows.add(new Row(Arrays.asList(
-                    role.getCreatedTime().toString(),
+                    ShowResultHelpers.createdOnText(role.getCreatedTime()),
                     "USAGE", "ROLE", grantedRoleName,
                     "ROLE", role.getName(),
                     "false", role.getRoleGrantor(grantedRoleName)
@@ -206,7 +214,7 @@ final class ShowSecurityExecutor {
                 String objName = parts[1];
                 for (final Privilege priv : entry.getValue()) {
                     rows.add(new Row(Arrays.asList(
-                        role.getCreatedTime().toString(),
+                        ShowResultHelpers.createdOnText(role.getCreatedTime()),
                         priv.toString(), objType, objName,
                         "ROLE", role.getName(),
                         "false", role.getPrivilegeGrantor(objType, objName, priv)

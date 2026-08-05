@@ -72,10 +72,14 @@ public class NumericType extends DataType {
         return 16; // Approximate size for numeric values
     }
 
+    // Snowflake gives EVERY integer alias the same precision and scale — live-verified,
+    // INT / INTEGER / BIGINT / SMALLINT / TINYINT / BYTEINT columns all report NUMERIC_PRECISION 38 and
+    // NUMERIC_SCALE 0. It keeps no narrower range for SMALLINT (was 5 here) or TINYINT (was 3), which
+    // made INFORMATION_SCHEMA.COLUMNS disagree with Snowflake for those two spellings.
     public static NumericType INTEGER = new NumericType("INTEGER", 38, 0);
     public static NumericType BIGINT = new NumericType("BIGINT", 38, 0);
-    public static NumericType SMALLINT = new NumericType("SMALLINT", 5, 0);
-    public static NumericType TINYINT = new NumericType("TINYINT", 3, 0);
+    public static NumericType SMALLINT = new NumericType("SMALLINT", 38, 0);
+    public static NumericType TINYINT = new NumericType("TINYINT", 38, 0);
     public static NumericType NUMBER = new NumericType("NUMBER", 38, 0);
     public static NumericType DECIMAL = new NumericType("DECIMAL", 38, 0);
     public static NumericType FLOAT = new NumericType("FLOAT", 38, 9);

@@ -16,7 +16,7 @@
 
 package dev.frostlake.functions.scalar.math;
 
-import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.functions.NumericArgumentFunction;
 import dev.frostlake.types.NumericType;
 
 import java.util.List;
@@ -25,7 +25,7 @@ import java.util.List;
  * ASINH(x) — inverse hyperbolic sine, computed as {@code ln(x + sqrt(x*x + 1))} since {@link Math} has no
  * {@code asinh}. Defined for all real x; NULL yields NULL.
  */
-public class Asinh extends BuiltInFunction {
+public class Asinh extends NumericArgumentFunction {
     public Asinh() { super("ASINH", NumericType.DOUBLE); }
 
     @Override

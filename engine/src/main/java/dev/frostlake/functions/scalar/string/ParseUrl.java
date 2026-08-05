@@ -16,8 +16,8 @@
 
 package dev.frostlake.functions.scalar.string;
 
-import dev.frostlake.functions.BuiltInFunction;
-import dev.frostlake.types.VariantType;
+import dev.frostlake.functions.TextArgumentFunction;
+import dev.frostlake.types.ObjectType;
 
 import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.node.ObjectNode;
@@ -27,18 +27,18 @@ import java.net.URISyntaxException;
 import java.util.List;
 
 /**
- * PARSE_URL(url [, permissive]) — parses a URL into a VARIANT OBJECT with Snowflake's keys, in order:
- * {@code scheme, host, port, path, query, parameters, fragment}. {@code port} is a string; {@code parameters}
- * is an object of the decoded query key/value pairs; missing components are JSON null. The leading slash is
- * stripped from {@code path} and any userinfo is folded into {@code host} (e.g. {@code user:pass@host}),
- * matching Snowflake. A parse failure (including a missing scheme) raises; when {@code permissive} is 1 it
- * instead returns an object with only an {@code error} key. NULL url yields NULL.
+ * PARSE_URL(url [, permissive]) — parses a URL into a VARIANT OBJECT with Snowflake's keys, in ALPHABETICAL
+ * order (live-verified): {@code fragment, host, parameters, path, port, query, scheme}. {@code port} is a
+ * string; {@code parameters} is an object of the decoded query key/value pairs; missing components are JSON
+ * null. The leading slash is stripped from {@code path} and any userinfo is folded into {@code host} (e.g.
+ * {@code user:pass@host}), matching Snowflake. A parse failure (including a missing scheme) raises; when
+ * {@code permissive} is 1 it instead returns an object with only an {@code error} key. NULL url yields NULL.
  */
-public class ParseUrl extends BuiltInFunction {
+public class ParseUrl extends TextArgumentFunction {
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
-    public ParseUrl() { super("PARSE_URL", VariantType.VARIANT); }
+    public ParseUrl() { super("PARSE_URL", ObjectType.OBJECT); }
 
     @Override
     public Object evaluate(final List<Object> args) {
@@ -50,8 +50,14 @@ public class ParseUrl extends BuiltInFunction {
             if (uri.getScheme() == null) {
                 return onError("scheme not specified", permissive);
             }
+            // Keys are emitted in ALPHABETICAL order — fragment, host, parameters, path, port, query,
+            // scheme — matching the object live Snowflake returns.
             final ObjectNode obj = MAPPER.createObjectNode();
-            obj.put("scheme", uri.getScheme());
+            if (uri.getFragment() == null) {
+                obj.putNull("fragment");
+            } else {
+                obj.put("fragment", uri.getFragment());
+            }
 
             final String userInfo = uri.getUserInfo();
             final String rawHost = uri.getHost();
@@ -63,29 +69,7 @@ public class ParseUrl extends BuiltInFunction {
                 obj.putNull("host");
             }
 
-            if (uri.getPort() >= 0) {
-                obj.put("port", String.valueOf(uri.getPort()));
-            } else {
-                obj.putNull("port");
-            }
-
-            String path = uri.getPath();
-            if (path != null && path.startsWith("/")) {
-                path = path.substring(1);
-            }
-            if (path == null || path.isEmpty()) {
-                obj.putNull("path");
-            } else {
-                obj.put("path", path);
-            }
-
             final String query = uri.getRawQuery();
-            if (query == null || query.isEmpty()) {
-                obj.putNull("query");
-            } else {
-                obj.put("query", query);
-            }
-
             final ObjectNode parameters = MAPPER.createObjectNode();
             if (query != null && !query.isEmpty()) {
                 for (final String pair : query.split("&")) {
@@ -100,11 +84,29 @@ public class ParseUrl extends BuiltInFunction {
             }
             obj.set("parameters", parameters);
 
-            if (uri.getFragment() == null) {
-                obj.putNull("fragment");
-            } else {
-                obj.put("fragment", uri.getFragment());
+            String path = uri.getPath();
+            if (path != null && path.startsWith("/")) {
+                path = path.substring(1);
             }
+            if (path == null || path.isEmpty()) {
+                obj.putNull("path");
+            } else {
+                obj.put("path", path);
+            }
+
+            if (uri.getPort() >= 0) {
+                obj.put("port", String.valueOf(uri.getPort()));
+            } else {
+                obj.putNull("port");
+            }
+
+            if (query == null || query.isEmpty()) {
+                obj.putNull("query");
+            } else {
+                obj.put("query", query);
+            }
+
+            obj.put("scheme", uri.getScheme());
             return obj.toString();
         } catch (final URISyntaxException e) {
             return onError(e.getReason() != null ? e.getReason() : "invalid URL", permissive);

@@ -17,8 +17,11 @@
 
 package dev.frostlake.executor.commands;
 
+import dev.frostlake.executor.ParseTreeText;
 import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.executor.SQLCommandVisitor;
+import dev.frostlake.executor.SqlCompilationError;
+import dev.frostlake.executor.StatementErrors;
 import dev.frostlake.executor.procedural.ProceduralException;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.QualifiedName;
@@ -236,7 +239,7 @@ public class AlterCommandHandler implements CommandHandler {
                         }
                         for (int i = 0; i < defs.size(); i++) {
                             final FrostlakeParser.ColumnDefContext colDef = defs.get(i);
-                            final String colName = visitor.getText(colDef.identifier());
+                            final String colName = ParseTreeText.namePartText(colDef.namePart());
                             if (defIfNotExists.get(i) && table.hasColumn(colName)) {
                                 logger.debug("Column already exists (IF NOT EXISTS): {}", colName);
                                 continue;
@@ -301,10 +304,17 @@ public class AlterCommandHandler implements CommandHandler {
                             col.setMaskingPolicyName(null);
                         } else {
                             String policyName = visitor.getText(ctx.tableAction().qualifiedName());
-                            if (col.getMaskingPolicyName() != null) {
+                            if (col.getMaskingPolicyName() != null
+                                    && !col.getMaskingPolicyName().equalsIgnoreCase(policyName)) {
                                 // Snowflake: one masking policy per column — UNSET the current one first.
-                                throw new RuntimeException("Column '" + colName.toUpperCase()
-                                    + "' is already attached to a masking policy");
+                                // Re-attaching the SAME policy is a no-op, not an error: live-verified on
+                                // a real account, repeating SET MASKING POLICY mp1 succeeds
+                                // while switching to a different policy fails "Specified column already
+                                // attached to another masking policy...".
+                                throw new RuntimeException("Specified column already attached to another"
+                                    + " masking policy. A column cannot be attached to multiple masking"
+                                    + " policies. Please drop the current association in order to attach a"
+                                    + " new masking policy.");
                             }
                             if (ctx.tableAction().identifierList() != null) {
                                 // Conditional policy: a USING argument column that is itself masked is
@@ -384,14 +394,16 @@ public class AlterCommandHandler implements CommandHandler {
                                 columns.add(visitor.getText(idCtx));
                             }
                             table.addPrimaryKeyConstraint(columns);
+                            // An explicit CONSTRAINT <name> names the key; without one it auto-names itself.
+                            table.setPrimaryKeyConstraintName(constraintName);
                             logger.trace("Added PRIMARY KEY constraint to table {}: {}", tableName, columns);
                         } else if (constraintCtx.UNIQUE() != null) {
-                            // UNIQUE constraint
+                            // UNIQUE constraint — one constraint over every listed column, not one each.
                             List<String> columns = new ArrayList<>();
                             for (final FrostlakeParser.IdentifierContext idCtx : constraintCtx.identifierList(0).identifier()) {
                                 columns.add(visitor.getText(idCtx));
                             }
-                            table.addUniqueConstraint(columns);
+                            table.addUniqueConstraint(constraintName, columns);
                             logger.trace("Added UNIQUE constraint to table {}: {}", tableName, columns);
                         } else if (constraintCtx.FOREIGN() != null) {
                             // FOREIGN KEY constraint
@@ -424,8 +436,9 @@ public class AlterCommandHandler implements CommandHandler {
                                     throw new RuntimeException("invalid identifier '" + fkColumn.toUpperCase() + "'");
                                 }
                             }
+                            // A nameless constraint is auto-named SYS_CONSTRAINT_<uuid> by the constructor.
                             ForeignKeyConstraint fk = new ForeignKeyConstraint(
-                                constraintName != null ? constraintName : "FK_" + tableName + "_" + System.currentTimeMillis(),
+                                constraintName,
                                 columns,
                                 referencedTable,
                                 referencedColumns,
@@ -457,7 +470,7 @@ public class AlterCommandHandler implements CommandHandler {
                         String colName = visitor.getText(cta.identifier());
                         TableColumn col = table.getColumn(colName);
                         if (col == null) {
-                            throw new RuntimeException("Column does not exist: " + colName);
+                            throw new RuntimeException(SqlCompilationError.invalidIdentifier(colName));
                         }
                         if (cta.tagSet() != null) {
                             applyTagSet(col, cta.tagSet());
@@ -806,7 +819,7 @@ public class AlterCommandHandler implements CommandHandler {
             }
             if (e instanceof SecurityException) throw (SecurityException) e;
             if (e instanceof ProceduralException) throw (ProceduralException) e;
-            throw new RuntimeException("Failed to execute ALTER statement: " + e.getMessage(), e);
+            throw StatementErrors.propagate(e);
         }
     }
 

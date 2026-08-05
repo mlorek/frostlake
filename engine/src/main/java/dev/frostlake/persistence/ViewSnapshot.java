@@ -37,4 +37,10 @@ public class ViewSnapshot implements Serializable {
     // Attached row access policy (ALTER VIEW ... ADD ROW ACCESS POLICY p ON (cols)). Null on old snapshots.
     public String rowAccessPolicyName;
     public List<String> rowAccessPolicyColumns;
+    // The view's resolved columns — name and declared type — as frozen when it was created, so
+    // INFORMATION_SCHEMA.COLUMNS still reports them after a restore. Only the type-carrying fields are
+    // written: a view's columns have no DEFAULT, IDENTITY or key of their own. Null on old snapshots
+    // (and whenever the defining query could not be resolved), in which case the view reports no
+    // columns exactly as it did before they were captured.
+    public List<ColumnSnapshot> columns;
 }

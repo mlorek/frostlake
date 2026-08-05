@@ -22,10 +22,20 @@ package dev.frostlake.executor.expressions;
 class IntervalValue {
     private final Object value;
     private final IntervalUnit unit;
+    private final IntervalValue rest;
 
     public IntervalValue(final Object value, final IntervalUnit unit) {
+        this(value, unit, null);
+    }
+
+    public IntervalValue(final Object value, final IntervalUnit unit, final IntervalValue rest) {
         this.value = value;
         this.unit = unit;
+        this.rest = rest;
+    }
+
+    public IntervalValue getRest() {
+        return rest;
     }
 
     public Object getValue() {

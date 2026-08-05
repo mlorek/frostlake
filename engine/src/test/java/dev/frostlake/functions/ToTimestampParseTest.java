@@ -19,13 +19,18 @@ package dev.frostlake.functions;
 import dev.frostlake.BaseDatabaseTest;
 import org.junit.jupiter.api.Test;
 
+import java.time.LocalDateTime;
+import java.time.ZoneOffset;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * TO_TIMESTAMP / TO_TIMESTAMP_NTZ parsing: an explicit Snowflake format is honored (a date-only
- * format defaults to midnight), and a numeric argument is a Unix epoch whose unit is chosen by
- * magnitude (seconds vs milliseconds vs …). Previously the format was ignored and only epoch seconds
- * were accepted.
+ * format defaults to midnight). A NUMERIC argument is ALWAYS a seconds epoch (live:
+ * TO_TIMESTAMP_NTZ(1631711999000) → year 53676) unless an explicit scale argument is passed;
+ * magnitude-based unit detection (seconds vs milliseconds vs …) applies only to a STRING argument
+ * containing an integer (live: TO_TIMESTAMP_NTZ('1631711999000') → 2021-09-15).
  */
 public class ToTimestampParseTest extends BaseDatabaseTest {
 
@@ -39,9 +44,24 @@ public class ToTimestampParseTest extends BaseDatabaseTest {
     }
 
     @Test
-    public void epochMillisecondsByMagnitude() {
-        // 1631711999000 (ms) resolves to the same instant as 1631711999 (s).
-        assertEquals("2021-09-15T13:19:59", ts("SELECT TO_TIMESTAMP_NTZ(1631711999000)"));
+    public void numericEpochIsAlwaysSeconds() {
+        // A numeric argument is never magnitude-sniffed: 1631711999000 reads as SECONDS, landing in
+        // year 53676 (live-verified), not as the millisecond epoch of 2021-09-15.
+        final String result = ts("SELECT TO_TIMESTAMP_NTZ(1631711999000)");
+        assertEquals(LocalDateTime.ofEpochSecond(1631711999000L, 0, ZoneOffset.UTC).toString(), result);
+        assertTrue(result.startsWith("+53676"), result);
+    }
+
+    @Test
+    public void digitStringEpochUsesMagnitudeDetection() {
+        // A STRING of digits picks its unit by magnitude: 13 digits → milliseconds (live-verified).
+        assertEquals("2021-09-15T13:19:59", ts("SELECT TO_TIMESTAMP_NTZ('1631711999000')"));
+    }
+
+    @Test
+    public void numericEpochWithExplicitScale() {
+        // An explicit scale argument fixes the unit: scale 3 reads the number as milliseconds.
+        assertEquals("2021-09-15T13:19:59", ts("SELECT TO_TIMESTAMP_NTZ(1631711999000, 3)"));
     }
 
     @Test

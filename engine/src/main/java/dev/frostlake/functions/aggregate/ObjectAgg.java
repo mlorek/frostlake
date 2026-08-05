@@ -17,6 +17,7 @@
 package dev.frostlake.functions.aggregate;
 
 import dev.frostlake.functions.AggregateFunction;
+import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.types.ObjectType;
 
 import java.util.List;
@@ -27,6 +28,42 @@ import java.util.List;
  */
 public class ObjectAgg extends AggregateFunction {
     public ObjectAgg() { super("OBJECT_AGG", ObjectType.OBJECT); }
+
+    /**
+     * The KEY is never semi-structured, plain or not: live, {@code OBJECT_AGG(o, n)} is
+     * "Invalid argument types for function 'OBJECT_AGG': (OBJECT, NUMBER(38,0))" and
+     * {@code OBJECT_AGG(so, n)} / {@code OBJECT_AGG(sa, n)} are the same sentence with the structured
+     * type named. Position 1, the VALUE, is where the two kinds diverge — see
+     * {@link #structuredRejection}.
+     */
+    @Override
+    public SemiStructuredRejection semiStructuredRejection(final int position) {
+        return position == 0 ? SemiStructuredRejection.ARGUMENT_TYPES : SemiStructuredRejection.NONE;
+    }
+
+    /**
+     * The VALUE takes a plain OBJECT or ARRAY and refuses a STRUCTURED one: live,
+     * {@code OBJECT_AGG(s, o)} builds {@code {"aa":{"k":"v1"},…}} while {@code OBJECT_AGG(s, so)} is
+     * "Invalid argument types for function 'OBJECT_AGG': (VARCHAR(16777216), OBJECT(x
+     * VARCHAR(16777216)))" — the message lists BOTH arguments, so the offending position is visible.
+     */
+    @Override
+    public SemiStructuredRejection structuredRejection(final int position) {
+        return position == 1 ? SemiStructuredRejection.ARGUMENT_TYPES : SemiStructuredRejection.NONE;
+    }
+
+    /**
+     * A FILE is refused in BOTH halves, which is where it parts company with the plain OBJECT the
+     * VALUE position accepts: live, {@code OBJECT_AGG(f, 1)} is "Invalid argument types for
+     * function 'OBJECT_AGG': (FILE, NUMBER(1,0))" and {@code OBJECT_AGG(s, f)} is the same sentence
+     * naming "(VARCHAR(16777216), FILE)", while {@code OBJECT_AGG(s, o)} builds its object happily.
+     * Without this the inherited default would read {@link #semiStructuredRejection} and let the value
+     * half through.
+     */
+    @Override
+    public SemiStructuredRejection fileRejection(final int position) {
+        return SemiStructuredRejection.ARGUMENT_TYPES;
+    }
 
     @Override
     public Accumulator createAccumulator() { return new ObjectAggAccumulator(); }

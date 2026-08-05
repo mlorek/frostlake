@@ -18,9 +18,11 @@ package dev.frostlake.functions;
 
 import dev.frostlake.BaseDatabaseTest;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /**
  * A JSON null is distinct from a SQL NULL (Snowflake): IS_NULL_VALUE is TRUE for a JSON null but NULL for a
@@ -68,7 +70,16 @@ public class JsonNullDistinctTest extends BaseDatabaseTest {
         assertNull(scalar("SELECT PARSE_JSON('{\"a\":null}'):a::NUMBER(10,2)"));
         assertNull(scalar("SELECT PARSE_JSON('{\"a\":null}'):a::BOOLEAN"));
         assertNull(scalar("SELECT PARSE_JSON('{\"a\":null}'):a::DATE"));
-        assertNull(scalar("SELECT TRY_CAST(PARSE_JSON('{\"a\":null}'):a AS DATE)"));
+        // TRY_CAST cannot take a semi-structured SOURCE at all. Live-verified on a real account
+        //: TRY_CAST(<variant> AS DATE) fails "Function TRY_CAST cannot be used with
+        // arguments of types VARIANT and DATE" for every target type tried, and OBJECT / ARRAY sources
+        // fail the same way — while the plain :: cast above succeeds.
+        assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                scalar("SELECT TRY_CAST(PARSE_JSON('{\"a\":null}'):a AS DATE)");
+            }
+        });
     }
 
     @Test

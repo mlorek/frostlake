@@ -141,10 +141,10 @@ public class WindowFunctionsExtTest extends BaseDatabaseTest {
         ResultSet rs = engine.executeQuery(
             "SELECT id, LAST_VALUE(amount) OVER (ORDER BY id) AS lv FROM sales ORDER BY id");
         assertEquals(6, rs.getRowCount());
-        // With default frame (UNBOUNDED PRECEDING to CURRENT ROW):
-        // row 1: last in frame = 100 (itself); row 3: last = 300
-        assertEquals(100.0, ((Number) rs.getRows().get(0).getValue(1)).doubleValue(), 0.001);
-        assertEquals(300.0, ((Number) rs.getRows().get(2).getValue(1)).doubleValue(), 0.001);
+        // Snowflake's default frame for LAST_VALUE is the WHOLE partition (RANGE BETWEEN UNBOUNDED
+        // PRECEDING AND UNBOUNDED FOLLOWING), so every row sees the partition's last amount (400).
+        assertEquals(400.0, ((Number) rs.getRows().get(0).getValue(1)).doubleValue(), 0.001);
+        assertEquals(400.0, ((Number) rs.getRows().get(2).getValue(1)).doubleValue(), 0.001);
     }
 
     // ── NTH_VALUE ──────────────────────────────────────────────────────────────

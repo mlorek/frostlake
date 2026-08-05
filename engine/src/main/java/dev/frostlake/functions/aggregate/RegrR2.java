@@ -17,6 +17,7 @@
 package dev.frostlake.functions.aggregate;
 
 import dev.frostlake.functions.AggregateFunction;
+import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.types.NumericType;
 
 import java.util.List;
@@ -33,4 +34,18 @@ public class RegrR2 extends AggregateFunction {
 
     @Override public int getMinArgCount() { return 2; }
     @Override public int getMaxArgCount() { return 2; }
+
+    /**
+     * REGR_R2 squares both of its inputs, so it reports the same internal multiplication the moment
+     * aggregates do and names the OFFENDING type on both sides whichever position it arrived in: live
+     * {@code REGR_R2(o, n)} and {@code REGR_R2(n, o)} are each "Invalid argument types for
+     * function '*': (OBJECT, OBJECT)". The rest of the REGR family is deliberately NOT declared —
+     * {@code REGR_COUNT}, {@code REGR_AVGX} and {@code REGR_SXX} ACCEPT an OBJECT in the y position
+     * live, and {@code REGR_SLOPE} / {@code REGR_INTERCEPT} / {@code REGR_AVGY} / {@code REGR_SYY}
+     * fail through a desugared TO_DOUBLE plan Frostlake does not have.
+     */
+    @Override
+    public SemiStructuredRejection semiStructuredRejection(final int position) {
+        return SemiStructuredRejection.MULTIPLY_OPERANDS;
+    }
 }

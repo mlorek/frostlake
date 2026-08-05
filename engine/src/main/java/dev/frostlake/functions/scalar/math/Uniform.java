@@ -16,7 +16,7 @@
 
 package dev.frostlake.functions.scalar.math;
 
-import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.functions.NumericArgumentFunction;
 import dev.frostlake.types.NumericType;
 
 import java.math.BigDecimal;
@@ -30,7 +30,7 @@ import java.util.concurrent.ThreadLocalRandom;
  * RANDOM() varies the result per row, a constant RANDOM(seed) repeats it; without it an independent
  * value is used per call.
  */
-public class Uniform extends BuiltInFunction {
+public class Uniform extends NumericArgumentFunction {
     public Uniform() { super("UNIFORM", NumericType.NUMBER); }
 
     @Override
@@ -62,6 +62,8 @@ public class Uniform extends BuiltInFunction {
         return o instanceof BigDecimal && ((BigDecimal) o).scale() > 0;
     }
 
-    @Override public int getMinArgCount() { return 2; }
+    // Snowflake requires the generator argument: UNIFORM(5, 10) errors "not enough arguments for
+    // function [UNIFORM(5, 10)], expected 3, got 2" (live-verified) — RANDOM() is the usual third.
+    @Override public int getMinArgCount() { return 3; }
     @Override public int getMaxArgCount() { return 3; }
 }

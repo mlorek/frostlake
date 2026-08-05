@@ -16,7 +16,11 @@
 
 package dev.frostlake.executor;
 
+import dev.frostlake.functions.scalar.SharedFunctionHelpers;
+
 import dev.frostlake.parser.FrostlakeLexer;
+import dev.frostlake.values.BinaryValue;
+import dev.frostlake.values.VariantValue;
 import org.antlr.v4.runtime.CharStreams;
 import org.antlr.v4.runtime.CommonTokenStream;
 import org.antlr.v4.runtime.Token;
@@ -78,6 +82,7 @@ public class BindVariableSubstitutor {
                 final Token nameTok = toks.get(i + 1);
                 if (SqlTokens.isWord(nameTok)
                         && nameTok.getStartIndex() == t.getStopIndex() + 1) {
+                    rejectDottedBindVariable(toks, i + 1, nameTok);
                     out.append(sql, cursor, t.getStartIndex());
                     out.append(toLiteral(variables.get(nameTok.getText().toUpperCase())));
                     cursor = nameTok.getStopIndex() + 1;
@@ -112,7 +117,34 @@ public class BindVariableSubstitutor {
         return out.toString();
     }
 
-    /** Render a variable value as a SQL literal: NULL, or a single-quoted string with quotes escaped. */
+    /**
+     * A bind variable cannot name a field: {@code :rec.col} is rejected outright, as Snowflake does.
+     *
+     * <p>Live-verified on a real account inside a cursor FOR loop. NONE of the record-field
+     * spellings work in embedded SQL there:
+     * <pre>
+     *   INSERT INTO t VALUES (:r.price)  -&gt; "syntax error line 4 at position 31 unexpected '.'"
+     *   INSERT INTO t VALUES (r.price)   -&gt; "invalid identifier 'R.PRICE'"
+     *   INSERT INTO t VALUES (r)         -&gt; "invalid identifier 'R'"
+     *   INSERT INTO t VALUES (:r)        -&gt; "Bind variable :r not set."
+     * </pre>
+     * The supported idiom is to copy the field into a scalar variable and bind THAT — live, {@code pv :=
+     * r.price;} followed by {@code INSERT INTO t VALUES (:pv)} works and sums to 30. Frostlake used to
+     * substitute only the {@code :r} part, leaving {@code NULL.price} behind, so the documented-looking
+     * form silently inserted NULL — the reason this is an error rather than a quiet fallback.
+     */
+    private void rejectDottedBindVariable(final List<Token> toks, final int nameIndex, final Token nameTok) {
+        if (nameIndex + 1 >= toks.size()) {
+            return;
+        }
+        final Token next = toks.get(nameIndex + 1);
+        if (next.getType() != FrostlakeLexer.DOT || next.getStartIndex() != nameTok.getStopIndex() + 1) {
+            return;
+        }
+        throw new RuntimeException("SQL compilation error:\nsyntax error unexpected '.'. "
+            + "A bind variable cannot name a field (:" + nameTok.getText() + ".…); assign the field to a "
+            + "variable first and bind that variable instead.");
+    }
 
     /**
      * The token indices of the COLONs that introduce a {@code SELECT … INTO :v1, :v2} TARGET. Those names are
@@ -175,6 +207,22 @@ public class BindVariableSubstitutor {
         if (value instanceof Boolean) {
             return ((Boolean) value) ? "TRUE" : "FALSE";
         }
+        // A semi-structured variable re-enters SQL as PARSE_JSON of its canonical text — inlining a
+        // bare string literal would lose its variant-ness, and the strict functions (TYPEOF / GET /
+        // TO_JSON) would rightly reject the literal that substitution created.
+        if (value instanceof VariantValue) {
+            return "PARSE_JSON(" + SqlStringLiterals.encode(((VariantValue) value).text()) + ")";
+        }
+        // A BINARY variable binds as a hex literal, which the parser reads back as BINARY.
+        if (value instanceof BinaryValue) {
+            return "X'" + ((BinaryValue) value).toHex() + "'";
+        }
+        // A temporal variable binds as a cast literal so it re-enters SQL as a temporal.
+        final String temporal = SharedFunctionHelpers.temporalSqlLiteral(value);
+        if (temporal != null) {
+            return temporal;
+        }
+
         return SqlStringLiterals.encode(value.toString());
     }
 

@@ -61,12 +61,20 @@ public class AlterRoutineTest extends BaseDatabaseTest {
         engine.execute("CREATE PROCEDURE pr() RETURNS STRING LANGUAGE SQL AS $$ BEGIN RETURN 'x'; END $$");
         engine.execute("ALTER PROCEDURE pr() RENAME TO qr");
 
-        // The new name describes; the old name no longer exists.
-        engine.executeQuery("DESCRIBE PROCEDURE qr");
+        // The new name describes; the old name no longer exists. DESCRIBE needs the argument-type list
+        // — live-verified on a real account, the bare DESCRIBE PROCEDURE qr fails
+        // "Argument types of function 'QR' must be specified." while DESCRIBE PROCEDURE qr() describes.
+        engine.executeQuery("DESCRIBE PROCEDURE qr()");
         assertThrows(RuntimeException.class, new Executable() {
             @Override
             public void execute() {
-                engine.executeQuery("DESCRIBE PROCEDURE pr");
+                engine.executeQuery("DESCRIBE PROCEDURE qr");
+            }
+        });
+        assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.executeQuery("DESCRIBE PROCEDURE pr()");
             }
         });
     }

@@ -16,6 +16,7 @@
 
 package dev.frostlake.metastore.model;
 
+import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.metastore.SqlObject;
 
 import java.util.ArrayList;
@@ -33,11 +34,11 @@ public class Database extends SqlObject {
         this.schemas = new ConcurrentHashMap<>();
 
         // Create default PUBLIC schema
-        schemas.put("PUBLIC", new Schema("PUBLIC"));
+        registerSchema("PUBLIC", new Schema("PUBLIC"));
 
         // Create INFORMATION_SCHEMA - a special schema that exists in every database
         Schema infoSchema = new Schema("INFORMATION_SCHEMA");
-        schemas.put("INFORMATION_SCHEMA", infoSchema);
+        registerSchema("INFORMATION_SCHEMA", infoSchema);
 
         // Add system views to INFORMATION_SCHEMA
         // These are special views intercepted by QueryExecutor
@@ -55,12 +56,18 @@ public class Database extends SqlObject {
         }
     }
 
+    /** Register a schema under this database, stamping it so it can spell its members' full names. */
+    private void registerSchema(final String key, final Schema schema) {
+        schema.setDatabaseName(getName());
+        schemas.put(key, schema);
+    }
+
     public void addSchema(final Schema schema) {
         String upperName = schema.getName().toUpperCase();
         if (schemas.containsKey(upperName)) {
             throw new RuntimeException("Schema already exists: " + schema.getName());
         }
-        schemas.put(upperName, schema);
+        registerSchema(upperName, schema);
     }
 
     public void dropSchema(final String name, final boolean cascade) {
@@ -69,7 +76,7 @@ public class Database extends SqlObject {
             throw new RuntimeException("Cannot drop INFORMATION_SCHEMA schema");
         }
         if (!schemas.containsKey(upperName)) {
-            throw new RuntimeException("Schema does not exist: " + name);
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Schema", getName() + "." + name));
         }
         // Live-verified Snowflake semantics: PUBLIC is droppable like any schema, and
         // DROP SCHEMA ... RESTRICT drops a NON-EMPTY schema too (the callers snapshot and
@@ -80,7 +87,7 @@ public class Database extends SqlObject {
     public Schema getSchema(final String name) {
         Schema schema = schemas.get(name.toUpperCase());
         if (schema == null) {
-            throw new RuntimeException("Schema does not exist: " + name);
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Schema", getName() + "." + name));
         }
         return schema;
     }
@@ -137,7 +144,7 @@ public class Database extends SqlObject {
             } else {
                 // Clone user-created schemas
                 Schema clonedSchema = schema.clone();
-                clonedDb.schemas.put(schemaName.toUpperCase(), clonedSchema);
+                clonedDb.registerSchema(schemaName.toUpperCase(), clonedSchema);
             }
         }
 

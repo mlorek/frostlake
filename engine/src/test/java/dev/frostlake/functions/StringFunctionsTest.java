@@ -155,12 +155,13 @@ public class StringFunctionsTest extends BaseDatabaseTest {
     }
 
     @Test
-    public void testLPadShorter() {
+    public void testLPadTruncatesLongerInput() {
         ResultSet result = engine.executeQuery(
             "SELECT LPAD(text, 3, '*') as padded FROM test_strings WHERE id = 2"
         );
         assertEquals(1, result.getRowCount());
-        assertEquals("world", result.getRows().get(0).getValue(result.getColumnIndex("padded")));
+        // String is longer than target: Snowflake truncates to the target length (live-verified).
+        assertEquals("wor", result.getRows().get(0).getValue(result.getColumnIndex("padded")));
     }
 
     @Test
@@ -193,13 +194,13 @@ public class StringFunctionsTest extends BaseDatabaseTest {
     }
 
     @Test
-    public void testRPadShorter() {
+    public void testRPadTruncatesLongerInput() {
         ResultSet result = engine.executeQuery(
             "SELECT RPAD(text, 3, '*') as padded FROM test_strings WHERE id = 2"
         );
         assertEquals(1, result.getRowCount());
-        // String is longer than target, return as-is
-        assertEquals("world", result.getRows().get(0).getValue(result.getColumnIndex("padded")));
+        // String is longer than target: Snowflake truncates to the target length (live-verified).
+        assertEquals("wor", result.getRows().get(0).getValue(result.getColumnIndex("padded")));
     }
 
     @Test

@@ -18,6 +18,7 @@ package dev.frostlake.executor;
 
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.parser.FrostlakeParser;
+import dev.frostlake.values.VariantValue;
 import java.math.BigDecimal;
 
 /**
@@ -36,7 +37,7 @@ public final class ValueComparisons {
                 return i;
             }
         }
-        throw new RuntimeException("Column not found: " + columnName);
+        throw new RuntimeException(SqlCompilationError.invalidIdentifier(columnName));
     }
 
     /**
@@ -60,6 +61,11 @@ public final class ValueComparisons {
      * else a trailing-zero-stripped {@code BigDecimal}, both of which honor equals/hashCode.
      */
     public static Object canonicalGroupKeyValue(final Object value) {
+        if (value instanceof VariantValue) {
+            // Group semi-structured values by their JSON text so typed and text-carried equal values
+            // fall into one group.
+            return ((VariantValue) value).text();
+        }
         if (!(value instanceof Number)) {
             return value;
         }

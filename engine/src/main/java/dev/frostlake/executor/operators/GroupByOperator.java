@@ -16,9 +16,11 @@
 
 package dev.frostlake.executor.operators;
 
+import dev.frostlake.executor.InvalidQualifierException;
 import dev.frostlake.executor.ExpressionEvaluator;
 import dev.frostlake.executor.ValueComparisons;
 import dev.frostlake.executor.expressions.Expression;
+import dev.frostlake.executor.expressions.SortKeyRole;
 import dev.frostlake.storage.Row;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -146,7 +148,31 @@ public class GroupByOperator implements Operator {
         if (implicitGrouping) {
             return executeImplicitGrouping(input);
         }
+        rejectFileGroupKeys(context);
         return executeExplicitGrouping(input);
+    }
+
+    /**
+     * Snowflake rejects a FILE-typed GROUP BY key at compile time ("Expressions of type FILE cannot be
+     * used as GROUP BY keys"), while still grouping an OBJECT or VARIANT quite happily. The keys
+     * reaching this operator have already had positional ordinals and SELECT aliases resolved to their
+     * defining expression, so checking them here covers {@code GROUP BY f}, {@code GROUP BY 1} and
+     * {@code GROUP BY <alias>} with one rule. Runs before any row is grouped, so an empty input rejects
+     * exactly like a populated one.
+     */
+    private void rejectFileGroupKeys(final OperatorContext context) {
+        if (context == null || context.getQueryExecutor() == null || groupByExpressions.isEmpty()) {
+            return;
+        }
+        final ExpressionEvaluator keyChecker = new ExpressionEvaluator(context.getTable(),
+            context.getFunctionRegistry(), context.getQueryExecutor().getCatalog(),
+            context.getQueryExecutor());
+        if (context.getAllTables() != null) {
+            keyChecker.setMultiTableContext(context.getAliasToTable(), context.getAllTables());
+        }
+        for (final String key : groupByExpressions) {
+            keyChecker.validateKey(ExpressionEvaluator.parse(key), SortKeyRole.GROUP_BY);
+        }
     }
 
     @Override
@@ -257,6 +283,10 @@ public class GroupByOperator implements Operator {
         for (int i = 0; i < parsedGroupBy.size(); i++) {
             try {
                 key.add(ValueComparisons.canonicalGroupKeyValue(columnEvaluator.evaluate(parsedGroupBy.get(i), row)));
+            } catch (final InvalidQualifierException invalidQualifier) {
+                // Definitive — live rejects a GROUP BY key whose qualifier names no FROM key
+                // ("invalid identifier 'R.T'"); a silent error-key would group wrongly instead.
+                throw invalidQualifier;
             } catch (final Exception e) {
                 logger.warn("Failed to evaluate GROUP BY expression '{}': {}", groupByExpressions.get(i), e.getMessage());
                 key.add(GROUP_KEY_ERROR);

@@ -59,7 +59,7 @@ public class EngineStateCloneTest {
         original.execute("CREATE SCHEMA s");
         original.execute("USE SCHEMA s");
         original.execute("CREATE TABLE t (id INTEGER, name VARCHAR, payload VARIANT)");
-        original.execute("INSERT INTO t VALUES (1, 'a', PARSE_JSON('{\"k\":1}')), (2, 'b', NULL)");
+        original.execute("INSERT INTO t SELECT 1, 'a', PARSE_JSON('{\"k\":1}') UNION ALL SELECT 2, 'b', NULL");
         original.execute("CREATE SEQUENCE seq1 START = 100");
         original.execute("SELECT seq1.NEXTVAL");
         original.execute("CREATE VIEW v1 AS SELECT COUNT(*) c FROM t");

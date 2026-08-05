@@ -24,6 +24,7 @@ import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
 import org.graalvm.polyglot.Value;
 import dev.frostlake.types.StringType;
+import dev.frostlake.values.BinaryValue;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -111,6 +112,8 @@ public class PythonTableFunctionExecutor {
                 sb.append("None");
             } else if (v instanceof String) {
                 sb.append("'").append(v.toString().replace("'", "\\'")).append("'");
+            } else if (v instanceof BinaryValue) {
+                sb.append("bytes.fromhex('").append(((BinaryValue) v).toHex()).append("')");
             } else {
                 sb.append(v);
             }

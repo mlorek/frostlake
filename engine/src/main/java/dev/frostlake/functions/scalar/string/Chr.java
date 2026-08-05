@@ -16,12 +16,12 @@
 
 package dev.frostlake.functions.scalar.string;
 
-import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.functions.TextArgumentFunction;
 import dev.frostlake.types.StringType;
 
 import java.util.List;
 
-public class Chr extends BuiltInFunction {
+public class Chr extends TextArgumentFunction {
     public Chr() { super("CHR", StringType.VARCHAR); }
 
     @Override

@@ -27,10 +27,11 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /**
- * PARSE_JSON / TRY_PARSE_JSON tolerate JSON strings that a strict parser rejects but Snowflake accepts —
- * chiefly invalid backslash escapes (e.g. a regex {@code \d}), whose backslash is kept literally so the
- * pattern survives. An over-escaped quote ({@code \'}) is dropped to a literal quote. Truly malformed JSON
- * still errors (PARSE_JSON) / yields NULL (TRY_PARSE_JSON).
+ * PARSE_JSON / TRY_PARSE_JSON tolerate JSON strings that a strict parser rejects but Snowflake
+ * accepts. Note the SQL string-literal decode runs FIRST and consumes single backslashes
+ * ({@code \d} &rarr; {@code d}, {@code \'} &rarr; {@code '}), so the single-backslash forms here
+ * reach PARSE_JSON as plain text — a regex backslash must be written {@code \\d} to survive. Truly
+ * malformed JSON still errors (PARSE_JSON) / yields NULL (TRY_PARSE_JSON).
  *
  * <p>Note: a Java {@code "\\d"} literal is the single-backslash SQL text {@code \d}.
  */
@@ -41,9 +42,10 @@ public class ParseJsonLenientTest extends BaseDatabaseTest {
     }
 
     @Test
-    public void invalidBackslashEscapeKeepsBackslash() {
-        // \d is not a valid JSON escape; Snowflake keeps the backslash because the pattern is a regex.
-        assertEquals("a\\d+", one("SELECT PARSE_JSON('[\"a\\d+\",\"b\"]')[0]::VARCHAR"));
+    public void invalidBackslashEscapeDropsTheBackslash() {
+        // The SQL literal decode consumes '\d' to 'd' before PARSE_JSON ever sees it — matching
+        // Snowflake, where keeping the regex backslash requires writing '\\d'.
+        assertEquals("ad+", one("SELECT PARSE_JSON('[\"a\\d+\",\"b\"]')[0]::VARCHAR"));
     }
 
     @Test
@@ -102,10 +104,13 @@ public class ParseJsonLenientTest extends BaseDatabaseTest {
     public void undefinedTokenParsesAsSnowflakeTolerates() {
         // Snowflake's PARSE_JSON accepts the non-standard JavaScript `undefined` token (loaders guard
         // against ingested artifacts with `= PARSE_JSON('[undefined]')`); a strict parser rejected it and
-        // killed the whole statement. Bare tokens normalize to the string "undefined"; the word inside a
-        // string value stays untouched.
-        assertEquals("[\"undefined\"]", String.valueOf(one("SELECT PARSE_JSON('[undefined]')")));
-        assertEquals("{\"a\":\"undefined\",\"b\":1}",
+        // killed the whole statement. A bare token in an ARRAY is the VARIANT `undefined` ELEMENT — live
+        // PARSE_JSON('[undefined]') renders [undefined] and EQUALS ARRAY_CONSTRUCT(NULL), which
+        // is what makes the loader guard fire. In an OBJECT it degrades to a JSON null
+        // (PARSE_JSON('{"a":undefined}') is {"a":null}) and the word inside a string value stays untouched.
+        assertEquals("[undefined]", String.valueOf(one("SELECT PARSE_JSON('[undefined]')")));
+        assertEquals(Boolean.TRUE, one("SELECT PARSE_JSON('[undefined]') = ARRAY_CONSTRUCT(NULL)"));
+        assertEquals("{\"a\":null,\"b\":1}",
             String.valueOf(one("SELECT PARSE_JSON('{\"a\":undefined,\"b\":1}')")));
         assertEquals("is undefined here",
             String.valueOf(one("SELECT PARSE_JSON('{\"m\":\"is undefined here\"}'):m::VARCHAR")));

@@ -18,32 +18,48 @@ package dev.frostlake.functions.scalar.semistructured;
 
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
-import dev.frostlake.types.VariantType;
+import dev.frostlake.types.ArrayType;
+import dev.frostlake.values.VariantUndefined;
+import dev.frostlake.values.VariantValue;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.node.ArrayNode;
 
-import java.util.HashSet;
+import java.util.HashMap;
 import java.util.List;
-import java.util.Set;
+import java.util.Map;
 
-/** ARRAY_EXCEPT(array1, array2) — returns elements in array1 that are not in array2 (distinct). */
+/** ARRAY_EXCEPT(array1, array2) — the MULTISET difference: max(0, N-M) copies of each element. */
 public class ArrayExcept extends BuiltInFunction {
-    public ArrayExcept() { super("ARRAY_EXCEPT", VariantType.VARIANT); }
+    public ArrayExcept() { super("ARRAY_EXCEPT", ArrayType.ARRAY); }
 
     @Override
     public Object evaluate(final List<Object> args) {
         ArrayNode a1 = ArrayFunctionHelper.parseArray(args.get(0));
         ArrayNode a2 = ArrayFunctionHelper.parseArray(args.get(1));
         if (a1 == null || a2 == null) return null;
-        Set<String> set2 = new HashSet<>();
-        for (final JsonNode el : a2) set2.add(el.toString());
-        Set<String> seen = new HashSet<>();
-        ArrayNode result = ArrayFunctionHelper.MAPPER.createArrayNode();
-        for (final JsonNode el : a1) {
-            String k = el.toString();
-            if (!set2.contains(k) && seen.add(k)) result.add(el);
+        // MULTISET difference, not a set difference: with N copies in array1 and M in array2 the result keeps
+        // max(0, N-M) copies, in array1's order. Live-verified: ARRAY_EXCEPT([1,1,2], []) is
+        // [1,1,2] (duplicates survive), ARRAY_EXCEPT(ARRAY_CONSTRUCT(NULL,1,NULL), ARRAY_CONSTRUCT(1)) is
+        // [undefined,undefined] and ARRAY_EXCEPT(ARRAY_CONSTRUCT(1,NULL,2), ARRAY_CONSTRUCT(1)) is
+        // [undefined,2]. An `undefined` is removed only by another `undefined`, never by a JSON null:
+        // ARRAY_EXCEPT(PARSE_JSON('[1,null,2]'), ARRAY_CONSTRUCT(NULL)) is [1,null,2].
+        final Map<String, Integer> remaining = new HashMap<>();
+        for (final JsonNode el : a2) {
+            final String k = el.toString();
+            final Integer count = remaining.get(k);
+            remaining.put(k, count == null ? 1 : count + 1);
         }
-        return result.toString();
+        final ArrayNode result = ArrayFunctionHelper.MAPPER.createArrayNode();
+        for (final JsonNode el : a1) {
+            final String k = el.toString();
+            final Integer count = remaining.get(k);
+            if (count != null && count > 0) {
+                remaining.put(k, count - 1);
+            } else {
+                result.add(el);
+            }
+        }
+        return VariantValue.ofNode(result);
     }
 
     @Override public int getMinArgCount() { return 2; }

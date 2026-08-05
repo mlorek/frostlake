@@ -16,12 +16,12 @@
 
 package dev.frostlake.functions.scalar.math;
 
-import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.functions.NumericArgumentFunction;
 import dev.frostlake.types.NumericType;
 
 import java.util.List;
 
-public class Factorial extends BuiltInFunction {
+public class Factorial extends NumericArgumentFunction {
     public Factorial() { super("FACTORIAL", NumericType.INTEGER); }
 
     @Override

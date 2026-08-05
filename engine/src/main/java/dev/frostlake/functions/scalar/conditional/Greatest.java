@@ -17,12 +17,27 @@
 package dev.frostlake.functions.scalar.conditional;
 
 import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.types.VariantType;
 
 import java.util.List;
 
 public class Greatest extends BuiltInFunction {
     public Greatest() { super("GREATEST", VariantType.VARIANT); }
+
+    /**
+     * {@code GREATEST} ORDERS its arguments, and a GEOSPATIAL value has no order — where an OBJECT
+     * does. Live, {@code GREATEST(o, o)} returns the object while {@code GREATEST(g, g)} is
+     * "Invalid argument types for function 'GREATEST': (GEOGRAPHY, GEOGRAPHY)" (SQLSTATE 42P13), and
+     * {@code LEAST} splits the same way. This is the boundary of the NULL-choosing family rather than
+     * a property of it: {@code IFF}, {@code COALESCE}, {@code NVL}, {@code IFNULL}, {@code NVL2},
+     * {@code DECODE} and {@code CASE} all return a geo value happily, because none of them compares
+     * one.
+     */
+    @Override
+    public SemiStructuredRejection geoRejection(final int position) {
+        return SemiStructuredRejection.ARGUMENT_TYPES;
+    }
 
     @Override
     @SuppressWarnings("unchecked")

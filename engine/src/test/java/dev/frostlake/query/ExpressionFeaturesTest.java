@@ -202,9 +202,10 @@ public class ExpressionFeaturesTest {
         engine.execute("INSERT INTO patterns VALUES (2, '50 dollars')");
         engine.execute("INSERT INTO patterns VALUES (3, '100% guaranteed')");
 
-        // Match literal % using ESCAPE. A one-backslash string literal is '\\' in Snowflake (\' escapes a
-        // quote), so the escape character is ESCAPE '\\'.
-        ResultSet rs = engine.executeQuery("SELECT text FROM patterns WHERE text LIKE '%\\%%' ESCAPE '\\\\'");
+        // Match literal % using ESCAPE. The string-literal decode consumes single backslashes
+        // ('\%' -> '%'), so the escape must be written doubled: SQL '%\\%%' ESCAPE '\\' — the
+        // decoded pattern is %\%% with escape \.
+        ResultSet rs = engine.executeQuery("SELECT text FROM patterns WHERE text LIKE '%\\\\%%' ESCAPE '\\\\'");
         assertEquals(2, rs.getRowCount());
     }
 

@@ -179,17 +179,22 @@ public class WindowFunctionHelper {
         return AggregateNumerics.sum(values);
     }
 
-    /** AVG over the frame, ignoring nulls; null when there are no non-null values. */
+    /** The declared-VARIANT-argument flavour — live, {@code SUM(v:b) OVER ()} is DOUBLE
+     * (SYSTEM$TYPEOF FLOAT) exactly like the grouped form, even over whole-number JSON values. */
+    public static Object sum(final List<Object> values, final boolean variantArgument) {
+        return AggregateNumerics.sum(values, variantArgument);
+    }
+
+    /** AVG over the frame, ignoring nulls; null when there are no non-null values. Shares the grouped
+     * AVG's Snowflake typing: fixed-point inputs average to a scale-(max input scale + 6) BigDecimal,
+     * any double/VARIANT input keeps the double average. */
     public static Object avg(final List<Object> values) {
-        double total = 0;
-        long n = 0;
-        for (final Object v : values) {
-            if (v != null) {
-                total += toDouble(v);
-                n++;
-            }
-        }
-        return n == 0 ? null : (Double) (total / n);
+        return AggregateNumerics.avg(values);
+    }
+
+    /** See {@link #sum(List, boolean)} — the same declared-VARIANT rule applied to a window AVG. */
+    public static Object avg(final List<Object> values, final boolean variantArgument) {
+        return AggregateNumerics.avg(values, variantArgument);
     }
 
     /** MIN over the frame (by {@link #compareValues}), ignoring nulls; preserves the element's type. */

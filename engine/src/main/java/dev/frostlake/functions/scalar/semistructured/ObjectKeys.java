@@ -16,17 +16,18 @@
 
 package dev.frostlake.functions.scalar.semistructured;
 
-import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.functions.VariantAccessorFunction;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
-import dev.frostlake.types.VariantType;
+import dev.frostlake.types.ArrayType;
+import dev.frostlake.values.VariantValue;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.node.ArrayNode;
 
 import java.util.List;
 
 /** OBJECT_KEYS(object) — returns an array of the object's keys. */
-public class ObjectKeys extends BuiltInFunction {
-    public ObjectKeys() { super("OBJECT_KEYS", VariantType.VARIANT); }
+public class ObjectKeys extends VariantAccessorFunction {
+    public ObjectKeys() { super("OBJECT_KEYS", ArrayType.ARRAY); }
 
     @Override
     public Object evaluate(final List<Object> args) {
@@ -34,7 +35,7 @@ public class ObjectKeys extends BuiltInFunction {
         if (src == null || !src.isObject()) return null;
         ArrayNode result = ArrayFunctionHelper.MAPPER.createArrayNode();
         src.propertyNames().forEach(result::add);
-        return result.toString();
+        return VariantValue.ofNode(result);
     }
 
     @Override public int getMinArgCount() { return 1; }

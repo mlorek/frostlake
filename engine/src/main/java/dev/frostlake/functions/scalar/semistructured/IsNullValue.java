@@ -16,13 +16,13 @@
 
 package dev.frostlake.functions.scalar.semistructured;
 
-import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.functions.StructuredArgumentFunction;
 import dev.frostlake.functions.scalar.JsonTypeHelper;
 import dev.frostlake.types.BooleanType;
 import java.util.List;
 import tools.jackson.databind.JsonNode;
 
-public class IsNullValue extends BuiltInFunction {
+public class IsNullValue extends StructuredArgumentFunction {
     public IsNullValue() { super("IS_NULL_VALUE", new BooleanType()); }
 
     @Override

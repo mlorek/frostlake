@@ -20,6 +20,7 @@ import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.storage.ResultSet;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -29,10 +30,16 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 public class CreateTableTest extends BaseDatabaseTest {
 
+    private static final String CATALOG_ASSERTIONS =
+        "asserts through engine.getCatalog(), which under SF_LIVE still reads the embedded engine — "
+        + "the CREATE TABLE went to Snowflake, so the embedded catalog never saw the table; the DDL "
+        + "itself is still submitted to the account";
+
     @Test
     public void testCreateSimpleTable() {
         engine.execute("CREATE TABLE users (id INTEGER, name VARCHAR, age INTEGER)");
 
+        Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_ASSERTIONS);
         Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
         Table table = schema.getTable("users");
 
@@ -51,6 +58,7 @@ public class CreateTableTest extends BaseDatabaseTest {
             )
             """);
 
+        Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_ASSERTIONS);
         Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
         Table table = schema.getTable("users");
 
@@ -68,6 +76,7 @@ public class CreateTableTest extends BaseDatabaseTest {
             )
             """);
 
+        Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_ASSERTIONS);
         Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
         Table table = schema.getTable("users");
 
@@ -87,6 +96,7 @@ public class CreateTableTest extends BaseDatabaseTest {
             )
             """);
 
+        Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_ASSERTIONS);
         Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
         Table table = schema.getTable("users");
 
@@ -103,6 +113,7 @@ public class CreateTableTest extends BaseDatabaseTest {
             )
             """);
 
+        Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_ASSERTIONS);
         Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
         Table table = schema.getTable("users");
 
@@ -134,6 +145,7 @@ public class CreateTableTest extends BaseDatabaseTest {
             )
             """);
 
+        Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_ASSERTIONS);
         Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
         Table table = schema.getTable("test_types");
 
@@ -158,6 +170,7 @@ public class CreateTableTest extends BaseDatabaseTest {
         engine.execute("CREATE SCHEMA other_schema");
         engine.execute("CREATE TABLE other_schema.users (id INTEGER, name VARCHAR)");
 
+        Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_ASSERTIONS);
         Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("other_schema");
         Table table = schema.getTable("users");
 
@@ -169,6 +182,7 @@ public class CreateTableTest extends BaseDatabaseTest {
     public void testCreateTableWithQualifiedName() {
         engine.execute("CREATE TABLE test_db.test_schema.products (id INTEGER, name VARCHAR)");
 
+        Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_ASSERTIONS);
         Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
         Table table = schema.getTable("products");
 

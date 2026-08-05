@@ -306,6 +306,20 @@ final class CatalogSnapshotReader {
                         table.setRowAccessPolicyColumns(tableSnapshot.rowAccessPolicyColumns);
                     }
                 }
+                // Constraint names, so a reloaded table keeps reporting the ones it was created with. All
+                // of these are null on snapshots written before they were persisted, in which case the
+                // constraint auto-names itself again on first use.
+                table.setPrimaryKeyConstraintName(tableSnapshot.primaryKeyConstraintName);
+                if (tableSnapshot.uniqueConstraints != null) {
+                    for (final UniqueConstraintSnapshot uniqueSnapshot : tableSnapshot.uniqueConstraints) {
+                        table.addUniqueConstraint(new UniqueConstraint(uniqueSnapshot.constraintName,
+                            uniqueSnapshot.columnNames));
+                    }
+                }
+                for (final ColumnSnapshot colSnapshot : tableSnapshot.columns) {
+                    table.setUniqueConstraintName(colSnapshot.name, colSnapshot.uniqueConstraintName);
+                    table.setColumnForeignKeyConstraintName(colSnapshot.name, colSnapshot.foreignKeyConstraintName);
+                }
                 schema.addTable(table);
 
                 // Create storage for table
@@ -329,6 +343,7 @@ final class CatalogSnapshotReader {
                         view.setRowAccessPolicyColumns(viewSnapshot.rowAccessPolicyColumns != null
                             ? viewSnapshot.rowAccessPolicyColumns : new ArrayList<>());
                     }
+                    view.setResolvedColumns(derivedColumns(viewSnapshot.columns));
                     schema.addView(view);
                 }
             }
@@ -592,6 +607,24 @@ final class CatalogSnapshotReader {
         }
         logger.debug("Loaded table data: {}.{}.{} ({} rows)",
                     database, schema, table.getName(), dataSnapshot.rows.size());
+    }
+
+    /**
+     * Rebuild a DERIVED relation's frozen column list — a view's. Null in, null out, so a snapshot
+     * written before view columns were captured leaves the view reporting none, as it did then.
+     */
+    static List<TableColumn> derivedColumns(final List<ColumnSnapshot> snapshots) {
+        if (snapshots == null) {
+            return null;
+        }
+        final List<TableColumn> columns = new ArrayList<>();
+        for (final ColumnSnapshot colSnapshot : snapshots) {
+            columns.add(new TableColumn(colSnapshot.name,
+                parseDataType(colSnapshot.dataType, colSnapshot.precision, colSnapshot.scale,
+                    colSnapshot.maxLength),
+                colSnapshot.nullable, null, false, false, false));
+        }
+        return columns;
     }
 
     /**

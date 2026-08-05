@@ -43,16 +43,25 @@ public class SnowflakeStrictnessRulesTest extends BaseDatabaseTest {
     public void temporalFunctionsRejectDeclaredVarcharColumns() {
         engine.execute("CREATE TABLE tf_v (d VARCHAR, ts TIMESTAMP)");
         engine.execute("INSERT INTO tf_v VALUES ('2024-04-08', '2024-04-08 10:00:00')");
-        // String constants coerce (Snowflake behavior)...
-        assertEquals("2024-04-01", String.valueOf(scalar("SELECT DATE_TRUNC('month', '2024-04-08')")));
-        // ...a declared-VARCHAR column does not...
+        // A string CONSTANT is rejected exactly like a column (live-verified: DATE_TRUNC,
+        // EXTRACT, LAST_DAY and the part extractors all reject '2024-04-08'); an explicit cast is
+        // the portable form.
+        assertEquals("2024-04-01",
+            String.valueOf(scalar("SELECT DATE_TRUNC('month', '2024-04-08'::DATE)")));
+        assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.executeQuery("SELECT DATE_TRUNC('month', '2024-04-08')");
+            }
+        });
+        // ...and a declared-VARCHAR column likewise...
         final RuntimeException e = assertThrows(RuntimeException.class, new Executable() {
             @Override
             public void execute() {
                 engine.executeQuery("SELECT DATE_TRUNC('month', d) FROM tf_v");
             }
         });
-        assertTrue(e.getMessage().contains("does not support VARCHAR argument type"),
+        assertTrue(e.getMessage().contains("does not support VARCHAR("),
             "unexpected: " + e.getMessage());
         // ...while casts, temporal columns, and CTE-derived values all stay usable.
         assertEquals("2024-04-01", String.valueOf(scalar("SELECT DATE_TRUNC('month', d::DATE) FROM tf_v")));
@@ -91,10 +100,15 @@ public class SnowflakeStrictnessRulesTest extends BaseDatabaseTest {
                 engine.execute("DROP MASKING POLICY sp_m1");
             }
         }, "a policy in use cannot be dropped");
+        // Re-attaching the SAME policy is a no-op — live-verified on a real account.
+        engine.execute("ALTER TABLE sp_t ALTER COLUMN secret SET MASKING POLICY sp_m1");
+        // Attaching a DIFFERENT one without unsetting first is the error: "Specified column already
+        // attached to another masking policy..." (live-verified).
+        engine.execute("CREATE MASKING POLICY sp_m3 AS (v VARCHAR) RETURNS VARCHAR -> '###'");
         assertThrows(RuntimeException.class, new Executable() {
             @Override
             public void execute() {
-                engine.execute("ALTER TABLE sp_t ALTER COLUMN secret SET MASKING POLICY sp_m1");
+                engine.execute("ALTER TABLE sp_t ALTER COLUMN secret SET MASKING POLICY sp_m3");
             }
         }, "one masking policy per column");
         engine.execute("CREATE MASKING POLICY sp_m2 AS (v VARCHAR, s VARCHAR) RETURNS VARCHAR -> '***'");
@@ -141,10 +155,19 @@ public class SnowflakeStrictnessRulesTest extends BaseDatabaseTest {
             }
         });
         assertTrue(e.getMessage().contains("lateral table function"), "unexpected: " + e.getMessage());
-        // The comma-lateral form stays supported, and a lateral SUBQUERY with ON stays valid too.
+        // The restriction is specific to a lateral TABLE FUNCTION: the same query with an INNER join
+        // and the very same ON TRUE runs (live-verified), so it is the OUTER/predicate rule
+        // on TABLE FUNCTIONS, not a ban on predicates over laterals. The null-extending LEFT form of a
+        // lateral SUBQUERY lives in LateralLeftJoinNullExtendTest, over plain tables — Snowflake reports
+        // "Unsupported subquery type cannot be evaluated" for some OUTER-lateral shapes for reasons of
+        // its own (a FROM-less derived table, or this VARIANT-carrying source), and that limitation is
+        // not the rule under test here.
+        assertEquals(1, engine.executeQuery(
+            "SELECT t.id FROM lt t JOIN LATERAL (SELECT 1 AS k) l ON TRUE").getRowCount());
+        // The predicate-free spellings stay supported.
         assertEquals(2, engine.executeQuery(
             "SELECT t.id, f.value FROM lt t, LATERAL FLATTEN(INPUT => t.tags) f").getRowCount());
         assertEquals(1, engine.executeQuery(
-            "SELECT t.id FROM lt t LEFT JOIN LATERAL (SELECT 1 AS k) l ON TRUE").getRowCount());
+            "SELECT t.id FROM lt t CROSS JOIN LATERAL (SELECT 1 AS k) l").getRowCount());
     }
 }

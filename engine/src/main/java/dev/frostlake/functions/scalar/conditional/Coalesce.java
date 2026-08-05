@@ -32,6 +32,9 @@ public class Coalesce extends BuiltInFunction {
         return null;
     }
 
-    @Override public int getMinArgCount() { return 1; }
+    // Live-verified: COALESCE needs at least TWO arguments — SELECT COALESCE(1) fails
+    // "not enough arguments for function [COALESCE(1)], expected 2, got 1". GREATEST/LEAST, by
+    // contrast, accept a single argument, so this is not a family-wide rule.
+    @Override public int getMinArgCount() { return 2; }
     @Override public int getMaxArgCount() { return Integer.MAX_VALUE; }
 }

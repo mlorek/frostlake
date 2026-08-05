@@ -154,7 +154,7 @@ public class DirectConnection implements Connection {
     @Override
     public java.sql.DatabaseMetaData getMetaData() throws SQLException {
         checkClosed();
-        return new DirectDatabaseMetaData(this, engine);
+        return new DirectDatabaseMetaData(this);
     }
 
     @Override

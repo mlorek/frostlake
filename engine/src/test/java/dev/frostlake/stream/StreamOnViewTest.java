@@ -104,8 +104,10 @@ public class StreamOnViewTest extends BaseJdbcTest {
         SQLException exception = assertThrows(SQLException.class, () -> {
             statement.execute("CREATE STREAM test_stream ON VIEW non_existent_view");
         });
-        assertTrue(exception.getMessage().contains("View does not exist"),
-                   "Should fail when view doesn't exist");
+        // Live-verified on a real account: "SQL compilation error:\nView
+        // 'NON_EXISTENT_VIEW' does not exist or not authorized."
+        assertTrue(exception.getMessage().contains("does not exist or not authorized"),
+                   "Should fail when view doesn't exist: " + exception.getMessage());
     }
 
     @Test

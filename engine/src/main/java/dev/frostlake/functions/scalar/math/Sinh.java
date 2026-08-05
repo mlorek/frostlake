@@ -16,12 +16,12 @@
 
 package dev.frostlake.functions.scalar.math;
 
-import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.functions.NumericArgumentFunction;
 import dev.frostlake.types.NumericType;
 
 import java.util.List;
 
-public class Sinh extends BuiltInFunction {
+public class Sinh extends NumericArgumentFunction {
     public Sinh() { super("SINH", NumericType.DOUBLE); }
 
     @Override

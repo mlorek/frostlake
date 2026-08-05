@@ -47,12 +47,27 @@ public class NullSemanticsAuditTest extends BaseDatabaseTest {
         "ARRAY_CONSTRUCT_COMPACT",      // builds [] (drops NULLs by definition)
         "OBJECT_CONSTRUCT",             // {} — a NULL key omits the pair
         "OBJECT_CONSTRUCT_KEEP_NULL",   // {} — a NULL key still omits the pair (only NULL values kept)
+        // {} — the MAP constructor, same rule as its OBJECT twin. Live-measured over a
+        // two-row table (so no all-NULL column could be folded to a NULL literal): a NULL KEY drops the
+        // whole pair, so an all-NULL call is the EMPTY map rather than NULL. The rest of the MAP family
+        // does propagate NULL and is deliberately absent from this list.
+        "MAP_CONSTRUCT",
         "EQUAL_NULL",                   // NULL-safe equality: EQUAL_NULL(NULL, NULL) is TRUE
         "ZEROIFNULL",                   // 0 by definition
         "DIV0NULL",                     // 0 when the divisor is NULL by definition
         "HASH",                         // hashes NULL to a number; never returns NULL
         "GROUPING", "GROUPING_ID",      // engine-special super-group markers
-        "LAST_QUERY_ID", "RANDOM", "NORMAL", "UUID_STRING"   // context / generators
+        "LAST_QUERY_ID", "RANDOM", "NORMAL", "UUID_STRING",  // context / generators
+        // Context functions with an OPTIONAL precision argument: the argument never gates the
+        // result, so a NULL precision still yields the current value (Snowflake signature
+        // CURRENT_TIMESTAMP([fract_sec_precision])).
+        "CURRENT_TIME", "CURRENT_TIMESTAMP",
+        // The FILE classifiers. Live-measured, NOT inferred: over a NULL file —
+        // both a literal NULL and a NULL FILE column — FL_GET_FILE_TYPE returns the STRING 'unknown'
+        // and every FL_IS_* returns FALSE. The eight plain FL_GET_* accessors DO propagate NULL and are
+        // deliberately absent from this list, which is exactly the split the account shows.
+        "FL_GET_FILE_TYPE",
+        "FL_IS_AUDIO", "FL_IS_COMPRESSED", "FL_IS_DOCUMENT", "FL_IS_IMAGE", "FL_IS_VIDEO"
     ));
 
     /** Functions allowed to THROW on a NULL argument (a required identifier/name argument). */

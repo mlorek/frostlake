@@ -86,9 +86,10 @@ public class InformationSchemaTest extends BaseJdbcTest {
         statement.execute("CREATE TABLE users (id INTEGER, name VARCHAR)");
         statement.execute("CREATE TABLE products (id INTEGER, price DECIMAL)");
 
-        // Query INFORMATION_SCHEMA.TABLES
+        // Query INFORMATION_SCHEMA.TABLES. Filter to the PUBLIC schema: on real Snowflake the
+        // catalog filter alone also surfaces the INFORMATION_SCHEMA views, which are not BASE TABLEs.
         ResultSet rs = statement.executeQuery("""
-            SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_CATALOG = 'TEST_DB'
+            SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_CATALOG = 'TEST_DB' AND TABLE_SCHEMA = 'PUBLIC'
             """);
 
         boolean foundUsers = false;
@@ -120,26 +121,27 @@ public class InformationSchemaTest extends BaseJdbcTest {
             "SELECT * FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'EMPLOYEES' ORDER BY ORDINAL_POSITION"
         );
 
+        // DATA_TYPE reports Snowflake's canonical family names (live-verified):
+        // integer/decimal flavors -> NUMBER, character flavors -> TEXT.
+
         // Check column 1: id
         assertTrue(rs.next(), "Should have first column");
         assertEquals("EMPLOYEES", rs.getString("TABLE_NAME"));
         assertEquals("ID", rs.getString("COLUMN_NAME"));
         assertEquals(1, rs.getInt("ORDINAL_POSITION"));
-        assertEquals("INTEGER", rs.getString("DATA_TYPE"));
+        assertEquals("NUMBER", rs.getString("DATA_TYPE"));
 
         // Check column 2: name
         assertTrue(rs.next(), "Should have second column");
         assertEquals("NAME", rs.getString("COLUMN_NAME"));
         assertEquals(2, rs.getInt("ORDINAL_POSITION"));
-        assertEquals("VARCHAR", rs.getString("DATA_TYPE"));
+        assertEquals("TEXT", rs.getString("DATA_TYPE"));
 
         // Check column 3: salary
         assertTrue(rs.next(), "Should have third column");
         assertEquals("SALARY", rs.getString("COLUMN_NAME"));
         assertEquals(3, rs.getInt("ORDINAL_POSITION"));
-        // Note: DECIMAL type is stored as NUMBER internally
-        assertTrue("NUMBER".equals(rs.getString("DATA_TYPE")) || "DECIMAL".equals(rs.getString("DATA_TYPE")),
-                   "Data type should be NUMBER or DECIMAL");
+        assertEquals("NUMBER", rs.getString("DATA_TYPE"));
 
         assertFalse(rs.next(), "Should have only three columns");
         rs.close();

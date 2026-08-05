@@ -19,8 +19,10 @@ package dev.frostlake.functions;
 import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertNull;
 
 public class BoolOrTest extends BaseDatabaseTest {
@@ -38,7 +40,13 @@ public class BoolOrTest extends BaseDatabaseTest {
     @Test
     public void testEitherTrue() {
         assertEquals(true, q("SELECT BOOLOR(1, 0)"));
-        assertEquals(true, q("SELECT BOOLOR(false, true)"));
+        // BOOLOR takes numeric/variant truthiness, not a BOOLEAN (live-verified rejection).
+        assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                q("SELECT BOOLOR(false, true)");
+            }
+        });
     }
 
     @Test

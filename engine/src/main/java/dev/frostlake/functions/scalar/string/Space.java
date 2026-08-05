@@ -16,12 +16,12 @@
 
 package dev.frostlake.functions.scalar.string;
 
-import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.functions.TextArgumentFunction;
 import dev.frostlake.types.StringType;
 
 import java.util.List;
 
-public class Space extends BuiltInFunction {
+public class Space extends TextArgumentFunction {
     public Space() { super("SPACE", StringType.VARCHAR); }
 
     @Override

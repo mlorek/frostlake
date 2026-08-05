@@ -18,8 +18,10 @@ package dev.frostlake.functions;
 
 import dev.frostlake.BaseDatabaseTest;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /**
  * A bare NUMBER / DECIMAL / NUMERIC is NUMBER(38,0) in Snowflake, so every conversion to it with no
@@ -72,10 +74,25 @@ public class NumberDefaultScaleTest extends BaseDatabaseTest {
     }
 
     @Test
-    public void formatStringImpliesItsFractionalScale() {
-        // A format model such as '9,999.99' has two fractional digit placeholders, so the scale is 2.
-        assertEquals(405.96, num("SELECT TO_NUMBER('405.958', '9,999.99')"), 1e-9);
-        assertEquals(406.0, num("SELECT TO_NUMBER('405.958', '9,999')"), 1e-9);
+    public void formatStringDoesNotImplyAScale() {
+        // A format model governs PARSING only — the result still defaults to NUMBER(38,0), so even
+        // '999.999' rounds to a whole number (live: TO_NUMBER('1,234.56', '9,999.99') → 1235).
+        assertEquals(406.0, num("SELECT TO_NUMBER('405.958', '999.999')"), 1e-9);
+        //... but the input must FIT the format. Live-verified on a real account:
+        // TO_NUMBER('405.958', '9,999.99') and ('405.958', '9,999') both fail "Can't parse '405.958' as
+        // number with format '…'" because the value carries more fraction digits than the model does.
+        assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                num("SELECT TO_NUMBER('405.958', '9,999.99')");
+            }
+        });
+        assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                num("SELECT TO_NUMBER('405.958', '9,999')");
+            }
+        });
     }
 
     @Test

@@ -54,7 +54,7 @@ public class BeginEndDeclareTest {
         engine.execute("""
             DECLARE x INTEGER DEFAULT 10;
             BEGIN
-                INSERT INTO results VALUES (x);
+                INSERT INTO results VALUES (:x);
             END;
             """);
 
@@ -84,7 +84,7 @@ public class BeginEndDeclareTest {
         engine.execute("""
             DECLARE x INTEGER := 15;
             BEGIN
-                INSERT INTO results VALUES (x);
+                INSERT INTO results VALUES (:x);
             END;
             """);
 

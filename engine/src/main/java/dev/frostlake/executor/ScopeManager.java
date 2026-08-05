@@ -35,6 +35,8 @@ public class ScopeManager {
     private final Stack<Map<String, Object>> scopeStack = new Stack<>();
     // Track which variable names were NEWLY DECLARED (not inherited) in each scope level.
     private final Stack<Set<String>> declaredInScopeStack = new Stack<>();
+    // Whether each scope level is ISOLATED — inherits nothing and propagates nothing (a UDF body).
+    private final Stack<Boolean> isolatedScopeStack = new Stack<>();
 
     /** Live variable map — for raw record-field / session-variable / result-set access. */
     public Map<String, Object> variables() {
@@ -44,6 +46,21 @@ public class ScopeManager {
     public void enterScope() {
         scopeStack.push(new HashMap<>(variables));
         declaredInScopeStack.push(new HashSet<>());
+        isolatedScopeStack.push(Boolean.FALSE);
+    }
+
+    /**
+     * Enter a scope that inherits NOTHING and propagates NOTHING — a fresh variable namespace whose exit
+     * restores the caller's variables exactly. Used for a SQL UDF body: a function is its own execution
+     * context, so it can neither read nor clobber the variables of a procedure that calls it
+     * (live-verified — a UDF body naming a caller procedure's variable fails "invalid identifier", and a
+     * UDF declaring a variable the caller also has leaves the caller's value untouched).
+     */
+    public void enterIsolatedScope() {
+        scopeStack.push(new HashMap<>(variables));
+        declaredInScopeStack.push(new HashSet<>());
+        isolatedScopeStack.push(Boolean.TRUE);
+        variables.clear();
     }
 
     public void exitScope() {
@@ -51,6 +68,13 @@ public class ScopeManager {
             Map<String, Object> parentSnapshot = scopeStack.pop();
             Set<String> declaredHere = declaredInScopeStack.isEmpty()
                 ? Collections.emptySet() : declaredInScopeStack.pop();
+            boolean isolated = !isolatedScopeStack.isEmpty() && isolatedScopeStack.pop();
+
+            if (isolated) {
+                variables.clear();
+                variables.putAll(parentSnapshot);
+                return;
+            }
 
             // Propagate updates to variables inherited from parent (not re-declared here),
             // discard variables newly declared in this scope (including shadowed ones).

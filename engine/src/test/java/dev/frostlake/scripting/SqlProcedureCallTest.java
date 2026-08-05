@@ -91,7 +91,7 @@ public class SqlProcedureCallTest extends BaseDatabaseTest {
         engine.execute("CREATE TABLE proc_log (v INTEGER)");
         engine.execute(
             "CREATE OR REPLACE PROCEDURE log_and_return(v INTEGER) RETURNS INTEGER LANGUAGE SQL "
-            + "AS $$ BEGIN INSERT INTO proc_log VALUES (v); RETURN v; END $$");
+            + "AS $$ BEGIN INSERT INTO proc_log VALUES (:v); RETURN v; END $$");
         assertEquals(7L, callLong("CALL log_and_return(7)"));
         final ResultSet rs = engine.executeQuery("SELECT COUNT(*) FROM proc_log WHERE v = 7");
         assertEquals(1L, ((Number) rs.getRows().get(0).getValue(0)).longValue());

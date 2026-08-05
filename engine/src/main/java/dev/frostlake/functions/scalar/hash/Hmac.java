@@ -20,7 +20,6 @@ import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.types.StringType;
 
-import java.nio.charset.StandardCharsets;
 import java.util.List;
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
@@ -31,15 +30,16 @@ public class Hmac extends BuiltInFunction {
     @Override
     public Object evaluate(final List<Object> args) {
         if (args.get(0) == null || args.get(1) == null) return null;
-        String msg = args.get(0).toString();
-        String key = args.get(1).toString();
-        String algo = args.size() > 2 && args.get(2) != null
+        // A BINARY message or key contributes its OWN bytes, not its hex rendering.
+        final byte[] msg = SharedFunctionHelpers.toUtf8(args.get(0));
+        final byte[] key = SharedFunctionHelpers.toUtf8(args.get(1));
+        final String algo = args.size() > 2 && args.get(2) != null
             ? "HmacSHA" + args.get(2).toString().toUpperCase().replace("SHA", "").replace("-", "")
             : "HmacSHA256";
         try {
-            Mac mac = Mac.getInstance(algo);
-            mac.init(new SecretKeySpec(key.getBytes(StandardCharsets.UTF_8), algo));
-            return SharedFunctionHelpers.toHex(mac.doFinal(msg.getBytes(StandardCharsets.UTF_8)));
+            final Mac mac = Mac.getInstance(algo);
+            mac.init(new SecretKeySpec(key, algo));
+            return SharedFunctionHelpers.toHex(mac.doFinal(msg));
         } catch (final Exception e) {
             throw new RuntimeException("HMAC failed: " + e.getMessage());
         }

@@ -25,10 +25,14 @@ import dev.frostlake.functions.aggregate.MaxByMinByAccumulator;
 import dev.frostlake.functions.aggregate.ObjectAggAccumulator;
 import dev.frostlake.functions.aggregate.RegrAccumulator;
 import dev.frostlake.executor.expressions.AstPrinterVisitor;
+import dev.frostlake.executor.expressions.SortKeyRole;
 import dev.frostlake.functions.window.WindowFunctionHelper;
+import dev.frostlake.functions.window.WindowFunctionNames;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.storage.Row;
+import dev.frostlake.types.VariantType;
+import dev.frostlake.values.VariantJsonNulls;
 import java.math.BigDecimal;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -85,9 +89,6 @@ final class WindowFunctionEvaluator {
                                             final List<FrostlakeParser.FunctionCallExprContext> out) {
         if (node instanceof FrostlakeParser.FunctionCallExprContext
                 && ((FrostlakeParser.FunctionCallExprContext) node).overClause() != null) {
-            if (((FrostlakeParser.FunctionCallExprContext) node).filterClause() != null) {
-                throw new RuntimeException("FILTER (WHERE ...) combined with OVER (...) is not supported");
-            }
             out.add((FrostlakeParser.FunctionCallExprContext) node);
             return;
         }
@@ -204,6 +205,24 @@ final class WindowFunctionEvaluator {
         // restored so a nested subquery's window computation doesn't leak its aliases back out.
         final Map<String, String> savedAliases = beginWindowAliasScope(ctx, rowsAreProjected);
         try {
+
+        // Plan-time: a FILE argument to a window aggregate is rejected before any row is computed.
+        final List<FrostlakeParser.FunctionCallExprContext> selectWindowCalls = new ArrayList<>();
+        for (final FrostlakeParser.SelectItemContext item : ctx.selectList().selectItem()) {
+            if (SelectItemAccessors.isExprItem(item)) {
+                collectWindowFunctionCalls(SelectItemAccessors.getItemValueExpr(item), selectWindowCalls);
+            }
+        }
+        rejectFileWindowArguments(selectWindowCalls, table, executor.selectItemAliasNames(ctx));
+        // …and so is a FILE or GEOSPATIAL key in the OVER spec. The per-partition call below only runs
+        // once a partition is actually built, which never happens over an EMPTY input — while live
+        // rejects the query at COMPILE time either way ("Expressions of type GEOGRAPHY cannot be used
+        // as PARTITION BY keys", SQLSTATE 42804, on a table with no rows as on a populated one).
+        for (final FrostlakeParser.FunctionCallExprContext call : selectWindowCalls) {
+            if (call.overClause() != null) {
+                rejectFileWindowKeys(call.overClause(), table);
+            }
+        }
 
         // Per OVER clause: rows grouped into partitions (PARTITION BY) and each partition sorted
         // (ORDER BY) exactly once, then reused across every row — instead of re-partitioning/re-sorting
@@ -337,9 +356,20 @@ final class WindowFunctionEvaluator {
                             // The grouped projection already produced this slot's value; keep the layout aligned.
                             values.add(originalRow.getValue(selectItemIdx));
                         }
+                    } else if (SelectItemAccessors.isObjectStarItem(item)) {
+                        // The braced star is ONE object over the row's columns, not the columns themselves.
+                        values.add(executor.evaluateExpression(
+                            executor.objectStarExpression(item, table, null), originalRow, table));
+                    } else if (SelectItemAccessors.isStarItem(item)) {
+                        // A bare star projects its effective columns one by one — never the raw row,
+                        // which for a USING / NATURAL join is WIDER than the star's column list (the
+                        // hidden right-side key duplicates) and would misalign every later slot.
+                        for (final String starExpr : executor.bareStarExpressions(item, table)) {
+                            values.add(executor.evaluateExpression(starExpr, originalRow, table));
+                        }
                     } else {
-                        // A star item expands to the source row's columns. Dropping them left the
-                        // projected row holding only the window values while the result metadata kept
+                        // A qualified star (t.*) expands to the source row's columns. Dropping them left
+                        // the projected row holding only the window values while the result metadata kept
                         // every column — any later positional read (an outer SELECT over the CTE)
                         // indexed past the row's end.
                         values.addAll(originalRow.getValues());
@@ -413,6 +443,17 @@ final class WindowFunctionEvaluator {
             return evaluateNestedWindowExpression(expr, allRows, currentRowIndex, ctx, table, overCache);
         }
 
+        // Only names WindowFunctionNames declares (or a registered aggregate, which the default branch
+        // below runs over the frame) are window functions. Rejecting anything else HERE, before the
+        // partition work and before the switch, is what makes that set load-bearing: it is the same set
+        // SHOW FUNCTIONS enumerates via FunctionRegistry.allDispatchableNames(), so a case added below
+        // without declaring the name simply does not dispatch — the listing cannot silently fall behind
+        // the switch again, which is how ROW_NUMBER, RANK, LAG and 11 others ended up unlisted.
+        if (!WindowFunctionNames.handles(functionName)
+                && executor.getFunctionRegistry().getAggregateFunction(functionName) == null) {
+            throw new RuntimeException("Unsupported window function: " + functionName);
+        }
+
         // The current row's partition (PARTITION BY), sorted by ORDER BY — grouped and sorted once per
         // OVER clause and cached, then shared read-only by every function for this window.
         List<Row> sortedPartition =
@@ -431,7 +472,8 @@ final class WindowFunctionEvaluator {
             case "LEAD":
                 return computeLead(funcCtx, sortedPartition, currentRowIndex, overClause, allRows, table);
             case "COUNT":
-                return (long) frameRows(overClause, sortedPartition, allRows.get(currentRowIndex), table).size();
+                return computeWindowCount(funcCtx,
+                    frameRows(overClause, sortedPartition, allRows.get(currentRowIndex), table), table);
             case "SUM":
             case "AVG":
             case "MIN":
@@ -448,13 +490,13 @@ final class WindowFunctionEvaluator {
                 return computeRatioToReport(funcCtx, sortedPartition, allRows.get(currentRowIndex), table);
             case "FIRST_VALUE":
                 return computeFirstValue(funcCtx,
-                    frameRows(overClause, sortedPartition, allRows.get(currentRowIndex), table), table);
+                    valueFrameRows(functionName, overClause, sortedPartition, allRows.get(currentRowIndex), table), table);
             case "LAST_VALUE":
                 return computeLastValue(funcCtx,
-                    frameRows(overClause, sortedPartition, allRows.get(currentRowIndex), table), table);
+                    valueFrameRows(functionName, overClause, sortedPartition, allRows.get(currentRowIndex), table), table);
             case "NTH_VALUE":
                 return computeNthValue(funcCtx,
-                    frameRows(overClause, sortedPartition, allRows.get(currentRowIndex), table), table);
+                    valueFrameRows(functionName, overClause, sortedPartition, allRows.get(currentRowIndex), table), table);
             case "CONDITIONAL_TRUE_EVENT":
                 return computeConditionalTrueEvent(funcCtx, sortedPartition, allRows.get(currentRowIndex), table);
             case "CONDITIONAL_CHANGE_EVENT":
@@ -609,6 +651,7 @@ final class WindowFunctionEvaluator {
      */
     private Map<List<Object>, List<Row>> buildSortedPartitions(final FrostlakeParser.OverClauseContext overClause,
                                                                final List<Row> allRows, final Table table) {
+        rejectFileWindowKeys(overClause, table);
         Map<List<Object>, List<Row>> groups = new LinkedHashMap<>();
         for (final Row row : allRows) {
             List<Object> key = partitionKey(row, overClause.partitionByClause(), table);
@@ -625,6 +668,60 @@ final class WindowFunctionEvaluator {
             }
         }
         return groups;
+    }
+
+    /**
+     * A window spec's keys are subject to the same FILE rule as the statement-level clauses: live
+     * {@code OVER (PARTITION BY f)} is "Expressions of type FILE cannot be used as
+     * PARTITION BY keys" and {@code OVER (ORDER BY f)} the ORDER BY variant. Checked once per OVER
+     * clause — this method runs from the partition build, which is itself cached per clause — so every
+     * window path (SELECT list and inline QUALIFY alike) is covered by the one call.
+     */
+    /**
+     * A window aggregate is subject to the same FILE rule as its plain form: live,
+     * {@code MAX(f) OVER ()} fails "Function MAX does not support FILE argument type" exactly as
+     * {@code MAX(f)} does. The plan-time projection walk cannot see it — a windowed call parses to a
+     * {@code WindowFunctionExpression} the walk does not descend into — so the call is re-formed here
+     * WITHOUT its OVER clause and put through the ordinary strict-argument checks. Called once per
+     * query per window call, before any row is evaluated.
+     */
+    void rejectFileWindowArguments(final List<FrostlakeParser.FunctionCallExprContext> windowCalls,
+                                   final Table table, final Set<String> outputAliasNames) {
+        final ExpressionEvaluator checker = new ExpressionEvaluator(table,
+            executor.getFunctionRegistry(), executor.getCatalog(), executor);
+        // A window argument may reference a SELECT alias (SUM(w) OVER () beside v AS w works
+        // live), so the output aliases are exempt from the walk's scope rejection.
+        checker.setScopeExemptNames(outputAliasNames);
+        for (final FrostlakeParser.FunctionCallExprContext call : windowCalls) {
+            final List<String> argTexts = new ArrayList<>();
+            for (final FrostlakeParser.BooleanExprContext arg : windowArgs(call)) {
+                argTexts.add(ParseTreeText.getOriginalText(arg));
+            }
+            if (argTexts.isEmpty()) {
+                continue;
+            }
+            checker.validateStrictWindowed(ExpressionEvaluator.parse(
+                call.functionName().getText() + "(" + String.join(", ", argTexts) + ")"));
+        }
+    }
+
+    private void rejectFileWindowKeys(final FrostlakeParser.OverClauseContext overClause, final Table table) {
+        final ExpressionEvaluator keyChecker = new ExpressionEvaluator(table,
+            executor.getFunctionRegistry(), executor.getCatalog(), executor);
+        if (overClause.partitionByClause() != null) {
+            for (final FrostlakeParser.ExpressionContext expr
+                    : overClause.partitionByClause().expressionList().expression()) {
+                keyChecker.validateKey(
+                    ExpressionEvaluator.parse(ParseTreeText.getOriginalText(expr)), SortKeyRole.PARTITION_BY);
+            }
+        }
+        if (overClause.orderByClause() != null) {
+            for (final FrostlakeParser.OrderItemContext item : overClause.orderByClause().orderItem()) {
+                keyChecker.validateKey(
+                    ExpressionEvaluator.parse(ParseTreeText.getOriginalText(item.expression())),
+                    SortKeyRole.ORDER_BY);
+            }
+        }
     }
 
     /**
@@ -982,6 +1079,26 @@ final class WindowFunctionEvaluator {
      * (peer-aware). Frame-sensitive functions (SUM/AVG/MIN/MAX/COUNT, FIRST_VALUE/LAST_VALUE/NTH_VALUE) use
      * this; ranking and LAG/LEAD ignore the frame.
      */
+    /**
+     * The frame for the VALUE window functions (FIRST_VALUE / LAST_VALUE / NTH_VALUE), whose
+     * Snowflake defaults differ from the aggregates: ORDER BY is REQUIRED ("Window function type
+     * [NTH_VALUE] requires ORDER BY in window specification."), and with no explicit frame the
+     * default is the WHOLE partition — LAST_VALUE(x) OVER (ORDER BY y) is the partition's last
+     * value on every row (both live-verified). An explicit frame is honoured normally.
+     */
+    private List<Row> valueFrameRows(final String functionName,
+                                     final FrostlakeParser.OverClauseContext overClause,
+                                     final List<Row> partition, final Row currentRow, final Table table) {
+        if (overClause.orderByClause() == null) {
+            throw new RuntimeException("Window function type [" + functionName
+                + "] requires ORDER BY in window specification.");
+        }
+        if (overClause.windowFrame() == null) {
+            return partition;
+        }
+        return frameRows(overClause, partition, currentRow, table);
+    }
+
     private List<Row> frameRows(final FrostlakeParser.OverClauseContext overClause, final List<Row> partition,
                                 final Row currentRow, final Table table) {
         final int size = partition.size();
@@ -1145,15 +1262,63 @@ final class WindowFunctionEvaluator {
             ? ParseTreeText.getOriginalText(windowArgs(funcCtx).get(0)) : null;
         final List<Object> values = new ArrayList<>();
         for (final Row r : sortedPartition) {
-            values.add(colExpr == null ? null : extractColumnValue(r, colExpr, table));
+            // Same JSON-null rule as the grouped path and the generic window dispatch: a VARIANT
+            // JSON null is missing input for SUM/AVG and a VALUE for MIN/MAX — without this a
+            // windowed AVG counted the JSON null as 0 in its divisor (grouped AVG skips it).
+            values.add(colExpr == null ? null
+                : VariantJsonNulls.asAggregateInput(functionName, extractColumnValue(r, colExpr, table)));
         }
         switch (functionName) {
-            case "SUM": return WindowFunctionHelper.sum(values);
-            case "AVG": return WindowFunctionHelper.avg(values);
+            case "SUM": return WindowFunctionHelper.sum(values,
+                isStaticallyVariantArgument(colExpr, table));
+            case "AVG": return WindowFunctionHelper.avg(values,
+                isStaticallyVariantArgument(colExpr, table));
             case "MIN": return WindowFunctionHelper.min(values);
             case "MAX": return WindowFunctionHelper.max(values);
             default:    return null;
         }
+    }
+
+    /**
+     * Whether the window aggregate's ARGUMENT is declared VARIANT — live, {@code SUM(v:b) OVER ()}
+     * and {@code AVG(v:b) OVER ()} are DOUBLE (SYSTEM$TYPEOF FLOAT) exactly like the grouped forms,
+     * even though path extraction hands the engine plain integers; the declared type decides the
+     * tier just as a runtime VariantValue does.
+     */
+    private boolean isStaticallyVariantArgument(final String argExpr, final Table table) {
+        if (argExpr == null || argExpr.isEmpty()) {
+            return false;
+        }
+        try {
+            final ExpressionEvaluator ev = new ExpressionEvaluator(table,
+                executor.getFunctionRegistry(), executor.getCatalog(), executor);
+            return ev.inferStaticType(ExpressionEvaluator.parse(argExpr)) instanceof VariantType;
+        } catch (final RuntimeException undetermined) {
+            return false;
+        }
+    }
+
+    /**
+     * COUNT over the frame. With an argument, only rows whose argument value is non-null count — and
+     * a VARIANT JSON null is missing input exactly as on the grouped path (live: {@code COUNT(v:b)
+     * OVER ()} is 0 over a lone JSON-null row, where this method used to answer the frame size — it
+     * ignored its argument entirely, so SQL NULLs were miscounted too). A star call does not reach
+     * this method, so an empty argument list only defends against a malformed call.
+     */
+    private Object computeWindowCount(final FrostlakeParser.FunctionCallExprContext funcCtx,
+                                      final List<Row> frame, final Table table) {
+        final List<FrostlakeParser.BooleanExprContext> args = windowArgs(funcCtx);
+        if (args.isEmpty()) {
+            return (long) frame.size();
+        }
+        final String argExpr = ParseTreeText.getOriginalText(args.get(0));
+        long count = 0;
+        for (final Row r : frame) {
+            if (VariantJsonNulls.asAggregateInput("COUNT", extractColumnValue(r, argExpr, table)) != null) {
+                count++;
+            }
+        }
+        return count;
     }
 
     /**
@@ -1182,7 +1347,12 @@ final class WindowFunctionEvaluator {
                 || acc instanceof RegrAccumulator);
         final Set<Object> seen = funcCtx.DISTINCT() != null ? new HashSet<>() : null;
         for (final Row r : frame) {
-            final Object v = argExpr == null ? null : extractColumnValue(r, argExpr, table);
+            // Same JSON-null rule as the grouped path: a VARIANT JSON null is missing input for a
+            // value-computing aggregate (live: COUNT ignores it, SUM over {JSON null, 3}
+            // is 3) and a VALUE for an ordering/collecting one (MAX over {JSON null, 5} is the JSON
+            // null). Without this a windowed COUNT(v:b) counted rows a grouped COUNT(v:b) skipped.
+            final Object v = argExpr == null ? null
+                : VariantJsonNulls.asAggregateInput(aggFunc.getName(), extractColumnValue(r, argExpr, table));
             if (seen != null && v != null && !seen.add(ValueComparisons.normalizeValueForDistinct(v))) {
                 continue;
             }

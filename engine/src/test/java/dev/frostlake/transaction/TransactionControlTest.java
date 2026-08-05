@@ -18,6 +18,7 @@ package dev.frostlake.transaction;
 
 import dev.frostlake.BaseDatabaseTest;
 
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -50,6 +51,7 @@ public class TransactionControlTest extends BaseDatabaseTest {
 
     @Test
     public void failedStatementKeepsExplicitTransactionOpen() {
+        Assumptions.assumeFalse(isLiveSnowflake(), "PK enforcement is informational on live Snowflake");
         engine.execute("CREATE TABLE t (id INTEGER PRIMARY KEY)");
         engine.getStorageEngine().setEnforcePrimaryKey(true);
         engine.execute("BEGIN");
@@ -67,6 +69,7 @@ public class TransactionControlTest extends BaseDatabaseTest {
 
     @Test
     public void failedMultiRowStatementUndoesOnlyItsOwnWrites() {
+        Assumptions.assumeFalse(isLiveSnowflake(), "PK enforcement is informational on live Snowflake");
         engine.execute("CREATE TABLE t (id INTEGER PRIMARY KEY)");
         engine.getStorageEngine().setEnforcePrimaryKey(true);
         engine.execute("BEGIN");

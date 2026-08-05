@@ -18,9 +18,11 @@ package dev.frostlake.functions;
 
 import dev.frostlake.BaseDatabaseTest;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /**
  * TRY_CAST(expr AS type) converts like CAST but returns NULL for a value that cannot be converted, rather
@@ -39,7 +41,14 @@ public class TryCastTest extends BaseDatabaseTest {
     @Test
     public void convertsValidValues() {
         assertEquals(123L, ((Number) val("SELECT TRY_CAST('123' AS INTEGER)")).longValue());
-        assertEquals("123", String.valueOf(val("SELECT TRY_CAST(123 AS VARCHAR)")));
+        // TRY_CAST converts only FROM a string: a numeric source errors "Function TRY_CAST cannot
+        // be used with arguments of types NUMBER(3,0) and VARCHAR(134217728)" (live-verified).
+        assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                val("SELECT TRY_CAST(123 AS VARCHAR)");
+            }
+        });
         assertEquals(1.5, num("SELECT TRY_CAST('1.5' AS FLOAT)"), 1e-9);
     }
 

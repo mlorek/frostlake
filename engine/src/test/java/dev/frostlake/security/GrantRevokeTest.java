@@ -19,7 +19,9 @@ package dev.frostlake.security;
 import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.metastore.model.Privilege;
 import dev.frostlake.storage.ResultSet;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -27,6 +29,12 @@ import static org.junit.jupiter.api.Assertions.*;
  * Tests for enhanced GRANT and REVOKE commands
  */
 public class GrantRevokeTest extends BaseDatabaseTest {
+
+    private static final String CATALOG_PRINCIPAL_ASSERTIONS =
+        "asserts the grant through engine.getCatalog().getUser()/getRole(), which under SF_LIVE "
+        + "still reads the embedded engine — the CREATE USER and the GRANT went to Snowflake, so "
+        + "the embedded catalog has no such principal; the statements are still submitted to the "
+        + "account";
 
     @Override
     protected void setupTest() {
@@ -285,6 +293,7 @@ public class GrantRevokeTest extends BaseDatabaseTest {
 
     @Test
     public void testGrantPrivilegeToUser() {
+        Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_PRINCIPAL_ASSERTIONS);
         engine.execute("CREATE USER u1");
         engine.execute("CREATE TABLE t1 (id INTEGER, name VARCHAR)");
 
@@ -300,6 +309,7 @@ public class GrantRevokeTest extends BaseDatabaseTest {
 
     @Test
     public void testRevokePrivilegeFromUser() {
+        Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_PRINCIPAL_ASSERTIONS);
         engine.execute("CREATE USER u2");
         engine.execute("CREATE TABLE t2 (id INTEGER)");
 
@@ -314,6 +324,7 @@ public class GrantRevokeTest extends BaseDatabaseTest {
 
     @Test
     public void testGrantMultiplePrivilegesToUser() {
+        Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_PRINCIPAL_ASSERTIONS);
         engine.execute("CREATE USER u3");
         engine.execute("CREATE TABLE t3 (id INTEGER, value VARCHAR)");
 
@@ -330,6 +341,7 @@ public class GrantRevokeTest extends BaseDatabaseTest {
 
     @Test
     public void testGrantAllPrivilegesToUser() {
+        Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_PRINCIPAL_ASSERTIONS);
         engine.execute("CREATE USER u4");
         engine.execute("CREATE TABLE t4 (id INTEGER)");
 
@@ -342,6 +354,7 @@ public class GrantRevokeTest extends BaseDatabaseTest {
 
     @Test
     public void testGrantOnDatabaseToUser() {
+        Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_PRINCIPAL_ASSERTIONS);
         engine.execute("CREATE USER u5");
         engine.execute("CREATE DATABASE user_test_db");
 
@@ -354,18 +367,41 @@ public class GrantRevokeTest extends BaseDatabaseTest {
 
     @Test
     public void testGrantOwnershipToUser() {
-        engine.execute("CREATE USER u6");
+        engine.execute("CREATE USER IF NOT EXISTS u6");
         engine.execute("CREATE TABLE t6 (id INTEGER)");
 
-        engine.execute("GRANT OWNERSHIP ON TABLE t6 TO USER u6");
+        // Ownership belongs to ROLES only. Live-verified: GRANT OWNERSHIP ON TABLE t TO USER u fails
+        // with "SQL execution error: Cannot grant OWNERSHIP to users." while the same statement
+        // TO ROLE succeeds — so the user form is asserted as a rejection, not as a grant.
+        final RuntimeException rejected = assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.execute("GRANT OWNERSHIP ON TABLE t6 TO USER u6");
+            }
+        });
+        assertTrue(String.valueOf(rejected.getMessage()).contains("Cannot grant OWNERSHIP to users"),
+            "unexpected message: " + rejected.getMessage());
 
-        var user = engine.getCatalog().getUser("u6");
-        assertTrue(user.hasPrivilege("TABLE", "T6",
-            Privilege.OWNERSHIP));
+        // The positive half of the pair, keeping the OWNERSHIP-transfer coverage the user form used
+        // to provide.
+        engine.execute("CREATE ROLE IF NOT EXISTS t6_owner_role");
+        engine.execute("GRANT OWNERSHIP ON TABLE t6 TO ROLE t6_owner_role");
+
+        ResultSet grants = engine.executeQuery("SHOW GRANTS ON TABLE t6");
+        boolean foundOwnership = false;
+        for (int i = 0; i < grants.getRowCount(); i++) {
+            // Column 1 is the privilege (0=created_on, 1=privilege, 2=granted_on, ...).
+            if ("OWNERSHIP".equals(String.valueOf(grants.getRows().get(i).getValue(1)))) {
+                foundOwnership = true;
+                break;
+            }
+        }
+        assertTrue(foundOwnership, "OWNERSHIP privilege should be granted to the role");
     }
 
     @Test
     public void testMixedUserAndRoleGrants() {
+        Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_PRINCIPAL_ASSERTIONS);
         engine.execute("CREATE USER mixed_user");
         engine.execute("CREATE ROLE mixed_role");
         engine.execute("CREATE TABLE mixed_table (id INTEGER)");

@@ -205,7 +205,7 @@ public class LateralColumnAliasTest extends BaseDatabaseTest {
 
     @Test
     public void aChainedAliasAsAWindowOrderKey() {
-        // The priority-CASE loader shape: acr_priority is defined over two sibling aliases and used as
+        // The priority-CASE shape: pri_rank is defined over two sibling aliases and used as
         // the RANK() ORDER key inside QUALIFY. Unexpanded, the key evaluated to NULL for every row, so
         // every row ranked 1 and QUALIFY filtered nothing.
         engine.execute("CREATE TABLE pri (grp VARCHAR, meta VARIANT, cls VARCHAR, score NUMBER)");

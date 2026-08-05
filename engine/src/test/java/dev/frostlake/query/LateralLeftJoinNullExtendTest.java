@@ -18,62 +18,105 @@ package dev.frostlake.query;
 
 import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
+
+import org.junit.jupiter.api.Assumptions;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 
 /**
- * LEFT JOIN LATERAL (subquery) ON TRUE must KEEP a left row whose lateral produced no rows,
- * null-extended over the lateral's columns — it previously behaved as INNER and dropped them,
- * emptying the vendor's 12-month trend loaders. INNER and comma laterals still drop such rows.
+ * {@code LEFT JOIN LATERAL (<correlated subquery>) … ON TRUE} null-extends the left rows whose lateral
+ * produced nothing — live-verified over real tables and CTEs. The predicate-free spellings (comma
+ * lateral, {@code CROSS JOIN LATERAL}) instead DROP those rows.
+ *
+ * <p>The sources here are real tables on purpose. Correlating a lateral into a {@code UNION ALL} derived
+ * table is a separate Snowflake limitation ("Unsupported subquery type cannot be evaluated") that has
+ * nothing to do with the lateral join itself, and using that shape would test the limitation rather than
+ * the join. A lateral TABLE FUNCTION with an ON clause IS genuinely rejected — that belongs to
+ * {@code SnowflakeStrictnessRulesTest}, not here.
  */
 public class LateralLeftJoinNullExtendTest extends BaseDatabaseTest {
 
+    @BeforeEach
+    public void createSources() {
+        engine.execute("CREATE TABLE lat_left (x INTEGER)");
+        engine.execute("INSERT INTO lat_left VALUES (1), (2)");
+        engine.execute("CREATE TABLE lat_right (k INTEGER, y INTEGER)");
+        engine.execute("INSERT INTO lat_right VALUES (1, 10)");
+    }
+
     @Test
-    public void testLeftLateralKeepsUnmatchedLeftRows() {
+    public void leftJoinLateralNullExtendsUnmatchedRows() {
         final ResultSet rs = engine.executeQuery("""
             SELECT t.x, l.y
-            FROM (SELECT 1 AS x UNION ALL SELECT 2) t
-            LEFT JOIN LATERAL (SELECT u.y FROM (SELECT 1 AS k, 10 AS y) u WHERE u.k = t.x) l ON TRUE
+            FROM lat_left t
+            LEFT JOIN LATERAL (SELECT r.y FROM lat_right r WHERE r.k = t.x) l ON TRUE
             ORDER BY t.x
             """);
         assertEquals(2, rs.getRows().size());
         assertEquals(10L, ((Number) rs.getRows().get(0).getValue(1)).longValue());
+        assertNull(rs.getRows().get(1).getValue(1), "the unmatched left row must be null-extended");
+    }
+
+    @Test
+    public void leftJoinLateralOverACteNullExtends() {
+        final ResultSet rs = engine.executeQuery("""
+            WITH tt AS (SELECT x FROM lat_left)
+            SELECT tt.x, l.y
+            FROM tt
+            LEFT JOIN LATERAL (SELECT r.y FROM lat_right r WHERE r.k = tt.x) l ON TRUE
+            ORDER BY tt.x
+            """);
+        assertEquals(2, rs.getRows().size());
         assertNull(rs.getRows().get(1).getValue(1));
     }
 
     @Test
-    public void testInnerLateralStillDropsUnmatched() {
-        final ResultSet rs = engine.executeQuery("""
-            SELECT t.x, l.y
-            FROM (SELECT 1 AS x UNION ALL SELECT 2) t
-            INNER JOIN LATERAL (SELECT u.y FROM (SELECT 1 AS k, 10 AS y) u WHERE u.k = t.x) l ON TRUE
-            """);
-        assertEquals(1, rs.getRows().size());
-    }
-
-    @Test
-    public void testCommaLateralStillDropsUnmatched() {
-        final ResultSet rs = engine.executeQuery("""
-            SELECT t.x, l.y
-            FROM (SELECT 1 AS x UNION ALL SELECT 2) t,
-            LATERAL (SELECT u.y FROM (SELECT 1 AS k, 10 AS y) u WHERE u.k = t.x) l
-            """);
-        assertEquals(1, rs.getRows().size());
-    }
-
-    @Test
-    public void testAggregateOverNullExtendedLateral() {
-        // The vendor trend idiom: COUNT(DISTINCT lateral column) per left row — 0 where nothing matched.
+    public void aggregateOverANullExtendedLateralCountsOnlyMatches() {
         final ResultSet rs = engine.executeQuery("""
             SELECT t.x, COUNT(DISTINCT l.y) AS c
-            FROM (SELECT 1 AS x UNION ALL SELECT 2) t
-            LEFT JOIN LATERAL (SELECT u.y FROM (SELECT 1 AS k, 10 AS y) u WHERE u.k = t.x) l ON TRUE
+            FROM lat_left t
+            LEFT JOIN LATERAL (SELECT r.y FROM lat_right r WHERE r.k = t.x) l ON TRUE
             GROUP BY t.x ORDER BY t.x
             """);
         assertEquals(2, rs.getRows().size());
         assertEquals(1L, ((Number) rs.getRows().get(0).getValue(1)).longValue());
-        assertEquals(0L, ((Number) rs.getRows().get(1).getValue(1)).longValue());
+        assertEquals(0L, ((Number) rs.getRows().get(1).getValue(1)).longValue(),
+            "COUNT(DISTINCT …) over the null-extended side is 0, not 1");
+    }
+
+    @Test
+    public void innerJoinLateralKeepsOnlyMatches() {
+        Assumptions.assumeFalse(isLiveSnowflake(),
+            "INNER JOIN LATERAL ... ON TRUE aborts live with 'SQL execution internal error' (it raises an "
+            + "incident) rather than failing compilation — an account-side defect, not a rejection rule");
+        final ResultSet rs = engine.executeQuery("""
+            SELECT t.x, l.y
+            FROM lat_left t
+            INNER JOIN LATERAL (SELECT r.y FROM lat_right r WHERE r.k = t.x) l ON TRUE
+            """);
+        assertEquals(1, rs.getRows().size());
+    }
+
+    @Test
+    public void commaLateralDropsUnmatched() {
+        final ResultSet rs = engine.executeQuery("""
+            SELECT t.x, l.y
+            FROM lat_left t,
+            LATERAL (SELECT r.y FROM lat_right r WHERE r.k = t.x) l
+            """);
+        assertEquals(1, rs.getRows().size());
+    }
+
+    @Test
+    public void crossJoinLateralDropsUnmatched() {
+        final ResultSet rs = engine.executeQuery("""
+            SELECT t.x, l.y
+            FROM lat_left t
+            CROSS JOIN LATERAL (SELECT r.y FROM lat_right r WHERE r.k = t.x) l
+            """);
+        assertEquals(1, rs.getRows().size());
     }
 }

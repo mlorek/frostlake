@@ -16,12 +16,12 @@
 
 package dev.frostlake.functions.scalar.math;
 
-import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.functions.NumericArgumentFunction;
 import dev.frostlake.types.NumericType;
 
 import java.util.List;
 
-public class Asin extends BuiltInFunction {
+public class Asin extends NumericArgumentFunction {
     public Asin() { super("ASIN", NumericType.DOUBLE); }
 
     @Override

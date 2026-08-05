@@ -21,6 +21,7 @@ import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.TableColumn;
 import dev.frostlake.storage.ResultSet;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -32,6 +33,11 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 public class PrimaryKeyTest extends BaseDatabaseTest {
 
+    private static final String CATALOG_ASSERTIONS =
+        "asserts through engine.getCatalog() / engine.showColumns(), which under SF_LIVE still read "
+        + "the embedded engine — the CREATE TABLE went to Snowflake, so the embedded catalog never "
+        + "saw the table; the DDL itself is still submitted to the account";
+
     @Test
     public void testSingleColumnPrimaryKey() {
         engine.execute("""
@@ -42,6 +48,7 @@ public class PrimaryKeyTest extends BaseDatabaseTest {
             )
             """);
 
+        Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_ASSERTIONS);
         Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
         Table table = schema.getTable("users");
 
@@ -71,6 +78,7 @@ public class PrimaryKeyTest extends BaseDatabaseTest {
             )
             """);
 
+        Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_ASSERTIONS);
         Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
         Table table = schema.getTable("users");
 
@@ -85,6 +93,7 @@ public class PrimaryKeyTest extends BaseDatabaseTest {
         engine.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, name VARCHAR)");
         engine.execute("CREATE TABLE products (product_id INTEGER PRIMARY KEY, name VARCHAR)");
 
+        Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_ASSERTIONS);
         Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
 
         Table users = schema.getTable("users");
@@ -103,6 +112,7 @@ public class PrimaryKeyTest extends BaseDatabaseTest {
             )
             """);
 
+        Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_ASSERTIONS);
         Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
         Table table = schema.getTable("users");
 
@@ -120,6 +130,7 @@ public class PrimaryKeyTest extends BaseDatabaseTest {
             )
             """);
 
+        Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_ASSERTIONS);
         Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
         Table table = schema.getTable("users");
 
@@ -163,6 +174,7 @@ public class PrimaryKeyTest extends BaseDatabaseTest {
         // VARCHAR primary key
         engine.execute("CREATE TABLE t3 (id VARCHAR PRIMARY KEY, name VARCHAR)");
 
+        Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_ASSERTIONS);
         Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
 
         assertTrue(schema.getTable("t1").getColumn("id").isPrimaryKey());
@@ -180,6 +192,7 @@ public class PrimaryKeyTest extends BaseDatabaseTest {
             )
             """);
 
+        Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_ASSERTIONS);
         Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
         Table table = schema.getTable("users");
 
@@ -195,6 +208,7 @@ public class PrimaryKeyTest extends BaseDatabaseTest {
     public void testTableWithNoPrimaryKey() {
         engine.execute("CREATE TABLE users (id INTEGER, name VARCHAR, email VARCHAR)");
 
+        Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_ASSERTIONS);
         Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
         Table table = schema.getTable("users");
 
@@ -220,6 +234,7 @@ public class PrimaryKeyTest extends BaseDatabaseTest {
             )
             """);
 
+        Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_ASSERTIONS);
         Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
         Table table = schema.getTable("orders");
 
@@ -242,6 +257,7 @@ public class PrimaryKeyTest extends BaseDatabaseTest {
             )
             """);
 
+        Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_ASSERTIONS);
         ResultSet columns = engine.showColumns("users");
 
         boolean foundPrimaryKey = false;

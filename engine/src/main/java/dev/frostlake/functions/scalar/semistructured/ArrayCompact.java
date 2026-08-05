@@ -18,7 +18,8 @@ package dev.frostlake.functions.scalar.semistructured;
 
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
-import dev.frostlake.types.VariantType;
+import dev.frostlake.types.ArrayType;
+import dev.frostlake.values.VariantValue;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.node.ArrayNode;
 
@@ -26,7 +27,7 @@ import java.util.List;
 
 /** ARRAY_COMPACT(array) — returns the array with all null elements removed. */
 public class ArrayCompact extends BuiltInFunction {
-    public ArrayCompact() { super("ARRAY_COMPACT", VariantType.VARIANT); }
+    public ArrayCompact() { super("ARRAY_COMPACT", ArrayType.ARRAY); }
 
     @Override
     public Object evaluate(final List<Object> args) {
@@ -36,7 +37,7 @@ public class ArrayCompact extends BuiltInFunction {
         for (final JsonNode el : src) {
             if (!el.isNull()) result.add(el);
         }
-        return result.toString();
+        return VariantValue.ofNode(result);
     }
 
     @Override public int getMinArgCount() { return 1; }

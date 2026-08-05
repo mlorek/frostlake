@@ -42,9 +42,9 @@ public class CursorPositionalBindTest extends BaseDatabaseTest {
     public void cursorWithTwoPositionalBinds() {
         // price > 15 AND price < 45 → {20, 30, 40} → sum 90.
         assertEquals(90L, ret("""
+            DECLARE c1 CURSOR FOR SELECT price FROM invoices WHERE price > ? AND price < ?;
             BEGIN
               LET total INTEGER := 0;
-              DECLARE c1 CURSOR FOR SELECT price FROM invoices WHERE price > ? AND price < ?;
               OPEN c1 USING (15, 45);
               FOR rec IN c1 DO
                 total := total + rec.price;
@@ -57,9 +57,9 @@ public class CursorPositionalBindTest extends BaseDatabaseTest {
     public void cursorWithSinglePositionalBind() {
         // price >= 40 → {40, 50} → count 2 via manual OPEN/FETCH.
         assertEquals(2L, ret("""
+            DECLARE c CURSOR FOR SELECT id FROM invoices WHERE price >= ?;
             BEGIN
               LET cnt INTEGER := 0;
-              DECLARE c CURSOR FOR SELECT id FROM invoices WHERE price >= ?;
               OPEN c USING (40);
               FOR r IN c DO
                 cnt := cnt + 1;
@@ -72,9 +72,9 @@ public class CursorPositionalBindTest extends BaseDatabaseTest {
     public void cursorWithoutBindsStillWorks() {
         // Regression: a plain cursor (no placeholders, no USING) still opens.
         assertEquals(150L, ret("""
+            DECLARE c CURSOR FOR SELECT price FROM invoices;
             BEGIN
               LET total INTEGER := 0;
-              DECLARE c CURSOR FOR SELECT price FROM invoices;
               OPEN c;
               FOR r IN c DO
                 total := total + r.price;

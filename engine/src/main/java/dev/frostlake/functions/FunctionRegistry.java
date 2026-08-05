@@ -17,21 +17,58 @@
 package dev.frostlake.functions;
 
 import dev.frostlake.config.EngineConfig;
-import dev.frostlake.functions.scalar.conditional.*;
+import dev.frostlake.functions.scalar.conditional.BoolAnd;
+import dev.frostlake.functions.scalar.conditional.BoolNot;
+import dev.frostlake.functions.scalar.conditional.BoolOr;
+import dev.frostlake.functions.scalar.conditional.BoolXor;
+import dev.frostlake.functions.scalar.conditional.Coalesce;
+import dev.frostlake.functions.scalar.conditional.Decode;
+import dev.frostlake.functions.scalar.conditional.EqualNull;
+import dev.frostlake.functions.scalar.conditional.Greatest;
+import dev.frostlake.functions.scalar.conditional.GreatestIgnoreNulls;
+import dev.frostlake.functions.scalar.conditional.IfNull;
+import dev.frostlake.functions.scalar.conditional.Iff;
+import dev.frostlake.functions.scalar.conditional.Least;
+import dev.frostlake.functions.scalar.conditional.LeastIgnoreNulls;
+import dev.frostlake.functions.scalar.conditional.NullIf;
+import dev.frostlake.functions.scalar.conditional.NullIfZero;
+import dev.frostlake.functions.scalar.conditional.Nvl;
+import dev.frostlake.functions.scalar.conditional.Nvl2;
+import dev.frostlake.functions.scalar.conditional.RegrValx;
+import dev.frostlake.functions.scalar.conditional.RegrValy;
+import dev.frostlake.functions.scalar.conditional.ZeroIfNull;
 import dev.frostlake.functions.scalar.context.*;
 import dev.frostlake.functions.scalar.conversion.*;
 import dev.frostlake.functions.scalar.crypto.*;
 import dev.frostlake.functions.scalar.datetime.*;
 import dev.frostlake.functions.scalar.encoding.*;
+import dev.frostlake.functions.scalar.file.FlGetContentType;
+import dev.frostlake.functions.scalar.file.FlGetEtag;
+import dev.frostlake.functions.scalar.file.FlGetFileType;
+import dev.frostlake.functions.scalar.file.FlGetLastModified;
+import dev.frostlake.functions.scalar.file.FlGetRelativePath;
+import dev.frostlake.functions.scalar.file.FlGetScopedFileUrl;
+import dev.frostlake.functions.scalar.file.FlGetSize;
+import dev.frostlake.functions.scalar.file.FlGetStage;
+import dev.frostlake.functions.scalar.file.FlGetStageFileUrl;
+import dev.frostlake.functions.scalar.file.FlIsAudio;
+import dev.frostlake.functions.scalar.file.FlIsCompressed;
+import dev.frostlake.functions.scalar.file.FlIsDocument;
+import dev.frostlake.functions.scalar.file.FlIsImage;
+import dev.frostlake.functions.scalar.file.FlIsVideo;
+import dev.frostlake.functions.scalar.file.ToFile;
+import dev.frostlake.functions.scalar.file.TryToFile;
 import dev.frostlake.functions.scalar.hash.*;
 import dev.frostlake.functions.scalar.math.*;
 import dev.frostlake.functions.scalar.semistructured.*;
 import dev.frostlake.functions.scalar.string.*;
+import dev.frostlake.functions.scalar.vector.*;
 import dev.frostlake.functions.table.Flatten;
 import dev.frostlake.functions.table.Generator;
 import dev.frostlake.functions.table.SplitToTable;
 import dev.frostlake.functions.table.TaskHistoryFunction;
 import dev.frostlake.functions.table.UserTaskCancelFunction;
+import dev.frostlake.functions.window.WindowFunctionNames;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.security.SessionContext;
 
@@ -41,6 +78,9 @@ import dev.frostlake.functions.scalar.GroupingIdFn;
 
 import java.util.Collection;
 import java.util.Map;
+import java.util.ServiceLoader;
+import java.util.SortedSet;
+import java.util.TreeSet;
 import java.util.concurrent.ConcurrentHashMap;
 
 public class FunctionRegistry {
@@ -127,8 +167,10 @@ public class FunctionRegistry {
         register(new BitLength());
         register(new Base64Encode());
         register(new Base64Decode());
+        register(new Base64DecodeBinary());
         register(new HexEncode());
         register(new HexDecode());
+        register(new HexDecodeBinary());
         register(new Md5());
         register(new Sha2());
 
@@ -294,7 +336,9 @@ public class FunctionRegistry {
         register(new Instr());
         register(new RegexpInstr());
         register(new TryBase64Decode());
+        register(new TryBase64DecodeBinary());
         register(new TryHexDecode());
+        register(new TryHexDecodeBinary());
         register(new Sha1());
         register(new Md5Hex());
         register(new Md5NumberLower64());
@@ -368,7 +412,18 @@ public class FunctionRegistry {
         register(new ObjectConstruct());
         register(new ObjectConstructKeepNull());
         register(new ObjectInsert());
-        register(new MapCat());   // MAP_CAT — merge two MAPs (MAP is OBJECT-backed)
+        // The MAP family (MAP is OBJECT-backed). Every one of these REQUIRES a MAP(k, v) argument and
+        // refuses a plain OBJECT, so they are also listed in ExpressionEvaluatorVisitor's MAP_STRICT_ARGS
+        // — MAP_CONSTRUCT excepted, which builds a map instead of reading one.
+        register(new MapCat());
+        register(new MapConstruct());
+        register(new MapContainsKey());
+        register(new MapDelete());
+        register(new MapEntries());
+        register(new MapInsert());
+        register(new MapKeys());
+        register(new MapPick());
+        register(new MapSize());
         register(new ObjectDelete());
         register(new ObjectPick());
         register(new ObjectKeys());
@@ -424,10 +479,46 @@ public class FunctionRegistry {
         registerAggregate(new MaxBy());
         registerAggregate(new MinBy());
 
+        // FILE functions. TO_FILE builds the file-metadata object that IS a FILE value; the
+        // fourteen FL_* accessors read one field of it each. TO_FILE / TRY_TO_FILE are re-registered by
+        // QueryExecutor with a stage resolver — registered here too so the names always resolve and
+        // SHOW FUNCTIONS lists them. Live, the accessors classify on CONTENT_TYPE alone.
+        register(new ToFile());
+        register(new TryToFile());
+        register(new FlGetContentType());
+        register(new FlGetEtag());
+        register(new FlGetFileType());
+        register(new FlGetLastModified());
+        register(new FlGetRelativePath());
+        register(new FlGetScopedFileUrl());
+        register(new FlGetSize());
+        register(new FlGetStage());
+        register(new FlGetStageFileUrl());
+        register(new FlIsAudio());
+        register(new FlIsCompressed());
+        register(new FlIsDocument());
+        register(new FlIsImage());
+        register(new FlIsVideo());
+
+        // VECTOR functions. The distance/similarity pair returns a float64 FLOAT while vector RESULTS
+        // carry 32-bit elements; the four aggregates reduce element-wise across a group's rows.
+        register(new VectorCosineSimilarity());
+        register(new VectorL1Distance());
+        register(new VectorL2Distance());
+        register(new VectorInnerProduct());
+        register(new VectorNormalize());
+        register(new VectorTrunc());
+        register(new IsVector());
+        registerAggregate(new VectorSum());
+        registerAggregate(new VectorAvg());
+        registerAggregate(new VectorMin());
+        registerAggregate(new VectorMax());
+
         // Aliases — Snowflake alternate names mapped to already-implemented classes.
         functions.put("TRUNCATE", new Trunc());          // TRUNCATE == TRUNC
+        functions.put("VECTOR_TRUNCATE", new VectorTrunc());   // VECTOR_TRUNCATE == VECTOR_TRUNC
         functions.put("POW", new Power());               // POW == POWER
-        functions.put("DATE", new ToDate());             // DATE == TO_DATE
+        functions.put("DATE", new DateFunction());       // DATE == TO_DATE, but it also takes an epoch NUMBER
         functions.put("TIME", new ToTime());             // TIME == TO_TIME
         functions.put("TIMESTAMPADD", new DateAdd());    // TIMESTAMPADD == DATEADD (== TIMEADD)
         functions.put("TIMESTAMPDIFF", new DateDiff());  // TIMESTAMPDIFF == DATEDIFF (== TIMEDIFF)
@@ -437,12 +528,119 @@ public class FunctionRegistry {
         aggregateFunctions.put("VARIANCE_POP", new VarPop());    // VARIANCE_POP == VAR_POP
         aggregateFunctions.put("VARIANCE_SAMP", new VarSamp());  // VARIANCE_SAMP == VAR_SAMP
 
+        // ── Live-catalog coverage batch: scalars newly present in SHOW BUILTIN FUNCTIONS ──
+        register(new BitCount());
+        register(new Negate());
+        register(new RegrValx());
+        register(new RegrValy());
+        register(new RtrimmedLength());
+        register(new RandStr());
+        register(new NormalizeFn());
+        register(new TryValidateUtf8());
+        register(new ToUuid());
+        register(new TryToUuid());
+        register(new BinaryAsString());
+        register(new StringAsBinary());
+        register(new Md5Binary());
+        register(new Sha1Binary());
+        register(new Sha2Binary());
+        register(new TryDecrypt());
+        register(new TryDecryptRaw());
+        register(new TryParseIp());
+        register(new DayOfWeekIso());
+        register(new WeekIso());
+        register(new YearOfWeek());
+        register(new YearOfWeekIso());
+        register(new TimeSlice());
+        register(new AsBinary());
+        register(new AsDate());
+        register(new AsTime());
+        register(new AsTimestampNtz());
+        register(new AsDecimal());
+        register(new IsBinary());
+        register(new IsDate());
+        register(new IsTime());
+        register(new IsTimestampNtz());
+        register(new IsDecimal());
+        register(new IsDoubleFn());
+        register(new ArraysZip());
+        register(new ArraysToObject());
+        register(new ArrayRepeat());
+        register(new JsonExtractPathText());
+        register(new ParseXml());
+        register(new CheckXml());
+        register(new ToXml());
+        register(new XmlGet());
+        register(new CurrentIpAddress());
+        register(new CurrentRoleType());
+        register(new CurrentSecondaryRoles());
+        register(new CurrentOrganizationName());
+        register(new CurrentStatement());
+        register(new CurrentTransaction());
+        register(new LastTransaction());
+        register(new CurrentSchemas(catalog));
+        register(new InvokerRole(sessionContext));
+        register(new IsRoleInSession(sessionContext));
+        // Snowflake-name aliases over existing implementations.
+        functions.put("AS_CHAR", new AsVarchar());
+        functions.put("AS_NUMBER", new AsDecimal());
+        functions.put("AS_REAL", new AsDouble());
+        functions.put("AS_TIMESTAMP_LTZ", new AsTimestampNtz());
+        functions.put("AS_TIMESTAMP_TZ", new AsTimestampNtz());
+        functions.put("IS_CHAR", new IsVarchar());
+        functions.put("IS_DATE_VALUE", new IsDate());
+        functions.put("IS_REAL", new IsDoubleFn());
+        functions.put("IS_TIMESTAMP_LTZ", new IsTimestampNtz());
+        functions.put("IS_TIMESTAMP_TZ", new IsTimestampNtz());
+        functions.put("BIT_AND", new Bitand());
+        functions.put("BIT_OR", new Bitor());
+        functions.put("BIT_XOR", new Bitxor());
+        functions.put("BIT_NOT", new Bitnot());
+        functions.put("BIT_SHIFTLEFT", new BitShiftLeft());
+        functions.put("BIT_SHIFTRIGHT", new BitShiftRight());
+        functions.put("DATEFROMPARTS", new DateFromParts());
+        functions.put("TIMEFROMPARTS", new TimeFromParts());
+        functions.put("TIMESTAMPFROMPARTS", new TimestampFromParts());
+        functions.put("TIMESTAMPNTZFROMPARTS", new TimestampFromParts());
+        functions.put("TIMESTAMP_NTZ_FROM_PARTS", new TimestampFromParts());
+        functions.put("TIMESTAMPLTZFROMPARTS", new TimestampFromParts());
+        functions.put("TIMESTAMP_LTZ_FROM_PARTS", new TimestampFromParts());
+        functions.put("TIMESTAMPTZFROMPARTS", new TimestampFromParts());
+        functions.put("TIMESTAMP_TZ_FROM_PARTS", new TimestampFromParts());
+        functions.put("TRY_TO_TIMESTAMP_NTZ", new TryToTimestamp());
+        functions.put("TO_DECFLOAT", new ToDouble());
+        functions.put("TRY_TO_DECFLOAT", new TryToDouble());
+        aggregateFunctions.put("ARRAYAGG", new ArrayAgg());
+        aggregateFunctions.put("OBJECTAGG", new ObjectAgg());
+        aggregateFunctions.put("HLL", new ApproxCountDistinct());
+        aggregateFunctions.put("APPROXIMATE_COUNT_DISTINCT", new ApproxCountDistinct());
+        aggregateFunctions.put("BITANDAGG", new BitAndAgg());
+        aggregateFunctions.put("BIT_ANDAGG", new BitAndAgg());
+        aggregateFunctions.put("BIT_AND_AGG", new BitAndAgg());
+        aggregateFunctions.put("BITORAGG", new BitOrAgg());
+        aggregateFunctions.put("BIT_ORAGG", new BitOrAgg());
+        aggregateFunctions.put("BIT_OR_AGG", new BitOrAgg());
+        aggregateFunctions.put("BITXORAGG", new BitXorAgg());
+        aggregateFunctions.put("BIT_XORAGG", new BitXorAgg());
+        aggregateFunctions.put("BIT_XOR_AGG", new BitXorAgg());
+
         // Table functions
         registerTableFunction(new Generator());
         registerTableFunction(new SplitToTable());
         registerTableFunction(new Flatten());
         registerTableFunction(new TaskHistoryFunction(catalog));
         registerTableFunction(new UserTaskCancelFunction(catalog));
+        // Optional function packs (e.g. frostlake-geo) contribute through the FunctionProvider
+        // ServiceLoader SPI — discovered here, after the built-ins, so a pack could also override.
+        for (final FunctionProvider provider : ServiceLoader.load(FunctionProvider.class)) {
+            provider.contribute(this);
+        }
+
+    }
+
+    /** Registers an alias name for an already-constructed function (used by FunctionProviders). */
+    public void registerAlias(final String name, final BuiltInFunction function) {
+        functions.put(name.toUpperCase(), function);
     }
 
     public void register(final BuiltInFunction function) {
@@ -477,6 +675,10 @@ public class FunctionRegistry {
         return aggregateFunctions.containsKey(name.toUpperCase());
     }
 
+    public boolean hasTableFunction(final String name) {
+        return tableFunctions.containsKey(name.toUpperCase());
+    }
+
     public Collection<BuiltInFunction> getAllFunctions() {
         return functions.values();
     }
@@ -487,5 +689,46 @@ public class FunctionRegistry {
 
     public Collection<TableFunction> getAllTableFunctions() {
         return tableFunctions.values();
+    }
+
+    /**
+     * <strong>The</strong> list of built-in names this engine can dispatch — the single source
+     * {@code SHOW FUNCTIONS} and {@code SHOW BUILTIN FUNCTIONS} enumerate, so a listing and a working
+     * call can no longer disagree.
+     *
+     * <p>It is the union of six families, each contributed by the very structure the dispatcher consults:
+     *
+     * <ul>
+     *   <li>the scalar map's <em>keys</em> — keys, not {@code getAllFunctions()} values, because an alias
+     *       such as {@code SUBSTR} is a second key onto a {@code Substring} instance whose
+     *       {@link BuiltInFunction#getName()} still answers {@code SUBSTRING}. Enumerating values listed
+     *       {@code SUBSTRING} twice and {@code SUBSTR} never;</li>
+     *   <li>the aggregate map's keys (same alias story: {@code ARRAYAGG}, {@code BIT_OR_AGG}, …);</li>
+     *   <li>the table-function map's keys;</li>
+     *   <li>{@link dev.frostlake.functions.window.WindowFunctionNames} — window functions live in
+     *       {@code WindowFunctionEvaluator}, never in these maps;</li>
+     *   <li>{@link HigherOrderFunctionNames} — TRANSFORM / FILTER / REDUCE are taken by
+     *       {@code ExpressionEvaluatorVisitor} before the registry lookup;</li>
+     *   <li>{@link SystemFunctionNames} and {@link OperatorFunctionNames} — evaluated by the
+     *       {@code SYSTEM$} evaluators and by the grammar respectively.</li>
+     * </ul>
+     *
+     * <p>The first three families cannot drift because the listing reads the same maps
+     * {@code getFunction} / {@code getAggregateFunction} / {@code getTableFunction} resolve against; the
+     * next three cannot drift because their dispatchers reject names those sets do not declare. Only
+     * {@link OperatorFunctionNames} is curated, and its entries are re-verified by test.
+     *
+     * @return every dispatchable built-in name, upper-cased and sorted; never null
+     */
+    public SortedSet<String> allDispatchableNames() {
+        final SortedSet<String> names = new TreeSet<>();
+        names.addAll(functions.keySet());
+        names.addAll(aggregateFunctions.keySet());
+        names.addAll(tableFunctions.keySet());
+        names.addAll(WindowFunctionNames.names());
+        names.addAll(HigherOrderFunctionNames.names());
+        names.addAll(SystemFunctionNames.names());
+        names.addAll(OperatorFunctionNames.names());
+        return names;
     }
 }

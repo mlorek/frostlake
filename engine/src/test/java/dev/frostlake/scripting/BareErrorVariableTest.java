@@ -18,14 +18,17 @@ package dev.frostlake.scripting;
 
 import dev.frostlake.BaseDatabaseTest;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Snowflake Scripting exposes {@code SQLERRM} / {@code SQLCODE} / {@code SQLSTATE} as <b>bare</b> identifiers
- * (no {@code :} prefix) inside an exception handler. The evaluator must resolve those to the procedural
- * variables the handler bound, rather than treating them as (missing) column references — a common pattern
- * is {@code err_msg('OTHER', SQLERRM, SQLCODE, SQLSTATE)}.
+ * (no {@code :} prefix) inside an exception handler, in a SCRIPTING expression — {@code RETURN 'ERR:' ||
+ * SQLERRM}. The evaluator must resolve those to the procedural variables the handler bound, rather than
+ * treating them as (missing) column references. Inside an EMBEDDED SQL statement they are ordinary
+ * scripting names and reach it only as {@code :SQLERRM} / {@code :SQLCODE} / {@code :SQLSTATE}.
  */
 public class BareErrorVariableTest extends BaseDatabaseTest {
 
@@ -56,17 +59,43 @@ public class BareErrorVariableTest extends BaseDatabaseTest {
             CREATE OR REPLACE FUNCTION emsg(t VARCHAR, m VARCHAR, c NUMBER, s VARCHAR)
             RETURNS VARCHAR LANGUAGE SQL AS $$ t || ':' || m $$
             """);
+        // Bare in the RETURN expression (scripting), bound as :SQLERRM inside the SELECT (embedded SQL).
+        // `LET r :=`, not a bare `r :=`: live-verified, assigning to an UNDECLARED name fails
+        // "invalid identifier 'R'" before the block ever runs, so the handler never sees the division by
+        // zero. With LET (or a DECLARE) the same block answers 'caught' / 'ERR:Division by zero'.
         engine.execute("""
             CREATE OR REPLACE PROCEDURE p_args() RETURNS VARCHAR LANGUAGE SQL AS
             $$ BEGIN
-                 r := (SELECT 1 / 0);
+                 LET r := (SELECT 1 / 0);
                  RETURN 'x';
                EXCEPTION WHEN OTHER THEN
-                 RETURN (SELECT emsg('ERR', SQLERRM, SQLCODE, SQLSTATE));
+                 RETURN emsg('ERR', SQLERRM, SQLCODE, SQLSTATE);
                END $$
             """);
         final Object v = scalar("CALL p_args()");
         assertTrue(v != null && v.toString().startsWith("ERR:") && v.toString().length() > 4,
             "SQLERRM/SQLCODE/SQLSTATE should resolve as bare function arguments, got: " + v);
+    }
+
+    /** The same names inside an embedded SQL statement are identifiers, not the handler's variables. */
+    @Test
+    public void bareErrorVariableInsideSqlStatementIsRejected() {
+        engine.execute("CREATE TABLE err_sink (msg VARCHAR)");
+        engine.execute("""
+            CREATE OR REPLACE PROCEDURE p_bare_sql() RETURNS VARCHAR LANGUAGE SQL AS
+            $$ BEGIN
+                 r := (SELECT 1 / 0);
+                 RETURN 'x';
+               EXCEPTION WHEN OTHER THEN
+                 INSERT INTO err_sink VALUES (SQLERRM);
+                 RETURN 'logged';
+               END $$
+            """);
+        assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.executeQuery("CALL p_bare_sql()");
+            }
+        });
     }
 }

@@ -1,0 +1,44 @@
+/*
+ * Copyright 2026 MLorek
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package dev.frostlake.geo;
+
+import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.types.NumericType;
+import dev.frostlake.values.GeoValue;
+
+import java.util.List;
+
+/**
+ * ST_DISTANCE — minimum distance between two values: great-circle METERS on Snowflake's sphere
+ * (R = 6371008.7714 m, live-verified) for GEOGRAPHY, planar units for GEOMETRY. Mixing the two
+ * kinds raises Snowflake's argument-type error.
+ */
+public class StDistance extends BuiltInFunction {
+    public StDistance() { super("ST_DISTANCE", NumericType.DOUBLE); }
+
+    @Override
+    public Object evaluate(final List<Object> args) {
+        final GeoValue a = GeoShapes.asGeo(args.get(0));
+        final GeoValue b = GeoShapes.asGeo(args.get(1));
+        if (a == null || b == null) return null;
+        GeoShapes.requireSameKind("ST_DISTANCE", a, b);
+        return GeoShapes.minDistance(a, b);
+    }
+
+    @Override public int getMinArgCount() { return 2; }
+    @Override public int getMaxArgCount() { return 2; }
+}

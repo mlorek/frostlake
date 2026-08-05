@@ -64,8 +64,12 @@ public class ArrayConstructCompactTest extends BaseDatabaseTest {
     }
 
     @Test
-    public void plainArrayConstructStillKeepsNulls() {
-        assertEquals("[1,null,2]", scalar("SELECT ARRAY_CONSTRUCT(1, NULL, 2)"));
+    public void plainArrayConstructRendersNullsAsUndefined() {
+        // A SQL NULL array ELEMENT is the VARIANT `undefined`, distinct from a JSON null — live-verified
+        // ARRAY_CONSTRUCT(1, NULL, 2) is [1,undefined,2] while
+        // ARRAY_CONSTRUCT(1, PARSE_JSON('null'), 2) keeps [1,null,2], and the two compare UNEQUAL.
+        assertEquals("[1,undefined,2]", scalar("SELECT ARRAY_CONSTRUCT(1, NULL, 2)"));
+        assertEquals("[1,null,2]", scalar("SELECT ARRAY_CONSTRUCT(1, PARSE_JSON('null'), 2)"));
     }
 
     @Test

@@ -24,6 +24,7 @@ import org.junit.jupiter.api.function.Executable;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /**
  * Snowflake grammar constructs that were each previously rejected as an "SQL syntax error":
@@ -100,13 +101,20 @@ public class KeywordAndSyntaxCoverageTest extends BaseDatabaseTest {
 
     @Test
     public void reservedWordsAsColumnNames() {
-        // START/CLUSTER/IDENTITY/CHANGES/STREAM/NETWORK/NUMERIC are keyword tokens that are also valid as
+        // CLUSTER/IDENTITY/CHANGES/STREAM/NETWORK/NUMERIC are keyword tokens that are also valid as
         // ordinary column names.
-        engine.execute("CREATE TABLE rw (start INT, cluster INT, identity INT, changes INT, "
+        engine.execute("CREATE TABLE rw (cluster INT, identity INT, changes INT, "
             + "stream INT, network INT, numeric INT)");
-        engine.execute("INSERT INTO rw VALUES (1, 2, 3, 4, 5, 6, 7)");
+        engine.execute("INSERT INTO rw VALUES (2, 3, 4, 5, 6, 7)");
         assertEquals(5, ((Number) scalar("SELECT stream FROM rw")).intValue());
-        assertEquals(1, ((Number) scalar("SELECT start FROM rw")).intValue());
+        // START is reserved (live-verified): a bare column name is a syntax error, the quoted form works.
+        assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.execute("CREATE TABLE rw_start (start INT)");
+            }
+        });
+        engine.execute("CREATE TABLE rw_q (\"START\" INT)");
     }
 
     @Test

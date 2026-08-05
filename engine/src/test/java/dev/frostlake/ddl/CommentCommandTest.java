@@ -144,7 +144,7 @@ public class CommentCommandTest {
             CREATE TASK daily_task
             WAREHOUSE = 'test_wh'
             SCHEDULE = 'USING CRON 0 9 * * * UTC'
-            AS 'SELECT 1'
+            AS SELECT 1
             """);
         engine.execute("COMMENT ON TASK daily_task IS 'Daily task comment'");
 

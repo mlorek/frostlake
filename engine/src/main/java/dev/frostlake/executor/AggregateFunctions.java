@@ -23,6 +23,8 @@ import dev.frostlake.functions.aggregate.PercentileDisc;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.storage.Row;
+import dev.frostlake.values.VariantValue;
+import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -95,37 +97,40 @@ public final class AggregateFunctions {
             case "SUM": {
                 final List<Object> numbers = new ArrayList<>();
                 for (final Object val : values) {
-                    if (val instanceof Number) {
+                    if (val instanceof Number || val instanceof VariantValue) {
                         numbers.add(val);
                     }
                 }
-                // SUM preserves integer-ness (SUM of INTs is a whole number, not X.0); empty -> NULL.
+                // SUM preserves integer-ness (SUM of INTs is a whole number, not X.0); a VARIANT input
+                // makes the sum DOUBLE; empty -> NULL.
                 return AggregateNumerics.sum(numbers);
             }
             case "AVG":
-                double avg = 0;
+                // Fixed-point inputs average to a scale-(max+6) BigDecimal, doubles/variants stay double,
+                // nulls are ignored and no non-null input is NULL (live-verified Snowflake typing).
+                return AggregateNumerics.avg(values);
+            case "MIN": {
+                // MIN/MAX keep the winning value's ORIGINAL type (MIN of INTEGERs is a Long, not
+                // a Double) — live-verified: SYSTEM$TYPEOF(MIN(int_col)) is NUMBER, not FLOAT.
+                Number minWinner = null;
                 for (final Object val : values) {
-                    if (val instanceof Number) {
-                        avg += ((Number) val).doubleValue();
+                    if (val instanceof Number && (minWinner == null
+                            || new BigDecimal(val.toString()).compareTo(new BigDecimal(minWinner.toString())) < 0)) {
+                        minWinner = (Number) val;
                     }
                 }
-                return avg / values.size();
-            case "MIN":
-                double min = Double.MAX_VALUE;
+                return minWinner;
+            }
+            case "MAX": {
+                Number maxWinner = null;
                 for (final Object val : values) {
-                    if (val instanceof Number) {
-                        min = Math.min(min, ((Number) val).doubleValue());
+                    if (val instanceof Number && (maxWinner == null
+                            || new BigDecimal(val.toString()).compareTo(new BigDecimal(maxWinner.toString())) > 0)) {
+                        maxWinner = (Number) val;
                     }
                 }
-                return min;
-            case "MAX":
-                double max = Double.MIN_VALUE;
-                for (final Object val : values) {
-                    if (val instanceof Number) {
-                        max = Math.max(max, ((Number) val).doubleValue());
-                    }
-                }
-                return max;
+                return maxWinner;
+            }
             default:
                 return null;
         }

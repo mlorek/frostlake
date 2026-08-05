@@ -16,7 +16,7 @@
 
 package dev.frostlake.functions.scalar.string;
 
-import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.functions.TextArgumentFunction;
 import dev.frostlake.types.NumericType;
 
 import java.util.List;
@@ -26,7 +26,7 @@ import java.util.regex.Matcher;
  * REGEXP_COUNT(subject, pattern [, position [, parameters]]) — the number of matches of {@code pattern}
  * at or after {@code position} (1-based, default 1). An invalid pattern is an error.
  */
-public class RegexpCount extends BuiltInFunction {
+public class RegexpCount extends TextArgumentFunction {
     public RegexpCount() { super("REGEXP_COUNT", NumericType.INTEGER); }
 
     @Override

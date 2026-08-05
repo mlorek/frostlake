@@ -19,6 +19,7 @@ package dev.frostlake.functions;
 import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
 
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
@@ -66,6 +67,7 @@ public class GeneratorTest extends BaseDatabaseTest {
 
     @Test
     public void timelimitZeroProducesNoRows() {
+        Assumptions.assumeFalse(isLiveSnowflake(), "TIMELIMIT 0 is nondeterministic on live Snowflake");
         assertEquals(0L, count("SELECT COUNT(*) FROM TABLE(GENERATOR(TIMELIMIT => 0))"));
     }
 }

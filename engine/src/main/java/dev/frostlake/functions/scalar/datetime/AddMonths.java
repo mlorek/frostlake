@@ -21,19 +21,34 @@ import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.types.DateTimeType;
 
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.List;
 
 public class AddMonths extends BuiltInFunction {
-    public AddMonths() { super("ADD_MONTHS", DateTimeType.DATE); }
+    public AddMonths() { super("ADD_MONTHS", DateTimeType.TIMESTAMP_NTZ); }
 
     @Override
     public Object evaluate(final List<Object> args) {
         if (args.get(0) == null || args.get(1) == null) return null;
-        final LocalDate d = SharedFunctionHelpers.toLocalDate(args.get(0));
+        final Object input = args.get(0);
         final long months = ((Number) args.get(1)).longValue();
+        // The result type follows the input (live-verified): a DATE input stays DATE, while a VARCHAR
+        // input is implicitly cast to TIMESTAMP_NTZ — ADD_MONTHS('2016-01-31', 1) is
+        // 2016-02-29 00:00:00, but ADD_MONTHS('2016-01-31'::DATE, 1) is the DATE 2016-02-29 — and a
+        // TIMESTAMP input stays TIMESTAMP (its time-of-day preserved; a date-only string is midnight).
+        if (input instanceof LocalDate) {
+            return shiftMonths((LocalDate) input, months);
+        }
+        final LocalDateTime dt = SharedFunctionHelpers.toLocalDateTime(input);
+        return LocalDateTime.of(shiftMonths(dt.toLocalDate(), months), dt.toLocalTime());
+    }
+
+    /**
+     * Snowflake preserves end-of-month: if the input is the last day of its month, the result is the
+     * last day of the target month (e.g. ADD_MONTHS('2016-02-29', 1) = 2016-03-31).
+     */
+    private LocalDate shiftMonths(final LocalDate d, final long months) {
         LocalDate result = d.plusMonths(months);
-        // Snowflake preserves end-of-month: if the input is the last day of its month, the result is
-        // the last day of the target month (e.g. ADD_MONTHS('2016-02-29', 1) = 2016-03-31).
         if (d.getDayOfMonth() == d.lengthOfMonth()) {
             result = result.withDayOfMonth(result.lengthOfMonth());
         }

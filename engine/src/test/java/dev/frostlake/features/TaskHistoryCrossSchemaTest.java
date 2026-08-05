@@ -18,6 +18,7 @@ package dev.frostlake.features;
 
 import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -34,8 +35,14 @@ public class TaskHistoryCrossSchemaTest extends BaseDatabaseTest {
 
     private static final Logger logger = LoggerFactory.getLogger(TaskHistoryCrossSchemaTest.class);
 
+    private static final String TASK_EXECUTION =
+        "runs a task and immediately reads its TASK_HISTORY row: on a real account EXECUTE TASK is "
+        + "asynchronous and the history view is populated with latency, so a terminal state is not "
+        + "readable synchronously";
+
     @Test
     public void manualRunInAnotherSchemaIsVisibleFromCurrentSchema() {
+        Assumptions.assumeFalse(isLiveSnowflake(), TASK_EXECUTION);
         engine.execute("CREATE SCHEMA task_home");
         engine.execute("CREATE TASK task_home.history_probe SCHEDULE = '1 MINUTE' AS SELECT 1");
         engine.execute("EXECUTE TASK task_home.history_probe");
@@ -58,6 +65,7 @@ public class TaskHistoryCrossSchemaTest extends BaseDatabaseTest {
 
     @Test
     public void failedRunSurfacesItsState() {
+        Assumptions.assumeFalse(isLiveSnowflake(), TASK_EXECUTION);
         engine.execute("CREATE SCHEMA task_home2");
         engine.execute("CREATE TASK task_home2.broken_probe SCHEDULE = '1 MINUTE' AS INSERT INTO no_such_table VALUES (1)");
         engine.execute("EXECUTE TASK task_home2.broken_probe");

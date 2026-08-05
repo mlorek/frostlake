@@ -25,6 +25,10 @@ public class View extends SqlObject {
 
     private final String definition;
     private final List<String> columnNames;
+    /** The CREATE statement exactly as typed (Snowflake surfaces it verbatim), or null pre-restore. */
+    private String originalDdl;
+    /** The view's column list as resolved when it was created — see {@link #getResolvedColumns()}. */
+    private List<TableColumn> resolvedColumns;
     private boolean secure = false;
     /** Attached row access policy (ALTER VIEW ... ADD ROW ACCESS POLICY p ON (cols)), or null. */
     private String rowAccessPolicyName;
@@ -46,12 +50,57 @@ public class View extends SqlObject {
         return definition;
     }
 
+    public String getOriginalDdl() {
+        return originalDdl;
+    }
+
+    public void setOriginalDdl(final String originalDdl) {
+        this.originalDdl = originalDdl;
+    }
+
     public List<String> getColumnNames() {
         return columnNames;
     }
 
     public boolean hasExplicitColumnNames() {
         return columnNames != null && !columnNames.isEmpty();
+    }
+
+    /**
+     * The view's columns — name and declared type — as its defining query resolved to at CREATE time,
+     * or null when they could not be resolved (a body that would not plan, or a snapshot predating
+     * capture). This is what {@code INFORMATION_SCHEMA.COLUMNS} reports for the view, and through it
+     * what {@code DatabaseMetaData.getColumns} answers.
+     *
+     * <p>Resolved ONCE, at creation, and never recomputed — which is Snowflake's own behavior, verified
+     * live on a real account. There, a view's reported column metadata is a snapshot taken
+     * when the view is created and is entirely independent of the tables underneath it afterwards:
+     *
+     * <ul>
+     *   <li>{@code ALTER TABLE t ALTER COLUMN c SET DATA TYPE VARCHAR(50)} leaves every view over
+     *       {@code c} still reporting {@code VARCHAR(10)};</li>
+     *   <li>{@code ALTER TABLE t ADD COLUMN} does not widen a {@code SELECT *} view — the star was
+     *       expanded once, at creation;</li>
+     *   <li>{@code ALTER TABLE t ALTER COLUMN c DROP NOT NULL} leaves the view still reporting
+     *       {@code IS_NULLABLE = NO};</li>
+     *   <li>dropping the column a view projects — or the whole base table — leaves the view reporting
+     *       its columns unchanged, even though selecting from it then fails to compile.</li>
+     * </ul>
+     *
+     * <p>Freezing at creation is also what keeps a metadata read from ever planning a query:
+     * {@code INFORMATION_SCHEMA} is itself served by these views, so resolving a view body while
+     * answering a metadata call could re-enter the metadata layer. Nothing here can.
+     */
+    public List<TableColumn> getResolvedColumns() {
+        return resolvedColumns;
+    }
+
+    public void setResolvedColumns(final List<TableColumn> resolvedColumns) {
+        this.resolvedColumns = resolvedColumns != null ? new ArrayList<>(resolvedColumns) : null;
+    }
+
+    public boolean hasResolvedColumns() {
+        return resolvedColumns != null && !resolvedColumns.isEmpty();
     }
 
     public boolean isSecure() { return secure; }
@@ -75,6 +124,8 @@ public class View extends SqlObject {
             ? new View(name, new ArrayList<>(columnNames), definition)
             : new View(name, definition);
         clone.setComment(comment);
+        clone.originalDdl = originalDdl;
+        clone.setResolvedColumns(resolvedColumns);
         clone.secure = secure;
         clone.rowAccessPolicyName = rowAccessPolicyName;
         clone.rowAccessPolicyColumns = new ArrayList<>(rowAccessPolicyColumns);
@@ -89,6 +140,12 @@ public class View extends SqlObject {
      * deployment tooling relies on {@code EXECUTE IMMEDIATE} of that text to recreate views.
      */
     public String ddl(final String displayName) {
+        // Live-verified: Snowflake's SHOW VIEWS text and VIEW_DEFINITION carry the ORIGINAL
+        // statement exactly as typed. The reconstruction below is the fallback for views restored
+        // from snapshots that predate original-text capture.
+        if (originalDdl != null) {
+            return SqlObject.withoutTrailingSemicolon(originalDdl);
+        }
         final StringBuilder sb = new StringBuilder();
         sb.append("create or replace ");
         if (secure) {

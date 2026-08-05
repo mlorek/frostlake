@@ -35,6 +35,7 @@ public interface ExpressionVisitor<T> {
     T visitJsonObject(final JsonObjectExpression expr);
     T visitJsonArray(final JsonArrayExpression expr);
     T visitBetween(final BetweenExpression expr);
+    T visitLikeAnyAll(final LikeAnyAllExpression expr);
     T visitIn(final InExpression expr);
     T visitQuantifiedComparison(final QuantifiedComparisonExpression expr);
     T visitInterval(final IntervalExpression expr);

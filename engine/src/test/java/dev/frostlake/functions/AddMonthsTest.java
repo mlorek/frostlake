@@ -20,13 +20,16 @@ import dev.frostlake.BaseDatabaseTest;
 import org.junit.jupiter.api.Test;
 
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
  * ADD_MONTHS preserves end-of-month (Snowflake): when the input is the last day of its month, the
  * result is the last day of the target month — so ADD_MONTHS('2016-02-29', 1) is 2016-03-31, not the
- * plain 2016-03-29. A non-month-end date is shifted normally.
+ * plain 2016-03-29. A non-month-end date is shifted normally. The result TYPE follows the input
+ * (live-verified): a VARCHAR input is implicitly cast to TIMESTAMP_NTZ — ADD_MONTHS('2016-01-31', 1)
+ * → 2016-02-29 00:00:00 — while a DATE input stays DATE and a TIMESTAMP input stays TIMESTAMP.
  */
 public class AddMonthsTest extends BaseDatabaseTest {
 
@@ -36,26 +39,32 @@ public class AddMonthsTest extends BaseDatabaseTest {
 
     @Test
     public void nonMonthEndShiftsNormally() {
-        assertEquals(LocalDate.of(2016, 2, 15), q("SELECT ADD_MONTHS('2016-01-15', 1)"));
+        assertEquals(LocalDateTime.of(2016, 2, 15, 0, 0), q("SELECT ADD_MONTHS('2016-01-15', 1)"));
     }
 
     @Test
     public void endOfMonthGoesToEndOfLongerMonth() {
-        assertEquals(LocalDate.of(2016, 3, 31), q("SELECT ADD_MONTHS('2016-02-29', 1)"));
+        assertEquals(LocalDateTime.of(2016, 3, 31, 0, 0), q("SELECT ADD_MONTHS('2016-02-29', 1)"));
     }
 
     @Test
     public void endOfMonthGoesToEndOfShorterMonth() {
-        assertEquals(LocalDate.of(2016, 4, 30), q("SELECT ADD_MONTHS('2016-03-31', 1)"));
+        assertEquals(LocalDateTime.of(2016, 4, 30, 0, 0), q("SELECT ADD_MONTHS('2016-03-31', 1)"));
     }
 
     @Test
     public void jan31ToLeapFebruary() {
-        assertEquals(LocalDate.of(2016, 2, 29), q("SELECT ADD_MONTHS('2016-01-31', 1)"));
+        assertEquals(LocalDateTime.of(2016, 2, 29, 0, 0), q("SELECT ADD_MONTHS('2016-01-31', 1)"));
     }
 
     @Test
     public void negativeMonthsPreserveEndOfMonth() {
-        assertEquals(LocalDate.of(2016, 1, 31), q("SELECT ADD_MONTHS('2016-02-29', -1)"));
+        assertEquals(LocalDateTime.of(2016, 1, 31, 0, 0), q("SELECT ADD_MONTHS('2016-02-29', -1)"));
+    }
+
+    @Test
+    public void dateInputStaysDate() {
+        // live: ADD_MONTHS('2016-01-31'::DATE, 1) is a DATE, not the TIMESTAMP_NTZ a bare string yields.
+        assertEquals(LocalDate.of(2016, 2, 29), q("SELECT ADD_MONTHS('2016-01-31'::DATE, 1)"));
     }
 }

@@ -18,9 +18,11 @@ package dev.frostlake.functions;
 
 import dev.frostlake.BaseDatabaseTest;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /** TRY_TO_TIMESTAMP / _LTZ / _TZ — non-throwing TO_TIMESTAMP family (all behave as NTZ in this engine). */
 public class TryToTimestampVariantsTest extends BaseDatabaseTest {
@@ -50,9 +52,18 @@ public class TryToTimestampVariantsTest extends BaseDatabaseTest {
     }
 
     @Test
-    public void nullInputYieldsNull() {
-        assertNull(scalar("SELECT TRY_TO_TIMESTAMP(NULL)"));
-        assertNull(scalar("SELECT TRY_TO_TIMESTAMP_LTZ(NULL)"));
-        assertNull(scalar("SELECT TRY_TO_TIMESTAMP_TZ(NULL)"));
+    public void untypedNullIsRejectedAndCastNullYieldsNull() {
+        // TRY_TO_* is TRY_CAST under the hood and needs a VARCHAR source: an UNTYPED NULL errors
+        // "Function TRY_CAST cannot be used with arguments of types NULL and TIMESTAMP_NTZ(9)"
+        // (live-verified), while NULL::VARCHAR converts to NULL.
+        assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                scalar("SELECT TRY_TO_TIMESTAMP(NULL)");
+            }
+        });
+        assertNull(scalar("SELECT TRY_TO_TIMESTAMP(NULL::VARCHAR)"));
+        assertNull(scalar("SELECT TRY_TO_TIMESTAMP_LTZ(NULL::VARCHAR)"));
+        assertNull(scalar("SELECT TRY_TO_TIMESTAMP_TZ(NULL::VARCHAR)"));
     }
 }

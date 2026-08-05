@@ -21,6 +21,8 @@ import org.w3c.dom.Element;
 import org.w3c.dom.NamedNodeMap;
 import org.w3c.dom.Node;
 import org.w3c.dom.NodeList;
+import org.xml.sax.ErrorHandler;
+import org.xml.sax.SAXParseException;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.node.ArrayNode;
 import tools.jackson.databind.node.JsonNodeFactory;
@@ -59,6 +61,23 @@ public class XmlStageReader implements StageFileReader {
             factory.setNamespaceAware(false);
             factory.setExpandEntityReferences(false);
             final DocumentBuilder builder = factory.newDocumentBuilder();
+            // The default handler prints "[Fatal Error] …" to stderr before throwing; parse errors
+            // are reported through the exception alone.
+            builder.setErrorHandler(new ErrorHandler() {
+                @Override
+                public void warning(final SAXParseException exception) {
+                }
+
+                @Override
+                public void error(final SAXParseException exception) throws SAXParseException {
+                    throw exception;
+                }
+
+                @Override
+                public void fatalError(final SAXParseException exception) throws SAXParseException {
+                    throw exception;
+                }
+            });
             final Document doc = builder.parse(in);
             final Element root = doc.getDocumentElement();
             root.normalize();

@@ -18,11 +18,17 @@ package dev.frostlake.functions;
 
 import dev.frostlake.BaseDatabaseTest;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/** ARRAY_POSITION(value, array) — 0-based index of the first matching element, or NULL. */
+/**
+ * ARRAY_POSITION(value, array) — 0-based index of the first matching element, or NULL. The first
+ * argument must be a VARIANT: a bare VARCHAR is rejected at compile time (numbers coerce fine).
+ */
 public class ArrayPositionTest extends BaseDatabaseTest {
 
     private Object scalar(final String sql) {
@@ -31,7 +37,7 @@ public class ArrayPositionTest extends BaseDatabaseTest {
 
     @Test
     public void findsTextElement() {
-        assertEquals(1L, scalar("SELECT ARRAY_POSITION('b', ARRAY_CONSTRUCT('a', 'b', 'c'))"));
+        assertEquals(1L, scalar("SELECT ARRAY_POSITION('b'::VARIANT, ARRAY_CONSTRUCT('a', 'b', 'c'))"));
     }
 
     @Test
@@ -42,11 +48,23 @@ public class ArrayPositionTest extends BaseDatabaseTest {
 
     @Test
     public void notFoundIsNull() {
-        assertNull(scalar("SELECT ARRAY_POSITION('z', ARRAY_CONSTRUCT('a', 'b', 'c'))"));
+        assertNull(scalar("SELECT ARRAY_POSITION('z'::VARIANT, ARRAY_CONSTRUCT('a', 'b', 'c'))"));
     }
 
     @Test
     public void nullArrayIsNull() {
-        assertNull(scalar("SELECT ARRAY_POSITION('a', NULL)"));
+        assertNull(scalar("SELECT ARRAY_POSITION('a'::VARIANT, NULL)"));
+    }
+
+    @Test
+    public void bareVarcharFirstArgumentIsRejected() {
+        final RuntimeException rejected = assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                scalar("SELECT ARRAY_POSITION('b', ARRAY_CONSTRUCT('a', 'b', 'c'))");
+            }
+        });
+        assertTrue(rejected.getMessage().contains("Invalid argument types for function 'ARRAY_POSITION'"),
+            "unexpected: " + rejected.getMessage());
     }
 }

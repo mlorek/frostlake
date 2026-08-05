@@ -21,9 +21,13 @@ import dev.frostlake.metastore.model.*;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
+import dev.frostlake.types.BinaryType;
+import dev.frostlake.types.DataType;
+import dev.frostlake.types.DateTimeType;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.types.StringType;
 
+import java.time.Instant;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
@@ -81,6 +85,26 @@ public class SystemViews {
 
     // ── TABLES ────────────────────────────────────────────────────────────────
 
+    /**
+     * INFORMATION_SCHEMA.TABLES — every table-shaped object in the database, not just base tables.
+     *
+     * <p>Live Snowflake (verified against a database holding one of each) lists views,
+     * materialized views and dynamic tables here alongside tables, and reports TABLE_TYPE from a
+     * four-value vocabulary:
+     *
+     * <ul>
+     *   <li>{@code BASE TABLE} — a permanent table, a transient table (told apart by
+     *       {@code IS_TRANSIENT}) and a dynamic table alike;</li>
+     *   <li>{@code LOCAL TEMPORARY} — a temporary table;</li>
+     *   <li>{@code VIEW} — a view;</li>
+     *   <li>{@code MATERIALIZED VIEW} — a materialized view.</li>
+     * </ul>
+     *
+     * <p>Snowflake also uses {@code EXTERNAL TABLE}, which Frostlake has no concept of.
+     * "TRANSIENT TABLE" and "TEMPORARY TABLE" — the values emitted before — are not Snowflake
+     * vocabulary at all; as live, transience is carried by {@code IS_TRANSIENT} instead, which keeps
+     * the Y/N spelling it shares with the DATABASES and SCHEMATA views here (live spells it YES/NO).
+     */
     public ResultSet queryTables(final String databaseName, final String schemaName) {
         ResultSet result = new ResultSet(Arrays.asList(
             col("TABLE_CATALOG"), col("TABLE_SCHEMA"), col("TABLE_NAME"),
@@ -93,8 +117,7 @@ public class SystemViews {
         for (final Database db : databases(databaseName)) {
             for (final Schema schema : schemas(db, schemaName)) {
                 for (final Table table : schema.getTables()) {
-                    String type = table.isTemporary() ? "TEMPORARY TABLE" :
-                                  table.isTransient() ? "TRANSIENT TABLE" : "BASE TABLE";
+                    String type = table.isTemporary() ? "LOCAL TEMPORARY" : "BASE TABLE";
                     result.addRow(new Row(
                         db.getName(), schema.getName(), table.getName(), table.getOwner(),
                         type, table.isTransient() ? "Y" : "N",
@@ -104,57 +127,207 @@ public class SystemViews {
                         table.getComment()
                     ));
                 }
+                for (final View view : schema.getViews()) {
+                    result.addRow(tableShapedRow(db, schema, view.getName(), view.getOwner(),
+                        "VIEW", view.getCreatedTime(), view.getComment()));
+                }
+                for (final MaterializedView view : schema.getMaterializedViews()) {
+                    result.addRow(tableShapedRow(db, schema, view.getName(), view.getOwner(),
+                        "MATERIALIZED VIEW", view.getCreatedTime(), view.getComment()));
+                }
+                for (final DynamicTable dynamicTable : schema.getDynamicTables()) {
+                    result.addRow(tableShapedRow(db, schema, dynamicTable.getName(), dynamicTable.getOwner(),
+                        "BASE TABLE", dynamicTable.getCreatedTime(), dynamicTable.getComment()));
+                }
             }
         }
         return result;
     }
 
+    /**
+     * A TABLES row for an object with no stored rows of its own — a view, a materialized view or a
+     * dynamic table. Live leaves IS_TRANSIENT, CLUSTERING_KEY and the size columns empty for these.
+     */
+    private Row tableShapedRow(final Database db, final Schema schema, final String name,
+                               final String owner, final String type, final Instant created,
+                               final String comment) {
+        return new Row(
+            db.getName(), schema.getName(), name, owner, type,
+            null, null, null, null, "1", created, created, created, comment
+        );
+    }
+
     // ── COLUMNS ───────────────────────────────────────────────────────────────
 
+    /**
+     * INFORMATION_SCHEMA.COLUMNS — one row per column of every table-shaped object, VIEWS AND
+     * MATERIALIZED VIEWS INCLUDED.
+     *
+     * <p>Live Snowflake (verified on a real account, over a table carrying a spread of
+     * types) reports a view's columns in exactly the same row shape as a table's — same DATA_TYPE
+     * vocabulary, same precision/scale/length — so a browsing tool that lists views (which
+     * {@code getTables} does) can expand one and see its columns. Three of the columns are NOT
+     * inherited from the base table, all three measured:
+     *
+     * <ul>
+     *   <li>{@code COLUMN_DEFAULT} is null for a view over a column that has a DEFAULT;</li>
+     *   <li>{@code IS_IDENTITY} is NO for a view over an IDENTITY column;</li>
+     *   <li>{@code IS_PRIMARY_KEY} is NO — a view has no constraints.</li>
+     * </ul>
+     *
+     * <p>{@code IS_NULLABLE}, by contrast, IS inherited live: a view over a NOT NULL column reports
+     * NO. Frostlake reports YES for every view column, because the nullability of a projected
+     * expression is not something the projection channel carries — the one deliberate divergence here,
+     * and the lenient direction of it.
+     *
+     * <p>What a view reports comes off {@link View#getResolvedColumns()}, frozen when the view was
+     * created; nothing in this method plans a query, so a metadata read can never re-enter the
+     * metadata layer that serves it.
+     */
     public ResultSet queryColumns(final String databaseName, final String schemaName, final String tableName) {
         ResultSet result = new ResultSet(Arrays.asList(
             col("TABLE_CATALOG"), col("TABLE_SCHEMA"), col("TABLE_NAME"),
             col("COLUMN_NAME"), colInt("ORDINAL_POSITION"),
             col("COLUMN_DEFAULT"), col("IS_NULLABLE"),
-            col("DATA_TYPE"), colInt("CHARACTER_MAXIMUM_LENGTH"),
-            colInt("NUMERIC_PRECISION"), colInt("NUMERIC_SCALE"),
+            col("DATA_TYPE"), colInt("CHARACTER_MAXIMUM_LENGTH"), colInt("CHARACTER_OCTET_LENGTH"),
+            colInt("NUMERIC_PRECISION"), colInt("NUMERIC_SCALE"), colInt("DATETIME_PRECISION"),
             col("COLLATION_NAME"), col("IS_IDENTITY"),
             col("IDENTITY_START"), col("IDENTITY_INCREMENT"),
             col("COMMENT"), col("IS_PRIMARY_KEY")
         ));
         for (final Database db : databases(databaseName)) {
             for (final Schema schema : schemas(db, schemaName)) {
-                List<Table> tables = tableName != null
-                    ? Collections.singletonList(schema.getTable(tableName))
-                    : schema.getTables();
-                for (final Table table : tables) {
+                for (final Table table : tablesFor(schema, tableName)) {
                     int pos = 1;
                     for (final TableColumn col : table.getColumns()) {
-                        String typeName = col.getDataType().getName().toUpperCase();
-                        Integer charLen = typeName.startsWith("VARCHAR") || typeName.startsWith("CHAR") || typeName.startsWith("TEXT")
-                            ? 16777216 : null;
-                        Integer numPrec = typeName.contains("INT") || typeName.contains("NUM") ||
-                                          typeName.contains("FLOAT") || typeName.contains("DOUBLE") ||
-                                          typeName.contains("DECIMAL") ? 38 : null;
-                        Integer numScale = typeName.contains("FLOAT") || typeName.contains("DOUBLE") ? 6 : null;
-                        result.addRow(new Row(
-                            db.getName(), schema.getName(), table.getName(),
-                            col.getName(), pos++,
-                            col.getDefaultValue() != null ? col.getDefaultValue().toString() : null,
-                            col.isNullable() ? "YES" : "NO",
-                            typeName, charLen, numPrec, numScale,
-                            col.getCollation(),
-                            col.isAutoIncrement() ? "YES" : "NO",
-                            col.isAutoIncrement() ? "1" : null,
-                            col.isAutoIncrement() ? "1" : null,
-                            col.getComment(),
-                            col.isPrimaryKey() ? "YES" : "NO"
-                        ));
+                        result.addRow(columnRow(db, schema, table.getName(), col, pos++, true));
+                    }
+                }
+                for (final View view : schema.getViews()) {
+                    if (matchesName(view.getName(), tableName)) {
+                        addDerivedColumnRows(result, db, schema, view.getName(), view.getResolvedColumns());
+                    }
+                }
+                for (final MaterializedView view : schema.getMaterializedViews()) {
+                    if (matchesName(view.getName(), tableName)) {
+                        addDerivedColumnRows(result, db, schema, view.getName(), view.getResolvedColumns());
                     }
                 }
             }
         }
         return result;
+    }
+
+    /** The base tables a COLUMNS read covers: one named table, or all of them. A name that is not a
+     *  table (a view's, say) selects no table rather than failing the whole read. */
+    private List<Table> tablesFor(final Schema schema, final String tableName) {
+        if (tableName == null) {
+            return schema.getTables();
+        }
+        return schema.hasTable(tableName)
+            ? Collections.singletonList(schema.getTable(tableName))
+            : Collections.<Table>emptyList();
+    }
+
+    private boolean matchesName(final String name, final String requested) {
+        return requested == null || name.equalsIgnoreCase(requested);
+    }
+
+    /** The COLUMNS rows for a view or materialized view, from the column list frozen at its creation.
+     *  A relation whose columns were never resolved contributes nothing, as it always did. */
+    private void addDerivedColumnRows(final ResultSet result, final Database db, final Schema schema,
+                                      final String relationName, final List<TableColumn> columns) {
+        if (columns == null) {
+            return;
+        }
+        int pos = 1;
+        for (final TableColumn col : columns) {
+            result.addRow(columnRow(db, schema, relationName, col, pos++, false));
+        }
+    }
+
+    /**
+     * One COLUMNS row. {@code fromBaseTable} tells apart the columns of a real table — which carry a
+     * DEFAULT, an IDENTITY and a PRIMARY KEY — from a view's, which live reports without any of the
+     * three however the underlying column was declared.
+     */
+    private Row columnRow(final Database db, final Schema schema, final String relationName,
+                          final TableColumn col, final int position, final boolean fromBaseTable) {
+        final DataType dataType = col.getDataType();
+        final String typeName = dataType.getName().toUpperCase();
+        final String canonical = canonicalDataType(typeName);
+        final Integer charLen = dataType instanceof StringType
+            ? Integer.valueOf(((StringType) dataType).getMaxLength()) : null;
+        Integer octetLen = charLen;
+        if (dataType instanceof BinaryType) {
+            octetLen = Integer.valueOf(((BinaryType) dataType).getMaxLength());
+        }
+        // Live reports precision/scale only for the exact-numeric family: a FLOAT column
+        // leaves both NULL, and every non-numeric type leaves both NULL too.
+        Integer numPrec = null;
+        Integer numScale = null;
+        if (dataType instanceof NumericType && !"FLOAT".equals(canonical)) {
+            numPrec = Integer.valueOf(((NumericType) dataType).getPrecision());
+            numScale = Integer.valueOf(((NumericType) dataType).getScale());
+        }
+        final Integer dateTimePrec = dataType instanceof DateTimeType && !"DATE".equals(canonical)
+            ? Integer.valueOf(((DateTimeType) dataType).getPrecision()) : null;
+        final boolean identity = fromBaseTable && col.isAutoIncrement();
+        return new Row(
+            db.getName(), schema.getName(), relationName,
+            col.getName(), position,
+            fromBaseTable && col.getDefaultValue() != null ? col.getDefaultValue().toString() : null,
+            !fromBaseTable || col.isNullable() ? "YES" : "NO",
+            canonical, charLen, octetLen, numPrec, numScale, dateTimePrec,
+            col.getCollation(),
+            identity ? "YES" : "NO",
+            identity ? "1" : null,
+            identity ? "1" : null,
+            fromBaseTable ? col.getComment() : null,
+            fromBaseTable && col.isPrimaryKey() ? "YES" : "NO"
+        );
+    }
+
+    /**
+     * Snowflake's INFORMATION_SCHEMA.COLUMNS reports DATA_TYPE by canonical family name
+     * (live-verified): every integer/NUMBER/DECIMAL flavor is NUMBER, every character flavor is
+     * TEXT, every floating-point flavor is FLOAT, and plain TIMESTAMP surfaces as TIMESTAMP_NTZ.
+     * DATE/TIME/BOOLEAN/BINARY/VARIANT/OBJECT/ARRAY and the zoned timestamps pass through.
+     * This mapping applies ONLY here — DESCRIBE TABLE and SHOW COLUMNS keep their own shapes.
+     */
+    private String canonicalDataType(final String typeName) {
+        switch (typeName) {
+            case "INTEGER":
+            case "INT":
+            case "BIGINT":
+            case "SMALLINT":
+            case "TINYINT":
+            case "BYTEINT":
+            case "NUMBER":
+            case "DECIMAL":
+            case "NUMERIC":
+                return "NUMBER";
+            case "VARCHAR":
+            case "CHAR":
+            case "CHARACTER":
+            case "STRING":
+            case "TEXT":
+                return "TEXT";
+            case "FLOAT":
+            case "FLOAT4":
+            case "FLOAT8":
+            case "DOUBLE":
+            case "DOUBLE PRECISION":
+            case "REAL":
+                return "FLOAT";
+            case "TIMESTAMP":
+            case "DATETIME":
+                return "TIMESTAMP_NTZ";
+            case "VARBINARY":
+                return "BINARY";
+            default:
+                return typeName;
+        }
     }
 
     // ── VIEWS ─────────────────────────────────────────────────────────────────
@@ -194,24 +367,33 @@ public class SystemViews {
         for (final Database db : databases(databaseName)) {
             for (final Schema schema : schemas(db, schemaName)) {
                 for (final Table table : schema.getTables()) {
+                    // ONE row per CONSTRAINT, never one per column (live-verified): a composite
+                    // PRIMARY KEY (a, b) is a single constraint under a single name, and so is a
+                    // multi-column UNIQUE. Frostlake models both as per-column flags, so the row count
+                    // comes from the table's constraint view of them, not from its column list.
+                    final String primaryKeyName = table.primaryKeyConstraintName();
+                    if (primaryKeyName != null) {
+                        result.addRow(constraintRow(db, schema, table, primaryKeyName, "PRIMARY KEY",
+                            relyOfColumns(table, table.getPrimaryKeys())));
+                    }
+                    for (final UniqueConstraint unique : table.getUniqueConstraints()) {
+                        result.addRow(constraintRow(db, schema, table, unique.getConstraintName(), "UNIQUE",
+                            relyOfColumns(table, unique.getColumnNames())));
+                    }
+                    // An inline REFERENCES is its own single-column FOREIGN KEY constraint.
                     for (final TableColumn col : table.getColumns()) {
-                        if (col.isPrimaryKey()) {
-                            result.addRow(constraint(db, schema, table, col, "PRIMARY KEY"));
-                        }
-                        if (col.isUnique()) {
-                            result.addRow(constraint(db, schema, table, col, "UNIQUE"));
-                        }
                         if (col.hasForeignKey()) {
-                            result.addRow(constraint(db, schema, table, col, "FOREIGN KEY"));
+                            result.addRow(constraintRow(db, schema, table,
+                                table.columnForeignKeyConstraintName(col.getName()), "FOREIGN KEY",
+                                col.getRely()));
                         }
                     }
                     // Table-level FOREIGN KEY constraints (FOREIGN KEY (cols) REFERENCES …) live in the
                     // constraint list rather than as a column reference like an inline REFERENCES, so emit
                     // them too. Snowflake does not distinguish the two declaration forms in TABLE_CONSTRAINTS.
                     for (final ForeignKeyConstraint fk : table.getForeignKeys()) {
-                        for (final String fkColumn : fk.getColumnNames()) {
-                            result.addRow(foreignKeyConstraintRow(db, schema, table, fk, fkColumn));
-                        }
+                        result.addRow(constraintRow(db, schema, table, fk.getConstraintName(), "FOREIGN KEY",
+                            fk.getRely()));
                     }
                 }
             }
@@ -219,30 +401,45 @@ public class SystemViews {
         return result;
     }
 
-    private Row constraint(final Database db, final Schema schema, final Table table,
-                            final TableColumn col, final String type) {
-        String suffix = type.equals("PRIMARY KEY") ? "_PK" : type.equals("UNIQUE") ? "_UNIQUE" : "_FK";
-        String name = table.getName() + "_" + col.getName() + suffix;
-        String rely = col.getRely() != null && col.getRely() ? "YES" : "NO";
+    // One TABLE_CONSTRAINTS row for one constraint, under the name it reports everywhere else: the name an
+    // explicit CONSTRAINT <name> clause gave it, else the SYS_CONSTRAINT_<uuid> it auto-named itself with.
+    private Row constraintRow(final Database db, final Schema schema, final Table table,
+                              final String name, final String type, final Boolean rely) {
+        // Live-verified on a real account: Snowflake reports IS_DEFERRABLE = NO but
+        // INITIALLY_DEFERRED = YES for PRIMARY KEY, UNIQUE and FOREIGN KEY alike, and ENFORCED is a
+        // constant NO — a table declared PRIMARY KEY RELY still shows ENFORCED = NO with RELY = YES,
+        // so ENFORCED does not track RELY.
+        final String relyText = rely != null && rely ? "YES" : "NO";
         return new Row(db.getName(), schema.getName(), name,
                        db.getName(), schema.getName(), table.getName(),
-                       type, "NO", "NO", rely, rely, null);
+                       type, "NO", "YES", "NO", relyText, null);
     }
 
-    // Constraint name for a table-level FK: the explicit CONSTRAINT name if given, else the same
-    // generated {table}_{column}_FK shape used for inline foreign keys so the two views line up.
-    private String foreignKeyName(final Table table, final ForeignKeyConstraint fk, final String columnName) {
-        return fk.getConstraintName() != null && !fk.getConstraintName().isEmpty()
-            ? fk.getConstraintName()
-            : table.getName() + "_" + columnName + "_FK";
+    // RELY for a constraint spanning several columns: RELY is declared per column in Frostlake, so the
+    // constraint relies when any of its columns does.
+    private Boolean relyOfColumns(final Table table, final List<String> columnNames) {
+        for (final String columnName : columnNames) {
+            if (table.hasColumn(columnName) && Boolean.TRUE.equals(table.getColumn(columnName).getRely())) {
+                return Boolean.TRUE;
+            }
+        }
+        return Boolean.FALSE;
     }
 
-    private Row foreignKeyConstraintRow(final Database db, final Schema schema, final Table table,
-                                        final ForeignKeyConstraint fk, final String columnName) {
-        final String rely = fk.getRely() != null && fk.getRely() ? "YES" : "NO";
-        return new Row(db.getName(), schema.getName(), foreignKeyName(table, fk, columnName),
-                       db.getName(), schema.getName(), table.getName(),
-                       "FOREIGN KEY", "NO", "NO", rely, rely, null);
+    // The name of the PRIMARY KEY constraint a foreign key points at — REFERENTIAL_CONSTRAINTS reports it
+    // as the referenced (unique) constraint. Null when the referenced table is unknown or has no PK.
+    private String referencedPrimaryKeyName(final Schema schema, final String referencedTable) {
+        final String bare = QualifiedName.parse(referencedTable).last();
+        Table target = schema.hasTable(bare) ? schema.getTable(bare) : null;
+        if (target == null) {
+            try {
+                target = catalog.resolveTable(referencedTable);
+            } catch (final RuntimeException e) {
+                logger.debug("Referenced table {} not resolvable for REFERENTIAL_CONSTRAINTS", referencedTable);
+                return null;
+            }
+        }
+        return target != null ? target.primaryKeyConstraintName() : null;
     }
 
     // ── REFERENTIAL_CONSTRAINTS ───────────────────────────────────────────────
@@ -260,9 +457,9 @@ public class SystemViews {
                         if (col.hasForeignKey()) {
                             result.addRow(new Row(
                                 db.getName(), schema.getName(),
-                                table.getName() + "_" + col.getName() + "_FK",
+                                table.columnForeignKeyConstraintName(col.getName()),
                                 db.getName(), schema.getName(),
-                                col.getReferencedTable() + "_PK",
+                                referencedPrimaryKeyName(schema, col.getReferencedTable()),
                                 "NONE", "NO ACTION", "NO ACTION", null
                             ));
                         }
@@ -271,9 +468,9 @@ public class SystemViews {
                     for (final ForeignKeyConstraint fk : table.getForeignKeys()) {
                         result.addRow(new Row(
                             db.getName(), schema.getName(),
-                            foreignKeyName(table, fk, fk.getColumnNames().get(0)),
+                            fk.getConstraintName(),
                             db.getName(), schema.getName(),
-                            fk.getReferencedTable() + "_PK",
+                            referencedPrimaryKeyName(schema, fk.getReferencedTable()),
                             "NONE",
                             fk.getOnUpdate() != null ? fk.getOnUpdate() : "NO ACTION",
                             fk.getOnDelete() != null ? fk.getOnDelete() : "NO ACTION",

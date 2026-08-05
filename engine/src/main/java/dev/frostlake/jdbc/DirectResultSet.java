@@ -19,6 +19,8 @@ package dev.frostlake.jdbc;
 import dev.frostlake.DatabaseEngine;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
+import dev.frostlake.values.BinaryValue;
+import dev.frostlake.values.VariantValue;
 
 import java.io.InputStream;
 import java.io.Reader;
@@ -152,13 +154,25 @@ public class DirectResultSet implements java.sql.ResultSet {
     @Override
     public Object getObject(final int columnIndex) throws SQLException {
         checkClosed();
-        return engineResultSet.getValue(columnIndex - 1);
+        return unwrapEngineValue(engineResultSet.getValue(columnIndex - 1));
     }
 
     @Override
     public Object getObject(final String columnLabel) throws SQLException {
         checkClosed();
-        return engineResultSet.getValue(columnLabel);
+        return unwrapEngineValue(engineResultSet.getValue(columnLabel));
+    }
+
+    /** Map engine-internal value objects to their JDBC-visible form (BINARY cells become byte[]). */
+    private Object unwrapEngineValue(final Object value) {
+        if (value instanceof BinaryValue) {
+            return ((BinaryValue) value).bytes();
+        }
+        if (value instanceof VariantValue) {
+            // Snowflake's JDBC driver surfaces VARIANT/OBJECT/ARRAY as their JSON text.
+            return ((VariantValue) value).text();
+        }
+        return value;
     }
 
     @Override
@@ -1060,6 +1074,12 @@ public class DirectResultSet implements java.sql.ResultSet {
         }
         if (value instanceof Timestamp) {
             return "'" + value.toString() + "'";
+        }
+        if (value instanceof BinaryValue) {
+            return "X'" + ((BinaryValue) value).toHex() + "'";
+        }
+        if (value instanceof byte[]) {
+            return JdbcMarshaling.formatLiteral(value);
         }
         // Default: treat as string
         return "'" + value.toString().replace("'", "''") + "'";

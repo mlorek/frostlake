@@ -17,6 +17,7 @@
 package dev.frostlake.functions;
 
 import dev.frostlake.BaseDatabaseTest;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -30,6 +31,7 @@ public class CurrentClientTest extends BaseDatabaseTest {
 
     @Test
     public void returnsTheStableClientIdentifier() {
+        Assumptions.assumeFalse(isLiveSnowflake(), "the client identity differs on live Snowflake");
         assertEquals("Frostlake", scalar("SELECT CURRENT_CLIENT()"));
     }
 }

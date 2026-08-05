@@ -17,7 +17,6 @@
 package dev.frostlake.expressions;
 
 import dev.frostlake.BaseDatabaseTest;
-import dev.frostlake.storage.ResultSet;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
@@ -27,76 +26,128 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * The spread operator {@code **}: in the SELECT list a constant array expands to one column per
- * element (labeled {@code <text>[N]}, 1-based); inside array constructors and function argument
- * lists the array's elements are spliced in; inside object constructors an object's pairs are
- * merged (last key wins). The row-spread forms ({@code t.**} / {@code ** t}) are unaffected.
+ * The {@code **} spread operator. It is argument SPLATTING, not an array feature — {@code […]} is sugar
+ * for {@code ARRAY_CONSTRUCT}, so one rule serves both the array-literal and the function-argument forms,
+ * and every function gets it (live-verified: {@code GREATEST(** [1,5,3])} → 5,
+ * {@code ARRAY_APPEND(** [[1,2], 3])} splices TWO arguments).
+ *
+ * <p>The operand must be a CONSTANT array, decided structurally: an array literal or an
+ * {@code ARRAY_CONSTRUCT} call. A runtime expression is refused even when its value is an array —
+ * {@code ** PARSE_JSON('[1,2]')} fails live — as are a column, a scalar, a string and an OBJECT.
  */
 public class SpreadOperatorTest extends BaseDatabaseTest {
 
     private Object scalar(final String sql) {
-        final ResultSet rs = engine.executeQuery(sql);
-        return rs.getRows().get(0).getValue(0);
+        return engine.executeQuery(sql).getRows().get(0).getValue(0);
     }
 
-    @Test
-    public void selectListSpreadExpandsToOneColumnPerElement() {
-        final ResultSet rs = engine.executeQuery("SELECT ** [3, 4]");
-        assertEquals(2, rs.getColumns().size());
-        assertEquals("** [3, 4][1]", rs.getColumns().get(0).getName());
-        assertEquals("** [3, 4][2]", rs.getColumns().get(1).getName());
-        assertEquals(3L, ((Number) rs.getRows().get(0).getValue(0)).longValue());
-        assertEquals(4L, ((Number) rs.getRows().get(0).getValue(1)).longValue());
-    }
-
-    @Test
-    public void selectListSpreadWorksWithAFromClause() {
-        engine.execute("CREATE TABLE sp_t (id INTEGER)");
-        engine.execute("INSERT INTO sp_t VALUES (10), (20)");
-        final ResultSet rs = engine.executeQuery("SELECT id, ** [3, 4] FROM sp_t ORDER BY id");
-        assertEquals(3, rs.getColumns().size());
-        assertEquals("** [3, 4][1]", rs.getColumns().get(1).getName());
-        assertEquals(2, rs.getRowCount());
-        assertEquals(3L, ((Number) rs.getRows().get(0).getValue(1)).longValue());
-        assertEquals(4L, ((Number) rs.getRows().get(1).getValue(2)).longValue());
-    }
-
-    @Test
-    public void arrayConstructorSplicesSpreadElements() {
-        assertEquals("[1,2,3,4]", String.valueOf(scalar("SELECT [1, 2, ** [3, 4]]")));
-        assertEquals("[1,2,3,4]", String.valueOf(scalar("SELECT [** [1, 2], ** [3, 4]]")));
-        assertEquals("[3,4]", String.valueOf(scalar("SELECT ARRAY_CONSTRUCT(** [3, 4])")));
-    }
-
-    @Test
-    public void objectConstructorMergesSpreadPairs() {
-        assertEquals("{\"a\":1,\"b\":2}", String.valueOf(scalar("SELECT {'a': 1, ** {'b': 2}}")));
-        assertEquals("{\"a\":1,\"b\":2}", String.valueOf(scalar("SELECT OBJECT_CONSTRUCT('a', 1, ** {'b': 2})")));
-        assertEquals("{\"a\":9}", String.valueOf(scalar("SELECT {'a': 1, ** {'a': 9}}")),
-            "the last occurrence of a key wins, as in the plain constructor");
-    }
-
-    @Test
-    public void functionArgumentSpreadFeedsPositionalArguments() {
-        assertEquals(7L, ((Number) scalar("SELECT COALESCE(** [null, 7])")).longValue());
-    }
-
-    @Test
-    public void nonArraySpreadFailsClearly() {
-        final RuntimeException e = assertThrows(RuntimeException.class, new Executable() {
+    private void assertRejected(final String sql) {
+        assertThrows(RuntimeException.class, new Executable() {
             @Override
             public void execute() {
-                engine.executeQuery("SELECT ** 5");
+                engine.executeQuery(sql);
             }
         });
-        assertTrue(e.getMessage().contains("spread"), "unexpected message: " + e.getMessage());
+    }
+
+    /** A rejection whose message must carry Snowflake's non-constant-operand wording. */
+    private void assertNonConstantOperand(final String sql) {
+        final RuntimeException error = assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.executeQuery(sql);
+            }
+        });
+        assertTrue(String.valueOf(error.getMessage())
+                .contains("spread argument with non-constant array input"),
+            "expected the non-constant-array-input wording, got: " + error.getMessage());
     }
 
     @Test
-    public void rowSpreadFormsAreUnaffected() {
+    public void arrayLiteralSpreadSplicesElements() {
+        assertEquals("[1,2,3,4]", String.valueOf(scalar("SELECT [** [1, 2], ** [3, 4]]")));
+        assertEquals("[1,2,3,4]", String.valueOf(scalar("SELECT [1, 2, ** [3, 4]]")));
+        assertEquals("[1,2,3]", String.valueOf(scalar("SELECT [** [1, 2], 3]")));
+        assertEquals("[0,1,2,3,4,5]", String.valueOf(scalar("SELECT [0, ** [1, 2], 3, ** [4], 5]")));
+        assertEquals("[1,2]", String.valueOf(scalar("SELECT [** [1, 2]]")));
+    }
+
+    @Test
+    public void spreadOfEmptyArrayContributesNothing() {
+        assertEquals("[]", String.valueOf(scalar("SELECT [** []]")));
+        assertEquals("[7]", String.valueOf(scalar("SELECT [** [], 7]")));
+    }
+
+    @Test
+    public void spreadIsOneLevelDeepAndKeepsNesting() {
+        // Only the outer array is flattened; a nested array stays an element.
+        assertEquals("[1,[2,3]]", String.valueOf(scalar("SELECT [** [1, [2, 3]]]")));
+    }
+
+    @Test
+    public void spreadKeepsMixedElementTypes() {
+        assertEquals("[\"a\",1,true]", String.valueOf(scalar("SELECT [** ['a', 1, TRUE]]")));
+    }
+
+    @Test
+    public void arrayConstructCallIsAConstantOperand() {
+        assertEquals("[1,2,3]", String.valueOf(scalar("SELECT [** ARRAY_CONSTRUCT(1, 2), 3]")));
+    }
+
+    @Test
+    public void spreadAsFunctionArgumentsSplatsThem() {
+        assertEquals("[3,4]", String.valueOf(scalar("SELECT ARRAY_CONSTRUCT(** [3, 4])")));
+        assertEquals("[1,2,3,4]", String.valueOf(scalar("SELECT ARRAY_CONSTRUCT(1, ** [2, 3], 4)")));
+        assertEquals("[1,2]", String.valueOf(scalar("SELECT ARRAY_CONSTRUCT(** [1], ** [2])")));
+    }
+
+    @Test
+    public void spreadSplatsArgumentsOfOrdinaryFunctions() {
+        // Not array-specific: the spliced elements become ordinary positional arguments.
+        assertEquals("[1,2,3]", String.valueOf(scalar("SELECT ARRAY_APPEND(** [[1, 2], 3])")));
+        assertEquals(5L, ((Number) scalar("SELECT GREATEST(** [1, 5, 3])")).longValue());
+        assertEquals("ab", String.valueOf(scalar("SELECT CONCAT(** ['a', 'b'])")));
+        assertEquals("{\"a\":1,\"b\":2}",
+            String.valueOf(scalar("SELECT OBJECT_CONSTRUCT('a', 1, ** ['b', 2])")));
+    }
+
+    @Test
+    public void splicedArrayBehavesLikeAnyOtherArray() {
+        assertEquals(3L, ((Number) scalar("SELECT ARRAY_SIZE([** [1, 2], 3])")).longValue());
+        assertEquals(1L, ((Number) scalar("SELECT ([** [1, 2], 3])[0]")).longValue());
+    }
+
+    @Test
+    public void nonConstantOperandIsRejected() {
+        // A runtime expression is refused even though its VALUE is an array (live-verified).
+        assertNonConstantOperand("SELECT [** PARSE_JSON('[1,2]'), 3]");
+        engine.execute("CREATE TABLE sp_a (a ARRAY)");
+        engine.execute("INSERT INTO sp_a SELECT [10, 20]");
+        assertNonConstantOperand("SELECT [** a, 99] FROM sp_a");
+        assertNonConstantOperand("SELECT ARRAY_CONSTRUCT(** a, 99) FROM sp_a");
+    }
+
+    @Test
+    public void nonArrayOperandIsRejected() {
+        assertNonConstantOperand("SELECT [** 5]");
+        assertNonConstantOperand("SELECT [** 'ab']");
+        assertNonConstantOperand("SELECT [** OBJECT_CONSTRUCT('k', 'v')]");
+    }
+
+    @Test
+    public void objectLiteralSpreadAndBareRowSpreadStayRejected() {
+        // Snowflake has no object-literal spread and no bare/qualified row spread — all syntax errors.
+        assertRejected("SELECT {'a': 1, ** {'b': 2}}");
+        assertRejected("SELECT ** 5");
         engine.execute("CREATE TABLE sp_r (a INTEGER, b INTEGER)");
         engine.execute("INSERT INTO sp_r VALUES (1, 2)");
-        assertEquals(2, engine.executeQuery("SELECT sp_r.** FROM sp_r").getColumns().size());
-        assertEquals(2, engine.executeQuery("SELECT ** sp_r FROM sp_r").getColumns().size());
+        assertRejected("SELECT sp_r.** FROM sp_r");
+        assertRejected("SELECT ** sp_r FROM sp_r");
+    }
+
+    @Test
+    public void plainArrayAndObjectLiteralsStillWork() {
+        assertEquals("[3,4]", String.valueOf(scalar("SELECT [3, 4]")));
+        assertEquals("{\"a\":1,\"b\":2}", String.valueOf(scalar("SELECT {'a': 1, 'b': 2}")));
     }
 }

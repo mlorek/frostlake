@@ -29,8 +29,9 @@ public class ToTimestamp extends BuiltInFunction {
     @Override
     public Object evaluate(final List<Object> args) {
         if (args.get(0) == null) return null;
-        final String format = args.size() >= 2 && args.get(1) != null ? args.get(1).toString() : null;
-        return SharedFunctionHelpers.parseTimestampWithFormat(args.get(0), format);
+        // The second argument is a format for a string input, or a scale (0-9) for a numeric epoch.
+        final Object formatOrScale = args.size() >= 2 ? args.get(1) : null;
+        return SharedFunctionHelpers.parseTimestampWithFormatOrScale(args.get(0), formatOrScale);
     }
 
     @Override public int getMinArgCount() { return 1; }

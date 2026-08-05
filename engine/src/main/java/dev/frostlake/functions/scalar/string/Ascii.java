@@ -16,12 +16,12 @@
 
 package dev.frostlake.functions.scalar.string;
 
-import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.functions.TextArgumentFunction;
 import dev.frostlake.types.NumericType;
 
 import java.util.List;
 
-public class Ascii extends BuiltInFunction {
+public class Ascii extends TextArgumentFunction {
     public Ascii() { super("ASCII", NumericType.INTEGER); }
 
     @Override
