@@ -16,6 +16,7 @@
 
 package dev.frostlake.metastore.model;
 
+import java.time.Instant;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -28,6 +29,7 @@ public class Sequence {
     private long increment;
     private final boolean order;
     private String comment;
+    private final Instant createdTime = Instant.now();
 
     public Sequence(final String name, final long startValue, final long increment, final boolean order, final String comment) {
         this.name = name;
@@ -67,6 +69,14 @@ public class Sequence {
     }
 
     /**
+     * The value the NEXT call to {@link #nextVal()} will return, without consuming it — the
+     * catalog's NEXT_VALUE. On a sequence nothing has drawn from yet this is its START value.
+     */
+    public long peekNextValue() {
+        return currentValue.get() + increment;
+    }
+
+    /**
      * Set the current value (used by ALTER SEQUENCE)
      */
     public void setCurrentValue(final long value) {
@@ -99,6 +109,11 @@ public class Sequence {
     /** Change the step applied by future NEXTVAL calls (ALTER SEQUENCE … SET INCREMENT). */
     public void setIncrement(final long increment) {
         this.increment = increment;
+    }
+
+    /** When this sequence was created, as SHOW SEQUENCES reports it. */
+    public Instant getCreatedTime() {
+        return createdTime;
     }
 
     public boolean isOrder() {

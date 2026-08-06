@@ -36,22 +36,28 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 public class ArrayStructTest extends BaseJdbcTest {
 
     /**
-     * The tests that go through {@code Connection.createArrayOf} / {@code createStruct} (or that cast the
-     * result to {@link DirectArray} / {@link DirectStruct}) assert Frostlake's own driver objects. The
-     * Snowflake driver returns its own {@code SfSqlArray}, does not implement {@code createStruct}, and
-     * rejects {@code getArray(index, count)} — so those assertions describe a driver surface, not SQL
-     * behaviour, and cannot hold on both drivers. The tests that build a {@code DirectStruct} directly are
-     * backend-independent and keep running.
+     * Only the calls the Snowflake driver genuinely cannot answer are held back from live. Measured
+     * against driver 3.20.0, {@code createArrayOf} DOES work and agrees with Frostlake on
+     * {@code getBaseTypeName} ("INTEGER"), {@code getBaseType} (4) and {@code getArray()} — so those
+     * tests run on both. What differs:
+     *
+     * <pre>
+     *   getArray(index, count)   Snowflake: SQLFeatureNotSupportedException   Frostlake: returns the slice
+     *   free() then getArray()   Snowflake: still returns the elements        Frostlake: throws
+     *   createStruct(...)        Snowflake: SnowflakeLoggedFeatureNotSupported Frostlake: builds a struct
+     * </pre>
+     *
+     * <p>Those three are a driver surface rather than SQL behaviour, and Frostlake is the more permissive
+     * side of each. Tests that build a {@code DirectStruct} directly stay embedded-only for the same reason.
      */
     private static final String DRIVER_OBJECTS =
-        "asserts Frostlake's own JDBC Array/Struct objects (DirectArray / DirectStruct); the Snowflake "
-        + "driver returns SfSqlArray, has no createStruct, and rejects getArray(index, count)";
+        "the Snowflake driver rejects getArray(index, count) and createStruct, and keeps serving elements "
+        + "after free(); these assert Frostlake's own DirectArray / DirectStruct behaviour";
 
     // === ARRAY TESTS ===
 
     @Test
     public void testCreateIntegerArray() throws SQLException {
-        Assumptions.assumeFalse(isLiveSnowflake(), DRIVER_OBJECTS);
         Object[] elements = {1, 2, 3, 4, 5};
         Array array = connection.createArrayOf("INTEGER", elements);
 
@@ -65,7 +71,6 @@ public class ArrayStructTest extends BaseJdbcTest {
 
     @Test
     public void testCreateStringArray() throws SQLException {
-        Assumptions.assumeFalse(isLiveSnowflake(), DRIVER_OBJECTS);
         Object[] elements = {"apple", "banana", "cherry"};
         Array array = connection.createArrayOf("VARCHAR", elements);
 
@@ -79,7 +84,6 @@ public class ArrayStructTest extends BaseJdbcTest {
 
     @Test
     public void testCreateEmptyArray() throws SQLException {
-        Assumptions.assumeFalse(isLiveSnowflake(), DRIVER_OBJECTS);
         Object[] elements = {};
         Array array = connection.createArrayOf("INTEGER", elements);
 
@@ -140,7 +144,6 @@ public class ArrayStructTest extends BaseJdbcTest {
 
     @Test
     public void testArrayWithNullElements() throws SQLException {
-        Assumptions.assumeFalse(isLiveSnowflake(), DRIVER_OBJECTS);
         Object[] elements = {1, null, 3, null, 5};
         Array array = connection.createArrayOf("INTEGER", elements);
 
@@ -150,7 +153,6 @@ public class ArrayStructTest extends BaseJdbcTest {
 
     @Test
     public void testArrayWithDoubles() throws SQLException {
-        Assumptions.assumeFalse(isLiveSnowflake(), DRIVER_OBJECTS);
         Object[] elements = {1.5, 2.5, 3.5};
         Array array = connection.createArrayOf("DOUBLE", elements);
 
@@ -163,7 +165,6 @@ public class ArrayStructTest extends BaseJdbcTest {
 
     @Test
     public void testArrayWithBooleans() throws SQLException {
-        Assumptions.assumeFalse(isLiveSnowflake(), DRIVER_OBJECTS);
         Object[] elements = {true, false, true};
         Array array = connection.createArrayOf("BOOLEAN", elements);
 

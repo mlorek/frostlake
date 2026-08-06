@@ -134,7 +134,7 @@ public class AlterTableIfExistsTest {
         engine.execute("CREATE TABLE existing_table (id INTEGER, name VARCHAR)");
         engine.execute("ALTER TABLE IF EXISTS existing_table ADD COLUMN age INTEGER");
 
-        Table table = engine.getCatalog().resolveTable("existing_table");
+        Table table = engine.getCatalog().resolveTable("EXISTING_TABLE");
         assertNotNull(table);
         assertEquals(3, table.getColumns().size());
         assertTrue(table.hasColumn("age"));
@@ -152,11 +152,11 @@ public class AlterTableIfExistsTest {
         assertThrows(RuntimeException.class, new Executable() {
             @Override
             public void execute() throws Throwable {
-                engine.getCatalog().resolveTable("old_name");
+                engine.getCatalog().resolveTable("OLD_NAME");
             }
         });
 
-        Table table = engine.getCatalog().resolveTable("new_name");
+        Table table = engine.getCatalog().resolveTable("NEW_NAME");
         assertNotNull(table);
 
         logger.info("ALTER TABLE RENAME TO IF EXISTS on existing table works correctly");
@@ -169,7 +169,7 @@ public class AlterTableIfExistsTest {
         engine.execute("CREATE TABLE test_table (id INTEGER, name VARCHAR, age INTEGER)");
         engine.execute("ALTER TABLE IF EXISTS test_table DROP COLUMN age");
 
-        Table table = engine.getCatalog().resolveTable("test_table");
+        Table table = engine.getCatalog().resolveTable("TEST_TABLE");
         assertNotNull(table);
         assertEquals(2, table.getColumns().size());
 
@@ -183,7 +183,7 @@ public class AlterTableIfExistsTest {
         engine.execute("CREATE TABLE test_table (id INTEGER, old_name VARCHAR)");
         engine.execute("ALTER TABLE IF EXISTS test_table RENAME COLUMN old_name TO new_name");
 
-        Table table = engine.getCatalog().resolveTable("test_table");
+        Table table = engine.getCatalog().resolveTable("TEST_TABLE");
         assertNotNull(table);
         assertTrue(table.hasColumn("new_name"));
 
@@ -197,7 +197,7 @@ public class AlterTableIfExistsTest {
         engine.execute("CREATE TABLE test_table (id INTEGER)");
         engine.execute("ALTER TABLE IF EXISTS test_table SET COMMENT = 'Test comment'");
 
-        Table table = engine.getCatalog().resolveTable("test_table");
+        Table table = engine.getCatalog().resolveTable("TEST_TABLE");
         assertNotNull(table);
         assertEquals("Test comment", table.getComment());
 
@@ -236,7 +236,7 @@ public class AlterTableIfExistsTest {
         assertThrows(RuntimeException.class, new Executable() {
             @Override
             public void execute() throws Throwable {
-                engine.getCatalog().resolveTable("phantom_table");
+                engine.getCatalog().resolveTable("PHANTOM_TABLE");
             }
         });
 
@@ -257,7 +257,7 @@ public class AlterTableIfExistsTest {
         assertNotNull(rs);
         assertEquals(2, rs.getRowCount());
 
-        Table table = engine.getCatalog().resolveTable("customers");
+        Table table = engine.getCatalog().resolveTable("CUSTOMERS");
         assertEquals(3, table.getColumns().size());
 
         logger.info("ALTER TABLE IF EXISTS on table with data works correctly");

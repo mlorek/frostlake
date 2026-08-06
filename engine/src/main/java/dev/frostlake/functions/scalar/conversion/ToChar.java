@@ -23,6 +23,7 @@ import dev.frostlake.functions.scalar.SnowflakeDateFormat;
 import dev.frostlake.functions.scalar.SnowflakeNumberFormat;
 import dev.frostlake.types.StringType;
 import dev.frostlake.values.BinaryValue;
+import dev.frostlake.values.VariantValue;
 
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
@@ -56,6 +57,11 @@ public class ToChar extends BuiltInFunction {
     public Object evaluate(final List<Object> args) {
         if (args.get(0) == null) return null;
         final Object value = args.get(0);
+        if (value instanceof VariantValue) {
+            // An explicit conversion is always the COMPACT text on a real account, whatever
+            // JSON_INDENT is set to — only a variant DISPLAYED as itself follows the width.
+            return ((VariantValue) value).text();
+        }
         if (value instanceof BinaryValue && args.size() >= 2 && args.get(1) != null) {
             // BINARY has its own format model — the target ENCODING, not a picture string.
             return renderBinary((BinaryValue) value, args.get(1).toString());

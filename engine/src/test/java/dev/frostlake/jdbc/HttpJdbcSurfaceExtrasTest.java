@@ -139,4 +139,30 @@ public class HttpJdbcSurfaceExtrasTest {
         logger.info("HTTP metadata identity: {} {} via {}",
             md.getDatabaseProductName(), md.getDatabaseProductVersion(), md.getDriverName());
     }
+
+    /**
+     * getProcedures / getFunctions over the HTTP transport. Both transports run the same
+     * INFORMATION_SCHEMA-backed query, but only this one carries it across the wire, so the shape is
+     * asserted on both sides rather than assumed to travel intact.
+     */
+    @Test
+    public void routineMetadataCrossesTheWire() throws Exception {
+        statement.execute("CREATE OR REPLACE PROCEDURE wire_proc(x INTEGER) RETURNS VARCHAR LANGUAGE SQL"
+            + " AS $$BEGIN RETURN 'a'; END;$$");
+        statement.execute("CREATE OR REPLACE FUNCTION wire_fn(x INTEGER) RETURNS INTEGER AS $$ x + 1 $$");
+
+        try (ResultSet rs = connection.getMetaData().getProcedures("HTTP_EXTRAS_DB", "PUBLIC", "WIRE%")) {
+            assertEquals(6, rs.getMetaData().getColumnCount());
+            assertTrue(rs.next(), "the procedure must come back over HTTP");
+            assertEquals("WIRE_PROC", rs.getString("PROCEDURE_NAME"));
+            assertEquals("user-defined procedure", rs.getString("REMARKS"));
+            assertEquals(2, rs.getInt("PROCEDURE_TYPE"));
+        }
+        try (ResultSet rs = connection.getMetaData().getFunctions("HTTP_EXTRAS_DB", "PUBLIC", "WIRE%")) {
+            assertEquals(6, rs.getMetaData().getColumnCount());
+            assertTrue(rs.next(), "the function must come back over HTTP");
+            assertEquals("WIRE_FN", rs.getString("FUNCTION_NAME"));
+            assertEquals(1, rs.getInt("FUNCTION_TYPE"));
+        }
+    }
 }

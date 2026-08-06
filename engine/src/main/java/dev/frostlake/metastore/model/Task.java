@@ -19,7 +19,10 @@ package dev.frostlake.metastore.model;
 
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
+import java.util.UUID;
 
 /**
  * Represents a Snowflake Task - Scheduled SQL execution
@@ -27,6 +30,10 @@ import java.util.List;
 public class Task {
 
     private final String name;
+    private String id = UUID.randomUUID().toString();
+    private String createdByUser;
+    /** Parameter names this task set explicitly, which SHOW PARAMETERS reports at the TASK level. */
+    private final Set<String> explicitParameters = new LinkedHashSet<>();
     // schedule / scheduleType / sqlStatement / warehouse are mutable so ALTER TASK … SET/MODIFY can change them.
     private String schedule;
     private ScheduleType scheduleType;
@@ -97,6 +104,42 @@ public class Task {
 
     /** Owning role; defaults to SYSADMIN until stamped with the creating role at CREATE. */
     private String owner = "SYSADMIN";
+
+    /** The opaque task identifier live reports as SHOW TASKS' {@code id}. */
+    public String getId() {
+        return id;
+    }
+
+    /** Restore the identity a snapshot recorded, so it survives a reload as live's does. */
+    public void setId(final String id) {
+        if (id != null) {
+            this.id = id;
+        }
+    }
+
+    /** The parameter names set on this task, for the snapshot writer. */
+    public Set<String> getExplicitParameters() {
+        return explicitParameters;
+    }
+
+    /** The user who ran the CREATE TASK, which live reports as {@code created_by_user}. */
+    public String getCreatedByUser() {
+        return createdByUser;
+    }
+
+    public void setCreatedByUser(final String createdByUser) {
+        this.createdByUser = createdByUser;
+    }
+
+    /** Record that {@code parameterName} was given on the task itself rather than left at its default. */
+    public void markParameterSet(final String parameterName) {
+        explicitParameters.add(parameterName.toUpperCase());
+    }
+
+    /** Whether the task set this parameter itself — the difference between a TASK level and a blank one. */
+    public boolean isParameterSetOnTask(final String parameterName) {
+        return explicitParameters.contains(parameterName.toUpperCase());
+    }
 
     public String getName() {
         return name;

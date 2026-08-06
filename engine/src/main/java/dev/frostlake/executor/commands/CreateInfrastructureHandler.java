@@ -18,6 +18,9 @@ package dev.frostlake.executor.commands;
 
 import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.executor.SqlCompilationError;
+import dev.frostlake.executor.SqlIdentifiers;
+import dev.frostlake.executor.WarehouseReference;
+import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.metastore.*;
 import dev.frostlake.metastore.model.*;
 import dev.frostlake.parser.FrostlakeParser;
@@ -73,6 +76,8 @@ public class CreateInfrastructureHandler implements CommandHandler {
                 } catch (final RuntimeException ignored) {}
             }
             String warehouse = ctx.warehouseClause() != null ? ddl.extractWarehouseName(ctx.warehouseClause()) : null;
+            // Live validates the reference at CREATE time, with its own phrasing for tasks.
+            WarehouseReference.requireForTask(catalog, warehouse);
 
             // Schedule is now inside taskOptions
             String schedule = null;
@@ -107,6 +112,8 @@ public class CreateInfrastructureHandler implements CommandHandler {
             String targetInterval = null;
             String errorIntegration = null;
             int minTriggerInterval = 30;
+            // Which parameters the DDL names, so SHOW PARAMETERS can tell a TASK-level value from a default.
+            final List<String> setParameters = new ArrayList<>();
             if (ctx.taskOptions() != null) {
                 for (final FrostlakeParser.TaskOptionContext opt : ctx.taskOptions().taskOption()) {
                     if (opt.scheduleClause() != null) {
@@ -133,20 +140,26 @@ public class CreateInfrastructureHandler implements CommandHandler {
                     } else if (opt.ALLOW_OVERLAPPING_EXECUTION() != null) {
                         allowOverlapping = "TRUE".equalsIgnoreCase(opt.booleanValue().getText());
                     } else if (opt.USER_TASK_TIMEOUT_MS() != null) {
+                        setParameters.add("USER_TASK_TIMEOUT_MS");
                         timeoutMs = Long.parseLong(opt.INTEGER_LITERAL().getText());
                     } else if (opt.SUSPEND_TASK_AFTER_NUM_FAILURES() != null) {
+                        setParameters.add("SUSPEND_TASK_AFTER_NUM_FAILURES");
                         suspendAfterFailures = Integer.parseInt(opt.INTEGER_LITERAL().getText());
                     } else if (opt.TASK_AUTO_RETRY_ATTEMPTS() != null) {
+                        setParameters.add("TASK_AUTO_RETRY_ATTEMPTS");
                         autoRetryAttempts = Integer.parseInt(opt.INTEGER_LITERAL().getText());
                     } else if (opt.USER_TASK_MANAGED_INITIAL_WAREHOUSE_SIZE() != null) {
+                        setParameters.add("USER_TASK_MANAGED_INITIAL_WAREHOUSE_SIZE");
                         managedWarehouseSize = ddl.extractStringLiteral(opt.STRING_LITERAL());
                     } else if (opt.SERVERLESS_TASK_MAX_STATEMENT_SIZE() != null) {
+                        setParameters.add("SERVERLESS_TASK_MAX_STATEMENT_SIZE");
                         serverlessMaxStmtSize = opt.STRING_LITERAL() != null
                             ? ddl.extractStringLiteral(opt.STRING_LITERAL())
                             : (opt.identifier() != null ? getText(opt.identifier()) : null);
                     } else if (opt.TARGET_COMPLETION_INTERVAL() != null) {
                         targetInterval = ddl.extractStringLiteral(opt.STRING_LITERAL());
                     } else if (opt.USER_TASK_MINIMUM_TRIGGER_INTERVAL_IN_SECONDS() != null) {
+                        setParameters.add("USER_TASK_MINIMUM_TRIGGER_INTERVAL_IN_SECONDS");
                         minTriggerInterval = Integer.parseInt(opt.INTEGER_LITERAL().getText());
                     } else if (opt.ERROR_INTEGRATION() != null) {
                         errorIntegration = getText(opt.identifier());
@@ -163,7 +176,16 @@ public class CreateInfrastructureHandler implements CommandHandler {
                         + " cannot have both a schedule and a predecessor.");
             }
 
+            // A task with a WAREHOUSE is not serverless, so the serverless-only options are refused.
+            TaskOptions.rejectServerlessOptionsOnWarehouseTask(warehouse, managedWarehouseSize,
+                serverlessMaxStmtSize, targetInterval,
+                ddl.resolveSchemaFromQualifiedName(taskQualifiedName), taskName);
+
             Task task = new Task(taskName, schedule, scheduleType, sqlText, warehouse);
+            task.setCreatedByUser(catalog.currentUserForStage());
+            for (final String setParameter : setParameters) {
+                task.markParameterSet(setParameter);
+            }
             for (final String pred : predecessors) task.addPredecessor(pred);
             task.setAllowOverlappingExecution(allowOverlapping);
             task.setUserTaskTimeoutMs(timeoutMs);
@@ -310,6 +332,113 @@ public class CreateInfrastructureHandler implements CommandHandler {
         return null;
     }
 
+    /**
+     * CREATE COMPUTE POOL. The name must be upper case; MIN_NODES, MAX_NODES and INSTANCE_FAMILY
+     * are required and reported missing in that order; MIN_NODES is at least 1 and no greater than
+     * MAX_NODES; INSTANCE_FAMILY must name a family from the account catalog. Every rejection uses
+     * a real account's wording.
+     */
+    public Object handleCreateComputePool(final FrostlakeParser.CreateStatementContext ctx,
+            final boolean ifNotExists) {
+        final String poolName = getText(ctx.identifier(0));
+        if (!poolName.equals(poolName.toUpperCase())) {
+            throw new RuntimeException(
+                "Invalid compute pool name: '" + poolName + "'. Name must be uppercase.");
+        }
+        if (ifNotExists && catalog.hasComputePool(poolName)) {
+            logger.debug("Compute pool already exists (IF NOT EXISTS): {}", poolName);
+            return null;
+        }
+        final ComputePool pool = new ComputePool(poolName);
+        Integer minNodes = null;
+        Integer maxNodes = null;
+        String instanceFamily = null;
+        for (final FrostlakeParser.ComputePoolOptionContext option : ctx.computePoolOption()) {
+            if (option.MIN_NODES() != null) {
+                minNodes = Integer.valueOf(option.INTEGER_LITERAL().getText());
+            } else if (option.MAX_NODES() != null) {
+                maxNodes = Integer.valueOf(option.INTEGER_LITERAL().getText());
+            } else if (option.INSTANCE_FAMILY() != null) {
+                instanceFamily = getText(option.identifier()).toUpperCase();
+            } else if (option.AUTO_RESUME() != null) {
+                pool.setAutoResume("TRUE".equalsIgnoreCase(option.booleanValue().getText()));
+            } else if (option.INITIALLY_SUSPENDED() != null) {
+                if ("TRUE".equalsIgnoreCase(option.booleanValue().getText())) {
+                    pool.setState(ComputePoolState.SUSPENDED);
+                }
+            } else if (option.AUTO_SUSPEND_SECS() != null) {
+                pool.setAutoSuspendSecs(Integer.parseInt(option.INTEGER_LITERAL().getText()));
+            } else if (option.COMMENT() != null) {
+                pool.setComment(ddl.extractStringLiteral(option.STRING_LITERAL()));
+            } else if (option.PLACEMENT_GROUP() != null) {
+                // Placement groups are a region registry this engine has none of, so the lookup
+                // fails exactly as a real account's does.
+                final String group = ddl.extractStringLiteral(option.STRING_LITERAL());
+                throw new RuntimeException("Invalid value '" + group + "' for property"
+                    + " 'PLACEMENT_GROUP':\nPlacement group '" + group
+                    + "' does not exist in this region.");
+            } else if (option.BACKUP_INSTANCE_FAMILIES() != null) {
+                final List<String> families = new ArrayList<>();
+                for (final TerminalNode family : option.stringLiteralList().STRING_LITERAL()) {
+                    families.add(ddl.extractStringLiteral(family));
+                }
+                pool.setBackupInstanceFamilies(families);
+            }
+        }
+        final List<String> missing = new ArrayList<>();
+        if (minNodes == null) {
+            missing.add("MIN_NODES");
+        }
+        if (maxNodes == null) {
+            missing.add("MAX_NODES");
+        }
+        if (instanceFamily == null) {
+            missing.add("INSTANCE_FAMILY");
+        }
+        if (!missing.isEmpty()) {
+            throw new RuntimeException(SqlCompilationError.of("Missing option(s): " + missing));
+        }
+        if (minNodes.intValue() < 1) {
+            throw new RuntimeException(SqlCompilationError.of(
+                "invalid value '" + minNodes + "' for property 'MIN_NODES'"));
+        }
+        if (minNodes.intValue() > maxNodes.intValue()) {
+            throw new RuntimeException(SqlCompilationError.of(
+                "invalid property combination 'MIN_NODES'='" + minNodes
+                + "' and 'MAX_NODES'='" + maxNodes + "'"));
+        }
+        if (!InstanceFamilies.isValid(instanceFamily)) {
+            throw new RuntimeException("Invalid instance family " + instanceFamily
+                + ". Please refer to Snowflake documentation for supported instance families.");
+        }
+        // Backup families obey the same rules at CREATE as at ALTER: each must be in the catalog
+        // and none may match the primary.
+        for (final String backup : pool.getBackupInstanceFamilies()) {
+            if (!InstanceFamilies.isValid(backup)) {
+                throw new RuntimeException("Invalid instance family " + backup
+                    + ". Please refer to Snowflake documentation for supported instance families.");
+            }
+            if (backup.equalsIgnoreCase(instanceFamily)) {
+                throw new RuntimeException("Invalid BACKUP_INSTANCE_FAMILIES for compute pool:"
+                    + " BACKUP_INSTANCE_FAMILIES contains '" + backup
+                    + "' which matches the primary INSTANCE_FAMILY. Each backup must be different"
+                    + " from the primary.");
+            }
+        }
+        pool.setMinNodes(minNodes.intValue());
+        pool.setMaxNodes(maxNodes.intValue());
+        pool.setInstanceFamily(instanceFamily);
+        if (ctx.FOR() != null && ctx.APPLICATION() != null) {
+            pool.setApplication(getText(ctx.identifier(1)));
+        }
+        if (ctx.tagList() != null) {
+            InlineTags.apply(pool, ctx.tagList());
+        }
+        catalog.createComputePool(pool);
+        logger.trace("Created compute pool: {}", poolName);
+        return null;
+    }
+
     public Object handleCreateWarehouse(final FrostlakeParser.CreateStatementContext ctx, final boolean ifNotExists) {
         String warehouseName = getText(ctx.identifier(0));
         if (ctx.or_replace() != null) {
@@ -395,6 +524,114 @@ public class CreateInfrastructureHandler implements CommandHandler {
         return null;
     }
 
+    /**
+     * CREATE CORTEX SEARCH SERVICE. WAREHOUSE and TARGET_LAG are required and reported the way a real
+     * account reports them — {@code Missing option(s): [WAREHOUSE]} — rather than as a syntax error, so
+     * the grammar accepts the options in any order and the check lives here.
+     *
+     * <p>The searched column and every attribute column must be projected by the defining query, which
+     * is run once at create time both to establish that column list and to reject a bad name the way
+     * live does: as an {@code invalid identifier}.
+     */
+    public Object handleCreateCortexSearchService(final FrostlakeParser.CreateStatementContext ctx,
+                                                  final boolean ifNotExists) {
+        final String serviceName = getText(ctx.qualifiedName(0));
+        final String searchColumn = SqlIdentifiers.canonical(ctx.identifier(0));
+        final List<String> attributeColumns = new ArrayList<>();
+        if (!ctx.identifierList().isEmpty()) {
+            for (final FrostlakeParser.IdentifierContext attribute : ctx.identifierList(0).identifier()) {
+                attributeColumns.add(SqlIdentifiers.canonical(attribute));
+            }
+        }
+
+        String warehouse = null;
+        String targetLag = null;
+        String embeddingModel = null;
+        String comment = null;
+        for (final FrostlakeParser.CortexSearchOptionContext option : ctx.cortexSearchOption()) {
+            if (option.WAREHOUSE() != null) {
+                warehouse = SqlIdentifiers.canonical(option.identifier());
+            } else if (option.TARGET_LAG() != null) {
+                targetLag = ddl.extractStringLiteral(option.STRING_LITERAL());
+            } else if (option.EMBEDDING_MODEL() != null) {
+                embeddingModel = ddl.extractStringLiteral(option.STRING_LITERAL());
+            } else if (option.COMMENT() != null) {
+                comment = ddl.extractStringLiteral(option.STRING_LITERAL());
+            }
+        }
+        if (warehouse == null) {
+            throw new RuntimeException(SqlCompilationError.of("Missing option(s): [WAREHOUSE]"));
+        }
+        if (targetLag == null) {
+            throw new RuntimeException(SqlCompilationError.of("Missing option(s): [TARGET_LAG]"));
+        }
+        WarehouseReference.require(catalog, warehouse);
+
+        if (ctx.or_replace() != null) {
+            try {
+                catalog.resolveCortexSearchService(serviceName);
+                dropCortexSearchService(serviceName);
+            } catch (final RuntimeException nothingToReplace) {
+                // OR REPLACE over a name that is not taken.
+            }
+        }
+        if (ifNotExists && existingCortexSearchService(serviceName)) {
+            return null;
+        }
+
+        final String definition = ddl.getOriginalText(ctx.selectStatement());
+        final List<String> columns = definitionColumns(ctx.selectStatement());
+        requireProjected(columns, searchColumn);
+        for (final String attribute : attributeColumns) {
+            requireProjected(columns, attribute);
+        }
+
+        final CortexSearchService service = new CortexSearchService(
+            simpleName(serviceName).toUpperCase(), searchColumn, attributeColumns, columns,
+            warehouse, targetLag, embeddingModel, definition, comment);
+        service.setOwner(catalog.currentRoleForOwner());
+        ddl.resolveSchemaFromQualifiedName(serviceName).addCortexSearchService(service);
+        logger.trace("Created Cortex search service: {}", serviceName);
+        return null;
+    }
+
+    /** The column names the defining query projects, taken from running it once. */
+    private List<String> definitionColumns(final FrostlakeParser.SelectStatementContext select) {
+        final List<String> columns = new ArrayList<>();
+        for (final ResultSetColumn column
+                : queryExecutor.executeSelectFromContext(select).getColumns()) {
+            columns.add(column.getName());
+        }
+        return columns;
+    }
+
+    private void requireProjected(final List<String> columns, final String column) {
+        for (final String projected : columns) {
+            if (projected.equalsIgnoreCase(column)) {
+                return;
+            }
+        }
+        throw new RuntimeException(SqlCompilationError.invalidIdentifier(column));
+    }
+
+    private boolean existingCortexSearchService(final String serviceName) {
+        try {
+            catalog.resolveCortexSearchService(serviceName);
+            return true;
+        } catch (final RuntimeException absent) {
+            return false;
+        }
+    }
+
+    private void dropCortexSearchService(final String serviceName) {
+        ddl.resolveSchemaFromQualifiedName(serviceName).dropCortexSearchService(simpleName(serviceName));
+    }
+
+    private String simpleName(final String qualifiedName) {
+        return qualifiedName.contains(".")
+            ? qualifiedName.substring(qualifiedName.lastIndexOf('.') + 1) : qualifiedName;
+    }
+
     public Object handleCreateFileFormat(final FrostlakeParser.CreateStatementContext ctx, final boolean ifNotExists) {
         final String name = getText(ctx.qualifiedName(0));
         final String simpleName = name.contains(".") ? name.substring(name.lastIndexOf('.') + 1) : name;
@@ -467,7 +704,13 @@ public class CreateInfrastructureHandler implements CommandHandler {
             } else if (opt.ESCAPE() != null) {
                 fileFormat.setOption("ESCAPE", fileFormatOptValue(opt.copyOptionValue()));
             } else if (opt.identifier() != null && opt.copyOptionValue() != null) {
-                fileFormat.setOption(getText(opt.identifier()), fileFormatOptValue(opt.copyOptionValue()));
+                final String optionName = getText(opt.identifier());
+                if ("COMMENT".equalsIgnoreCase(optionName)) {
+                    // COMMENT describes the format object itself; it is not one of its format options.
+                    fileFormat.setComment(fileFormatOptValue(opt.copyOptionValue()));
+                } else {
+                    fileFormat.setOption(optionName, fileFormatOptValue(opt.copyOptionValue()));
+                }
             } else if (opt.identifier() != null && opt.LPAREN() != null) {
                 // A string-list option such as NULL_IF = ('\\N', '') — store the values comma-joined so the
                 // named format round-trips without a parse error (COPY applies NULL_IF from its inline form).

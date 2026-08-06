@@ -221,6 +221,22 @@ final class CatalogSnapshotWriter {
                     schemaSnapshot.stages.add(stageSnapshot);
                 }
 
+                // Save Cortex search services (the whole definition; nothing is indexed to save)
+                for (final CortexSearchService service : schema.getCortexSearchServices()) {
+                    final CortexSearchServiceSnapshot serviceSnapshot = new CortexSearchServiceSnapshot();
+                    serviceSnapshot.name = service.getName();
+                    serviceSnapshot.searchColumn = service.getSearchColumn();
+                    serviceSnapshot.attributeColumns = new ArrayList<>(service.getAttributeColumns());
+                    serviceSnapshot.columns = new ArrayList<>(service.getColumns());
+                    serviceSnapshot.warehouse = service.getWarehouse();
+                    serviceSnapshot.targetLag = service.getTargetLag();
+                    serviceSnapshot.embeddingModel = service.getEmbeddingModel();
+                    serviceSnapshot.definition = service.getDefinition();
+                    serviceSnapshot.comment = service.getComment();
+                    serviceSnapshot.owner = service.getOwner();
+                    schemaSnapshot.cortexSearchServices.add(serviceSnapshot);
+                }
+
                 // Save streams (definition + pending unconsumed change records)
                 for (final Stream stream : schema.getStreams()) {
                     StreamSnapshot streamSnapshot = new StreamSnapshot();
@@ -250,6 +266,9 @@ final class CatalogSnapshotWriter {
                 for (final Task task : schema.getTasks()) {
                     TaskSnapshot taskSnapshot = new TaskSnapshot();
                     taskSnapshot.name = task.getName();
+                    taskSnapshot.id = task.getId();
+                    taskSnapshot.createdByUser = task.getCreatedByUser();
+                    taskSnapshot.explicitParameters = new ArrayList<>(task.getExplicitParameters());
                     taskSnapshot.schedule = task.getSchedule();
                     taskSnapshot.scheduleType = task.getScheduleType() != null ? task.getScheduleType().name() : null;
                     taskSnapshot.sqlStatement = task.getSqlStatement();
@@ -430,6 +449,19 @@ final class CatalogSnapshotWriter {
             userSnapshot.enabled = user.isEnabled();
             userSnapshot.owner = user.getOwner();
             userSnapshot.privileges = snapshotPrivileges(user.getAllPrivileges(), user.getAllColumnPrivileges());
+            // The CREATE USER property set, written as-is so an unset property stays unset.
+            userSnapshot.propertiesWritten = Boolean.TRUE;
+            userSnapshot.loginName = user.getLoginName();
+            userSnapshot.displayName = user.getDisplayName();
+            userSnapshot.firstName = user.getFirstName();
+            userSnapshot.middleName = user.getMiddleName();
+            userSnapshot.lastName = user.getLastName();
+            userSnapshot.email = user.getEmail();
+            userSnapshot.defaultWarehouse = user.getDefaultWarehouse();
+            userSnapshot.defaultNamespace = user.getDefaultNamespace();
+            userSnapshot.defaultSecondaryRoles = user.getDefaultSecondaryRoles();
+            userSnapshot.mustChangePassword = user.isMustChangePassword();
+            userSnapshot.userType = user.getUserType();
             snapshot.users.add(userSnapshot);
         }
 

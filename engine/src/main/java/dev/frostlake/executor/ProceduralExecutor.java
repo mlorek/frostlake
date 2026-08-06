@@ -96,6 +96,11 @@ public class ProceduralExecutor {
     // type wins for the rest of the script (acceptable shadowing edge case); cleared per top-level
     // statement together with cursors/exceptions.
     private final Map<String, DataType> variableTypes = new HashMap<>();
+    /**
+     * The one script-supplied name that is NUMERIC. Its siblings SQLCODE, SQLSTATE and SQLERRM are
+     * text, so only this one keeps its number when RETURN names it directly.
+     */
+    private static final String NUMERIC_SCRIPT_VARIABLE = "SQLROWCOUNT";
     private final Map<String, UserDefinedException> userExceptions = new HashMap<>();
     // Exceptions currently being handled (a stack for nested handlers) so a bare RAISE; can re-raise the one
     // it is handling rather than throwing a fresh generic error.
@@ -562,9 +567,48 @@ public class ProceduralExecutor {
 
     private void executeReturn(final ReturnStatement stmt) {
         if (stmt.getExpression() != null) {
-            returnValue = evaluateExpression(stmt.getExpression());
+            final Object value = evaluateExpression(stmt.getExpression());
+            returnValue = returnsAsText(stmt.getExpression()) ? asReturnedText(value) : value;
         }
         returnFlag = true;
+    }
+
+    /**
+     * Whether RETURN of this expression yields TEXT. Snowflake types a routine's result from the
+     * static type of the expression the EXECUTED RETURN names — a sibling RETURN elsewhere in the
+     * block, another branch, a nested block or a handler that never fires does not participate, so
+     * deciding here at the RETURN that runs is live's own model, not an approximation of it. A
+     * literal, an arithmetic expression, a DECLAREd variable and a routine PARAMETER all keep their
+     * own type; so does SQLROWCOUNT, which is numeric. A name carrying no declared type at all — a
+     * FOR-loop counter — makes the result VARCHAR, as do the text-typed SQLCODE, SQLSTATE and
+     * SQLERRM.
+     *
+     * <p>A declared RETURNS does not override this. A procedure declaring {@code RETURNS INTEGER}
+     * still answers text when its RETURN names an untyped variable, so the rule belongs here rather
+     * than at either caller.
+     */
+    private boolean returnsAsText(final BaseExpression expression) {
+        if (!(expression instanceof VariableExpression)) {
+            return false;
+        }
+        final String name = ((VariableExpression) expression).getName();
+        if (name == null) {
+            return false;
+        }
+        final String canonical = name.toUpperCase();
+        return !NUMERIC_SCRIPT_VARIABLE.equals(canonical) && !variableTypes.containsKey(canonical);
+    }
+
+    /**
+     * The text form of a returned scalar. A result set is not a scalar and is handed back untouched,
+     * as is NULL — which stays NULL rather than becoming the four letters.
+     */
+    private Object asReturnedText(final Object value) {
+        if (value == null || value instanceof ResultSet || value instanceof ResultSetVariable
+                || value instanceof Cursor) {
+            return value;
+        }
+        return String.valueOf(value);
     }
 
     /**
@@ -1042,6 +1086,17 @@ public class ProceduralExecutor {
     /** Called when a variable is DECLARED (not just assigned) in the current scope. */
     public void markDeclaredInCurrentScope(final String name) {
         scope.markDeclaredInCurrentScope(name);
+    }
+
+    /**
+     * Record a name's declared type. Routine PARAMETERS are declared names just as DECLARE'd
+     * variables are, so their signature type governs assignment coercion and the type a RETURN of
+     * that name carries.
+     */
+    public void declareVariableType(final String name, final DataType type) {
+        if (name != null && type != null) {
+            variableTypes.put(name.toUpperCase(), type);
+        }
     }
 
     public void setVariable(final String name, final Object value) {

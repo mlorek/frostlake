@@ -69,6 +69,18 @@ public final class SqlCompilationError {
      * answer {@code Table 'NOSUCH' …}. A table missing from a FROM clause is the one that also changes
      * kind: it is reported as {@code Object 'NOSUCH' …}, not {@code Table}.
      */
+    /**
+     * The sentence live gives when a SHOW cannot reach its scope — for the kinds that do not name what
+     * was missing. Measured across all three scope forms ({@code IN SCHEMA db.missing},
+     * {@code IN SCHEMA missing}, {@code IN DATABASE missing}): TABLES, VIEWS, STAGES, FILE FORMATS and
+     * DYNAMIC TABLES answer exactly this, while PIPES, STREAMS, TASKS, SEQUENCES, TAGS, the two policy
+     * kinds, CORTEX SEARCH SERVICES, PROCEDURES, FUNCTIONS and COLUMNS name the missing schema or
+     * database instead. Which one a kind uses is a property of the kind, not of the scope form.
+     */
+    public static String objectDoesNotExist() {
+        return of("Object does not exist, or operation cannot be performed.");
+    }
+
     public static String doesNotExist(final String kind, final String name) {
         return of(kind + " '" + name + "' does not exist or not authorized.");
     }

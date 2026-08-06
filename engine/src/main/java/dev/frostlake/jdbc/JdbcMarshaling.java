@@ -429,14 +429,35 @@ public final class JdbcMarshaling {
     }
 
     private static LocalDateTime parseDateTime(final String s) {
-        // Engine/Jackson emit ISO 'T' ("2025-06-17T14:30:00"); a SQL space ("2025-06-17 14:30:00") may also
-        // appear. Normalize to ISO, and fall back to midnight for a date-only value.
-        final String iso = s.contains(" ") && !s.contains("T") ? s.replace(' ', 'T') : s;
+        // Three spellings reach here: ISO 'T' ("2025-06-17T14:30:00"), a SQL space
+        // ("2025-06-17 14:30:00"), and the zoned form the HTTP wire now carries for a TIMESTAMP_LTZ
+        // ("2025-06-17 14:30:00.000 -0700"). Drop a trailing numeric offset before normalizing —
+        // without that the parse fails and the date-only fallback silently loses the time of day.
+        String text = s.trim();
+        final int offset = text.lastIndexOf(' ');
+        if (offset > 0 && isNumericOffset(text.substring(offset + 1))) {
+            text = text.substring(0, offset);
+        }
+        final String iso = text.contains(" ") && !text.contains("T") ? text.replace(' ', 'T') : text;
         try {
             return LocalDateTime.parse(iso);
         } catch (final DateTimeParseException dateOnly) {
             return LocalDate.parse(s.length() >= 10 ? s.substring(0, 10) : s).atStartOfDay();
         }
+    }
+
+    /** Whether a trailing token is a {@code ±HHMM} / {@code ±HH:MM} zone offset rather than text. */
+    private static boolean isNumericOffset(final String token) {
+        if (token.length() < 3 || (token.charAt(0) != '+' && token.charAt(0) != '-')) {
+            return false;
+        }
+        for (int i = 1; i < token.length(); i++) {
+            final char c = token.charAt(i);
+            if (c != ':' && (c < '0' || c > '9')) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private static byte[] hexToBytes(final String hex) {

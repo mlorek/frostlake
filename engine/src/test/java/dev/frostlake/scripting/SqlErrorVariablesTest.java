@@ -45,7 +45,8 @@ public class SqlErrorVariablesTest extends BaseDatabaseTest {
         final Object v = ret(
             "DECLARE e EXCEPTION (-20001, 'boom'); BEGIN RAISE e;"
             + " EXCEPTION WHEN e THEN RETURN SQLCODE; END");
-        assertEquals(-20001L, ((Number) v).longValue());
+        // SQLCODE carries no declared type, so RETURNing it directly makes the result TEXT.
+        assertEquals("-20001", v);
     }
 
     @Test
@@ -74,7 +75,8 @@ public class SqlErrorVariablesTest extends BaseDatabaseTest {
     public void divisionByZeroSqlcode() {
         final Object v = ret(
             "BEGIN RETURN 1 / 0; EXCEPTION WHEN OTHER THEN RETURN SQLCODE; END");
-        assertEquals(100051L, ((Number) v).longValue());
+        // SQLCODE carries no declared type, so RETURNing it directly makes the result TEXT.
+        assertEquals("100051", v);
     }
 
     @Test

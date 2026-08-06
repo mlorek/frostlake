@@ -16,6 +16,7 @@
 
 package dev.frostlake.transaction;
 
+import java.time.Instant;
 import java.util.List;
 
 /**
@@ -27,5 +28,5 @@ import java.util.List;
 public interface WalSink {
 
     /** Append one committed transaction's statements to the log and force them to disk (fsync). */
-    void appendTransaction(final List<String> statements);
+    void appendTransaction(final List<String> statements, final List<Instant> instants);
 }

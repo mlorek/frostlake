@@ -16,6 +16,7 @@
 
 package dev.frostlake.metastore.model;
 
+import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
@@ -29,6 +30,8 @@ public class FileFormat {
     private String type;
     private final Map<String, String> options;
     private String comment;
+    private final Instant createdTime = Instant.now();
+    private String owner = "SYSADMIN";
 
     public FileFormat(final String name, final String type) {
         this.name = name;
@@ -64,6 +67,20 @@ public class FileFormat {
 
     public String getOption(final String key) {
         return key == null ? null : options.get(key.toUpperCase());
+    }
+
+    /** When this file format was created, as SHOW FILE FORMATS reports it. */
+    public Instant getCreatedTime() {
+        return createdTime;
+    }
+
+    /** The role that owns this file format. */
+    public String getOwner() {
+        return owner;
+    }
+
+    public void setOwner(final String owner) {
+        this.owner = owner;
     }
 
     public String getComment() {

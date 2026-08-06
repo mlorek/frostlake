@@ -32,10 +32,12 @@ import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
 import dev.frostlake.types.NumericType;
+import dev.frostlake.types.DateTimeType;
 import dev.frostlake.types.StringType;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 
 /**
  * SHOW / DESCRIBE handlers for routines and metadata objects: functions, procedures, tags, file formats,
@@ -56,8 +58,8 @@ final class ShowRoutineExecutor {
         final List<Row> rows = new ArrayList<>();
 
         // User-defined procedures in the current (or named) schema, if one is selected.
-        final String dbName = catalog.getCurrentDatabase();
-        final String scName = schemaName != null ? schemaName : catalog.getCurrentSchema();
+        final String dbName = ShowResultHelpers.scopeDatabase(catalog, schemaName);
+        final String scName = ShowResultHelpers.scopeSchemaName(catalog, schemaName);
         if (dbName != null && scName != null) {
             appendUserProcedureRows(catalog.getDatabase(dbName).getSchema(scName), dbName, rows);
         }
@@ -141,7 +143,7 @@ final class ShowRoutineExecutor {
             final String sig = proc.getName() + buildArgSig(proc.getParameters())
                 + " RETURN " + proc.getReturnType().getName();
             rows.add(new Row(Arrays.asList(
-                ShowResultHelpers.createdOnText(proc.getCreatedTime()),
+                ShowResultHelpers.createdOn(proc.getCreatedTime()),
                 proc.getName(),
                 schema.getName(),
                 "N", "N", "N",
@@ -171,7 +173,7 @@ final class ShowRoutineExecutor {
      */
     private List<ResultSetColumn> procedureColumns() {
         return Arrays.asList(
-            new ResultSetColumn("created_on", StringType.VARCHAR),
+            new ResultSetColumn("created_on", DateTimeType.TIMESTAMP_LTZ),
             new ResultSetColumn("name", StringType.VARCHAR),
             new ResultSetColumn("schema_name", StringType.VARCHAR),
             new ResultSetColumn("is_builtin", StringType.VARCHAR),
@@ -195,8 +197,8 @@ final class ShowRoutineExecutor {
         final List<Row> rows = new ArrayList<>();
 
         // User-defined functions in the current (or named) schema first, if a schema is selected.
-        final String dbName = catalog.getCurrentDatabase();
-        final String scName = schemaName != null ? schemaName : catalog.getCurrentSchema();
+        final String dbName = ShowResultHelpers.scopeDatabase(catalog, schemaName);
+        final String scName = ShowResultHelpers.scopeSchemaName(catalog, schemaName);
         if (dbName != null && scName != null) {
             appendUserFunctionRows(catalog.getDatabase(dbName).getSchema(scName), dbName, rows);
         }
@@ -277,7 +279,7 @@ final class ShowRoutineExecutor {
             final String sig = func.getName() + buildArgSig(func.getParameters())
                 + " RETURN " + func.getReturnType().getName();
             rows.add(new Row(Arrays.asList(
-                ShowResultHelpers.createdOnText(func.getCreatedTime()),
+                ShowResultHelpers.createdOn(func.getCreatedTime()),
                 func.getName(),
                 schema.getName(),
                 "N", "N", "N",
@@ -303,7 +305,7 @@ final class ShowRoutineExecutor {
      */
     private List<ResultSetColumn> functionColumns() {
         return Arrays.asList(
-            new ResultSetColumn("created_on", StringType.VARCHAR),
+            new ResultSetColumn("created_on", DateTimeType.TIMESTAMP_LTZ),
             new ResultSetColumn("name", StringType.VARCHAR),
             new ResultSetColumn("schema_name", StringType.VARCHAR),
             new ResultSetColumn("is_builtin", StringType.VARCHAR),
@@ -406,8 +408,8 @@ final class ShowRoutineExecutor {
     }
 
     public ResultSet showTags(final String schemaName) {
-        final String dbName = catalog.getCurrentDatabase();
-        final String scName = schemaName != null ? schemaName : catalog.getCurrentSchema();
+        final String dbName = ShowResultHelpers.scopeDatabase(catalog, schemaName);
+        final String scName = ShowResultHelpers.scopeSchemaName(catalog, schemaName);
         if (dbName == null || scName == null) return new ResultSet(tagColumns(), new ArrayList<>());
         final List<Row> rows = new ArrayList<>();
         appendTagRows(catalog.getDatabase(dbName).getSchema(scName), dbName, rows);
@@ -415,6 +417,17 @@ final class ShowRoutineExecutor {
     }
 
     /** SHOW TAGS IN DATABASE &lt;db&gt;: tags across all schemas of the database. */
+    /** SHOW TAGS IN ACCOUNT: every database's tags, in database order. */
+    public ResultSet showTagsInAccount() {
+        final ResultSet across = ShowResultHelpers.acrossAllDatabases(catalog, new DatabaseScopedListing() {
+            @Override
+            public ResultSet listIn(final String databaseName) {
+                return showTagsInDatabase(databaseName);
+            }
+        });
+        return across != null ? across : showTags(null);
+    }
+
     public ResultSet showTagsInDatabase(final String databaseName) {
         final String dbName = databaseName != null ? databaseName : catalog.getCurrentDatabase();
         if (dbName == null) return new ResultSet(tagColumns(), new ArrayList<>());
@@ -430,25 +443,33 @@ final class ShowRoutineExecutor {
         for (final Tag tag : schema.getTags()) {
             final String av = tag.hasAllowedValues() ? String.join(", ", tag.getAllowedValues()) : null;
             rows.add(new Row(Arrays.asList(
-                ShowResultHelpers.createdOnText(tag.getCreatedTime()),
+                ShowResultHelpers.createdOn(tag.getCreatedTime()),
                 tag.getName(),
                 dbName, scName,
                 tag.getOwner(),
-                tag.getComment(),
-                av
+                ShowResultHelpers.text(tag.getComment()),
+                av,
+                ShowResultHelpers.OWNER_ROLE_TYPE,
+                "NONE",
+                null,
+                "false"
             )));
         }
     }
 
     private List<ResultSetColumn> tagColumns() {
         return Arrays.asList(
-            new ResultSetColumn("created_on", StringType.VARCHAR),
+            new ResultSetColumn("created_on", DateTimeType.TIMESTAMP_LTZ),
             new ResultSetColumn("name", StringType.VARCHAR),
             new ResultSetColumn("database_name", StringType.VARCHAR),
             new ResultSetColumn("schema_name", StringType.VARCHAR),
             new ResultSetColumn("owner", StringType.VARCHAR),
             new ResultSetColumn("comment", StringType.VARCHAR),
-            new ResultSetColumn("allowed_values", StringType.VARCHAR)
+            new ResultSetColumn("allowed_values", StringType.VARCHAR),
+            new ResultSetColumn("owner_role_type", StringType.VARCHAR),
+            new ResultSetColumn("propagate", StringType.VARCHAR),
+            new ResultSetColumn("on_conflict", StringType.VARCHAR),
+            new ResultSetColumn("multi_value", StringType.VARCHAR)
         );
     }
 
@@ -578,15 +599,26 @@ final class ShowRoutineExecutor {
     }
 
     public ResultSet showFileFormats(final String schemaName) {
-        final String dbName = catalog.getCurrentDatabase();
-        final String scName = schemaName != null ? schemaName : catalog.getCurrentSchema();
+        final String dbName = ShowResultHelpers.scopeDatabase(catalog, schemaName);
+        final String scName = ShowResultHelpers.scopeSchemaName(catalog, schemaName);
         if (dbName == null || scName == null) return new ResultSet(fileFormatColumns(), new ArrayList<>());
         final List<Row> rows = new ArrayList<>();
-        appendFileFormatRows(catalog.getDatabase(dbName).getSchema(scName), dbName, rows);
+        appendFileFormatRows(ShowResultHelpers.scopeSchemaReportedGenerically(catalog, dbName, scName), dbName, rows);
         return new ResultSet(fileFormatColumns(), rows);
     }
 
     /** SHOW FILE FORMATS IN DATABASE &lt;db&gt;: file formats across all schemas of the database. */
+    /** SHOW FILE FORMATS IN ACCOUNT: every database's file formats, in database order. */
+    public ResultSet showFileFormatsInAccount() {
+        final ResultSet across = ShowResultHelpers.acrossAllDatabases(catalog, new DatabaseScopedListing() {
+            @Override
+            public ResultSet listIn(final String databaseName) {
+                return showFileFormatsInDatabase(databaseName);
+            }
+        });
+        return across != null ? across : showFileFormats(null);
+    }
+
     public ResultSet showFileFormatsInDatabase(final String databaseName) {
         final String dbName = databaseName != null ? databaseName : catalog.getCurrentDatabase();
         if (dbName == null) return new ResultSet(fileFormatColumns(), new ArrayList<>());
@@ -601,31 +633,48 @@ final class ShowRoutineExecutor {
         final String scName = schema.getName();
         for (final FileFormat ff : schema.getFileFormats()) {
             rows.add(new Row(Arrays.asList(
-                null,
+                ShowResultHelpers.createdOn(ff.getCreatedTime()),
                 ff.getName(),
                 dbName, scName,
                 ff.getType(),
-                null,
-                ff.getComment()
+                ff.getOwner(),
+                ShowResultHelpers.text(ff.getComment()),
+                formatOptionsJson(ff),
+                ShowResultHelpers.OWNER_ROLE_TYPE
             )));
         }
     }
 
     private List<ResultSetColumn> fileFormatColumns() {
         return Arrays.asList(
-            new ResultSetColumn("created_on", StringType.VARCHAR),
+            new ResultSetColumn("created_on", DateTimeType.TIMESTAMP_LTZ),
             new ResultSetColumn("name", StringType.VARCHAR),
             new ResultSetColumn("database_name", StringType.VARCHAR),
             new ResultSetColumn("schema_name", StringType.VARCHAR),
             new ResultSetColumn("type", StringType.VARCHAR),
             new ResultSetColumn("owner", StringType.VARCHAR),
-            new ResultSetColumn("comment", StringType.VARCHAR)
+            new ResultSetColumn("comment", StringType.VARCHAR),
+            new ResultSetColumn("format_options", StringType.VARCHAR),
+            new ResultSetColumn("owner_role_type", StringType.VARCHAR)
         );
     }
 
+    /** SHOW FILE FORMATS reports the format's options as a JSON object, TYPE included. */
+    private String formatOptionsJson(final FileFormat format) {
+        final StringBuilder json = new StringBuilder("{\"TYPE\":\"").append(format.getType()).append('"');
+        for (final Map.Entry<String, String> option : format.getOptions().entrySet()) {
+            if ("TYPE".equalsIgnoreCase(option.getKey())) {
+                continue;
+            }
+            json.append(",\"").append(option.getKey().toUpperCase()).append("\":");
+            json.append(option.getValue() == null ? "null" : "\"" + option.getValue() + "\"");
+        }
+        return json.append('}').toString();
+    }
+
     public ResultSet showMaskingPolicies(final String schemaName) {
-        final String dbName = catalog.getCurrentDatabase();
-        final String scName = schemaName != null ? schemaName : catalog.getCurrentSchema();
+        final String dbName = ShowResultHelpers.scopeDatabase(catalog, schemaName);
+        final String scName = ShowResultHelpers.scopeSchemaName(catalog, schemaName);
         if (dbName == null || scName == null) return new ResultSet(policyColumns(), new ArrayList<>());
         final List<Row> rows = new ArrayList<>();
         appendMaskingPolicyRows(catalog.getDatabase(dbName).getSchema(scName), dbName, rows);
@@ -633,6 +682,17 @@ final class ShowRoutineExecutor {
     }
 
     /** SHOW MASKING POLICIES IN DATABASE &lt;db&gt;: masking policies across all schemas of the database. */
+    /** SHOW MASKING POLICIES IN ACCOUNT: every database's masking policies, in database order. */
+    public ResultSet showMaskingPoliciesInAccount() {
+        final ResultSet across = ShowResultHelpers.acrossAllDatabases(catalog, new DatabaseScopedListing() {
+            @Override
+            public ResultSet listIn(final String databaseName) {
+                return showMaskingPoliciesInDatabase(databaseName);
+            }
+        });
+        return across != null ? across : showMaskingPolicies(null);
+    }
+
     public ResultSet showMaskingPoliciesInDatabase(final String databaseName) {
         final String dbName = databaseName != null ? databaseName : catalog.getCurrentDatabase();
         if (dbName == null) return new ResultSet(policyColumns(), new ArrayList<>());
@@ -647,7 +707,7 @@ final class ShowRoutineExecutor {
         final String scName = schema.getName();
         for (final MaskingPolicy mp : schema.getMaskingPolicies()) {
             rows.add(new Row(Arrays.asList(
-                ShowResultHelpers.createdOnText(mp.getCreatedTime()),
+                ShowResultHelpers.createdOn(mp.getCreatedTime()),
                 mp.getName(),
                 dbName, scName,
                 "MASKING_POLICY",
@@ -658,8 +718,8 @@ final class ShowRoutineExecutor {
     }
 
     public ResultSet showRowAccessPolicies(final String schemaName) {
-        final String dbName = catalog.getCurrentDatabase();
-        final String scName = schemaName != null ? schemaName : catalog.getCurrentSchema();
+        final String dbName = ShowResultHelpers.scopeDatabase(catalog, schemaName);
+        final String scName = ShowResultHelpers.scopeSchemaName(catalog, schemaName);
         if (dbName == null || scName == null) return new ResultSet(policyColumns(), new ArrayList<>());
         final List<Row> rows = new ArrayList<>();
         appendRowAccessPolicyRows(catalog.getDatabase(dbName).getSchema(scName), dbName, rows);
@@ -667,6 +727,17 @@ final class ShowRoutineExecutor {
     }
 
     /** SHOW ROW ACCESS POLICIES IN DATABASE &lt;db&gt;: row-access policies across all schemas of the database. */
+    /** SHOW ROW ACCESS POLICIES IN ACCOUNT: every database's row access policies, in database order. */
+    public ResultSet showRowAccessPoliciesInAccount() {
+        final ResultSet across = ShowResultHelpers.acrossAllDatabases(catalog, new DatabaseScopedListing() {
+            @Override
+            public ResultSet listIn(final String databaseName) {
+                return showRowAccessPoliciesInDatabase(databaseName);
+            }
+        });
+        return across != null ? across : showRowAccessPolicies(null);
+    }
+
     public ResultSet showRowAccessPoliciesInDatabase(final String databaseName) {
         final String dbName = databaseName != null ? databaseName : catalog.getCurrentDatabase();
         if (dbName == null) return new ResultSet(policyColumns(), new ArrayList<>());
@@ -681,7 +752,7 @@ final class ShowRoutineExecutor {
         final String scName = schema.getName();
         for (final RowAccessPolicy rap : schema.getRowAccessPolicies()) {
             rows.add(new Row(Arrays.asList(
-                ShowResultHelpers.createdOnText(rap.getCreatedTime()),
+                ShowResultHelpers.createdOn(rap.getCreatedTime()),
                 rap.getName(),
                 dbName, scName,
                 "ROW_ACCESS_POLICY",
@@ -694,7 +765,7 @@ final class ShowRoutineExecutor {
     /** Shared column shape for SHOW MASKING POLICIES and SHOW ROW ACCESS POLICIES. */
     private List<ResultSetColumn> policyColumns() {
         return Arrays.asList(
-            new ResultSetColumn("created_on", StringType.VARCHAR),
+            new ResultSetColumn("created_on", DateTimeType.TIMESTAMP_LTZ),
             new ResultSetColumn("name", StringType.VARCHAR),
             new ResultSetColumn("database_name", StringType.VARCHAR),
             new ResultSetColumn("schema_name", StringType.VARCHAR),

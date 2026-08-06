@@ -57,7 +57,7 @@ public class DefaultExpressionTest {
 
         engine.execute("CREATE TABLE test1 (id INTEGER, status VARCHAR DEFAULT 'active')");
 
-        Table table = engine.getCatalog().resolveTable("test1");
+        Table table = engine.getCatalog().resolveTable("TEST1");
         assertNotNull(table);
 
         TableColumn statusColumn = table.getColumn("status");
@@ -72,7 +72,7 @@ public class DefaultExpressionTest {
 
         engine.execute("CREATE TABLE test2 (id INTEGER, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)");
 
-        Table table = engine.getCatalog().resolveTable("test2");
+        Table table = engine.getCatalog().resolveTable("TEST2");
         assertNotNull(table);
 
         TableColumn createdAtColumn = table.getColumn("created_at");
@@ -87,7 +87,7 @@ public class DefaultExpressionTest {
 
         engine.execute("CREATE TABLE test3 (id INTEGER, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP())");
 
-        Table table = engine.getCatalog().resolveTable("test3");
+        Table table = engine.getCatalog().resolveTable("TEST3");
         assertNotNull(table);
 
         TableColumn updatedAtColumn = table.getColumn("updated_at");
@@ -102,7 +102,7 @@ public class DefaultExpressionTest {
 
         engine.execute("CREATE TABLE test4 (id INTEGER, date_col DATE DEFAULT CURRENT_DATE)");
 
-        Table table = engine.getCatalog().resolveTable("test4");
+        Table table = engine.getCatalog().resolveTable("TEST4");
         assertNotNull(table);
 
         TableColumn dateColumn = table.getColumn("date_col");
@@ -117,7 +117,7 @@ public class DefaultExpressionTest {
 
         engine.execute("CREATE TABLE test5 (id INTEGER, quantity INTEGER DEFAULT 10 + 5)");
 
-        Table table = engine.getCatalog().resolveTable("test5");
+        Table table = engine.getCatalog().resolveTable("TEST5");
         assertNotNull(table);
 
         TableColumn quantityColumn = table.getColumn("quantity");
@@ -132,7 +132,7 @@ public class DefaultExpressionTest {
 
         engine.execute("CREATE TABLE test6 (id INTEGER, upper_name VARCHAR DEFAULT UPPER('test'))");
 
-        Table table = engine.getCatalog().resolveTable("test6");
+        Table table = engine.getCatalog().resolveTable("TEST6");
         assertNotNull(table);
 
         TableColumn nameColumn = table.getColumn("upper_name");
@@ -147,7 +147,7 @@ public class DefaultExpressionTest {
 
         engine.execute("CREATE TABLE test7 (id INTEGER, full_name VARCHAR DEFAULT 'Mr. ' || 'Unknown')");
 
-        Table table = engine.getCatalog().resolveTable("test7");
+        Table table = engine.getCatalog().resolveTable("TEST7");
         assertNotNull(table);
 
         TableColumn nameColumn = table.getColumn("full_name");
@@ -162,7 +162,7 @@ public class DefaultExpressionTest {
 
         engine.execute("CREATE TABLE test8 (id INTEGER, priority VARCHAR DEFAULT CASE WHEN 1 = 1 THEN 'high' ELSE 'low' END)");
 
-        Table table = engine.getCatalog().resolveTable("test8");
+        Table table = engine.getCatalog().resolveTable("TEST8");
         assertNotNull(table);
 
         TableColumn priorityColumn = table.getColumn("priority");
@@ -177,7 +177,7 @@ public class DefaultExpressionTest {
 
         engine.execute("CREATE TABLE test9 (id INTEGER, balance INTEGER DEFAULT -100)");
 
-        Table table = engine.getCatalog().resolveTable("test9");
+        Table table = engine.getCatalog().resolveTable("TEST9");
         assertNotNull(table);
 
         TableColumn balanceColumn = table.getColumn("balance");
@@ -192,7 +192,7 @@ public class DefaultExpressionTest {
 
         engine.execute("CREATE TABLE test10 (id INTEGER, computed INTEGER DEFAULT (10 * 5) + (20 - 5))");
 
-        Table table = engine.getCatalog().resolveTable("test10");
+        Table table = engine.getCatalog().resolveTable("TEST10");
         assertNotNull(table);
 
         TableColumn computedColumn = table.getColumn("computed");
@@ -207,7 +207,7 @@ public class DefaultExpressionTest {
 
         engine.execute("CREATE TABLE test11 (id INTEGER, value INTEGER DEFAULT (100))");
 
-        Table table = engine.getCatalog().resolveTable("test11");
+        Table table = engine.getCatalog().resolveTable("TEST11");
         assertNotNull(table);
 
         TableColumn valueColumn = table.getColumn("value");
@@ -222,7 +222,7 @@ public class DefaultExpressionTest {
 
         engine.execute("CREATE TABLE test12 (id INTEGER DEFAULT 0, name VARCHAR DEFAULT 'unnamed', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, count INTEGER DEFAULT 5 * 2)");
 
-        Table table = engine.getCatalog().resolveTable("test12");
+        Table table = engine.getCatalog().resolveTable("TEST12");
         assertNotNull(table);
         assertEquals(4, table.getColumns().size());
 
@@ -240,7 +240,7 @@ public class DefaultExpressionTest {
 
         engine.execute("CREATE TABLE test13 (id INTEGER, nullable_col VARCHAR DEFAULT NULL)");
 
-        Table table = engine.getCatalog().resolveTable("test13");
+        Table table = engine.getCatalog().resolveTable("TEST13");
         assertNotNull(table);
 
         TableColumn nullableColumn = table.getColumn("nullable_col");
@@ -255,7 +255,7 @@ public class DefaultExpressionTest {
 
         engine.execute("CREATE TABLE test14 (id INTEGER, is_active BOOLEAN DEFAULT TRUE)");
 
-        Table table = engine.getCatalog().resolveTable("test14");
+        Table table = engine.getCatalog().resolveTable("TEST14");
         assertNotNull(table);
 
         TableColumn activeColumn = table.getColumn("is_active");
@@ -270,7 +270,7 @@ public class DefaultExpressionTest {
 
         engine.execute("CREATE TABLE test15 (id INTEGER, rate DECIMAL DEFAULT 3.14 * 2)");
 
-        Table table = engine.getCatalog().resolveTable("test15");
+        Table table = engine.getCatalog().resolveTable("TEST15");
         assertNotNull(table);
 
         TableColumn rateColumn = table.getColumn("rate");

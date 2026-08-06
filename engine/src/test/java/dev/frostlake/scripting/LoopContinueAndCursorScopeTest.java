@@ -90,9 +90,10 @@ public class LoopContinueAndCursorScopeTest extends BaseDatabaseTest {
             + " RETURN -1; END"));
     }
 
+    /** A FOR counter carries no declared type, so RETURNing it directly makes the result TEXT. */
     @Test
     public void returnExitsForLoopEarly() {
-        assertEquals(4L, retLong(
+        assertEquals("4", retString(
             "BEGIN FOR i IN 1 TO 10 DO IF (i = 4) THEN RETURN i; END IF; END FOR; RETURN -1; END"));
     }
 

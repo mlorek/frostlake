@@ -162,8 +162,14 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
 
     private Expression buildColumnReference(final FrostlakeParser.QualifiedNameContext qn) {
         final String[] parts = ParseTreeText.qualifiedNameParts(qn);
+        // Where the reference begins, relative to the fragment being parsed. A message about an
+        // unresolvable column reports the position of the reference itself — live, an identifier
+        // inside a function call or on the right of a comparison is reported at ITS offset, not at
+        // the start of the clause that holds it.
+        final SourcePosition position =
+            new SourcePosition(qn.getStart().getLine(), qn.getStart().getCharPositionInLine());
         if (parts.length == 1) {
-            return new ColumnReferenceExpression(parts[0]);
+            return new ColumnReferenceExpression(null, parts[0], position);
         }
         final String column = parts[parts.length - 1];
         final StringBuilder table = new StringBuilder();
@@ -173,7 +179,7 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
             }
             table.append(parts[i]);
         }
-        return new ColumnReferenceExpression(table.toString(), column);
+        return new ColumnReferenceExpression(table.toString(), column, position);
     }
 
     @Override

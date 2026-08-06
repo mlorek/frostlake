@@ -66,11 +66,14 @@ import dev.frostlake.functions.scalar.vector.*;
 import dev.frostlake.functions.table.Flatten;
 import dev.frostlake.functions.table.Generator;
 import dev.frostlake.functions.table.SplitToTable;
+import dev.frostlake.functions.table.TagReferencesFunction;
 import dev.frostlake.functions.table.TaskHistoryFunction;
 import dev.frostlake.functions.table.UserTaskCancelFunction;
 import dev.frostlake.functions.window.WindowFunctionNames;
+import dev.frostlake.functions.table.QueryRunner;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.security.SessionContext;
+import dev.frostlake.task.TaskScheduler;
 
 import dev.frostlake.functions.aggregate.*;
 import dev.frostlake.functions.scalar.GroupingFn;
@@ -89,8 +92,12 @@ public class FunctionRegistry {
     private final Map<String, AggregateFunction> aggregateFunctions;
     private final Map<String, TableFunction> tableFunctions;
     private final Catalog catalog;
+    /** Installed after construction by the executor; see {@link #setQueryRunner}. */
+    private QueryRunner queryRunner;
     private final SessionContext sessionContext;
     private final EngineConfig config;
+    /** Held so the task scheduler can be handed over once it exists — it is built after this. */
+    private UserTaskCancelFunction userTaskCancel;
 
     public FunctionRegistry(final Catalog catalog) {
         this(catalog, null, null);
@@ -268,6 +275,10 @@ public class FunctionRegistry {
         register(new CurrentDatabase(catalog));
         register(new GetDdl(catalog));
         register(new UuidString());
+        register(new SeqFn("SEQ1", 1));
+        register(new SeqFn("SEQ2", 2));
+        register(new SeqFn("SEQ4", 4));
+        register(new SeqFn("SEQ8", 8));
         register(new CurrentSchema(catalog));
         register(new CurrentWarehouse(catalog));
         register(new CurrentRegion(config != null ? config : new EngineConfig()));
@@ -574,7 +585,8 @@ public class FunctionRegistry {
         register(new CurrentIpAddress());
         register(new CurrentRoleType());
         register(new CurrentSecondaryRoles());
-        register(new CurrentOrganizationName());
+        register(new CurrentOrganizationName(config != null ? config : new EngineConfig()));
+        register(new CurrentAccountName(config != null ? config : new EngineConfig()));
         register(new CurrentStatement());
         register(new CurrentTransaction());
         register(new LastTransaction());
@@ -629,7 +641,9 @@ public class FunctionRegistry {
         registerTableFunction(new SplitToTable());
         registerTableFunction(new Flatten());
         registerTableFunction(new TaskHistoryFunction(catalog));
-        registerTableFunction(new UserTaskCancelFunction(catalog));
+        registerTableFunction(new TagReferencesFunction(catalog));
+        this.userTaskCancel = new UserTaskCancelFunction(catalog);
+        registerTableFunction(this.userTaskCancel);
         // Optional function packs (e.g. frostlake-geo) contribute through the FunctionProvider
         // ServiceLoader SPI — discovered here, after the built-ins, so a pack could also override.
         for (final FunctionProvider provider : ServiceLoader.load(FunctionProvider.class)) {
@@ -653,6 +667,42 @@ public class FunctionRegistry {
 
     public void registerTableFunction(final TableFunction function) {
         tableFunctions.put(function.getName().toUpperCase(), function);
+    }
+
+    /**
+     * The catalog this registry's functions read metadata from, for a {@link FunctionProvider} whose
+     * pack contributes a catalog-aware function. The engine's own such built-ins (GET_DDL, the
+     * INFORMATION_SCHEMA-adjacent context functions) are handed it at construction; a pack sees the
+     * registry and nothing else, so it asks here.
+     */
+    public Catalog getCatalog() {
+        return catalog;
+    }
+
+    /** The session a pack's function answers for — the current role, database and schema. */
+    public SessionContext getSessionContext() {
+        return sessionContext;
+    }
+
+    /**
+     * How a pack's function runs SQL of its own. Installed by the executor once it exists — the
+     * registry is built first — so a function that needs it holds the REGISTRY and asks at call time
+     * rather than capturing a runner it would have been handed as null.
+     */
+    public void setQueryRunner(final QueryRunner runner) {
+        this.queryRunner = runner;
+    }
+
+    public QueryRunner getQueryRunner() {
+        return queryRunner;
+    }
+
+    /**
+     * Hands the task scheduler to the built-ins that need it. The scheduler is constructed after
+     * this registry, so it arrives here rather than through a constructor.
+     */
+    public void setTaskScheduler(final TaskScheduler taskScheduler) {
+        userTaskCancel.setTaskScheduler(taskScheduler);
     }
 
     public BuiltInFunction getFunction(final String name) {

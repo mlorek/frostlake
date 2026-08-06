@@ -27,6 +27,7 @@ import dev.frostlake.security.SecurityManager;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.StorageEngine;
 import dev.frostlake.task.TaskScheduler;
+import dev.frostlake.task.UserTaskCancellation;
 import org.antlr.v4.runtime.misc.Interval;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -231,19 +232,9 @@ public class VisitorExpressionBuilder {
         }
         if (ctx instanceof FrostlakeParser.SystemUserTaskCancelExprContext) {
             FrostlakeParser.SystemUserTaskCancelExprContext sctx = (FrostlakeParser.SystemUserTaskCancelExprContext) ctx;
-            Object nameVal = evaluateExpression(sctx.expression(), scriptingNamesVisible);
-            String taskName = nameVal != null ? nameVal.toString().toUpperCase().replaceAll("^'|'$", "") : "";
-            try {
-                Catalog cat = queryExecutor.getCatalog();
-                String dbN = cat.getCurrentDatabase(), scN = cat.getCurrentSchema();
-                if (dbN == null || scN == null) return "Task not found";
-                Task task = cat.getDatabase(dbN).getSchema(scN).getTask(taskName);
-                if (task == null) return "Task not found: " + taskName;
-                task.setState(TaskState.SUSPENDED);
-                return "Task " + taskName + ": cancelled";
-            } catch (final Exception e) {
-                return "Error: " + e.getMessage();
-            }
+            final Object nameVal = evaluateExpression(sctx.expression(), scriptingNamesVisible);
+            return UserTaskCancellation.cancel(queryExecutor.getCatalog(),
+                queryExecutor.getTaskScheduler(), nameVal == null ? null : nameVal.toString());
         }
         if (ctx instanceof FrostlakeParser.SystemStreamHasDataExprContext) {
             FrostlakeParser.SystemStreamHasDataExprContext sshd = (FrostlakeParser.SystemStreamHasDataExprContext) ctx;

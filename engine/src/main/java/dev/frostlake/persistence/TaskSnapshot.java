@@ -29,6 +29,11 @@ public class TaskSnapshot implements Serializable {
     private static final long serialVersionUID = 1L;
 
     public String name;
+    // Added after 1L. An older snapshot deserialises with these null, and the reader keeps the
+    // freshly generated identity in that case rather than failing.
+    public String id;
+    public String createdByUser;
+    public List<String> explicitParameters = new ArrayList<>();
     public String schedule;
     public String scheduleType;
     public String sqlStatement;

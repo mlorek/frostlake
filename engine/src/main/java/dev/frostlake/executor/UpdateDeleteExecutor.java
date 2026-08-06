@@ -21,6 +21,8 @@ import dev.frostlake.executor.expressions.SqlTruth;
 import dev.frostlake.metastore.model.Privilege;
 import dev.frostlake.metastore.model.SecurableObjectType;
 import dev.frostlake.metastore.model.Table;
+import dev.frostlake.executor.expressions.ExpressionSource;
+import dev.frostlake.executor.expressions.SourcePosition;
 import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.Row;
@@ -83,6 +85,10 @@ final class UpdateDeleteExecutor {
 
             // Parse assignments
             Map<String, String> assignments = new HashMap<>();
+            // Where each SET value begins in the statement, so an unknown name inside it reports the
+            // place it was written. The assignments themselves are keyed by column, which loses the
+            // parse context, so the origins travel alongside.
+            final Map<String, SourcePosition> assignmentOrigins = new HashMap<>();
             for (final FrostlakeParser.AssignmentContext assign : ctx.assignmentList().assignment()) {
                 // Handle qualified identifiers (table.column) or simple identifiers
                 String colName = ParseTreeText.namePartText(assign.namePart());
@@ -90,6 +96,15 @@ final class UpdateDeleteExecutor {
                 // (SELECT MAX(value) FROM test) must stay parseable when re-evaluated.
                 String value = executor.getOriginalText(assign.expression());
                 assignments.put(colName, value);
+                assignmentOrigins.put(colName, new SourcePosition(
+                    assign.expression().getStart().getLine(),
+                    assign.expression().getStart().getCharPositionInLine()));
+                // Reject an unknown SET target HERE, where the statement is still in hand, so the
+                // refusal can carry the position live reports — and before a single row is touched,
+                // which is when live rejects it. The check delegates to the same resolution the
+                // update loop uses, so WHICH statements are refused cannot drift; only the message
+                // gains its position.
+                requireColumn(table, colName, assign.namePart());
             }
 
             // Get all rows - use fully qualified name
@@ -113,7 +128,8 @@ final class UpdateDeleteExecutor {
             if (executor.isDeferredApply()) {
                 int n = executeUpdateDeferred(table, fullyQualifiedName, updateTargetAlias, assignments,
                     ctx.whereClause() != null ? executor.getOriginalText(ctx.whereClause().booleanExpr()) : null,
-                    cteResults);
+                    cteResults, assignmentOrigins,
+                    ctx.whereClause() != null ? originOf(ctx.whereClause()) : null);
                 logger.trace("Updated {} rows (deferred) in table: {}", n, tableName);
                 return executor.updateCountResult(n);
             }
@@ -124,9 +140,14 @@ final class UpdateDeleteExecutor {
             List<Row> matchingRows = rows;
             if (ctx.whereClause() != null) {
                 String whereExpr = executor.getOriginalText(ctx.whereClause().booleanExpr());
-                matchingRows = cteResults != null
-                    ? executor.filterRowsWithCTEs(rows, table, updateTargetAlias, whereExpr, cteResults)
-                    : executor.filterRows(rows, table, updateTargetAlias, whereExpr);
+                final SourcePosition displacedWhere = ExpressionSource.begin(originOf(ctx.whereClause()));
+                try {
+                    matchingRows = cteResults != null
+                        ? executor.filterRowsWithCTEs(rows, table, updateTargetAlias, whereExpr, cteResults)
+                        : executor.filterRows(rows, table, updateTargetAlias, whereExpr);
+                } finally {
+                    ExpressionSource.end(displacedWhere);
+                }
             }
 
             // Update matching rows. Expose any WITH-clause CTEs so a SET-clause subquery can resolve them.
@@ -145,7 +166,14 @@ final class UpdateDeleteExecutor {
                         String valueExpr = entry.getValue();
 
                         int colIndex = executor.getColumnIndex(table, colName);
-                        Object newValue = executor.evaluateExpression(valueExpr, row, table);
+                        final SourcePosition displaced =
+                            ExpressionSource.begin(assignmentOrigins.get(colName));
+                        final Object newValue;
+                        try {
+                            newValue = executor.evaluateExpression(valueExpr, row, table);
+                        } finally {
+                            ExpressionSource.end(displaced);
+                        }
                         row.setValue(colIndex, newValue);
                     }
                     executor.enforceColumnConstraintsForDml(table, row);
@@ -217,7 +245,7 @@ final class UpdateDeleteExecutor {
             if (executor.isDeferredApply()) {
                 int n = executeDeleteDeferred(table, fullyQualifiedName, deleteTargetAlias,
                     ctx.whereClause() != null ? executor.getOriginalText(ctx.whereClause().booleanExpr()) : null,
-                    cteResults);
+                    cteResults, ctx.whereClause() != null ? originOf(ctx.whereClause()) : null);
                 logger.trace("Deleted {} rows (deferred) from table: {}", n, tableName);
                 return executor.dmlCountResult("number of rows deleted", n);
             }
@@ -282,7 +310,8 @@ final class UpdateDeleteExecutor {
     private int executeUpdateDeferred(final Table table, final String fullyQualifiedName,
             final String targetAlias,
             final Map<String, String> assignments, final String whereExpr,
-            final Map<String, ResultSet> cteResults) {
+            final Map<String, ResultSet> cteResults,
+            final Map<String, SourcePosition> assignmentOrigins, final SourcePosition whereOrigin) {
         final TransactionWriteSet writeSet = executor.getTransactionManager().getCurrentTransaction().getWriteSet();
         final StorageEngine.TableStorage tableStorage = executor.getStorageEngine().getTableStorage(fullyQualifiedName);
 
@@ -306,9 +335,14 @@ final class UpdateDeleteExecutor {
 
         List<Row> matching = effective;
         if (whereExpr != null) {
-            matching = cteResults != null
-                ? executor.filterRowsWithCTEs(effective, table, targetAlias, whereExpr, cteResults)
-                : executor.filterRows(effective, table, targetAlias, whereExpr);
+            final SourcePosition displaced = ExpressionSource.begin(whereOrigin);
+            try {
+                matching = cteResults != null
+                    ? executor.filterRowsWithCTEs(effective, table, targetAlias, whereExpr, cteResults)
+                    : executor.filterRows(effective, table, targetAlias, whereExpr);
+            } finally {
+                ExpressionSource.end(displaced);
+            }
         }
 
         // Rows this transaction inserted but hasn't committed yet: modify the pending insert directly.
@@ -331,14 +365,14 @@ final class UpdateDeleteExecutor {
                 final int idx = effective.indexOf(row);
                 if (idx >= 0) {
                     writeSet.recordUpdate(fullyQualifiedName, effectiveIds.get(idx),
-                        buildUpdatedRow(row, table, assignments));
+                        buildUpdatedRow(row, table, assignments, assignmentOrigins));
                     rowsUpdated++;
                 }
             }
             for (final Row row : matchingPending) {
                 final int idx = pendingInserts.indexOf(row);
                 if (idx >= 0) {
-                    writeSet.setPendingInsert(fullyQualifiedName, idx, buildUpdatedRow(row, table, assignments));
+                    writeSet.setPendingInsert(fullyQualifiedName, idx, buildUpdatedRow(row, table, assignments, assignmentOrigins));
                     rowsUpdated++;
                 }
             }
@@ -356,7 +390,8 @@ final class UpdateDeleteExecutor {
      */
     private int executeDeleteDeferred(final Table table, final String fullyQualifiedName,
             final String targetAlias,
-            final String whereExpr, final Map<String, ResultSet> cteResults) {
+            final String whereExpr, final Map<String, ResultSet> cteResults,
+            final SourcePosition whereOrigin) {
         final TransactionWriteSet writeSet = executor.getTransactionManager().getCurrentTransaction().getWriteSet();
         final StorageEngine.TableStorage tableStorage = executor.getStorageEngine().getTableStorage(fullyQualifiedName);
 
@@ -378,9 +413,14 @@ final class UpdateDeleteExecutor {
 
         List<Row> matching = effective;
         if (whereExpr != null) {
-            matching = cteResults != null
-                ? executor.filterRowsWithCTEs(effective, table, targetAlias, whereExpr, cteResults)
-                : executor.filterRows(effective, table, targetAlias, whereExpr);
+            final SourcePosition displaced = ExpressionSource.begin(whereOrigin);
+            try {
+                matching = cteResults != null
+                    ? executor.filterRowsWithCTEs(effective, table, targetAlias, whereExpr, cteResults)
+                    : executor.filterRows(effective, table, targetAlias, whereExpr);
+            } finally {
+                ExpressionSource.end(displaced);
+            }
         }
         for (final Row row : matching) {
             final int idx = effective.indexOf(row);
@@ -415,11 +455,21 @@ final class UpdateDeleteExecutor {
     }
 
     /** Build a copy of {@code source} with the UPDATE assignments applied (never mutates the base row). */
-    private Row buildUpdatedRow(final Row source, final Table table, final Map<String, String> assignments) {
+    private Row buildUpdatedRow(final Row source, final Table table, final Map<String, String> assignments,
+                                final Map<String, SourcePosition> origins) {
         final Row newRow = source.copy();
         for (final Map.Entry<String, String> entry : assignments.entrySet()) {
             final int colIndex = executor.getColumnIndex(table, entry.getKey());
-            final Object newValue = executor.evaluateExpression(entry.getValue(), newRow, table);
+            // Each value is evaluated under ITS OWN origin, so an unknown name inside one SET value
+            // reports that value's place rather than the statement's or the previous assignment's.
+            final SourcePosition displaced =
+                ExpressionSource.begin(origins == null ? null : origins.get(entry.getKey()));
+            final Object newValue;
+            try {
+                newValue = executor.evaluateExpression(entry.getValue(), newRow, table);
+            } finally {
+                ExpressionSource.end(displaced);
+            }
             newRow.setValue(colIndex, newValue);
         }
         executor.enforceColumnConstraintsForDml(table, newRow);
@@ -705,5 +755,27 @@ final class UpdateDeleteExecutor {
 
     private boolean isTrueResult(final Object result) {
         return SqlTruth.isTrue(result);
+    }
+
+    /**
+     * Confirm {@code colName} is a column of {@code table}, reporting an unknown one at the place it
+     * was written. Resolution itself is delegated, so this can only add a position to a refusal that
+     * would have happened anyway — never change which statements are refused.
+     */
+    private void requireColumn(final Table table, final String colName,
+                               final FrostlakeParser.NamePartContext where) {
+        try {
+            executor.getColumnIndex(table, colName);
+        } catch (final RuntimeException unknown) {
+            throw new RuntimeException(SqlCompilationError.invalidIdentifier(
+                where.getStart().getLine(), where.getStart().getCharPositionInLine(),
+                colName.toUpperCase()), unknown);
+        }
+    }
+
+    /** Where a WHERE clause's PREDICATE begins — the offset the extracted text was taken from. */
+    private SourcePosition originOf(final FrostlakeParser.WhereClauseContext where) {
+        return new SourcePosition(where.booleanExpr().getStart().getLine(),
+            where.booleanExpr().getStart().getCharPositionInLine());
     }
 }

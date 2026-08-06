@@ -68,6 +68,7 @@ public class ScalaJarHandlerTest {
     @Test
     public void scalaUdfFromJar() {
         engine.execute("CREATE FUNCTION s_double(x INTEGER) RETURNS INTEGER LANGUAGE SCALA "
+            + "RUNTIME_VERSION = '2.12' "
             + "IMPORTS = ('" + scalaJar + "') HANDLER = 'ScUdf.doubleIt'");
         final ResultSet rs = engine.executeQuery("SELECT s_double(21)");
         assertEquals("42", rs.getRows().get(0).getValue(0).toString());
@@ -76,6 +77,7 @@ public class ScalaJarHandlerTest {
     @Test
     public void scalaProcedureFromJar() {
         engine.execute("CREATE PROCEDURE s_proc() RETURNS VARCHAR LANGUAGE SCALA "
+            + "RUNTIME_VERSION = '2.12' "
             + "IMPORTS = ('" + scalaJar + "') HANDLER = 'ScProc.run'");
         final ResultSet rs = engine.executeQuery("CALL s_proc()");
         assertEquals("scproc", rs.getRows().get(0).getValue(0).toString());

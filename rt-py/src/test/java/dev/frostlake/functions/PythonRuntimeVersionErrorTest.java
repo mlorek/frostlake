@@ -90,26 +90,30 @@ public class PythonRuntimeVersionErrorTest extends BaseDatabaseTest {
         assertEquals("a/b", scalar("SELECT py_stdlib('a%2Fb')"));
     }
 
+    /**
+     * PEP 696 type-parameter DEFAULTS ({@code def f[T = int]}) are 3.13 syntax; on the embedded 3.12
+     * that is a parse error, and the message must name the version gap rather than just echo the parser.
+     *
+     * <p>It is raised by CREATE, not by the call: a real account compiles a Python FUNCTION's body when
+     * the function is created, so the body never gets as far as being callable.
+     */
     @Test
     public void testNewerThanEmbeddedSyntaxIsExplained() {
-        // PEP 696 type-parameter DEFAULTS (`def f[T = int]`) are 3.13 syntax; on the embedded 3.12 that
-        // is a parse error, and the message must name the version gap rather than just echo the parser.
-        engine.execute("""
-            CREATE FUNCTION py_future(s VARCHAR)
-            RETURNS VARCHAR
-            LANGUAGE PYTHON
-            RUNTIME_VERSION = '3.13'
-            HANDLER = 'go'
-            AS
-            $$
-            def go[T = str](s: T) -> T:
-                return s
-            $$
-            """);
         final RuntimeException error = assertThrows(RuntimeException.class, new Executable() {
             @Override
             public void execute() {
-                engine.executeQuery("SELECT py_future('x')");
+                engine.execute("""
+                    CREATE FUNCTION py_future(s VARCHAR)
+                    RETURNS VARCHAR
+                    LANGUAGE PYTHON
+                    RUNTIME_VERSION = '3.13'
+                    HANDLER = 'go'
+                    AS
+                    $$
+                    def go[T = str](s: T) -> T:
+                        return s
+                    $$
+                    """);
             }
         });
         final String message = error.getMessage();

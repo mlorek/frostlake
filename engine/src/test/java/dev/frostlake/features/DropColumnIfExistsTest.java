@@ -61,7 +61,7 @@ public class DropColumnIfExistsTest {
         engine.execute("CREATE TABLE test1 (id INTEGER, name VARCHAR, email VARCHAR)");
         engine.execute("ALTER TABLE test1 DROP COLUMN IF EXISTS email");
 
-        Table table = engine.getCatalog().resolveTable("test1");
+        Table table = engine.getCatalog().resolveTable("TEST1");
         assertNotNull(table);
         assertEquals(2, table.getColumns().size());
         assertTrue(table.hasColumn("id"));
@@ -78,7 +78,7 @@ public class DropColumnIfExistsTest {
         engine.execute("CREATE TABLE test2 (id INTEGER, name VARCHAR)");
         engine.execute("ALTER TABLE test2 DROP COLUMN IF EXISTS nonexistent");
 
-        Table table = engine.getCatalog().resolveTable("test2");
+        Table table = engine.getCatalog().resolveTable("TEST2");
         assertNotNull(table);
         assertEquals(2, table.getColumns().size());
         assertTrue(table.hasColumn("id"));
@@ -107,13 +107,13 @@ public class DropColumnIfExistsTest {
         engine.execute("CREATE TABLE test4 (id INTEGER, name VARCHAR, email VARCHAR)");
         engine.execute("ALTER TABLE test4 DROP COLUMN IF EXISTS email");
 
-        Table table = engine.getCatalog().resolveTable("test4");
+        Table table = engine.getCatalog().resolveTable("TEST4");
         assertEquals(2, table.getColumns().size());
 
         // Dropping the same column again should not error
         engine.execute("ALTER TABLE test4 DROP COLUMN IF EXISTS email");
 
-        table = engine.getCatalog().resolveTable("test4");
+        table = engine.getCatalog().resolveTable("TEST4");
         assertEquals(2, table.getColumns().size());
 
         logger.info("DROP COLUMN IF EXISTS is idempotent");
@@ -127,7 +127,7 @@ public class DropColumnIfExistsTest {
         engine.execute("CREATE TABLE test_schema.test5 (id INTEGER, name VARCHAR, email VARCHAR)");
         engine.execute("ALTER TABLE test_schema.test5 DROP COLUMN IF EXISTS email");
 
-        Table table = engine.getCatalog().resolveTable("test_schema.test5");
+        Table table = engine.getCatalog().resolveTable("TEST_SCHEMA.TEST5");
         assertNotNull(table);
         assertEquals(2, table.getColumns().size());
         assertFalse(table.hasColumn("email"));
@@ -142,7 +142,7 @@ public class DropColumnIfExistsTest {
         engine.execute("CREATE TABLE test6 (id INTEGER, Name VARCHAR, EMAIL VARCHAR)");
         engine.execute("ALTER TABLE test6 DROP COLUMN IF EXISTS email");
 
-        Table table = engine.getCatalog().resolveTable("test6");
+        Table table = engine.getCatalog().resolveTable("TEST6");
         assertNotNull(table);
         assertEquals(2, table.getColumns().size());
         assertFalse(table.hasColumn("email"));
@@ -159,7 +159,7 @@ public class DropColumnIfExistsTest {
         engine.execute("ALTER TABLE test7 DROP COLUMN IF EXISTS col2");
         engine.execute("ALTER TABLE test7 DROP COLUMN IF EXISTS nonexistent");
 
-        Table table = engine.getCatalog().resolveTable("test7");
+        Table table = engine.getCatalog().resolveTable("TEST7");
         assertNotNull(table);
         assertEquals(2, table.getColumns().size());
         assertTrue(table.hasColumn("id"));
@@ -175,7 +175,7 @@ public class DropColumnIfExistsTest {
         engine.execute("CREATE TABLE test8 (id INTEGER, name VARCHAR, email VARCHAR)");
         engine.execute("ALTER TABLE IF EXISTS test8 DROP COLUMN IF EXISTS email");
 
-        Table table = engine.getCatalog().resolveTable("test8");
+        Table table = engine.getCatalog().resolveTable("TEST8");
         assertNotNull(table);
         assertEquals(2, table.getColumns().size());
 
@@ -192,7 +192,7 @@ public class DropColumnIfExistsTest {
         engine.execute("CREATE TABLE test9 (id INTEGER PRIMARY KEY, name VARCHAR NOT NULL, email VARCHAR UNIQUE)");
         engine.execute("ALTER TABLE test9 DROP COLUMN IF EXISTS email");
 
-        Table table = engine.getCatalog().resolveTable("test9");
+        Table table = engine.getCatalog().resolveTable("TEST9");
         assertNotNull(table);
         assertEquals(2, table.getColumns().size());
         assertFalse(table.hasColumn("email"));
@@ -207,7 +207,7 @@ public class DropColumnIfExistsTest {
         engine.execute("CREATE TABLE test10 (id INTEGER, status VARCHAR DEFAULT 'active', created_at TIMESTAMP)");
         engine.execute("ALTER TABLE test10 DROP COLUMN IF EXISTS status");
 
-        Table table = engine.getCatalog().resolveTable("test10");
+        Table table = engine.getCatalog().resolveTable("TEST10");
         assertNotNull(table);
         assertEquals(2, table.getColumns().size());
         assertFalse(table.hasColumn("status"));
@@ -222,7 +222,7 @@ public class DropColumnIfExistsTest {
         engine.execute("CREATE TABLE test11 (id INTEGER, name VARCHAR COLLATE 'utf8', description VARCHAR)");
         engine.execute("ALTER TABLE test11 DROP COLUMN IF EXISTS name");
 
-        Table table = engine.getCatalog().resolveTable("test11");
+        Table table = engine.getCatalog().resolveTable("TEST11");
         assertNotNull(table);
         assertEquals(2, table.getColumns().size());
         assertFalse(table.hasColumn("name"));
@@ -238,17 +238,17 @@ public class DropColumnIfExistsTest {
 
         // First drop should succeed
         engine.execute("ALTER TABLE test12 DROP COLUMN IF EXISTS col1");
-        Table table = engine.getCatalog().resolveTable("test12");
+        Table table = engine.getCatalog().resolveTable("TEST12");
         assertEquals(2, table.getColumns().size());
 
         // Second drop should not error
         engine.execute("ALTER TABLE test12 DROP COLUMN IF EXISTS col1");
-        table = engine.getCatalog().resolveTable("test12");
+        table = engine.getCatalog().resolveTable("TEST12");
         assertEquals(2, table.getColumns().size());
 
         // Third drop should still not error
         engine.execute("ALTER TABLE test12 DROP COLUMN IF EXISTS col1");
-        table = engine.getCatalog().resolveTable("test12");
+        table = engine.getCatalog().resolveTable("TEST12");
         assertEquals(2, table.getColumns().size());
 
         logger.info("DROP COLUMN IF EXISTS multiple times works correctly");
@@ -262,12 +262,12 @@ public class DropColumnIfExistsTest {
 
         // Drop existing column without IF EXISTS
         engine.execute("ALTER TABLE test13 DROP COLUMN col1");
-        Table table = engine.getCatalog().resolveTable("test13");
+        Table table = engine.getCatalog().resolveTable("TEST13");
         assertEquals(3, table.getColumns().size());
 
         // Drop existing column with IF EXISTS
         engine.execute("ALTER TABLE test13 DROP COLUMN IF EXISTS col2");
-        table = engine.getCatalog().resolveTable("test13");
+        table = engine.getCatalog().resolveTable("TEST13");
         assertEquals(2, table.getColumns().size());
 
         // Try to drop non-existing without IF EXISTS - should error
@@ -288,7 +288,7 @@ public class DropColumnIfExistsTest {
         engine.execute("CREATE TRANSIENT TABLE test14 (id INTEGER, name VARCHAR, email VARCHAR)");
         engine.execute("ALTER TABLE test14 DROP COLUMN IF EXISTS email");
 
-        Table table = engine.getCatalog().resolveTable("test14");
+        Table table = engine.getCatalog().resolveTable("TEST14");
         assertNotNull(table);
         assertTrue(table.isTransient());
         assertEquals(2, table.getColumns().size());
@@ -304,7 +304,7 @@ public class DropColumnIfExistsTest {
         engine.execute("CREATE TABLE test15 (id INTEGER, name VARCHAR, date DATE) CLUSTER BY (date)");
         engine.execute("ALTER TABLE test15 DROP COLUMN IF EXISTS name");
 
-        Table table = engine.getCatalog().resolveTable("test15");
+        Table table = engine.getCatalog().resolveTable("TEST15");
         assertNotNull(table);
         assertEquals(2, table.getColumns().size());
         assertFalse(table.hasColumn("name"));
@@ -320,7 +320,7 @@ public class DropColumnIfExistsTest {
         engine.execute("CREATE TABLE test16 (id INTEGER, name VARCHAR, email VARCHAR) COMMENT = 'Test table'");
         engine.execute("ALTER TABLE test16 DROP COLUMN IF EXISTS email");
 
-        Table table = engine.getCatalog().resolveTable("test16");
+        Table table = engine.getCatalog().resolveTable("TEST16");
         assertNotNull(table);
         assertEquals(2, table.getColumns().size());
         assertEquals("Test table", table.getComment());
@@ -340,7 +340,7 @@ public class DropColumnIfExistsTest {
         engine.execute("ALTER TABLE test17 RENAME COLUMN col3 TO col3_renamed");
         engine.execute("ALTER TABLE test17 DROP COLUMN IF EXISTS nonexistent");
 
-        Table table = engine.getCatalog().resolveTable("test17");
+        Table table = engine.getCatalog().resolveTable("TEST17");
         assertNotNull(table);
         assertEquals(3, table.getColumns().size());
         assertTrue(table.hasColumn("id"));

@@ -20,6 +20,7 @@ import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.metastore.model.Pipe;
 import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.storage.ResultSet;
+import dev.frostlake.storage.Row;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
@@ -628,13 +629,11 @@ public class PipesTest extends BaseDatabaseTest {
 
         ResultSet result = engine.executeQuery("SHOW PIPES LIKE 'content_pipe'");
         assertEquals(1, result.getRowCount());
-        // columns: created_on(0) name(1) database_name(2) schema_name(3) owner(4) comment(5)
-        // notification_channel(6) definition(7) auto_ingest(8) integration(9) error_integration(10)
-        // aws_sns_topic_arn(11) status(12)
-        assertEquals("content_pipe", result.getRows().get(0).getValue(1).toString().toLowerCase());
-        assertTrue(result.getRows().get(0).getValue(7).toString().contains("COPY INTO"));
-        assertEquals("true", result.getRows().get(0).getValue(8).toString());
-        assertEquals("RUNNING", result.getRows().get(0).getValue(12).toString());
+        final Row pipe = result.getRows().get(0);
+        assertEquals("content_pipe", pipe.getValue(result.getColumnIndex("name")).toString().toLowerCase());
+        assertTrue(pipe.getValue(result.getColumnIndex("definition")).toString().contains("COPY INTO"));
+        assertEquals("STAGE", pipe.getValue(result.getColumnIndex("kind")));
+        assertEquals("false", pipe.getValue(result.getColumnIndex("is_snowflake_managed")));
     }
 
     @Test

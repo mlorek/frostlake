@@ -59,7 +59,7 @@ public class ColumnCollationTest {
 
         engine.execute("CREATE TABLE test1 (id INTEGER, name VARCHAR COLLATE 'utf8')");
 
-        Table table = engine.getCatalog().resolveTable("test1");
+        Table table = engine.getCatalog().resolveTable("TEST1");
         assertNotNull(table);
 
         TableColumn nameColumn = table.getColumn("name");
@@ -82,7 +82,7 @@ public class ColumnCollationTest {
             )
             """);
 
-        Table table = engine.getCatalog().resolveTable("test2");
+        Table table = engine.getCatalog().resolveTable("TEST2");
         assertNotNull(table);
 
         TableColumn nameColumn = table.getColumn("name");
@@ -103,7 +103,7 @@ public class ColumnCollationTest {
 
         engine.execute("CREATE TABLE test3 (id INTEGER, name VARCHAR(100) COLLATE 'utf8_bin')");
 
-        Table table = engine.getCatalog().resolveTable("test3");
+        Table table = engine.getCatalog().resolveTable("TEST3");
         assertNotNull(table);
 
         TableColumn nameColumn = table.getColumn("name");
@@ -124,7 +124,7 @@ public class ColumnCollationTest {
             )
             """);
 
-        Table table = engine.getCatalog().resolveTable("test4");
+        Table table = engine.getCatalog().resolveTable("TEST4");
         assertNotNull(table);
 
         TableColumn nameColumn = table.getColumn("name");
@@ -149,7 +149,7 @@ public class ColumnCollationTest {
             )
             """);
 
-        Table table = engine.getCatalog().resolveTable("test5");
+        Table table = engine.getCatalog().resolveTable("TEST5");
         assertNotNull(table);
 
         TableColumn statusColumn = table.getColumn("status");
@@ -170,7 +170,7 @@ public class ColumnCollationTest {
             )
             """);
 
-        Table table = engine.getCatalog().resolveTable("test6");
+        Table table = engine.getCatalog().resolveTable("TEST6");
         assertNotNull(table);
 
         TableColumn nameColumn = table.getColumn("name");
@@ -186,7 +186,7 @@ public class ColumnCollationTest {
 
         engine.execute("CREATE TABLE test7 (id INTEGER, name VARCHAR COLLATE 'UTF8_UNICODE_CI')");
 
-        Table table = engine.getCatalog().resolveTable("test7");
+        Table table = engine.getCatalog().resolveTable("TEST7");
         assertNotNull(table);
 
         TableColumn nameColumn = table.getColumn("name");
@@ -207,7 +207,7 @@ public class ColumnCollationTest {
             )
             """);
 
-        Table table = engine.getCatalog().resolveTable("test_schema.test8");
+        Table table = engine.getCatalog().resolveTable("TEST_SCHEMA.TEST8");
         assertNotNull(table);
 
         TableColumn nameColumn = table.getColumn("name");
@@ -229,8 +229,8 @@ public class ColumnCollationTest {
             """);
         engine.execute("CREATE TABLE test9 CLONE source");
 
-        Table sourceTable = engine.getCatalog().resolveTable("source");
-        Table clonedTable = engine.getCatalog().resolveTable("test9");
+        Table sourceTable = engine.getCatalog().resolveTable("SOURCE");
+        Table clonedTable = engine.getCatalog().resolveTable("TEST9");
 
         assertNotNull(sourceTable);
         assertNotNull(clonedTable);
@@ -254,7 +254,7 @@ public class ColumnCollationTest {
             )
             """);
 
-        Table table = engine.getCatalog().resolveTable("test10");
+        Table table = engine.getCatalog().resolveTable("TEST10");
         assertNotNull(table);
 
         TableColumn nameColumn = table.getColumn("name");
@@ -274,7 +274,7 @@ public class ColumnCollationTest {
             )
             """);
 
-        Table table = engine.getCatalog().resolveTable("test11");
+        Table table = engine.getCatalog().resolveTable("TEST11");
         assertNotNull(table);
 
         TableColumn nameColumn = table.getColumn("name");
@@ -293,7 +293,7 @@ public class ColumnCollationTest {
 
         engine.execute("CREATE TABLE test12 (id INTEGER, name VARCHAR)");
 
-        Table table = engine.getCatalog().resolveTable("test12");
+        Table table = engine.getCatalog().resolveTable("TEST12");
         assertNotNull(table);
 
         TableColumn nameColumn = table.getColumn("name");
@@ -315,7 +315,7 @@ public class ColumnCollationTest {
             )
             """);
 
-        Table table = engine.getCatalog().resolveTable("test13");
+        Table table = engine.getCatalog().resolveTable("TEST13");
         assertNotNull(table);
 
         assertEquals("utf8", table.getColumn("varchar_col").getCollation());
@@ -336,12 +336,12 @@ public class ColumnCollationTest {
             )
             """);
 
-        Table table = engine.getCatalog().resolveTable("test14");
+        Table table = engine.getCatalog().resolveTable("TEST14");
         assertEquals("utf8", table.getColumn("name").getCollation());
 
         engine.execute("ALTER TABLE test14 ALTER COLUMN name VARCHAR(200)");
 
-        table = engine.getCatalog().resolveTable("test14");
+        table = engine.getCatalog().resolveTable("TEST14");
         assertEquals("utf8", table.getColumn("name").getCollation());
 
         logger.info("COLLATE preserved during ALTER COLUMN correctly");
@@ -359,7 +359,7 @@ public class ColumnCollationTest {
             ) CLUSTER BY (date)
             """);
 
-        Table table = engine.getCatalog().resolveTable("test15");
+        Table table = engine.getCatalog().resolveTable("TEST15");
         assertNotNull(table);
 
         assertEquals("utf8", table.getColumn("name").getCollation());
@@ -379,7 +379,7 @@ public class ColumnCollationTest {
             ) COMMENT = 'Test table'
             """);
 
-        Table table = engine.getCatalog().resolveTable("test16");
+        Table table = engine.getCatalog().resolveTable("TEST16");
         assertNotNull(table);
 
         assertEquals("utf8", table.getColumn("name").getCollation());

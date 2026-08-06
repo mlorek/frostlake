@@ -199,6 +199,7 @@ def run(session):
             CREATE PROCEDURE py_test()
             RETURNS VARIANT
             LANGUAGE PYTHON
+            RUNTIME_VERSION = '3.11'
             HANDLER = 'run'
             AS $$
 def run(session):

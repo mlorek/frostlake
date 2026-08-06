@@ -16,6 +16,7 @@
 
 package dev.frostlake.executor.commands;
 
+import dev.frostlake.executor.WarehouseReference;
 import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.metastore.*;
@@ -219,6 +220,9 @@ public class CreateRelationalHandler implements CommandHandler {
             }
 
             view.setOwner(catalog.currentRoleForOwner());
+            if (ctx.tagList() != null) {
+                InlineTags.apply(view, ctx.tagList());
+            }
             view.setResolvedColumns(
                 queryExecutor.resolveRelationColumns(selectQuery, view.getColumnNames()));
             schema.addView(view);
@@ -351,6 +355,7 @@ public class CreateRelationalHandler implements CommandHandler {
                         else if (opt.STRING_LITERAL() != null) targetLag = ddl.extractStringLiteral(opt.STRING_LITERAL());
                     } else if (opt.WAREHOUSE() != null && opt.identifier() != null) {
                         warehouse = getText(opt.identifier()).toUpperCase();
+                        WarehouseReference.require(catalog, warehouse);
                     } else if (opt.REFRESH_MODE() != null) {
                         if (opt.FULL() != null) refreshMode = DynamicTable.RefreshMode.FULL;
                         else if (opt.INCREMENTAL() != null) refreshMode = DynamicTable.RefreshMode.INCREMENTAL;

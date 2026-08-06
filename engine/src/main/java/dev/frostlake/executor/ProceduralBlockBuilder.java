@@ -73,6 +73,9 @@ public class ProceduralBlockBuilder {
      */
     private Statement buildProceduralStatement(final FrostlakeParser.ProceduralStatementContext ctx) {
         if (ctx.setStatement() != null) {
+            // SET is a session variable, which a procedure may not touch. The block is built while
+            // the CALL is running, so the depth check sees the procedure it belongs to.
+            visitor.rejectInsideProcedure("SET");
             String varName = visitor.getText(ctx.setStatement().identifier());
             BaseExpression expr = visitor.buildExpression(ctx.setStatement().expression());
             return new SetStatement(varName, expr);

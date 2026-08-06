@@ -103,7 +103,13 @@ final class InsertExecutor {
             if (ctx.columnListOptional() != null) {
                 columnNames = new ArrayList<>();
                 for (final FrostlakeParser.NamePartContext id : ctx.columnListOptional().namePart()) {
-                    columnNames.add(ParseTreeText.namePartText(id));
+                    final String columnName = ParseTreeText.namePartText(id);
+                    // A named column that the table does not have is refused HERE, at the place it was
+                    // written. Frostlake used to ACCEPT the statement and quietly insert nothing for it,
+                    // where live rejects the whole INSERT — an accepted-but-invalid statement, which is
+                    // a fidelity bug of its own and not merely a missing position.
+                    requireColumn(table, columnName, id);
+                    columnNames.add(columnName);
                 }
             }
 
@@ -480,6 +486,21 @@ final class InsertExecutor {
                     throw new RuntimeException("Duplicate unique key on column '" + col.getName() + "': " + value);
                 }
             }
+        }
+    }
+
+    /**
+     * Confirm a named INSERT column exists, reporting an unknown one where it was written. Resolution
+     * is delegated to the table, so this can only add a refusal live already makes — never invent one.
+     */
+    private void requireColumn(final Table table, final String columnName,
+                               final FrostlakeParser.NamePartContext where) {
+        try {
+            table.getColumn(columnName);
+        } catch (final RuntimeException unknown) {
+            throw new RuntimeException(SqlCompilationError.invalidIdentifier(
+                where.getStart().getLine(), where.getStart().getCharPositionInLine(),
+                columnName.toUpperCase()), unknown);
         }
     }
 }

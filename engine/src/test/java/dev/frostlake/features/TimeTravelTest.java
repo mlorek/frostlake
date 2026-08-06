@@ -21,9 +21,12 @@ import dev.frostlake.storage.ResultSet;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
@@ -52,13 +55,21 @@ public class TimeTravelTest {
     // ── AT (TIMESTAMP epoch-seconds) ──────────────────────────────────────────
 
     @Test
-    public void testAtTimestampFarFutureReturnsAllRows() {
+    public void testAtTimestampInTheFutureIsRejected() {
         engine.execute("INSERT INTO events VALUES (1, 'a')");
         engine.execute("INSERT INTO events VALUES (2, 'b')");
 
-        ResultSet rs = engine.executeQuery(
-            "SELECT * FROM events AT (TIMESTAMP => 253402300799)"); // year 9999
-        assertEquals(2, rs.getRowCount());
+        // A point in the future has no data yet and is refused. (A real account refuses this input
+        // too; for a time this far out its wording is about the retention window instead, which the
+        // engine does not model.)
+        final RuntimeException error = assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.executeQuery("SELECT * FROM events AT (TIMESTAMP => 253402300799)");
+            }
+        });
+        assertTrue(error.getMessage().contains("Future data is not yet available for table EVENTS."),
+            "unexpected message: " + error.getMessage());
     }
 
     @Test
@@ -87,14 +98,18 @@ public class TimeTravelTest {
     // ── BEFORE ────────────────────────────────────────────────────────────────
 
     @Test
-    public void testBeforeTimestampFarFutureSeesMostRows() {
+    public void testBeforeTimestampInTheFutureIsRejected() {
         engine.execute("INSERT INTO events VALUES (1, 'x')");
         engine.execute("INSERT INTO events VALUES (2, 'y')");
-        // BEFORE year 9999 — uses snapshotBefore which excludes the exact instant
-        ResultSet rs = engine.executeQuery(
-            "SELECT * FROM events BEFORE (TIMESTAMP => 253402300799)");
-        // Should have at least 1 row (the earlier snapshots)
-        assertTrue(rs.getRowCount() >= 0); // structural check
+        // BEFORE a future point is refused exactly as AT is — live-verified for both.
+        final RuntimeException error = assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.executeQuery("SELECT * FROM events BEFORE (TIMESTAMP => 253402300799)");
+            }
+        });
+        assertTrue(error.getMessage().contains("Future data is not yet available for table EVENTS."),
+            "unexpected message: " + error.getMessage());
     }
 
     @Test
@@ -223,5 +238,22 @@ public class TimeTravelTest {
         assertEquals(2, before.getRowCount(), "Snapshot before delete");
         assertEquals(1, after.getRowCount(), "Current after delete");
         assertEquals(1, before.getRowCount() - after.getRowCount(), "Net: 1 delete detected");
+    }
+
+    /** A time-travel point in the future has no data yet, and live says so rather than returning rows. */
+    @Test
+    public void timeTravelIntoTheFutureIsRejected() {
+        engine.execute("CREATE TABLE future_probe (k INTEGER)");
+        engine.execute("INSERT INTO future_probe VALUES (1)");
+        final RuntimeException error = assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.executeQuery("SELECT COUNT(*) FROM future_probe"
+                    + " AT(TIMESTAMP => DATEADD(hour, 1, CURRENT_TIMESTAMP()))");
+            }
+        });
+        assertTrue(error.getMessage().contains(
+            "Future data is not yet available for table FUTURE_PROBE."),
+            "unexpected message: " + error.getMessage());
     }
 }

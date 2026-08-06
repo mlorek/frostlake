@@ -153,30 +153,29 @@ public class ObjectTaggingTest {
             engine.executeQuery("SELECT SYSTEM$GET_TAG('sensitivity', 't', 'TABLE')").getRows().get(0).getValue(0));
     }
 
+    /**
+     * TAG_REFERENCES is a table FUNCTION on a real account, not a view — reading it as a relation
+     * is "Object … does not exist or not authorized", and calling the function without its
+     * object-name argument is "missing required argument [OBJECT_NAME]" (both measured). Assigned
+     * tags are read back here through SYSTEM$GET_TAG, which this engine does implement.
+     */
     @Test
-    public void testTagReferencesView() {
+    public void tagReferencesIsNotAViewAndTagsReadBackThroughGetTag() {
         engine.execute("ALTER TABLE t SET TAG cost_center = 'engineering'");
         engine.execute("ALTER TABLE t ALTER COLUMN name SET TAG cost_center = 'pii'");
 
-        ResultSet rs = engine.executeQuery("SELECT * FROM information_schema.tag_references");
-        boolean foundTable = false;
-        boolean foundColumn = false;
-        while (rs.next()) {
-            String domain = (String) rs.getValue("DOMAIN");
-            String objName = (String) rs.getValue("OBJECT_NAME");
-            String tagName = (String) rs.getValue("TAG_NAME");
-            String tagValue = (String) rs.getValue("TAG_VALUE");
-            String colName = (String) rs.getValue("COLUMN_NAME");
-            if ("TABLE".equals(domain) && "T".equalsIgnoreCase(objName) && "COST_CENTER".equals(tagName)) {
-                assertEquals("engineering", tagValue);
-                foundTable = true;
+        final RuntimeException error = assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.executeQuery("SELECT * FROM information_schema.tag_references");
             }
-            if ("COLUMN".equals(domain) && "NAME".equalsIgnoreCase(colName) && "COST_CENTER".equals(tagName)) {
-                assertEquals("pii", tagValue);
-                foundColumn = true;
-            }
-        }
-        assertTrue(foundTable, "TAG_REFERENCES should list the table-level tag");
-        assertTrue(foundColumn, "TAG_REFERENCES should list the column-level tag");
+        });
+        assertTrue(String.valueOf(error.getMessage()).contains("does not exist"),
+            "expected a does-not-exist rejection, got: " + error.getMessage());
+
+        assertEquals("engineering", engine.executeQuery(
+            "SELECT SYSTEM$GET_TAG('cost_center', 't', 'TABLE')").getRows().get(0).getValue(0));
+        assertEquals("pii", engine.executeQuery(
+            "SELECT SYSTEM$GET_TAG('cost_center', 't.name', 'COLUMN')").getRows().get(0).getValue(0));
     }
 }

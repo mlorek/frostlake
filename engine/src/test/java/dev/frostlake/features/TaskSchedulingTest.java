@@ -19,11 +19,15 @@ package dev.frostlake.features;
 import dev.frostlake.DatabaseEngine;
 import dev.frostlake.metastore.model.Task;
 import dev.frostlake.metastore.model.TaskState;
+import dev.frostlake.task.TaskScheduler;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.io.File;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.LocalDateTime;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -34,8 +38,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Exercises time-based task scheduling end-to-end through the SQL layer: {@code ALTER TASK … RESUME} arms
- * the {@link dev.frostlake.task.TaskScheduler} (when it is running) so the task fires on its {@code SCHEDULE}
- * and stamps a next-run time; RESUME issued before the scheduler is started only flips state. All assertions
+ * the {@link dev.frostlake.task.TaskScheduler} so the task fires on its {@code SCHEDULE} and stamps a
+ * next-run time — lazy-starting the scheduler if the embedder never did — and {@code start()} arms every
+ * task that is already STARTED, which is how a task restored from a snapshot resumes firing. All assertions
  * read state that {@code resumeTask}/{@code scheduleTask} set synchronously, so there are no sleeps and no
  * waiting for an actual firing (per the no-timing-assertions rule). {@code scheduleAtFixedRate} uses an
  * initial delay of 0, so the task bodies are read-only {@code SELECT 1} to keep the incidental immediate run
@@ -119,5 +124,108 @@ public class TaskSchedulingTest {
         assertEquals(TaskState.STARTED, t.getState(), "RESUME flips state to STARTED");
         assertNotNull(t.getNextRunTime(), "RESUME arms the schedule without a manual scheduler start");
         assertTrue(engine.getTaskScheduler().isRunning(), "scheduler lazy-started on RESUME");
+    }
+
+    /** The key the scheduler arms under, for the tests that check what is scheduled. */
+    private String key(final String taskName) {
+        return TaskScheduler.schedulerKey("TEST_DB", "PUBLIC", taskName);
+    }
+
+    /**
+     * The case RESUME cannot cover: a snapshot restore writes STARTED straight onto the model without
+     * going through resumeTask, so before start() armed what it finds, a task that was running when the
+     * engine was checkpointed came back STARTED and never fired again.
+     */
+    @Test
+    public void startArmsATaskRestoredAsStarted() throws Exception {
+        engine.execute("CREATE TASK persisted WAREHOUSE = 'COMPUTE_WH' SCHEDULE = '5 MINUTES' AS SELECT 1");
+        engine.execute("ALTER TASK persisted RESUME");
+        assertEquals(TaskState.STARTED, task("PERSISTED").getState());
+
+        final Path dir = Files.createTempDirectory("task_sched_restore_");
+        try {
+            engine.checkpointStateTo(dir);
+
+            final DatabaseEngine restored = new DatabaseEngine();
+            try {
+                restored.restoreStateFrom(dir);
+                final Task restoredTask = restored.getCatalog()
+                    .getDatabase("TEST_DB").getSchema("PUBLIC").getTask("PERSISTED");
+                assertEquals(TaskState.STARTED, restoredTask.getState(),
+                    "the restore must carry the resumed state");
+                assertNull(restoredTask.getNextRunTime(),
+                    "restoring sets state only — nothing is armed yet");
+
+                restored.startTaskScheduler();
+
+                assertNotNull(restoredTask.getNextRunTime(),
+                    "start() must arm a task restored in the STARTED state");
+                assertTrue(restored.getTaskScheduler().isScheduled(key("PERSISTED")),
+                    "and it must be armed under the canonical DB.SCHEMA.TASK key");
+            } finally {
+                restored.shutdown();
+            }
+        } finally {
+            deleteRecursively(dir.toFile());
+        }
+    }
+
+    /** A stop() shuts the timer pool down for good, so a restart needs a fresh one AND a re-arm. */
+    @Test
+    public void restartAfterStopRearmsFromTheCatalog() {
+        engine.execute("CREATE TASK restarted WAREHOUSE = 'COMPUTE_WH' SCHEDULE = '5 MINUTES' AS SELECT 1");
+        engine.execute("ALTER TASK restarted RESUME");
+        assertTrue(engine.getTaskScheduler().isScheduled(key("RESTARTED")));
+
+        engine.getTaskScheduler().stop();
+        assertFalse(engine.getTaskScheduler().isScheduled(key("RESTARTED")), "stop() cancels every entry");
+
+        engine.startTaskScheduler();
+
+        assertTrue(engine.getTaskScheduler().isRunning());
+        assertTrue(engine.getTaskScheduler().isScheduled(key("RESTARTED")),
+            "the task is still STARTED, so a restart must arm it again");
+    }
+
+    /** Arming on start() must not fire for tasks nobody resumed. */
+    @Test
+    public void startWithNothingResumedArmsNothing() {
+        engine.execute("CREATE TASK idle WAREHOUSE = 'COMPUTE_WH' SCHEDULE = '5 MINUTES' AS SELECT 1");
+
+        engine.startTaskScheduler();
+
+        assertTrue(engine.getTaskScheduler().isRunning());
+        assertEquals(TaskState.SUSPENDED, task("IDLE").getState());
+        assertNull(task("IDLE").getNextRunTime(), "a suspended task stays unarmed through start()");
+        assertFalse(engine.getTaskScheduler().isScheduled(key("IDLE")));
+    }
+
+    /**
+     * Key consistency: SUSPEND cancels by the key ALTER builds, so start()'s arming scan must have used
+     * the same one. A drift between the two would leave the timer running behind a SUSPENDED task.
+     */
+    @Test
+    public void suspendCancelsWhatStartArmed() {
+        engine.execute("CREATE TASK armed WAREHOUSE = 'COMPUTE_WH' SCHEDULE = '5 MINUTES' AS SELECT 1");
+        engine.execute("ALTER TASK armed RESUME");
+        engine.getTaskScheduler().stop();
+        engine.startTaskScheduler();
+        assertTrue(engine.getTaskScheduler().isScheduled(key("ARMED")), "start() armed it");
+
+        engine.execute("ALTER TASK armed SUSPEND");
+
+        assertEquals(TaskState.SUSPENDED, task("ARMED").getState());
+        assertFalse(engine.getTaskScheduler().isScheduled(key("ARMED")),
+            "SUSPEND must cancel the entry start() created — same key on both paths");
+    }
+
+    private void deleteRecursively(final File file) {
+        final File[] children = file.listFiles();
+        if (children != null) {
+            for (final File child : children) {
+                deleteRecursively(child);
+            }
+        }
+        file.delete();
     }
 }

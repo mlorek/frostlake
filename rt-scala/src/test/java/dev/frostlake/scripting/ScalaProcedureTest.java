@@ -118,6 +118,7 @@ public class ScalaProcedureTest {
             CREATE PROCEDURE sp1()
             RETURNS VARCHAR
             LANGUAGE SCALA
+            RUNTIME_VERSION = '2.12'
             HANDLER = 'A.run'
             AS $$
             import com.snowflake.snowpark_java.Session;
@@ -129,6 +130,7 @@ public class ScalaProcedureTest {
             CREATE OR REPLACE PROCEDURE sp1()
             RETURNS VARCHAR
             LANGUAGE SCALA
+            RUNTIME_VERSION = '2.12'
             HANDLER = 'A.run'
             AS $$
             import com.snowflake.snowpark_java.Session;
@@ -152,6 +154,7 @@ public class ScalaProcedureTest {
             CREATE OR REPLACE PROCEDURE scala_hello()
             RETURNS VARCHAR
             LANGUAGE SCALA
+            RUNTIME_VERSION = '2.12'
             HANDLER = 'Hello.run'
             AS $$
             import com.snowflake.snowpark_java.Session;

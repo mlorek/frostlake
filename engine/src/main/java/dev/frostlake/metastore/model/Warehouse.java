@@ -22,7 +22,9 @@ import dev.frostlake.metastore.Taggable;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.Map;
 
 /**
@@ -50,10 +52,14 @@ public class Warehouse implements Taggable {
     private String resourceMonitor;
     private int maxConcurrencyLevel = 8;
     private int statementQueuedTimeoutSeconds = 0;
-    private int statementTimeoutSeconds = 0;
+    // Live's default is two days; the engine stores the setting but enforces no timeout.
+    private int statementTimeoutSeconds = 172800;
+    /** Parameter names this warehouse set explicitly, which SHOW PARAMETERS reports at WAREHOUSE level. */
+    private final Set<String> explicitParameters = new LinkedHashSet<>();
     private boolean enableQueryAcceleration = false;
     private int queryAccelerationMaxScaleFactor = 8;
-    private String generation;
+    /** The compute generation a warehouse runs on; live defaults a new warehouse to 2. */
+    private String generation = "2";
 
     public Warehouse(final String name, final WarehouseSize size) {
         this.name = name;
@@ -242,6 +248,16 @@ public class Warehouse implements Taggable {
 
     public String getResourceMonitor() { return resourceMonitor; }
     public void setResourceMonitor(final String resourceMonitor) { this.resourceMonitor = resourceMonitor; }
+
+    /** Record that {@code parameterName} was given on the warehouse rather than left at its default. */
+    public void markParameterSet(final String parameterName) {
+        explicitParameters.add(parameterName.toUpperCase());
+    }
+
+    /** Whether the warehouse set this parameter itself — a WAREHOUSE level rather than a blank one. */
+    public boolean isParameterSetOnWarehouse(final String parameterName) {
+        return explicitParameters.contains(parameterName.toUpperCase());
+    }
 
     public int getMaxConcurrencyLevel() { return maxConcurrencyLevel; }
     public void setMaxConcurrencyLevel(final int maxConcurrencyLevel) { this.maxConcurrencyLevel = maxConcurrencyLevel; }

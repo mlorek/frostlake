@@ -59,6 +59,7 @@ import dev.frostlake.types.MapType;
 import dev.frostlake.types.DateTimeType;
 import dev.frostlake.types.BinaryType;
 import dev.frostlake.types.BooleanType;
+import dev.frostlake.task.UserTaskCancellation;
 import dev.frostlake.types.ObjectType;
 import dev.frostlake.types.StructuredTypes;
 import dev.frostlake.types.VariantType;
@@ -246,22 +247,12 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
 
     @Override
     public Object visitSystemUserTaskCancel(final SystemUserTaskCancelExpression expr) {
-        Object nameVal = expr.getTaskNameExpr().accept(this);
-        if (nameVal == null) return "Task not found";
-        String taskName = nameVal.toString().toUpperCase().replaceAll("^'|'$", "");
-        if (queryExecutor == null) return "cancelled";
-        try {
-            Catalog cat = queryExecutor.getCatalog();
-            String dbN = cat.getCurrentDatabase(), scN = cat.getCurrentSchema();
-            if (dbN == null || scN == null) return "Task not found";
-            Task task = cat.getDatabase(dbN).getSchema(scN).getTask(taskName);
-            if (task == null) return "Task not found: " + taskName;
-            // Mark task as suspended to cancel ongoing executions
-            task.setState(TaskState.SUSPENDED);
-            return "Task " + taskName + ": cancelled";
-        } catch (final Exception e) {
-            return "Error: " + e.getMessage();
+        final Object nameVal = expr.getTaskNameExpr().accept(this);
+        if (queryExecutor == null) {
+            return null;
         }
+        return UserTaskCancellation.cancel(queryExecutor.getCatalog(),
+            queryExecutor.getTaskScheduler(), nameVal == null ? null : nameVal.toString());
     }
 
     @Override
@@ -446,7 +437,7 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
 
             // Try case-insensitive
             for (final TableColumn col : table.getColumns()) {
-                if (col.getName().equalsIgnoreCase(columnName)) {
+                if (col.getName().equals(columnName)) {
                     int index = table.getColumnIndex(col.getName());
                     return row.getValue(index);
                 }
@@ -462,7 +453,7 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
         // Try case-insensitive
         if (table != null) {
             for (final TableColumn col : table.getColumns()) {
-                if (col.getName().equalsIgnoreCase(columnName)) {
+                if (col.getName().equals(columnName)) {
                     int index = table.getColumnIndex(col.getName());
                     return row.getValue(index);
                 }
@@ -509,7 +500,15 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
             }
         }
 
-        throw new RuntimeException(SqlCompilationError.invalidIdentifier(String.valueOf(expr)));
+        // Row time, not plan time: the statement forms that never reach the plan-time scope walk —
+        // UPDATE's SET values, DELETE's WHERE, a qualified reference resolved per row — land here.
+        // The reference carries its own fragment-relative position, so the refusal can still say
+        // where it was written whenever an origin has been set for the fragment being evaluated.
+        final SourcePosition at = ExpressionSource.resolve(expr.getPosition());
+        throw new RuntimeException(at != null
+            ? SqlCompilationError.invalidIdentifier(
+                at.getLine(), at.getCharPositionInLine(), String.valueOf(expr))
+            : SqlCompilationError.invalidIdentifier(String.valueOf(expr)));
     }
 
     /**
@@ -3304,8 +3303,13 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
                     && !"NEXTVAL".equalsIgnoreCase(columnName)
                     && !"CURRVAL".equalsIgnoreCase(columnName)
                     && !qualifierIsAFromClauseKey(ref.getTableName())) {
-                throw new InvalidQualifierException(
-                    ref.getTableName().toUpperCase() + "." + columnName.toUpperCase());
+                final SourcePosition qualifierAt = ExpressionSource.resolve(ref.getPosition());
+                final String dotted = ref.getTableName().toUpperCase() + "." + columnName.toUpperCase();
+                // The position is the whole reference's start, qualifier included — live reports 7 for
+                // `SELECT t.nosuchcol`, not the offset of the column part after the dot.
+                throw qualifierAt != null
+                    ? new InvalidQualifierException(dotted, qualifierAt)
+                    : new InvalidQualifierException(dotted);
             }
             return;
         }
@@ -3335,7 +3339,10 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
                 && !(strictWalkInsideFunctionArgs && isDateTimeUnitKeyword(upperName))
                 && !upperName.startsWith("PRIOR$")
                 && !upperName.startsWith("CONNECT_BY_ROOT$")) {
-            throw new InvalidQualifierException(upperName);
+            final SourcePosition where = ExpressionSource.resolve(ref.getPosition());
+            throw where != null
+                ? new InvalidQualifierException(upperName, where)
+                : new InvalidQualifierException(upperName);
         }
     }
 
@@ -3378,7 +3385,7 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
 
     private boolean tableCarriesColumn(final Table candidate, final String name) {
         for (final TableColumn col : candidate.getColumns()) {
-            if (col.getName().equalsIgnoreCase(name)) {
+            if (col.getName().equals(name)) {
                 return true;
             }
         }
@@ -3420,7 +3427,7 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
             return false;
         }
         for (final String keyName : table.getJoinKeyNames()) {
-            if (keyName.equalsIgnoreCase(columnName)) {
+            if (keyName.equals(columnName)) {
                 return true;
             }
         }
@@ -3435,7 +3442,7 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
         for (final Table side : multiTableAllTables) {
             final List<TableColumn> sideColumns = side.getColumns();
             for (int i = 0; i < sideColumns.size(); i++) {
-                if (sideColumns.get(i).getName().equalsIgnoreCase(columnName)) {
+                if (sideColumns.get(i).getName().equals(columnName)) {
                     if (offset + i < row.getValues().size()) {
                         final Object value = row.getValue(offset + i);
                         if (value != null) {
@@ -3456,7 +3463,7 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
     private Object coalescedJoinKeyFromTable(final String columnName, final Row row) {
         final List<TableColumn> columns = table.getColumns();
         for (int i = 0; i < columns.size(); i++) {
-            if (columns.get(i).getName().equalsIgnoreCase(columnName)
+            if (columns.get(i).getName().equals(columnName)
                     && i < row.getValues().size()) {
                 final Object value = row.getValue(i);
                 if (value != null) {
@@ -3957,7 +3964,7 @@ public class ExpressionEvaluatorVisitor implements ExpressionVisitor<Object> {
 
     private static boolean columnIsCaseInsensitive(final Table owner, final String colName) {
         for (final TableColumn col : owner.getColumns()) {
-            if (col.getName().equalsIgnoreCase(colName)) {
+            if (col.getName().equals(colName)) {
                 return isCaseInsensitiveCollation(col.getCollation());
             }
         }

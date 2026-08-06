@@ -60,7 +60,7 @@ public class ClusterByTest {
 
         engine.execute("CREATE TABLE customers (id INTEGER, name VARCHAR, region VARCHAR) CLUSTER BY (region)");
 
-        Table table = engine.getCatalog().resolveTable("customers");
+        Table table = engine.getCatalog().resolveTable("CUSTOMERS");
         assertNotNull(table);
 
         List<String> clusterKeys = table.getClusterKeys();
@@ -77,7 +77,7 @@ public class ClusterByTest {
 
         engine.execute("CREATE TABLE orders (order_id INTEGER, customer_id INTEGER, order_date VARCHAR, status VARCHAR) CLUSTER BY (order_date, status)");
 
-        Table table = engine.getCatalog().resolveTable("orders");
+        Table table = engine.getCatalog().resolveTable("ORDERS");
         assertNotNull(table);
 
         List<String> clusterKeys = table.getClusterKeys();
@@ -95,7 +95,7 @@ public class ClusterByTest {
 
         engine.execute("CREATE TABLE products (id INTEGER, name VARCHAR, price INTEGER)");
 
-        Table table = engine.getCatalog().resolveTable("products");
+        Table table = engine.getCatalog().resolveTable("PRODUCTS");
         assertNotNull(table);
 
         List<String> clusterKeys = table.getClusterKeys();
@@ -111,7 +111,7 @@ public class ClusterByTest {
 
         engine.execute("CREATE TABLE sales (id INTEGER, product VARCHAR, amount INTEGER) CLUSTER BY (product) COMMENT = 'Sales data clustered by product'");
 
-        Table table = engine.getCatalog().resolveTable("sales");
+        Table table = engine.getCatalog().resolveTable("SALES");
         assertNotNull(table);
 
         List<String> clusterKeys = table.getClusterKeys();
@@ -149,7 +149,7 @@ public class ClusterByTest {
 
         engine.execute("CREATE TABLE cloned_table CLONE original_table");
 
-        Table clonedTable = engine.getCatalog().resolveTable("cloned_table");
+        Table clonedTable = engine.getCatalog().resolveTable("CLONED_TABLE");
         assertNotNull(clonedTable);
 
         List<String> clusterKeys = clonedTable.getClusterKeys();
@@ -174,7 +174,7 @@ public class ClusterByTest {
         engine.execute("CREATE DATABASE test_db_clone CLONE test_db");
         engine.execute("USE DATABASE test_db_clone");
 
-        Table clonedTable = engine.getCatalog().resolveTable("test_db_clone.public.users");
+        Table clonedTable = engine.getCatalog().resolveTable("TEST_DB_CLONE.PUBLIC.USERS");
         assertNotNull(clonedTable);
 
         List<String> clusterKeys = clonedTable.getClusterKeys();
@@ -192,7 +192,7 @@ public class ClusterByTest {
         engine.execute("CREATE SCHEMA analytics");
         engine.execute("CREATE TABLE analytics.metrics (metric_id INTEGER, date VARCHAR, value INTEGER) CLUSTER BY (date)");
 
-        Table table = engine.getCatalog().resolveTable("analytics.metrics");
+        Table table = engine.getCatalog().resolveTable("ANALYTICS.METRICS");
         assertNotNull(table);
 
         List<String> clusterKeys = table.getClusterKeys();
@@ -211,13 +211,13 @@ public class ClusterByTest {
         engine.execute("CREATE TABLE t2 (id INTEGER, col2 VARCHAR, col3 VARCHAR) CLUSTER BY (col2, col3)");
         engine.execute("CREATE TABLE t3 (id INTEGER, col4 VARCHAR)");
 
-        Table table1 = engine.getCatalog().resolveTable("t1");
+        Table table1 = engine.getCatalog().resolveTable("T1");
         assertEquals(1, table1.getClusterKeys().size());
 
-        Table table2 = engine.getCatalog().resolveTable("t2");
+        Table table2 = engine.getCatalog().resolveTable("T2");
         assertEquals(2, table2.getClusterKeys().size());
 
-        Table table3 = engine.getCatalog().resolveTable("t3");
+        Table table3 = engine.getCatalog().resolveTable("T3");
         assertEquals(0, table3.getClusterKeys().size());
 
         logger.info("Multiple tables with different clustering configurations work correctly");
@@ -229,7 +229,7 @@ public class ClusterByTest {
 
         engine.execute("CREATE TABLE users (id INTEGER, email VARCHAR, created_at VARCHAR) CLUSTER BY (UPPER(email))");
 
-        Table table = engine.getCatalog().resolveTable("users");
+        Table table = engine.getCatalog().resolveTable("USERS");
         assertNotNull(table);
 
         List<String> clusterKeys = table.getClusterKeys();
@@ -246,7 +246,7 @@ public class ClusterByTest {
 
         engine.execute("CREATE TABLE events (id INTEGER, name VARCHAR, timestamp VARCHAR) CLUSTER BY (UPPER(name), DATE(timestamp))");
 
-        Table table = engine.getCatalog().resolveTable("events");
+        Table table = engine.getCatalog().resolveTable("EVENTS");
         assertNotNull(table);
 
         List<String> clusterKeys = table.getClusterKeys();
@@ -265,7 +265,7 @@ public class ClusterByTest {
 
         engine.execute("CREATE TABLE data (id INTEGER, value VARCHAR, amount DECIMAL) CLUSTER BY (CAST(value AS INTEGER))");
 
-        Table table = engine.getCatalog().resolveTable("data");
+        Table table = engine.getCatalog().resolveTable("DATA");
         assertNotNull(table);
 
         List<String> clusterKeys = table.getClusterKeys();
@@ -284,7 +284,7 @@ public class ClusterByTest {
 
         engine.execute("CREATE TABLE metrics (id INTEGER, value INTEGER, multiplier INTEGER) CLUSTER BY (value * multiplier)");
 
-        Table table = engine.getCatalog().resolveTable("metrics");
+        Table table = engine.getCatalog().resolveTable("METRICS");
         assertNotNull(table);
 
         List<String> clusterKeys = table.getClusterKeys();
@@ -302,7 +302,7 @@ public class ClusterByTest {
 
         engine.execute("CREATE TABLE orders (id INTEGER, customer_id INTEGER, order_date VARCHAR, amount DECIMAL) CLUSTER BY (UPPER(order_date), customer_id + 1000)");
 
-        Table table = engine.getCatalog().resolveTable("orders");
+        Table table = engine.getCatalog().resolveTable("ORDERS");
         assertNotNull(table);
 
         List<String> clusterKeys = table.getClusterKeys();
@@ -321,7 +321,7 @@ public class ClusterByTest {
 
         engine.execute("CREATE TABLE sales (id INTEGER, region VARCHAR, amount INTEGER, date VARCHAR) CLUSTER BY (region, UPPER(date), amount * 2)");
 
-        Table table = engine.getCatalog().resolveTable("sales");
+        Table table = engine.getCatalog().resolveTable("SALES");
         assertNotNull(table);
 
         List<String> clusterKeys = table.getClusterKeys();
@@ -340,7 +340,7 @@ public class ClusterByTest {
 
         engine.execute("CREATE TABLE logs (id INTEGER, message VARCHAR, timestamp VARCHAR) CLUSTER BY (SUBSTRING(message, 1, 10))");
 
-        Table table = engine.getCatalog().resolveTable("logs");
+        Table table = engine.getCatalog().resolveTable("LOGS");
         assertNotNull(table);
 
         List<String> clusterKeys = table.getClusterKeys();
@@ -361,7 +361,7 @@ public class ClusterByTest {
 
         engine.execute("CREATE TABLE cloned CLONE original");
 
-        Table clonedTable = engine.getCatalog().resolveTable("cloned");
+        Table clonedTable = engine.getCatalog().resolveTable("CLONED");
         assertNotNull(clonedTable);
 
         List<String> clusterKeys = clonedTable.getClusterKeys();
@@ -379,7 +379,7 @@ public class ClusterByTest {
 
         engine.execute("CREATE TABLE people (id INTEGER, first_name VARCHAR, last_name VARCHAR) CLUSTER BY (first_name || ' ' || last_name)");
 
-        Table table = engine.getCatalog().resolveTable("people");
+        Table table = engine.getCatalog().resolveTable("PEOPLE");
         assertNotNull(table);
 
         List<String> clusterKeys = table.getClusterKeys();
@@ -398,7 +398,7 @@ public class ClusterByTest {
         // Snowflake accepts CLUSTER BY immediately after the table name, before the column definitions.
         engine.execute("CREATE TABLE lead_single CLUSTER BY (i) (i INTEGER, name VARCHAR)");
 
-        Table table = engine.getCatalog().resolveTable("lead_single");
+        Table table = engine.getCatalog().resolveTable("LEAD_SINGLE");
         assertNotNull(table);
 
         List<String> clusterKeys = table.getClusterKeys();
@@ -415,7 +415,7 @@ public class ClusterByTest {
 
         engine.execute("CREATE TABLE lead_multi CLUSTER BY (region, status) (id INTEGER, region VARCHAR, status VARCHAR)");
 
-        Table table = engine.getCatalog().resolveTable("lead_multi");
+        Table table = engine.getCatalog().resolveTable("LEAD_MULTI");
         assertNotNull(table);
 
         List<String> clusterKeys = table.getClusterKeys();
@@ -433,7 +433,7 @@ public class ClusterByTest {
 
         engine.execute("CREATE TABLE lead_expr CLUSTER BY (UPPER(name)) (id INTEGER, name VARCHAR)");
 
-        Table table = engine.getCatalog().resolveTable("lead_expr");
+        Table table = engine.getCatalog().resolveTable("LEAD_EXPR");
         assertNotNull(table);
 
         List<String> clusterKeys = table.getClusterKeys();

@@ -20,14 +20,19 @@ import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /**
  * A correlated subquery may reference the outer row's FLATTEN outputs UNQUALIFIED (VALUE, KEY, INDEX
  * have no natural alias): {@code WHERE EXISTS (SELECT 1 FROM t WHERE k = UPPER(VALUE:field))}. The
  * lateral context passed into the subquery only carried table-/alias-qualified names, so such
  * correlations silently resolved to NULL and an INNER-JOIN-plus-EXISTS pipeline produced zero rows.
+ *
+ * <p>That is EXISTS. A SCALAR subquery correlating the same way is refused outright unless it
+ * aggregates — see {@code TableFunctionCorrelationRule} for the measured boundary.
  */
 public class CorrelatedSubqueryOverFlattenTest extends BaseDatabaseTest {
 
@@ -77,14 +82,77 @@ public class CorrelatedSubqueryOverFlattenTest extends BaseDatabaseTest {
         assertEquals(1, rs.getRowCount());
     }
 
+    /**
+     * A SCALAR subquery correlating on a FLATTEN output is REFUSED, though the EXISTS above is not.
+     * The refusal names the subquery's own opening parenthesis, counting BOTH line and position from 1.
+     */
     @Test
-    public void correlatedScalarSubqueryOnAFlattenValue() {
+    public void aCorrelatedScalarSubqueryOnAFlattenValueIsRefused() {
+        assertEquals("SQL compilation error:\n"
+            + "Unsupported subquery type cannot be evaluated at line 1, position 8",
+            refusalOf("SELECT (SELECT pkey FROM parents"
+                + " WHERE pid = UPPER('PFX:' || VALUE:grp:guid::VARCHAR)) k"
+                + " FROM raw_events s, TABLE(FLATTEN(src, OUTER => true))"
+                + " ORDER BY VALUE:inst:iid::VARCHAR"));
+    }
+
+    /** An aggregate in the subquery's select list makes exactly that query legal. */
+    @Test
+    public void anAggregateInTheSubqueryMakesItLegal() {
         final ResultSet rs = engine.executeQuery("""
-            SELECT (SELECT pkey FROM parents WHERE pid = UPPER('PFX:' || VALUE:grp:guid::VARCHAR)) k
+            SELECT (SELECT MAX(pkey) FROM parents WHERE pid = UPPER('PFX:' || VALUE:grp:guid::VARCHAR)) k
             FROM raw_events s, TABLE(FLATTEN(src, OUTER => true))
             ORDER BY VALUE:inst:iid::VARCHAR""");
         assertEquals(2, rs.getRowCount());
         assertEquals("K1", rs.getRows().get(0).getValue(0));
         assertEquals(null, rs.getRows().get(1).getValue(0));
+    }
+
+    /** The WHERE clause is refused the same way, at the subquery's place in it. */
+    @Test
+    public void theSameSubqueryInWhereIsRefusedAtItsOwnPosition() {
+        assertEquals("SQL compilation error:\n"
+            + "Unsupported subquery type cannot be evaluated at line 1, position 96",
+            refusalOf("SELECT VALUE:inst:iid::VARCHAR iid"
+                + " FROM raw_events s, TABLE(FLATTEN(src, OUTER => true))"
+                + " WHERE (SELECT pkey FROM parents"
+                + " WHERE pid = UPPER('PFX:' || VALUE:grp:guid::VARCHAR)) = 'K1'"));
+    }
+
+    /** It is the table FUNCTION that matters, not FLATTEN: SPLIT_TO_TABLE is refused alike. */
+    @Test
+    public void anotherTableFunctionsOutputIsRefusedTheSameWay() {
+        assertEquals("SQL compilation error:\n"
+            + "Unsupported subquery type cannot be evaluated at line 1, position 8",
+            refusalOf("SELECT (SELECT pkey FROM parents WHERE pid = t.value) k"
+                + " FROM parents p, TABLE(SPLIT_TO_TABLE(p.pid, ',')) t"));
+    }
+
+    /**
+     * What the rule does NOT touch, so it stays as narrow as the account's: a subquery that correlates
+     * to the BASE table while a table function sits in the same FROM, an uncorrelated one beside a
+     * table function, and an ordinary correlated scalar subquery with no table function in sight.
+     */
+    @Test
+    public void theNeighbouringShapesAreStillAccepted() {
+        assertEquals(2, engine.executeQuery(
+            "SELECT (SELECT pkey FROM parents WHERE pkey <> s.id::VARCHAR) k"
+            + " FROM raw_events s, TABLE(FLATTEN(src, OUTER => true))").getRowCount());
+        assertEquals(2, engine.executeQuery(
+            "SELECT (SELECT pkey FROM parents WHERE pid = 'PFX:G1') k"
+            + " FROM raw_events s, TABLE(FLATTEN(src, OUTER => true))").getRowCount());
+        assertEquals(1, engine.executeQuery(
+            "SELECT p.pid, (SELECT pkey FROM parents q WHERE q.pid = p.pid) k"
+            + " FROM parents p").getRowCount());
+    }
+
+    private String refusalOf(final String sql) {
+        final RuntimeException error = assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.executeQuery(sql);
+            }
+        });
+        return error.getMessage();
     }
 }

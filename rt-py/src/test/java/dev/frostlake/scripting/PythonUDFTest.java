@@ -65,7 +65,10 @@ public class PythonUDFTest {
             CREATE FUNCTION py_double(x INTEGER)
             RETURNS INTEGER
             LANGUAGE PYTHON
+            RUNTIME_VERSION = '3.11'
+            HANDLER = 'go'
             AS $$
+            def go(x):
                 return x * 2
             $$
             """);
@@ -251,7 +254,12 @@ public class PythonUDFTest {
             CREATE FUNCTION py_triple(x INTEGER)
             RETURNS INTEGER
             LANGUAGE PYTHON
-            AS 'return x * 3'
+            RUNTIME_VERSION = '3.11'
+            HANDLER = 'go'
+            AS $$
+            def go(x):
+                return x * 3
+            $$
             """);
 
         Schema schema = engine.getCatalog().getDatabase("TEST_DB").getSchema("PUBLIC");

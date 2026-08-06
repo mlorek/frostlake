@@ -68,7 +68,7 @@ public class TimestampLtzTest {
         logger.info("Testing TIMESTAMP_LTZ with default precision");
         engine.execute("CREATE TABLE test_ts_ltz (id INTEGER, ts TIMESTAMP_LTZ)");
 
-        Table table = engine.getCatalog().resolveTable("test_ts_ltz");
+        Table table = engine.getCatalog().resolveTable("TEST_TS_LTZ");
         assertNotNull(table);
 
         TableColumn tsCol = table.getColumn("ts");
@@ -86,7 +86,7 @@ public class TimestampLtzTest {
         logger.info("Testing TIMESTAMP_LTZ with precision 3");
         engine.execute("CREATE TABLE test_ts_ltz3 (id INTEGER, ts TIMESTAMP_LTZ(3))");
 
-        Table table = engine.getCatalog().resolveTable("test_ts_ltz3");
+        Table table = engine.getCatalog().resolveTable("TEST_TS_LTZ3");
         assertNotNull(table);
 
         TableColumn tsCol = table.getColumn("ts");
@@ -103,7 +103,7 @@ public class TimestampLtzTest {
         logger.info("Testing TIMESTAMP_LTZ with precision 6");
         engine.execute("CREATE TABLE test_ts_ltz6 (id INTEGER, ts TIMESTAMP_LTZ(6))");
 
-        Table table = engine.getCatalog().resolveTable("test_ts_ltz6");
+        Table table = engine.getCatalog().resolveTable("TEST_TS_LTZ6");
         assertNotNull(table);
 
         TableColumn tsCol = table.getColumn("ts");
@@ -120,7 +120,7 @@ public class TimestampLtzTest {
         logger.info("Testing TIMESTAMP_LTZ with DEFAULT CURRENT_TIMESTAMP");
         engine.execute("CREATE TABLE test_ts_ltz_default (id INTEGER, ts TIMESTAMP_LTZ(3) DEFAULT CURRENT_TIMESTAMP)");
 
-        Table table = engine.getCatalog().resolveTable("test_ts_ltz_default");
+        Table table = engine.getCatalog().resolveTable("TEST_TS_LTZ_DEFAULT");
         assertNotNull(table);
 
         TableColumn tsCol = table.getColumn("ts");
@@ -143,7 +143,7 @@ public class TimestampLtzTest {
         logger.info("Testing TIMESTAMP_NTZ with default precision");
         engine.execute("CREATE TABLE test_ts_ntz (id INTEGER, ts TIMESTAMP_NTZ)");
 
-        Table table = engine.getCatalog().resolveTable("test_ts_ntz");
+        Table table = engine.getCatalog().resolveTable("TEST_TS_NTZ");
         assertNotNull(table);
 
         TableColumn tsCol = table.getColumn("ts");
@@ -160,7 +160,7 @@ public class TimestampLtzTest {
         logger.info("Testing TIMESTAMP_NTZ with custom precision");
         engine.execute("CREATE TABLE test_ts_ntz_p (id INTEGER, ts TIMESTAMP_NTZ(5))");
 
-        Table table = engine.getCatalog().resolveTable("test_ts_ntz_p");
+        Table table = engine.getCatalog().resolveTable("TEST_TS_NTZ_P");
         assertNotNull(table);
 
         TableColumn tsCol = table.getColumn("ts");
@@ -174,7 +174,7 @@ public class TimestampLtzTest {
         logger.info("Testing TIMESTAMP_TZ with default precision");
         engine.execute("CREATE TABLE test_ts_tz (id INTEGER, ts TIMESTAMP_TZ)");
 
-        Table table = engine.getCatalog().resolveTable("test_ts_tz");
+        Table table = engine.getCatalog().resolveTable("TEST_TS_TZ");
         assertNotNull(table);
 
         TableColumn tsCol = table.getColumn("ts");
@@ -192,7 +192,7 @@ public class TimestampLtzTest {
         logger.info("Testing TIMESTAMP_TZ with custom precision");
         engine.execute("CREATE TABLE test_ts_tz_p (id INTEGER, ts TIMESTAMP_TZ(7))");
 
-        Table table = engine.getCatalog().resolveTable("test_ts_tz_p");
+        Table table = engine.getCatalog().resolveTable("TEST_TS_TZ_P");
         assertNotNull(table);
 
         TableColumn tsCol = table.getColumn("ts");
@@ -214,7 +214,7 @@ public class TimestampLtzTest {
             )
             """);
 
-        Table table = engine.getCatalog().resolveTable("test_multi_ts");
+        Table table = engine.getCatalog().resolveTable("TEST_MULTI_TS");
         assertNotNull(table);
 
         TableColumn ntzCol = table.getColumn("ts_ntz");
@@ -253,12 +253,12 @@ public class TimestampLtzTest {
 
         // Test precision 0
         engine.execute("CREATE TABLE test_ts_p0 (id INTEGER, ts TIMESTAMP_LTZ(0))");
-        Table table0 = engine.getCatalog().resolveTable("test_ts_p0");
+        Table table0 = engine.getCatalog().resolveTable("TEST_TS_P0");
         assertEquals(0, ((DateTimeType) table0.getColumn("ts").getDataType()).getPrecision());
 
         // Test precision 9 (max)
         engine.execute("CREATE TABLE test_ts_p9 (id INTEGER, ts TIMESTAMP_LTZ(9))");
-        Table table9 = engine.getCatalog().resolveTable("test_ts_p9");
+        Table table9 = engine.getCatalog().resolveTable("TEST_TS_P9");
         assertEquals(9, ((DateTimeType) table9.getColumn("ts").getDataType()).getPrecision());
 
         logger.info("Tested precision range 0-9 successfully");
@@ -270,7 +270,7 @@ public class TimestampLtzTest {
         logger.info("Testing plain TIMESTAMP type still works");
         engine.execute("CREATE TABLE test_plain_ts (id INTEGER, ts TIMESTAMP)");
 
-        Table table = engine.getCatalog().resolveTable("test_plain_ts");
+        Table table = engine.getCatalog().resolveTable("TEST_PLAIN_TS");
         assertNotNull(table);
 
         TableColumn tsCol = table.getColumn("ts");

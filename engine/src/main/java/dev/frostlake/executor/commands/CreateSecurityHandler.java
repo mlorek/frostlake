@@ -173,26 +173,8 @@ public class CreateSecurityHandler implements CommandHandler {
         }
         try {
             if (ctx.userProperties() != null) {
-                String password = null;
-                String defaultRole = null;
-
-                for (final FrostlakeParser.UserPropertyContext propCtx : ctx.userProperties().userProperty()) {
-                    if (propCtx.PASSWORD() != null) {
-                        password = ddl.extractStringLiteral(propCtx.STRING_LITERAL());
-                    } else if (propCtx.DEFAULT_ROLE() != null) {
-                        if (propCtx.identifier() != null) {
-                            defaultRole = getText(propCtx.identifier());
-                        } else if (propCtx.STRING_LITERAL() != null) {
-                            defaultRole = ddl.extractStringLiteral(propCtx.STRING_LITERAL());
-                        }
-                    }
-                }
-
-                if (password != null) {
-                    catalog.createUser(userName, password, defaultRole);
-                } else {
-                    catalog.createUser(userName, null, defaultRole);
-                }
+                catalog.createUser(userName, null, null);
+                UserProperties.apply(catalog.getUser(userName), ctx.userProperties().userProperty());
             } else {
                 catalog.createUser(userName);
             }

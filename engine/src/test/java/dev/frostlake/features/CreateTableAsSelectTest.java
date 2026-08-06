@@ -63,7 +63,7 @@ public class CreateTableAsSelectTest {
 
         engine.execute("CREATE TABLE target AS SELECT id, name FROM source");
 
-        Table table = engine.getCatalog().resolveTable("target");
+        Table table = engine.getCatalog().resolveTable("TARGET");
         assertNotNull(table);
         assertEquals(2, table.getColumns().size());
         assertEquals("ID", table.getColumn("id").getName());
@@ -81,7 +81,7 @@ public class CreateTableAsSelectTest {
 
         engine.execute("CREATE TABLE tbl AS SELECT 1 as c, 2 as d");
 
-        Table table = engine.getCatalog().resolveTable("tbl");
+        Table table = engine.getCatalog().resolveTable("TBL");
         assertNotNull(table);
         assertEquals(2, table.getColumns().size());
         assertEquals("C", table.getColumn("c").getName());
@@ -109,7 +109,7 @@ public class CreateTableAsSelectTest {
         engine.execute("CREATE OR REPLACE TABLE test (id INTEGER, value VARCHAR)");
         engine.execute("INSERT INTO test VALUES (2, 'Second')");
 
-        Table table = engine.getCatalog().resolveTable("test");
+        Table table = engine.getCatalog().resolveTable("TEST");
         assertNotNull(table);
         assertEquals(2, table.getColumns().size());
         assertEquals("VALUE", table.getColumn("value").getName());
@@ -128,7 +128,7 @@ public class CreateTableAsSelectTest {
 
         engine.execute("CREATE OR REPLACE TEMP TABLE tbl AS SELECT 1 as c, 2 as d");
 
-        Table table = engine.getCatalog().resolveTable("tbl");
+        Table table = engine.getCatalog().resolveTable("TBL");
         assertNotNull(table);
         assertTrue(table.isTemporary());
         assertEquals(2, table.getColumns().size());
@@ -145,7 +145,7 @@ public class CreateTableAsSelectTest {
 
         engine.execute("CREATE TEMP TABLE temp_tbl (id INTEGER, name VARCHAR)");
 
-        Table table = engine.getCatalog().resolveTable("temp_tbl");
+        Table table = engine.getCatalog().resolveTable("TEMP_TBL");
         assertNotNull(table);
         assertTrue(table.isTemporary());
         assertFalse(table.isTransient());
@@ -159,7 +159,7 @@ public class CreateTableAsSelectTest {
 
         engine.execute("CREATE TEMPORARY TABLE temp_tbl (id INTEGER, name VARCHAR)");
 
-        Table table = engine.getCatalog().resolveTable("temp_tbl");
+        Table table = engine.getCatalog().resolveTable("TEMP_TBL");
         assertNotNull(table);
         assertTrue(table.isTemporary());
         assertFalse(table.isTransient());
@@ -176,7 +176,7 @@ public class CreateTableAsSelectTest {
 
         engine.execute("CREATE TEMP TABLE temp_target AS SELECT * FROM source");
 
-        Table table = engine.getCatalog().resolveTable("temp_target");
+        Table table = engine.getCatalog().resolveTable("TEMP_TARGET");
         assertNotNull(table);
         assertTrue(table.isTemporary());
 
@@ -192,7 +192,7 @@ public class CreateTableAsSelectTest {
 
         engine.execute("CREATE TEMPORARY TABLE temp_tbl AS SELECT 10 as x, 20 as y");
 
-        Table table = engine.getCatalog().resolveTable("temp_tbl");
+        Table table = engine.getCatalog().resolveTable("TEMP_TBL");
         assertNotNull(table);
         assertTrue(table.isTemporary());
 
@@ -215,7 +215,7 @@ public class CreateTableAsSelectTest {
 
         engine.execute("CREATE OR REPLACE TABLE tbl AS SELECT 2 as b, 3 as c");
 
-        Table table = engine.getCatalog().resolveTable("tbl");
+        Table table = engine.getCatalog().resolveTable("TBL");
         assertNotNull(table);
         assertEquals(2, table.getColumns().size());
 
@@ -256,7 +256,7 @@ public class CreateTableAsSelectTest {
 
         engine.execute("CREATE TABLE joined AS SELECT u.name, o.order_id FROM users u JOIN orders o ON u.id = o.user_id");
 
-        Table table = engine.getCatalog().resolveTable("joined");
+        Table table = engine.getCatalog().resolveTable("JOINED");
         assertNotNull(table);
         assertEquals(2, table.getColumns().size());
 
@@ -277,7 +277,7 @@ public class CreateTableAsSelectTest {
 
         engine.execute("CREATE TABLE summary AS SELECT product, SUM(amount) as total FROM sales GROUP BY product");
 
-        Table table = engine.getCatalog().resolveTable("summary");
+        Table table = engine.getCatalog().resolveTable("SUMMARY");
         assertNotNull(table);
         assertEquals(2, table.getColumns().size());
 
@@ -301,7 +301,7 @@ public class CreateTableAsSelectTest {
         rs2.next();
         assertEquals(2L, rs2.getValue(0));
 
-        Table table = engine.getCatalog().resolveTable("tbl");
+        Table table = engine.getCatalog().resolveTable("TBL");
         assertTrue(table.isTemporary());
 
         logger.info("Multiple CREATE OR REPLACE TEMP TABLE works correctly");
@@ -314,8 +314,8 @@ public class CreateTableAsSelectTest {
         engine.execute("CREATE TRANSIENT TABLE trans_tbl (id INTEGER)");
         engine.execute("CREATE TEMP TABLE temp_tbl (id INTEGER)");
 
-        Table transTable = engine.getCatalog().resolveTable("trans_tbl");
-        Table tempTable = engine.getCatalog().resolveTable("temp_tbl");
+        Table transTable = engine.getCatalog().resolveTable("TRANS_TBL");
+        Table tempTable = engine.getCatalog().resolveTable("TEMP_TBL");
 
         assertNotNull(transTable);
         assertNotNull(tempTable);
@@ -335,7 +335,7 @@ public class CreateTableAsSelectTest {
 
         engine.execute("CREATE OR REPLACE TABLE tbl (id INTEGER) COMMENT = 'Test table'");
 
-        Table table = engine.getCatalog().resolveTable("tbl");
+        Table table = engine.getCatalog().resolveTable("TBL");
         assertNotNull(table);
         assertEquals("Test table", table.getComment());
 
@@ -352,7 +352,7 @@ public class CreateTableAsSelectTest {
 
         engine.execute("CREATE TEMP TABLE clustered AS SELECT * FROM source CLUSTER BY (region)");
 
-        Table table = engine.getCatalog().resolveTable("clustered");
+        Table table = engine.getCatalog().resolveTable("CLUSTERED");
         assertNotNull(table);
         assertTrue(table.isTemporary());
         assertEquals(1, table.getClusterKeys().size());

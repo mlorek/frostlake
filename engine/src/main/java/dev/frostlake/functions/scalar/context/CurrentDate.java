@@ -16,6 +16,7 @@
 
 package dev.frostlake.functions.scalar.context;
 
+import dev.frostlake.executor.StatementClock;
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.types.DateTimeType;
 
@@ -26,7 +27,7 @@ public class CurrentDate extends BuiltInFunction {
     public CurrentDate() { super("CURRENT_DATE", DateTimeType.DATE); }
 
     @Override
-    public Object evaluate(final List<Object> args) { return LocalDate.now(); }
+    public Object evaluate(final List<Object> args) { return StatementClock.now().toLocalDate(); }
 
     @Override public int getMinArgCount() { return 0; }
     @Override public int getMaxArgCount() { return 0; }

@@ -38,6 +38,7 @@
 
     <modules>
         <module>engine</module>
+        <module>ai</module>
         <module>formats</module>
         <module>geo</module>
         <module>perf-tests</module>

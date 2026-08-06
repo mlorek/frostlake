@@ -18,13 +18,15 @@ package dev.frostlake.rt.py;
 
 import dev.frostlake.DatabaseEngine;
 import dev.frostlake.ExecutionResult;
+import dev.frostlake.executor.SqlIdentifiers;
+import dev.frostlake.executor.udf.TemporaryObjectStatements;
 import dev.frostlake.metastore.model.Parameter;
 import dev.frostlake.metastore.model.Procedure;
 import dev.frostlake.metastore.model.UdfLanguage;
 import dev.frostlake.storage.ResultSet;
+import dev.frostlake.storage.Row;
 import dev.frostlake.values.BinaryValue;
 import dev.frostlake.values.VariantValue;
-import dev.frostlake.storage.Row;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -80,7 +82,11 @@ public class PythonProcedureExecutor {
                 PythonRuntime.bind(parameters.get(i).getName(), arguments.get(i));
             }
 
-            SnowparkSession session = new SnowparkSession(engine);
+            // Measured live: an owner's rights PYTHON procedure is refused a temporary object exactly as
+            // a Java one is, so the restriction belongs to the handler languages rather than to Java.
+            // The rights mode rides on the Procedure, so the SPI signature does not have to grow one.
+            SnowparkSession session = new SnowparkSession(
+                engine, "OWNER".equalsIgnoreCase(procedure.getExecuteAs()));
             // Handlers receive a PYTHON Session (the snowpark emulation) wrapping the Java facade, so
             // snowpark DataFrame code (session.table(...).select(...), df.write, udtf) works; plain
             // session.sql(...).collect()/count() callers see the same surface snowpark itself has.
@@ -197,12 +203,19 @@ public class PythonProcedureExecutor {
 
     public static class SnowparkSession {
         private final DatabaseEngine engine;
+        private final boolean ownersRights;
 
         public SnowparkSession(final DatabaseEngine engine) {
+            this(engine, false);
+        }
+
+        public SnowparkSession(final DatabaseEngine engine, final boolean ownersRights) {
             this.engine = engine;
+            this.ownersRights = ownersRights;
         }
 
         public PythonResultSet sql(final String sqlText) {
+            rejectTemporaryObjectUnderOwnersRights(sqlText);
             try {
                 // General execute, not executeQuery: handler code runs DDL and DML (CREATE OR REPLACE
                 // TABLE, TRUNCATE, MERGE, DELETE, ...) through session.sql exactly as it does queries.
@@ -221,13 +234,32 @@ public class PythonProcedureExecutor {
         }
 
         /**
+         * The owner's rights temporary-object refusal, in Snowflake's words — the same rule and the same
+         * sentence the Java/Scala session applies, because live applies it to both.
+         */
+        private void rejectTemporaryObjectUnderOwnersRights(final String sqlText) {
+            if (!ownersRights) {
+                return;
+            }
+            final String kind = TemporaryObjectStatements.temporaryObjectKind(sqlText);
+            if (kind != null) {
+                throw new RuntimeException(
+                    "Stored procedure execution error: Unsupported statement type 'temporary " + kind + "'.");
+            }
+        }
+
+        /**
          * Quiet existence probe for the shim's save_as_table paths: resolves through the catalog without
          * executing a statement, so a missing table does not produce an engine ERROR log entry the way a
          * failing probe query would.
          */
         public boolean tableExists(final String tableName) {
             try {
-                return engine.getCatalog().resolveTable(tableName) != null;
+                // The shim hands over the name the handler wrote — save_as_table('shim_target') — which is
+                // an identifier reference, not a resolved name. Catalog resolution matches exactly, so the
+                // bare form has to be folded here or the probe answers "missing" for a table that exists
+                // and the writer appends to a second one.
+                return engine.getCatalog().resolveTable(SqlIdentifiers.canonicalText(tableName)) != null;
             } catch (final RuntimeException e) {
                 return false;
             }

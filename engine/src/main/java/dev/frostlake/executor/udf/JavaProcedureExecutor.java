@@ -28,6 +28,7 @@ import javax.tools.JavaCompiler;
 import javax.tools.JavaFileObject;
 import javax.tools.ToolProvider;
 import java.io.File;
+import java.lang.reflect.Constructor;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.net.URL;
@@ -141,7 +142,13 @@ public class JavaProcedureExecutor {
         // Find matching method: first parameter must be Session
         Method target = findMethod(clazz, methodName, args.length);
 
-        Object instance = clazz.getDeclaredConstructor().newInstance();
+        // The handler class does not have to be public — Snowflake accepts a package-private one, and a
+        // body written as a bare "class H { … }" is the common shape in its own examples. Reflection from
+        // this package cannot touch such a class's members without being told to.
+        final Constructor<?> constructor = clazz.getDeclaredConstructor();
+        constructor.setAccessible(true);
+        Object instance = constructor.newInstance();
+        target.setAccessible(true);
         UdfConsoleCapture.enter();
         try {
             return target.invoke(instance, args);

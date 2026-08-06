@@ -143,6 +143,21 @@ final class CatalogSnapshotReader {
             if (userSnapshot.owner != null) {
                 user.setOwner(userSnapshot.owner);
             }
+            // The CREATE USER property set. Applied verbatim — nulls included — but only when the
+            // snapshot actually carries the group; an older one leaves the new user's defaults be.
+            if (Boolean.TRUE.equals(userSnapshot.propertiesWritten)) {
+                user.setLoginName(userSnapshot.loginName);
+                user.setDisplayName(userSnapshot.displayName);
+                user.setFirstName(userSnapshot.firstName);
+                user.setMiddleName(userSnapshot.middleName);
+                user.setLastName(userSnapshot.lastName);
+                user.setEmail(userSnapshot.email);
+                user.setDefaultWarehouse(userSnapshot.defaultWarehouse);
+                user.setDefaultNamespace(userSnapshot.defaultNamespace);
+                user.setDefaultSecondaryRoles(userSnapshot.defaultSecondaryRoles);
+                user.setMustChangePassword(userSnapshot.mustChangePassword);
+                user.setUserType(userSnapshot.userType);
+            }
             // Privileges granted directly to the user (object- and column-level). The referenced objects were
             // loaded above; grant* only records the entry, so this is order-independent for the grant itself.
             if (userSnapshot.privileges != null) {
@@ -372,6 +387,21 @@ final class CatalogSnapshotReader {
                 }
             }
 
+            // Load Cortex search services. Null on older snapshots.
+            if (schemaSnapshot.cortexSearchServices != null) {
+                for (final CortexSearchServiceSnapshot serviceSnapshot
+                        : schemaSnapshot.cortexSearchServices) {
+                    final CortexSearchService service = new CortexSearchService(
+                        serviceSnapshot.name, serviceSnapshot.searchColumn,
+                        serviceSnapshot.attributeColumns, serviceSnapshot.columns,
+                        serviceSnapshot.warehouse, serviceSnapshot.targetLag,
+                        serviceSnapshot.embeddingModel, serviceSnapshot.definition,
+                        serviceSnapshot.comment);
+                    service.setOwner(serviceSnapshot.owner);
+                    schema.addCortexSearchService(service);
+                }
+            }
+
             // Load streams (pending change records restored at offset 0 = all unconsumed)
             if (schemaSnapshot.streams != null) {
                 for (final StreamSnapshot streamSnapshot : schemaSnapshot.streams) {
@@ -406,6 +436,13 @@ final class CatalogSnapshotReader {
                     Task task = new Task(taskSnapshot.name, taskSnapshot.schedule,
                         taskSnapshot.scheduleType != null ? ScheduleType.valueOf(taskSnapshot.scheduleType) : null,
                         taskSnapshot.sqlStatement, taskSnapshot.warehouse);
+                    task.setId(taskSnapshot.id);
+                    task.setCreatedByUser(taskSnapshot.createdByUser);
+                    if (taskSnapshot.explicitParameters != null) {
+                        for (final String parameterName : taskSnapshot.explicitParameters) {
+                            task.markParameterSet(parameterName);
+                        }
+                    }
                     if (taskSnapshot.predecessors != null) {
                         for (final String pred : taskSnapshot.predecessors) {
                             task.addPredecessor(pred);

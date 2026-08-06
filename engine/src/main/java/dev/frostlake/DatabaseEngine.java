@@ -20,6 +20,8 @@ import dev.frostlake.config.EngineConfig;
 import dev.frostlake.config.S3PathResolver;
 import dev.frostlake.executor.ProceduralExecutor;
 import dev.frostlake.executor.QueryExecutor;
+import dev.frostlake.executor.QueryResultCache;
+import dev.frostlake.values.VariantJsonFormat;
 import dev.frostlake.executor.udf.UdfLanguageRuntime;
 import dev.frostlake.executor.udf.UdfRuntimes;
 import dev.frostlake.functions.FunctionRegistry;
@@ -31,6 +33,7 @@ import dev.frostlake.parser.SqlSyntaxException;
 import dev.frostlake.persistence.CatalogSnapshot;
 import dev.frostlake.persistence.MemoryTableDataStore;
 import dev.frostlake.persistence.PersistenceManager;
+import dev.frostlake.persistence.WalStatementKinds;
 import dev.frostlake.persistence.WalRecord;
 import dev.frostlake.persistence.WalRecordType;
 import dev.frostlake.persistence.WriteAheadLog;
@@ -53,6 +56,8 @@ import java.nio.file.DirectoryStream;
 import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Instant;
+import java.time.LocalDateTime;
 import java.nio.file.SimpleFileVisitor;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.util.ArrayList;
@@ -155,6 +160,7 @@ public class DatabaseEngine {
         queryExecutor.setStreamManager(streamManager);
         transactionManager.setStreamManager(streamManager);
         queryExecutor.setTaskScheduler(taskScheduler);
+        functionRegistry.setTaskScheduler(taskScheduler);
 
         initializeSystemObjects();
         initializePersistence();
@@ -166,6 +172,12 @@ public class DatabaseEngine {
             wireWalSink();
             checkpointSeq = scanMaxCheckpointSeq();
             replayWal();
+        }
+
+        // Last, so the arming scan sees every task both restore paths brought back.
+        if (config.isTaskSchedulerAutoStart()) {
+            taskScheduler.start();
+            logger.info("Task scheduler auto-started ({}=true)", EngineConfig.PROP_TASKS_AUTOSTART);
         }
         logger.info("Frostlake SQL Engine initialized successfully");
     }
@@ -187,15 +199,17 @@ public class DatabaseEngine {
     private void wireWalSink() {
         transactionManager.setWalSink(new WalSink() {
             @Override
-            public void appendTransaction(final List<String> statements) {
-                appendTransactionToWal(statements);
+            public void appendTransaction(final List<String> statements,
+                                          final List<Instant> instants) {
+                appendTransactionToWal(statements, instants);
             }
         });
     }
 
-    private void appendTransactionToWal(final List<String> statements) {
+    private void appendTransactionToWal(final List<String> statements,
+                                        final List<Instant> instants) {
         try {
-            wal.appendTransaction(statements);
+            wal.appendTransaction(statements, instants);
             txnsSinceCheckpoint++;
         } catch (final Exception e) {
             throw new RuntimeException("WAL append failed: " + e.getMessage(), e);
@@ -236,7 +250,7 @@ public class DatabaseEngine {
                 if (rec.getType() != WalRecordType.TRANSACTION) {
                     continue;
                 }
-                replayTransaction(rec.getStatements());
+                replayTransaction(rec.getStatements(), rec);
                 replayed++;
             }
 
@@ -255,15 +269,23 @@ public class DatabaseEngine {
 
     /** Re-execute one committed transaction's statements. A single-statement record replays as an autocommit
      *  statement; a multi-statement record replays inside a BEGIN…COMMIT, exactly as it was committed. */
-    private void replayTransaction(final List<String> statements) {
+    /**
+     * Re-execute one logged transaction. Each statement is given back the instant it originally ran at,
+     * so a replayed {@code CURRENT_TIMESTAMP} resolves to the value the row was written with instead of
+     * to the recovery time. A record from a pre-v3 log carries no instant and replays at the wall clock,
+     * which is what it did before.
+     */
+    private void replayTransaction(final List<String> statements, final WalRecord record) {
         try {
             if (statements.size() == 1) {
+                queryExecutor.setNextStatementInstant(record.getStatementInstant(0));
                 execute(statements.get(0));
                 return;
             }
             execute("BEGIN");
-            for (final String sql : statements) {
-                execute(sql);
+            for (int i = 0; i < statements.size(); i++) {
+                queryExecutor.setNextStatementInstant(record.getStatementInstant(i));
+                execute(statements.get(i));
             }
             execute("COMMIT");
         } catch (final Exception e) {
@@ -299,18 +321,28 @@ public class DatabaseEngine {
             return;
         }
         if (transactionManager.hasActiveTransaction()) {
-            transactionManager.getCurrentTransaction().logStatementForWal(sql);
+            transactionManager.getCurrentTransaction()
+                .logStatementForWal(sql, queryExecutor.currentStatementInstant());
         } else {
-            appendTransactionToWal(Collections.singletonList(sql));
+            appendTransactionToWal(Collections.singletonList(sql),
+                Collections.singletonList(queryExecutor.currentStatementInstant()));
         }
     }
 
+    /**
+     * Whether this statement belongs in the write-ahead log. The answer comes from the parse tree —
+     * see {@link WalStatementKinds}, which owns the rule — because the leading keyword does not
+     * identify the family: {@code BEGIN} opens a transaction AND a procedural block, so reading the
+     * text dropped the DML inside an anonymous {@code BEGIN … END} block and lost those rows on the
+     * next restart.
+     */
     private boolean isLoggableStatement(final String sql) {
-        final String u = sql.trim().toUpperCase();
-        return !(u.startsWith("SELECT") || u.startsWith("WITH") || u.startsWith("SHOW")
-                || u.startsWith("DESCRIBE") || u.startsWith("DESC") || u.startsWith("EXPLAIN")
-                || u.startsWith("BEGIN") || u.startsWith("START") || u.startsWith("COMMIT")
-                || u.startsWith("ROLLBACK"));
+        return queryExecutor.isDurableStatement(sql);
+    }
+
+    /** The loggability decision, exposed so tests can assert it family by family. */
+    public boolean isDurableStatementForTesting(final String sql) {
+        return isLoggableStatement(sql);
     }
 
     /**
@@ -472,6 +504,11 @@ public class DatabaseEngine {
      */
     public ExecutionResult execute(final String sql) {
         logger.debug("Executing SQL: {}", sql);
+
+        // Bind this session's JSON_INDENT for the statement's duration. Reading it per statement,
+        // rather than pushing it from ALTER SESSION, keeps a width one session set from surviving
+        // into whatever runs on this thread next.
+        bindJsonIndent();
 
         // Snowflake: a failed statement inside an explicit transaction rolls back ITSELF but leaves the
         // transaction open. In deferred-apply mode, snapshot the write set so we can restore exactly this
@@ -695,6 +732,26 @@ public class DatabaseEngine {
     /** This engine's effective configuration (read-only introspection, e.g. by embedders and tests). */
     public EngineConfig getConfig() {
         return config;
+    }
+
+    /** Bind the session's JSON_INDENT so displayed variants use its width for this statement. */
+    private void bindJsonIndent() {
+        final Object indent = securityManager != null
+            ? securityManager.getSessionContext().getSessionParameter("JSON_INDENT") : null;
+        if (indent == null) {
+            VariantJsonFormat.clearSessionScope();
+            return;
+        }
+        try {
+            VariantJsonFormat.beginSessionScope(Integer.parseInt(indent.toString().trim()));
+        } catch (final NumberFormatException notANumber) {
+            VariantJsonFormat.clearSessionScope();
+        }
+    }
+
+    /** The query-result cache backing RESULT_SCAN and LAST_QUERY_ID. */
+    public QueryResultCache getQueryResultCache() {
+        return queryExecutor.getResultCache();
     }
 
     public Catalog getCatalog() {

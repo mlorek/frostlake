@@ -175,9 +175,65 @@ final class JdbcMetadataQueries {
         + "CAST(NULL AS VARCHAR) AS SCOPE_TABLE, CAST(NULL AS INTEGER) AS SOURCE_DATA_TYPE, "
         + "IS_IDENTITY AS IS_AUTOINCREMENT, 'NO' AS IS_GENERATEDCOLUMN FROM ";
 
+    /**
+     * Primary keys are read through SHOW PRIMARY KEYS, re-projected from its result — the same route
+     * Snowflake's own driver takes, and the only one available: INFORMATION_SCHEMA.COLUMNS carries no
+     * key flag on a real account, and its key-column mapping lives nowhere else in the catalog.
+     * The SHOW output names its columns in lower case, so they are quoted here.
+     */
+    /**
+     * {@code getProcedures}' columns — SIX of them, which is NOT what {@code java.sql.DatabaseMetaData}
+     * documents. The spec calls for nine, three of them "reserved for future use"; Snowflake's driver
+     * simply omits those three, and this is measured from it rather than copied from the interface.
+     * Frostlake follows Snowflake, because a client reading these by index has to see what it would see
+     * against the real thing.
+     *
+     * <p>{@code REMARKS} is the fixed string live returns, and {@code PROCEDURE_TYPE} is
+     * {@code procedureReturnsResult} (2) for every row: a Snowflake procedure always returns a value.
+     * {@code SPECIFIC_NAME} carries the SIGNATURE — {@code MP(NUMBER) RETURN VARCHAR} — where the
+     * function equivalent below carries the bare name, an asymmetry that is live's, not ours.
+     */
+    /**
+     * The fourteen columns {@code getImportedKeys} / {@code getExportedKeys} / {@code getCrossReference}
+     * all share — one shape, three filters. Read off {@code SHOW IMPORTED KEYS}, whose own output was
+     * widened to carry both database names for exactly this.
+     *
+     * <p>Constants, measured from live rather than chosen: {@code UPDATE_RULE} and {@code DELETE_RULE}
+     * are {@code importedKeyNoAction} (3) and {@code DEFERRABILITY} is {@code importedKeyNotDeferrable}
+     * (7). Snowflake does not enforce foreign keys and has no deferred checking, so no other value can
+     * arise — but the numbers are what its driver returns, not what this code decided.
+     */
+    private static final String FOREIGN_KEYS_PROJECTION =
+        "SELECT \"pk_database_name\" AS PKTABLE_CAT, \"pk_schema_name\" AS PKTABLE_SCHEM, "
+        + "\"pk_table_name\" AS PKTABLE_NAME, \"pk_column_name\" AS PKCOLUMN_NAME, "
+        + "\"fk_database_name\" AS FKTABLE_CAT, \"fk_schema_name\" AS FKTABLE_SCHEM, "
+        + "\"fk_table_name\" AS FKTABLE_NAME, \"fk_column_name\" AS FKCOLUMN_NAME, "
+        + "\"key_sequence\" AS KEY_SEQ, 3 AS UPDATE_RULE, 3 AS DELETE_RULE, "
+        + "\"fk_name\" AS FK_NAME, \"pk_name\" AS PK_NAME, 7 AS DEFERRABILITY "
+        + "FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE 1=1";
+
+    private static final String PROCEDURES_PROJECTION =
+        "SELECT PROCEDURE_CATALOG AS PROCEDURE_CAT, PROCEDURE_SCHEMA AS PROCEDURE_SCHEM, "
+        + "PROCEDURE_NAME, 'user-defined procedure' AS REMARKS, 2 AS PROCEDURE_TYPE, "
+        + "PROCEDURE_NAME || ARGUMENT_SIGNATURE || ' RETURN ' || DATA_TYPE AS SPECIFIC_NAME FROM ";
+
+    /**
+     * {@code getFunctions}' six columns. {@code FUNCTION_TYPE} separates the two kinds, measured live:
+     * {@code functionNoTable} (1) for a scalar UDF and {@code functionReturnsTable} (2) for a UDTF. A
+     * table function is recognised by its {@code DATA_TYPE}, which Frostlake's INFORMATION_SCHEMA
+     * already writes as {@code TABLE (col TYPE, …)} rather than a scalar type name.
+     */
+    private static final String FUNCTIONS_PROJECTION =
+        "SELECT FUNCTION_CATALOG AS FUNCTION_CAT, FUNCTION_SCHEMA AS FUNCTION_SCHEM, "
+        + "FUNCTION_NAME, 'user-defined function' AS REMARKS, "
+        + "CASE WHEN DATA_TYPE LIKE 'TABLE (%' THEN 2 ELSE 1 END AS FUNCTION_TYPE, "
+        + "FUNCTION_NAME AS SPECIFIC_NAME FROM ";
+
     private static final String PRIMARY_KEYS_PROJECTION =
-        "SELECT TABLE_CATALOG AS TABLE_CAT, TABLE_SCHEMA AS TABLE_SCHEM, TABLE_NAME, COLUMN_NAME, "
-        + "ORDINAL_POSITION AS KEY_SEQ, 'PRIMARY' AS PK_NAME FROM ";
+        "SELECT \"database_name\" AS TABLE_CAT, \"schema_name\" AS TABLE_SCHEM, "
+        + "\"table_name\" AS TABLE_NAME, \"column_name\" AS COLUMN_NAME, "
+        + "\"key_sequence\" AS KEY_SEQ, \"constraint_name\" AS PK_NAME "
+        + "FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE 1=1";
 
     /**
      * {@code DatabaseMetaData.getSchemas(catalog, schemaPattern)} — one row per schema, labelled
@@ -251,20 +307,164 @@ final class JdbcMetadataQueries {
     static ResultSet primaryKeys(final Connection connection, final String catalog, final String schema,
                                  final String table) throws SQLException {
         final List<String> catalogs = catalogsInScope(connection, catalog);
+        // SHOW PRIMARY KEYS is scoped per statement, so the widest scope is listed once and then
+        // filtered; a caller naming no real catalog gets a correctly shaped, zero-row answer.
+        final StringBuilder sql = new StringBuilder(PRIMARY_KEYS_PROJECTION);
+        if (catalogs.size() == 1 && catalogs.get(0) == null) {
+            sql.append(" AND 1=0");
+        } else {
+            appendInList(sql, "\"database_name\"", catalogs);
+            appendEquals(sql, "\"schema_name\"", schema);
+            appendEquals(sql, "\"table_name\"", table);
+        }
+        sql.append(" ORDER BY TABLE_CAT, TABLE_SCHEM, TABLE_NAME, KEY_SEQ");
+        // The listing and its re-projection go out as ONE multi-statement request: RESULT_SCAN
+        // reads the listing back, and pairing them costs one round trip instead of two.
+        final Statement statement = connection.createStatement();
+        statement.execute("SHOW PRIMARY KEYS IN ACCOUNT; " + sql);
+        // Advance exactly once, past the listing, to the re-projection: a further getMoreResults()
+        // would close that result set while looking for a third statement that does not exist.
+        statement.getMoreResults();
+        return statement.getResultSet();
+    }
+
+    /** {@code AND UPPER(col) IN ('A', 'B')}, skipped when the list is empty. */
+    /**
+     * {@code DatabaseMetaData.getProcedures(...)}, spanning every catalog in scope — the call a tool
+     * makes to put a Procedures node under a schema.
+     */
+    static ResultSet procedures(final Connection connection, final String catalog,
+                                final String schemaPattern, final String procedureNamePattern)
+            throws SQLException {
+        final List<String> catalogs = catalogsInScope(connection, catalog);
         final StringBuilder sql = new StringBuilder();
         for (int i = 0; i < catalogs.size(); i++) {
             final String database = catalogs.get(i);
             if (i > 0) {
                 sql.append(" UNION ALL ");
             }
-            sql.append(PRIMARY_KEYS_PROJECTION).append(qualifier(database))
-                .append("COLUMNS WHERE IS_PRIMARY_KEY = 'YES'");
-            appendEquals(sql, "TABLE_SCHEMA", schema);
-            appendEquals(sql, "TABLE_NAME", table);
+            sql.append(PROCEDURES_PROJECTION).append(qualifier(database)).append("PROCEDURES WHERE 1=1");
+            appendPattern(sql, "PROCEDURE_SCHEMA", schemaPattern);
+            appendPattern(sql, "PROCEDURE_NAME", procedureNamePattern);
             appendNoMatchGuard(sql, database);
         }
-        sql.append(" ORDER BY TABLE_CAT, TABLE_SCHEM, TABLE_NAME, KEY_SEQ");
+        sql.append(" ORDER BY PROCEDURE_CAT, PROCEDURE_SCHEM, PROCEDURE_NAME");
         return query(connection, sql.toString());
+    }
+
+    /** {@code DatabaseMetaData.getFunctions(...)} — scalar UDFs and UDTFs alike, as live lists both. */
+    static ResultSet functions(final Connection connection, final String catalog,
+                               final String schemaPattern, final String functionNamePattern)
+            throws SQLException {
+        final List<String> catalogs = catalogsInScope(connection, catalog);
+        final StringBuilder sql = new StringBuilder();
+        for (int i = 0; i < catalogs.size(); i++) {
+            final String database = catalogs.get(i);
+            if (i > 0) {
+                sql.append(" UNION ALL ");
+            }
+            sql.append(FUNCTIONS_PROJECTION).append(qualifier(database)).append("FUNCTIONS WHERE 1=1");
+            appendPattern(sql, "FUNCTION_SCHEMA", schemaPattern);
+            appendPattern(sql, "FUNCTION_NAME", functionNamePattern);
+            appendNoMatchGuard(sql, database);
+        }
+        sql.append(" ORDER BY FUNCTION_CAT, FUNCTION_SCHEM, FUNCTION_NAME");
+        return query(connection, sql.toString());
+    }
+
+    /**
+     * The foreign keys of one table, filtered at whichever end the caller asked about — the FK side for
+     * {@code getImportedKeys}, the PK side for {@code getExportedKeys}, both for
+     * {@code getCrossReference}. A null table on a side means "do not filter that side".
+     *
+     * <p>Follows {@link #primaryKeys}: one multi-statement round trip, the SHOW listing then a
+     * re-projection reading it back through RESULT_SCAN.
+     */
+    static ResultSet foreignKeys(final Connection connection,
+                                 final String pkCatalog, final String pkSchema, final String pkTable,
+                                 final String fkCatalog, final String fkSchema, final String fkTable)
+            throws SQLException {
+        final StringBuilder sql = new StringBuilder(FOREIGN_KEYS_PROJECTION);
+        appendEquals(sql, "\"pk_database_name\"", pkCatalog);
+        appendEquals(sql, "\"pk_schema_name\"", pkSchema);
+        appendEquals(sql, "\"pk_table_name\"", pkTable);
+        appendEquals(sql, "\"fk_database_name\"", fkCatalog);
+        appendEquals(sql, "\"fk_schema_name\"", fkSchema);
+        appendEquals(sql, "\"fk_table_name\"", fkTable);
+        // Live orders imported keys by the PK end then the sequence, which is also the order a tool
+        // wants when drawing a table's inbound references.
+        sql.append(" ORDER BY PKTABLE_CAT, PKTABLE_SCHEM, PKTABLE_NAME, KEY_SEQ");
+        final Statement statement = connection.createStatement();
+        statement.execute("SHOW IMPORTED KEYS IN ACCOUNT; " + sql);
+        statement.getMoreResults();
+        return statement.getResultSet();
+    }
+
+    /**
+     * {@code DatabaseMetaData.getTypeInfo()} — the eight rows Snowflake's driver returns, COPIED from it
+     * rather than derived from Frostlake's type hierarchy.
+     *
+     * <pre>
+     *   NUMBER    3   precision 38, scale 0..37
+     *   INTEGER   4   precision 38, scale 0..0
+     *   DOUBLE    8   precision 38, scale 0..37
+     *   VARCHAR  12   precision -1
+     *   DATE     91   TIME 92   TIMESTAMP 93   BOOLEAN 16
+     * </pre>
+     *
+     * <p>Several cells are the driver's constants rather than facts about the type, and deriving them
+     * would produce something more "correct" and less faithful: {@code CASE_SENSITIVE} is false even for
+     * VARCHAR, {@code AUTO_INCREMENT} is true on every row including DATE, and {@code SQL_DATA_TYPE},
+     * {@code SQL_DATETIME_SUB} and {@code NUM_PREC_RADIX} are -1 throughout. A client comparing against
+     * a real account sees these values, so these are the values.
+     *
+     * <p>The list is also SHORTER than the type system: no VARIANT, OBJECT, ARRAY, BINARY, GEOGRAPHY or
+     * the TIMESTAMP variants. That is live's list, not an omission here.
+     */
+    static ResultSet typeInfo(final Connection connection) throws SQLException {
+        final StringBuilder sql = new StringBuilder();
+        final String[][] types = {
+            //  name        jdbc  precision  minScale  maxScale
+            {"NUMBER",    "3",  "38", "0",  "37"},
+            {"INTEGER",   "4",  "38", "0",  "0"},
+            {"DOUBLE",    "8",  "38", "0",  "37"},
+            {"VARCHAR",   "12", "-1", "-1", "-1"},
+            {"DATE",      "91", "-1", "-1", "-1"},
+            {"TIME",      "92", "-1", "-1", "-1"},
+            {"TIMESTAMP", "93", "-1", "-1", "-1"},
+            {"BOOLEAN",   "16", "-1", "-1", "-1"},
+        };
+        for (int i = 0; i < types.length; i++) {
+            if (i > 0) {
+                sql.append(" UNION ALL ");
+            }
+            sql.append("SELECT '").append(types[i][0]).append("' AS TYPE_NAME, ")
+               .append(types[i][1]).append(" AS DATA_TYPE, ")
+               .append(types[i][2]).append(" AS PRECISION, ")
+               .append("CAST(NULL AS VARCHAR) AS LITERAL_PREFIX, CAST(NULL AS VARCHAR) AS LITERAL_SUFFIX, ")
+               .append("CAST(NULL AS VARCHAR) AS CREATE_PARAMS, 1 AS NULLABLE, FALSE AS CASE_SENSITIVE, ")
+               .append("3 AS SEARCHABLE, FALSE AS UNSIGNED_ATTRIBUTE, TRUE AS FIXED_PREC_SCALE, ")
+               .append("TRUE AS AUTO_INCREMENT, CAST(NULL AS VARCHAR) AS LOCAL_TYPE_NAME, ")
+               .append(types[i][3]).append(" AS MINIMUM_SCALE, ")
+               .append(types[i][4]).append(" AS MAXIMUM_SCALE, ")
+               .append("-1 AS SQL_DATA_TYPE, -1 AS SQL_DATETIME_SUB, -1 AS NUM_PREC_RADIX");
+        }
+        return query(connection, sql.toString());
+    }
+
+    private static void appendInList(final StringBuilder sql, final String column,
+                                     final List<String> values) {
+        if (values.isEmpty()) {
+            return;
+        }
+        sql.append(" AND UPPER(").append(column).append(") IN (");
+        for (int i = 0; i < values.size(); i++) {
+            if (i > 0) {
+                sql.append(", ");
+            }
+            sql.append('\'').append(values.get(i).toUpperCase().replace("'", "''")).append('\'');
+        }
+        sql.append(')');
     }
 
     /**

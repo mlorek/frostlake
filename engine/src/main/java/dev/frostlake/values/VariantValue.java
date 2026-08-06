@@ -89,15 +89,14 @@ public final class VariantValue implements Comparable<VariantValue>, Serializabl
     @Override
     public String toString() {
         // Snowflake renders an XML-shaped variant as XML text wherever the value is stringified
-        // (display, ::VARCHAR, TO_VARCHAR). Its indentation follows the JSON_INDENT session
-        // parameter — pretty by default, COMPACT at JSON_INDENT = 0 (live-verified both ways).
-        // Frostlake has no such parameter, so the compact form is its canonical rendering, which
-        // also matches TO_XML. The shape test is structural, so gate on the cheap canonical-text
-        // prefix before parsing. Equality, ordering and hashing stay on the canonical JSON text.
+        // (display, ::VARCHAR, TO_VARCHAR); that form stays compact, as TO_XML does. The shape test
+        // is structural, so gate on the cheap canonical-text prefix before parsing.
         if (XmlVariants.mightBeXmlText(text) && XmlVariants.isXmlElement(node())) {
             return XmlVariants.compactXml(node());
         }
-        return text;
+        // Everything else displays at the session's JSON_INDENT. Equality, ordering and hashing all
+        // stay on the canonical compact text, which is what text() returns.
+        return VariantJsonFormat.render(node(), text);
     }
 
     @Override

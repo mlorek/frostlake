@@ -18,6 +18,7 @@ package dev.frostlake.http;
 
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.values.BinaryValue;
+import dev.frostlake.values.TemporalText;
 import dev.frostlake.values.VariantValue;
 
 import dev.frostlake.storage.ResultSetColumn;
@@ -139,7 +140,10 @@ public class SqlResponse {
 
             // Copy rows. Engine-internal value objects are mapped to their JSON wire form here:
             // a BINARY cell crosses as its uppercase-hex text (the client re-types via the column
-            // metadata), so Jackson never bean-serializes an engine value class.
+            // metadata), so Jackson never bean-serializes an engine value class. A TEMPORAL cell
+            // crosses as the text a real account's driver would print for that type — otherwise
+            // Jackson emits its own ISO form and this transport disagrees with the in-process one
+            // about the same cell, which is worse than either shape being wrong on its own.
             rs.reset();
             while (rs.next()) {
                 List<Object> rowData = new ArrayList<>();
@@ -147,7 +151,7 @@ public class SqlResponse {
                     final Object cell = rs.getValue(i);
                     rowData.add(cell instanceof BinaryValue ? ((BinaryValue) cell).toHex()
                         : cell instanceof VariantValue ? ((VariantValue) cell).text()
-                        : cell);
+                        : TemporalText.wireValue(cell, rs.getColumns().get(i).getDataType()));
                 }
                 data.getRows().add(rowData);
             }

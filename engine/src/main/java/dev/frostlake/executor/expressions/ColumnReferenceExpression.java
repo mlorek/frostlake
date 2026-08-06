@@ -22,15 +22,32 @@ package dev.frostlake.executor.expressions;
 public class ColumnReferenceExpression implements Expression {
     private final String tableName;  // null if unqualified
     private final String columnName;
+    /** Fragment-relative; null when the reference was synthesised rather than parsed. */
+    private final SourcePosition position;
 
     public ColumnReferenceExpression(final String columnName) {
-        this.tableName = null;
-        this.columnName = columnName;
+        this(null, columnName, null);
     }
 
     public ColumnReferenceExpression(final String tableName, final String columnName) {
+        this(tableName, columnName, null);
+    }
+
+    /**
+     * A reference that remembers where it sat in the text it was parsed from, so a message about it
+     * can carry the position Snowflake always reports. See {@link SourcePosition} for why the place
+     * is fragment-relative and not absolute.
+     */
+    public ColumnReferenceExpression(final String tableName, final String columnName,
+                                     final SourcePosition position) {
         this.tableName = tableName;
         this.columnName = columnName;
+        this.position = position;
+    }
+
+    /** Where this reference sat in its fragment, or null when nobody wrote it. */
+    public SourcePosition getPosition() {
+        return position;
     }
 
     public String getTableName() {

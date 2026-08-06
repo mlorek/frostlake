@@ -16,17 +16,32 @@
 
 package dev.frostlake.functions.scalar.context;
 
+import dev.frostlake.config.EngineConfig;
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.types.StringType;
 
 import java.util.List;
 
-/** CURRENT_ORGANIZATION_NAME() — the organization name (not modeled; NULL). */
+/**
+ * CURRENT_ORGANIZATION_NAME() — the organization the account belongs to, configured through
+ * {@code organization.name}.
+ *
+ * <p>Reported UPPER-CASED, measured: an account whose organization-account identifier is
+ * {@code TWEPWDT-WJ64893} answers {@code TWEPWDT}, and {@code LOWER(...) = ...} is false there.
+ * The docs render the example in lower case, which is the documentation's styling rather than the
+ * account's answer — one more reason to measure the cell instead of reading it.
+ */
 public class CurrentOrganizationName extends BuiltInFunction {
-    public CurrentOrganizationName() { super("CURRENT_ORGANIZATION_NAME", StringType.VARCHAR); }
+
+    private final EngineConfig config;
+
+    public CurrentOrganizationName(final EngineConfig config) {
+        super("CURRENT_ORGANIZATION_NAME", StringType.VARCHAR);
+        this.config = config;
+    }
 
     @Override
-    public Object evaluate(final List<Object> args) { return null; }
+    public Object evaluate(final List<Object> args) { return config.getOrganizationName(); }
 
     @Override public int getMinArgCount() { return 0; }
     @Override public int getMaxArgCount() { return 0; }

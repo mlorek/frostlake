@@ -29,7 +29,9 @@ import dev.frostlake.parser.FrostlakeLexer;
 import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.parser.SyntaxErrorListener;
 import dev.frostlake.security.SecurityManager;
+import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.storage.ResultSet;
+import dev.frostlake.types.StringType;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
 import dev.frostlake.storage.StorageEngine;
@@ -188,6 +190,7 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
 
     @Override
     public Object visitUseStatement(final FrostlakeParser.UseStatementContext ctx) {
+        rejectInsideProcedure("USE");
         try {
             return ddlHandler.handleUseStatement(ctx);
         } catch (final Exception e) {
@@ -337,7 +340,14 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
             taskScheduler.executeTaskManually(taskName);
             logger.trace("Executed task: {}", taskName);
 
-            return null;
+            // Live answers with one status row rather than nothing. It SCHEDULES the run and returns
+            // immediately, where this engine has already finished the body by the time the row is
+            // built — the wording is live's, the timing is this engine's.
+            final List<ResultSetColumn> columns = Arrays.asList(
+                new ResultSetColumn("status", StringType.VARCHAR));
+            final List<Row> rows = Arrays.asList(new Row(Arrays.asList(
+                "Task " + QualifiedName.parse(taskName).last() + " is scheduled to run immediately.")));
+            return new ResultSet(columns, rows);
         } catch (final Exception e) {
             if (e instanceof SecurityException) throw (SecurityException) e;
             if (e instanceof ProceduralException) throw (ProceduralException) e;
@@ -419,6 +429,10 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
         // already-consumed, empty window).
         final boolean alterSession =
             ctx.alterStatement() != null && ctx.alterStatement().SESSION() != null;
+        if (alterSession) {
+            // A procedure runs in the caller's session and may not reconfigure it.
+            rejectInsideProcedure("ALTER_SESSION");
+        }
         if (!alterSession && queryExecutor.getTransactionManager().hasActiveTransaction()) {
             queryExecutor.getTransactionManager().commit();
         }
@@ -643,6 +657,7 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
 
     @Override
     public Object visitSetStatement(final FrostlakeParser.SetStatementContext ctx) {
+        rejectInsideProcedure("SET");
         String varName = getText(ctx.identifier());
 
         // Check if expression exists (might be null for non-procedural SET statements)
@@ -1079,6 +1094,25 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
     }
 
     /**
+     * How deep inside a stored-procedure body execution currently is. A procedure may not change
+     * the session it runs in, and the statements that would are refused wherever they appear —
+     * including inside a BEGIN…END body, which the procedural executor runs rather than this loop.
+     */
+    private int procedureDepth;
+
+    /**
+     * Refuse a statement type a stored procedure may not run. Live reports these as
+     * "Unsupported statement type '<TYPE>'" and names the family, not the specific statement:
+     * every USE form is USE, and a session parameter change is ALTER_SESSION.
+     */
+    void rejectInsideProcedure(final String statementType) {
+        if (procedureDepth > 0) {
+            throw new RuntimeException("Stored procedure execution error: "
+                + "Unsupported statement type '" + statementType + "'.");
+        }
+    }
+
+    /**
      * Enforces Snowflake's scoped-transaction rule at a stored procedure's normal completion: a
      * transaction the procedure STARTED (none was open at CALL time) and left open is rolled back
      * and the call fails with Snowflake's exact wording (live-verified). A transaction that was
@@ -1229,6 +1263,8 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
                 }
                 for (int i = 0; i < params.size(); i++) {
                     proceduralExecutor.markDeclaredInCurrentScope(params.get(i).getName());
+                    proceduralExecutor.declareVariableType(params.get(i).getName(),
+                        params.get(i).getDataType());
                     proceduralExecutor.setVariable(params.get(i).getName(), arguments.get(i));
                 }
 
@@ -1245,6 +1281,8 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
                 errorListener.throwIfErrors();
 
                 Object bodyResult = null;
+                procedureDepth++;
+                try {
                 for (final FrostlakeParser.StatementContext stmtCtx : flattenedStatements(tree)) {
                     bodyResult = visit(stmtCtx);
                     // Per-statement autocommit, as inside BEGIN…END bodies (Snowflake procedures do
@@ -1253,6 +1291,9 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
                     if (proceduralExecutor.hasReturned()) {
                         break; // a bare (non-BEGIN…END) RETURN statement stops the body
                     }
+                }
+                } finally {
+                    procedureDepth--;
                 }
                 rejectOpenScopedTransaction(txnOpenBeforeCall);
                 // A BEGIN…END body surfaces its RETURN as a single-row ResultSet (bodyResult, with the
@@ -1751,6 +1792,8 @@ public class SQLCommandVisitor extends FrostlakeBaseVisitor<Object> {
             final List<Parameter> params = function.getParameters();
             for (int i = 0; i < params.size() && i < args.size(); i++) {
                 proceduralExecutor.markDeclaredInCurrentScope(params.get(i).getName());
+                proceduralExecutor.declareVariableType(params.get(i).getName(),
+                    params.get(i).getDataType());
                 proceduralExecutor.setVariable(params.get(i).getName(), args.get(i));
             }
 

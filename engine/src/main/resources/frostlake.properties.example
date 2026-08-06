@@ -17,6 +17,19 @@ schema.default=PUBLIC
 # This should be an alphanumeric string that identifies your database instance
 account.id=ABC12345
 
+# The account NAME returned by CURRENT_ACCOUNT_NAME() — a different identifier from the locator above
+# (on a real account CURRENT_ACCOUNT() and CURRENT_ACCOUNT_NAME() answer different values). Defaults to
+# account.id when unset.
+#account.name=ABC12345
+
+# The organization returned by CURRENT_ORGANIZATION_NAME().
+#organization.name=ABCORG
+
+# The region returned by CURRENT_REGION(). BARE by default, which is what a real account answers; the
+# <region_group>.<region> spelling (PUBLIC.AWS_US_EAST_1) belongs to an organization spanning multiple
+# region groups, so set it here explicitly if that is the shape you want.
+#snowflake.region=AWS_US_EAST_1
+
 # Storage Configuration
 storage.inMemory=true
 
@@ -43,6 +56,17 @@ durability.walEnabled=false
 # the log's growth and speeding recovery. 0 disables automatic checkpointing.
 durability.checkpointInterval=0
 
+# Task scheduler
+# Whether the engine arms the task scheduler as it finishes starting, so tasks left in the STARTED state —
+# typically by a restore, which writes the state without arming anything — start firing on their schedule
+# again. Off by default: it spawns timer threads, and task bodies begin executing against restored data as
+# soon as the engine is up, before anyone has looked at the instance. Turn it on for a long-running server
+# expected to pick up where it left off across restarts; leave it off for an embedded engine inside another
+# process, which should call startTaskScheduler() when it is ready.
+# This does NOT gate tasks in general — ALTER TASK ... RESUME starts the scheduler by itself. It only
+# decides whether ALREADY-resumed tasks are armed at boot.
+tasks.autostart=false
+
 # Command toggles
 # REMOVE / RM @stage deletes the files backing a stage on the local filesystem. Off by default as a safety
 # guard against accidental data loss; set to true to allow it.
@@ -68,3 +92,21 @@ logging.level=INFO
 # at the venv produced by the graalpy-maven-plugin (<externalDirectory>/venv), matching the engine's
 # GraalPy version. Optional; a missing directory leaves the standard library only.
 # python.venv=/opt/graalpy-packages/venv
+
+# Cortex AI (frostlake-ai module only)
+# Where the Cortex functions — SNOWFLAKE.CORTEX.COMPLETE, SENTIMENT, SUMMARIZE, TRANSLATE,
+# EMBED_TEXT_*, the AI_ family, SEARCH_PREVIEW — send their prompts. Frostlake answers them with a
+# locally-hosted Ollama model rather than a paid account, so Cortex-shaped SQL runs against a model
+# you host. Every key is also readable as a system property of the same name.
+# Nothing here contacts the server at startup: an engine whose Ollama is not running still starts, and
+# only a CALL of one of those functions fails.
+#
+# Base URL of the Ollama server (default: http://localhost:11434):
+# ai.ollama.url=http://localhost:11434
+# Model for the text functions (default: llama3.2) — must be pulled: `ollama pull llama3.2`
+# ai.ollama.model=llama3.2
+# Model for EMBED_TEXT_768 / EMBED_TEXT_1024 / AI_SIMILARITY / SEARCH_PREVIEW
+# (default: nomic-embed-text):
+# ai.ollama.embedModel=nomic-embed-text
+# Per-request timeout in milliseconds (default: 60000):
+# ai.ollama.timeoutMs=60000

@@ -47,6 +47,15 @@ public final class UdfRuntimes {
         return RUNTIMES.values();
     }
 
+    /**
+     * The runtime for {@code language}, or null when no module provides it. Unlike {@link #require},
+     * this is for callers that carry on without one — a CREATE-time body check can only judge a body
+     * whose language is installed, and accepts it otherwise.
+     */
+    public static UdfLanguageRuntime installed(final UdfLanguage language) {
+        return RUNTIMES.get(language);
+    }
+
     /** The runtime for {@code language}, or a clear error naming the module that provides it. */
     public static UdfLanguageRuntime require(final UdfLanguage language) {
         final UdfLanguageRuntime runtime = RUNTIMES.get(language);

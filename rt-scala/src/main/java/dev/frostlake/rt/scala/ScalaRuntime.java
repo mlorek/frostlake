@@ -56,4 +56,39 @@ public final class ScalaRuntime implements UdfLanguageRuntime {
     public ResultSet executeTableFunction(final Function function, final List<Object> arguments) {
         throw new RuntimeException("Scala table functions are not supported");
     }
+
+    /**
+     * Scala is compiled at CREATE, functions and procedures alike — live-verified, a body that is not
+     * Scala is refused by the CREATE statement rather than by the first call. The compile is cached,
+     * so the class the first call loads is the one built here.
+     */
+    @Override
+    public void compileFunction(final Function function) {
+        compileBody(function.getBody(), function.getHandler(), function.getName());
+    }
+
+    @Override
+    public void compileProcedure(final Procedure procedure) {
+        compileBody(procedure.getBody(), procedure.getHandler(), procedure.getName());
+    }
+
+    private void compileBody(final String body, final String handler, final String routineName) {
+        try {
+            ScalaCompiler.compileCached(body, handlerClass(handler));
+        } catch (final RuntimeException e) {
+            throw e;
+        } catch (final Exception e) {
+            throw new RuntimeException("Failed to compile Scala routine " + routineName + ": "
+                + e.getMessage(), e);
+        }
+    }
+
+    private String handlerClass(final String handler) {
+        final int dot = handler == null ? -1 : handler.lastIndexOf('.');
+        if (dot < 0) {
+            throw new RuntimeException(
+                "HANDLER must be 'ClassName.methodName' for LANGUAGE SCALA routines");
+        }
+        return handler.substring(0, dot);
+    }
 }

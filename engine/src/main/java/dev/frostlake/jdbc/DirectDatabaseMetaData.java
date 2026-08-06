@@ -78,18 +78,22 @@ public class DirectDatabaseMetaData implements java.sql.DatabaseMetaData {
 
     @Override
     public java.sql.ResultSet getImportedKeys(final String catalog, final String schema, final String table) throws SQLException {
-        throw new SQLFeatureNotSupportedException("getImportedKeys not supported");
+        // Every FK whose CHILD side is this table — what a tool draws as the table's outbound refs.
+        return JdbcMetadataQueries.foreignKeys(connection, null, null, null, catalog, schema, table);
     }
 
     @Override
     public java.sql.ResultSet getExportedKeys(final String catalog, final String schema, final String table) throws SQLException {
-        throw new SQLFeatureNotSupportedException("getExportedKeys not supported");
+        // The mirror: every FK POINTING AT this table.
+        return JdbcMetadataQueries.foreignKeys(connection, catalog, schema, table, null, null, null);
     }
 
     @Override
     public java.sql.ResultSet getCrossReference(final String parentCatalog, final String parentSchema, final String parentTable,
                                       final String foreignCatalog, final String foreignSchema, final String foreignTable) throws SQLException {
-        throw new SQLFeatureNotSupportedException("getCrossReference not supported");
+        // Both ends pinned.
+        return JdbcMetadataQueries.foreignKeys(connection, parentCatalog, parentSchema, parentTable,
+            foreignCatalog, foreignSchema, foreignTable);
     }
 
     @Override
@@ -701,10 +705,14 @@ public class DirectDatabaseMetaData implements java.sql.DatabaseMetaData {
 
     @Override
     public java.sql.ResultSet getProcedures(final String catalog, final String schemaPattern, final String procedureNamePattern) throws SQLException {
-        throw new SQLFeatureNotSupportedException("getProcedures not supported");
+        // The Procedures node a JDBC tool shows under a schema. Same INFORMATION_SCHEMA-backed
+        // query on both transports; six columns, matching what Snowflake's own driver returns.
+        return JdbcMetadataQueries.procedures(connection, catalog, schemaPattern, procedureNamePattern);
     }
 
     @Override
+    // Live answers this with 20 columns, a COLUMN_TYPE=5 return row then one row per parameter. Not implemented here: a tool that
+    // asks simply shows no parameters, and the listing above is what puts the node in the tree.
     public java.sql.ResultSet getProcedureColumns(final String catalog, final String schemaPattern, final String procedureNamePattern, final String columnNamePattern) throws SQLException {
         throw new SQLFeatureNotSupportedException("getProcedureColumns not supported");
     }
@@ -750,12 +758,19 @@ public class DirectDatabaseMetaData implements java.sql.DatabaseMetaData {
 
     @Override
     public java.sql.ResultSet getTypeInfo() throws SQLException {
-        throw new SQLFeatureNotSupportedException("getTypeInfo not supported");
+        // The eight rows live returns, verbatim — see JdbcMetadataQueries.typeInfo.
+        return JdbcMetadataQueries.typeInfo(connection);
     }
 
     @Override
     public java.sql.ResultSet getUDTs(final String catalog, final String schemaPattern, final String typeNamePattern, final int[] types) throws SQLException {
-        throw new SQLFeatureNotSupportedException("getUDTs not supported");
+        // Live answers this with seven columns and no rows — Snowflake has no SQL user-defined types
+        // to list. Answering empty rather than throwing is what its driver does.
+        return connection.createStatement().executeQuery(
+            "SELECT CAST(NULL AS VARCHAR) AS TYPE_CAT, CAST(NULL AS VARCHAR) AS TYPE_SCHEM, "
+            + "CAST(NULL AS VARCHAR) AS TYPE_NAME, CAST(NULL AS VARCHAR) AS CLASS_NAME, "
+            + "CAST(NULL AS INTEGER) AS DATA_TYPE, CAST(NULL AS VARCHAR) AS REMARKS, "
+            + "CAST(NULL AS INTEGER) AS BASE_TYPE WHERE 1=0");
     }
 
     @Override
@@ -832,10 +847,13 @@ public class DirectDatabaseMetaData implements java.sql.DatabaseMetaData {
 
     @Override
     public java.sql.ResultSet getFunctions(final String catalog, final String schemaPattern, final String functionNamePattern) throws SQLException {
-        throw new SQLFeatureNotSupportedException("getFunctions not supported");
+        // Scalar UDFs and UDTFs alike; FUNCTION_TYPE tells them apart.
+        return JdbcMetadataQueries.functions(connection, catalog, schemaPattern, functionNamePattern);
     }
 
     @Override
+    // Live answers this with 17 columns, a COLUMN_TYPE=4 return row then one row per parameter. Not implemented here: a tool that
+    // asks simply shows no parameters, and the listing above is what puts the node in the tree.
     public java.sql.ResultSet getFunctionColumns(final String catalog, final String schemaPattern, final String functionNamePattern, final String columnNamePattern) throws SQLException {
         throw new SQLFeatureNotSupportedException("getFunctionColumns not supported");
     }

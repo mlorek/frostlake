@@ -59,7 +59,7 @@ public class AlterColumnSyntaxTest {
         engine.execute("CREATE TABLE test1 (id INTEGER, col1 VARCHAR(10))");
         engine.execute("ALTER TABLE test1 ALTER COLUMN col1 SET DATA TYPE VARCHAR");
 
-        Table table = engine.getCatalog().resolveTable("test1");
+        Table table = engine.getCatalog().resolveTable("TEST1");
         assertNotNull(table);
 
         TableColumn column = table.getColumn("col1");
@@ -75,7 +75,7 @@ public class AlterColumnSyntaxTest {
         engine.execute("CREATE TABLE test2 (id INTEGER, col1 VARCHAR(10))");
         engine.execute("ALTER TABLE test2 ALTER COLUMN col1 TYPE VARCHAR");
 
-        Table table = engine.getCatalog().resolveTable("test2");
+        Table table = engine.getCatalog().resolveTable("TEST2");
         assertNotNull(table);
 
         TableColumn column = table.getColumn("col1");
@@ -91,7 +91,7 @@ public class AlterColumnSyntaxTest {
         engine.execute("CREATE TABLE test3 (id INTEGER, col1 VARCHAR(10))");
         engine.execute("ALTER TABLE test3 ALTER COLUMN col1 VARCHAR");
 
-        Table table = engine.getCatalog().resolveTable("test3");
+        Table table = engine.getCatalog().resolveTable("TEST3");
         assertNotNull(table);
 
         TableColumn column = table.getColumn("col1");
@@ -107,7 +107,7 @@ public class AlterColumnSyntaxTest {
         engine.execute("CREATE TABLE test4 (id INTEGER, col1 VARCHAR(10))");
         engine.execute("ALTER TABLE test4 ALTER COLUMN col1 SET DATA TYPE VARCHAR(100)");
 
-        Table table = engine.getCatalog().resolveTable("test4");
+        Table table = engine.getCatalog().resolveTable("TEST4");
         assertNotNull(table);
 
         TableColumn column = table.getColumn("col1");
@@ -123,7 +123,7 @@ public class AlterColumnSyntaxTest {
         engine.execute("CREATE TABLE test5 (id INTEGER, col1 INTEGER)");
         engine.execute("ALTER TABLE test5 ALTER COLUMN col1 TYPE DECIMAL(10, 2)");
 
-        Table table = engine.getCatalog().resolveTable("test5");
+        Table table = engine.getCatalog().resolveTable("TEST5");
         assertNotNull(table);
 
         TableColumn column = table.getColumn("col1");
@@ -139,7 +139,7 @@ public class AlterColumnSyntaxTest {
         engine.execute("CREATE TABLE test6 (id INTEGER, col1 VARCHAR(100))");
         engine.execute("ALTER TABLE test6 ALTER COLUMN col1 VARCHAR(500)");
 
-        Table table = engine.getCatalog().resolveTable("test6");
+        Table table = engine.getCatalog().resolveTable("TEST6");
         assertNotNull(table);
 
         TableColumn column = table.getColumn("col1");
@@ -158,7 +158,7 @@ public class AlterColumnSyntaxTest {
         engine.execute("ALTER TABLE test7 ALTER COLUMN col2 TYPE DATE");
         engine.execute("ALTER TABLE test7 ALTER COLUMN col3 TIMESTAMP");
 
-        Table table = engine.getCatalog().resolveTable("test7");
+        Table table = engine.getCatalog().resolveTable("TEST7");
         assertNotNull(table);
 
         assertEquals("VARCHAR", table.getColumn("col1").getDataType().getName());
@@ -175,7 +175,7 @@ public class AlterColumnSyntaxTest {
         engine.execute("CREATE TABLE test8 (id INTEGER, col1 VARCHAR(10))");
         engine.execute("ALTER TABLE IF EXISTS test8 ALTER COLUMN col1 TYPE VARCHAR");
 
-        Table table = engine.getCatalog().resolveTable("test8");
+        Table table = engine.getCatalog().resolveTable("TEST8");
         assertNotNull(table);
 
         TableColumn column = table.getColumn("col1");
@@ -193,7 +193,7 @@ public class AlterColumnSyntaxTest {
 
         engine.execute("ALTER TABLE test_schema.test9 ALTER COLUMN col1 TYPE VARCHAR");
 
-        Table table = engine.getCatalog().resolveTable("test_schema.test9");
+        Table table = engine.getCatalog().resolveTable("TEST_SCHEMA.TEST9");
         assertNotNull(table);
 
         TableColumn column = table.getColumn("col1");
@@ -209,7 +209,7 @@ public class AlterColumnSyntaxTest {
         engine.execute("CREATE TABLE test10 (id INTEGER, col1 TIMESTAMP)");
         engine.execute("ALTER TABLE test10 ALTER COLUMN col1 TYPE TIMESTAMP_LTZ");
 
-        Table table = engine.getCatalog().resolveTable("test10");
+        Table table = engine.getCatalog().resolveTable("TEST10");
         assertNotNull(table);
 
         TableColumn column = table.getColumn("col1");
@@ -228,7 +228,7 @@ public class AlterColumnSyntaxTest {
         engine.execute("ALTER TABLE test11 ALTER COLUMN col2 TYPE VARCHAR");
         engine.execute("ALTER TABLE test11 ALTER COLUMN col3 VARCHAR");
 
-        Table table = engine.getCatalog().resolveTable("test11");
+        Table table = engine.getCatalog().resolveTable("TEST11");
         assertNotNull(table);
 
         assertEquals("VARCHAR", table.getColumn("col1").getDataType().getName());
@@ -245,7 +245,7 @@ public class AlterColumnSyntaxTest {
         engine.execute("CREATE TABLE test12 (id INTEGER, col1 INTEGER)");
         engine.execute("ALTER TABLE test12 ALTER COLUMN col1 DECIMAL(15, 3)");
 
-        Table table = engine.getCatalog().resolveTable("test12");
+        Table table = engine.getCatalog().resolveTable("TEST12");
         assertNotNull(table);
 
         TableColumn column = table.getColumn("col1");
@@ -261,7 +261,7 @@ public class AlterColumnSyntaxTest {
         engine.execute("CREATE TABLE test13 (id INTEGER, col1 INTEGER)");
         engine.execute("ALTER TABLE test13 ALTER COLUMN col1 SET DATA TYPE DECIMAL(20, 5)");
 
-        Table table = engine.getCatalog().resolveTable("test13");
+        Table table = engine.getCatalog().resolveTable("TEST13");
         assertNotNull(table);
 
         TableColumn column = table.getColumn("col1");

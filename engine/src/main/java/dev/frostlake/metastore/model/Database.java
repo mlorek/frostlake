@@ -36,21 +36,34 @@ public class Database extends SqlObject {
         // Create default PUBLIC schema
         registerSchema("PUBLIC", new Schema("PUBLIC"));
 
-        // Create INFORMATION_SCHEMA - a special schema that exists in every database
+        // Create INFORMATION_SCHEMA - a special schema that exists in every database. Nobody owns
+        // it: a real account reports its owner as absent, where PUBLIC and every created schema
+        // name a role. SHOW SCHEMAS spells that absence as an empty string and
+        // INFORMATION_SCHEMA.SCHEMATA as NULL, which is the usual split between the two surfaces.
         Schema infoSchema = new Schema("INFORMATION_SCHEMA");
+        infoSchema.setOwner(null);
         registerSchema("INFORMATION_SCHEMA", infoSchema);
 
-        // Add system views to INFORMATION_SCHEMA
-        // These are special views intercepted by QueryExecutor
+        // The INFORMATION_SCHEMA views a real account exposes, listed so they appear in
+        // INFORMATION_SCHEMA.TABLES / VIEWS and SHOW VIEWS exactly as they do live (this list and
+        // the reader in QueryExecutor.executeSystemViewIfApplicable must name the same set — a
+        // name listed here but not routed there would resolve to this placeholder definition).
+        // STREAMS, TASKS and TAGS are deliberately absent: a real account has no such views.
         for (final String v : new String[]{
-            "DATABASES", "SCHEMATA", "TABLES", "COLUMNS", "VIEWS",
-            "TABLE_CONSTRAINTS", "REFERENTIAL_CONSTRAINTS",
-            "PROCEDURES", "FUNCTIONS", "SEQUENCES",
-            "STAGES", "PIPES", "STREAMS", "TASKS",
-            "ENABLED_ROLES", "APPLICABLE_ROLES",
-            "TABLE_PRIVILEGES", "OBJECT_PRIVILEGES", "USAGE_PRIVILEGES",
-            "TAGS", "TAG_REFERENCES",
-            "INDEXES", "INDEX_COLUMNS", "DYNAMIC_TABLES"
+            "APPLICABLE_ROLES", "APPLICATION_CONFIGURATIONS", "APPLICATION_SPECIFICATIONS", "BACKUPS",
+            "BACKUP_POLICIES", "BACKUP_SETS", "CHECK_CONSTRAINTS", "CLASSES", "CLASS_INSTANCES",
+            "CLASS_INSTANCE_FUNCTIONS", "CLASS_INSTANCE_PROCEDURES", "COLUMNS",
+            "CORTEX_SEARCH_SERVICES", "CORTEX_SEARCH_SERVICE_SCORING_PROFILES",
+            "CURRENT_PACKAGES_POLICY", "DATABASES", "ELEMENT_TYPES", "ENABLED_ROLES", "EVENT_TABLES",
+            "EXTERNAL_TABLES", "FIELDS", "FILE_FORMATS", "FUNCTIONS", "GIT_REPOSITORIES",
+            "HYBRID_TABLES", "INDEXES", "INDEX_COLUMNS", "INFORMATION_SCHEMA_CATALOG_NAME", "LISTINGS",
+            "LOAD_HISTORY", "MODEL_VERSIONS", "NOTEBOOKS", "OBJECT_PRIVILEGES", "PACKAGES", "PIPES",
+            "PROCEDURES", "REFERENTIAL_CONSTRAINTS", "REPLICATION_DATABASES", "REPLICATION_GROUPS",
+            "SCHEMATA", "SEMANTIC_DIMENSIONS", "SEMANTIC_FACTS", "SEMANTIC_METRICS",
+            "SEMANTIC_RELATIONSHIPS", "SEMANTIC_TABLES", "SEMANTIC_VARIABLES", "SEMANTIC_VIEWS",
+            "SEQUENCES", "SERVICES", "SHARES", "SNAPSHOTS", "SNAPSHOT_POLICIES", "SNAPSHOT_SETS",
+            "STAGES", "STREAMLITS", "TABLES", "TABLE_CONSTRAINTS", "TABLE_PRIVILEGES",
+            "TABLE_STORAGE_METRICS", "TYPES", "USAGE_PRIVILEGES", "VIEWS"
         }) {
             infoSchema.addView(new View(v, "/* system view */"));
         }
@@ -84,9 +97,26 @@ public class Database extends SqlObject {
         schemas.remove(upperName);
     }
 
+    /**
+     * A schema by name, matched ignoring case — the INTERNAL Java API. SQL resolution goes through
+     * {@link #schemaExact}.
+     */
     public Schema getSchema(final String name) {
         Schema schema = schemas.get(name.toUpperCase());
         if (schema == null) {
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Schema", getName() + "." + name));
+        }
+        return schema;
+    }
+
+    /**
+     * The schema a SQL reference names, matched EXACTLY — live answers
+     * {@code Schema 'DB.MIXEDSCH' does not exist or not authorized.} for an unquoted reference to a schema
+     * created as {@code "mixedSch"}, echoing each qualifier as the reference resolved it.
+     */
+    public Schema schemaExact(final String name) {
+        final Schema schema = schemas.get(name.toUpperCase());
+        if (schema == null || !schema.getName().equals(name)) {
             throw new RuntimeException(SqlCompilationError.doesNotExist("Schema", getName() + "." + name));
         }
         return schema;

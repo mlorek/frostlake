@@ -203,22 +203,38 @@ public class SqlCompilationErrorFormatTest extends BaseDatabaseTest {
      * on a real account across the select list, WHERE, UPDATE SET and every ALTER COLUMN form,
      * and the name keeps the qualifier the writer used.
      *
-     * <p>Live also carries a source position on these; Frostlake resolves columns from an AST that does
-     * not record one, so the wording matches and the position clause is absent. See
-     * {@link SqlCompilationError#invalidIdentifier(String)}.
+     * <p>The position is the IDENTIFIER's own 0-based offset in every one of these, live-verified —
+     * never the clause's and never the select item's.
      */
     @Test
     public void anUnresolvableColumnIsAnInvalidIdentifier() {
         engine.execute("CREATE TABLE col_src (a INTEGER, b INTEGER)");
         engine.execute("INSERT INTO col_src VALUES (1, 2)");
-        assertEquals("SQL compilation error:\ninvalid identifier 'NOSUCHCOL'",
+        // The position is the IDENTIFIER's own 0-based offset, live-verified — not the clause's:
+        // `SELECT nosuchcol` reports 7, and `WHERE nosuchcol = 1` reports 22 rather than the WHERE.
+        assertEquals("SQL compilation error: error line 1 at position 7\ninvalid identifier 'NOSUCHCOL'",
             messageOf("SELECT nosuchcol FROM col_src"));
-        assertEquals("SQL compilation error:\ninvalid identifier 'NOSUCHCOL'",
+        assertEquals("SQL compilation error: error line 1 at position 28\ninvalid identifier 'NOSUCHCOL'",
             messageOf("SELECT a FROM col_src WHERE nosuchcol = 1"));
-        assertEquals("SQL compilation error:\ninvalid identifier 'NOSUCHCOL'",
+        // The DDL/DML paths resolve columns outside the expression walk, so their position is supplied
+        // by the HANDLER, which still holds the statement — measured at 19 and 37 respectively.
+        assertEquals("SQL compilation error: error line 1 at position 19\ninvalid identifier 'NOSUCHCOL'",
             messageOf("UPDATE col_src SET nosuchcol = 1"));
-        assertEquals("SQL compilation error:\ninvalid identifier 'NOSUCHCOL'",
+        assertEquals("SQL compilation error: error line 1 at position 37\ninvalid identifier 'NOSUCHCOL'",
             messageOf("ALTER TABLE col_src ADD PRIMARY KEY (nosuchcol)"));
+        // …and the value side of a SET, which goes back through the expression walk.
+        assertEquals("SQL compilation error: error line 1 at position 23\ninvalid identifier 'NOSUCHCOL'",
+            messageOf("UPDATE col_src SET a = nosuchcol"));
+        assertEquals("SQL compilation error: error line 1 at position 46\ninvalid identifier 'NOSUCHCOL'",
+            messageOf("ALTER TABLE col_src ADD CONSTRAINT ck UNIQUE (nosuchcol)"));
+        assertEquals("SQL compilation error: error line 1 at position 31\ninvalid identifier 'NOSUCHCOL'",
+            messageOf("UPDATE col_src SET a = 1 WHERE nosuchcol = 2"));
+        assertEquals("SQL compilation error: error line 1 at position 26\ninvalid identifier 'NOSUCHCOL'",
+            messageOf("DELETE FROM col_src WHERE nosuchcol = 1"));
+        // An INSERT naming a column the table has not got is refused OUTRIGHT — this used to be
+        // accepted, which is a fidelity bug of its own rather than a missing position.
+        assertEquals("SQL compilation error: error line 1 at position 21\ninvalid identifier 'NOSUCHCOL'",
+            messageOf("INSERT INTO col_src (nosuchcol) VALUES (1)"));
     }
 
     /** The qualifier is kept: live answers {@code invalid identifier 'T.NOSUCHCOL'} for {@code t.nosuchcol}. */
@@ -226,8 +242,19 @@ public class SqlCompilationErrorFormatTest extends BaseDatabaseTest {
     public void aQualifiedColumnKeepsItsQualifier() {
         engine.execute("CREATE TABLE qual_src (a INTEGER)");
         engine.execute("INSERT INTO qual_src VALUES (1)");
-        assertEquals("SQL compilation error:\ninvalid identifier 'QUAL_SRC.NOSUCHCOL'",
+        // The position is the WHOLE reference's start, qualifier included — 7, not the offset of the
+        // column part after the dot.
+        assertEquals("SQL compilation error: error line 1 at position 7\n"
+            + "invalid identifier 'QUAL_SRC.NOSUCHCOL'",
             messageOf("SELECT qual_src.nosuchcol FROM qual_src"));
+        assertEquals("SQL compilation error: error line 1 at position 7\ninvalid identifier 'X.NOSUCHCOL'",
+            messageOf("SELECT x.nosuchcol FROM qual_src x"));
+        // The one shape still without its position: a qualifier that RESOLVES (qual_src really is in
+        // the FROM) passes the plan-time walk, so the refusal happens at row time inside an operator
+        // that was handed the predicate as extracted TEXT and no longer knows its offset. Live answers
+        // position 28 here. Threading operator offsets is the remaining half of task #143.
+        assertEquals("SQL compilation error:\ninvalid identifier 'QUAL_SRC.NOSUCHCOL'",
+            messageOf("SELECT a FROM qual_src WHERE qual_src.nosuchcol = 1"));
     }
 
     /**

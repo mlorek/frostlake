@@ -211,6 +211,9 @@ public class CreateNamespaceHandler implements CommandHandler {
             if (comment != null) {
                 schema.setComment(comment);
             }
+            if (ctx.tagList() != null) {
+                InlineTags.apply(schema, ctx.tagList());
+            }
             // Snowflake activates a newly created schema: it becomes the session's current schema,
             // in its containing database (live-verified: CURRENT_SCHEMA() changes right after).
             final String activatedDb = parts.length == 2 ? parts[0] : catalog.getCurrentDatabase();

@@ -88,6 +88,7 @@ public class PythonTableFunctionTest {
             CREATE OR REPLACE FUNCTION expand(n NUMBER)
               RETURNS TABLE (val NUMBER)
               LANGUAGE PYTHON
+              RUNTIME_VERSION = '3.11'
               HANDLER = 'Expander'
             AS $$
             class Expander:
@@ -112,6 +113,7 @@ public class PythonTableFunctionTest {
             CREATE OR REPLACE FUNCTION sum_and_avg(v NUMBER)
               RETURNS TABLE (label VARCHAR, result NUMBER)
               LANGUAGE PYTHON
+              RUNTIME_VERSION = '3.11'
               HANDLER = 'Aggregator'
             AS $$
             class Aggregator:

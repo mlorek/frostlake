@@ -40,4 +40,22 @@ public class UserSnapshot implements Serializable {
     public String owner;
     // Privileges granted directly to this user (object- and column-level). Null on old snapshots.
     public List<PrivilegeSnapshot> privileges;
+
+    // ── The CREATE USER property set ─────────────────────────────────────────────────────────────
+    // One nullable marker covers the whole group: a writer that knows these fields sets it TRUE, so
+    // the reader can apply them VERBATIM — including the nulls, which is what makes an explicitly
+    // unset property survive a round trip. A snapshot predating the group deserializes it as null,
+    // and the reader then leaves the restored user's own defaults alone rather than nulling them.
+    public Boolean propertiesWritten;
+    public String loginName;
+    public String displayName;
+    public String firstName;
+    public String middleName;
+    public String lastName;
+    public String email;
+    public String defaultWarehouse;
+    public String defaultNamespace;
+    public String defaultSecondaryRoles;
+    public boolean mustChangePassword;
+    public String userType;
 }

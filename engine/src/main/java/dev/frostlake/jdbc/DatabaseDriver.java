@@ -46,10 +46,13 @@ public class DatabaseDriver implements Driver {
     private static final String URL_PREFIX = "jdbc:frostlake://";
     // In-process (no HTTP server) scheme: jdbc:frostlake:direct:<name>. Connections sharing a <name> share one
     // embedded DatabaseEngine for the JVM's lifetime; different names are isolated (mirrors H2's mem-DB model).
+    // Both in-process schemes also take the account identity the engine reports —
+    // ?account= (locator), ?accountName=, ?organization= and ?region= — see identityOverrides.
     private static final String DIRECT_PREFIX = "jdbc:frostlake:direct:";
     private static final Map<String, DatabaseEngine> DIRECT_ENGINES = new HashMap<>();
     // Embedded-persistent scheme (H2's file-DB model):
-    //   jdbc:frostlake:file:<dir>[?database=DB&schema=S&wal=false&venv=<graalpy-venv-dir>]
+    //   jdbc:frostlake:file:<dir>[?database=DB&schema=S&wal=false&venv=<graalpy-venv-dir>
+    //                               &account=LOC&accountName=ACC&organization=ORG&region=AWS_EU_WEST_1]
     // The engine runs in this JVM and persists to <dir>; state restores on the first connection and survives
     // restarts. Connections naming the same directory (by canonical path) share one engine; a lock file guards
     // the directory against a second process. Durable via the WAL by default, ?wal=false switches to
@@ -58,7 +61,8 @@ public class DatabaseDriver implements Driver {
     private static final String FILE_PREFIX = "jdbc:frostlake:file:";
     private static final Map<String, DatabaseEngine> FILE_ENGINES = new HashMap<>();
     private static final Map<String, Thread> FILE_SHUTDOWN_HOOKS = new HashMap<>();
-    private static final String LOCK_FILE_NAME = "frostlake.lock";
+    /** The OS lock held on each open data directory, released when its engine closes. */
+    private static final Map<String, DataDirectoryLock> FILE_LOCKS = new HashMap<>();
     private static final int MAJOR_VERSION = 1;
     private static final int MINOR_VERSION = 0;
 
@@ -143,6 +147,35 @@ public class DatabaseDriver implements Driver {
         }
     }
 
+    /**
+     * The account identity a URL names: {@code ?account=}, {@code ?accountName=}, {@code ?region=} and
+     * {@code ?organization=}, each overriding the corresponding {@code frostlake.properties} value,
+     * which in turn overrides the built-in default.
+     *
+     * <p>Only the IN-PROCESS URL forms take these. Over {@code jdbc:frostlake://host:port/db} the engine
+     * belongs to a server that is already running and shared by every client, so a client cannot
+     * redefine the account it is connecting TO — configure that server instead.
+     *
+     * <p>They also only apply on the connection that CREATES the engine: engines are shared per
+     * {@code direct:} name and per {@code file:} directory, so a second connection naming a different
+     * account joins the first one's engine rather than reconfiguring it. The same is true of
+     * {@code ?venv=}, and for the same reason.
+     */
+    private static Properties identityOverrides(final String url) {
+        final Properties overrides = new Properties();
+        putIfNamed(overrides, EngineConfig.PROP_ACCOUNT_ID, parseParameter(url, "account"));
+        putIfNamed(overrides, EngineConfig.PROP_ACCOUNT_NAME, parseParameter(url, "accountName"));
+        putIfNamed(overrides, EngineConfig.PROP_SNOWFLAKE_REGION, parseParameter(url, "region"));
+        putIfNamed(overrides, EngineConfig.PROP_ORGANIZATION_NAME, parseParameter(url, "organization"));
+        return overrides;
+    }
+
+    private static void putIfNamed(final Properties into, final String key, final String value) {
+        if (value != null && !value.isEmpty()) {
+            into.setProperty(key, URLDecoder.decode(value, StandardCharsets.UTF_8));
+        }
+    }
+
     private Connection connectDirect(final String url, final Properties info) throws SQLException {
         try {
             final int q = url.indexOf('?');
@@ -153,7 +186,7 @@ public class DatabaseDriver implements Driver {
             synchronized (DIRECT_ENGINES) {
                 engine = DIRECT_ENGINES.get(name);
                 if (engine == null) {
-                    engine = new DatabaseEngine();
+                    engine = new DatabaseEngine(new EngineConfig(identityOverrides(url)));
                     DIRECT_ENGINES.put(name, engine);
                 }
             }
@@ -212,7 +245,8 @@ public class DatabaseDriver implements Driver {
             synchronized (FILE_ENGINES) {
                 engine = FILE_ENGINES.get(key);
                 if (engine == null) {
-                    engine = openFileEngine(key, "false".equalsIgnoreCase(parseParameter(url, "wal")), venv);
+                    engine = openFileEngine(key, "false".equalsIgnoreCase(parseParameter(url, "wal")),
+                        venv, identityOverrides(url));
                     FILE_ENGINES.put(key, engine);
                 }
             }
@@ -251,20 +285,14 @@ public class DatabaseDriver implements Driver {
      * {@code FILE_ENGINES} monitor.
      */
     private static DatabaseEngine openFileEngine(final String canonicalDir, final boolean snapshotOnly,
-                                                 final String venv) throws IOException {
+                                                 final String venv, final Properties identity)
+            throws IOException {
         final Path dir = Path.of(canonicalDir);
         Files.createDirectories(dir);
-        final Path lockFile = dir.resolve(LOCK_FILE_NAME);
-        try {
-            Files.createFile(lockFile);
-            Files.writeString(lockFile, "pid=" + ProcessHandle.current().pid() + System.lineSeparator());
-        } catch (final FileAlreadyExistsException e) {
-            throw new IOException("Data directory " + canonicalDir + " is locked by another Frostlake process ("
-                + LOCK_FILE_NAME + " exists). If no other process is using the directory, delete the lock file "
-                + "and reconnect.");
-        }
+        final DataDirectoryLock directoryLock = DataDirectoryLock.acquire(dir);
 
         final Properties overrides = new Properties();
+        overrides.putAll(identity);
         overrides.setProperty(EngineConfig.PROP_PERSISTENCE_DIRECTORY, canonicalDir);
         overrides.setProperty(EngineConfig.PROP_DURABILITY_WAL_FILE, canonicalDir + File.separator + "wal.log");
         if (venv != null && !venv.isEmpty()) {
@@ -285,11 +313,7 @@ public class DatabaseDriver implements Driver {
         try {
             engine = new DatabaseEngine(new EngineConfig(overrides));
         } catch (final RuntimeException e) {
-            try {
-                Files.deleteIfExists(lockFile);
-            } catch (final IOException cleanup) {
-                logger.warn("Could not remove {} after failed engine open", lockFile, cleanup);
-            }
+            directoryLock.release();
             throw e;
         }
 
@@ -298,15 +322,12 @@ public class DatabaseDriver implements Driver {
             @Override
             public void run() {
                 opened.shutdown();
-                try {
-                    Files.deleteIfExists(lockFile);
-                } catch (final IOException e) {
-                    // The JVM is exiting; a leftover lock file is all that can go wrong here.
-                }
+                directoryLock.release();
             }
         }, "frostlake-file-engine-shutdown");
         Runtime.getRuntime().addShutdownHook(hook);
         FILE_SHUTDOWN_HOOKS.put(canonicalDir, hook);
+        FILE_LOCKS.put(canonicalDir, directoryLock);
         return engine;
     }
 
@@ -321,9 +342,11 @@ public class DatabaseDriver implements Driver {
         final String key = new File(dataDir).getCanonicalPath();
         final DatabaseEngine engine;
         final Thread hook;
+        final DataDirectoryLock directoryLock;
         synchronized (FILE_ENGINES) {
             engine = FILE_ENGINES.remove(key);
             hook = FILE_SHUTDOWN_HOOKS.remove(key);
+            directoryLock = FILE_LOCKS.remove(key);
         }
         if (engine == null) {
             return null;
@@ -332,7 +355,9 @@ public class DatabaseDriver implements Driver {
             Runtime.getRuntime().removeShutdownHook(hook);
         }
         engine.shutdown();
-        Files.deleteIfExists(Path.of(key).resolve(LOCK_FILE_NAME));
+        if (directoryLock != null) {
+            directoryLock.release();
+        }
         return engine;
     }
 
@@ -415,7 +440,7 @@ public class DatabaseDriver implements Driver {
         return database != null && !database.isEmpty() ? database.toUpperCase() : null;
     }
 
-    private String parseParameter(final String url, final String paramName) {
+    private static String parseParameter(final String url, final String paramName) {
         int questionIndex = url.indexOf('?');
         if (questionIndex < 0) {
             return null;

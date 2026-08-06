@@ -47,4 +47,6 @@ public class SchemaSnapshot implements Serializable {
     public List<DynamicTableSnapshot> dynamicTables = new ArrayList<>();
     public List<RowAccessPolicySnapshot> rowAccessPolicies = new ArrayList<>();
     public List<TagSnapshot> tags = new ArrayList<>();
+    // Null on snapshots predating Cortex search services — the restore path null-checks.
+    public List<CortexSearchServiceSnapshot> cortexSearchServices = new ArrayList<>();
 }

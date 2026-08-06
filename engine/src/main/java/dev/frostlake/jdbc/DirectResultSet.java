@@ -19,6 +19,8 @@ package dev.frostlake.jdbc;
 import dev.frostlake.DatabaseEngine;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
+import dev.frostlake.types.DataType;
+import dev.frostlake.values.TemporalText;
 import dev.frostlake.values.BinaryValue;
 import dev.frostlake.values.VariantValue;
 
@@ -118,15 +120,30 @@ public class DirectResultSet implements java.sql.ResultSet {
     @Override
     public String getString(final int columnIndex) throws SQLException {
         checkClosed();
-        Object value = readValue(columnIndex);
-        return value != null ? value.toString() : null;
+        return TemporalText.render(readValue(columnIndex), declaredType(columnIndex - 1));
     }
 
     @Override
     public String getString(final String columnLabel) throws SQLException {
         checkClosed();
-        Object value = readValue(columnLabel);
-        return value != null ? value.toString() : null;
+        return TemporalText.render(readValue(columnLabel), declaredType(indexOf(columnLabel)));
+    }
+
+    /** The declared type of a 0-based column, or null when the index is out of range. */
+    private DataType declaredType(final int index) {
+        final List<ResultSetColumn> columns = engineResultSet.getColumns();
+        return index >= 0 && index < columns.size() ? columns.get(index).getDataType() : null;
+    }
+
+    /** The 0-based position of a named column, or -1. */
+    private int indexOf(final String columnLabel) {
+        final List<ResultSetColumn> columns = engineResultSet.getColumns();
+        for (int i = 0; i < columns.size(); i++) {
+            if (columns.get(i).getName().equalsIgnoreCase(columnLabel)) {
+                return i;
+            }
+        }
+        return -1;
     }
 
     @Override

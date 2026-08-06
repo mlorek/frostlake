@@ -20,6 +20,8 @@ import dev.frostlake.functions.scalar.ArrayFunctionHelper;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.node.ArrayNode;
 
+import javax.tools.Diagnostic;
+import javax.tools.DiagnosticCollector;
 import javax.tools.JavaCompiler;
 import javax.tools.JavaFileObject;
 import javax.tools.SimpleJavaFileObject;
@@ -87,11 +89,15 @@ public class JavaFunctionCompiler {
                 compiler.getStandardFileManager(null, null, null)
             );
 
+            // Diagnostics are COLLECTED rather than left to go to stderr: a real account puts the
+            // compiler's own complaint in the error it raises ("Error while compiling source: …"), and
+            // a body rejected at CREATE is useless to the caller without knowing which line broke it.
+            final DiagnosticCollector<JavaFileObject> diagnostics = new DiagnosticCollector<>();
             JavaFileObject javaFile = new InMemoryJavaFile(className, sourceCode);
             JavaCompiler.CompilationTask task = compiler.getTask(
                 null,
                 fileManager,
-                null,
+                diagnostics,
                 null,
                 null,
                 Arrays.asList(javaFile)
@@ -99,7 +105,7 @@ public class JavaFunctionCompiler {
 
             boolean success = task.call();
             if (!success) {
-                throw new RuntimeException("Compilation failed for class: " + className);
+                throw new RuntimeException("Error while compiling source: " + describe(diagnostics));
             }
 
             byte[] classBytes = fileManager.getClassBytes(className);
@@ -113,9 +119,25 @@ public class JavaFunctionCompiler {
             compiledClasses.put(cacheKey, compiledClass);
             return compiledClass;
 
+        } catch (final RuntimeException alreadyDescribed) {
+            // A compile diagnostic already reads the way a real account's does; wrapping it a second
+            // time ("Failed to compile Java function: Error while compiling source: …") only doubles it.
+            throw alreadyDescribed;
         } catch (final Exception e) {
             throw new RuntimeException("Failed to compile Java function: " + e.getMessage(), e);
         }
+    }
+
+    /** The compiler's own complaints, one per line, as the raised error will quote them. */
+    private static String describe(final DiagnosticCollector<JavaFileObject> diagnostics) {
+        final StringBuilder text = new StringBuilder();
+        for (final Diagnostic<? extends JavaFileObject> diagnostic : diagnostics.getDiagnostics()) {
+            if (text.length() > 0) {
+                text.append('\n');
+            }
+            text.append(diagnostic.getMessage(null));
+        }
+        return text.length() == 0 ? "no diagnostic reported" : text.toString();
     }
 
     /**

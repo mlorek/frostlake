@@ -44,7 +44,7 @@ public class TaskScheduler {
     private static final Logger logger = LoggerFactory.getLogger(TaskScheduler.class);
 
     private final Catalog catalog;
-    private final ScheduledExecutorService scheduler;
+    private ScheduledExecutorService scheduler;
     private final Map<String, ScheduledFuture<?>> scheduledTasks;
     private final TaskExecutor taskExecutor;
     private volatile boolean running;
@@ -63,8 +63,18 @@ public class TaskScheduler {
     public TaskScheduler(final Catalog catalog, final TaskExecutor taskExecutor) {
         this.catalog = catalog;
         this.taskExecutor = taskExecutor;
-        // Daemon threads: an engine that is never shut down must not keep the JVM alive.
-        this.scheduler = Executors.newScheduledThreadPool(4, new ThreadFactory() {
+        this.scheduler = newSchedulerPool();
+        this.scheduledTasks = new ConcurrentHashMap<>();
+        this.running = false;
+    }
+
+    /**
+     * A fresh timer pool. Daemon threads: an engine that is never shut down must not keep the JVM
+     * alive. Built by a factory rather than inline because {@link #stop()} shuts the pool down
+     * permanently, so a later {@link #start()} needs a new one.
+     */
+    private static ScheduledExecutorService newSchedulerPool() {
+        return Executors.newScheduledThreadPool(4, new ThreadFactory() {
             @Override
             public Thread newThread(final Runnable r) {
                 final Thread t = new Thread(r, "frostlake-task-scheduler");
@@ -72,16 +82,60 @@ public class TaskScheduler {
                 return t;
             }
         });
-        this.scheduledTasks = new ConcurrentHashMap<>();
-        this.running = false;
     }
 
+    /**
+     * The scheduler key for a task: {@code DB.SCHEMA.TASK}, upper-cased. Every path that arms or
+     * cancels a task must build it the same way, or a later SUSPEND cancels nothing because it looks
+     * up a key that RESUME never wrote. Shared by {@code ALTER TASK … RESUME/SUSPEND} and by
+     * {@link #start()}'s arming scan.
+     */
+    public static String schedulerKey(final String databaseName, final String schemaName, final String taskName) {
+        return (databaseName + "." + schemaName + "." + taskName).toUpperCase();
+    }
+
+    /**
+     * Start the scheduler and arm every task already in the STARTED state.
+     *
+     * <p>The scan matters because a task can reach STARTED without anyone calling
+     * {@link #resumeTask}: a snapshot restore writes the state straight onto the model
+     * ({@code CatalogSnapshotReader}), so a task that was running when the engine was persisted comes
+     * back STARTED but unarmed, and would never fire again until it was manually RESUMEd. Arming here
+     * makes "it was running before the restart" survive the restart.
+     *
+     * <p>Still OPT-IN — nothing starts the scheduler at engine boot, so an embedded engine spawns no
+     * timer threads unless the embedder asks for them (or a RESUME lazy-starts it).
+     */
     public void start() {
         if (running) {
             return;
         }
+        // A previous stop() shut the pool down for good; a restart needs a fresh one, or every
+        // scheduleAtFixedRate below would be rejected.
+        if (scheduler.isShutdown()) {
+            scheduler = newSchedulerPool();
+        }
         running = true;
+        armStartedTasks();
         logger.info("Task scheduler started");
+    }
+
+    /** Arm every STARTED task in the catalog that is not already scheduled. */
+    private void armStartedTasks() {
+        for (final Database database : catalog.getAllDatabases()) {
+            for (final Schema schema : database.getAllSchemas()) {
+                for (final Task task : schema.getTasks()) {
+                    if (task.getState() != TaskState.STARTED) {
+                        continue;
+                    }
+                    final String key = schedulerKey(database.getName(), schema.getName(), task.getName());
+                    if (scheduledTasks.containsKey(key)) {
+                        continue; // already armed — do not stack a second timer on the same task
+                    }
+                    scheduleTask(key, task);
+                }
+            }
+        }
     }
 
     public void stop() {
@@ -443,5 +497,23 @@ public class TaskScheduler {
 
     public boolean isRunning() {
         return running;
+    }
+
+    /**
+     * Whether this task currently holds a live timer entry. The key must be built with
+     * {@link #schedulerKey}; anything else answers false because it is not the key the scheduler
+     * armed under.
+     */
+    public boolean isScheduled(final String qualifiedTaskName) {
+        return scheduledTasks.containsKey(qualifiedTaskName);
+    }
+
+    /**
+     * Whether a run of this task is in flight right now. Only tracked for tasks that forbid
+     * overlapping execution (the default) — a task with {@code ALLOW_OVERLAPPING_EXECUTION = TRUE}
+     * needs no in-flight bookkeeping, so it always reports false.
+     */
+    public boolean hasRunningExecutions(final String qualifiedTaskName) {
+        return runningTasks.contains(qualifiedTaskName.toUpperCase());
     }
 }

@@ -89,6 +89,56 @@ public class PythonExecutor {
         }
     }
 
+    /**
+     * Compile a Python FUNCTION's body at CREATE time. Live refuses three things here and this refuses
+     * the same three: a body that is not Python, a body whose module-level code fails (an import of
+     * something that is not installed is the usual one), and a HANDLER the body does not define — or
+     * defines with a different number of arguments than the function declares.
+     *
+     * <p>A Python PROCEDURE is deliberately NOT put through this. Measured on the same account: the
+     * identical nonsense body is refused for a function and accepted for a procedure.
+     */
+    static void compilePythonFunction(final Function function) {
+        try {
+            PythonRuntime.eval(dedent(function.getBody()));
+        } catch (final Exception e) {
+            // Same discipline as execution: a failed eval may hold a Python-level lock, and reusing the
+            // context afterwards would block this thread's NEXT call forever.
+            PythonRuntime.discardContext();
+            throw new RuntimeException(PythonRuntimeDiagnostics.describeFailure(
+                "function", function.getName(), function.getRuntimeVersion(), function.getBody(), e), e);
+        }
+        final String handlerName = function.getHandler();
+        if (handlerName == null || handlerName.isEmpty()) {
+            return;
+        }
+        final Value handler = PythonRuntime.global(handlerName);
+        if (handler == null || !handler.canExecute()) {
+            throw new RuntimeException("Could not find handler in function " + function.getName()
+                + " with handler " + handlerName);
+        }
+        final int declared = function.getParameters() == null ? 0 : function.getParameters().size();
+        final int accepts = declaredArgumentCount(handler);
+        if (accepts >= 0 && accepts != declared) {
+            throw new RuntimeException("Python function is defined with " + accepts
+                + " arguments, but UDF definition contains " + declared
+                + " arguments in function " + function.getName() + " with handler " + handlerName);
+        }
+    }
+
+    /** How many positional arguments a Python callable takes, or -1 when it will not say. */
+    private static int declaredArgumentCount(final Value handler) {
+        try {
+            final Value code = handler.getMember("__code__");
+            if (code == null || !code.hasMember("co_argcount")) {
+                return -1;
+            }
+            return code.getMember("co_argcount").asInt();
+        } catch (final RuntimeException notIntrospectable) {
+            return -1;
+        }
+    }
+
     /** Build the runnable Python source: the body plus an {@code __result = handler(params)} call. */
     private static String buildCode(final Function function, final List<Parameter> parameters) {
         final String body = dedent(function.getBody());

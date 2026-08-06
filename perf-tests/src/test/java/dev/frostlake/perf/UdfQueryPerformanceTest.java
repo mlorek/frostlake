@@ -65,14 +65,14 @@ public class UdfQueryPerformanceTest extends BaseDatabaseTest {
             AS $$ return x * 2; $$
             """);
         engine.execute("""
-            CREATE FUNCTION py_dbl(x INTEGER) RETURNS INTEGER LANGUAGE PYTHON HANDLER = 'dbl'
+            CREATE FUNCTION py_dbl(x INTEGER) RETURNS INTEGER LANGUAGE PYTHON RUNTIME_VERSION = '3.11' HANDLER = 'dbl'
             AS $$
             def dbl(x):
                 return x * 2
             $$
             """);
         engine.execute("""
-            CREATE FUNCTION sc_dbl(x INTEGER) RETURNS INTEGER LANGUAGE SCALA HANDLER = 'D.dbl'
+            CREATE FUNCTION sc_dbl(x INTEGER) RETURNS INTEGER LANGUAGE SCALA RUNTIME_VERSION = '2.12' HANDLER = 'D.dbl'
             AS $$ object D { def dbl(x: Int): Int = x * 2 } $$
             """);
     }

@@ -142,14 +142,15 @@ public class StreamOnUnionViewTest extends BaseDatabaseTest {
     }
 
     @Test
-    public void testJoinViewIsRejected() {
+    public void testJoinInsideUnionAllBranchIsRejected() {
         Assumptions.assumeFalse(isLiveSnowflake(),
-            "matches FROSTLAKE's rejection wording (\"change tracking supports …\") for a stream on a "
-            + "join view; a real account turns the same CREATE STREAM away with its own differently "
-            + "worded error");
+            "matches FROSTLAKE's rejection wording (\"change tracking supports …\") for a join inside "
+            + "a UNION ALL arm; single-branch inner-join views ARE supported (StreamOnJoinViewTest) "
+            + "and this mixed shape is unmeasured on a real account");
         engine.execute("CREATE TABLE t1 (id INTEGER)");
         engine.execute("CREATE TABLE t2 (id INTEGER)");
-        engine.execute("CREATE VIEW u AS SELECT t1.id FROM t1 JOIN t2 ON t1.id = t2.id");
+        engine.execute("CREATE VIEW u AS SELECT t1.id FROM t1 JOIN t2 ON t1.id = t2.id"
+            + " UNION ALL SELECT id FROM t2");
 
         final RuntimeException ex = assertThrows(RuntimeException.class, new Executable() {
             @Override
@@ -158,6 +159,6 @@ public class StreamOnUnionViewTest extends BaseDatabaseTest {
             }
         });
         assertTrue(ex.getMessage().contains("change tracking supports"),
-            "joins in a view stream are unsupported: " + ex.getMessage());
+            "a join inside a UNION ALL branch is unsupported: " + ex.getMessage());
     }
 }

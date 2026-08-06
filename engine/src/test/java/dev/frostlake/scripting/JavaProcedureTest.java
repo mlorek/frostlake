@@ -105,15 +105,16 @@ public class JavaProcedureTest {
             HANDLER='Counter.run'
             AS
             $$
-            import com.snowflake.snowpark_java.Session;
             import com.snowflake.snowpark_java.DataFrame;
+            import com.snowflake.snowpark_java.Row;
+            import com.snowflake.snowpark_java.Session;
 
             public class Counter {
               public String run(Session session) {
                 DataFrame df = session.sql("SELECT COUNT(*) AS CNT FROM public.items");
-                Object[] rows = df.collect();
+                Row[] rows = df.collect();
                 if (rows.length > 0) {
-                  return "count=" + ((dev.frostlake.storage.Row) rows[0]).getValue(0);
+                  return "count=" + rows[0].getLong(0);
                 }
                 return "count=0";
               }
