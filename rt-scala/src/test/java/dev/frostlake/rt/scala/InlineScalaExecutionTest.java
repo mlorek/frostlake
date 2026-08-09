@@ -26,7 +26,7 @@ import org.slf4j.LoggerFactory;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
- * Inline {@code LANGUAGE SCALA} execution — an {@code AS $$ … $$} body compiled by the in-process
+ * Inline {@code LANGUAGE SCALA RUNTIME_VERSION = '2.12'} execution — an {@code AS $$ … $$} body compiled by the in-process
  * {@link ScalaCompiler}: a UDF handler on an {@code object}, and a procedure handler class taking a
  * Snowpark {@code Session}. The Java/JavaScript/Python counterparts live with their own runtimes
  * (engine, rt-js, rt-py).
@@ -42,6 +42,7 @@ public class InlineScalaExecutionTest extends BaseDatabaseTest {
             CREATE OR REPLACE FUNCTION sc_double(x INTEGER)
             RETURNS INTEGER
             LANGUAGE SCALA
+            RUNTIME_VERSION = '2.12'
             HANDLER = 'M.f'
             AS $$
             object M { def f(x: Int): Int = x * 2 }
@@ -57,6 +58,7 @@ public class InlineScalaExecutionTest extends BaseDatabaseTest {
             CREATE OR REPLACE PROCEDURE scala_proc()
             RETURNS STRING
             LANGUAGE SCALA
+            RUNTIME_VERSION = '2.12'
             HANDLER = 'P.run'
             AS $$
             import com.snowflake.snowpark_java.Session

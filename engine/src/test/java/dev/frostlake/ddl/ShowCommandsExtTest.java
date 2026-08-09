@@ -21,6 +21,7 @@ import dev.frostlake.storage.ResultSet;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -110,37 +111,32 @@ public class ShowCommandsExtTest {
 
     // ── SHOW SESSIONS ─────────────────────────────────────────────────────────
 
+    /**
+     * There is no SHOW SESSIONS on Snowflake. Measured in every spelling — plain, TERSE, IN ACCOUNT and
+     * LIKE all answer {@code Object type or Class 'SESSIONS' does not exist or not authorized}, and
+     * {@code FOR USER} is a syntax error — while SHOW TRANSACTIONS and SHOW LOCKS beside it both work,
+     * so this is SESSIONS specifically and not a whole family being absent. An account exposes its
+     * sessions through the {@code SNOWFLAKE.ACCOUNT_USAGE.SESSIONS} view instead.
+     *
+     * <p>Frostlake used to answer one. Accepting a statement the account rejects is a fidelity bug in
+     * its own right, so the command is gone and the parser refuses it.
+     */
     @Test
-    public void testShowSessions() {
-        ResultSet rs = engine.executeQuery("SHOW SESSIONS");
-        assertNotNull(rs);
-        assertEquals(1, rs.getRowCount(), "Should show current session");
-        assertNotNull(rs.getColumnIndex("session_id"));
-        assertNotNull(rs.getColumnIndex("user_name"));
-        assertNotNull(rs.getColumnIndex("created_on"));
+    public void showSessionsIsNotAStatement() {
+        assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.executeQuery("SHOW SESSIONS");
+            }
+        });
     }
 
+    /** SESSIONS survives as an ordinary identifier, which it was before and still is. */
     @Test
-    public void testShowSessionsHasUserName() {
-        ResultSet rs = engine.executeQuery("SHOW SESSIONS");
-        int userIdx = rs.getColumnIndex("user_name");
-        assertNotNull(rs.getRows().get(0).getValue(userIdx));
-    }
-
-    @Test
-    public void testShowSessionsHasSessionId() {
-        ResultSet rs = engine.executeQuery("SHOW SESSIONS");
-        int sidIdx = rs.getColumnIndex("session_id");
-        assertNotNull(rs.getRows().get(0).getValue(sidIdx));
-    }
-
-    @Test
-    public void testShowSessionsHasDatabaseAndSchema() {
-        ResultSet rs = engine.executeQuery("SHOW SESSIONS");
-        int dbIdx = rs.getColumnIndex("database_name");
-        int scIdx = rs.getColumnIndex("schema_name");
-        assertEquals("TEST_DB", rs.getRows().get(0).getValue(dbIdx).toString().toUpperCase());
-        assertEquals("PUBLIC", rs.getRows().get(0).getValue(scIdx).toString().toUpperCase());
+    public void sessionsIsStillAUsableName() {
+        engine.execute("CREATE TABLE sessions (id INTEGER)");
+        engine.execute("INSERT INTO sessions VALUES (1)");
+        assertEquals(1, engine.executeQuery("SELECT id FROM sessions").getRowCount());
     }
 
     // ── SHOW OBJECTS ──────────────────────────────────────────────────────────
@@ -149,11 +145,10 @@ public class ShowCommandsExtTest {
     public void testShowObjects() {
         engine.execute("CREATE TABLE t1 (id INTEGER)");
         engine.execute("CREATE VIEW v1 AS SELECT * FROM t1");
-        engine.execute("CREATE FUNCTION f1(x INTEGER) RETURNS INTEGER AS $$ SELECT x $$");
 
         ResultSet rs = engine.executeQuery("SHOW OBJECTS");
         assertNotNull(rs);
-        assertTrue(rs.getRowCount() >= 3);
+        assertTrue(rs.getRowCount() >= 2);
         assertNotNull(rs.getColumnIndex("name"));
         assertNotNull(rs.getColumnIndex("kind"));
     }
@@ -204,7 +199,7 @@ public class ShowCommandsExtTest {
                 found = true;
             }
         }
-        assertTrue(found, "SHOW OBJECTS should include MY_PROC");
+        assertFalse(found, "SHOW OBJECTS lists tables and views; SHOW PROCEDURES lists procedures");
     }
 
     @Test

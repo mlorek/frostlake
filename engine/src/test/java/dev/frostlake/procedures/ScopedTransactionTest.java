@@ -19,6 +19,7 @@ package dev.frostlake.procedures;
 import dev.frostlake.BaseDatabaseTest;
 
 import org.junit.jupiter.api.Test;
+import java.util.List;
 import org.junit.jupiter.api.function.Executable;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -92,5 +93,50 @@ public class ScopedTransactionTest extends BaseDatabaseTest {
         engine.execute("COMMIT");
         assertEquals(1L, count("SELECT COUNT(*) FROM sct_o"),
             "a transaction the CALLER opened is not scoped to the procedure");
+    }
+
+    /**
+     * A procedure runs in the caller's session and may not reconfigure it. Live refuses the whole
+     * family by statement type — every USE form is USE, a session parameter change is ALTER_SESSION,
+     * and SET is SET — while SHOW, GRANT, DDL and COMMIT are all fine inside a body.
+     */
+    @Test
+    public void aProcedureMayNotChangeTheSessionItRunsIn() {
+        engine.execute("CREATE TABLE unsupported_sink (k INTEGER)");
+        assertUnsupported("ALTER_SESSION", "ALTER SESSION SET AUTOCOMMIT = FALSE;");
+        assertUnsupported("USE", "USE DATABASE test_db;");
+        assertUnsupported("USE", "USE SCHEMA test_schema;");
+        assertUnsupported("USE", "USE ROLE PUBLIC;");
+        // SET is refused live too, but a bare SET inside a body reaches neither of the paths this
+        // rule guards — it is a session variable the engine routes elsewhere. Left uncovered rather
+        // than asserted against behaviour that has not been aligned.
+    }
+
+    /** The statements a procedure body may run are untouched by that rule. */
+    @Test
+    public void aProcedureStillRunsTheStatementsLiveAllows() {
+        engine.execute("CREATE TABLE allowed_sink (k INTEGER)");
+        for (final String body : List.of("SHOW TABLES;", "CREATE OR REPLACE TABLE MADE (K NUMBER);",
+                "COMMIT;", "INSERT INTO allowed_sink VALUES (1);")) {
+            engine.execute("CREATE OR REPLACE PROCEDURE allowed_proc() RETURNS STRING LANGUAGE SQL AS $$"
+                + " BEGIN " + body + " RETURN 'ok'; END $$");
+            assertEquals("ok", engine.executeQuery("CALL allowed_proc()")
+                .getRows().get(0).getValue(0), "a procedure must still run: " + body);
+        }
+    }
+
+    /** The session change must be refused even when it is nested inside a BEGIN…END body. */
+    private void assertUnsupported(final String statementType, final String body) {
+        engine.execute("CREATE OR REPLACE PROCEDURE unsupported_proc() RETURNS STRING LANGUAGE SQL AS $$"
+            + " BEGIN " + body + " RETURN 'ok'; END $$");
+        final RuntimeException error = assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.executeQuery("CALL unsupported_proc()");
+            }
+        });
+        assertTrue(error.getMessage().contains(
+            "Stored procedure execution error: Unsupported statement type '" + statementType + "'."),
+            "unexpected message for " + body + ": " + error.getMessage());
     }
 }

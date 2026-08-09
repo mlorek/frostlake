@@ -27,6 +27,7 @@ import org.antlr.v4.runtime.ParserRuleContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -169,14 +170,20 @@ public class GrantRevokeHandler implements CommandHandler {
                 } else {
                     // Handle privilege list
                     if (ctx.privilegeList().ALL() != null) {
-                        // Grant all privileges
-                        if (isUser) {
-                            catalog.grantPrivilegeToUser("ALL", objectType, objectName, targetName);
-                            logger.trace("Granted ALL privileges on {} {} to user {}", objectType, objectName, targetName);
-                        } else {
-                            catalog.grantPrivilegeToRole("ALL", objectType, objectName, targetName);
-                            logger.trace("Granted ALL privileges on {} {} to role {}", objectType, objectName, targetName);
+                        // GRANT ALL stores the EXPANSION, never an ALL marker — live-verified:
+                        // SHOW GRANTS lists the individual privileges, revoking one leaves the
+                        // rest, and OWNERSHIP is never part of the set. A type without a modeled
+                        // vocabulary keeps the legacy ALL row.
+                        final List<String> expansion = allPrivilegesFor(objectType);
+                        for (final String privilege : expansion) {
+                            if (isUser) {
+                                catalog.grantPrivilegeToUser(privilege, objectType, objectName, targetName);
+                            } else {
+                                catalog.grantPrivilegeToRole(privilege, objectType, objectName, targetName);
+                            }
                         }
+                        logger.trace("Granted ALL privileges ({}) on {} {} to {} {}", expansion,
+                            objectType, objectName, isUser ? "user" : "role", targetName);
                     } else {
                         // Grant specific privileges
                         for (final FrostlakeParser.PrivilegeContext privCtx : ctx.privilegeList().privilege()) {
@@ -287,14 +294,21 @@ public class GrantRevokeHandler implements CommandHandler {
                 } else {
                     // Handle privilege list
                     if (ctx.privilegeList().ALL() != null) {
-                        // Revoke all privileges
-                        if (isUser) {
-                            catalog.revokePrivilegeFromUser("ALL", objectType, objectName, targetName);
-                            logger.trace("Revoked ALL privileges on {} {} from user {}", objectType, objectName, targetName);
-                        } else {
-                            catalog.revokePrivilegeFromRole("ALL", objectType, objectName, targetName);
-                            logger.trace("Revoked ALL privileges on {} {} from role {}", objectType, objectName, targetName);
+                        // REVOKE ALL removes the expanded set (and a legacy stored ALL marker),
+                        // mirroring the grant-side expansion.
+                        final List<String> allToRevoke = new ArrayList<>(allPrivilegesFor(objectType));
+                        if (!allToRevoke.contains("ALL")) {
+                            allToRevoke.add("ALL");
                         }
+                        for (final String privilege : allToRevoke) {
+                            if (isUser) {
+                                catalog.revokePrivilegeFromUser(privilege, objectType, objectName, targetName);
+                            } else {
+                                catalog.revokePrivilegeFromRole(privilege, objectType, objectName, targetName);
+                            }
+                        }
+                        logger.trace("Revoked ALL privileges on {} {} from {} {}", objectType, objectName,
+                            isUser ? "user" : "role", targetName);
                     } else {
                         // Revoke specific privileges
                         for (final FrostlakeParser.PrivilegeContext privCtx : ctx.privilegeList().privilege()) {
@@ -351,6 +365,45 @@ public class GrantRevokeHandler implements CommandHandler {
                 || (schemaLevelCreate && "DATABASE".equals(objectType))) {
             throw new RuntimeException("SQL compilation error:\nInvalid object type '" + objectType
                 + "' for privilege '" + privilege.replace('_', ' ') + "'.");
+        }
+    }
+
+    /**
+     * The privileges {@code GRANT ALL} expands to for one securable type. Live stores the
+     * expansion, never an ALL marker: SHOW GRANTS lists individual privileges, revoking one leaves
+     * the rest, REVOKE ALL clears them, and OWNERSHIP is never included. The TABLE / VIEW / SCHEMA
+     * / DATABASE sets are the measured core restricted to the privileges this engine models (a
+     * real account also lists edition-dependent extras such as APPLYBUDGET); the remaining types
+     * follow the documented stable sets. An unmapped type falls back to the legacy single ALL row.
+     */
+    private List<String> allPrivilegesFor(final String objectType) {
+        switch (objectType) {
+            case "TABLE":
+            case "VIEW":
+                // Live expands a view's ALL to the same DML set as a table's.
+                return List.of("SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE", "REFERENCES");
+            case "SCHEMA":
+                return List.of("MODIFY", "MONITOR", "USAGE",
+                    "CREATE_TABLE", "CREATE_VIEW", "CREATE_STAGE", "CREATE_FILE_FORMAT",
+                    "CREATE_SEQUENCE", "CREATE_FUNCTION", "CREATE_PROCEDURE", "CREATE_PIPE",
+                    "CREATE_STREAM", "CREATE_TASK", "CREATE_MASKING_POLICY",
+                    "CREATE_ROW_ACCESS_POLICY", "CREATE_TAG");
+            case "DATABASE":
+                return List.of("CREATE_SCHEMA", "MODIFY", "MONITOR", "USAGE");
+            case "WAREHOUSE":
+                return List.of("MODIFY", "MONITOR", "OPERATE", "USAGE");
+            case "STAGE":
+                return List.of("READ", "USAGE", "WRITE");
+            case "FUNCTION":
+            case "PROCEDURE":
+            case "SEQUENCE":
+                return List.of("USAGE");
+            case "STREAM":
+                return List.of("SELECT");
+            case "TASK":
+                return List.of("MONITOR", "OPERATE");
+            default:
+                return List.of("ALL");
         }
     }
 

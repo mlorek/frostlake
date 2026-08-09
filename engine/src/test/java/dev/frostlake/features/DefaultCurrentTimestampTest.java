@@ -68,7 +68,7 @@ public class DefaultCurrentTimestampTest {
         logger.info("Testing DEFAULT CURRENT_TIMESTAMP");
         engine.execute("CREATE TABLE test_timestamps (id INTEGER, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, name VARCHAR)");
 
-        Table table = engine.getCatalog().resolveTable("test_timestamps");
+        Table table = engine.getCatalog().resolveTable("TEST_TIMESTAMPS");
         assertNotNull(table);
 
         TableColumn createdAtCol = table.getColumn("created_at");
@@ -148,7 +148,7 @@ public class DefaultCurrentTimestampTest {
         logger.info("Testing DEFAULT CURRENT_DATE");
         engine.execute("CREATE TABLE test_dates (id INTEGER, date_col DATE DEFAULT CURRENT_DATE, name VARCHAR)");
 
-        Table table = engine.getCatalog().resolveTable("test_dates");
+        Table table = engine.getCatalog().resolveTable("TEST_DATES");
         TableColumn dateCol = table.getColumn("date_col");
         assertEquals("CURRENT_DATE", dateCol.getDefaultValue());
 
@@ -242,7 +242,7 @@ public class DefaultCurrentTimestampTest {
         logger.info("Testing DEFAULT CURRENT_TIMESTAMP()");
         engine.execute("CREATE TABLE test_timestamps_paren (id INTEGER, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP(), name VARCHAR)");
 
-        Table table = engine.getCatalog().resolveTable("test_timestamps_paren");
+        Table table = engine.getCatalog().resolveTable("TEST_TIMESTAMPS_PAREN");
         assertNotNull(table);
 
         TableColumn createdAtCol = table.getColumn("created_at");
@@ -274,7 +274,7 @@ public class DefaultCurrentTimestampTest {
         logger.info("Testing DEFAULT CURRENT_DATE()");
         engine.execute("CREATE TABLE test_dates_paren (id INTEGER, date_col DATE DEFAULT CURRENT_DATE(), name VARCHAR)");
 
-        Table table = engine.getCatalog().resolveTable("test_dates_paren");
+        Table table = engine.getCatalog().resolveTable("TEST_DATES_PAREN");
         TableColumn dateCol = table.getColumn("date_col");
         assertEquals("CURRENT_DATE", dateCol.getDefaultValue());
 
@@ -307,7 +307,7 @@ public class DefaultCurrentTimestampTest {
             )
             """);
 
-        Table table = engine.getCatalog().resolveTable("test_mixed_syntax");
+        Table table = engine.getCatalog().resolveTable("TEST_MIXED_SYNTAX");
         assertNotNull(table);
 
         assertEquals("CURRENT_TIMESTAMP", table.getColumn("ts_no_paren").getDefaultValue());

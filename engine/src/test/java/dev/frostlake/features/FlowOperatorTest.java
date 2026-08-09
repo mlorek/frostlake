@@ -87,15 +87,20 @@ public class FlowOperatorTest extends BaseDatabaseTest {
                 engine.executeQuery("select 1 ->> select * from $3");
             }
         });
-        assertTrue(range.getMessage().contains("does not reference a previous statement"),
-            "unexpected message: " + range.getMessage());
+        // Live reports a stage outside the chain as an unresolvable generated name, at a position it
+        // does not have — "error line 0 at position -1" is the account's own wording, not a bug here.
+        assertEquals("SQL compilation error: error line 0 at position -1\n"
+            + "invalid identifier 'SQL_PIPE_3'", range.getMessage());
         final RuntimeException outside = assertThrows(RuntimeException.class, new Executable() {
             @Override
             public void execute() {
                 engine.executeQuery("select * from $1");
             }
         });
-        assertTrue(outside.getMessage().contains("flow chain"),
+        // A $n with no chain at all is a pipe reference rather than an identifier. Live's message
+        // leads with the same phrase and then dumps one of its own AST objects; only the phrase is
+        // reproduced — see the throw site for why the dump is not.
+        assertTrue(outside.getMessage().contains("invalid pipe reference '$1'"),
             "unexpected message: " + outside.getMessage());
     }
 

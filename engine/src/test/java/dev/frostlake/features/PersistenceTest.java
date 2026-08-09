@@ -174,7 +174,8 @@ public class PersistenceTest {
             String whName = (String) warehouses.getValue("name");
             if ("TEST_WH".equalsIgnoreCase(whName)) {
                 foundTestWh = true;
-                assertEquals("MEDIUM", warehouses.getValue("size"));
+                // SHOW WAREHOUSES spells the size the way live displays it, not as the keyword.
+                assertEquals("Medium", warehouses.getValue("size"));
             }
             if ("COMPUTE_WH".equalsIgnoreCase(whName)) {
                 foundComputeWh = true;

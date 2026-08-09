@@ -56,24 +56,24 @@ public class TaskHistoryFunction extends TableFunction {
     @Override
     public ResultSet execute(final Map<String, Object> namedArgs) {
         List<ResultSetColumn> columns = Arrays.asList(
-            new ResultSetColumn("query_id", StringType.VARCHAR),
-            new ResultSetColumn("name", StringType.VARCHAR),
-            new ResultSetColumn("database_name", StringType.VARCHAR),
-            new ResultSetColumn("schema_name", StringType.VARCHAR),
-            new ResultSetColumn("query_text", StringType.VARCHAR),
-            new ResultSetColumn("condition_text", StringType.VARCHAR),
-            new ResultSetColumn("state", StringType.VARCHAR),
-            new ResultSetColumn("error_code", StringType.VARCHAR),
-            new ResultSetColumn("error_message", StringType.VARCHAR),
-            new ResultSetColumn("scheduled_time", StringType.VARCHAR),
-            new ResultSetColumn("query_start_time", StringType.VARCHAR),
-            new ResultSetColumn("next_scheduled_time", StringType.VARCHAR),
-            new ResultSetColumn("completed_time", StringType.VARCHAR),
-            new ResultSetColumn("root_task_id", StringType.VARCHAR),
-            new ResultSetColumn("graph_version", NumericType.BIGINT),
-            new ResultSetColumn("run_id", NumericType.BIGINT),
-            new ResultSetColumn("return_value", StringType.VARCHAR),
-            new ResultSetColumn("scheduled_from", StringType.VARCHAR)
+            new ResultSetColumn("QUERY_ID", StringType.VARCHAR),
+            new ResultSetColumn("NAME", StringType.VARCHAR),
+            new ResultSetColumn("DATABASE_NAME", StringType.VARCHAR),
+            new ResultSetColumn("SCHEMA_NAME", StringType.VARCHAR),
+            new ResultSetColumn("QUERY_TEXT", StringType.VARCHAR),
+            new ResultSetColumn("CONDITION_TEXT", StringType.VARCHAR),
+            new ResultSetColumn("STATE", StringType.VARCHAR),
+            new ResultSetColumn("ERROR_CODE", StringType.VARCHAR),
+            new ResultSetColumn("ERROR_MESSAGE", StringType.VARCHAR),
+            new ResultSetColumn("SCHEDULED_TIME", StringType.VARCHAR),
+            new ResultSetColumn("QUERY_START_TIME", StringType.VARCHAR),
+            new ResultSetColumn("NEXT_SCHEDULED_TIME", StringType.VARCHAR),
+            new ResultSetColumn("COMPLETED_TIME", StringType.VARCHAR),
+            new ResultSetColumn("ROOT_TASK_ID", StringType.VARCHAR),
+            new ResultSetColumn("GRAPH_VERSION", NumericType.BIGINT),
+            new ResultSetColumn("RUN_ID", NumericType.BIGINT),
+            new ResultSetColumn("RETURN_VALUE", StringType.VARCHAR),
+            new ResultSetColumn("SCHEDULED_FROM", StringType.VARCHAR)
         );
 
         String filterTaskName = namedArgs.containsKey("TASK_NAME")

@@ -18,6 +18,8 @@ package dev.frostlake.executor.commands;
 
 import dev.frostlake.executor.ParseTreeText;
 import dev.frostlake.executor.QueryExecutor;
+import dev.frostlake.executor.SqlCompilationError;
+import dev.frostlake.executor.udf.RoutineImports;
 import dev.frostlake.metastore.*;
 import dev.frostlake.metastore.model.*;
 import dev.frostlake.parser.FrostlakeParser;
@@ -28,6 +30,7 @@ import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 
 /**
  * Handles CREATE FUNCTION and CREATE PROCEDURE (UDF / stored-procedure creation across SQL/JS/Python/Java/
@@ -38,6 +41,12 @@ import java.util.List;
 public class CreateRoutineHandler implements CommandHandler {
 
     private static final Logger logger = LoggerFactory.getLogger(CreateRoutineHandler.class);
+
+    /** The languages whose runtime is versioned, and so require RUNTIME_VERSION. */
+    private static final Set<String> VERSIONED_RUNTIMES = Set.of("PYTHON", "SCALA");
+
+    /** The languages that run an inline body and so take neither RUNTIME_VERSION nor HANDLER. */
+    private static final Set<String> INLINE_BODY_LANGUAGES = Set.of("SQL", "JAVASCRIPT");
 
     private final DDLCommandHandler ddl;
     private final Catalog catalog;
@@ -176,6 +185,8 @@ public class CreateRoutineHandler implements CommandHandler {
                 }
             }
 
+            validateRoutineProperties(language, runtimeVersion, handler);
+
             Function function = new Function(functionName, parameters, returnType, returnColumns, body, isTableFunction, language, handler, runtimeVersion);
 
             if (ctx.SECURE() != null) function.setSecure(true);
@@ -183,6 +194,13 @@ public class CreateRoutineHandler implements CommandHandler {
             function.setVolatility(volatility);
             if (!imports.isEmpty()) function.setImports(imports);
             if (comment != null) function.setComment(comment);
+
+            // The body is compiled before the function is registered, for the languages where a real
+            // account does — see RoutineBodyCompiler for which those are and why it is not all of them.
+            // IMPORTS is checked here too: live refuses a routine whose stage or jar is absent, so the
+            // routine must not come into existence when it names one that is not there.
+            RoutineImports.validate(function.getImports(), catalog);
+            RoutineBodyCompiler.compileFunctionBody(function);
 
             function.setOwner(catalog.currentRoleForOwner());
             schema.addFunction(function);
@@ -295,6 +313,8 @@ public class CreateRoutineHandler implements CommandHandler {
                 }
             }
 
+            validateRoutineProperties(language, runtimeVersion, handler);
+
             Procedure procedure = new Procedure(procedureName, parameters, returnType, body, language, handler, runtimeVersion, packages);
             if (!procReturnColumns.isEmpty()) {
                 procedure.setReturnColumns(procReturnColumns);
@@ -317,6 +337,9 @@ public class CreateRoutineHandler implements CommandHandler {
                 String execAs = ctx.executeAsClause().OWNER() != null ? "OWNER" : "CALLER";
                 procedure.setExecuteAs(execAs);
             }
+
+            RoutineImports.validate(procedure.getImports(), catalog);
+            RoutineBodyCompiler.compileProcedureBody(procedure);
 
             procedure.setOwner(catalog.currentRoleForOwner());
             schema.addProcedure(procedure);
@@ -362,4 +385,37 @@ public class CreateRoutineHandler implements CommandHandler {
         return language;
     }
 
+
+    /**
+     * The per-language property rules, live-verified and applied to functions and procedures alike.
+     * SQL and JAVASCRIPT run an inline body, so naming either RUNTIME_VERSION or HANDLER for one is
+     * an invalid property — and the two rejections do NOT share a shape: RUNTIME_VERSION is reported
+     * upper-cased against 'FUNCTION', while handler is reported lower-cased against the LANGUAGE's
+     * own "&lt;LANG&gt; function", the latter even when the routine is a procedure. PYTHON and SCALA
+     * name a versioned runtime and so require RUNTIME_VERSION, whose message carries no
+     * compilation-error prefix at all.
+     */
+    private void validateRoutineProperties(final String language, final String runtimeVersion,
+                                           final String handler) {
+        final String lang = language.toUpperCase();
+        if (INLINE_BODY_LANGUAGES.contains(lang)) {
+            if (runtimeVersion != null) {
+                throw new RuntimeException(SqlCompilationError.of(
+                    "invalid property 'RUNTIME_VERSION' for 'FUNCTION'"));
+            }
+            if (handler != null) {
+                throw new RuntimeException(SqlCompilationError.of(
+                    "invalid property 'handler' for '" + lang + " function'"));
+            }
+            return;
+        }
+        if (runtimeVersion == null && VERSIONED_RUNTIMES.contains(lang)) {
+            throw new RuntimeException("Property 'runtime_version' must be specified");
+        }
+        // Every language that loads a compiled/interpreted body names an entry point into it. A body
+        // with no handler is not a routine Snowflake can call, so it is refused at CREATE.
+        if (handler == null) {
+            throw new RuntimeException("Property 'handler' must be specified");
+        }
+    }
 }

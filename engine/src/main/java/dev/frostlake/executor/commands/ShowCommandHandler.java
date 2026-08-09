@@ -19,6 +19,7 @@ package dev.frostlake.executor.commands;
 import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.executor.ShowCommandExecutor;
 import dev.frostlake.metastore.Catalog;
+import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
@@ -115,6 +116,9 @@ public class ShowCommandHandler implements CommandHandler {
             }
             return showExecutor.showSchemas(dbName);
         } else if (ctx.DYNAMIC() != null && ctx.TABLES() != null) {
+            if (ctx.ACCOUNT() != null) {
+                return showExecutor.showDynamicTablesInAccount();
+            }
             if (ctx.DATABASE() != null && ctx.qualifiedName() != null) {
                 return showExecutor.showDynamicTablesInDatabase(getText(ctx.qualifiedName()));
             }
@@ -211,6 +215,9 @@ public class ShowCommandHandler implements CommandHandler {
             }
             return showExecutor.showProcedures(schemaName, ctx.USER() != null);
         } else if (ctx.STREAMS() != null) {
+            if (ctx.ACCOUNT() != null) {
+                return showExecutor.showStreamsInAccount();
+            }
             if (ctx.DATABASE() != null && ctx.qualifiedName() != null) {
                 return showExecutor.showStreamsInDatabase(getText(ctx.qualifiedName()));
             }
@@ -220,6 +227,9 @@ public class ShowCommandHandler implements CommandHandler {
             }
             return showExecutor.showStreams(schemaName);
         } else if (ctx.TASKS() != null) {
+            if (ctx.ACCOUNT() != null) {
+                return showExecutor.showTasksInAccount();
+            }
             if (ctx.DATABASE() != null && ctx.qualifiedName() != null) {
                 return showExecutor.showTasksInDatabase(getText(ctx.qualifiedName()));
             }
@@ -230,6 +240,9 @@ public class ShowCommandHandler implements CommandHandler {
             if (ctx.LIKE() != null && ctx.STRING_LITERAL() != null) {
                 String raw = ctx.STRING_LITERAL().getText();
                 like = raw.startsWith("'") && raw.endsWith("'") ? raw.substring(1, raw.length() - 1) : raw;
+            }
+            if (ctx.ACCOUNT() != null) {
+                return showExecutor.showPipesInAccount(like);
             }
             if (ctx.DATABASE() != null && ctx.qualifiedName() != null) {
                 return showExecutor.showPipesInDatabase(getText(ctx.qualifiedName()), like);
@@ -251,9 +264,35 @@ public class ShowCommandHandler implements CommandHandler {
                 schemaName = getText(ctx.qualifiedName());
             }
             return showExecutor.showSequences(schemaName);
+        } else if (ctx.CORTEX() != null && ctx.SERVICES() != null) {
+            String cortexLike = null;
+            if (ctx.LIKE() != null && ctx.STRING_LITERAL() != null) {
+                final String raw = ctx.STRING_LITERAL().getText();
+                cortexLike = raw.startsWith("'") && raw.endsWith("'")
+                    ? raw.substring(1, raw.length() - 1) : raw;
+            }
+            if (ctx.ACCOUNT() != null) {
+                return showExecutor.showCortexSearchServicesInAccount(cortexLike);
+            }
+            if (ctx.DATABASE() != null && ctx.qualifiedName() != null) {
+                return showExecutor.showCortexSearchServicesInDatabase(
+                    getText(ctx.qualifiedName()), cortexLike);
+            }
+            String cortexSchemaName = null;
+            if (ctx.qualifiedName() != null) {
+                cortexSchemaName = getText(ctx.qualifiedName());
+            }
+            return showExecutor.showCortexSearchServices(cortexSchemaName, cortexLike);
+        } else if (ctx.COMPUTE() != null && ctx.POOLS() != null) {
+            return showExecutor.showComputePools();
+        } else if (ctx.COMPUTE() != null && ctx.POOL() != null && ctx.FAMILIES() != null) {
+            return showExecutor.showComputePoolInstanceFamilies();
         } else if (ctx.WAREHOUSES() != null) {
             return showExecutor.showWarehouses();
         } else if (ctx.STAGES() != null) {
+            if (ctx.ACCOUNT() != null) {
+                return showExecutor.showStagesInAccount();
+            }
             if (ctx.DATABASE() != null && ctx.qualifiedName() != null) {
                 return showExecutor.showStagesInDatabase(getText(ctx.qualifiedName()));
             }
@@ -263,6 +302,9 @@ public class ShowCommandHandler implements CommandHandler {
             }
             return showExecutor.showStages(schemaName);
         } else if (ctx.FILE() != null && ctx.FORMATS() != null) {
+            if (ctx.ACCOUNT() != null) {
+                return showExecutor.showFileFormatsInAccount();
+            }
             if (ctx.DATABASE() != null && ctx.qualifiedName() != null) {
                 return showExecutor.showFileFormatsInDatabase(getText(ctx.qualifiedName()));
             }
@@ -272,6 +314,9 @@ public class ShowCommandHandler implements CommandHandler {
             }
             return showExecutor.showFileFormats(schemaName);
         } else if (ctx.MASKING() != null && ctx.POLICIES() != null) {
+            if (ctx.ACCOUNT() != null) {
+                return showExecutor.showMaskingPoliciesInAccount();
+            }
             if (ctx.DATABASE() != null && ctx.qualifiedName() != null) {
                 return showExecutor.showMaskingPoliciesInDatabase(getText(ctx.qualifiedName()));
             }
@@ -281,6 +326,9 @@ public class ShowCommandHandler implements CommandHandler {
             }
             return showExecutor.showMaskingPolicies(schemaName);
         } else if (ctx.ROW() != null && ctx.POLICIES() != null) {
+            if (ctx.ACCOUNT() != null) {
+                return showExecutor.showRowAccessPoliciesInAccount();
+            }
             if (ctx.DATABASE() != null && ctx.qualifiedName() != null) {
                 return showExecutor.showRowAccessPoliciesInDatabase(getText(ctx.qualifiedName()));
             }
@@ -313,6 +361,9 @@ public class ShowCommandHandler implements CommandHandler {
             }
             return showExecutor.showKeysScoped(ctx.PRIMARY() != null, scopeKind, scopeName);
         } else if (ctx.TAGS() != null) {
+            if (ctx.ACCOUNT() != null) {
+                return showExecutor.showTagsInAccount();
+            }
             if (ctx.DATABASE() != null && ctx.qualifiedName() != null) {
                 return showExecutor.showTagsInDatabase(getText(ctx.qualifiedName()));
             }
@@ -329,14 +380,13 @@ public class ShowCommandHandler implements CommandHandler {
                 String raw = ctx.STRING_LITERAL().getText();
                 like = raw.startsWith("'") && raw.endsWith("'") ? raw.substring(1, raw.length() - 1) : raw;
             }
-            return showExecutor.showParameters(like);
-        } else if (ctx.SESSIONS() != null) {
-            String like = null;
-            if (ctx.LIKE() != null && ctx.STRING_LITERAL() != null) {
-                String raw = ctx.STRING_LITERAL().getText();
-                like = raw.startsWith("'") && raw.endsWith("'") ? raw.substring(1, raw.length() - 1) : raw;
+            if (ctx.TASK() != null && ctx.identifier() != null) {
+                return showExecutor.showParametersInTask(getText(ctx.identifier()), like);
             }
-            return showExecutor.showSessions(like);
+            if (ctx.WAREHOUSE() != null && ctx.identifier() != null) {
+                return showExecutor.showParametersInWarehouse(getText(ctx.identifier()), like);
+            }
+            return showExecutor.showParameters(like);
         } else if (ctx.OBJECTS() != null) {
             if (ctx.DATABASE() != null && ctx.qualifiedName() != null) {
                 return showExecutor.showObjectsInDatabase(getText(ctx.qualifiedName()));
@@ -389,6 +439,10 @@ public class ShowCommandHandler implements CommandHandler {
         } else if (ctx.STREAM() != null) {
             String streamName = getText(ctx.identifier());
             return showExecutor.describeStream(streamName);
+        } else if (ctx.CORTEX() != null) {
+            return showExecutor.describeCortexSearchService(getText(ctx.qualifiedName()));
+        } else if (ctx.COMPUTE() != null && ctx.POOL() != null) {
+            return showExecutor.describeComputePool(getText(ctx.identifier()));
         } else if (ctx.WAREHOUSE() != null) {
             String warehouseName = getText(ctx.identifier());
             return showExecutor.describeWarehouse(warehouseName);
@@ -546,8 +600,8 @@ public class ShowCommandHandler implements CommandHandler {
      * <p>Only three of them are ever anything but null. {@code kind} is the listing's own object kind —
      * the literal STANDARD for DATABASES and DELTA for STREAMS, or VIEW / MATERIALIZED_VIEW decided per
      * row from {@code is_materialized} for VIEWS, which is the one case where two kinds share a listing.
-     * {@code tableOn} is the stream's base table, which the untrimmed SHOW STREAMS calls
-     * {@code table_name}.
+     * {@code tableOn} is the stream's base table under its bare name, which the untrimmed
+     * SHOW STREAMS carries fully qualified as {@code table_name}.
      */
     private Object terseFallback(final String column, final ShowModifierProfile profile, final Row row,
                                  final int materializedIdx, final int tableNameIdx) {
@@ -558,7 +612,9 @@ public class ShowCommandHandler implements CommandHandler {
             return profile.terseKind();
         }
         if ("tableOn".equals(column) && tableNameIdx >= 0) {
-            return row.getValue(tableNameIdx);
+            final Object tableName = row.getValue(tableNameIdx);
+            // The terse form names the base table alone, where the full listing qualifies it.
+            return tableName == null ? null : QualifiedName.parse(tableName.toString()).last();
         }
         return null;
     }
@@ -613,6 +669,14 @@ public class ShowCommandHandler implements CommandHandler {
             String targetType = ctx.USER() != null ? "USER" : "ROLE";
             String targetName = getText(ctx.identifier());
             return showExecutor.showGrantsTo(targetType, targetName);
+        }
+        if (ctx.OF() != null && ctx.ROLE() != null && ctx.identifier() != null) {
+            // SHOW GRANTS OF ROLE identifier
+            return showExecutor.showGrantsOfRole(getText(ctx.identifier()));
+        }
+        if (ctx.ON() == null && ctx.TO() == null && ctx.OF() == null) {
+            // Bare SHOW GRANTS: what the current user holds.
+            return showExecutor.showGrantsForCurrentUser();
         }
         throw new RuntimeException("Invalid SHOW GRANTS syntax");
     }

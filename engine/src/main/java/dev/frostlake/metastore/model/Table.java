@@ -332,11 +332,10 @@ public class Table extends SqlObject {
     }
 
     public void addColumn(final TableColumn column) {
-        String upperName = column.getName().toUpperCase();
-        if (columnIndex.containsKey(upperName)) {
+        if (columnIndex.containsKey(column.getName().toUpperCase())) {
             throw new RuntimeException("Column already exists: " + column.getName());
         }
-        columnIndex.put(upperName, columns.size());
+        columnIndex.put(column.getName().toUpperCase(), columns.size());
         columns.add(column);
         if (column.isPrimaryKey()) {
             primaryKeys.add(column.getName());

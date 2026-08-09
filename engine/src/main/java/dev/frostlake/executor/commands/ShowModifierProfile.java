@@ -152,6 +152,12 @@ public final class ShowModifierProfile {
      * keyword they contain, or {@code SHOW MATERIALIZED VIEWS} would be answered as VIEWS.
      */
     public static ShowModifierProfile forStatement(final FrostlakeParser.ShowStatementContext ctx) {
+        if (ctx.COMPUTE() != null && ctx.POOLS() != null) {
+            // LIKE, STARTS WITH and LIMIT all act on the listing; the family catalog
+            // (SHOW COMPUTE POOL INSTANCE FAMILIES) takes the unsorted default instead,
+            // keeping the account's own order.
+            return sorted(true, true, NO_TERSE, null, false);
+        }
         if (ctx.MATERIALIZED() != null && ctx.VIEWS() != null) {
             // LIMIT 1 → 1 of 2 materialized views; STARTS WITH 'ZZZ' → none. Both honoured, TERSE inert
             // (22 columns with and without).

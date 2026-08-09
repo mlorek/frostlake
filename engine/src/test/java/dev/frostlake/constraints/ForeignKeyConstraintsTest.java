@@ -54,7 +54,7 @@ public class ForeignKeyConstraintsTest extends BaseDatabaseTest {
         engine.execute("CREATE TABLE child_table (id INTEGER, parent_id INTEGER REFERENCES parent_table(id))");
 
         Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_ASSERTIONS);
-        Table childTable = engine.getCatalog().resolveTable("child_table");
+        Table childTable = engine.getCatalog().resolveTable("CHILD_TABLE");
         TableColumn parentIdCol = childTable.getColumn("parent_id");
 
         assertTrue(parentIdCol.hasForeignKey());
@@ -79,7 +79,7 @@ public class ForeignKeyConstraintsTest extends BaseDatabaseTest {
             """);
 
         Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_ASSERTIONS);
-        Table empTable = engine.getCatalog().resolveTable("employees");
+        Table empTable = engine.getCatalog().resolveTable("EMPLOYEES");
         TableColumn deptIdCol = empTable.getColumn("dept_id");
 
         assertTrue(deptIdCol.hasForeignKey());
@@ -105,7 +105,7 @@ public class ForeignKeyConstraintsTest extends BaseDatabaseTest {
             """);
 
         Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_ASSERTIONS);
-        Table ordersTable = engine.getCatalog().resolveTable("orders");
+        Table ordersTable = engine.getCatalog().resolveTable("ORDERS");
         assertEquals(1, ordersTable.getForeignKeys().size());
 
         ForeignKeyConstraint fk = ordersTable.getForeignKeys().get(0);
@@ -134,7 +134,7 @@ public class ForeignKeyConstraintsTest extends BaseDatabaseTest {
             """);
 
         Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_ASSERTIONS);
-        Table invTable = engine.getCatalog().resolveTable("inventory");
+        Table invTable = engine.getCatalog().resolveTable("INVENTORY");
         assertEquals(1, invTable.getForeignKeys().size());
 
         ForeignKeyConstraint fk = invTable.getForeignKeys().get(0);
@@ -161,7 +161,7 @@ public class ForeignKeyConstraintsTest extends BaseDatabaseTest {
             """);
 
         Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_ASSERTIONS);
-        Table contactTable = engine.getCatalog().resolveTable("contact");
+        Table contactTable = engine.getCatalog().resolveTable("CONTACT");
         assertEquals(1, contactTable.getForeignKeys().size());
 
         ForeignKeyConstraint fk = contactTable.getForeignKeys().get(0);
@@ -190,7 +190,7 @@ public class ForeignKeyConstraintsTest extends BaseDatabaseTest {
             """);
 
         Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_ASSERTIONS);
-        Table txnTable = engine.getCatalog().resolveTable("transactions");
+        Table txnTable = engine.getCatalog().resolveTable("TRANSACTIONS");
         ForeignKeyConstraint fk = txnTable.getForeignKeys().get(0);
 
         assertEquals("SET NULL", fk.getOnDelete());
@@ -213,7 +213,7 @@ public class ForeignKeyConstraintsTest extends BaseDatabaseTest {
             """);
 
         Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_ASSERTIONS);
-        Table itemsTable = engine.getCatalog().resolveTable("items");
+        Table itemsTable = engine.getCatalog().resolveTable("ITEMS");
         ForeignKeyConstraint fk = itemsTable.getForeignKeys().get(0);
 
         assertNull(fk.getOnDelete());
@@ -236,7 +236,7 @@ public class ForeignKeyConstraintsTest extends BaseDatabaseTest {
             """);
 
         Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_ASSERTIONS);
-        Table purchasesTable = engine.getCatalog().resolveTable("purchases");
+        Table purchasesTable = engine.getCatalog().resolveTable("PURCHASES");
         ForeignKeyConstraint fk = purchasesTable.getForeignKeys().get(0);
 
         assertEquals("NO ACTION", fk.getOnDelete());
@@ -258,7 +258,7 @@ public class ForeignKeyConstraintsTest extends BaseDatabaseTest {
             """);
 
         Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_ASSERTIONS);
-        Table membersTable = engine.getCatalog().resolveTable("members");
+        Table membersTable = engine.getCatalog().resolveTable("MEMBERS");
         ForeignKeyConstraint fk = membersTable.getForeignKeys().get(0);
 
         assertEquals("SET DEFAULT", fk.getOnDelete());
@@ -283,7 +283,7 @@ public class ForeignKeyConstraintsTest extends BaseDatabaseTest {
             """);
 
         Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_ASSERTIONS);
-        Table empTable = engine.getCatalog().resolveTable("employees");
+        Table empTable = engine.getCatalog().resolveTable("EMPLOYEES");
         assertEquals(2, empTable.getForeignKeys().size());
 
         ForeignKeyConstraint fk1 = empTable.getForeignKeys().get(0);
@@ -395,7 +395,7 @@ public class ForeignKeyConstraintsTest extends BaseDatabaseTest {
             """);
 
         Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_ASSERTIONS);
-        Table mainTable = engine.getCatalog().resolveTable("main_table");
+        Table mainTable = engine.getCatalog().resolveTable("MAIN_TABLE");
         TableColumn lookupCol = mainTable.getColumn("lookup_id");
 
         assertTrue(lookupCol.hasForeignKey());
@@ -418,7 +418,7 @@ public class ForeignKeyConstraintsTest extends BaseDatabaseTest {
             """);
 
         Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_ASSERTIONS);
-        Table childTable = engine.getCatalog().resolveTable("child");
+        Table childTable = engine.getCatalog().resolveTable("CHILD");
         TableColumn parentIdCol = childTable.getColumn("parent_id");
 
         assertTrue(parentIdCol.isUnique());
@@ -441,7 +441,7 @@ public class ForeignKeyConstraintsTest extends BaseDatabaseTest {
             """);
 
         Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_ASSERTIONS);
-        Table childTable = engine.getCatalog().resolveTable("child");
+        Table childTable = engine.getCatalog().resolveTable("CHILD");
         TableColumn parentIdCol = childTable.getColumn("parent_id");
 
         assertFalse(parentIdCol.isNullable());
@@ -471,7 +471,7 @@ public class ForeignKeyConstraintsTest extends BaseDatabaseTest {
         engine.execute("CREATE TABLE test_rely (id INTEGER PRIMARY KEY RELY, name VARCHAR)");
 
         Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_ASSERTIONS);
-        Table table = engine.getCatalog().resolveTable("test_rely");
+        Table table = engine.getCatalog().resolveTable("TEST_RELY");
         TableColumn idCol = table.getColumn("id");
 
         assertTrue(idCol.isPrimaryKey());
@@ -488,7 +488,7 @@ public class ForeignKeyConstraintsTest extends BaseDatabaseTest {
         engine.execute("CREATE TABLE test_norely (id INTEGER PRIMARY KEY NORELY, name VARCHAR)");
 
         Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_ASSERTIONS);
-        Table table = engine.getCatalog().resolveTable("test_norely");
+        Table table = engine.getCatalog().resolveTable("TEST_NORELY");
         TableColumn idCol = table.getColumn("id");
 
         assertTrue(idCol.isPrimaryKey());
@@ -505,7 +505,7 @@ public class ForeignKeyConstraintsTest extends BaseDatabaseTest {
         engine.execute("CREATE TABLE test_unique_rely (id INTEGER, email VARCHAR UNIQUE RELY)");
 
         Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_ASSERTIONS);
-        Table table = engine.getCatalog().resolveTable("test_unique_rely");
+        Table table = engine.getCatalog().resolveTable("TEST_UNIQUE_RELY");
         TableColumn emailCol = table.getColumn("email");
 
         assertTrue(emailCol.isUnique());
@@ -530,7 +530,7 @@ public class ForeignKeyConstraintsTest extends BaseDatabaseTest {
         // NOT NULL alone still works.
         engine.execute("CREATE TABLE test_notnull_ok (id INTEGER, name VARCHAR NOT NULL)");
         Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_ASSERTIONS);
-        Table table = engine.getCatalog().resolveTable("test_notnull_ok");
+        Table table = engine.getCatalog().resolveTable("TEST_NOTNULL_OK");
         TableColumn nameCol = table.getColumn("name");
         assertFalse(nameCol.isNullable());
 
@@ -545,7 +545,7 @@ public class ForeignKeyConstraintsTest extends BaseDatabaseTest {
         engine.execute("CREATE TABLE child_rely (id INTEGER, parent_id INTEGER REFERENCES parent_rely(id) RELY)");
 
         Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_ASSERTIONS);
-        Table childTable = engine.getCatalog().resolveTable("child_rely");
+        Table childTable = engine.getCatalog().resolveTable("CHILD_RELY");
         TableColumn parentIdCol = childTable.getColumn("parent_id");
 
         assertTrue(parentIdCol.hasForeignKey());
@@ -564,7 +564,7 @@ public class ForeignKeyConstraintsTest extends BaseDatabaseTest {
         engine.execute("CREATE TABLE child_norely (id INTEGER, parent_id INTEGER REFERENCES parent_norely(id) NORELY)");
 
         Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_ASSERTIONS);
-        Table childTable = engine.getCatalog().resolveTable("child_norely");
+        Table childTable = engine.getCatalog().resolveTable("CHILD_NORELY");
         TableColumn parentIdCol = childTable.getColumn("parent_id");
 
         assertTrue(parentIdCol.hasForeignKey());
@@ -588,7 +588,7 @@ public class ForeignKeyConstraintsTest extends BaseDatabaseTest {
             """);
 
         Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_ASSERTIONS);
-        Table childTable = engine.getCatalog().resolveTable("child_tbl");
+        Table childTable = engine.getCatalog().resolveTable("CHILD_TBL");
         assertEquals(1, childTable.getForeignKeys().size());
 
         ForeignKeyConstraint fk = childTable.getForeignKeys().get(0);
@@ -612,7 +612,7 @@ public class ForeignKeyConstraintsTest extends BaseDatabaseTest {
             """);
 
         Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_ASSERTIONS);
-        Table txnTable = engine.getCatalog().resolveTable("transactions_tbl");
+        Table txnTable = engine.getCatalog().resolveTable("TRANSACTIONS_TBL");
         ForeignKeyConstraint fk = txnTable.getForeignKeys().get(0);
 
         assertEquals("FK_ACCOUNT", fk.getConstraintName());
@@ -636,7 +636,7 @@ public class ForeignKeyConstraintsTest extends BaseDatabaseTest {
             """);
 
         Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_ASSERTIONS);
-        Table table = engine.getCatalog().resolveTable("compound_key");
+        Table table = engine.getCatalog().resolveTable("COMPOUND_KEY");
         assertEquals(2, table.getPrimaryKeys().size());
         assertTrue(table.getPrimaryKeys().contains("FIRST_NAME"));
         assertTrue(table.getPrimaryKeys().contains("LAST_NAME"));
@@ -651,7 +651,7 @@ public class ForeignKeyConstraintsTest extends BaseDatabaseTest {
         engine.execute("CREATE TABLE no_rely_option (id INTEGER PRIMARY KEY, name VARCHAR UNIQUE)");
 
         Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_ASSERTIONS);
-        Table table = engine.getCatalog().resolveTable("no_rely_option");
+        Table table = engine.getCatalog().resolveTable("NO_RELY_OPTION");
         TableColumn idCol = table.getColumn("id");
         TableColumn nameCol = table.getColumn("name");
 
@@ -679,7 +679,7 @@ public class ForeignKeyConstraintsTest extends BaseDatabaseTest {
             """);
 
         Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_ASSERTIONS);
-        Table table = engine.getCatalog().resolveTable("mixed_rely");
+        Table table = engine.getCatalog().resolveTable("MIXED_RELY");
 
         TableColumn idCol = table.getColumn("id");
         assertTrue(idCol.isPrimaryKey());

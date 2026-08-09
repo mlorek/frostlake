@@ -16,6 +16,7 @@
 
 package dev.frostlake.transaction;
 
+import java.time.Instant;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.model.Stream;
 import dev.frostlake.storage.Row;
@@ -191,6 +192,7 @@ public class TransactionManager {
 
         // Captured before the txn is cleared below so the WAL append (after a successful apply) can use it.
         final List<String> walStatements = txn.getWalStatements();
+        final List<Instant> walInstants = txn.getWalInstants();
         try {
             // Apply all changes
             txn.commit();
@@ -206,7 +208,7 @@ public class TransactionManager {
         // Durability: the commit has applied successfully — now append it to the WAL and fsync (a failure
         // here surfaces to the caller). Done after apply so the log only ever holds committed work.
         if (walSink != null && !walStatements.isEmpty()) {
-            walSink.appendTransaction(walStatements);
+            walSink.appendTransaction(walStatements, walInstants);
         }
     }
 
@@ -276,6 +278,8 @@ public class TransactionManager {
         private final List<TransactionLog> logs;
         private final TransactionWriteSet writeSet = new TransactionWriteSet();   // deferred-apply buffer (Phase 1)
         private final List<String> walStatements = new ArrayList<>();   // mutating SQL to log on commit (WAL)
+        /** What each buffered statement called "now" — one per entry of walStatements, same order. */
+        private final List<Instant> walInstants = new ArrayList<>();
         // CDC streams read by this txn's DML, each with the scope of what the read SAW (committed cut +
         // this txn's then-buffered changes) so commit advances past exactly that. Latest read governs.
         private final Map<Stream, StreamReadScope> streamsToConsume = new LinkedHashMap<>();
@@ -315,14 +319,24 @@ public class TransactionManager {
             return writeSet;
         }
 
-        /** Record a mutating statement to be written to the WAL (as part of this transaction) on commit. */
-        public void logStatementForWal(final String sql) {
+        /**
+         * Record a mutating statement to be written to the WAL (as part of this transaction) on commit,
+         * together with the instant it called "now" — statements of one transaction get DIFFERENT
+         * instants, so the log keeps one per statement rather than one per record.
+         */
+        public void logStatementForWal(final String sql, final Instant instant) {
             walStatements.add(sql);
+            walInstants.add(instant);
         }
 
         /** The mutating statements buffered for the WAL, in execution order (empty when the WAL is off). */
         public List<String> getWalStatements() {
             return walStatements;
+        }
+
+        /** The instants of {@link #getWalStatements}, in the same order. */
+        public List<Instant> getWalInstants() {
+            return walInstants;
         }
 
         /**

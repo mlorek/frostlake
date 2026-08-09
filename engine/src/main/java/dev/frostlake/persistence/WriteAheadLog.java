@@ -27,7 +27,9 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 
 import org.slf4j.Logger;
@@ -56,8 +58,15 @@ public class WriteAheadLog {
     private static final Logger logger = LoggerFactory.getLogger(WriteAheadLog.class);
 
     private static final int MAGIC = 0x53465731;          // "SFW1"
-    private static final byte VERSION = 2;                // v2: typed, per-transaction records + checkpoints
+    private static final byte VERSION = 3;                // v3: v2 + each transaction's statement instant
+    private static final byte VERSION_WITHOUT_INSTANT = 2;   // still readable; those records replay at the wall clock
     private static final byte REC_TRANSACTION = 1;
+    /** Sentinel for "this record recorded no instant" — replay falls back to the wall clock. */
+    private static final long NO_INSTANT = Long.MIN_VALUE;
+    private static final long NANOS_PER_MILLI = 1_000_000L;
+    private static final long NANOS_PER_SECOND = 1_000_000_000L;
+    /** False while reading a v2 log, whose transaction records have no instant field. */
+    private boolean readsInstants = true;
     private static final byte REC_CHECKPOINT = 2;
     private static final int MAX_STRING_BYTES = 1 << 28;  // 256 MB sanity cap — a larger length means a torn record
 
@@ -91,13 +100,26 @@ public class WriteAheadLog {
      * recovery. No-op for a null/empty statement list (a read-only transaction logs nothing).
      */
     public synchronized void appendTransaction(final List<String> statements) throws IOException {
+        appendTransaction(statements, Collections.<Instant>emptyList());
+    }
+
+    /**
+     * As {@link #appendTransaction(List)}, recording what these statements called "now" so replay can
+     * put it back instead of resolving CURRENT_TIMESTAMP to the recovery time.
+     */
+    public synchronized void appendTransaction(final List<String> statements,
+                                               final List<Instant> statementInstants)
+            throws IOException {
         if (statements == null || statements.isEmpty()) {
             return;
         }
         out.writeByte(REC_TRANSACTION);
         out.writeInt(statements.size());
-        for (final String sql : statements) {
-            writeString(out, sql);
+        for (int i = 0; i < statements.size(); i++) {
+            final Instant instant =
+                statementInstants != null && i < statementInstants.size() ? statementInstants.get(i) : null;
+            out.writeLong(instant == null ? NO_INSTANT : toNanos(instant));
+            writeString(out, statements.get(i));
         }
         out.flush();
         fileOut.getFD().sync();
@@ -127,7 +149,8 @@ public class WriteAheadLog {
                 logger.warn("Write-ahead log at {} has an unrecognized header; ignoring it", path);
                 return new ArrayList<>();
             }
-            in.readByte();   // version — only v2 exists
+            // v2 records carry no instant; v3 onwards prefix each transaction with one.
+            readsInstants = in.readByte() >= VERSION;
             while (true) {
                 final WalRecord rec = readRecord(in);
                 if (rec == null) {
@@ -137,6 +160,20 @@ public class WriteAheadLog {
             }
         }
         return records;
+    }
+
+    /** Epoch nanoseconds, the form the log stores an instant in. */
+    private static long toNanos(final Instant instant) {
+        return instant.getEpochSecond() * NANOS_PER_SECOND + instant.getNano();
+    }
+
+    /** Reconstruct a recorded instant, or null for a v2 record that carried none. */
+    private static Instant instantFrom(final long nanos) {
+        if (nanos == NO_INSTANT) {
+            return null;
+        }
+        return Instant.ofEpochSecond(Math.floorDiv(nanos, NANOS_PER_SECOND),
+                                    Math.floorMod(nanos, NANOS_PER_SECOND));
     }
 
     private WalRecord readRecord(final DataInputStream in) throws IOException {
@@ -151,10 +188,12 @@ public class WriteAheadLog {
                     throw new EOFException("implausible statement count " + count + " (torn record)");
                 }
                 final List<String> statements = new ArrayList<>(count);
+                final List<Instant> instants = new ArrayList<>(count);
                 for (int i = 0; i < count; i++) {
+                    instants.add(readsInstants ? instantFrom(in.readLong()) : null);
                     statements.add(readString(in));
                 }
-                return WalRecord.transaction(statements);
+                return WalRecord.transaction(statements, instants);
             } else if (type == REC_CHECKPOINT) {
                 return WalRecord.checkpoint(readString(in));
             } else {

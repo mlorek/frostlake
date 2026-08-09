@@ -181,7 +181,8 @@ final class OrderByExecutor {
             if (outputNames.contains(asWritten.toUpperCase())) {
                 continue;
             }
-            executor.validateClauseScope(asWritten, table, aliasToTable, allTables, outputNames);
+            executor.validateClauseScope(asWritten, table, aliasToTable, allTables, outputNames,
+                item.expression());
         }
     }
 
@@ -366,7 +367,8 @@ final class OrderByExecutor {
                     || groupKeyTexts.contains(item.expression().getText().toUpperCase())) {
                 continue;
             }
-            executor.validateClauseScope(asWritten, table, aliasToTable, allTables, outputNames);
+            executor.validateClauseScope(asWritten, table, aliasToTable, allTables, outputNames,
+                item.expression());
             if (groupBy != null && groupBy.ALL() == null) {
                 rejectUngroupedOrderReference(ExpressionEvaluator.parse(asWritten), table, allTables,
                     outputNames, groupKeyNames);
@@ -638,6 +640,45 @@ final class OrderByExecutor {
         final String[] parts = ParseTreeText.qualifiedNameParts(
             ((FrostlakeParser.QualifiedNameExprContext) valueExpr).qualifiedName());
         return parts.length == 0 ? null : parts[parts.length - 1];
+    }
+
+    /**
+     * Whether EVERY ORDER BY item matches a SELECT output column (by position, alias, or expression
+     * text). When they all do, the caller sorts AFTER projection by the output values instead of
+     * re-evaluating the item expressions as sort keys — live evaluates each SELECT item ONCE per
+     * row, which a side-effecting item makes observable: {@code SELECT seq.nextval FROM t ORDER BY
+     * 1} numbers the rows 1..n on a real account, while the re-evaluating order drew every value
+     * twice.
+     */
+    boolean allOrderKeysMatchOutput(final FrostlakeParser.SelectStatementContext ctx) {
+        if (ctx.orderByClause() == null) {
+            return false;
+        }
+        final FrostlakeParser.SelectOperandContext firstOp = ctx.selectOperand(0);
+        final FrostlakeParser.SelectClauseContext firstClause = firstOp.selectClause() != null
+            ? firstOp.selectClause()
+            : firstOp.selectStatement().selectOperand(0).selectClause();
+        final List<FrostlakeParser.SelectItemContext> selectItems = firstClause.selectList().selectItem();
+        for (final FrostlakeParser.OrderItemContext item : ctx.orderByClause().orderItem()) {
+            if (matchOrderItem(item.expression().getText(), selectItems, false) < 0) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** The compile-time key-TYPE rejections (FILE / geospatial ORDER BY keys) for the
+     *  sort-after-projection route, which skips {@link #orderBy}'s own pre-sort walk: ordinals and
+     *  aliases resolve to their defining expressions and run the same key checks. */
+    void validateOrderKeyTypes(final FrostlakeParser.SelectStatementContext ctx, final Table table,
+                               final Map<String, Table> aliasToTable, final List<Table> allTables) {
+        final List<String> orderColumns = new ArrayList<>();
+        for (final FrostlakeParser.OrderItemContext item : ctx.orderByClause().orderItem()) {
+            String colName = resolveOrderOrdinal(ParseTreeText.getOriginalText(item.expression()), ctx);
+            colName = resolveOrderAlias(colName, ctx);
+            orderColumns.add(colName);
+        }
+        rejectFileSortKeys(orderColumns, table, aliasToTable, allTables);
     }
 
     /**

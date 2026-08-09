@@ -164,6 +164,10 @@ public class DDLCommandHandler implements CommandHandler {
                 return infraHandler.handleCreatePipe(ctx, ifNotExists);
             } else if (ctx.SEQUENCE() != null) {
                 return infraHandler.handleCreateSequence(ctx, ifNotExists);
+            } else if (ctx.COMPUTE() != null && ctx.POOL() != null) {
+                return infraHandler.handleCreateComputePool(ctx, ifNotExists);
+            } else if (ctx.CORTEX() != null) {
+                return infraHandler.handleCreateCortexSearchService(ctx, ifNotExists);
             } else if (ctx.WAREHOUSE() != null) {
                 return infraHandler.handleCreateWarehouse(ctx, ifNotExists);
             } else if (ctx.STAGE() != null) {
@@ -880,10 +884,13 @@ public class DDLCommandHandler implements CommandHandler {
         } else if (prop.RESOURCE_MONITOR() != null) {
             warehouse.setResourceMonitor(getText(prop.identifier()));
         } else if (prop.MAX_CONCURRENCY_LEVEL() != null) {
+            warehouse.markParameterSet("MAX_CONCURRENCY_LEVEL");
             warehouse.setMaxConcurrencyLevel(Integer.parseInt(prop.INTEGER_LITERAL().getText()));
         } else if (prop.STATEMENT_QUEUED_TIMEOUT_IN_SECONDS() != null) {
+            warehouse.markParameterSet("STATEMENT_QUEUED_TIMEOUT_IN_SECONDS");
             warehouse.setStatementQueuedTimeoutSeconds(Integer.parseInt(prop.INTEGER_LITERAL().getText()));
         } else if (prop.STATEMENT_TIMEOUT_IN_SECONDS() != null) {
+            warehouse.markParameterSet("STATEMENT_TIMEOUT_IN_SECONDS");
             warehouse.setStatementTimeoutSeconds(Integer.parseInt(prop.INTEGER_LITERAL().getText()));
         } else if (prop.ENABLE_QUERY_ACCELERATION() != null) {
             warehouse.setEnableQueryAcceleration(prop.booleanValue().TRUE() != null);

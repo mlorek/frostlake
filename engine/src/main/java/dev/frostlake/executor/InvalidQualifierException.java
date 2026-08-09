@@ -16,6 +16,8 @@
 
 package dev.frostlake.executor;
 
+import dev.frostlake.executor.expressions.SourcePosition;
+
 /**
  * A dotted column qualifier naming no FROM-clause key — live's "SQL compilation error: invalid
  * identifier 'R.C'": an alias REPLACES the table name, in the SELECT list, WHERE, GROUP BY and
@@ -27,5 +29,15 @@ public class InvalidQualifierException extends RuntimeException {
 
     public InvalidQualifierException(final String qualifiedName) {
         super(SqlCompilationError.invalidIdentifier(qualifiedName));
+    }
+
+    /**
+     * The same refusal, carrying the source position live always reports. Used where the offending
+     * reference knows where it was written; the position-less constructor stays for the resolution
+     * paths that have only a name.
+     */
+    public InvalidQualifierException(final String qualifiedName, final SourcePosition position) {
+        super(SqlCompilationError.invalidIdentifier(
+            position.getLine(), position.getCharPositionInLine(), qualifiedName));
     }
 }

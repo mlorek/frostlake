@@ -19,11 +19,11 @@ package dev.frostlake.features;
 import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
 import org.junit.jupiter.api.Test;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import org.junit.jupiter.api.function.Executable;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -32,8 +32,6 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * (SYSTEM$STREAM_HAS_DATA, SYSTEM$USER_TASK_CANCEL, SYSTEM$TYPEOF).
  */
 public class SessionExpressionAndSystemFuncTest extends BaseDatabaseTest {
-
-    private static final Logger logger = LoggerFactory.getLogger(SessionExpressionAndSystemFuncTest.class);
 
     private Object scalar(final String sql) {
         final ResultSet rs = engine.executeQuery(sql);
@@ -69,17 +67,47 @@ public class SessionExpressionAndSystemFuncTest extends BaseDatabaseTest {
         assertEquals(true, scalar("SELECT $full_state"));
     }
 
+    /**
+     * The function cancels runs that are in flight; with none in flight it says so, and either way
+     * it leaves the task itself alone — a started task is still started afterwards.
+     */
     @Test
-    public void systemUserTaskCancelSuspendsTheTask() {
+    public void systemUserTaskCancelReportsNoRunningExecutions() {
         engine.execute("CREATE TASK cancel_me SCHEDULE = '1 MINUTE' AS SELECT 1");
+        engine.execute("ALTER TASK cancel_me RESUME");
         engine.execute("SET outcome = SYSTEM$USER_TASK_CANCEL_ONGOING_EXECUTIONS('CANCEL_ME')");
         final Object outcome = scalar("SELECT $outcome");
         assertNotNull(outcome);
-        assertTrue(outcome.toString().contains("cancelled"), "got: " + outcome);
+        assertEquals("Task CANCEL_ME has no currently running executions. If the task was dropped"
+            + " or replaced after a previous execution started, use SYSTEM$CANCEL_QUERY along with"
+            + " the query id to cancel the run.", outcome.toString());
 
         final ResultSet tasks = engine.executeQuery("SHOW TASKS LIKE 'CANCEL_ME'");
         assertEquals(1, tasks.getRows().size());
-        logger.info("Task state after cancel: {}", tasks.getRows().get(0).getValues());
+        assertEquals("started", tasks.getRows().get(0).getValue(tasks.getColumnIndex("state")));
+    }
+
+    /** The name is echoed into the message exactly as passed, while the lookup ignores case. */
+    @Test
+    public void systemUserTaskCancelEchoesTheNameVerbatim() {
+        engine.execute("CREATE TASK echo_me SCHEDULE = '1 MINUTE' AS SELECT 1");
+        engine.execute("SET outcome = SYSTEM$USER_TASK_CANCEL_ONGOING_EXECUTIONS('echo_me')");
+        assertTrue(scalar("SELECT $outcome").toString()
+            .startsWith("Task echo_me has no currently running executions."),
+            "got: " + scalar("SELECT $outcome"));
+    }
+
+    /** An unknown task is an error, not a status row. */
+    @Test
+    public void systemUserTaskCancelRejectsAnUnknownTask() {
+        final RuntimeException e = assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.execute("SET outcome = SYSTEM$USER_TASK_CANCEL_ONGOING_EXECUTIONS('NO_SUCH_TASK')");
+            }
+        });
+        assertTrue(e.getMessage().contains("Task NO_SUCH_TASK not found or not authorized."),
+            "got: " + e.getMessage());
     }
 
     @Test

@@ -72,7 +72,11 @@ public class NullSemanticsAuditTest extends BaseDatabaseTest {
 
     /** Functions allowed to THROW on a NULL argument (a required identifier/name argument). */
     private static final Set<String> THROW_WHITELIST = new HashSet<>(Arrays.asList(
-        "GET_DDL", "NEXTVAL", "CURRVAL"
+        "GET_DDL", "NEXTVAL", "CURRVAL",
+        // The SEQ family's optional argument is a SIGN, and live refuses a NULL one outright rather
+        // than folding the row's ordinal away: "Invalid parameter value: NULL. Reason: sign must not
+        // be NULL". Measured, not inferred — and it is the same refusal for all four widths.
+        "SEQ1", "SEQ2", "SEQ4", "SEQ8"
     ));
 
     @Test

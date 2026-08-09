@@ -186,7 +186,9 @@ public class SystemFunctionEvaluator {
             case "SYSTEM$GET_TAG": {
                 if (args.size() >= 3 && args.get(0) != null && args.get(1) != null) {
                     final String tagName = args.get(0).toString().replaceAll("^'|'$", "");
-                    final String objectName = args.get(1).toString().replaceAll("^'|'$", "");
+                    // A string naming an object is an identifier reference: unquoted folds up, quoted keeps case.
+                    final String objectName = SqlIdentifiers.canonicalText(
+                        args.get(1).toString().replaceAll("^'|'$", ""));
                     final String domain = args.get(2) == null ? null : args.get(2).toString().replaceAll("^'|'$", "");
                     return catalog.getObjectTagValue(tagName, objectName, domain);
                 }

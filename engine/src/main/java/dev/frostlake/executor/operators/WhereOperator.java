@@ -21,6 +21,7 @@ import dev.frostlake.executor.InvalidQualifierException;
 import dev.frostlake.executor.ExpressionEvaluator;
 import dev.frostlake.executor.expressions.SqlTruth;
 import dev.frostlake.executor.expressions.Expression;
+import dev.frostlake.executor.expressions.RowOrdinal;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.storage.Row;
 import org.slf4j.Logger;
@@ -127,10 +128,17 @@ public class WhereOperator implements Operator {
         evaluator.validatePredicate(parsed);
         List<Row> filtered = new ArrayList<>();
 
-        for (final Row row : rows) {
-            Object result = evaluator.evaluate(parsed, row);
-            if (SqlTruth.isTrue(result)) {
-                filtered.add(row);
+        for (int rowIndex = 0; rowIndex < rows.size(); rowIndex++) {
+            final Row row = rows.get(rowIndex);
+            // Number the rows the filter reads, so a SEQ1/2/4/8 in the predicate counts them.
+            final Long displacedOrdinal = RowOrdinal.begin(rowIndex);
+            try {
+                Object result = evaluator.evaluate(parsed, row);
+                if (SqlTruth.isTrue(result)) {
+                    filtered.add(row);
+                }
+            } finally {
+                RowOrdinal.end(displacedOrdinal);
             }
         }
 
@@ -161,7 +169,9 @@ public class WhereOperator implements Operator {
         final Expression parsed = ExpressionEvaluator.parse(whereExpression);
         validatePredicateOnce(parsed, context);
 
-        for (final Row row : rows) {
+        for (int rowIndex = 0; rowIndex < rows.size(); rowIndex++) {
+            final Row row = rows.get(rowIndex);
+            final Long displacedOrdinal = RowOrdinal.begin(rowIndex);
             try {
                 // Try to evaluate with alias support
                 Object result = evaluateWithAliases(parsed, row, context);
@@ -193,6 +203,8 @@ public class WhereOperator implements Operator {
                 } catch (final Exception e2) {
                     logger.error("WHERE clause evaluation failed completely: {}", e2.getMessage());
                 }
+            } finally {
+                RowOrdinal.end(displacedOrdinal);
             }
         }
 
@@ -214,7 +226,9 @@ public class WhereOperator implements Operator {
         final Expression parsed = ExpressionEvaluator.parse(whereExpression);
         validatePredicateOnce(parsed, context);
 
-        for (final Row row : rows) {
+        for (int rowIndex = 0; rowIndex < rows.size(); rowIndex++) {
+            final Row row = rows.get(rowIndex);
+            final Long displacedOrdinal = RowOrdinal.begin(rowIndex);
             try {
                 // For lateral context, we need to evaluate with outer row values
                 // This is a placeholder - full implementation would require QueryExecutor integration
@@ -228,6 +242,8 @@ public class WhereOperator implements Operator {
                 throw invalidQualifier;
             } catch (final Exception e) {
                 logger.warn("Failed to evaluate WHERE clause with lateral context: {}", e.getMessage());
+            } finally {
+                RowOrdinal.end(displacedOrdinal);
             }
         }
 

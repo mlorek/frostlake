@@ -275,10 +275,13 @@ public class DynamicTableTest {
         ResultSet rs = engine.executeQuery("SHOW OBJECTS");
         int nameIdx = rs.getColumnIndex("name");
         int kindIdx = rs.getColumnIndex("kind");
+        int dynamicIdx = rs.getColumnIndex("is_dynamic");
         boolean found = false;
         for (int i = 0; i < rs.getRowCount(); i++) {
+            // A dynamic table is a TABLE here; is_dynamic is what distinguishes it.
             if ("OBJ_DT".equalsIgnoreCase(rs.getRows().get(i).getValue(nameIdx).toString())
-                && rs.getRows().get(i).getValue(kindIdx).toString().contains("DYNAMIC")) {
+                && "TABLE".equals(rs.getRows().get(i).getValue(kindIdx).toString())
+                && "Y".equals(rs.getRows().get(i).getValue(dynamicIdx))) {
                 found = true;
             }
         }

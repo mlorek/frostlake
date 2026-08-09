@@ -59,12 +59,19 @@ public class Stream {
         this.stale = false;
     }
 
+    /**
+     * Whether a change record APPENDED a row: an INSERT that no UPDATE produced. The insert half of an
+     * update pair carries the same change type and is deliberately not an append — live-verified, a row
+     * that already existed contributes nothing to an append-only view however often it is rewritten.
+     */
+    public static boolean isAppend(final StreamRecord record) {
+        return record.getChangeType() == ChangeType.INSERT && !record.isUpdate();
+    }
+
     public void addRecord(final StreamRecord record) {
         // For append-only streams, only track actual INSERTs (not UPDATE-generated INSERTs)
-        if (streamType == StreamType.APPEND_ONLY) {
-            if (record.getChangeType() != ChangeType.INSERT || record.isUpdate()) {
-                return;
-            }
+        if (streamType == StreamType.APPEND_ONLY && !isAppend(record)) {
+            return;
         }
         records.add(record);
     }
@@ -100,15 +107,41 @@ public class Stream {
      * way before consolidation.
      */
     public List<StreamRecord> getUnconsumedNetRecordsWith(final List<StreamRecord> extraRaw) {
+        return netRecordsOf(unconsumedRecordsWith(extraRaw));
+    }
+
+    /**
+     * The unconsumed records that APPENDED a row, in the order the appends happened, with the values each
+     * row was appended WITH — the append-only view of the change window.
+     *
+     * <p>This is not the net delta filtered to its inserts, and the difference is visible three ways,
+     * all live-verified: a row inserted and then updated inside the window reports the value it was
+     * inserted with rather than its current one; a row inserted and then deleted inside the window is
+     * still reported, because a later delete does not un-append it; and a row that already existed
+     * reports nothing however it is rewritten, because rewriting is not appending.
+     *
+     * <p>{@code extraRaw} folds in transient records the same way {@link #getUnconsumedNetRecordsWith}
+     * does.
+     */
+    public List<StreamRecord> getUnconsumedAppendsWith(final List<StreamRecord> extraRaw) {
+        final List<StreamRecord> appends = new ArrayList<>();
+        for (final StreamRecord record : unconsumedRecordsWith(extraRaw)) {
+            if (isAppend(record)) {
+                appends.add(record);
+            }
+        }
+        return appends;
+    }
+
+    private List<StreamRecord> unconsumedRecordsWith(final List<StreamRecord> extraRaw) {
         final List<StreamRecord> combined = getUnconsumedRecords();
         for (final StreamRecord record : extraRaw) {
-            if (streamType == StreamType.APPEND_ONLY
-                    && (record.getChangeType() != ChangeType.INSERT || record.isUpdate())) {
+            if (streamType == StreamType.APPEND_ONLY && !isAppend(record)) {
                 continue;
             }
             combined.add(record);
         }
-        return netRecordsOf(combined);
+        return combined;
     }
 
     private List<StreamRecord> netRecordsOf(final List<StreamRecord> raw) {

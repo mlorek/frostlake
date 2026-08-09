@@ -307,17 +307,22 @@ public class SyntaxBreadthSingletonsTest extends BaseDatabaseTest {
         assertEquals(1, engine.executeQuery("SHOW FILE FORMATS LIKE 'FF_TMP'").getRowCount());
     }
 
+    /**
+     * A stream offset is a valid CHANGES start point, so what fails here is the END point: a window
+     * that runs into the future is refused before any change is read.
+     */
     @Test
-    public void streamTimeTravelPointIsRejectedHonestly() {
+    public void aFutureChangesEndPointIsRejected() {
         engine.execute("CREATE TABLE ct (c1 INTEGER)");
-        engine.execute("SET ts2 = '2030-01-01'");
+        engine.execute("CREATE STREAM s1 ON TABLE ct");
         final RuntimeException e = assertThrows(RuntimeException.class, new Executable() {
             @Override
             public void execute() {
                 engine.executeQuery("SELECT c1 FROM ct CHANGES (INFORMATION => APPEND_ONLY) "
-                    + "AT (STREAM => 's1') END (TIMESTAMP => $ts2)");
+                    + "AT (STREAM => 's1') END (TIMESTAMP => '2030-01-01'::TIMESTAMP)");
             }
         });
-        assertTrue(e.getMessage().contains("not supported"), "unexpected message: " + e.getMessage());
+        assertTrue(e.getMessage().contains("Future data is not yet available for table CT."),
+            "unexpected message: " + e.getMessage());
     }
 }

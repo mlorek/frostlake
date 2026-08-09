@@ -56,4 +56,14 @@ public final class PythonLanguageRuntime implements UdfLanguageRuntime {
     public ResultSet executeTableFunction(final Function function, final List<Object> arguments) {
         return PythonTableFunctionExecutor.executePythonTableFunction(function, arguments);
     }
+
+    /**
+     * A Python FUNCTION's body is compiled at CREATE — and a Python PROCEDURE's is not, which is why
+     * {@code compileProcedure} is left at its no-op default. Both halves were measured on the same
+     * account with the same nonsense body.
+     */
+    @Override
+    public void compileFunction(final Function function) {
+        PythonExecutor.compilePythonFunction(function);
+    }
 }

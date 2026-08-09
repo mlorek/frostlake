@@ -16,6 +16,7 @@
 
 package dev.frostlake.functions.scalar.context;
 
+import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.table.QueryRunner;
 import dev.frostlake.metastore.Catalog;
@@ -69,7 +70,8 @@ public class GetDdl extends BuiltInFunction {
             throw new RuntimeException("GET_DDL requires a non-null object type and name");
         }
         final String objectType = args.get(0).toString().trim().toUpperCase().replace(' ', '_');
-        final String objectName = args.get(1).toString().trim();
+        // The name is a string argument, so it is an identifier reference: fold it the way one resolves.
+        final String objectName = SqlIdentifiers.canonicalText(args.get(1).toString().trim());
         switch (objectType) {
             case "TABLE":
                 return tableDdl(catalog.resolveTable(objectName));

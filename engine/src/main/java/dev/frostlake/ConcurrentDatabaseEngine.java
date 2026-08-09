@@ -98,6 +98,7 @@ public class ConcurrentDatabaseEngine {
                     // not leak its session's context into whatever runs on this pooled thread next.
                     engine.getCatalog().clearSessionScope();
                     engine.getTransactionManager().clearSessionAutoCommit();
+                    engine.getQueryResultCache().clearSessionScope();
                     if (isReadOnlyQuery(sql)) {
                         engineLock.readLock().unlock();
                     } else {
@@ -151,6 +152,10 @@ public class ConcurrentDatabaseEngine {
             // The scopes are cleared in execute()'s finally.
             engine.getCatalog().beginSessionScope(session.getCurrentDatabase(), session.getCurrentSchema());
             engine.getTransactionManager().beginSessionAutoCommit(session.isAutoCommit());
+            // LAST_QUERY_ID must follow the SESSION, not the pool thread that happens to serve this
+            // statement: consecutive requests of one session land on different threads, and a
+            // thread-keyed history would lose the previous statement's ID between them.
+            engine.getQueryResultCache().beginSessionScope(session.getSessionId());
 
             // ALWAYS restore (or clear, when null) this session's transaction. The shared engine uses a
             // thread-local "current transaction", so if we skipped this when the session has none, the
@@ -193,6 +198,7 @@ public class ConcurrentDatabaseEngine {
 
     public void removeSession(final String sessionId) {
         sessionStates.remove(sessionId);
+        engine.getQueryResultCache().forgetSession(sessionId);
         sessionManager.removeSession(sessionId);
     }
 

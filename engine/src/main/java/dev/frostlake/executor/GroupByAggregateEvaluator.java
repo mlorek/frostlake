@@ -19,12 +19,14 @@ package dev.frostlake.executor;
 import dev.frostlake.executor.expressions.AstPrinterVisitor;
 import dev.frostlake.executor.expressions.ColumnReferenceExpression;
 import dev.frostlake.executor.expressions.Expression;
+import dev.frostlake.executor.expressions.RowOrdinal;
 import dev.frostlake.executor.expressions.SqlTruth;
 import dev.frostlake.executor.operators.AggregateEvaluator;
 import dev.frostlake.executor.operators.GroupByOperator;
 import dev.frostlake.executor.operators.OperatorContext;
 import dev.frostlake.executor.operators.RowExpressionEvaluator;
 import dev.frostlake.functions.AggregateFunction;
+import dev.frostlake.functions.MultiArgumentAccumulator;
 import dev.frostlake.functions.aggregate.AggregateNumerics;
 import dev.frostlake.functions.aggregate.ApproxPercentileAccumulator;
 import dev.frostlake.functions.aggregate.Corr;
@@ -511,19 +513,19 @@ final class GroupByAggregateEvaluator {
         for (final FrostlakeParser.GroupByElementContext element : ctx.groupByClause().groupByElement()) {
             if (element.expression() != null) {
                 executor.validateClauseScope(ParseTreeText.getOriginalText(element.expression()),
-                    table, aliasToTable, allTables, aliasNames);
+                    table, aliasToTable, allTables, aliasNames, element.expression());
             }
             if (element.groupByColumnList() != null) {
                 for (final FrostlakeParser.ExpressionContext member : element.groupByColumnList().expression()) {
                     executor.validateClauseScope(ParseTreeText.getOriginalText(member),
-                        table, aliasToTable, allTables, aliasNames);
+                        table, aliasToTable, allTables, aliasNames, member);
                 }
             }
             if (element.groupingSetList() != null) {
                 for (final FrostlakeParser.GroupingSetContext set : element.groupingSetList().groupingSet()) {
                     for (final FrostlakeParser.ExpressionContext member : set.expression()) {
                         executor.validateClauseScope(ParseTreeText.getOriginalText(member),
-                            table, aliasToTable, allTables, aliasNames);
+                            table, aliasToTable, allTables, aliasNames, member);
                     }
                 }
             }
@@ -1175,7 +1177,23 @@ final class GroupByAggregateEvaluator {
             ? executor.sortRowsForWindow(groupRows, withinGroup, table) : groupRows;
         final AggregateFunction.Accumulator acc = aggFunc.createAccumulator();
         final boolean hasTwoArgs = args.size() >= 2 && aggFunc.getMaxArgCount() >= 2;
-        if (hasTwoArgs && acc instanceof ListAggAccumulator) {
+        if (acc instanceof MultiArgumentAccumulator) {
+            // The SPI seam, tried before the engine's own accumulator classes: an aggregate contributed
+            // by an optional pack has no branch of its own here, so it declares that it wants the whole
+            // row tuple and gets every argument evaluated per row, in the order the call wrote them.
+            final List<List<Object>> perArgument = new ArrayList<>();
+            for (final String argument : args) {
+                perArgument.add(aggArgValues(funcName, argument, aggRows, table, aliasToTable, allTables));
+            }
+            final int rowCount = perArgument.isEmpty() ? 0 : perArgument.get(0).size();
+            for (int row = 0; row < rowCount; row++) {
+                final List<Object> tuple = new ArrayList<>();
+                for (final List<Object> argumentValues : perArgument) {
+                    tuple.add(row < argumentValues.size() ? argumentValues.get(row) : null);
+                }
+                ((MultiArgumentAccumulator) acc).accumulate(tuple);
+            }
+        } else if (hasTwoArgs && acc instanceof ListAggAccumulator) {
             // LISTAGG(<expr>, <delimiter>): the 2nd argument is a constant string delimiter.
             ((ListAggAccumulator) acc).setDelimiter(unquoteDelimiter(args.get(1)));
             for (final Object v : aggArgValues(funcName, args.get(0), aggRows, table, aliasToTable, allTables)) {
@@ -1325,11 +1343,18 @@ final class GroupByAggregateEvaluator {
             ev.setMultiTableContext(aliasToTable, allTables);
         }
         final Expression parsed = ExpressionEvaluator.parse(arg);
-        for (final Row r : groupRows) {
+        for (int rowIndex = 0; rowIndex < groupRows.size(); rowIndex++) {
+            // Number the group's rows so an aggregated SEQ1/2/4/8 counts them. With no GROUP BY the
+            // group IS the whole input in scan order, which is what live counts: SUM(SEQ4()) over
+            // five rows is 0+1+2+3+4. Under a real GROUP BY, live numbers by the SCAN and Frostlake
+            // numbers within the group, so the two disagree — see the note in SeqFn.
+            final Long displacedOrdinal = RowOrdinal.begin(rowIndex);
             try {
-                values.add(ev.evaluate(parsed, r));
+                values.add(ev.evaluate(parsed, groupRows.get(rowIndex)));
             } catch (final Exception e) {
                 values.add(null);
+            } finally {
+                RowOrdinal.end(displacedOrdinal);
             }
         }
         return values;

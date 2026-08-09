@@ -46,6 +46,8 @@ public class EngineConfig {
     public static final String PROP_DATABASE_DEFAULT = "database.default";
     public static final String PROP_SCHEMA_DEFAULT = "schema.default";
     public static final String PROP_ACCOUNT_ID = "account.id";
+    public static final String PROP_ACCOUNT_NAME = "account.name";
+    public static final String PROP_ORGANIZATION_NAME = "organization.name";
     public static final String PROP_SNOWFLAKE_REGION = "snowflake.region";
     public static final String PROP_CONSTRAINTS_ENFORCE_PRIMARY_KEY = "constraints.enforce.primaryKey";
     public static final String PROP_CONSTRAINTS_ENFORCE_UNIQUE_KEY = "constraints.enforce.uniqueKey";
@@ -63,6 +65,7 @@ public class EngineConfig {
     public static final String PROP_PERSISTENCE_AUTO_SAVE = "persistence.autoSave";
     public static final String PROP_PERSISTENCE_SAVE_INTERVAL_SECONDS = "persistence.saveIntervalSeconds";
     public static final String PROP_LOGGING_LEVEL = "logging.level";
+    public static final String PROP_TASKS_AUTOSTART = "tasks.autostart";
     public static final String PROP_QUERY_HISTORY_SIZE = "query.history.size";
     public static final String PROP_QUERY_RESULT_CACHE_SIZE = "query.result.cache.size";
     public static final String PROP_STAGE_S3_LOCAL_ROOT = "stage.s3.localRoot";
@@ -77,10 +80,18 @@ public class EngineConfig {
     private static final String DEFAULT_DATABASE = "SNOWFLAKE";
     private static final String DEFAULT_SCHEMA = "PUBLIC";
     private static final String DEFAULT_ACCOUNT_ID = "ABC12345";
+    // An account's NAME and its LOCATOR are different identifiers and a real account carries both —
+    // measured, CURRENT_ACCOUNT() answers the locator and CURRENT_ACCOUNT_NAME() the name. The name
+    // defaults to the locator so configuring one thing does not silently produce two.
+    private static final String DEFAULT_ACCOUNT_NAME = DEFAULT_ACCOUNT_ID;
+    private static final String DEFAULT_ORGANIZATION_NAME = "ABCORG";
     // Default connected user — picked up from the OS login (CURRENT_USER()), falling back to ADMIN.
     // An explicit `default.user` property still overrides this.
     private static final String DEFAULT_USER = System.getProperty("user.name", "ADMIN");
-    private static final String DEFAULT_REGION = "PUBLIC.AWS_US_EAST_1";
+    // The BARE region, which is what a real account answers. The <region_group>.<region> spelling
+    // (PUBLIC.AWS_US_EAST_1) is real but belongs to the rarer case — an organization spanning multiple
+    // region groups — so it is reachable by configuring it, not the default.
+    private static final String DEFAULT_REGION = "AWS_US_EAST_1";
     private static final String DEFAULT_STAGE_S3_LOCAL_ROOT =
         System.getProperty("user.home") + "/.frostlake_stages/s3";
     // Local root backing the implicit internal stages — the user stage (@~) and per-table stages (@%table),
@@ -150,6 +161,8 @@ public class EngineConfig {
         properties.setProperty(PROP_DATABASE_DEFAULT, DEFAULT_DATABASE);
         properties.setProperty(PROP_SCHEMA_DEFAULT, DEFAULT_SCHEMA);
         properties.setProperty(PROP_ACCOUNT_ID, DEFAULT_ACCOUNT_ID);
+        properties.setProperty(PROP_ACCOUNT_NAME, DEFAULT_ACCOUNT_NAME);
+        properties.setProperty(PROP_ORGANIZATION_NAME, DEFAULT_ORGANIZATION_NAME);
         properties.setProperty(PROP_SNOWFLAKE_REGION, DEFAULT_REGION);
         properties.setProperty(PROP_CONSTRAINTS_ENFORCE_PRIMARY_KEY, "false");
         properties.setProperty(PROP_CONSTRAINTS_ENFORCE_UNIQUE_KEY, "false");
@@ -166,6 +179,7 @@ public class EngineConfig {
         properties.setProperty(PROP_DURABILITY_CHECKPOINT_INTERVAL, "0");
         properties.setProperty(PROP_PERSISTENCE_AUTO_SAVE, "true");
         properties.setProperty(PROP_PERSISTENCE_SAVE_INTERVAL_SECONDS, "60");
+        properties.setProperty(PROP_TASKS_AUTOSTART, "false");
         properties.setProperty(PROP_LOGGING_LEVEL, "INFO");
         properties.setProperty(PROP_QUERY_HISTORY_SIZE, "10000");
         properties.setProperty(PROP_QUERY_RESULT_CACHE_SIZE, "500");
@@ -224,8 +238,23 @@ public class EngineConfig {
         return getProperty(PROP_SCHEMA_DEFAULT, DEFAULT_SCHEMA);
     }
 
+    /** The account LOCATOR, which CURRENT_ACCOUNT() answers with. */
     public String getAccountId() {
         return getProperty(PROP_ACCOUNT_ID, DEFAULT_ACCOUNT_ID);
+    }
+
+    /**
+     * The account NAME, which CURRENT_ACCOUNT_NAME() answers with — a different identifier from the
+     * locator: measured on a real account, CURRENT_ACCOUNT() is PG65914 while CURRENT_ACCOUNT_NAME()
+     * is WJ64893, and SHOW ACCOUNTS reports them in separate columns.
+     */
+    public String getAccountName() {
+        return getProperty(PROP_ACCOUNT_NAME, getAccountId()).toUpperCase();
+    }
+
+    /** The organization the account belongs to, which CURRENT_ORGANIZATION_NAME() answers with. */
+    public String getOrganizationName() {
+        return getProperty(PROP_ORGANIZATION_NAME, DEFAULT_ORGANIZATION_NAME).toUpperCase();
     }
 
     public boolean isEnforcePrimaryKey() {
@@ -285,6 +314,24 @@ public class EngineConfig {
 
     public boolean isPersistenceEnabled() {
         return getBooleanProperty(PROP_PERSISTENCE_ENABLED, false);
+    }
+
+    /**
+     * Whether the engine arms the task scheduler as it finishes starting, so tasks left in the STARTED
+     * state — typically by a restore, since that writes the state without arming anything — begin firing
+     * on their schedule again.
+     *
+     * <p>Default FALSE, because starting it is not free and not always wanted: it spawns timer threads,
+     * and task bodies start executing against restored data as soon as the engine is up, before anyone
+     * has looked at the instance. An embedded engine inside someone else's process should generally
+     * leave this alone and call {@code startTaskScheduler()} when it is ready; a long-running server
+     * that is expected to pick up where it left off across restarts is what the flag is for.
+     *
+     * <p>Turning it off does not stop tasks from running — {@code ALTER TASK … RESUME} still starts the
+     * scheduler by itself. It only decides whether ALREADY-resumed tasks are armed at boot.
+     */
+    public boolean isTaskSchedulerAutoStart() {
+        return getBooleanProperty(PROP_TASKS_AUTOSTART, false);
     }
 
     public String getPersistenceDirectory() {

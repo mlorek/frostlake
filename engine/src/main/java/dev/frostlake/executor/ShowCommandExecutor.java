@@ -17,6 +17,7 @@
 package dev.frostlake.executor;
 
 import dev.frostlake.functions.FunctionRegistry;
+import dev.frostlake.config.AccountIdentity;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.QueryHistoryTracker;
 import dev.frostlake.security.SecurityManager;
@@ -53,7 +54,8 @@ public class ShowCommandExecutor {
     public ShowCommandExecutor(final Catalog catalog, final TransactionManager transactionManager,
                                final QueryHistoryTracker queryHistoryTracker,
                                final Map<String, Object> sessionVariables,
-                               final FunctionRegistry functionRegistry) {
+                               final FunctionRegistry functionRegistry,
+                               final AccountIdentity identity) {
         this.catalog = catalog;
         this.transactionManager = transactionManager;
         this.queryHistoryTracker = queryHistoryTracker;
@@ -66,7 +68,7 @@ public class ShowCommandExecutor {
         // a reference to it rather than the (still-null-at-construction) SecurityManager value.
         this.securityExecutor = new ShowSecurityExecutor(catalog, this);
         this.sessionExecutor = new ShowSessionExecutor(catalog, this, transactionManager,
-            queryHistoryTracker, sessionVariables);
+            queryHistoryTracker, sessionVariables, identity);
     }
 
     public void setSecurityManager(final SecurityManager securityManager) {
@@ -126,6 +128,10 @@ public class ShowCommandExecutor {
         return pipelineExecutor.showStreamsInDatabase(databaseName);
     }
 
+    public ResultSet showStreamsInAccount() {
+        return pipelineExecutor.showStreamsInAccount();
+    }
+
     public ResultSet showStreams(final String schemaName) {
         return pipelineExecutor.showStreams(schemaName);
     }
@@ -146,12 +152,20 @@ public class ShowCommandExecutor {
         return pipelineExecutor.showTasksInDatabase(databaseName);
     }
 
+    public ResultSet showTasksInAccount() {
+        return pipelineExecutor.showTasksInAccount();
+    }
+
     public ResultSet showPipes(final String schemaName, final String like) {
         return pipelineExecutor.showPipes(schemaName, like);
     }
 
     public ResultSet showPipesInDatabase(final String databaseName, final String like) {
         return pipelineExecutor.showPipesInDatabase(databaseName, like);
+    }
+
+    public ResultSet showPipesInAccount(final String like) {
+        return pipelineExecutor.showPipesInAccount(like);
     }
 
     public ResultSet showWarehouses() {
@@ -164,6 +178,10 @@ public class ShowCommandExecutor {
 
     public ResultSet showStagesInDatabase(final String databaseName) {
         return infraExecutor.showStagesInDatabase(databaseName);
+    }
+
+    public ResultSet showStagesInAccount() {
+        return infraExecutor.showStagesInAccount();
     }
 
     public ResultSet showProcedures(final String schemaName, final boolean userOnly) {
@@ -232,6 +250,18 @@ public class ShowCommandExecutor {
         return pipelineExecutor.describeSequence(sequenceName);
     }
 
+    public ResultSet showComputePools() {
+        return infraExecutor.showComputePools();
+    }
+
+    public ResultSet showComputePoolInstanceFamilies() {
+        return infraExecutor.showComputePoolInstanceFamilies();
+    }
+
+    public ResultSet describeComputePool(final String poolName) {
+        return infraExecutor.describeComputePool(poolName);
+    }
+
     public ResultSet describeWarehouse(final String warehouseName) {
         return infraExecutor.describeWarehouse(warehouseName);
     }
@@ -246,6 +276,10 @@ public class ShowCommandExecutor {
 
     public ResultSet showTagsInDatabase(final String databaseName) {
         return routineExecutor.showTagsInDatabase(databaseName);
+    }
+
+    public ResultSet showTagsInAccount() {
+        return routineExecutor.showTagsInAccount();
     }
 
     public ResultSet describeTag(final String tagName) {
@@ -284,6 +318,10 @@ public class ShowCommandExecutor {
         return routineExecutor.showFileFormatsInDatabase(databaseName);
     }
 
+    public ResultSet showFileFormatsInAccount() {
+        return routineExecutor.showFileFormatsInAccount();
+    }
+
     public ResultSet showMaskingPolicies(final String schemaName) {
         return routineExecutor.showMaskingPolicies(schemaName);
     }
@@ -292,12 +330,20 @@ public class ShowCommandExecutor {
         return routineExecutor.showMaskingPoliciesInDatabase(databaseName);
     }
 
+    public ResultSet showMaskingPoliciesInAccount() {
+        return routineExecutor.showMaskingPoliciesInAccount();
+    }
+
     public ResultSet showRowAccessPolicies(final String schemaName) {
         return routineExecutor.showRowAccessPolicies(schemaName);
     }
 
     public ResultSet showRowAccessPoliciesInDatabase(final String databaseName) {
         return routineExecutor.showRowAccessPoliciesInDatabase(databaseName);
+    }
+
+    public ResultSet showRowAccessPoliciesInAccount() {
+        return routineExecutor.showRowAccessPoliciesInAccount();
     }
 
     public ResultSet showKeysScoped(final boolean primary, final String scopeKind, final String scopeName) {
@@ -334,8 +380,32 @@ public class ShowCommandExecutor {
         return securityExecutor.showUsers();
     }
 
+    public ResultSet showGrantsOfRole(final String roleName) {
+        return securityExecutor.showGrantsOfRole(roleName);
+    }
+
+    public ResultSet showGrantsForCurrentUser() {
+        return securityExecutor.showGrantsForCurrentUser();
+    }
+
     public ResultSet showRoles() {
         return securityExecutor.showRoles();
+    }
+
+    public ResultSet showCortexSearchServices(final String schemaName, final String like) {
+        return pipelineExecutor.showCortexSearchServices(schemaName, like);
+    }
+
+    public ResultSet showCortexSearchServicesInDatabase(final String databaseName, final String like) {
+        return pipelineExecutor.showCortexSearchServicesInDatabase(databaseName, like);
+    }
+
+    public ResultSet showCortexSearchServicesInAccount(final String like) {
+        return pipelineExecutor.showCortexSearchServicesInAccount(like);
+    }
+
+    public ResultSet describeCortexSearchService(final String serviceName) {
+        return pipelineExecutor.describeCortexSearchService(serviceName);
     }
 
     public ResultSet showDynamicTables(final String schemaName) {
@@ -346,6 +416,10 @@ public class ShowCommandExecutor {
         return pipelineExecutor.showDynamicTablesInDatabase(databaseName);
     }
 
+    public ResultSet showDynamicTablesInAccount() {
+        return pipelineExecutor.showDynamicTablesInAccount();
+    }
+
     public ResultSet describeDynamicTable(final String tableName) {
         return pipelineExecutor.describeDynamicTable(tableName);
     }
@@ -354,8 +428,12 @@ public class ShowCommandExecutor {
         return sessionExecutor.showParameters(likePattern);
     }
 
-    public ResultSet showSessions(final String likePattern) {
-        return sessionExecutor.showSessions(likePattern);
+    public ResultSet showParametersInTask(final String taskName, final String likePattern) {
+        return sessionExecutor.showParametersInTask(taskName, likePattern);
+    }
+
+    public ResultSet showParametersInWarehouse(final String warehouseName, final String likePattern) {
+        return sessionExecutor.showParametersInWarehouse(warehouseName, likePattern);
     }
 
     public ResultSet showObjects(final String schemaName) {

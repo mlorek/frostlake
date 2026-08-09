@@ -85,7 +85,10 @@ public class InlineUdfExecutionTest extends BaseJdbcTest {
             CREATE OR REPLACE FUNCTION py_concat(x INTEGER)
             RETURNS STRING
             LANGUAGE PYTHON
+            RUNTIME_VERSION = '3.11'
+            HANDLER = 'go'
             AS $$
+            def go(x):
                 return 'py:' + str(x)
             $$
             """);

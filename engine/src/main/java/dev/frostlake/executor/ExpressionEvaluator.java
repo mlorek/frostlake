@@ -295,6 +295,13 @@ public class ExpressionEvaluator {
      * Parse a (comment-stripped) expression string into an {@link Expression} AST via the ANTLR
      * grammar ({@link AntlrExpressionParser}). Results are cached because operators currently
      * re-evaluate the same expression text once per row.
+     *
+     * <p><b>The cache is keyed by TEXT, so everything stored in an AST must be a function of that
+     * text alone.</b> Source positions obey this by being fragment-relative — see
+     * {@link dev.frostlake.executor.expressions.SourcePosition}. Storing anything that varies between
+     * two occurrences of the same expression (an absolute statement offset, the row being evaluated,
+     * a session setting) would hand the first occurrence's value to every later one: a wrong answer,
+     * which is worse than the missing one it replaced.
      */
     private static Expression parseToAst(final String expression) {
         Expression cached = AST_CACHE.get(expression);

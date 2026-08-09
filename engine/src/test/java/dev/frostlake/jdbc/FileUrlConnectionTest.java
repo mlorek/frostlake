@@ -29,6 +29,8 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.ResultSet;
@@ -36,6 +38,7 @@ import java.sql.SQLException;
 import java.sql.Statement;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
@@ -46,7 +49,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * The embedded-persistent {@code jdbc:frostlake:file:<dir>} URL: state written through one connection
  * survives closing the engine and re-opening the same directory (WAL replay by default,
  * {@code ?wal=false} snapshot persistence), same-directory connections share one engine, and the
- * {@code frostlake.lock} file rejects a directory already held by another process.
+ * {@code frostlake.lock} OS lock rejects a directory held by another LIVE process, while a lock
+ * file left behind by one that died does not.
  */
 public class FileUrlConnectionTest {
 
@@ -122,23 +126,52 @@ public class FileUrlConnectionTest {
         }
     }
 
+    /**
+     * A lock file left behind by a process that is gone does NOT block the directory. The guard is an
+     * OS lock on that file, which the kernel drops when its holder ends however it ends; the file
+     * itself outliving a force-quit was what made a directory permanently unopenable, curable only by
+     * deleting a file nobody tells you about.
+     */
     @Test
-    public void lockedDirectoryIsRejectedWithAClearError() throws Exception {
+    public void aLeftoverLockFileFromADeadProcessDoesNotBlockTheDirectory() throws Exception {
         createAndFill(null);
         DatabaseDriver.closeFileEngine(dataDir.toString());
 
         final Path lock = dataDir.resolve("frostlake.lock");
-        Files.writeString(lock, "pid=99999\n");     // simulate another process holding the directory
-        final SQLException e = assertThrows(SQLException.class, new Executable() {
-            @Override
-            public void execute() throws SQLException {
-                DriverManager.getConnection(url(null));
-            }
-        });
-        assertTrue(e.getMessage().contains("frostlake.lock"),
-            "the error should name the lock file, got: " + e.getMessage());
+        Files.writeString(lock, "pid=99999\n");     // a crashed run's leftover: file present, nobody holding
+        assertTrue(Files.exists(lock));
 
-        Files.deleteIfExists(lock);
+        assertEquals(2L, countRows("?database=DEV&schema=APP"),
+            "a stale lock file must not stop the directory opening");
+    }
+
+    /** Releasing the directory tidies the lock file away. */
+    @Test
+    public void closingTheEngineRemovesTheLockFile() throws Exception {
+        createAndFill(null);
+        assertTrue(Files.exists(dataDir.resolve("frostlake.lock")), "held while open");
+        DatabaseDriver.closeFileEngine(dataDir.toString());
+        assertFalse(Files.exists(dataDir.resolve("frostlake.lock")), "removed on release");
+    }
+
+    /** Every connection to one directory shares its engine, so opening many at once takes one lock. */
+    @Test
+    public void manyConcurrentConnectionsShareTheOneLock() throws Exception {
+        createAndFill(null);
+        final List<Connection> open = new ArrayList<>();
+        try {
+            for (int i = 0; i < 8; i++) {
+                open.add(DriverManager.getConnection(url("?database=DEV&schema=APP")));
+            }
+            for (final Connection connection : open) {
+                assertSame(open.get(0).unwrap(DatabaseEngine.class),
+                    connection.unwrap(DatabaseEngine.class));
+            }
+        } finally {
+            for (final Connection connection : open) {
+                connection.close();
+            }
+        }
         assertEquals(2L, countRows("?database=DEV&schema=APP"));
     }
 

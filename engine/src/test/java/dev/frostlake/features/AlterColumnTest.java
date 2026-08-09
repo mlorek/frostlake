@@ -93,7 +93,7 @@ public class AlterColumnTest {
 
         engine.execute("ALTER TABLE documents ALTER COLUMN content SET DATA TYPE VARCHAR(1000)");
 
-        Table table = engine.getCatalog().resolveTable("documents");
+        Table table = engine.getCatalog().resolveTable("DOCUMENTS");
         assertNotNull(table);
 
         TableColumn contentColumn = table.getColumn("content");
@@ -110,7 +110,7 @@ public class AlterColumnTest {
 
         engine.execute("ALTER TABLE finances ALTER COLUMN amount SET DATA TYPE DECIMAL(10, 2)");
 
-        Table table = engine.getCatalog().resolveTable("finances");
+        Table table = engine.getCatalog().resolveTable("FINANCES");
         assertNotNull(table);
 
         TableColumn amountColumn = table.getColumn("amount");
@@ -127,7 +127,7 @@ public class AlterColumnTest {
 
         engine.execute("ALTER TABLE events ALTER COLUMN event_time SET DATA TYPE TIMESTAMP");
 
-        Table table = engine.getCatalog().resolveTable("events");
+        Table table = engine.getCatalog().resolveTable("EVENTS");
         assertNotNull(table);
 
         TableColumn eventTimeColumn = table.getColumn("event_time");
@@ -144,7 +144,7 @@ public class AlterColumnTest {
 
         engine.execute("ALTER TABLE orders ALTER COLUMN order_date SET DATA TYPE DATE");
 
-        Table table = engine.getCatalog().resolveTable("orders");
+        Table table = engine.getCatalog().resolveTable("ORDERS");
         assertNotNull(table);
 
         TableColumn dateColumn = table.getColumn("order_date");
@@ -198,13 +198,13 @@ public class AlterColumnTest {
 
         engine.execute("CREATE TABLE test_table (id INTEGER, value VARCHAR(10) COMMENT = 'Important value')");
 
-        Table table = engine.getCatalog().resolveTable("test_table");
+        Table table = engine.getCatalog().resolveTable("TEST_TABLE");
         TableColumn valueBefore = table.getColumn("value");
         String commentBefore = valueBefore.getComment();
 
         engine.execute("ALTER TABLE test_table ALTER COLUMN value SET DATA TYPE VARCHAR(200)");
 
-        table = engine.getCatalog().resolveTable("test_table");
+        table = engine.getCatalog().resolveTable("TEST_TABLE");
         TableColumn valueAfter = table.getColumn("value");
         String commentAfter = valueAfter.getComment();
 
@@ -220,13 +220,13 @@ public class AlterColumnTest {
 
         engine.execute("CREATE TABLE test_table (id INTEGER PRIMARY KEY, name VARCHAR)");
 
-        Table table = engine.getCatalog().resolveTable("test_table");
+        Table table = engine.getCatalog().resolveTable("TEST_TABLE");
         TableColumn idBefore = table.getColumn("id");
         boolean isPrimaryKeyBefore = idBefore.isPrimaryKey();
 
         engine.execute("ALTER TABLE test_table ALTER COLUMN id SET DATA TYPE BIGINT");
 
-        table = engine.getCatalog().resolveTable("test_table");
+        table = engine.getCatalog().resolveTable("TEST_TABLE");
         TableColumn idAfter = table.getColumn("id");
         boolean isPrimaryKeyAfter = idAfter.isPrimaryKey();
 
@@ -246,7 +246,7 @@ public class AlterColumnTest {
         engine.execute("ALTER TABLE test_table ALTER COLUMN col2 SET DATA TYPE DECIMAL");
         engine.execute("ALTER TABLE test_table ALTER COLUMN col3 SET DATA TYPE BIGINT");
 
-        Table table = engine.getCatalog().resolveTable("test_table");
+        Table table = engine.getCatalog().resolveTable("TEST_TABLE");
 
         assertEquals("VARCHAR", table.getColumn("col1").getDataType().getName());
         assertEquals("NUMBER", table.getColumn("col2").getDataType().getName());
@@ -264,7 +264,7 @@ public class AlterColumnTest {
 
         engine.execute("ALTER TABLE test_schema.products ALTER COLUMN price SET DATA TYPE DECIMAL");
 
-        Table table = engine.getCatalog().resolveTable("test_schema.products");
+        Table table = engine.getCatalog().resolveTable("TEST_SCHEMA.PRODUCTS");
         assertNotNull(table);
 
         TableColumn priceColumn = table.getColumn("price");
@@ -287,7 +287,7 @@ public class AlterColumnTest {
         assertNotNull(rs);
         assertEquals(2, rs.getRowCount());
 
-        Table table = engine.getCatalog().resolveTable("customers");
+        Table table = engine.getCatalog().resolveTable("CUSTOMERS");
         assertEquals("BIGINT", table.getColumn("age").getDataType().getName());
 
         logger.info("ALTER COLUMN on table with data works correctly");
@@ -304,7 +304,7 @@ public class AlterColumnTest {
         engine.execute("ALTER TABLE test_table RENAME COLUMN col2 TO col2_renamed");
         engine.execute("ALTER TABLE test_table ALTER COLUMN col3 SET DATA TYPE DECIMAL");
 
-        Table table = engine.getCatalog().resolveTable("test_table");
+        Table table = engine.getCatalog().resolveTable("TEST_TABLE");
 
         assertEquals(4, table.getColumns().size());
         assertEquals("VARCHAR", table.getColumn("col1").getDataType().getName());

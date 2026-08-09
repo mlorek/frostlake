@@ -21,6 +21,7 @@ import dev.frostlake.storage.ResultSet;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -311,5 +312,50 @@ public class ResultScanTest {
             "SELECT * FROM TABLE(RESULT_SCAN('" + firstQueryId + "'))"
         );
         assertEquals(1, scanResult.getRowCount());
+    }
+
+    /**
+     * RESULT_SCAN honours the offset its LAST_QUERY_ID argument carries. The argument used to be
+     * special-cased by NAME — any LAST_QUERY_ID call in that position was replaced with the most
+     * recent query ID, so RESULT_SCAN(LAST_QUERY_ID(-2)) silently scanned the wrong result. Live
+     * returns the three-row query for -2 and the one-row query for -1.
+     */
+    @Test
+    public void resultScanHonoursTheLastQueryIdOffset() {
+        engine.execute("CREATE DATABASE offset_db");
+        engine.execute("USE DATABASE offset_db");
+        engine.execute("USE SCHEMA public");
+        engine.execute("CREATE TABLE three (k INTEGER)");
+        engine.execute("INSERT INTO three VALUES (1), (2), (3)");
+        engine.execute("SELECT * FROM three");
+        engine.execute("SELECT 1");
+
+        final ResultSet mostRecent = engine.executeQuery(
+            "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID(-1)))");
+        assertEquals(1L, ((Number) mostRecent.getRows().get(0).getValue(0)).longValue());
+
+        // Re-establish the same two source queries: every statement joins the history, including
+        // the probe above, so -2 only means "the three-row SELECT" from a matching position.
+        engine.execute("SELECT * FROM three");
+        engine.execute("SELECT 1");
+        final ResultSet oneBefore = engine.executeQuery(
+            "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID(-2)))");
+        assertEquals(3L, ((Number) oneBefore.getRows().get(0).getValue(0)).longValue());
+    }
+
+    /** RESULT_SCAN over a LAST_QUERY_ID that resolves to nothing keeps its own wording. */
+    @Test
+    public void resultScanOverAnEmptyHistoryReportsNoPreviousResults() {
+        engine.execute("CREATE DATABASE empty_hist_db");
+        engine.execute("USE DATABASE empty_hist_db");
+        engine.execute("USE SCHEMA public");
+        final RuntimeException error = assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.executeQuery("SELECT * FROM TABLE(RESULT_SCAN(LAST_QUERY_ID(-99)))");
+            }
+        });
+        assertTrue(error.getMessage().contains("No previous query results available"),
+            "unexpected message: " + error.getMessage());
     }
 }

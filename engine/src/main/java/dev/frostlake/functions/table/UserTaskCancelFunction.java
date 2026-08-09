@@ -18,12 +18,11 @@ package dev.frostlake.functions.table;
 
 import dev.frostlake.functions.TableFunction;
 import dev.frostlake.metastore.Catalog;
-import dev.frostlake.metastore.model.Schema;
-import dev.frostlake.metastore.model.Task;
-import dev.frostlake.metastore.model.TaskState;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
+import dev.frostlake.task.TaskScheduler;
+import dev.frostlake.task.UserTaskCancellation;
 import dev.frostlake.types.StringType;
 
 import java.util.Arrays;
@@ -31,16 +30,27 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * SYSTEM$USER_TASK_CANCEL_ONGOING_EXECUTIONS('task_name') table function.
- * Cancels all ongoing executions of the specified task and returns a status row.
+ * {@code SYSTEM$USER_TASK_CANCEL_ONGOING_EXECUTIONS('task_name')} — cancels the runs of a task that
+ * are in flight and returns a one-column {@code status} row describing what happened.
+ *
+ * <p>It cancels <em>executions</em>, not the task: a started task stays started afterwards. The
+ * task name is echoed into the message exactly as it was passed, while the task itself is looked up
+ * case-insensitively. An unknown name is an error rather than a status row.
  */
 public class UserTaskCancelFunction extends TableFunction {
 
     private final Catalog catalog;
 
+    /** Set once the scheduler exists; it is built after the function registry. */
+    private TaskScheduler taskScheduler;
+
     public UserTaskCancelFunction(final Catalog catalog) {
         super("SYSTEM$USER_TASK_CANCEL_ONGOING_EXECUTIONS");
         this.catalog = catalog;
+    }
+
+    public void setTaskScheduler(final TaskScheduler taskScheduler) {
+        this.taskScheduler = taskScheduler;
     }
 
     @Override
@@ -50,30 +60,20 @@ public class UserTaskCancelFunction extends TableFunction {
 
     @Override
     public ResultSet execute(final Map<String, Object> args) {
-        List<ResultSetColumn> columns = Arrays.asList(
+        final List<ResultSetColumn> columns = Arrays.asList(
             new ResultSetColumn("status", StringType.VARCHAR)
         );
 
         Object taskNameArg = args.get("INPUT");
-        if (taskNameArg == null) taskNameArg = args.get("TASK_NAME");
+        if (taskNameArg == null) {
+            taskNameArg = args.get("TASK_NAME");
+        }
         if (taskNameArg == null) {
             return new ResultSet(columns, List.of(new Row(List.of("No task name provided"))));
         }
 
-        String taskName = taskNameArg.toString().toUpperCase().replaceAll("^'|'$", "");
-        try {
-            String dbName = catalog.getCurrentDatabase();
-            String scName = catalog.getCurrentSchema();
-            if (dbName == null || scName == null) {
-                return new ResultSet(columns, List.of(new Row(List.of("No database/schema selected"))));
-            }
-            Schema schema = catalog.getDatabase(dbName).getSchema(scName);
-            Task task = schema.getTask(taskName);
-            task.setState(TaskState.SUSPENDED);
-            String msg = "Successfully cancelled ongoing executions of task " + taskName + ".";
-            return new ResultSet(columns, List.of(new Row(List.of(msg))));
-        } catch (final Exception e) {
-            return new ResultSet(columns, List.of(new Row(List.of("Error: " + e.getMessage()))));
-        }
+        final String status =
+            UserTaskCancellation.cancel(catalog, taskScheduler, taskNameArg.toString());
+        return new ResultSet(columns, List.of(new Row(List.of(status))));
     }
 }

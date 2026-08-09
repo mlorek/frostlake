@@ -16,6 +16,7 @@
 
 package dev.frostlake.functions.scalar.context;
 
+import dev.frostlake.executor.StatementClock;
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.types.DateTimeType;
 
@@ -26,7 +27,7 @@ public class CurrentTime extends BuiltInFunction {
     public CurrentTime() { super("CURRENT_TIME", DateTimeType.TIMESTAMP_NTZ); }
 
     @Override
-    public Object evaluate(final List<Object> args) { return LocalTime.now(); }
+    public Object evaluate(final List<Object> args) { return StatementClock.now().toLocalTime(); }
 
     @Override public int getMinArgCount() { return 0; }
     // Snowflake accepts an optional fractional-seconds precision argument (CURRENT_TIMESTAMP(3));

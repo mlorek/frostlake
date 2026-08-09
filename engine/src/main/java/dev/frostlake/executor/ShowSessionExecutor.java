@@ -16,6 +16,7 @@
 
 package dev.frostlake.executor;
 
+import dev.frostlake.config.AccountIdentity;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.QueryHistory;
@@ -24,6 +25,8 @@ import dev.frostlake.metastore.model.Database;
 import dev.frostlake.metastore.model.ForeignKeyConstraint;
 import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.metastore.model.Table;
+import dev.frostlake.metastore.model.Task;
+import dev.frostlake.metastore.model.Warehouse;
 import dev.frostlake.metastore.model.TableColumn;
 import dev.frostlake.metastore.model.UniqueConstraint;
 import dev.frostlake.security.SecurityManager;
@@ -32,10 +35,13 @@ import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
 import dev.frostlake.transaction.TransactionManager;
 import dev.frostlake.types.NumericType;
+import dev.frostlake.types.DateTimeType;
 import dev.frostlake.types.StringType;
+import dev.frostlake.values.VariantJsonFormat;
 import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.time.LocalDateTime;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -51,6 +57,14 @@ import java.util.UUID;
  */
 final class ShowSessionExecutor {
 
+    /**
+     * When this engine's account was created. Nothing models an account's real birthday, so it is a
+     * fixed moment rather than the engine's start time — a SHOW that answered a different created_on
+     * on every run would be worse than one that answers a stable placeholder.
+     */
+    private static final LocalDateTime ACCOUNT_CREATED_ON = LocalDateTime.of(2020, 1, 1, 0, 0, 0);
+
+    private final AccountIdentity identity;
     private final Catalog catalog;
     private final ShowCommandExecutor facade;
     private final TransactionManager transactionManager;
@@ -60,7 +74,9 @@ final class ShowSessionExecutor {
     ShowSessionExecutor(final Catalog catalog, final ShowCommandExecutor facade,
                         final TransactionManager transactionManager,
                         final QueryHistoryTracker queryHistoryTracker,
-                        final Map<String, Object> sessionVariables) {
+                        final Map<String, Object> sessionVariables,
+                        final AccountIdentity identity) {
+        this.identity = identity;
         this.catalog = catalog;
         this.facade = facade;
         this.transactionManager = transactionManager;
@@ -68,9 +84,9 @@ final class ShowSessionExecutor {
         this.sessionVariables = sessionVariables;
     }
 
-    public ResultSet showParameters(final String likePattern) {
-        final SecurityManager securityManager = facade.getSecurityManager();
-        List<ResultSetColumn> columns = Arrays.asList(
+    /** The six columns every SHOW PARAMETERS form returns. */
+    private List<ResultSetColumn> parameterColumns() {
+        return Arrays.asList(
             new ResultSetColumn("key", StringType.VARCHAR),
             new ResultSetColumn("value", StringType.VARCHAR),
             new ResultSetColumn("default", StringType.VARCHAR),
@@ -78,6 +94,11 @@ final class ShowSessionExecutor {
             new ResultSetColumn("description", StringType.VARCHAR),
             new ResultSetColumn("type", StringType.VARCHAR)
         );
+    }
+
+    public ResultSet showParameters(final String likePattern) {
+        final SecurityManager securityManager = facade.getSecurityManager();
+        List<ResultSetColumn> columns = parameterColumns();
         // Built-in Snowflake session parameters with defaults
         Object[][] params = {
             {"TIMEZONE",                     "UTC",   "UTC",   "ACCOUNT", "Time zone",                    "TEXT"},
@@ -91,6 +112,8 @@ final class ShowSessionExecutor {
             {"LOCK_TIMEOUT",                 "43200", "43200", "ACCOUNT", "Lock wait timeout in seconds", "NUMBER"},
             {"STATEMENT_TIMEOUT_IN_SECONDS", "0",  "0",  "ACCOUNT", "Statement execution timeout (0 = disabled)", "NUMBER"},
             {"AUTOCOMMIT",                   "true", "true", "ACCOUNT", "Auto-commit mode", "BOOLEAN"},
+            {"JSON_INDENT", String.valueOf(VariantJsonFormat.indent()), "2", "SESSION",
+                "Width of indentation in JSON output (0 for compact)", "NUMBER"},
         };
         // Also include current session parameters
         Map<String, Object> sessionParams = securityManager != null
@@ -117,100 +140,186 @@ final class ShowSessionExecutor {
         return new ResultSet(columns, rows);
     }
 
-    public ResultSet showSessions(final String likePattern) {
-        final SecurityManager securityManager = facade.getSecurityManager();
-        List<ResultSetColumn> columns = Arrays.asList(
-            new ResultSetColumn("session_id", StringType.VARCHAR),
-            new ResultSetColumn("login_name", StringType.VARCHAR),
-            new ResultSetColumn("user_name", StringType.VARCHAR),
-            new ResultSetColumn("role_name", StringType.VARCHAR),
-            new ResultSetColumn("warehouse_name", StringType.VARCHAR),
-            new ResultSetColumn("database_name", StringType.VARCHAR),
-            new ResultSetColumn("schema_name", StringType.VARCHAR),
-            new ResultSetColumn("client_application", StringType.VARCHAR),
-            new ResultSetColumn("created_on", StringType.VARCHAR)
-        );
-        String user = securityManager != null ? securityManager.getSessionContext().getDisplayUser() : "SYSTEM";
-        String role = securityManager != null ? securityManager.getSessionContext().getCurrentRole() : "SYSADMIN";
-        if (likePattern != null && !user.toUpperCase().contains(likePattern.toUpperCase().replace("%", ""))) {
-            return new ResultSet(columns, new ArrayList<>());
+    /**
+     * SHOW PARAMETERS IN TASK: the task-scoped parameters, each with the value in force for that
+     * task. The {@code level} column is TASK where the task set the parameter itself and empty
+     * where it is inheriting the default — measured on a real account.
+     */
+    public ResultSet showParametersInTask(final String taskName, final String likePattern) {
+        final String dbName = catalog.getCurrentDatabase();
+        final String scName = catalog.getCurrentSchema();
+        if (dbName == null || scName == null) {
+            throw new RuntimeException("No database or schema selected");
         }
-        List<Row> rows = new ArrayList<>();
-        rows.add(new Row(Arrays.asList(
-            UUID.randomUUID().toString(),
-            user, user, role,
-            catalog.getCurrentWarehouse(),
-            catalog.getCurrentDatabase(),
-            catalog.getCurrentSchema(),
-            "FrostlakeSQLEngine/1.0",
-            Instant.now().toString()
-        )));
-        return new ResultSet(columns, rows);
+        final Task task = catalog.getDatabase(dbName).getSchema(scName).getTask(taskName);
+        if (task == null) {
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Task", taskName));
+        }
+        final Object[][] params = {
+            {"SERVERLESS_TASK_MAX_STATEMENT_SIZE",
+                task.getServerlessTaskMaxStatementSize() != null
+                    ? task.getServerlessTaskMaxStatementSize() : "X2Large",
+                "X2Large", "STRING",
+                "The maximum warehouse size to use for a serverless Task"},
+            {"SERVERLESS_TASK_MIN_STATEMENT_SIZE", "XSMALL", "XSMALL", "STRING",
+                "The minimum warehouse size to use for a serverless Task"},
+            {"SUSPEND_TASK_AFTER_NUM_FAILURES",
+                String.valueOf(task.getSuspendTaskAfterNumFailures()), "10", "NUMBER",
+                "How many times a task must fail in a row before it is automatically suspended. "
+                    + "0 disables auto-suspending."},
+            {"TASK_AUTO_RETRY_ATTEMPTS",
+                String.valueOf(task.getTaskAutoRetryAttempts()), "0", "NUMBER",
+                "Maximum Automatic Retries Allowed For A User Task"},
+            {"USER_TASK_MANAGED_INITIAL_WAREHOUSE_SIZE",
+                task.getUserTaskManagedInitialWarehouseSize() != null
+                    ? task.getUserTaskManagedInitialWarehouseSize() : "Medium",
+                "Medium", "STRING",
+                "The initial size of warehouse to use for managed warehouses in the absence of history"},
+            {"USER_TASK_MINIMUM_TRIGGER_INTERVAL_IN_SECONDS",
+                String.valueOf(task.getUserTaskMinimumTriggerIntervalInSeconds()), "30", "NUMBER",
+                "Minimum amount of time between Triggered Task executions in seconds"},
+            {"USER_TASK_TIMEOUT_MS",
+                String.valueOf(task.getUserTaskTimeoutMs()), "3600000", "NUMBER",
+                "User task execution timeout in milliseconds"}
+        };
+        final List<Row> rows = new ArrayList<>();
+        for (final Object[] param : params) {
+            final String key = (String) param[0];
+            if (!matchesParameterFilter(key, likePattern)) {
+                continue;
+            }
+            rows.add(new Row(Arrays.asList(key, param[1], param[2],
+                task.isParameterSetOnTask(key) ? "TASK" : "", param[4], param[3])));
+        }
+        return new ResultSet(parameterColumns(), rows);
     }
 
-    public ResultSet showOrganizationAccounts() {
-        List<ResultSetColumn> columns = Arrays.asList(
+    /**
+     * SHOW PARAMETERS IN WAREHOUSE: the warehouse-scoped parameters. As with tasks, the level is
+     * WAREHOUSE where the warehouse set the parameter itself and empty where it inherits.
+     */
+    public ResultSet showParametersInWarehouse(final String warehouseName, final String likePattern) {
+        final Warehouse warehouse = catalog.getWarehouse(warehouseName);
+        if (warehouse == null) {
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Warehouse", warehouseName));
+        }
+        final Object[][] params = {
+            {"MAX_CONCURRENCY_LEVEL", String.valueOf(warehouse.getMaxConcurrencyLevel()), "8", "NUMBER",
+                "Maximum number of SQL statements a warehouse cluster can execute concurrently "
+                    + "before queuing them. Small SQL statements count as a fraction of 1."},
+            {"STATEMENT_QUEUED_TIMEOUT_IN_SECONDS",
+                String.valueOf(warehouse.getStatementQueuedTimeoutSeconds()), "0", "NUMBER",
+                "Timeout in seconds for queued statements: statements will automatically be "
+                    + "canceled if they are queued on a warehouse for longer than this amount of "
+                    + "time; disabled if set to zero."},
+            {"STATEMENT_TIMEOUT_IN_SECONDS",
+                String.valueOf(warehouse.getStatementTimeoutSeconds()), "172800", "NUMBER",
+                "Timeout in seconds for statements: statements are automatically canceled if they "
+                    + "run for longer; if set to zero, max value (604800) is enforced."}
+        };
+        final List<Row> rows = new ArrayList<>();
+        for (final Object[] param : params) {
+            final String key = (String) param[0];
+            if (!matchesParameterFilter(key, likePattern)) {
+                continue;
+            }
+            rows.add(new Row(Arrays.asList(key, param[1], param[2],
+                warehouse.isParameterSetOnWarehouse(key) ? "WAREHOUSE" : "", param[4], param[3])));
+        }
+        return new ResultSet(parameterColumns(), rows);
+    }
+
+    /** Whether a parameter name survives a SHOW PARAMETERS … LIKE filter. */
+    private boolean matchesParameterFilter(final String key, final String likePattern) {
+        return likePattern == null
+            || key.toUpperCase().contains(likePattern.toUpperCase().replace("%", ""));
+    }
+
+    /**
+     * The 24 columns SHOW ACCOUNTS answers with, measured — SHOW ORGANIZATION ACCOUNTS answers with
+     * exactly the same shape, which is why both listings share this.
+     *
+     * <p>There is NO {@code region_group} column here, and no {@code org_default_region}: both were
+     * Frostlake's own invention and asking a real account for either is an invalid identifier. Four
+     * more timestamps ARE here that Frostlake did not have — the old-URL pairs — and the one it did
+     * have was spelled {@code account_oldurl_saved_on} against live's {@code account_old_url_saved_on}.
+     */
+    private List<ResultSetColumn> accountColumns() {
+        return Arrays.asList(
             new ResultSetColumn("organization_name", StringType.VARCHAR),
             new ResultSetColumn("account_name", StringType.VARCHAR),
             new ResultSetColumn("snowflake_region", StringType.VARCHAR),
             new ResultSetColumn("edition", StringType.VARCHAR),
             new ResultSetColumn("account_url", StringType.VARCHAR),
-            new ResultSetColumn("created_on", StringType.VARCHAR),
+            new ResultSetColumn("created_on", DateTimeType.TIMESTAMP_LTZ),
             new ResultSetColumn("comment", StringType.VARCHAR),
             new ResultSetColumn("account_locator", StringType.VARCHAR),
             new ResultSetColumn("account_locator_url", StringType.VARCHAR),
-            new ResultSetColumn("managed_accounts", NumericType.INTEGER),
+            new ResultSetColumn("managed_accounts", NumericType.NUMBER),
             new ResultSetColumn("consumption_billing_entity_name", StringType.VARCHAR),
             new ResultSetColumn("marketplace_consumer_billing_entity_name", StringType.VARCHAR),
             new ResultSetColumn("marketplace_provider_billing_entity_name", StringType.VARCHAR),
             new ResultSetColumn("old_account_url", StringType.VARCHAR),
-            new ResultSetColumn("is_org_admin", StringType.VARCHAR)
+            new ResultSetColumn("is_org_admin", StringType.VARCHAR),
+            new ResultSetColumn("account_old_url_saved_on", DateTimeType.TIMESTAMP_LTZ),
+            new ResultSetColumn("account_old_url_last_used", DateTimeType.TIMESTAMP_LTZ),
+            new ResultSetColumn("organization_old_url", StringType.VARCHAR),
+            new ResultSetColumn("organization_old_url_saved_on", DateTimeType.TIMESTAMP_LTZ),
+            new ResultSetColumn("organization_old_url_last_used", DateTimeType.TIMESTAMP_LTZ),
+            new ResultSetColumn("is_events_account", StringType.VARCHAR),
+            new ResultSetColumn("is_organization_account", StringType.VARCHAR),
+            new ResultSetColumn("tenant_type", StringType.VARCHAR),
+            new ResultSetColumn("domain_names", StringType.VARCHAR)
         );
-        // Return a single simulated account row matching the current engine instance
-        String orgName = "SIMORG";
-        String accountName = "SIMACCOUNT";
-        Row row = new Row(Arrays.asList(
-            orgName, accountName, "AWS_US_EAST_1", "ENTERPRISE",
-            "https://simaccount.snowflakecomputing.com", "2020-01-01 00:00:00.000",
-            null, "SIMACCT", "https://simacct.snowflakecomputing.com",
-            0L, orgName, null, null, null, "true"
+    }
+
+    /**
+     * The one account this engine is, spelled from {@link AccountIdentity} rather than hardcoded — the
+     * organization, name, locator and region all come from configuration and agree with what
+     * CURRENT_ORGANIZATION_NAME / CURRENT_ACCOUNT_NAME / CURRENT_ACCOUNT / CURRENT_REGION answer.
+     *
+     * <p>An account with no old URL reports the EMPTY STRING for {@code old_account_url} and NULL for
+     * the four old-URL timestamps beside it — measured, and the same "absent text is empty, absent
+     * moment is null" split the rest of the SHOW family uses.
+     */
+    private Row accountRow() {
+        return new Row(Arrays.asList(
+            identity.getOrganization(),
+            identity.getAccountName(),
+            identity.getRegion(),
+            "ENTERPRISE",
+            identity.getAccountUrl(),
+            ACCOUNT_CREATED_ON,
+            ShowResultHelpers.text(null),
+            identity.getAccountLocator(),
+            identity.getAccountLocatorUrl(),
+            0L,
+            identity.getOrganization() + "_DefaultBE",
+            null, null,
+            ShowResultHelpers.text(null),
+            "true",
+            null, null,
+            ShowResultHelpers.text(null),
+            null, null,
+            "false",
+            "false",
+            "INTERNAL",
+            null
         ));
-        return new ResultSet(columns, List.of(row));
+    }
+
+    public ResultSet showOrganizationAccounts() {
+        return new ResultSet(accountColumns(), List.of(accountRow()));
     }
 
     public ResultSet showAccounts() {
-        // SHOW ACCOUNTS — account-manager-level view; columns match Snowflake docs
-        List<ResultSetColumn> columns = Arrays.asList(
-            new ResultSetColumn("organization_name", StringType.VARCHAR),
-            new ResultSetColumn("account_name", StringType.VARCHAR),
-            new ResultSetColumn("region_group", StringType.VARCHAR),
-            new ResultSetColumn("snowflake_region", StringType.VARCHAR),
-            new ResultSetColumn("edition", StringType.VARCHAR),
-            new ResultSetColumn("account_url", StringType.VARCHAR),
-            new ResultSetColumn("created_on", StringType.VARCHAR),
-            new ResultSetColumn("comment", StringType.VARCHAR),
-            new ResultSetColumn("account_locator", StringType.VARCHAR),
-            new ResultSetColumn("account_locator_url", StringType.VARCHAR),
-            new ResultSetColumn("account_oldurl_saved_on", StringType.VARCHAR),
-            new ResultSetColumn("old_account_url", StringType.VARCHAR),
-            new ResultSetColumn("is_org_admin", StringType.VARCHAR),
-            new ResultSetColumn("account_old_url_last_used", StringType.VARCHAR),
-            new ResultSetColumn("org_default_region", StringType.VARCHAR),
-            new ResultSetColumn("is_events_account", StringType.VARCHAR)
-        );
-        Row row = new Row(Arrays.asList(
-            "SIMORG", "SIMACCOUNT", "PUBLIC", "AWS_US_EAST_1", "ENTERPRISE",
-            "https://simaccount.snowflakecomputing.com", "2020-01-01 00:00:00.000",
-            null, "SIMACCT", "https://simacct.snowflakecomputing.com",
-            null, null, "true", null, "AWS_US_EAST_1", "false"
-        ));
-        return new ResultSet(columns, List.of(row));
+        return new ResultSet(accountColumns(), List.of(accountRow()));
     }
 
     public ResultSet showLocks() {
         List<ResultSetColumn> columns = Arrays.asList(
             new ResultSetColumn("transaction", NumericType.BIGINT),
-            new ResultSetColumn("created_on", StringType.VARCHAR),
+            new ResultSetColumn("created_on", DateTimeType.TIMESTAMP_LTZ),
             new ResultSetColumn("resource", StringType.VARCHAR),
             new ResultSetColumn("type", StringType.VARCHAR),
             new ResultSetColumn("status", StringType.VARCHAR)
@@ -234,7 +343,7 @@ final class ShowSessionExecutor {
             new ResultSetColumn("user_name", StringType.VARCHAR),
             new ResultSetColumn("session_id", NumericType.BIGINT),
             new ResultSetColumn("status", StringType.VARCHAR),
-            new ResultSetColumn("started_on", StringType.VARCHAR),
+            new ResultSetColumn("started_on", DateTimeType.TIMESTAMP_LTZ),
             new ResultSetColumn("statement_count", NumericType.INTEGER)
         );
         List<Row> rows = new ArrayList<>();
@@ -346,7 +455,7 @@ final class ShowSessionExecutor {
      */
     public ResultSet showKeysScoped(final boolean primary, final String scopeKind, final String scopeName) {
         final List<ResultSetColumn> cols = Arrays.asList(
-            new ResultSetColumn("created_on", StringType.VARCHAR),
+            new ResultSetColumn("created_on", DateTimeType.TIMESTAMP_LTZ),
             new ResultSetColumn("database_name", StringType.VARCHAR),
             new ResultSetColumn("schema_name", StringType.VARCHAR),
             new ResultSetColumn("table_name", StringType.VARCHAR),
@@ -403,12 +512,27 @@ final class ShowSessionExecutor {
         return rely != null && rely ? "true" : "false";
     }
 
-    /** SHOW IMPORTED KEYS: one row per foreign-key column of every table in the scope (see showKeysScoped). */
+    /**
+     * SHOW IMPORTED KEYS: one row per foreign-key column of every table in the scope (see
+     * showKeysScoped).
+     *
+     * <p>Seventeen columns, live-verified — the shape its PRIMARY/UNIQUE sibling has, widened at both
+     * ends: each side of the reference names its own DATABASE as well as its schema and table, and the
+     * row carries {@code deferrability}, {@code rely} and {@code comment} after the two constraint
+     * names. The database columns are what let a JDBC {@code getImportedKeys} answer PKTABLE_CAT and
+     * FKTABLE_CAT at all.
+     *
+     * <p>{@code deferrability} is the constant "NOT DEFERRABLE": Snowflake has no deferred constraint
+     * checking to report anything else for.
+     */
     public ResultSet showImportedKeys(final String scopeKind, final String scopeName) {
         final List<ResultSetColumn> cols = Arrays.asList(
+            new ResultSetColumn("created_on", DateTimeType.TIMESTAMP_LTZ),
+            new ResultSetColumn("pk_database_name", StringType.VARCHAR),
             new ResultSetColumn("pk_schema_name", StringType.VARCHAR),
             new ResultSetColumn("pk_table_name", StringType.VARCHAR),
             new ResultSetColumn("pk_column_name", StringType.VARCHAR),
+            new ResultSetColumn("fk_database_name", StringType.VARCHAR),
             new ResultSetColumn("fk_schema_name", StringType.VARCHAR),
             new ResultSetColumn("fk_table_name", StringType.VARCHAR),
             new ResultSetColumn("fk_column_name", StringType.VARCHAR),
@@ -416,7 +540,10 @@ final class ShowSessionExecutor {
             new ResultSetColumn("update_rule", StringType.VARCHAR),
             new ResultSetColumn("delete_rule", StringType.VARCHAR),
             new ResultSetColumn("fk_name", StringType.VARCHAR),
-            new ResultSetColumn("pk_name", StringType.VARCHAR));
+            new ResultSetColumn("pk_name", StringType.VARCHAR),
+            new ResultSetColumn("deferrability", StringType.VARCHAR),
+            new ResultSetColumn("rely", StringType.VARCHAR),
+            new ResultSetColumn("comment", StringType.VARCHAR));
         final List<Row> rows = new ArrayList<>();
         for (final Schema schema : schemasInScope(scopeKind, scopeName)) {
             for (final Table table : tablesInScope(schema, scopeKind, scopeName)) {
@@ -424,10 +551,14 @@ final class ShowSessionExecutor {
                     final List<String> fkColumns = fk.getColumnNames();
                     final List<String> pkColumns = fk.getReferencedColumns();
                     for (int i = 0; i < fkColumns.size(); i++) {
+                        final String databaseName = databaseNameOf(schema);
                         rows.add(new Row(Arrays.asList(
+                            ShowResultHelpers.createdOn(table.getCreatedTime()),
+                            databaseName,
                             schema.getName(),
                             fk.getReferencedTable(),
                             i < pkColumns.size() ? pkColumns.get(i) : null,
+                            databaseName,
                             schema.getName(),
                             table.getName(),
                             fkColumns.get(i),
@@ -435,7 +566,10 @@ final class ShowSessionExecutor {
                             fk.getOnUpdate() != null ? fk.getOnUpdate() : "NO ACTION",
                             fk.getOnDelete() != null ? fk.getOnDelete() : "NO ACTION",
                             fk.getConstraintName(),
-                            referencedPrimaryKeyName(schema, fk.getReferencedTable()))));
+                            referencedPrimaryKeyName(schema, fk.getReferencedTable()),
+                            "NOT DEFERRABLE",
+                            relyText(fk.getRely()),
+                            null)));
                     }
                 }
             }

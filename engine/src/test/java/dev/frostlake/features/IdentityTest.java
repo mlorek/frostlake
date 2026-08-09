@@ -65,7 +65,7 @@ public class IdentityTest {
         logger.info("Testing simple IDENTITY");
         engine.execute("CREATE TABLE test_identity (id INTEGER IDENTITY, name VARCHAR)");
 
-        Table table = engine.getCatalog().resolveTable("test_identity");
+        Table table = engine.getCatalog().resolveTable("TEST_IDENTITY");
         assertNotNull(table);
 
         TableColumn idCol = table.getColumn("id");
@@ -80,7 +80,7 @@ public class IdentityTest {
         logger.info("Testing IDENTITY with custom start and increment");
         engine.execute("CREATE TABLE test_identity_custom (id INTEGER IDENTITY(100, 5), name VARCHAR)");
 
-        Table table = engine.getCatalog().resolveTable("test_identity_custom");
+        Table table = engine.getCatalog().resolveTable("TEST_IDENTITY_CUSTOM");
         assertNotNull(table);
 
         TableColumn idCol = table.getColumn("id");

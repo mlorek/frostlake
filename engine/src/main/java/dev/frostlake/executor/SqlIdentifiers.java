@@ -70,4 +70,49 @@ public final class SqlIdentifiers {
         }
         return ctx.getText().toUpperCase();
     }
+
+    /**
+     * Canonicalise an object name that arrived as a runtime STRING rather than as parse-tree text —
+     * {@code IDENTIFIER('t')}, {@code GET_DDL('TABLE','t')}, {@code SYSTEM$GET_TAG(...)} and the other
+     * places a name is a value the statement computed.
+     *
+     * <p>Such a string is an identifier reference and resolves like one: each dotted part folds to upper
+     * case unless it is double-quoted, in which case the quotes come off and the case stays. This is not
+     * re-deriving syntax from text — the string IS the identifier, not a statement to be re-parsed — but
+     * it is the only place a name may be canonicalised outside the parse tree.
+     *
+     * <p>Only for names that have NOT been through {@link #canonical}: that one already stripped the
+     * quotes, so folding its output again would upper-case a name that was written quoted.
+     */
+    public static String canonicalText(final String text) {
+        if (text == null || text.isEmpty()) {
+            return text;
+        }
+        final StringBuilder out = new StringBuilder(text.length());
+        final StringBuilder part = new StringBuilder();
+        boolean quoted = false;
+        boolean wasQuoted = false;
+        for (int i = 0; i < text.length(); i++) {
+            final char ch = text.charAt(i);
+            if (ch == '"') {
+                if (quoted && i + 1 < text.length() && text.charAt(i + 1) == '"') {
+                    part.append('"');
+                    i++;
+                    continue;
+                }
+                quoted = !quoted;
+                wasQuoted = true;
+                continue;
+            }
+            if (ch == '.' && !quoted) {
+                out.append(wasQuoted ? part.toString() : part.toString().toUpperCase()).append('.');
+                part.setLength(0);
+                wasQuoted = false;
+                continue;
+            }
+            part.append(ch);
+        }
+        out.append(wasQuoted ? part.toString() : part.toString().toUpperCase());
+        return out.toString();
+    }
 }

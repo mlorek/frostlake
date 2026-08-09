@@ -21,6 +21,7 @@ import dev.frostlake.storage.ResultSet;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -60,9 +61,10 @@ public class InformationSchemaExtTest {
 
     @Test
     public void testSchemataHasNewColumns() {
-        ResultSet rs = q("SELECT SCHEMA_NAME, IS_TRANSIENT, IS_MANAGED_ACCESS, RETENTION_TIME_DAYS FROM INFORMATION_SCHEMA.SCHEMATA");
+        // RETENTION_TIME, not RETENTION_TIME_DAYS: a real account has no such column.
+        ResultSet rs = q("SELECT SCHEMA_NAME, IS_TRANSIENT, IS_MANAGED_ACCESS, RETENTION_TIME, OWNER_ROLE_TYPE FROM INFORMATION_SCHEMA.SCHEMATA");
         assertTrue(rs.getRowCount() > 0);
-        assertNotNull(rs.getColumnIndex("RETENTION_TIME_DAYS"));
+        assertNotNull(rs.getColumnIndex("RETENTION_TIME"));
     }
 
     // ── TABLES ────────────────────────────────────────────────────────────────
@@ -83,7 +85,8 @@ public class InformationSchemaExtTest {
         boolean found = false;
         for (int i = 0; i < rs.getRowCount(); i++) {
             if ("TRANS_T".equalsIgnoreCase(rs.getRows().get(i).getValue(0).toString())) {
-                assertEquals("Y", rs.getRows().get(i).getValue(1).toString());
+                // INFORMATION_SCHEMA spells booleans YES / NO (SHOW output uses Y / N).
+                assertEquals("YES", rs.getRows().get(i).getValue(1).toString());
                 found = true;
             }
         }
@@ -143,18 +146,21 @@ public class InformationSchemaExtTest {
     @Test
     public void testFunctionsView() {
         engine.execute("CREATE FUNCTION add_one(n INTEGER) RETURNS INTEGER AS $$ SELECT 1 $$");
-        ResultSet rs = q("SELECT FUNCTION_NAME, FUNCTION_LANGUAGE, IS_TABLE_FUNCTION, ARGUMENT_SIGNATURE FROM INFORMATION_SCHEMA.FUNCTIONS");
+        // A real account has no IS_TABLE_FUNCTION column: a scalar function simply reports its
+        // own return type in DATA_TYPE.
+        ResultSet rs = q("SELECT FUNCTION_NAME, FUNCTION_LANGUAGE, DATA_TYPE, ARGUMENT_SIGNATURE FROM INFORMATION_SCHEMA.FUNCTIONS");
         assertEquals(1, rs.getRowCount());
         assertEquals("ADD_ONE", rs.getRows().get(0).getValue(0).toString());
-        assertEquals("N", rs.getRows().get(0).getValue(2).toString());
+        assertFalse(rs.getRows().get(0).getValue(2).toString().startsWith("TABLE"));
     }
 
     @Test
     public void testFunctionsViewTableFunction() {
         engine.execute("CREATE FUNCTION rows_fn() RETURNS TABLE(v VARCHAR) AS $$ SELECT 'a' $$");
-        ResultSet rs = q("SELECT FUNCTION_NAME, IS_TABLE_FUNCTION FROM INFORMATION_SCHEMA.FUNCTIONS");
+        // Table-ness is carried by DATA_TYPE — "TABLE (V VARCHAR)" — as on a real account.
+        ResultSet rs = q("SELECT FUNCTION_NAME, DATA_TYPE FROM INFORMATION_SCHEMA.FUNCTIONS");
         assertEquals(1, rs.getRowCount());
-        assertEquals("Y", rs.getRows().get(0).getValue(1).toString());
+        assertTrue(rs.getRows().get(0).getValue(1).toString().startsWith("TABLE ("));
     }
 
     // ── SEQUENCES ─────────────────────────────────────────────────────────────
@@ -228,28 +234,31 @@ public class InformationSchemaExtTest {
         assertNotNull(rs.getColumnIndex("PRIVILEGE_TYPE"));
     }
 
-    // ── STREAMS ───────────────────────────────────────────────────────────────
+    // ── STREAMS / TASKS / TAGS are NOT views ──────────────────────────────────
 
+    /**
+     * A real account has no INFORMATION_SCHEMA.STREAMS, TASKS or TAGS view — those catalogs live
+     * only under ACCOUNT_USAGE, and querying them is "Object … does not exist or not authorized"
+     * (measured). Answering them would accept a query Snowflake refuses, so the objects
+     * themselves are listed through SHOW STREAMS / SHOW TASKS / SHOW TAGS instead.
+     */
     @Test
-    public void testStreamsView() {
+    public void streamsTasksAndTagsAreNotInformationSchemaViews() {
         engine.execute("CREATE TABLE src (id INTEGER)");
         engine.execute("CREATE STREAM s1 ON TABLE src");
-        ResultSet rs = q("SELECT STREAM_NAME, TABLE_NAME, SOURCE_TYPE, MODE FROM INFORMATION_SCHEMA.STREAMS");
-        assertEquals(1, rs.getRowCount());
-        assertEquals("S1", rs.getRows().get(0).getValue(0).toString());
-        assertNotNull(rs.getColumnIndex("MODE"));
-    }
-
-    // ── TASKS ─────────────────────────────────────────────────────────────────
-
-    @Test
-    public void testTasksView() {
-        engine.execute("CREATE WAREHOUSE w1");
-        engine.execute("USE WAREHOUSE w1");
-        engine.execute("CREATE TASK t1 WAREHOUSE = 'w1' SCHEDULE = '1 MINUTE' AS SELECT 1 FROM (SELECT 1) t");
-        ResultSet rs = q("SELECT TASK_NAME, STATE FROM INFORMATION_SCHEMA.TASKS");
-        assertEquals(1, rs.getRowCount());
-        assertEquals("T1", rs.getRows().get(0).getValue(0).toString());
+        engine.execute("CREATE TAG env ALLOWED_VALUES 'prod', 'dev'");
+        for (final String view : new String[] {"STREAMS", "TASKS", "TAGS", "TAG_REFERENCES"}) {
+            final RuntimeException error = assertThrows(RuntimeException.class, new Executable() {
+                @Override
+                public void execute() {
+                    engine.executeQuery("SELECT * FROM INFORMATION_SCHEMA." + view);
+                }
+            });
+            assertTrue(String.valueOf(error.getMessage()).contains("does not exist"),
+                "expected a does-not-exist rejection for " + view + ", got: " + error.getMessage());
+        }
+        // The streams themselves remain listable the way a real account lists them.
+        assertEquals(1, q("SHOW STREAMS").getRowCount());
     }
 
     // ── PIPES ─────────────────────────────────────────────────────────────────
@@ -262,16 +271,6 @@ public class InformationSchemaExtTest {
         ResultSet rs = q("SELECT PIPE_NAME, IS_AUTOINGEST_ENABLED FROM INFORMATION_SCHEMA.PIPES");
         assertEquals(1, rs.getRowCount());
         assertEquals("P1", rs.getRows().get(0).getValue(0).toString());
-    }
-
-    // ── TAGS ──────────────────────────────────────────────────────────────────
-
-    @Test
-    public void testTagsView() {
-        engine.execute("CREATE TAG env ALLOWED_VALUES 'prod', 'dev'");
-        ResultSet rs = q("SELECT TAG_NAME, DATA_TYPE FROM INFORMATION_SCHEMA.TAGS");
-        assertEquals(1, rs.getRowCount());
-        assertEquals("ENV", rs.getRows().get(0).getValue(0).toString());
     }
 
     // ── Scoped to current database ────────────────────────────────────────────

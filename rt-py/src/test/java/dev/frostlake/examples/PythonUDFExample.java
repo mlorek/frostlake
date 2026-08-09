@@ -53,6 +53,7 @@ public class PythonUDFExample {
                 CREATE FUNCTION py_square(x INTEGER)
                 RETURNS INTEGER
                 LANGUAGE PYTHON
+                RUNTIME_VERSION = '3.11'
                 AS $$
                     return x * x
                 $$
@@ -70,6 +71,7 @@ public class PythonUDFExample {
                 CREATE FUNCTION py_title_case(text VARCHAR)
                 RETURNS VARCHAR
                 LANGUAGE PYTHON
+                RUNTIME_VERSION = '3.11'
                 AS $$
                     return text.title()
                 $$
@@ -86,6 +88,7 @@ public class PythonUDFExample {
                 CREATE FUNCTION py_grade(score INTEGER)
                 RETURNS VARCHAR
                 LANGUAGE PYTHON
+                RUNTIME_VERSION = '3.11'
                 AS $$
                     if score >= 90:
                         return 'A'
@@ -112,6 +115,7 @@ public class PythonUDFExample {
                 CREATE FUNCTION py_factorial(n INTEGER)
                 RETURNS INTEGER
                 LANGUAGE PYTHON
+                RUNTIME_VERSION = '3.11'
                 AS $$
                     result = 1
                     for i in range(1, n + 1):
@@ -134,6 +138,7 @@ public class PythonUDFExample {
                 CREATE FUNCTION py_sum_squares(n INTEGER)
                 RETURNS INTEGER
                 LANGUAGE PYTHON
+                RUNTIME_VERSION = '3.11'
                 AS $$
                     squares = [i * i for i in range(1, n + 1)]
                     return sum(squares)
@@ -152,6 +157,7 @@ public class PythonUDFExample {
                 CREATE FUNCTION py_reverse_words(text VARCHAR)
                 RETURNS VARCHAR
                 LANGUAGE PYTHON
+                RUNTIME_VERSION = '3.11'
                 AS $$
                     words = text.split()
                     return ' '.join(reversed(words))
@@ -210,6 +216,7 @@ public class PythonUDFExample {
                 CREATE FUNCTION py_double(x INTEGER)
                 RETURNS INTEGER
                 LANGUAGE PYTHON
+                RUNTIME_VERSION = '3.11'
                 AS 'return x * 2'
                 """);
 

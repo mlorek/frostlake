@@ -50,11 +50,11 @@ undropStatement
 
 createStatement
     : CREATE or_replace? DATABASE if_not_exists? identifier (CLONE identifier timeTravelClause?)? (DATA_RETENTION_TIME_IN_DAYS EQ INTEGER_LITERAL)? commentClause? SEMI?
-    | CREATE or_replace? SCHEMA if_not_exists? qualifiedName (CLONE qualifiedName timeTravelClause?)? commentClause? SEMI?
+    | CREATE or_replace? SCHEMA if_not_exists? qualifiedName (CLONE qualifiedName timeTravelClause?)? commentClause? tagList? SEMI?
     // A table must say what its columns ARE: an explicit column list, CLONE, LIKE, or CTAS. A body-less
     // `CREATE TABLE t`, `CREATE TABLE t TAG (…)` or `CREATE TABLE t CLUSTER BY (…)` is a syntax error in
     // Snowflake (live-verified), so the shape group below is NOT optional.
-    | CREATE or_replace? (TRANSIENT | TEMPORARY | TEMP | HYBRID)? TABLE if_not_exists? objectName tableTailOption* (LPAREN columnList RPAREN tableTailOption* (AS selectStatement)? | CLONE qualifiedName timeTravelClause? | LIKE qualifiedName | columnListOptional? AS selectStatement) tableTailOption* SEMI?
+    | CREATE or_replace? (TRANSIENT | (LOCAL | GLOBAL)? (TEMPORARY | TEMP) | VOLATILE | HYBRID)? TABLE if_not_exists? objectName tableTailOption* (LPAREN columnList RPAREN tableTailOption* (AS selectStatement)? | CLONE qualifiedName timeTravelClause? | LIKE qualifiedName | columnListOptional? AS selectStatement) tableTailOption* SEMI?
     | CREATE or_replace? SECURE? VIEW if_not_exists? qualifiedName copyGrants? viewProperty* (LPAREN viewColumnList RPAREN)? copyGrants? viewProperty* rowAccessPolicyClause? commentClause? tagList? AS selectStatement SEMI?
     | CREATE or_replace? SECURE? MATERIALIZED VIEW if_not_exists? qualifiedName copyGrants? (LPAREN viewColumnList RPAREN)? copyGrants? commentClause? tagList? AS selectStatement SEMI?
     | CREATE or_replace? DYNAMIC TABLE if_not_exists? qualifiedName (LPAREN identifierList RPAREN)? dynamicTableOptions (LPAREN identifierList RPAREN)? AS selectStatement commentClause? SEMI?
@@ -63,12 +63,21 @@ createStatement
     | CREATE or_replace? PIPE if_not_exists? qualifiedName pipeOptions? AS copyStatement commentClause? SEMI?
     | CREATE or_replace? SEQUENCE if_not_exists? qualifiedName WITH? sequenceOptions? commentClause? SEMI?
     | CREATE or_replace? WAREHOUSE if_not_exists? identifier warehouseProperties? commentClause? SEMI?
+    // CREATE COMPUTE POOL: MIN_NODES, MAX_NODES and INSTANCE_FAMILY are required, checked by the
+    // handler so the missing-option report matches a real account's.
+    | CREATE COMPUTE POOL if_not_exists? identifier (FOR APPLICATION identifier)? computePoolOption* tagList? SEMI?
+    // CREATE CORTEX SEARCH SERVICE: WAREHOUSE and TARGET_LAG are required and ON must follow the name
+    // (live-verified: `CREATE CORTEX SEARCH SERVICE ON body s` is a syntax error, while a missing
+    // WAREHOUSE or TARGET_LAG is a compilation error the handler reports). The options are order-free,
+    // and the parentheses around the defining query are optional.
+    | CREATE or_replace? CORTEX SEARCH SERVICE if_not_exists? qualifiedName ON identifier
+      (ATTRIBUTES identifierList)? cortexSearchOption* AS (LPAREN selectStatement RPAREN | selectStatement) SEMI?
     | CREATE or_replace? (TEMPORARY | TEMP)? STAGE if_not_exists? qualifiedName stageProperties? commentClause? SEMI?
     | CREATE or_replace? (TEMPORARY | TEMP)? FILE FORMAT if_not_exists? qualifiedName copyFormatOption* commentClause? SEMI?
     | CREATE or_replace? TAG if_not_exists? qualifiedName tagProperties? commentClause? SEMI?
     | CREATE or_replace? SECURE? FUNCTION if_not_exists? qualifiedName LPAREN parameterList? RPAREN RETURNS returnType functionOption* (AS bodyDefinition)? SEMI?
     | CREATE or_replace? PROCEDURE if_not_exists? qualifiedName LPAREN parameterList? RPAREN RETURNS returnType languageClause? runtimeVersionClause? packagesClause? importsClause? handlerClause? commentClause? executeAsClause? (AS bodyDefinition)?  SEMI?
-    | CREATE or_replace? USER if_not_exists? identifier userProperties? commentClause? SEMI?
+    | CREATE or_replace? USER if_not_exists? identifier userProperties? SEMI?
     | CREATE or_replace? ROLE if_not_exists? identifier commentClause? SEMI?
     | CREATE or_replace? MASKING POLICY if_not_exists? qualifiedName AS LPAREN parameterList RPAREN RETURNS dataTypeName typeParameters? THIN_ARROW (bodyDefinition | booleanExpr) commentClause? SEMI?
     | CREATE or_replace? ROW ACCESS POLICY if_not_exists? qualifiedName AS LPAREN parameterList RPAREN RETURNS BOOLEAN THIN_ARROW (bodyDefinition | booleanExpr) commentClause? SEMI?
@@ -144,6 +153,8 @@ dropStatement
     | DROP PIPE if_exists? qualifiedName SEMI?
     | DROP SEQUENCE if_exists? qualifiedName SEMI?
     | DROP WAREHOUSE if_exists? identifier SEMI?
+    | DROP COMPUTE POOL if_exists? identifier SEMI?
+    | DROP CORTEX SEARCH SERVICE if_exists? qualifiedName SEMI?
     | DROP STAGE if_exists? qualifiedName SEMI?
     | DROP FILE FORMAT if_exists? qualifiedName SEMI?
     | DROP TAG if_exists? qualifiedName SEMI?
@@ -167,6 +178,8 @@ alterStatement
     | ALTER PIPE if_exists? qualifiedName pipeAction SEMI?
     | ALTER SEQUENCE if_exists? qualifiedName sequenceAction SEMI?
     | ALTER WAREHOUSE if_exists? identifier warehouseAction SEMI?
+    | ALTER COMPUTE POOL if_exists? identifier computePoolAction SEMI?
+    | ALTER CORTEX SEARCH SERVICE if_exists? qualifiedName cortexSearchAction SEMI?
     | ALTER STAGE if_exists? qualifiedName stageAction SEMI?
     | ALTER FILE FORMAT if_exists? qualifiedName fileFormatAction SEMI?
     | ALTER TAG if_exists? qualifiedName tagAction SEMI?
@@ -366,6 +379,19 @@ userProperties
 userProperty
     : PASSWORD EQ STRING_LITERAL
     | DEFAULT_ROLE EQ (identifier | STRING_LITERAL)
+    | DEFAULT_WAREHOUSE EQ (identifier | STRING_LITERAL)
+    | DEFAULT_NAMESPACE EQ (qualifiedName | STRING_LITERAL)
+    | DEFAULT_SECONDARY_ROLES EQ LPAREN stringLiteralList RPAREN
+    | LOGIN_NAME EQ (identifier | STRING_LITERAL)
+    | DISPLAY_NAME EQ (identifier | STRING_LITERAL)
+    | FIRST_NAME EQ STRING_LITERAL
+    | MIDDLE_NAME EQ STRING_LITERAL
+    | LAST_NAME EQ STRING_LITERAL
+    | EMAIL EQ STRING_LITERAL
+    | MUST_CHANGE_PASSWORD EQ booleanValue
+    | DISABLED EQ booleanValue
+    | TYPE EQ (identifier | STRING_LITERAL)
+    | COMMENT EQ STRING_LITERAL
     ;
 
 streamOptions
@@ -428,7 +454,9 @@ taskOption
     | SUSPEND_TASK_AFTER_NUM_FAILURES EQ INTEGER_LITERAL
     | TASK_AUTO_RETRY_ATTEMPTS EQ INTEGER_LITERAL
     | USER_TASK_MANAGED_INITIAL_WAREHOUSE_SIZE EQ STRING_LITERAL
-    | SERVERLESS_TASK_MAX_STATEMENT_SIZE EQ identifier
+    // A warehouse size takes either spelling here — live accepts both the quoted 'MEDIUM' and the
+    // bare MEDIUM (the sibling USER_TASK_MANAGED_INITIAL_WAREHOUSE_SIZE is quoted-only).
+    | SERVERLESS_TASK_MAX_STATEMENT_SIZE EQ (identifier | STRING_LITERAL)
     | TARGET_COMPLETION_INTERVAL EQ STRING_LITERAL
     | USER_TASK_MINIMUM_TRIGGER_INTERVAL_IN_SECONDS EQ INTEGER_LITERAL
     | ERROR_INTEGRATION EQ identifier
@@ -656,7 +684,7 @@ tagUnset
     ;
 
 columnTagAction
-    : ALTER COLUMN identifier (tagSet | tagUnset)
+    : (ALTER | MODIFY) COLUMN identifier (tagSet | tagUnset)
     ;
 
 warehouseAction
@@ -691,11 +719,10 @@ tableAction
     | ADD COLUMN? if_not_exists? columnDef (COMMA alterAddColumnItem)*
     | DROP COLUMN if_exists? identifier
     | RENAME COLUMN identifier TO identifier
-    | ALTER COLUMN identifier ((SET DATA)? TYPE)? dataTypeName typeParameters?
-    | ALTER COLUMN identifier SET NOT NULL
-    | ALTER COLUMN identifier DROP NOT NULL
-    | ALTER COLUMN identifier SET DEFAULT defaultExpression
-    | ALTER COLUMN identifier DROP DEFAULT
+    // ALTER TABLE t { ALTER | MODIFY } [(] [COLUMN] c1 action [, [COLUMN] c2 action]* [)] — the
+    // column-action list. COLUMN is optional per item, the parens are optional but balanced.
+    | (ALTER | MODIFY) LPAREN alterColumnItem (COMMA alterColumnItem)* RPAREN
+    | (ALTER | MODIFY) alterColumnItem (COMMA alterColumnItem)*
     | SET COMMENT EQ STRING_LITERAL
     | SET optionKey EQ (parenOptionList | copyOptionValue)
     | CLUSTER BY LPAREN expressionList RPAREN
@@ -718,6 +745,77 @@ tableAction
 // keeps a single-token accessor in tableAction.
 tableUnsetProperties
     : UNSET optionKey (COMMA optionKey)*
+    ;
+
+cortexSearchOption
+    : WAREHOUSE EQ identifier
+    | TARGET_LAG EQ STRING_LITERAL
+    | EMBEDDING_MODEL EQ STRING_LITERAL
+    | COMMENT EQ STRING_LITERAL
+    ;
+
+cortexSearchAction
+    : SET cortexSearchOption+
+    | UNSET COMMENT
+    ;
+
+computePoolOption
+    : MIN_NODES EQ INTEGER_LITERAL
+    | MAX_NODES EQ INTEGER_LITERAL
+    | INSTANCE_FAMILY EQ identifier
+    | AUTO_RESUME EQ booleanValue
+    | INITIALLY_SUSPENDED EQ booleanValue
+    | AUTO_SUSPEND_SECS EQ INTEGER_LITERAL
+    | COMMENT EQ STRING_LITERAL
+    | PLACEMENT_GROUP EQ STRING_LITERAL
+    | BACKUP_INSTANCE_FAMILIES EQ LPAREN stringLiteralList RPAREN
+    ;
+
+computePoolAction
+    : SUSPEND
+    | RESUME
+    | STOP ALL (OF TYPE computePoolWorkloadType (COMMA computePoolWorkloadType)*)?
+    | tagSet
+    | tagUnset
+    | SET computePoolSetOption+
+    | UNSET computePoolUnsetKey (COMMA computePoolUnsetKey)*
+    ;
+
+computePoolWorkloadType
+    : identifier
+    | ALL
+    | USER
+    ;
+
+computePoolSetOption
+    : MIN_NODES EQ INTEGER_LITERAL
+    | MAX_NODES EQ INTEGER_LITERAL
+    | AUTO_RESUME EQ booleanValue
+    | AUTO_SUSPEND_SECS EQ INTEGER_LITERAL
+    | INSTANCE_FAMILY EQ identifier
+    | PLACEMENT_GROUP EQ STRING_LITERAL
+    | BACKUP_INSTANCE_FAMILIES EQ LPAREN stringLiteralList RPAREN
+    | COMMENT EQ STRING_LITERAL
+    ;
+
+computePoolUnsetKey
+    : AUTO_RESUME
+    | AUTO_SUSPEND_SECS
+    | PLACEMENT_GROUP
+    | BACKUP_INSTANCE_FAMILIES
+    | COMMENT
+    ;
+
+alterColumnItem
+    : COLUMN? identifier alterColumnItemAction
+    ;
+
+alterColumnItemAction
+    : ((SET DATA)? TYPE)? dataTypeName typeParameters?
+    | SET NOT NULL
+    | DROP NOT NULL
+    | SET DEFAULT defaultExpression
+    | DROP DEFAULT
     ;
 
 viewAction
@@ -808,9 +906,31 @@ routineAlterAction
 
 userAction
     : RENAME TO identifier
-    | SET PASSWORD EQ STRING_LITERAL
-    | SET DEFAULT_ROLE EQ identifier
+    | SET userProperty+
     | SET COMMENT EQ STRING_LITERAL
+    | UNSET userUnsetProperty (COMMA userUnsetProperty)*
+    ;
+
+// The property names UNSET takes. `identifier` is a catch-all so an unknown name PARSES and the
+// handler can report it the way a real account does — `invalid property 'X' for 'USER'` is a
+// compilation error there, not a syntax error.
+userUnsetProperty
+    : PASSWORD
+    | LOGIN_NAME
+    | DISPLAY_NAME
+    | FIRST_NAME
+    | MIDDLE_NAME
+    | LAST_NAME
+    | EMAIL
+    | DEFAULT_ROLE
+    | DEFAULT_WAREHOUSE
+    | DEFAULT_NAMESPACE
+    | DEFAULT_SECONDARY_ROLES
+    | MUST_CHANGE_PASSWORD
+    | DISABLED
+    | COMMENT
+    | TYPE
+    | identifier
     ;
 
 roleAction
@@ -1002,10 +1122,10 @@ copyGrants
     : COPY GRANTS
     ;
 
-// TAG (k1='v1', k2='v2') on tables, columns and views — accepted and ignored (tags do not change
-// query results; only tag-metadata introspection would observe them).
+// [WITH] TAG (k1='v1', k2='v2') at creation time, on tables, schemas and views. The tags are
+// recorded so that TAG_REFERENCES can report them; they do not affect query results.
 tagList
-    : TAG LPAREN tagAssignment (COMMA tagAssignment)* RPAREN
+    : WITH? TAG LPAREN tagAssignment (COMMA tagAssignment)* RPAREN
     ;
 
 tagAssignment
@@ -1299,7 +1419,7 @@ timeTravelPoint
     ;
 
 changesClause
-    : CHANGES LPAREN INFORMATION ARROW identifier RPAREN
+    : CHANGES LPAREN INFORMATION ARROW (DEFAULT | identifier) RPAREN
       (AT_KEYWORD LPAREN timeTravelPoint RPAREN | BEFORE LPAREN timeTravelPoint RPAREN)?
       (END LPAREN timeTravelPoint RPAREN)?
     ;
@@ -1524,17 +1644,21 @@ showStatement
     | SHOW TERSE? ICEBERG TABLES (LIKE STRING_LITERAL)? (IN (DATABASE | SCHEMA)? qualifiedName)? showTail SEMI?
     | SHOW TERSE? VIEWS (LIKE STRING_LITERAL)? (IN (DATABASE | SCHEMA | ACCOUNT)? qualifiedName?)? showTail SEMI?
     | SHOW TERSE? MATERIALIZED VIEWS (LIKE STRING_LITERAL)? (IN (DATABASE | SCHEMA)? qualifiedName)? showTail SEMI?
-    | SHOW TERSE? DYNAMIC TABLES (LIKE STRING_LITERAL)? (IN (DATABASE | SCHEMA)? qualifiedName)? showTail SEMI?
+    | SHOW TERSE? DYNAMIC TABLES (LIKE STRING_LITERAL)? (IN (ACCOUNT | (DATABASE | SCHEMA)? qualifiedName))? showTail SEMI?
     | SHOW HYBRID TABLES (LIKE STRING_LITERAL)? (IN (DATABASE | SCHEMA)? qualifiedName)? SEMI?
     | SHOW TERSE? COLUMNS (LIKE STRING_LITERAL)? (IN (TABLE | VIEW)? qualifiedName?)? showTail SEMI?   // FROM is not Snowflake syntax (live-verified)
-    | SHOW TERSE? STREAMS (LIKE STRING_LITERAL)? (IN (DATABASE | SCHEMA | ACCOUNT)? qualifiedName)? showTail SEMI?
-    | SHOW TERSE? TASKS (LIKE STRING_LITERAL)? (IN (DATABASE | SCHEMA | ACCOUNT)? qualifiedName)? showTail SEMI?
-    | SHOW TERSE? PIPES (LIKE STRING_LITERAL)? (IN (DATABASE | SCHEMA | ACCOUNT)? qualifiedName)? showTail SEMI?
+    | SHOW TERSE? STREAMS (LIKE STRING_LITERAL)? (IN (ACCOUNT | (DATABASE | SCHEMA)? qualifiedName))? showTail SEMI?
+    | SHOW TERSE? TASKS (LIKE STRING_LITERAL)? (IN (ACCOUNT | (DATABASE | SCHEMA)? qualifiedName))? showTail SEMI?
+    | SHOW TERSE? PIPES (LIKE STRING_LITERAL)? (IN (ACCOUNT | (DATABASE | SCHEMA)? qualifiedName))? showTail SEMI?
     | SHOW TERSE? SEQUENCES (LIKE STRING_LITERAL)? (IN (DATABASE | SCHEMA | ACCOUNT)? qualifiedName?)? showTail SEMI?
     | SHOW TERSE? WAREHOUSES (LIKE STRING_LITERAL)? showTail SEMI?
-    | SHOW TERSE? STAGES (LIKE STRING_LITERAL)? (IN (DATABASE | SCHEMA | ACCOUNT)? qualifiedName)? showTail SEMI?
-    | SHOW TERSE? FILE FORMATS (LIKE STRING_LITERAL)? (IN (DATABASE | SCHEMA)? qualifiedName)? showTail SEMI?
-    | SHOW TERSE? TAGS (LIKE STRING_LITERAL)? (IN (DATABASE | SCHEMA | ACCOUNT)? qualifiedName)? showTail SEMI?
+    | SHOW TERSE? CORTEX SEARCH SERVICES (LIKE STRING_LITERAL)? (IN (ACCOUNT | (DATABASE | SCHEMA)? qualifiedName))? showTail SEMI?
+    | SHOW COMPUTE POOLS (LIKE STRING_LITERAL)? showTail SEMI?
+    // The instance-family catalog. Its order is the account's own, so the listing is not re-sorted.
+    | SHOW COMPUTE POOL INSTANCE FAMILIES SEMI?
+    | SHOW TERSE? STAGES (LIKE STRING_LITERAL)? (IN (ACCOUNT | (DATABASE | SCHEMA)? qualifiedName))? showTail SEMI?
+    | SHOW TERSE? FILE FORMATS (LIKE STRING_LITERAL)? (IN (ACCOUNT | (DATABASE | SCHEMA)? qualifiedName))? showTail SEMI?
+    | SHOW TERSE? TAGS (LIKE STRING_LITERAL)? (IN (ACCOUNT | (DATABASE | SCHEMA)? qualifiedName))? showTail SEMI?
     // The routine listings take the same three modifiers, and TERSE must precede USER / BUILTIN.
     // Live-verified on a real account (2026-08-03):
     //   * USER and BUILTIN are mutually exclusive for BOTH families — `SHOW BUILTIN USER FUNCTIONS`,
@@ -1551,10 +1675,11 @@ showStatement
     | SHOW TERSE? ROLES (LIKE STRING_LITERAL)? showTail SEMI?
     | SHOW GRANTS ON objectType identifier SEMI?
     | SHOW GRANTS TO (USER | ROLE) identifier SEMI?  // SHOW GRANTS TO USER/ROLE name
-    | SHOW TERSE? MASKING POLICIES (LIKE STRING_LITERAL)? (IN (DATABASE | SCHEMA)? qualifiedName)? showTail SEMI?
-    | SHOW TERSE? ROW ACCESS POLICIES (LIKE STRING_LITERAL)? (IN (DATABASE | SCHEMA)? qualifiedName)? showTail SEMI?
-    | SHOW PARAMETERS (LIKE STRING_LITERAL)? (IN (SESSION | ACCOUNT | (DATABASE | SCHEMA | TABLE | WAREHOUSE | USER | ROLE) identifier))? SEMI?
-    | SHOW SESSIONS (LIKE STRING_LITERAL)? SEMI?
+    | SHOW GRANTS OF ROLE identifier SEMI?           // who holds this role
+    | SHOW GRANTS SEMI?                              // everything granted to the current user
+    | SHOW TERSE? MASKING POLICIES (LIKE STRING_LITERAL)? (IN (ACCOUNT | (DATABASE | SCHEMA)? qualifiedName))? showTail SEMI?
+    | SHOW TERSE? ROW ACCESS POLICIES (LIKE STRING_LITERAL)? (IN (ACCOUNT | (DATABASE | SCHEMA)? qualifiedName))? showTail SEMI?
+    | SHOW PARAMETERS (LIKE STRING_LITERAL)? (IN (SESSION | ACCOUNT | (DATABASE | SCHEMA | TABLE | WAREHOUSE | USER | ROLE | TASK) identifier))? SEMI?
     | SHOW TERSE? OBJECTS (LIKE STRING_LITERAL)? (IN (DATABASE | SCHEMA)? qualifiedName)? showTail SEMI?
     | SHOW ORGANIZATION ACCOUNTS SEMI?
     | SHOW ACCOUNTS SEMI?
@@ -1608,6 +1733,8 @@ describeStatement
     | (DESCRIBE | DESC) PIPE identifier SEMI?
     | (DESCRIBE | DESC) SEQUENCE identifier SEMI?
     | (DESCRIBE | DESC) WAREHOUSE identifier SEMI?
+    | (DESCRIBE | DESC) COMPUTE POOL identifier SEMI?
+    | (DESCRIBE | DESC) CORTEX SEARCH SERVICE qualifiedName SEMI?
     | (DESCRIBE | DESC) STAGE identifier SEMI?
     | (DESCRIBE | DESC) TAG identifier SEMI?
     | (DESCRIBE | DESC) FUNCTION qualifiedName (LPAREN dataTypeList? RPAREN)? SEMI?
@@ -2141,7 +2268,30 @@ identifier
     | FLATTEN       // Allow FLATTEN as identifier (table function)
     | BUILTIN       // Allow BUILTIN as identifier (also the SHOW BUILTIN FUNCTIONS modifier)
     | FUNCTIONS     // Allow FUNCTIONS as identifier (INFORMATION_SCHEMA view)
+    | STAGES        // Allow STAGES as identifier (INFORMATION_SCHEMA view; SHOW STAGES is anchored by SHOW)
+    | PACKAGES      // Allow PACKAGES as identifier (INFORMATION_SCHEMA view; the UDF PACKAGES = (...)
+                    // property is anchored by the following EQ)
     | GENERATION    // Allow GENERATION as identifier (also a CREATE WAREHOUSE property)
+    | COMPUTE       // Allow COMPUTE as identifier (COMPUTE POOL statements are anchored by CREATE/ALTER/DROP/SHOW/DESCRIBE)
+    | POOL          // Allow POOL as identifier
+    | POOLS         // Allow POOLS as identifier
+    | INSTANCE      // Allow INSTANCE as identifier (SHOW COMPUTE POOL INSTANCE FAMILIES is anchored by SHOW)
+    | CORTEX        // Allow CORTEX as identifier (CORTEX SEARCH SERVICE statements are anchored by
+                    // CREATE/ALTER/DROP/SHOW/DESCRIBE; SNOWFLAKE.CORTEX.<fn>() is a dotted function name)
+    | SEARCH        // Allow SEARCH as identifier
+    | SERVICE       // Allow SERVICE as identifier
+    | SERVICES      // Allow SERVICES as identifier
+    | ATTRIBUTES    // Allow ATTRIBUTES as identifier (the CREATE CORTEX SEARCH SERVICE clause is
+                    // positionally anchored between the ON column and the options)
+    | EMBEDDING_MODEL   // Allow EMBEDDING_MODEL as identifier (property is anchored by the following EQ)
+    | FAMILIES      // Allow FAMILIES as identifier
+    | MIN_NODES     // Allow MIN_NODES as identifier (compute pool property, anchored by the following EQ)
+    | MAX_NODES     // Allow MAX_NODES as identifier (compute pool property)
+    | INSTANCE_FAMILY        // Allow INSTANCE_FAMILY as identifier (compute pool property)
+    | AUTO_SUSPEND_SECS      // Allow AUTO_SUSPEND_SECS as identifier (compute pool property)
+    | PLACEMENT_GROUP        // Allow PLACEMENT_GROUP as identifier (compute pool property)
+    | BACKUP_INSTANCE_FAMILIES  // Allow BACKUP_INSTANCE_FAMILIES as identifier (compute pool property)
+    | STOP          // Allow STOP as identifier (ALTER COMPUTE POOL ... STOP ALL is anchored by ALTER)
     | GENERATOR     // Allow GENERATOR as identifier (table function)
     | GET           // Allow GET as identifier (the GET(array/object, key) semi-structured function; the
                     // GET stage command is a separate statement, disambiguated by context)
@@ -2196,6 +2346,17 @@ identifier
     | SECURE        // Allow SECURE as identifier
     | CALLED        // Allow CALLED as identifier
     | PARAMETERS    // Allow PARAMETERS as identifier
+    | DEFAULT_WAREHOUSE
+    | DEFAULT_NAMESPACE
+    | DEFAULT_SECONDARY_ROLES
+    | LOGIN_NAME
+    | DISPLAY_NAME
+    | FIRST_NAME
+    | MIDDLE_NAME
+    | LAST_NAME
+    | MUST_CHANGE_PASSWORD
+    | EMAIL
+    | DISABLED
     | PARTITION
     | PATH          // Allow PATH as identifier (FLATTEN parameter)
     | PATTERN
@@ -2307,6 +2468,33 @@ identifier
     | UNPIVOT
     | PIVOT
     | DATABASE      // e.g. a VARIANT path key `stats:database`
+    // Names that metadata output uses as COLUMN names, and that a real account accepts
+    // unquoted in that position. INCREMENT and ROWS are deliberately absent: a real
+    // account reserves those, so INFORMATION_SCHEMA.SEQUENCES."increment" and
+    // SHOW TABLES' "rows" have to be quoted there too.
+    | ALLOWED_VALUES
+    | AUTOINCREMENT
+    | AUTO_RESUME
+    | AUTO_SUSPEND
+    | COMPRESSION
+    | DATE_FORMAT
+    | DEFAULT_ROLE
+    | ERROR_INTEGRATION
+    | ESCAPE
+    | FIELD_DELIMITER
+    | HANDLER
+    | INTEGRATION
+    | INTERVAL
+    | LANGUAGE
+    | MAX_CLUSTER_COUNT
+    | MIN_CLUSTER_COUNT
+    | RECORD_DELIMITER
+    | RELY
+    | RESOURCE_MONITOR
+    | RUNTIME_VERSION
+    | SCHEDULE
+    | SKIP_HEADER
+    | WAREHOUSE
     ;
 
 // A VARIANT path key (the field name after `:` or `.`) is just a JSON key, so — unlike a bare identifier —
@@ -2523,6 +2711,12 @@ VIEW: V I E W;
 MATERIALIZED: M A T E R I A L I Z E D;
 DYNAMIC: D Y N A M I C;
 TARGET_LAG: T A R G E T '_' L A G;
+CORTEX: C O R T E X;
+SEARCH: S E A R C H;
+SERVICE: S E R V I C E;
+SERVICES: S E R V I C E S;
+ATTRIBUTES: A T T R I B U T E S;
+EMBEDDING_MODEL: E M B E D D I N G '_' M O D E L;
 DOWNSTREAM: D O W N S T R E A M;
 INCREMENTAL: I N C R E M E N T A L;
 INITIALIZE: I N I T I A L I Z E;
@@ -2578,6 +2772,18 @@ TASKS: T A S K S;
 PIPES: P I P E S;
 SEQUENCES: S E Q U E N C E S;
 WAREHOUSES: W A R E H O U S E S;
+COMPUTE: C O M P U T E;
+POOL: P O O L;
+POOLS: P O O L S;
+INSTANCE: I N S T A N C E;
+FAMILIES: F A M I L I E S;
+MIN_NODES: M I N '_' N O D E S;
+MAX_NODES: M A X '_' N O D E S;
+INSTANCE_FAMILY: I N S T A N C E '_' F A M I L Y;
+AUTO_SUSPEND_SECS: A U T O '_' S U S P E N D '_' S E C S;
+PLACEMENT_GROUP: P L A C E M E N T '_' G R O U P;
+BACKUP_INSTANCE_FAMILIES: B A C K U P '_' I N S T A N C E '_' F A M I L I E S;
+STOP: S T O P;
 STAGES: S T A G E S;
 ROLLUP: R O L L U P;
 CUBE: C U B E;
@@ -2598,6 +2804,7 @@ STAGE: S T A G E;
 MERGE: M E R G E;
 USING: U S I N G;
 ON: O N;
+OF: O F;
 WHEN: W H E N;
 MATCHED: M A T C H E D;
 PIVOT: P I V O T;
@@ -2746,6 +2953,17 @@ USAGE: U S A G E;
 OWNERSHIP: O W N E R S H I P;
 PASSWORD: P A S S W O R D;
 DEFAULT_ROLE: D E F A U L T UNDERSCORE R O L E;
+DEFAULT_WAREHOUSE: D E F A U L T UNDERSCORE W A R E H O U S E;
+DEFAULT_NAMESPACE: D E F A U L T UNDERSCORE N A M E S P A C E;
+DEFAULT_SECONDARY_ROLES: D E F A U L T UNDERSCORE S E C O N D A R Y UNDERSCORE R O L E S;
+LOGIN_NAME: L O G I N UNDERSCORE N A M E;
+DISPLAY_NAME: D I S P L A Y UNDERSCORE N A M E;
+FIRST_NAME: F I R S T UNDERSCORE N A M E;
+MIDDLE_NAME: M I D D L E UNDERSCORE N A M E;
+LAST_NAME: L A S T UNDERSCORE N A M E;
+MUST_CHANGE_PASSWORD: M U S T UNDERSCORE C H A N G E UNDERSCORE P A S S W O R D;
+EMAIL: E M A I L;
+DISABLED: D I S A B L E D;
 TRUNCATE: T R U N C A T E;
 MODIFY: M O D I F Y;
 OPERATE: O P E R A T E;
@@ -2777,6 +2995,7 @@ CHARACTER: C H A R A C T E R;
 VARYING: V A R Y I N G;
 TIMESTAMPLTZ: T I M E S T A M P L T Z;
 TIMESTAMPTZ: T I M E S T A M P T Z;
+GLOBAL: G L O B A L;
 LOCAL: L O C A L;
 ZONE: Z O N E;
 DIRECTORY: D I R E C T O R Y;

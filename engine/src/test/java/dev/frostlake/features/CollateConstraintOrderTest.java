@@ -60,7 +60,7 @@ public class CollateConstraintOrderTest {
 
         engine.execute("CREATE TABLE test1 (id INTEGER, name VARCHAR COLLATE 'utf8' NOT NULL)");
 
-        Table table = engine.getCatalog().resolveTable("test1");
+        Table table = engine.getCatalog().resolveTable("TEST1");
         assertNotNull(table);
 
         TableColumn nameColumn = table.getColumn("name");
@@ -76,7 +76,7 @@ public class CollateConstraintOrderTest {
 
         engine.execute("CREATE TABLE test2 (id INTEGER, name VARCHAR NOT NULL COLLATE 'utf8')");
 
-        Table table = engine.getCatalog().resolveTable("test2");
+        Table table = engine.getCatalog().resolveTable("TEST2");
         assertNotNull(table);
 
         TableColumn nameColumn = table.getColumn("name");
@@ -92,7 +92,7 @@ public class CollateConstraintOrderTest {
 
         engine.execute("CREATE TABLE test3 (id INTEGER, email VARCHAR COLLATE 'utf8_bin' UNIQUE)");
 
-        Table table = engine.getCatalog().resolveTable("test3");
+        Table table = engine.getCatalog().resolveTable("TEST3");
         assertNotNull(table);
 
         TableColumn emailColumn = table.getColumn("email");
@@ -108,7 +108,7 @@ public class CollateConstraintOrderTest {
 
         engine.execute("CREATE TABLE test4 (id INTEGER, email VARCHAR UNIQUE COLLATE 'utf8_bin')");
 
-        Table table = engine.getCatalog().resolveTable("test4");
+        Table table = engine.getCatalog().resolveTable("TEST4");
         assertNotNull(table);
 
         TableColumn emailColumn = table.getColumn("email");
@@ -124,7 +124,7 @@ public class CollateConstraintOrderTest {
 
         engine.execute("CREATE TABLE test5 (id INTEGER, status VARCHAR COLLATE 'utf8' DEFAULT 'active')");
 
-        Table table = engine.getCatalog().resolveTable("test5");
+        Table table = engine.getCatalog().resolveTable("TEST5");
         assertNotNull(table);
 
         TableColumn statusColumn = table.getColumn("status");
@@ -140,7 +140,7 @@ public class CollateConstraintOrderTest {
 
         engine.execute("CREATE TABLE test6 (id INTEGER, status VARCHAR DEFAULT 'active' COLLATE 'utf8')");
 
-        Table table = engine.getCatalog().resolveTable("test6");
+        Table table = engine.getCatalog().resolveTable("TEST6");
         assertNotNull(table);
 
         TableColumn statusColumn = table.getColumn("status");
@@ -156,7 +156,7 @@ public class CollateConstraintOrderTest {
 
         engine.execute("CREATE TABLE test7 (id INTEGER, name VARCHAR NOT NULL COLLATE 'utf8' UNIQUE)");
 
-        Table table = engine.getCatalog().resolveTable("test7");
+        Table table = engine.getCatalog().resolveTable("TEST7");
         assertNotNull(table);
 
         TableColumn nameColumn = table.getColumn("name");
@@ -173,7 +173,7 @@ public class CollateConstraintOrderTest {
 
         engine.execute("CREATE TABLE test8 (id INTEGER, name VARCHAR COLLATE 'utf8' NOT NULL UNIQUE DEFAULT 'unknown')");
 
-        Table table = engine.getCatalog().resolveTable("test8");
+        Table table = engine.getCatalog().resolveTable("TEST8");
         assertNotNull(table);
 
         TableColumn nameColumn = table.getColumn("name");
@@ -191,7 +191,7 @@ public class CollateConstraintOrderTest {
 
         engine.execute("CREATE TABLE test9 (id INTEGER, name VARCHAR NOT NULL UNIQUE DEFAULT 'unknown' COLLATE 'utf8')");
 
-        Table table = engine.getCatalog().resolveTable("test9");
+        Table table = engine.getCatalog().resolveTable("TEST9");
         assertNotNull(table);
 
         TableColumn nameColumn = table.getColumn("name");
@@ -209,7 +209,7 @@ public class CollateConstraintOrderTest {
 
         engine.execute("CREATE TABLE test10 (id INTEGER, name VARCHAR NOT NULL COLLATE 'utf8' DEFAULT 'test' UNIQUE)");
 
-        Table table = engine.getCatalog().resolveTable("test10");
+        Table table = engine.getCatalog().resolveTable("TEST10");
         assertNotNull(table);
 
         TableColumn nameColumn = table.getColumn("name");
@@ -227,7 +227,7 @@ public class CollateConstraintOrderTest {
 
         engine.execute("CREATE TABLE test11 (id INTEGER, name VARCHAR PRIMARY KEY COLLATE 'utf8')");
 
-        Table table = engine.getCatalog().resolveTable("test11");
+        Table table = engine.getCatalog().resolveTable("TEST11");
         assertNotNull(table);
 
         TableColumn nameColumn = table.getColumn("name");
@@ -243,7 +243,7 @@ public class CollateConstraintOrderTest {
 
         engine.execute("CREATE TABLE test12 (id INTEGER, name VARCHAR COLLATE 'utf8' PRIMARY KEY)");
 
-        Table table = engine.getCatalog().resolveTable("test12");
+        Table table = engine.getCatalog().resolveTable("TEST12");
         assertNotNull(table);
 
         TableColumn nameColumn = table.getColumn("name");
@@ -267,7 +267,7 @@ public class CollateConstraintOrderTest {
             )
             """);
 
-        Table table = engine.getCatalog().resolveTable("test13");
+        Table table = engine.getCatalog().resolveTable("TEST13");
         assertNotNull(table);
 
         assertEquals("utf8", table.getColumn("col1").getCollation());
@@ -284,7 +284,7 @@ public class CollateConstraintOrderTest {
 
         engine.execute("CREATE TABLE test14 (id INTEGER, name VARCHAR COLLATE 'utf8' COMMENT = 'User name')");
 
-        Table table = engine.getCatalog().resolveTable("test14");
+        Table table = engine.getCatalog().resolveTable("TEST14");
         assertNotNull(table);
 
         TableColumn nameColumn = table.getColumn("name");
@@ -305,7 +305,7 @@ public class CollateConstraintOrderTest {
             )
             """);
 
-        Table table = engine.getCatalog().resolveTable("test15");
+        Table table = engine.getCatalog().resolveTable("TEST15");
         assertNotNull(table);
 
         TableColumn nameColumn = table.getColumn("name");
@@ -333,7 +333,7 @@ public class CollateConstraintOrderTest {
             )
             """);
 
-        Table table = engine.getCatalog().resolveTable("test16");
+        Table table = engine.getCatalog().resolveTable("TEST16");
         assertNotNull(table);
 
         for (int i = 1; i <= 7; i++) {

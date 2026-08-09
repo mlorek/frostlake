@@ -20,9 +20,15 @@ import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
 
 import org.junit.jupiter.api.Test;
+
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.List;
 import org.junit.jupiter.api.function.Executable;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -145,17 +151,194 @@ public class RoutineBodyCompilationTest extends BaseDatabaseTest {
         assertEquals(8, ((Number) result.getRows().get(0).getValue(0)).intValue());
     }
 
+    /**
+     * A JAVASCRIPT body is never compiled at CREATE, function or procedure — live-verified with a body
+     * that is not JavaScript at all and with one that is broken JavaScript. Both are created; only a
+     * call fails.
+     */
     @Test
-    public void nonSqlRoutineBodiesAreNotCompiled() {
-        // JavaScript / Python bodies are not SQL — their own runtimes compile them (and, with the optional
-        // module absent, only a CALL fails). CREATE must still succeed.
+    public void javaScriptBodiesAreNotCompiled() {
         engine.execute("CREATE PROCEDURE p_js() RETURNS VARCHAR LANGUAGE JAVASCRIPT AS 'not sql at all'");
-        engine.execute("CREATE FUNCTION f_py(x INTEGER) RETURNS INTEGER LANGUAGE PYTHON AS 'not sql at all'");
+        engine.execute("CREATE FUNCTION f_js(x FLOAT) RETURNS FLOAT LANGUAGE JAVASCRIPT AS '}{'");
 
-        final ResultSet procedures = engine.executeQuery("SHOW PROCEDURES");
-        assertTrue(showListsName(procedures, "P_JS"));
-        final ResultSet functions = engine.executeQuery("SHOW USER FUNCTIONS");
-        assertTrue(showListsName(functions, "F_PY"));
+        assertTrue(showListsName(engine.executeQuery("SHOW PROCEDURES"), "P_JS"));
+        assertTrue(showListsName(engine.executeQuery("SHOW USER FUNCTIONS"), "F_JS"));
+    }
+
+    /**
+     * A PYTHON PROCEDURE's body is not compiled at CREATE either — the asymmetry that makes the language
+     * table worth transcribing, since the identical body under LANGUAGE PYTHON is refused for a FUNCTION
+     * (see {@code PythonRoutineCompilationTest} in the rt-py module, which needs the runtime installed).
+     */
+    @Test
+    public void aPythonProcedureBodyIsNotCompiled() {
+        engine.execute("CREATE PROCEDURE p_py() RETURNS VARCHAR LANGUAGE PYTHON"
+            + " RUNTIME_VERSION = '3.11' PACKAGES = ('snowflake-snowpark-python') HANDLER = 'go'"
+            + " AS 'not sql at all'");
+        assertTrue(showListsName(engine.executeQuery("SHOW PROCEDURES"), "P_PY"));
+    }
+
+    /** A JAVA body IS compiled at CREATE, and the failure is the compiler's own diagnostic. */
+    @Test
+    public void aJavaFunctionBodyIsCompiledAtCreate() {
+        final RuntimeException failure = assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.execute("CREATE FUNCTION f_java(x INTEGER) RETURNS INTEGER LANGUAGE JAVA"
+                    + " RUNTIME_VERSION = '11' HANDLER = 'C.go' AS 'not java at all'");
+            }
+        });
+        // The complaint after the prefix is the HOST compiler's own wording, as it is on a real
+        // account, so only the shape both share is asserted.
+        assertTrue(failure.getMessage().startsWith("Error while compiling source: "),
+            failure.getMessage());
+        assertFalse(showListsName(engine.executeQuery("SHOW USER FUNCTIONS"), "F_JAVA"));
+    }
+
+    /** …and the HANDLER must actually be in it, with the right number of arguments. */
+    @Test
+    public void aJavaHandlerMustBeInTheBodyWithTheRightArity() {
+        assertEquals("Failed to find a public method named \"go\" with 1 arguments"
+            + " in function F_JAVA2 with handler C.go",
+            assertThrows(RuntimeException.class, new Executable() {
+                @Override
+                public void execute() {
+                    engine.execute("CREATE FUNCTION f_java2(x INTEGER) RETURNS INTEGER LANGUAGE JAVA"
+                        + " RUNTIME_VERSION = '11' HANDLER = 'C.go'"
+                        + " AS 'public class C { public static int other(int x) { return x; } }'");
+                }
+            }).getMessage());
+        // The same body with the handler present is created.
+        engine.execute("CREATE FUNCTION f_java3(x INTEGER) RETURNS INTEGER LANGUAGE JAVA"
+            + " RUNTIME_VERSION = '11' HANDLER = 'C.go'"
+            + " AS 'public class C { public static int go(int x) { return x; } }'");
+        assertTrue(showListsName(engine.executeQuery("SHOW USER FUNCTIONS"), "F_JAVA3"));
+    }
+
+    /** A handler that lives in an IMPORTS jar is not in the body, so the body is not judged. */
+    @Test
+    public void anImportsHandlerLeavesTheBodyAlone() throws IOException {
+        // The stage and the jar have to exist: live validates BOTH at CREATE time, so a routine naming a
+        // stage that was never made is refused before it can demonstrate anything about its body.
+        final Path stageDir = Files.createTempDirectory("fl_imports_");
+        Files.writeString(stageDir.resolve("handlers.jar"), "not really a jar");
+        engine.execute("CREATE STAGE stg URL='file://" + stageDir + "'");
+
+        engine.execute("CREATE FUNCTION f_jar(x INTEGER) RETURNS INTEGER LANGUAGE JAVA"
+            + " RUNTIME_VERSION = '11' IMPORTS = ('@stg/handlers.jar') HANDLER = 'C.go'"
+            + " AS 'not java at all'");
+        assertTrue(showListsName(engine.executeQuery("SHOW USER FUNCTIONS"), "F_JAR"));
+    }
+
+    /** And the validation itself: live refuses the stage leg and the file leg, each with its own words. */
+    @Test
+    public void importsMustNameAStageAndAFileThatExist() throws IOException {
+        final RuntimeException noStage = assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.execute("CREATE FUNCTION f_nostage(x INTEGER) RETURNS INTEGER LANGUAGE JAVA"
+                    + " RUNTIME_VERSION = '11' IMPORTS = ('@nosuchstage/handlers.jar')"
+                    + " HANDLER = 'C.go' AS 'not java at all'");
+            }
+        });
+        assertTrue(String.valueOf(noStage.getMessage()).contains("NOSUCHSTAGE' does not exist or not authorized."),
+            noStage.getMessage());
+
+        final Path emptyStage = Files.createTempDirectory("fl_imports_empty_");
+        engine.execute("CREATE STAGE stg_empty URL='file://" + emptyStage + "'");
+        final RuntimeException noFile = assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.execute("CREATE FUNCTION f_nofile(x INTEGER) RETURNS INTEGER LANGUAGE JAVA"
+                    + " RUNTIME_VERSION = '11' IMPORTS = ('@stg_empty/handlers.jar')"
+                    + " HANDLER = 'C.go' AS 'not java at all'");
+            }
+        });
+        assertTrue(String.valueOf(noFile.getMessage())
+                .contains("Remote file 'handlers.jar' was not found."), noFile.getMessage());
+    }
+
+    /**
+     * PYTHON and SCALA name a versioned runtime, so RUNTIME_VERSION is required for functions and
+     * procedures alike. JAVA asks for no version, and SQL has no runtime to version.
+     */
+    @Test
+    public void versionedRuntimesRequireARuntimeVersion() {
+        for (final String sql : List.of(
+                "CREATE FUNCTION f_v(x INTEGER) RETURNS INTEGER LANGUAGE PYTHON AS 'body'",
+                "CREATE FUNCTION f_w(x INTEGER) RETURNS INTEGER LANGUAGE SCALA AS 'body'",
+                "CREATE PROCEDURE p_v() RETURNS VARCHAR LANGUAGE PYTHON AS 'body'")) {
+            final RuntimeException e = assertThrows(RuntimeException.class, new Executable() {
+                @Override
+                public void execute() {
+                    engine.execute(sql);
+                }
+            });
+            assertEquals("Property 'runtime_version' must be specified", e.getMessage(),
+                "for: " + sql);
+        }
+        // The languages that need none.
+        engine.execute("CREATE FUNCTION f_sql(x INTEGER) RETURNS INTEGER AS 'x + 1'");
+        engine.execute("CREATE PROCEDURE p_js2() RETURNS VARCHAR LANGUAGE JAVASCRIPT AS 'return 1'");
+    }
+
+    /**
+     * A body-loading language names an entry point into that body, so HANDLER is required for JAVA,
+     * SCALA and PYTHON, functions and procedures alike. RUNTIME_VERSION is checked first where both
+     * are missing.
+     */
+    @Test
+    public void bodyLoadingLanguagesRequireAHandler() {
+        for (final String sql : List.of(
+                "CREATE FUNCTION f_h(x INTEGER) RETURNS INTEGER LANGUAGE JAVA AS 'body'",
+                "CREATE FUNCTION f_i(x INTEGER) RETURNS INTEGER LANGUAGE PYTHON"
+                    + " RUNTIME_VERSION = '3.11' AS 'body'",
+                "CREATE FUNCTION f_j(x INTEGER) RETURNS INTEGER LANGUAGE SCALA"
+                    + " RUNTIME_VERSION = '2.12' AS 'body'",
+                "CREATE PROCEDURE p_h() RETURNS VARCHAR LANGUAGE PYTHON"
+                    + " RUNTIME_VERSION = '3.11' AS 'body'")) {
+            assertEquals("Property 'handler' must be specified", rejectionOf(sql), "for: " + sql);
+        }
+        // Both missing: the runtime version is the one reported.
+        assertEquals("Property 'runtime_version' must be specified",
+            rejectionOf("CREATE FUNCTION f_k(x INTEGER) RETURNS INTEGER LANGUAGE PYTHON AS 'body'"));
+    }
+
+    /**
+     * SQL and JAVASCRIPT run an inline body, so naming RUNTIME_VERSION or HANDLER for one is an
+     * invalid property. The two rejections do not share a shape: RUNTIME_VERSION is reported upper
+     * case against 'FUNCTION', handler lower case against the language's own "&lt;LANG&gt; function"
+     * — the latter even when the routine is a procedure.
+     */
+    @Test
+    public void inlineBodyLanguagesRejectRuntimeVersionAndHandler() {
+        assertEquals("SQL compilation error:\ninvalid property 'RUNTIME_VERSION' for 'FUNCTION'",
+            rejectionOf("CREATE FUNCTION f_a(x INTEGER) RETURNS INTEGER LANGUAGE SQL"
+                + " RUNTIME_VERSION = '1' AS 'x + 1'"));
+        assertEquals("SQL compilation error:\ninvalid property 'RUNTIME_VERSION' for 'FUNCTION'",
+            rejectionOf("CREATE FUNCTION f_b(x INTEGER) RETURNS INTEGER LANGUAGE JAVASCRIPT"
+                + " RUNTIME_VERSION = '1' AS 'return 1'"));
+
+        assertEquals("SQL compilation error:\ninvalid property 'handler' for 'SQL function'",
+            rejectionOf("CREATE FUNCTION f_c(x INTEGER) RETURNS INTEGER LANGUAGE SQL"
+                + " HANDLER = 'h' AS 'x + 1'"));
+        assertEquals("SQL compilation error:\ninvalid property 'handler' for 'JAVASCRIPT function'",
+            rejectionOf("CREATE FUNCTION f_d(x INTEGER) RETURNS INTEGER LANGUAGE JAVASCRIPT"
+                + " HANDLER = 'h' AS 'return 1'"));
+        // A procedure is still reported as a "function" here.
+        assertEquals("SQL compilation error:\ninvalid property 'handler' for 'JAVASCRIPT function'",
+            rejectionOf("CREATE PROCEDURE p_d() RETURNS VARCHAR LANGUAGE JAVASCRIPT"
+                + " HANDLER = 'h' AS 'return 1'"));
+    }
+
+    private String rejectionOf(final String sql) {
+        final RuntimeException e = assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.execute(sql);
+            }
+        });
+        return e.getMessage();
     }
 
     private boolean showListsName(final ResultSet result, final String expected) {

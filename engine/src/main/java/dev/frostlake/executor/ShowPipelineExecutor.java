@@ -17,6 +17,7 @@
 package dev.frostlake.executor;
 
 import dev.frostlake.metastore.Catalog;
+import dev.frostlake.metastore.model.CortexSearchService;
 import dev.frostlake.metastore.model.Database;
 import dev.frostlake.metastore.model.DynamicTable;
 import dev.frostlake.metastore.model.Pipe;
@@ -28,12 +29,16 @@ import dev.frostlake.metastore.model.Task;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
+import dev.frostlake.executor.SqlCompilationError;
+import dev.frostlake.types.ArrayType;
 import dev.frostlake.types.NumericType;
+import dev.frostlake.types.DateTimeType;
 import dev.frostlake.types.StringType;
+import dev.frostlake.values.VariantValue;
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
-import java.util.stream.Collectors;
 
 /**
  * SHOW / DESCRIBE handlers for the data-pipeline object family: streams, tasks, pipes, sequences and
@@ -41,10 +46,30 @@ import java.util.stream.Collectors;
  */
 final class ShowPipelineExecutor {
 
+    /**
+     * What live prints in a task column that does not apply to the row: the four-character text
+     * "null", not a SQL NULL (which live does use for the columns that are merely unset).
+     */
+    private static final String NOT_APPLICABLE = "null";
+
+    /** Snowflake's default MAX_DATA_EXTENSION_TIME_IN_DAYS, which bounds how long a stream stays fresh. */
+    private static final int MAX_DATA_EXTENSION_DAYS = 14;
+
     private final Catalog catalog;
 
     ShowPipelineExecutor(final Catalog catalog) {
         this.catalog = catalog;
+    }
+
+    /** SHOW STREAMS IN ACCOUNT: every database's streams, in database order. */
+    public ResultSet showStreamsInAccount() {
+        final ResultSet across = ShowResultHelpers.acrossAllDatabases(catalog, new DatabaseScopedListing() {
+            @Override
+            public ResultSet listIn(final String databaseName) {
+                return showStreamsInDatabase(databaseName);
+            }
+        });
+        return across != null ? across : showStreams(null);
     }
 
     public ResultSet showStreamsInDatabase(final String databaseName) {
@@ -75,7 +100,7 @@ final class ShowPipelineExecutor {
 
     public ResultSet showStreams(final String databaseNameOverride, final String schemaName) {
         List<ResultSetColumn> columns = Arrays.asList(
-            new ResultSetColumn("created_on", StringType.VARCHAR),
+            new ResultSetColumn("created_on", DateTimeType.TIMESTAMP_LTZ),
             new ResultSetColumn("name", StringType.VARCHAR),
             new ResultSetColumn("database_name", StringType.VARCHAR),
             new ResultSetColumn("schema_name", StringType.VARCHAR),
@@ -86,25 +111,33 @@ final class ShowPipelineExecutor {
             new ResultSetColumn("base_tables", StringType.VARCHAR),
             new ResultSetColumn("type", StringType.VARCHAR),
             new ResultSetColumn("stale", StringType.VARCHAR),
-            new ResultSetColumn("mode", StringType.VARCHAR)
+            new ResultSetColumn("mode", StringType.VARCHAR),
+            new ResultSetColumn("stale_after", StringType.VARCHAR),
+            new ResultSetColumn("invalid_reason", StringType.VARCHAR),
+            new ResultSetColumn("owner_role_type", StringType.VARCHAR)
         );
-        String dbName = databaseNameOverride != null ? databaseNameOverride : catalog.getCurrentDatabase();
-        String scName = schemaName != null ? schemaName : catalog.getCurrentSchema();
+        String dbName = databaseNameOverride != null
+            ? databaseNameOverride
+            : ShowResultHelpers.scopeDatabase(catalog, schemaName);
+        String scName = ShowResultHelpers.scopeSchemaName(catalog, schemaName);
         if (dbName == null || scName == null) throw new RuntimeException("No database or schema selected");
         List<Row> rows = new ArrayList<>();
         for (final Stream stream : catalog.getDatabase(dbName).getSchema(scName).getStreams()) {
             rows.add(new Row(Arrays.asList(
-                stream.getCreatedAt() != null ? stream.getCreatedAt().toString() : null,
+                ShowResultHelpers.createdOn(stream.getCreatedAt()),
                 stream.getName(),
                 dbName, scName,
                 stream.getOwner(),
-                stream.getComment(),
-                stream.getSourceTableName(),
-                stream.getSourceType() != null ? stream.getSourceType().name() : null,
-                stream.getSourceTableName(),
-                "Delta",
-                stream.isStale() ? "Y" : "N",
-                stream.getStreamType() == StreamType.APPEND_ONLY ? "APPEND_ONLY" : "DEFAULT"
+                ShowResultHelpers.text(stream.getComment()),
+                qualifiedSourceName(dbName, scName, stream.getSourceTableName()),
+                sourceTypeText(stream),
+                qualifiedSourceName(dbName, scName, stream.getSourceTableName()),
+                "DELTA",
+                stream.isStale() ? "true" : "false",
+                stream.getStreamType() == StreamType.APPEND_ONLY ? "APPEND_ONLY" : "DEFAULT",
+                ShowResultHelpers.createdOn(staleAfter(stream)),
+                "N/A",
+                ShowResultHelpers.OWNER_ROLE_TYPE
             )));
         }
         return new ResultSet(columns, rows);
@@ -115,62 +148,111 @@ final class ShowPipelineExecutor {
     }
 
     public ResultSet showTasks(final String databaseNameOverride, final String schemaName) {
-        List<ResultSetColumn> columns = Arrays.asList(
-            new ResultSetColumn("created_on", StringType.VARCHAR),
+        final String dbName = databaseNameOverride != null
+            ? databaseNameOverride
+            : ShowResultHelpers.scopeDatabase(catalog, schemaName);
+        final String scName = ShowResultHelpers.scopeSchemaName(catalog, schemaName);
+        if (dbName == null || scName == null) throw new RuntimeException("No database or schema selected");
+        final List<Row> rows = new ArrayList<>();
+        for (final Task task : catalog.getDatabase(dbName).getSchema(scName).getTasks()) {
+            rows.add(taskRow(task, dbName, scName));
+        }
+        return new ResultSet(taskColumns(), rows);
+    }
+
+    /**
+     * The task listing live emits, column for column. The task-level parameters
+     * (USER_TASK_TIMEOUT_MS and friends) are deliberately absent: live reports those through
+     * SHOW PARAMETERS IN TASK, not here.
+     */
+    private List<ResultSetColumn> taskColumns() {
+        return Arrays.asList(
+            new ResultSetColumn("created_on", DateTimeType.TIMESTAMP_LTZ),
             new ResultSetColumn("name", StringType.VARCHAR),
+            new ResultSetColumn("id", StringType.VARCHAR),
             new ResultSetColumn("database_name", StringType.VARCHAR),
             new ResultSetColumn("schema_name", StringType.VARCHAR),
             new ResultSetColumn("owner", StringType.VARCHAR),
             new ResultSetColumn("comment", StringType.VARCHAR),
             new ResultSetColumn("warehouse", StringType.VARCHAR),
             new ResultSetColumn("schedule", StringType.VARCHAR),
-            new ResultSetColumn("predecessors", StringType.VARCHAR),
+            new ResultSetColumn("predecessors", new ArrayType(StringType.VARCHAR)),
             new ResultSetColumn("state", StringType.VARCHAR),
             new ResultSetColumn("definition", StringType.VARCHAR),
             new ResultSetColumn("condition", StringType.VARCHAR),
             new ResultSetColumn("allow_overlapping_execution", StringType.VARCHAR),
-            new ResultSetColumn("user_task_timeout_ms", NumericType.BIGINT),
-            new ResultSetColumn("suspend_task_after_num_failures", NumericType.INTEGER),
-            new ResultSetColumn("task_auto_retry_attempts", NumericType.INTEGER),
-            new ResultSetColumn("user_task_managed_initial_warehouse_size", StringType.VARCHAR),
-            new ResultSetColumn("serverless_task_max_statement_size", StringType.VARCHAR),
-            new ResultSetColumn("target_completion_interval", StringType.VARCHAR),
             new ResultSetColumn("error_integration", StringType.VARCHAR),
-            new ResultSetColumn("user_task_minimum_trigger_interval_in_seconds", NumericType.INTEGER)
+            new ResultSetColumn("last_committed_on", DateTimeType.TIMESTAMP_LTZ),
+            new ResultSetColumn("last_suspended_on", DateTimeType.TIMESTAMP_LTZ),
+            new ResultSetColumn("owner_role_type", StringType.VARCHAR),
+            new ResultSetColumn("config", StringType.VARCHAR),
+            new ResultSetColumn("task_relations", StringType.VARCHAR),
+            new ResultSetColumn("last_suspended_reason", StringType.VARCHAR),
+            new ResultSetColumn("success_integration", StringType.VARCHAR),
+            new ResultSetColumn("scheduling_mode", StringType.VARCHAR),
+            new ResultSetColumn("target_completion_interval", StringType.VARCHAR),
+            new ResultSetColumn("execute_as_user", StringType.VARCHAR),
+            new ResultSetColumn("overlap_policy", StringType.VARCHAR),
+            new ResultSetColumn("created_by_user", StringType.VARCHAR)
         );
-        String dbName = databaseNameOverride != null ? databaseNameOverride : catalog.getCurrentDatabase();
-        String scName = schemaName != null ? schemaName : catalog.getCurrentSchema();
-        if (dbName == null || scName == null) throw new RuntimeException("No database or schema selected");
-        List<Row> rows = new ArrayList<>();
-        for (final Task task : catalog.getDatabase(dbName).getSchema(scName).getTasks()) {
-            rows.add(new Row(Arrays.asList(
-                task.getCreatedAt() != null ? task.getCreatedAt().toString() : null,
-                task.getName(),
-                dbName, scName,
-                task.getOwner(),
-                task.getComment(),
-                task.getWarehouse(),
-                task.getSchedule(),
-                task.getPredecessors().isEmpty() ? "[]"
-                    : "[" + task.getPredecessors().stream()
-                        .map((final var p) -> "\"" + p + "\"")
-                        .collect(Collectors.joining(",")) + "]",
-                // Snowflake's SHOW TASKS state column is lowercase: "started" / "suspended" (live-verified).
-                task.getState() != null ? task.getState().toString().toLowerCase() : null,
-                task.getSqlStatement(),
-                task.getCondition(),
-                String.valueOf(task.isAllowOverlappingExecution()),
-                task.getUserTaskTimeoutMs(),
-                (long) task.getSuspendTaskAfterNumFailures(),
-                (long) task.getTaskAutoRetryAttempts(),
-                task.getUserTaskManagedInitialWarehouseSize(),
-                task.getServerlessTaskMaxStatementSize(),
-                task.getTargetCompletionInterval(),
-                task.getErrorIntegration(),
-                (long) task.getUserTaskMinimumTriggerIntervalInSeconds()
-            )));
+    }
+
+    /** One task row in live's column order. DESCRIBE TASK returns exactly this shape too. */
+    private Row taskRow(final Task task, final String dbName, final String scName) {
+        final boolean isChild = !task.getPredecessors().isEmpty();
+        return new Row(Arrays.asList(
+            ShowResultHelpers.createdOn(task.getCreatedAt()),
+            task.getName(),
+            task.getId(),
+            dbName, scName,
+            task.getOwner(),
+            ShowResultHelpers.text(task.getComment()),
+            task.getWarehouse(),
+            task.getSchedule(),
+            VariantValue.of(predecessorsJson(task, dbName, scName)),
+            // Live spells the task state in lower case: started / suspended.
+            task.getState() != null ? task.getState().toString().toLowerCase() : null,
+            task.getSqlStatement(),
+            task.getCondition(),
+            // A child task carries no overlap setting of its own; live prints the text "null" there.
+            isChild ? NOT_APPLICABLE : String.valueOf(task.isAllowOverlappingExecution()),
+            task.getErrorIntegration() != null ? task.getErrorIntegration() : NOT_APPLICABLE,
+            null,
+            null,
+            ShowResultHelpers.OWNER_ROLE_TYPE,
+            null,
+            "{\"Predecessors\":" + predecessorsJson(task, dbName, scName) + "}",
+            null,
+            NOT_APPLICABLE,
+            null,
+            task.getTargetCompletionInterval(),
+            null,
+            isChild ? null : task.isAllowOverlappingExecution() ? "ALLOW_CHILD_OVERLAP" : "NO_OVERLAP",
+            task.getCreatedByUser()
+        ));
+    }
+
+    /** The task's predecessors as a JSON array of fully qualified names, the form live reports. */
+    private String predecessorsJson(final Task task, final String dbName, final String scName) {
+        final StringBuilder json = new StringBuilder("[");
+        for (final String predecessor : task.getPredecessors()) {
+            if (json.length() > 1) {
+                json.append(',');
+            }
+            json.append('"').append(qualifiedSourceName(dbName, scName, predecessor)).append('"');
         }
-        return new ResultSet(columns, rows);
+        return json.append(']').toString();
+    }
+
+    /** SHOW TASKS IN ACCOUNT: every database's tasks, in database order. */
+    public ResultSet showTasksInAccount() {
+        final ResultSet across = ShowResultHelpers.acrossAllDatabases(catalog, new DatabaseScopedListing() {
+            @Override
+            public ResultSet listIn(final String databaseName) {
+                return showTasksInDatabase(databaseName);
+            }
+        });
+        return across != null ? across : showTasks(null);
     }
 
     public ResultSet showTasksInDatabase(final String databaseName) {
@@ -198,8 +280,8 @@ final class ShowPipelineExecutor {
     }
 
     public ResultSet showPipes(final String schemaName, final String like) {
-        final String dbName = catalog.getCurrentDatabase();
-        final String scName = schemaName != null ? schemaName : catalog.getCurrentSchema();
+        final String dbName = ShowResultHelpers.scopeDatabase(catalog, schemaName);
+        final String scName = ShowResultHelpers.scopeSchemaName(catalog, schemaName);
         if (dbName == null || scName == null) throw new RuntimeException("No database or schema selected");
         final List<Row> rows = new ArrayList<>();
         appendPipeRows(dbName, catalog.getDatabase(dbName).getSchema(scName), like, rows);
@@ -207,6 +289,17 @@ final class ShowPipelineExecutor {
     }
 
     /** SHOW PIPES IN DATABASE &lt;db&gt;: pipes across all schemas of the database. */
+    /** SHOW PIPES IN ACCOUNT: every database's pipes, in database order. */
+    public ResultSet showPipesInAccount(final String like) {
+        final ResultSet across = ShowResultHelpers.acrossAllDatabases(catalog, new DatabaseScopedListing() {
+            @Override
+            public ResultSet listIn(final String databaseName) {
+                return showPipesInDatabase(databaseName, like);
+            }
+        });
+        return across != null ? across : showPipes(null, like);
+    }
+
     public ResultSet showPipesInDatabase(final String databaseName, final String like) {
         final String dbName = databaseName != null ? databaseName : catalog.getCurrentDatabase();
         if (dbName == null) throw new RuntimeException("No database specified");
@@ -224,38 +317,70 @@ final class ShowPipelineExecutor {
                 continue;
             }
             rows.add(new Row(Arrays.asList(
-                ShowResultHelpers.createdOnText(pipe.getCreatedTime()),
+                ShowResultHelpers.createdOn(pipe.getCreatedTime()),
                 pipe.getName(),
                 dbName, scName,
-                pipe.getOwner(),
-                pipe.getComment(),
-                pipe.getNotificationChannel(),
                 pipe.getCopyStatement(),
-                pipe.isAutoIngest() ? "true" : "false",
+                pipe.getOwner(),
+                pipe.getNotificationChannel(),
+                ShowResultHelpers.text(pipe.getComment()),
                 pipe.getIntegration(),
+                null,
                 pipe.getErrorIntegration(),
-                pipe.getAwsSnsTopicArn(),
-                pipe.getStatus()
+                ShowResultHelpers.OWNER_ROLE_TYPE,
+                null,
+                "STAGE",
+                "false"
             )));
         }
     }
 
     private List<ResultSetColumn> pipeColumns() {
         return Arrays.asList(
-            new ResultSetColumn("created_on", StringType.VARCHAR),
+            new ResultSetColumn("created_on", DateTimeType.TIMESTAMP_LTZ),
             new ResultSetColumn("name", StringType.VARCHAR),
             new ResultSetColumn("database_name", StringType.VARCHAR),
             new ResultSetColumn("schema_name", StringType.VARCHAR),
-            new ResultSetColumn("owner", StringType.VARCHAR),
-            new ResultSetColumn("comment", StringType.VARCHAR),
-            new ResultSetColumn("notification_channel", StringType.VARCHAR),
             new ResultSetColumn("definition", StringType.VARCHAR),
-            new ResultSetColumn("auto_ingest", StringType.VARCHAR),
+            new ResultSetColumn("owner", StringType.VARCHAR),
+            new ResultSetColumn("notification_channel", StringType.VARCHAR),
+            new ResultSetColumn("comment", StringType.VARCHAR),
             new ResultSetColumn("integration", StringType.VARCHAR),
+            new ResultSetColumn("pattern", StringType.VARCHAR),
             new ResultSetColumn("error_integration", StringType.VARCHAR),
-            new ResultSetColumn("aws_sns_topic_arn", StringType.VARCHAR),
-            new ResultSetColumn("status", StringType.VARCHAR)
+            new ResultSetColumn("owner_role_type", StringType.VARCHAR),
+            new ResultSetColumn("invalid_reason", StringType.VARCHAR),
+            new ResultSetColumn("kind", StringType.VARCHAR),
+            new ResultSetColumn("is_snowflake_managed", StringType.VARCHAR)
         );
+    }
+
+    /** Live reports a stream's source with its database and schema, even for a same-schema table. */
+    private String qualifiedSourceName(final String dbName, final String scName, final String source) {
+        if (source == null || source.indexOf('.') >= 0) {
+            return source;
+        }
+        return dbName + "." + scName + "." + source;
+    }
+
+    /** Live capitalises the source kind as a word (Table, View), not as the enum constant. */
+    private String sourceTypeText(final Stream stream) {
+        if (stream.getSourceType() == null) {
+            return null;
+        }
+        final String name = stream.getSourceType().name();
+        return name.charAt(0) + name.substring(1).toLowerCase();
+    }
+
+    /**
+     * When the stream's change data expires. Snowflake extends a stream's retention up to
+     * MAX_DATA_EXTENSION_TIME_IN_DAYS, which defaults to 14 days past the last offset advance.
+     */
+    private LocalDateTime staleAfter(final Stream stream) {
+        if (stream.getCreatedAt() == null) {
+            return null;
+        }
+        return stream.getCreatedAt().plusDays(MAX_DATA_EXTENSION_DAYS);
     }
 
     /** SQL LIKE match (case-insensitive, {@code %} and {@code _} wildcards) for SHOW … LIKE filters. */
@@ -280,8 +405,8 @@ final class ShowPipelineExecutor {
     }
 
     public ResultSet showSequences(final String schemaName) {
-        final String dbName = catalog.getCurrentDatabase();
-        final String scName = schemaName != null ? schemaName : catalog.getCurrentSchema();
+        final String dbName = ShowResultHelpers.scopeDatabase(catalog, schemaName);
+        final String scName = ShowResultHelpers.scopeSchemaName(catalog, schemaName);
         if (dbName == null || scName == null) throw new RuntimeException("No database or schema selected");
         final List<Row> rows = new ArrayList<>();
         appendSequenceRows(dbName, catalog.getDatabase(dbName).getSchema(scName), rows);
@@ -291,14 +416,13 @@ final class ShowPipelineExecutor {
     /** SHOW SEQUENCES IN DATABASE &lt;db&gt;: sequences across all schemas of the database. */
     /** SHOW SEQUENCES IN ACCOUNT: the sequences of every database, in database order. */
     public ResultSet showSequencesInAccount() {
-        List<ResultSetColumn> cols = null;
-        final List<Row> rows = new ArrayList<>();
-        for (final Database db : catalog.getAllDatabases()) {
-            final ResultSet part = showSequencesInDatabase(db.getName());
-            cols = part.getColumns();
-            rows.addAll(part.getRows());
-        }
-        return cols != null ? new ResultSet(cols, rows) : showSequences(null);
+        final ResultSet across = ShowResultHelpers.acrossAllDatabases(catalog, new DatabaseScopedListing() {
+            @Override
+            public ResultSet listIn(final String databaseName) {
+                return showSequencesInDatabase(databaseName);
+            }
+        });
+        return across != null ? across : showSequences(null);
     }
 
     public ResultSet showSequencesInDatabase(final String databaseName) {
@@ -319,9 +443,11 @@ final class ShowPipelineExecutor {
                 schema.getName(),
                 seq.getCurrentValueRaw() + seq.getIncrement(),
                 seq.getIncrement(),
-                null,
+                ShowResultHelpers.createdOn(seq.getCreatedTime()),
                 seq.getOwner(),
-                seq.getComment()
+                ShowResultHelpers.text(seq.getComment()),
+                ShowResultHelpers.OWNER_ROLE_TYPE,
+                seq.isOrder() ? "Y" : "N"
             )));
         }
     }
@@ -339,9 +465,11 @@ final class ShowPipelineExecutor {
             new ResultSetColumn("schema_name", StringType.VARCHAR),
             new ResultSetColumn("next_value", NumericType.BIGINT),
             new ResultSetColumn("interval", NumericType.BIGINT),
-            new ResultSetColumn("created_on", StringType.VARCHAR),
+            new ResultSetColumn("created_on", DateTimeType.TIMESTAMP_LTZ),
             new ResultSetColumn("owner", StringType.VARCHAR),
-            new ResultSetColumn("comment", StringType.VARCHAR)
+            new ResultSetColumn("comment", StringType.VARCHAR),
+            new ResultSetColumn("owner_role_type", StringType.VARCHAR),
+            new ResultSetColumn("ordered", StringType.VARCHAR)
         );
     }
 
@@ -364,61 +492,37 @@ final class ShowPipelineExecutor {
         return new ResultSet(columns, rows);
     }
 
+    /** DESCRIBE TASK returns the task's SHOW TASKS row — live gives the two commands one shape. */
     public ResultSet describeTask(final String taskName) {
-        List<Row> rows = new ArrayList<>();
-        List<ResultSetColumn> columns = Arrays.asList(
-            new ResultSetColumn("property", StringType.VARCHAR),
-            new ResultSetColumn("value", StringType.VARCHAR)
-        );
-
-        String dbName = catalog.getCurrentDatabase();
-        String scName = catalog.getCurrentSchema();
-        Schema schema = catalog.getDatabase(dbName).getSchema(scName);
-        Task task = schema.getTask(taskName);
-
-        rows.add(new Row(Arrays.asList("name", task.getName())));
-        rows.add(new Row(Arrays.asList("schedule", task.getSchedule())));
-        rows.add(new Row(Arrays.asList("state", task.getState().toString())));
-        rows.add(new Row(Arrays.asList("warehouse", task.getWarehouse())));
-        rows.add(new Row(Arrays.asList("definition", task.getSqlStatement())));
-
-        return new ResultSet(columns, rows);
+        final String dbName = catalog.getCurrentDatabase();
+        final String scName = catalog.getCurrentSchema();
+        final Schema schema = catalog.getDatabase(dbName).getSchema(scName);
+        final Task task = schema.getTask(taskName);
+        if (task == null) {
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Task", taskName));
+        }
+        final List<Row> rows = new ArrayList<>();
+        rows.add(taskRow(task, dbName, scName));
+        return new ResultSet(taskColumns(), rows);
     }
 
+    /** DESCRIBE PIPE returns the pipe's SHOW PIPES row — live gives the two commands one shape. */
     public ResultSet describePipe(final String pipeName) {
-        String dbName = catalog.getCurrentDatabase();
-        String scName = catalog.getCurrentSchema();
-        Schema schema = catalog.getDatabase(dbName).getSchema(scName);
-        Pipe pipe = schema.getPipe(pipeName);
-
-        // Snowflake DESC PIPE returns a single columnar row (the SHOW PIPES attributes), not property/value rows.
-        List<ResultSetColumn> columns = Arrays.asList(
-            new ResultSetColumn("created_on", StringType.VARCHAR),
-            new ResultSetColumn("name", StringType.VARCHAR),
-            new ResultSetColumn("database_name", StringType.VARCHAR),
-            new ResultSetColumn("schema_name", StringType.VARCHAR),
-            new ResultSetColumn("definition", StringType.VARCHAR),
-            new ResultSetColumn("owner", StringType.VARCHAR),
-            new ResultSetColumn("notification_channel", StringType.VARCHAR),
-            new ResultSetColumn("comment", StringType.VARCHAR),
-            new ResultSetColumn("integration", StringType.VARCHAR),
-            new ResultSetColumn("pattern", StringType.VARCHAR),
-            new ResultSetColumn("error_integration", StringType.VARCHAR)
-        );
-        List<Row> rows = new ArrayList<>();
-        rows.add(new Row(Arrays.asList(
-            ShowResultHelpers.createdOnText(pipe.getCreatedTime()),
-            pipe.getName(),
-            dbName, scName,
-            pipe.getCopyStatement(),
-            pipe.getOwner(),
-            pipe.getNotificationChannel(),
-            pipe.getComment(),
-            pipe.getIntegration(),
-            null,                       // pattern — not modeled
-            pipe.getErrorIntegration()
-        )));
-        return new ResultSet(columns, rows);
+        final String dbName = catalog.getCurrentDatabase();
+        final String scName = catalog.getCurrentSchema();
+        final Schema schema = catalog.getDatabase(dbName).getSchema(scName);
+        final List<Row> rows = new ArrayList<>();
+        appendPipeRows(dbName, schema, null, rows);
+        final List<Row> matching = new ArrayList<>();
+        for (final Row row : rows) {
+            if (pipeName.equalsIgnoreCase(String.valueOf(row.getValue(1)))) {
+                matching.add(row);
+            }
+        }
+        if (matching.isEmpty()) {
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Pipe", pipeName));
+        }
+        return new ResultSet(pipeColumns(), matching);
     }
 
     public ResultSet describeSequence(final String sequenceName) {
@@ -429,7 +533,7 @@ final class ShowPipelineExecutor {
             new ResultSetColumn("schema_name", StringType.VARCHAR),
             new ResultSetColumn("next_value", NumericType.BIGINT),
             new ResultSetColumn("interval", NumericType.BIGINT),
-            new ResultSetColumn("created_on", StringType.VARCHAR),
+            new ResultSetColumn("created_on", DateTimeType.TIMESTAMP_LTZ),
             new ResultSetColumn("owner", StringType.VARCHAR),
             new ResultSetColumn("comment", StringType.VARCHAR),
             new ResultSetColumn("owner_role_type", StringType.VARCHAR),
@@ -457,16 +561,159 @@ final class ShowPipelineExecutor {
         return new ResultSet(columns, rows);
     }
 
-    public ResultSet showDynamicTables(final String schemaName) {
+    /**
+     * SHOW CORTEX SEARCH SERVICES — a real account's 20 columns, in its order. The three counters
+     * (source_data_num_rows, scoring_profile_count, auto_suspend) and the two lifecycle states come
+     * from the service as the engine keeps it rather than from a running indexer, so a service here
+     * reports itself ACTIVE and served the moment it is created.
+     */
+    public ResultSet showCortexSearchServices(final String schemaName, final String like) {
+        final List<Row> rows = new ArrayList<>();
+        // IN SCHEMA takes a name that may already carry its database, so the schema is RESOLVED rather
+        // than looked up under the current one — `IN SCHEMA db.schema` names a schema, not a schema
+        // called "db.schema".
+        appendCortexSearchServiceRows(resolveShowSchema(schemaName), like, rows);
+        return new ResultSet(cortexSearchServiceColumns(), rows);
+    }
+
+    private Schema resolveShowSchema(final String schemaName) {
+        if (schemaName != null) {
+            return catalog.resolveSchema(schemaName);
+        }
         final String dbName = catalog.getCurrentDatabase();
-        final String scName = schemaName != null ? schemaName : catalog.getCurrentSchema();
+        final String scName = catalog.getCurrentSchema();
+        if (dbName == null || scName == null) {
+            throw new RuntimeException("No database or schema selected");
+        }
+        return catalog.getDatabase(dbName).getSchema(scName);
+    }
+
+    /** SHOW CORTEX SEARCH SERVICES IN ACCOUNT: every database's services, in database order. */
+    public ResultSet showCortexSearchServicesInAccount(final String like) {
+        final ResultSet across = ShowResultHelpers.acrossAllDatabases(catalog, new DatabaseScopedListing() {
+            @Override
+            public ResultSet listIn(final String databaseName) {
+                return showCortexSearchServicesInDatabase(databaseName, like);
+            }
+        });
+        return across != null ? across : showCortexSearchServices(null, like);
+    }
+
+    public ResultSet showCortexSearchServicesInDatabase(final String databaseName, final String like) {
+        final String dbName = databaseName != null ? databaseName : catalog.getCurrentDatabase();
+        if (dbName == null) {
+            throw new RuntimeException("No database specified");
+        }
+        final List<Row> rows = new ArrayList<>();
+        for (final Schema schema : catalog.getDatabase(dbName).getAllSchemas()) {
+            appendCortexSearchServiceRows(schema, like, rows);
+        }
+        return new ResultSet(cortexSearchServiceColumns(), rows);
+    }
+
+    /** DESCRIBE CORTEX SEARCH SERVICE — the one service, in the SHOW shape. */
+    public ResultSet describeCortexSearchService(final String serviceName) {
+        final CortexSearchService service = catalog.resolveCortexSearchService(serviceName);
+        final List<Row> rows = new ArrayList<>();
+        rows.add(new Row(cortexSearchServiceRow(service)));
+        return new ResultSet(cortexSearchServiceColumns(), rows);
+    }
+
+    private void appendCortexSearchServiceRows(final Schema schema, final String like,
+                                               final List<Row> rows) {
+        for (final CortexSearchService service : schema.getCortexSearchServices()) {
+            if (like == null || matchesLike(service.getName(), like)) {
+                rows.add(new Row(cortexSearchServiceRow(service)));
+            }
+        }
+    }
+
+    private List<Object> cortexSearchServiceRow(final CortexSearchService service) {
+        return Arrays.asList(
+            ShowResultHelpers.createdOn(service.getCreatedOn()),
+            service.getName(),
+            service.getDatabaseName(),
+            service.getSchemaName(),
+            service.getTargetLag(),
+            service.getWarehouse(),
+            service.getSearchColumn(),
+            nameArrayText(service.getAttributeColumns()),
+            nameArrayText(service.getColumns()),
+            service.getDefinition(),
+            service.getComment(),
+            service.getEmbeddingModel(),
+            "ACTIVE",
+            "RUNNING",
+            Long.valueOf(0L),
+            nameArrayText(new ArrayList<String>()),
+            Long.valueOf(0L),
+            null,
+            "AUTO",
+            nameArrayText(new ArrayList<String>())
+        );
+    }
+
+    /**
+     * A list of column names as SHOW prints one: a JSON array of quoted names, or {@code []} when the
+     * service names none.
+     */
+    private String nameArrayText(final List<String> names) {
+        final StringBuilder text = new StringBuilder("[");
+        for (int i = 0; i < names.size(); i++) {
+            if (i > 0) {
+                text.append(',');
+            }
+            text.append('"').append(names.get(i)).append('"');
+        }
+        return text.append(']').toString();
+    }
+
+    private List<ResultSetColumn> cortexSearchServiceColumns() {
+        return Arrays.asList(
+            new ResultSetColumn("created_on", DateTimeType.TIMESTAMP_LTZ),
+            new ResultSetColumn("name", StringType.VARCHAR),
+            new ResultSetColumn("database_name", StringType.VARCHAR),
+            new ResultSetColumn("schema_name", StringType.VARCHAR),
+            new ResultSetColumn("target_lag", StringType.VARCHAR),
+            new ResultSetColumn("warehouse", StringType.VARCHAR),
+            new ResultSetColumn("search_column", StringType.VARCHAR),
+            new ResultSetColumn("attribute_columns", StringType.VARCHAR),
+            new ResultSetColumn("columns", StringType.VARCHAR),
+            new ResultSetColumn("definition", StringType.VARCHAR),
+            new ResultSetColumn("comment", StringType.VARCHAR),
+            new ResultSetColumn("embedding_model", StringType.VARCHAR),
+            new ResultSetColumn("indexing_state", StringType.VARCHAR),
+            new ResultSetColumn("serving_state", StringType.VARCHAR),
+            new ResultSetColumn("source_data_num_rows", NumericType.BIGINT),
+            new ResultSetColumn("primary_key_columns", StringType.VARCHAR),
+            new ResultSetColumn("scoring_profile_count", NumericType.BIGINT),
+            new ResultSetColumn("auto_suspend", StringType.VARCHAR),
+            new ResultSetColumn("refresh_mode", StringType.VARCHAR),
+            new ResultSetColumn("vector_indexes", StringType.VARCHAR)
+        );
+    }
+
+    public ResultSet showDynamicTables(final String schemaName) {
+        final String dbName = ShowResultHelpers.scopeDatabase(catalog, schemaName);
+        final String scName = ShowResultHelpers.scopeSchemaName(catalog, schemaName);
         if (dbName == null || scName == null) throw new RuntimeException("No database or schema selected");
         final List<Row> rows = new ArrayList<>();
-        appendDynamicTableRows(dbName, catalog.getDatabase(dbName).getSchema(scName), rows);
+        appendDynamicTableRows(dbName, ShowResultHelpers.scopeSchemaReportedGenerically(catalog, dbName, scName), rows);
         return new ResultSet(dynamicTableColumns(), rows);
     }
 
     /** SHOW DYNAMIC TABLES IN DATABASE &lt;db&gt;: dynamic tables across all schemas of the database. */
+    /** SHOW DYNAMIC TABLES IN ACCOUNT: every database's dynamic tables, in database order. */
+    public ResultSet showDynamicTablesInAccount() {
+        final ResultSet across = ShowResultHelpers.acrossAllDatabases(catalog, new DatabaseScopedListing() {
+            @Override
+            public ResultSet listIn(final String databaseName) {
+                return showDynamicTablesInDatabase(databaseName);
+            }
+        });
+        return across != null ? across : showDynamicTables(null);
+    }
+
     public ResultSet showDynamicTablesInDatabase(final String databaseName) {
         final String dbName = databaseName != null ? databaseName : catalog.getCurrentDatabase();
         if (dbName == null) throw new RuntimeException("No database specified");
@@ -481,7 +728,7 @@ final class ShowPipelineExecutor {
         final String scName = schema.getName();
         for (final DynamicTable dt : schema.getDynamicTables()) {
             rows.add(new Row(Arrays.asList(
-                ShowResultHelpers.createdOnText(dt.getCreatedTime()),
+                ShowResultHelpers.createdOn(dt.getCreatedTime()),
                 dt.getName(), dbName, scName,
                 null, 0L, 0L,
                 dt.getOwner(),
@@ -500,7 +747,7 @@ final class ShowPipelineExecutor {
 
     private List<ResultSetColumn> dynamicTableColumns() {
         return Arrays.asList(
-            new ResultSetColumn("created_on", StringType.VARCHAR),
+            new ResultSetColumn("created_on", DateTimeType.TIMESTAMP_LTZ),
             new ResultSetColumn("name", StringType.VARCHAR),
             new ResultSetColumn("database_name", StringType.VARCHAR),
             new ResultSetColumn("schema_name", StringType.VARCHAR),
@@ -514,7 +761,7 @@ final class ShowPipelineExecutor {
             new ResultSetColumn("compaction", StringType.VARCHAR),
             new ResultSetColumn("enable_schema_evolution", StringType.VARCHAR),
             new ResultSetColumn("scheduling_state", StringType.VARCHAR),
-            new ResultSetColumn("last_suspended_on", StringType.VARCHAR),
+            new ResultSetColumn("last_suspended_on", DateTimeType.TIMESTAMP_LTZ),
             new ResultSetColumn("is_clone", StringType.VARCHAR),
             new ResultSetColumn("is_replica", StringType.VARCHAR),
             new ResultSetColumn("data_timestamp", StringType.VARCHAR),

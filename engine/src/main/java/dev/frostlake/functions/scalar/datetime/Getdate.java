@@ -16,6 +16,7 @@
 
 package dev.frostlake.functions.scalar.datetime;
 
+import dev.frostlake.executor.StatementClock;
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.types.DateTimeType;
 
@@ -26,7 +27,7 @@ public class Getdate extends BuiltInFunction {
     public Getdate() { super("GETDATE", DateTimeType.TIMESTAMP_NTZ); }
 
     @Override
-    public Object evaluate(final List<Object> args) { return LocalDateTime.now(); }
+    public Object evaluate(final List<Object> args) { return StatementClock.now(); }
 
     @Override public int getMinArgCount() { return 0; }
     @Override public int getMaxArgCount() { return 0; }

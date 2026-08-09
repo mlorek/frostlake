@@ -18,6 +18,7 @@ package dev.frostlake.metastore;
 
 import dev.frostlake.config.S3PathResolver;
 import dev.frostlake.executor.SqlCompilationError;
+import dev.frostlake.metastore.model.CortexSearchService;
 import dev.frostlake.metastore.model.Database;
 import dev.frostlake.metastore.model.FileFormat;
 import dev.frostlake.metastore.model.Pipe;
@@ -32,11 +33,13 @@ import dev.frostlake.metastore.model.TableColumn;
 import dev.frostlake.metastore.model.Tag;
 import dev.frostlake.metastore.model.User;
 import dev.frostlake.metastore.model.View;
+import dev.frostlake.metastore.model.ComputePool;
 import dev.frostlake.metastore.model.Warehouse;
 import dev.frostlake.metastore.model.WarehouseSize;
 import dev.frostlake.security.SessionContext;
 
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -47,6 +50,7 @@ public class Catalog {
 
     private final Map<String, Database> databases;
     private final Map<String, Warehouse> warehouses;
+    private final Map<String, ComputePool> computePools = new ConcurrentHashMap<>();
     private final Map<String, User> users;
     private final Map<String, Role> roles;
     private String currentDatabase;
@@ -95,7 +99,11 @@ public class Catalog {
         if (databases.containsKey(upperName)) {
             throw new RuntimeException("Database already exists: " + name);
         }
-        Database db = new Database(upperName);
+        // The name is stored as the reference resolved it — bare folded to upper, quoted verbatim — so a
+        // database created as "mixedDb" is still called mixedDb. Folding it here lost that, and with it any
+        // hope of telling mixedDb from MIXEDDB. The map key stays folded: it is a case-insensitive INDEX,
+        // and exactness is enforced against the stored name by databaseExact.
+        Database db = new Database(name);
         db.setOwner(currentRoleForOwner());
         databases.put(upperName, db);
     }
@@ -121,9 +129,30 @@ public class Catalog {
         databases.remove(upperName);
     }
 
+    /**
+     * A database by name, matched ignoring case — the INTERNAL Java API, used by engine plumbing and by
+     * tests that name {@code test_db} in lower case. SQL resolution must not come through here; see
+     * {@link #databaseExact}.
+     */
     public Database getDatabase(final String name) {
         Database db = databases.get(name.toUpperCase());
         if (db == null) {
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Database", name));
+        }
+        return db;
+    }
+
+    /**
+     * The database a SQL reference names, matched EXACTLY.
+     *
+     * <p>A reference resolves to a name first — bare folds to upper, quoted keeps its case — and that name
+     * must then equal a stored one. Live rejects {@code mixedDb} for a database created as
+     * {@code "mixedDb"} with {@code Database 'MIXEDDB' does not exist or not authorized.}, naming the
+     * resolved form rather than the spelling; so does this.
+     */
+    public Database databaseExact(final String name) {
+        final Database db = databases.get(name.toUpperCase());
+        if (db == null || !db.getName().equals(name)) {
             throw new RuntimeException(SqlCompilationError.doesNotExist("Database", name));
         }
         return db;
@@ -264,28 +293,43 @@ public class Catalog {
         return resolveTable(QualifiedName.parse(qualifiedName));
     }
 
+
+    /**
+     * The table a SQL reference names, matched exactly, reported as {@code reportedKind 'reportedName'}.
+     *
+     * <p>Exactness lives here rather than in {@link Schema#getTable(String)} for the same reason it lives
+     * outside {@code Table}'s column accessors: those are an internal Java API that engine plumbing and
+     * tests call with whatever case is convenient, while this is the boundary where a SQL reference — bare
+     * folded to upper, quoted verbatim — meets the catalog and must match a stored name outright.
+     */
+    private Table tableForReference(final Schema schema, final String name,
+                                    final String reportedName, final String reportedKind) {
+        final Table table = schema.tableExact(name);
+        if (table == null) {
+            throw new RuntimeException(SqlCompilationError.doesNotExist(reportedKind, reportedName));
+        }
+        return table;
+    }
+
     public Table resolveTable(final QualifiedName qn) {
         if (qn.size() == 1) {
             // table name only
             if (getCurrentDatabase() == null || getCurrentSchema() == null) {
                 throw new RuntimeException("No database or schema selected");
             }
-            return getDatabase(getCurrentDatabase())
-                    .getSchema(getCurrentSchema())
-                    .getTable(qn.part(0));
+            final Schema owner = databaseExact(getCurrentDatabase()).schemaExact(getCurrentSchema());
+            return tableForReference(owner, qn.part(0), owner.qualifiedName(qn.part(0)), "Table");
         } else if (qn.size() == 2) {
             // schema.table
             if (getCurrentDatabase() == null) {
                 throw new RuntimeException("No database selected");
             }
-            return getDatabase(getCurrentDatabase())
-                    .getSchema(qn.part(0))
-                    .getTable(qn.part(1));
+            final Schema owner = databaseExact(getCurrentDatabase()).schemaExact(qn.part(0));
+            return tableForReference(owner, qn.part(1), owner.qualifiedName(qn.part(1)), "Table");
         } else if (qn.size() == 3) {
             // database.schema.table
-            return getDatabase(qn.part(0))
-                    .getSchema(qn.part(1))
-                    .getTable(qn.part(2));
+            final Schema owner = databaseExact(qn.part(0)).schemaExact(qn.part(1));
+            return tableForReference(owner, qn.part(2), owner.qualifiedName(qn.part(2)), "Table");
         } else {
             throw new RuntimeException("Invalid qualified name: " + qn);
         }
@@ -315,17 +359,17 @@ public class Catalog {
                 throw new RuntimeException("No database selected");
             }
             final Schema schema = qn.size() == 2
-                ? getDatabase(getCurrentDatabase()).getSchema(qn.part(0))
-                : getDatabase(qn.part(0)).getSchema(qn.part(1));
+                ? databaseExact(getCurrentDatabase()).schemaExact(qn.part(0))
+                : databaseExact(qn.part(0)).schemaExact(qn.part(1));
             final String last = qn.part(qn.size() - 1);
-            return schema.getTable(last, schema.getDatabaseName() + "." + schema.getName() + "." + last,
-                reportedKind);
+            return tableForReference(schema, last,
+                schema.getDatabaseName() + "." + schema.getName() + "." + last, reportedKind);
         }
         if (getCurrentDatabase() == null || getCurrentSchema() == null) {
             throw new RuntimeException("No database or schema selected");
         }
-        return getDatabase(getCurrentDatabase()).getSchema(getCurrentSchema())
-            .getTable(qn.part(0), qn.part(0), reportedKind);
+        return tableForReference(databaseExact(getCurrentDatabase()).schemaExact(getCurrentSchema()),
+            qn.part(0), qn.part(0), reportedKind);
     }
 
     public View resolveView(final String qualifiedName) {
@@ -338,22 +382,62 @@ public class Catalog {
             if (getCurrentDatabase() == null || getCurrentSchema() == null) {
                 throw new RuntimeException("No database or schema selected");
             }
-            return getDatabase(getCurrentDatabase())
-                    .getSchema(getCurrentSchema())
+            return databaseExact(getCurrentDatabase())
+                    .schemaExact(getCurrentSchema())
                     .getView(qn.part(0));
         } else if (qn.size() == 2) {
             // schema.view
             if (getCurrentDatabase() == null) {
                 throw new RuntimeException("No database selected");
             }
-            return getDatabase(getCurrentDatabase())
-                    .getSchema(qn.part(0))
+            return databaseExact(getCurrentDatabase())
+                    .schemaExact(qn.part(0))
                     .getView(qn.part(1));
         } else if (qn.size() == 3) {
             // database.schema.view
-            return getDatabase(qn.part(0))
-                    .getSchema(qn.part(1))
+            return databaseExact(qn.part(0))
+                    .schemaExact(qn.part(1))
                     .getView(qn.part(2));
+        } else {
+            throw new RuntimeException("Invalid qualified name: " + qn);
+        }
+    }
+
+    /**
+     * A Cortex search service by name, however much of the path the caller wrote. The owning schema is
+     * resolved first so a missing DATABASE or SCHEMA is reported as such, and only a resolvable schema
+     * that lacks the service reports the service missing.
+     */
+    public CortexSearchService resolveCortexSearchService(final String qualifiedName) {
+        return resolveCortexSearchService(QualifiedName.parse(qualifiedName));
+    }
+
+    public CortexSearchService resolveCortexSearchService(final QualifiedName qn) {
+        return schemaOwning(qn).getCortexSearchService(qn.last());
+    }
+
+    /** Whether that service exists, without the throw — what CREATE … IF NOT EXISTS asks. */
+    public boolean hasCortexSearchService(final QualifiedName qn) {
+        return schemaOwning(qn).hasCortexSearchService(qn.last());
+    }
+
+    /**
+     * The schema a qualified object name belongs to: the current one for a bare name, the named one
+     * within the current database for {@code schema.object}, and the fully spelled one for three parts.
+     */
+    private Schema schemaOwning(final QualifiedName qn) {
+        if (qn.size() == 1) {
+            if (getCurrentDatabase() == null || getCurrentSchema() == null) {
+                throw new RuntimeException("No database or schema selected");
+            }
+            return databaseExact(getCurrentDatabase()).schemaExact(getCurrentSchema());
+        } else if (qn.size() == 2) {
+            if (getCurrentDatabase() == null) {
+                throw new RuntimeException("No database selected");
+            }
+            return databaseExact(getCurrentDatabase()).schemaExact(qn.part(0));
+        } else if (qn.size() == 3) {
+            return databaseExact(qn.part(0)).schemaExact(qn.part(1));
         } else {
             throw new RuntimeException("Invalid qualified name: " + qn);
         }
@@ -368,9 +452,9 @@ public class Catalog {
             if (getCurrentDatabase() == null) {
                 throw new RuntimeException("No database selected");
             }
-            return getDatabase(getCurrentDatabase()).getSchema(qn.part(0));
+            return databaseExact(getCurrentDatabase()).schemaExact(qn.part(0));
         } else if (qn.size() == 2) {
-            return getDatabase(qn.part(0)).getSchema(qn.part(1));
+            return databaseExact(qn.part(0)).schemaExact(qn.part(1));
         } else {
             throw new RuntimeException("Invalid qualified schema name: " + qn);
         }
@@ -395,6 +479,54 @@ public class Catalog {
             throw new RuntimeException("Cannot drop default warehouse");
         }
         warehouses.remove(upperName);
+    }
+
+    // Compute pools (account-level, like warehouses)
+
+    /** A real account phrases the duplicate as a generic object clash, not a pool-specific one. */
+    public void createComputePool(final ComputePool pool) {
+        if (computePools.containsKey(pool.getName().toUpperCase())) {
+            throw new RuntimeException(SqlCompilationError.of(
+                "Object '" + pool.getName().toUpperCase() + "' already exists."));
+        }
+        pool.setOwner(currentRoleForOwner());
+        computePools.put(pool.getName().toUpperCase(), pool);
+    }
+
+    public boolean hasComputePool(final String name) {
+        return computePools.containsKey(name.toUpperCase());
+    }
+
+    public ComputePool getComputePool(final String name) {
+        final ComputePool pool = computePools.get(name.toUpperCase());
+        if (pool == null) {
+            throw new RuntimeException(
+                SqlCompilationError.doesNotExist("Compute pool", name.toUpperCase()));
+        }
+        return pool;
+    }
+
+    public void dropComputePool(final String name) {
+        getComputePool(name);
+        computePools.remove(name.toUpperCase());
+    }
+
+    /** Every pool, sorted by name — the order SHOW COMPUTE POOLS lists them in. */
+    public List<ComputePool> getComputePools() {
+        final List<ComputePool> pools = new ArrayList<>(computePools.values());
+        pools.sort(new Comparator<ComputePool>() {
+            @Override
+            public int compare(final ComputePool a, final ComputePool b) {
+                return a.getName().compareTo(b.getName());
+            }
+        });
+        return pools;
+    }
+
+    /** Whether that warehouse exists, without the throw — for the statements that must VALIDATE a
+     *  warehouse they only reference. */
+    public boolean hasWarehouse(final String name) {
+        return name != null && warehouses.containsKey(name.toUpperCase());
     }
 
     public Warehouse getWarehouse(final String name) {
@@ -707,32 +839,32 @@ public class Catalog {
 
         // ORGADMIN - Organization administrator (highest level)
         Role orgAdmin = new Role("ORGADMIN");
-        orgAdmin.setComment("Organization administrator role - manages organization-level objects");
+        orgAdmin.setComment("Organization administrator can manage organizations and accounts in organizations");
         roles.put("ORGADMIN", orgAdmin);
 
         // ACCOUNTADMIN - Account administrator (manages account-level objects)
         Role accountAdmin = new Role("ACCOUNTADMIN");
-        accountAdmin.setComment("Account administrator role - manages all account objects and grants");
+        accountAdmin.setComment("Account administrator can manage all aspects of the account.");
         roles.put("ACCOUNTADMIN", accountAdmin);
 
         // SECURITYADMIN - Security administrator (manages users, roles, and security)
         Role securityAdmin = new Role("SECURITYADMIN");
-        securityAdmin.setComment("Security administrator role - manages users, roles, and grants");
+        securityAdmin.setComment("Security administrator can manage security aspects of the account.");
         roles.put("SECURITYADMIN", securityAdmin);
 
         // USERADMIN - User administrator (manages users and roles)
         Role userAdmin = new Role("USERADMIN");
-        userAdmin.setComment("User administrator role - manages users and roles");
+        userAdmin.setComment("User administrator can create and manage users and roles");
         roles.put("USERADMIN", userAdmin);
 
         // SYSADMIN - System administrator (manages warehouses, databases, and other objects)
         Role sysAdmin = new Role("SYSADMIN");
-        sysAdmin.setComment("System administrator role - manages databases, warehouses, and other objects");
+        sysAdmin.setComment("System administrator can create and manage databases and warehouses.");
         roles.put("SYSADMIN", sysAdmin);
 
         // PUBLIC - Default role (granted to all users automatically)
         Role publicRole = new Role("PUBLIC");
-        publicRole.setComment("Public role - granted to all users by default");
+        publicRole.setComment("Public role is automatically available to every user in the account.");
         roles.put("PUBLIC", publicRole);
 
         // Set up role hierarchy (roles inherit privileges from granted roles)
@@ -775,6 +907,11 @@ public class Catalog {
             throw new RuntimeException(SqlCompilationError.doesNotExist("User", name));
         }
         users.remove(upperName);
+    }
+
+    /** Whether a user of this name exists, for callers that must not throw on a miss. */
+    public boolean hasUser(final String name) {
+        return name != null && users.containsKey(name.toUpperCase());
     }
 
     public User getUser(final String name) {

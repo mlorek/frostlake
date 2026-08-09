@@ -345,6 +345,27 @@ public class DropCommandHandler implements CommandHandler {
                     if (!ifExists) throw e;
                     logger.debug("Sequence does not exist (IF EXISTS): {}", sequenceName);
                 }
+            } else if (ctx.CORTEX() != null) {
+                final String serviceName = getText(ctx.qualifiedName());
+                try {
+                    ddl.resolveSchemaFromQualifiedName(serviceName)
+                        .dropCortexSearchService(QualifiedName.parse(serviceName).last());
+                    logger.trace("Dropped Cortex search service: {}", serviceName);
+                } catch (final RuntimeException e) {
+                    if (!ifExists) {
+                        throw e;
+                    }
+                    logger.debug("Cortex search service does not exist (IF EXISTS): {}", serviceName);
+                }
+            } else if (ctx.COMPUTE() != null && ctx.POOL() != null) {
+                final String poolName = getText(ctx.identifier());
+                try {
+                    catalog.dropComputePool(poolName);
+                    logger.trace("Dropped compute pool: {}", poolName);
+                } catch (final RuntimeException e) {
+                    if (!ifExists) throw e;
+                    logger.debug("Compute pool does not exist (IF EXISTS): {}", poolName);
+                }
             } else if (ctx.WAREHOUSE() != null) {
                 String warehouseName = getText(ctx.identifier());
 

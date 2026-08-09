@@ -18,6 +18,9 @@ package dev.frostlake.executor.operators;
 
 import dev.frostlake.executor.ExpressionEvaluator;
 import dev.frostlake.executor.expressions.Expression;
+import dev.frostlake.executor.expressions.SourcePosition;
+import dev.frostlake.executor.expressions.ExpressionSource;
+import dev.frostlake.executor.expressions.RowOrdinal;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.storage.Row;
 import org.slf4j.Logger;
@@ -39,6 +42,7 @@ public class ProjectOperator implements Operator {
     private static final Logger logger = LoggerFactory.getLogger(ProjectOperator.class);
 
     private final List<String> projectionExpressions;
+    private List<SourcePosition> expressionOrigins;
     private final List<String> columnAliases;
     private final RowExpressionEvaluator expressionEvaluator;
     private final Map<String, Object> lateralAliasSink;
@@ -101,6 +105,21 @@ public class ProjectOperator implements Operator {
         }
     }
 
+    /** Where item {@code index} began in the statement, or null when it was synthesised. */
+    private SourcePosition originOf(final int index) {
+        return expressionOrigins != null && index < expressionOrigins.size()
+            ? expressionOrigins.get(index) : null;
+    }
+
+    /**
+     * Where each projection item began in the statement, index-aligned with the expressions. Null
+     * entries are synthesised items (star expansion), which nobody wrote and which therefore report
+     * no position.
+     */
+    public void setExpressionOrigins(final List<SourcePosition> expressionOrigins) {
+        this.expressionOrigins = expressionOrigins;
+    }
+
     @Override
     public List<Row> execute(final List<Row> input, final OperatorContext context) {
         if (projectionExpressions.isEmpty()) {
@@ -119,7 +138,13 @@ public class ProjectOperator implements Operator {
             parsedExpressions.add(ExpressionEvaluator.parse(e.trim()));
         }
 
-        for (final Row row : input) {
+        for (int rowIndex = 0; rowIndex < input.size(); rowIndex++) {
+            final Row row = input.get(rowIndex);
+            // Number the rows this operator was handed, so SEQ1/2/4/8 read one value per row rather
+            // than one per call. Restored after each row because a scalar subquery inside the
+            // projection runs its own operators, which number their own rows.
+            final Long displacedOrdinal = RowOrdinal.begin(rowIndex);
+            try {
             List<Object> projectedValues = new ArrayList<>();
             // The running map of this row's already-computed aliases. When a shared sink was provided it IS
             // that map (the evaluator reads it as its lateral context, so a later item's expression can
@@ -141,7 +166,15 @@ public class ProjectOperator implements Operator {
                 if (rowAliasValues.containsKey(expr.toUpperCase()) && !isInputColumn(expr, context)) {
                     value = rowAliasValues.get(expr.toUpperCase());
                 } else {
-                    value = evaluateExpression(parsedExpressions.get(i), row);
+                    // Note where this item began in the statement, so a message about an unresolvable
+                    // column inside it can carry the position live always reports. A star-expanded
+                    // item has no origin — nobody wrote it — and reports none.
+                    final SourcePosition displaced = ExpressionSource.begin(originOf(i));
+                    try {
+                        value = evaluateExpression(parsedExpressions.get(i), row);
+                    } finally {
+                        ExpressionSource.end(displaced);
+                    }
                 }
                 projectedValues.add(value);
                 if (columnAliases != null && columnAliases.get(i) != null) {
@@ -150,6 +183,9 @@ public class ProjectOperator implements Operator {
             }
 
             projectedRows.add(Row.of(projectedValues));
+            } finally {
+                RowOrdinal.end(displacedOrdinal);
+            }
         }
 
         logger.debug("Projection: {} rows -> {} rows with {} columns",

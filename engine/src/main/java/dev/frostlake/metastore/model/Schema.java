@@ -41,6 +41,7 @@ public class Schema extends SqlObject {
     private final Map<String, RowAccessPolicy> rowAccessPolicies;
     private final Map<String, Tag> tags;
     private final Map<String, Stage> stages;
+    private final Map<String, CortexSearchService> cortexSearchServices;
     private final Map<String, FileFormat> fileFormats;
 
     /**
@@ -62,6 +63,11 @@ public class Schema extends SqlObject {
      * A member's name as Snowflake reports it: fully qualified, or as much of the path as is known when
      * this schema has not been registered with a database (a detached clone, say).
      */
+    /** {@code database.schema.member} — the fully spelled name a DDL miss is reported under. */
+    public String qualifiedName(final String memberName) {
+        return qualified(memberName);
+    }
+
     private String qualified(final String memberName) {
         final String prefix = databaseName != null ? databaseName + "." + getName() + "." : getName() + ".";
         return prefix + memberName;
@@ -83,6 +89,7 @@ public class Schema extends SqlObject {
         this.rowAccessPolicies = new ConcurrentHashMap<>();
         this.tags = new ConcurrentHashMap<>();
         this.stages = new ConcurrentHashMap<>();
+        this.cortexSearchServices = new ConcurrentHashMap<>();
         this.fileFormats = new ConcurrentHashMap<>();
     }
 
@@ -120,6 +127,18 @@ public class Schema extends SqlObject {
 
     public Table getTable(final String name) {
         return getTable(name, qualified(name), "Table");
+    }
+
+    /**
+     * The table a SQL reference names, matched EXACTLY. Live reports a miss as
+     * {@code Object 'DB.SCHEMA.MIXEDTBL' does not exist or not authorized.} — "Object", not "Table".
+     */
+    public Table tableExact(final String name) {
+        final Table table = tables.get(name.toUpperCase());
+        if (table == null || !table.getName().equals(name)) {
+            return null;
+        }
+        return table;
     }
 
     /**
@@ -609,6 +628,10 @@ public class Schema extends SqlObject {
         tasks.remove(name.toUpperCase());
     }
 
+    public boolean hasTask(final String name) {
+        return tasks.containsKey(name.toUpperCase());
+    }
+
     public Task getTask(final String name) {
         Task task = tasks.get(name.toUpperCase());
         if (task == null) {
@@ -927,6 +950,37 @@ public class Schema extends SqlObject {
 
     public List<Stage> getStages() {
         return new ArrayList<>(stages.values());
+    }
+
+    // Cortex search services
+    public void addCortexSearchService(final CortexSearchService service) {
+        service.setDatabaseName(databaseName);
+        service.setSchemaName(getName());
+        cortexSearchServices.put(service.getName().toUpperCase(), service);
+    }
+
+    public void dropCortexSearchService(final String name) {
+        final String upper = name.toUpperCase();
+        if (!cortexSearchServices.containsKey(upper)) {
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Cortex Search Service", qualified(name)));
+        }
+        cortexSearchServices.remove(upper);
+    }
+
+    public CortexSearchService getCortexSearchService(final String name) {
+        final CortexSearchService service = cortexSearchServices.get(name.toUpperCase());
+        if (service == null) {
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Cortex Search Service", qualified(name)));
+        }
+        return service;
+    }
+
+    public boolean hasCortexSearchService(final String name) {
+        return cortexSearchServices.containsKey(name.toUpperCase());
+    }
+
+    public List<CortexSearchService> getCortexSearchServices() {
+        return new ArrayList<>(cortexSearchServices.values());
     }
 
     // Tags

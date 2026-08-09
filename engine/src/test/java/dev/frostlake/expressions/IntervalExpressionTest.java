@@ -17,6 +17,7 @@
 package dev.frostlake.expressions;
 
 import dev.frostlake.BaseJdbcTest;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
@@ -129,6 +130,9 @@ public class IntervalExpressionTest extends BaseJdbcTest {
 
     @Test
     public void unitSuffixedIntervalProjectsAsAValue() throws SQLException {
+        Assumptions.assumeFalse(isLiveSnowflake(),
+            "the Snowflake JDBC driver cannot marshal an interval result column — it fails with "
+            + "\"Feature unsupported: data type: 50006\" before the value reaches the test");
         // Live-verified: the <amount> <singular-unit> spelling is a first-class value —
         // SYSTEM$TYPEOF(INTERVAL '1' DAY) is "INTERVAL DAY(9)[SB16]", it aliases, and it survives
         // TO_VARCHAR. (The Snowflake JDBC driver cannot RENDER an interval result column, "No enum

@@ -22,6 +22,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -242,12 +243,16 @@ public class UserRoleTest extends BaseDatabaseTest {
         ResultSet grants = engine.executeQuery("SHOW GRANTS TO ROLE admin_role");
         assertTrue(grants.getRowCount() >= 1);
 
+        // GRANT ALL expands (live-verified): SELECT on the table appears as its own row and NO
+        // row is named ALL.
         boolean found = false;
         for (int i = 0; i < grants.getRowCount(); i++) {
-            if ("ALL".equals(grants.getRows().get(i).getValue(1)) &&
-                "ALL_PRIV_TEST".equals(grants.getRows().get(i).getValue(3))) {
+            assertFalse("ALL".equals(grants.getRows().get(i).getValue(1)),
+                "no ALL marker row may appear");
+            // The grant's object name: bare here, database.schema-qualified on a real account.
+            if ("SELECT".equals(grants.getRows().get(i).getValue(1)) &&
+                String.valueOf(grants.getRows().get(i).getValue(3)).endsWith("ALL_PRIV_TEST")) {
                 found = true;
-                break;
             }
         }
         assertTrue(found, "ALL privileges should be granted");

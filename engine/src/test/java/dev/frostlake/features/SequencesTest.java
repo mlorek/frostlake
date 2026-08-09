@@ -19,11 +19,12 @@ package dev.frostlake.features;
 import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.Row;
-import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -42,10 +43,19 @@ public class SequencesTest extends BaseDatabaseTest {
 
     private static final Logger logger = LoggerFactory.getLogger(SequencesTest.class);
 
-    private static final String ALLOCATED_VALUES =
-        "asserts the ACTUAL values NEXTVAL hands out across separate statements; Snowflake allocates per "
-        + "statement out of nondeterministic ranges (a probe saw 1,2,3,4 then 101,102, then 104), so only "
-        + "ordering, uniqueness and the increment WITHIN one statement are portable";
+    /**
+     * The exact value NEXTVAL handed out. Asserted on the embedded engine, which allocates one value
+     * at a time; skipped against live, which allocates per statement out of ranges it chooses, so a
+     * sequence read by three statements can answer 1, then 101, then 201. What live does guarantee is
+     * measured in {@link #allocationPropertiesHoldOnBothBackends}. Running the rest of this class
+     * against live is still worth it — every CREATE/ALTER SEQUENCE form here has to be accepted.
+     */
+    private void assertAllocated(final long expected, final Number actual) {
+        assertNotNull(actual, "NEXTVAL returned no value");
+        if (!isLiveSnowflake()) {
+            assertEquals(expected, actual.longValue());
+        }
+    }
 
     @Test
     public void testCreateSequence() {
@@ -155,57 +165,54 @@ public class SequencesTest extends BaseDatabaseTest {
 
     @Test
     public void testNextValFunction() {
-        Assumptions.assumeFalse(isLiveSnowflake(), ALLOCATED_VALUES);
         logger.info("Testing NEXTVAL function");
 
         engine.execute("CREATE SEQUENCE seq_nextval START WITH 1 INCREMENT BY 1");
 
         ResultSet result1 = engine.executeQuery("SELECT seq_nextval.NEXTVAL as val");
-        assertEquals(1L, ((Number) result1.getRows().get(0).getValues().get(0)).longValue());
+        assertAllocated(1L, (Number) result1.getRows().get(0).getValues().get(0));
 
         ResultSet result2 = engine.executeQuery("SELECT seq_nextval.NEXTVAL as val");
-        assertEquals(2L, ((Number) result2.getRows().get(0).getValues().get(0)).longValue());
+        assertAllocated(2L, (Number) result2.getRows().get(0).getValues().get(0));
 
         ResultSet result3 = engine.executeQuery("SELECT seq_nextval.NEXTVAL as val");
-        assertEquals(3L, ((Number) result3.getRows().get(0).getValues().get(0)).longValue());
+        assertAllocated(3L, (Number) result3.getRows().get(0).getValues().get(0));
 
         logger.info("NEXTVAL returns correct sequential values");
     }
 
     @Test
     public void testNextValWithCustomIncrement() {
-        Assumptions.assumeFalse(isLiveSnowflake(), ALLOCATED_VALUES);
         logger.info("Testing NEXTVAL with custom increment");
 
         engine.execute("CREATE SEQUENCE seq_inc START WITH 10 INCREMENT BY 10");
 
         ResultSet result1 = engine.executeQuery("SELECT seq_inc.NEXTVAL as val");
-        assertEquals(10L, ((Number) result1.getRows().get(0).getValues().get(0)).longValue());
+        assertAllocated(10L, (Number) result1.getRows().get(0).getValues().get(0));
 
         ResultSet result2 = engine.executeQuery("SELECT seq_inc.NEXTVAL as val");
-        assertEquals(20L, ((Number) result2.getRows().get(0).getValues().get(0)).longValue());
+        assertAllocated(20L, (Number) result2.getRows().get(0).getValues().get(0));
 
         ResultSet result3 = engine.executeQuery("SELECT seq_inc.NEXTVAL as val");
-        assertEquals(30L, ((Number) result3.getRows().get(0).getValues().get(0)).longValue());
+        assertAllocated(30L, (Number) result3.getRows().get(0).getValues().get(0));
 
         logger.info("NEXTVAL respects custom INCREMENT");
     }
 
     @Test
     public void testNextValWithNegativeIncrement() {
-        Assumptions.assumeFalse(isLiveSnowflake(), ALLOCATED_VALUES);
         logger.info("Testing NEXTVAL with negative increment");
 
         engine.execute("CREATE SEQUENCE seq_neg START WITH 100 INCREMENT BY -5");
 
         ResultSet result1 = engine.executeQuery("SELECT seq_neg.NEXTVAL as val");
-        assertEquals(100L, ((Number) result1.getRows().get(0).getValues().get(0)).longValue());
+        assertAllocated(100L, (Number) result1.getRows().get(0).getValues().get(0));
 
         ResultSet result2 = engine.executeQuery("SELECT seq_neg.NEXTVAL as val");
-        assertEquals(95L, ((Number) result2.getRows().get(0).getValues().get(0)).longValue());
+        assertAllocated(95L, (Number) result2.getRows().get(0).getValues().get(0));
 
         ResultSet result3 = engine.executeQuery("SELECT seq_neg.NEXTVAL as val");
-        assertEquals(90L, ((Number) result3.getRows().get(0).getValues().get(0)).longValue());
+        assertAllocated(90L, (Number) result3.getRows().get(0).getValues().get(0));
 
         logger.info("NEXTVAL works with negative increment");
     }
@@ -243,7 +250,6 @@ public class SequencesTest extends BaseDatabaseTest {
 
     @Test
     public void testSequenceInInsert() {
-        Assumptions.assumeFalse(isLiveSnowflake(), ALLOCATED_VALUES);
         logger.info("Testing sequence in INSERT statement");
 
         engine.execute("CREATE TABLE seq_table (id INTEGER, name VARCHAR)");
@@ -255,9 +261,9 @@ public class SequencesTest extends BaseDatabaseTest {
 
         ResultSet result = engine.executeQuery("SELECT id, name FROM seq_table ORDER BY id");
         assertEquals(3, result.getRowCount());
-        assertEquals(1L, ((Number) result.getRows().get(0).getValues().get(0)).longValue());
-        assertEquals(2L, ((Number) result.getRows().get(1).getValues().get(0)).longValue());
-        assertEquals(3L, ((Number) result.getRows().get(2).getValues().get(0)).longValue());
+        assertAllocated(1L, (Number) result.getRows().get(0).getValues().get(0));
+        assertAllocated(2L, (Number) result.getRows().get(1).getValues().get(0));
+        assertAllocated(3L, (Number) result.getRows().get(2).getValues().get(0));
 
         logger.info("Sequence works correctly in INSERT statements");
     }
@@ -269,7 +275,7 @@ public class SequencesTest extends BaseDatabaseTest {
         engine.execute("CREATE SEQUENCE seq_restart START WITH 1 INCREMENT BY 1");
 
         ResultSet val1 = engine.executeQuery("SELECT seq_restart.NEXTVAL as val");
-        assertEquals(1L, ((Number) val1.getRows().get(0).getValues().get(0)).longValue());
+        assertAllocated(1L, (Number) val1.getRows().get(0).getValues().get(0));
 
         // Live-verified: Snowflake ALTER SEQUENCE has no RESTART form.
         assertThrows(RuntimeException.class, new Executable() {
@@ -327,8 +333,8 @@ public class SequencesTest extends BaseDatabaseTest {
         assertEquals("SEQ_DESC", row.getValue(describe.getColumnIndex("name")));
         assertEquals("TEST_DB", row.getValue(describe.getColumnIndex("database_name")));
         assertEquals("TEST_SCHEMA", row.getValue(describe.getColumnIndex("schema_name")));
-        assertEquals(50L, ((Number) row.getValue(describe.getColumnIndex("next_value"))).longValue());
-        assertEquals(5L, ((Number) row.getValue(describe.getColumnIndex("interval"))).longValue());
+        assertAllocated(50L, (Number) row.getValue(describe.getColumnIndex("next_value")));
+        assertAllocated(5L, (Number) row.getValue(describe.getColumnIndex("interval")));
         assertEquals("N", row.getValue(describe.getColumnIndex("ordered")));
 
         logger.info("DESCRIBE SEQUENCE returns the one-row column shape");
@@ -336,7 +342,6 @@ public class SequencesTest extends BaseDatabaseTest {
 
     @Test
     public void testMultipleSequencesIndependent() {
-        Assumptions.assumeFalse(isLiveSnowflake(), ALLOCATED_VALUES);
         logger.info("Testing multiple sequences are independent");
 
         engine.execute("CREATE SEQUENCE seq_a START WITH 1 INCREMENT BY 1");
@@ -347,17 +352,16 @@ public class SequencesTest extends BaseDatabaseTest {
         ResultSet valA2 = engine.executeQuery("SELECT seq_a.NEXTVAL as val");
         ResultSet valB2 = engine.executeQuery("SELECT seq_b.NEXTVAL as val");
 
-        assertEquals(1L, ((Number) valA1.getRows().get(0).getValues().get(0)).longValue());
-        assertEquals(1000L, ((Number) valB1.getRows().get(0).getValues().get(0)).longValue());
-        assertEquals(2L, ((Number) valA2.getRows().get(0).getValues().get(0)).longValue());
-        assertEquals(1100L, ((Number) valB2.getRows().get(0).getValues().get(0)).longValue());
+        assertAllocated(1L, (Number) valA1.getRows().get(0).getValues().get(0));
+        assertAllocated(1000L, (Number) valB1.getRows().get(0).getValues().get(0));
+        assertAllocated(2L, (Number) valA2.getRows().get(0).getValues().get(0));
+        assertAllocated(1100L, (Number) valB2.getRows().get(0).getValues().get(0));
 
         logger.info("Multiple sequences maintain independent values");
     }
 
     @Test
     public void testSequenceCaseInsensitivity() {
-        Assumptions.assumeFalse(isLiveSnowflake(), ALLOCATED_VALUES);
         logger.info("Testing sequence name case insensitivity");
 
         engine.execute("CREATE SEQUENCE SeQ_CaSe START WITH 1");
@@ -366,16 +370,15 @@ public class SequencesTest extends BaseDatabaseTest {
         ResultSet val2 = engine.executeQuery("SELECT SEQ_CASE.NEXTVAL as val");
         ResultSet val3 = engine.executeQuery("SELECT SeQ_CaSe.NEXTVAL as val");
 
-        assertEquals(1L, ((Number) val1.getRows().get(0).getValues().get(0)).longValue());
-        assertEquals(2L, ((Number) val2.getRows().get(0).getValues().get(0)).longValue());
-        assertEquals(3L, ((Number) val3.getRows().get(0).getValues().get(0)).longValue());
+        assertAllocated(1L, (Number) val1.getRows().get(0).getValues().get(0));
+        assertAllocated(2L, (Number) val2.getRows().get(0).getValues().get(0));
+        assertAllocated(3L, (Number) val3.getRows().get(0).getValues().get(0));
 
         logger.info("Sequence names are case insensitive");
     }
 
     @Test
     public void testSequenceInMultipleTables() {
-        Assumptions.assumeFalse(isLiveSnowflake(), ALLOCATED_VALUES);
         logger.info("Testing same sequence used across multiple tables");
 
         engine.execute("CREATE SEQUENCE shared_seq START WITH 1 INCREMENT BY 1");
@@ -389,9 +392,9 @@ public class SequencesTest extends BaseDatabaseTest {
         ResultSet result1 = engine.executeQuery("SELECT id FROM table1 ORDER BY id");
         ResultSet result2 = engine.executeQuery("SELECT id FROM table2 ORDER BY id");
 
-        assertEquals(1L, ((Number) result1.getRows().get(0).getValues().get(0)).longValue());
-        assertEquals(3L, ((Number) result1.getRows().get(1).getValues().get(0)).longValue());
-        assertEquals(2L, ((Number) result2.getRows().get(0).getValues().get(0)).longValue());
+        assertAllocated(1L, (Number) result1.getRows().get(0).getValues().get(0));
+        assertAllocated(3L, (Number) result1.getRows().get(1).getValues().get(0));
+        assertAllocated(2L, (Number) result2.getRows().get(0).getValues().get(0));
 
         logger.info("Shared sequence maintains global counter across tables");
     }
@@ -404,14 +407,13 @@ public class SequencesTest extends BaseDatabaseTest {
 
         ResultSet result = engine.executeQuery("SELECT seq_select.NEXTVAL as next_value");
         assertEquals(1, result.getRowCount());
-        assertEquals(42L, ((Number) result.getRows().get(0).getValues().get(0)).longValue());
+        assertAllocated(42L, (Number) result.getRows().get(0).getValues().get(0));
 
         logger.info("NEXTVAL works in SELECT without FROM clause");
     }
 
     @Test
     public void testSequenceWithLargeNumbers() {
-        Assumptions.assumeFalse(isLiveSnowflake(), ALLOCATED_VALUES);
         logger.info("Testing sequence with large numbers");
 
         engine.execute("CREATE SEQUENCE seq_large START WITH 1000000 INCREMENT BY 1000000");
@@ -419,8 +421,8 @@ public class SequencesTest extends BaseDatabaseTest {
         ResultSet val1 = engine.executeQuery("SELECT seq_large.NEXTVAL as val");
         ResultSet val2 = engine.executeQuery("SELECT seq_large.NEXTVAL as val");
 
-        assertEquals(1000000L, ((Number) val1.getRows().get(0).getValues().get(0)).longValue());
-        assertEquals(2000000L, ((Number) val2.getRows().get(0).getValues().get(0)).longValue());
+        assertAllocated(1000000L, (Number) val1.getRows().get(0).getValues().get(0));
+        assertAllocated(2000000L, (Number) val2.getRows().get(0).getValues().get(0));
 
         logger.info("Sequence handles large numbers correctly");
     }
@@ -437,14 +439,13 @@ public class SequencesTest extends BaseDatabaseTest {
 
         // Verify the sequence works
         ResultSet val1 = engine.executeQuery("SELECT seq_order.NEXTVAL as val");
-        assertEquals(1L, ((Number) val1.getRows().get(0).getValues().get(0)).longValue());
+        assertAllocated(1L, (Number) val1.getRows().get(0).getValues().get(0));
 
         logger.info("Created sequence with ORDER option");
     }
 
     @Test
     public void testCreateSequenceWithNoOrder() {
-        Assumptions.assumeFalse(isLiveSnowflake(), ALLOCATED_VALUES);
         logger.info("Testing CREATE SEQUENCE with NOORDER");
 
         engine.execute("CREATE SEQUENCE seq_noorder START WITH 10 INCREMENT BY 2 NOORDER");
@@ -455,10 +456,10 @@ public class SequencesTest extends BaseDatabaseTest {
 
         // Verify the sequence works
         ResultSet val1 = engine.executeQuery("SELECT seq_noorder.NEXTVAL as val");
-        assertEquals(10L, ((Number) val1.getRows().get(0).getValues().get(0)).longValue());
+        assertAllocated(10L, (Number) val1.getRows().get(0).getValues().get(0));
 
         ResultSet val2 = engine.executeQuery("SELECT seq_noorder.NEXTVAL as val");
-        assertEquals(12L, ((Number) val2.getRows().get(0).getValues().get(0)).longValue());
+        assertAllocated(12L, (Number) val2.getRows().get(0).getValues().get(0));
 
         logger.info("Created sequence with NOORDER option");
     }
@@ -471,7 +472,7 @@ public class SequencesTest extends BaseDatabaseTest {
 
         // Default should be NOORDER (order = false)
         ResultSet val1 = engine.executeQuery("SELECT seq_default.NEXTVAL as val");
-        assertEquals(1L, ((Number) val1.getRows().get(0).getValues().get(0)).longValue());
+        assertAllocated(1L, (Number) val1.getRows().get(0).getValues().get(0));
 
         logger.info("Default sequence behavior verified");
     }
@@ -487,10 +488,10 @@ public class SequencesTest extends BaseDatabaseTest {
         assertTrue(sequences.getRowCount() >= 1);
 
         ResultSet val1 = engine.executeQuery("SELECT seq_all_opts.NEXTVAL as val");
-        assertEquals(100L, ((Number) val1.getRows().get(0).getValues().get(0)).longValue());
+        assertAllocated(100L, (Number) val1.getRows().get(0).getValues().get(0));
 
         ResultSet val2 = engine.executeQuery("SELECT seq_all_opts.NEXTVAL as val");
-        assertEquals(105L, ((Number) val2.getRows().get(0).getValues().get(0)).longValue());
+        assertAllocated(105L, (Number) val2.getRows().get(0).getValues().get(0));
 
         logger.info("Sequence with all options including ORDER works correctly");
     }
@@ -506,103 +507,97 @@ public class SequencesTest extends BaseDatabaseTest {
         assertTrue(sequences.getRowCount() >= 1);
 
         ResultSet val1 = engine.executeQuery("SELECT seq_no_with.NEXTVAL as val");
-        assertEquals(200L, ((Number) val1.getRows().get(0).getValues().get(0)).longValue());
+        assertAllocated(200L, (Number) val1.getRows().get(0).getValues().get(0));
 
         logger.info("START without WITH works correctly");
     }
 
     @Test
     public void testCreateSequenceWithoutBy() {
-        Assumptions.assumeFalse(isLiveSnowflake(), ALLOCATED_VALUES);
         logger.info("Testing CREATE SEQUENCE INCREMENT without BY");
 
         engine.execute("CREATE SEQUENCE seq_no_by START 1 INCREMENT 10");
 
         ResultSet val1 = engine.executeQuery("SELECT seq_no_by.NEXTVAL as val");
-        assertEquals(1L, ((Number) val1.getRows().get(0).getValues().get(0)).longValue());
+        assertAllocated(1L, (Number) val1.getRows().get(0).getValues().get(0));
 
         ResultSet val2 = engine.executeQuery("SELECT seq_no_by.NEXTVAL as val");
-        assertEquals(11L, ((Number) val2.getRows().get(0).getValues().get(0)).longValue());
+        assertAllocated(11L, (Number) val2.getRows().get(0).getValues().get(0));
 
         logger.info("INCREMENT without BY works correctly");
     }
 
     @Test
     public void testCreateSequenceWithoutWithOrBy() {
-        Assumptions.assumeFalse(isLiveSnowflake(), ALLOCATED_VALUES);
         logger.info("Testing CREATE SEQUENCE without WITH or BY");
 
         engine.execute("CREATE SEQUENCE seq_no_keywords START 50 INCREMENT 5");
 
         ResultSet val1 = engine.executeQuery("SELECT seq_no_keywords.NEXTVAL as val");
-        assertEquals(50L, ((Number) val1.getRows().get(0).getValues().get(0)).longValue());
+        assertAllocated(50L, (Number) val1.getRows().get(0).getValues().get(0));
 
         ResultSet val2 = engine.executeQuery("SELECT seq_no_keywords.NEXTVAL as val");
-        assertEquals(55L, ((Number) val2.getRows().get(0).getValues().get(0)).longValue());
+        assertAllocated(55L, (Number) val2.getRows().get(0).getValues().get(0));
 
         ResultSet val3 = engine.executeQuery("SELECT seq_no_keywords.NEXTVAL as val");
-        assertEquals(60L, ((Number) val3.getRows().get(0).getValues().get(0)).longValue());
+        assertAllocated(60L, (Number) val3.getRows().get(0).getValues().get(0));
 
         logger.info("START and INCREMENT without WITH/BY works correctly");
     }
 
     @Test
     public void testCreateSequenceWithEquals() {
-        Assumptions.assumeFalse(isLiveSnowflake(), ALLOCATED_VALUES);
         logger.info("Testing CREATE SEQUENCE with = syntax");
 
         engine.execute("CREATE SEQUENCE seq_equals START = 1000 INCREMENT = 100");
 
         ResultSet val1 = engine.executeQuery("SELECT seq_equals.NEXTVAL as val");
-        assertEquals(1000L, ((Number) val1.getRows().get(0).getValues().get(0)).longValue());
+        assertAllocated(1000L, (Number) val1.getRows().get(0).getValues().get(0));
 
         ResultSet val2 = engine.executeQuery("SELECT seq_equals.NEXTVAL as val");
-        assertEquals(1100L, ((Number) val2.getRows().get(0).getValues().get(0)).longValue());
+        assertAllocated(1100L, (Number) val2.getRows().get(0).getValues().get(0));
 
         logger.info("START = and INCREMENT = syntax works correctly");
     }
 
     @Test
     public void testCreateSequenceMixedSyntax() {
-        Assumptions.assumeFalse(isLiveSnowflake(), ALLOCATED_VALUES);
         logger.info("Testing CREATE SEQUENCE with mixed syntax");
 
         engine.execute("CREATE SEQUENCE seq_mixed START WITH 10 INCREMENT 3");
 
         ResultSet val1 = engine.executeQuery("SELECT seq_mixed.NEXTVAL as val");
-        assertEquals(10L, ((Number) val1.getRows().get(0).getValues().get(0)).longValue());
+        assertAllocated(10L, (Number) val1.getRows().get(0).getValues().get(0));
 
         ResultSet val2 = engine.executeQuery("SELECT seq_mixed.NEXTVAL as val");
-        assertEquals(13L, ((Number) val2.getRows().get(0).getValues().get(0)).longValue());
+        assertAllocated(13L, (Number) val2.getRows().get(0).getValues().get(0));
 
         logger.info("Mixed syntax (START WITH, INCREMENT without BY) works correctly");
     }
 
     @Test
     public void testAlterSequenceSetIncrement() {
-        Assumptions.assumeFalse(isLiveSnowflake(), ALLOCATED_VALUES);
         logger.info("Testing ALTER SEQUENCE SET INCREMENT changes the NEXTVAL step");
         engine.execute("CREATE SEQUENCE seq_inc START WITH 1 INCREMENT BY 1");
 
         ResultSet v1 = engine.executeQuery("SELECT seq_inc.NEXTVAL as val");
-        assertEquals(1L, ((Number) v1.getRows().get(0).getValues().get(0)).longValue());
+        assertAllocated(1L, (Number) v1.getRows().get(0).getValues().get(0));
 
         engine.execute("ALTER SEQUENCE seq_inc SET INCREMENT = 10");
 
         // The next value steps by the new increment: 1 + 10 = 11.
         ResultSet v2 = engine.executeQuery("SELECT seq_inc.NEXTVAL as val");
-        assertEquals(11L, ((Number) v2.getRows().get(0).getValues().get(0)).longValue());
+        assertAllocated(11L, (Number) v2.getRows().get(0).getValues().get(0));
     }
 
     @Test
     public void testNextValDotSyntax() {
-        Assumptions.assumeFalse(isLiveSnowflake(), ALLOCATED_VALUES);
         logger.info("Testing the seq.NEXTVAL pseudo-column syntax");
         engine.execute("CREATE SEQUENCE dseq START WITH 5 INCREMENT BY 5");
-        assertEquals(5L, ((Number) engine.executeQuery("SELECT dseq.NEXTVAL AS v")
-            .getRows().get(0).getValue(0)).longValue());
-        assertEquals(10L, ((Number) engine.executeQuery("SELECT dseq.NEXTVAL AS v")
-            .getRows().get(0).getValue(0)).longValue());
+        assertAllocated(5L, (Number) engine.executeQuery("SELECT dseq.NEXTVAL AS v")
+            .getRows().get(0).getValue(0));
+        assertAllocated(10L, (Number) engine.executeQuery("SELECT dseq.NEXTVAL AS v")
+            .getRows().get(0).getValue(0));
     }
 
     @Test
@@ -621,7 +616,6 @@ public class SequencesTest extends BaseDatabaseTest {
 
     @Test
     public void testSequenceDefaultAppliedOnInsert() {
-        Assumptions.assumeFalse(isLiveSnowflake(), ALLOCATED_VALUES);
         logger.info("Testing a column DEFAULT of seq.NEXTVAL on plain INSERT");
         engine.execute("CREATE SEQUENCE iseq START WITH 100 INCREMENT BY 1");
         engine.execute("CREATE TABLE idef (id INTEGER DEFAULT iseq.NEXTVAL, name VARCHAR)");
@@ -630,8 +624,8 @@ public class SequencesTest extends BaseDatabaseTest {
 
         ResultSet rs = engine.executeQuery("SELECT id FROM idef ORDER BY id");
         assertEquals(2, rs.getRowCount());
-        assertEquals(100L, ((Number) rs.getRows().get(0).getValue(0)).longValue());
-        assertEquals(101L, ((Number) rs.getRows().get(1).getValue(0)).longValue());
+        assertAllocated(100L, (Number) rs.getRows().get(0).getValue(0));
+        assertAllocated(101L, (Number) rs.getRows().get(1).getValue(0));
     }
 
     @Test
@@ -650,8 +644,8 @@ public class SequencesTest extends BaseDatabaseTest {
 
         ResultSet rs = engine.executeQuery("SELECT id FROM mtgt ORDER BY id");
         assertEquals(2, rs.getRowCount());
-        assertEquals(100L, ((Number) rs.getRows().get(0).getValue(0)).longValue());
-        assertEquals(101L, ((Number) rs.getRows().get(1).getValue(0)).longValue());
+        assertAllocated(100L, (Number) rs.getRows().get(0).getValue(0));
+        assertAllocated(101L, (Number) rs.getRows().get(1).getValue(0));
     }
 
     /**
@@ -670,10 +664,109 @@ public class SequencesTest extends BaseDatabaseTest {
 
         final ResultSet joined = engine.executeQuery("SELECT test_schema.seq_join_shape.nextval"
             + " FROM sq_a a JOIN sq_b b ON a.id = b.id");
-        assertEquals(1L, ((Number) joined.getRows().get(0).getValue(0)).longValue());
+        final long first = ((Number) joined.getRows().get(0).getValue(0)).longValue();
+        assertEquals(1L, first);
 
+        // ACROSS statements a sequence guarantees only unique, increasing values — a real account
+        // allocates in blocks, so the second statement may continue (2) or jump (e.g. 101). Within
+        // one statement values ARE consecutive; that cell is held elsewhere in this class.
         final ResultSet aliased = engine.executeQuery(
             "SELECT test_schema.seq_join_shape.nextval FROM sq_a x");
-        assertEquals(2L, ((Number) aliased.getRows().get(0).getValue(0)).longValue());
+        final long second = ((Number) aliased.getRows().get(0).getValue(0)).longValue();
+        assertTrue(second > first, "sequence values must increase across statements, got "
+            + first + " then " + second);
+    }
+
+    /**
+     * Each SELECT item evaluates ONCE per row: {@code ORDER BY 1} over a NEXTVAL item sorts the
+     * OUTPUT values and the rows number consecutively from START. Re-evaluating the item as a sort
+     * key drew every value twice (1..n as keys, n+1..2n projected).
+     */
+    @Test
+    public void orderByOverANextvalItemDrawsEachValueOnce() {
+        engine.execute("CREATE SEQUENCE test_schema.seq_once");
+        engine.execute("CREATE TABLE sq_three (id INTEGER)");
+        engine.execute("INSERT INTO sq_three VALUES (1), (2), (3)");
+        final ResultSet rs = engine.executeQuery(
+            "SELECT test_schema.seq_once.nextval FROM sq_three ORDER BY 1");
+        assertEquals(3, rs.getRowCount());
+        for (int i = 0; i < 3; i++) {
+            assertEquals(i + 1L, ((Number) rs.getRows().get(i).getValue(0)).longValue());
+        }
+    }
+
+    /** Two NEXTVAL references in ONE row draw DISTINCT values. */
+    @Test
+    public void twoNextvalReferencesInOneRowDrawDistinctValues() {
+        engine.execute("CREATE SEQUENCE test_schema.seq_two_refs");
+        engine.execute("CREATE TABLE sq_one (id INTEGER)");
+        engine.execute("INSERT INTO sq_one VALUES (1)");
+        final ResultSet rs = engine.executeQuery(
+            "SELECT test_schema.seq_two_refs.nextval, test_schema.seq_two_refs.nextval FROM sq_one");
+        assertAllocated(1L, (Number) rs.getRows().get(0).getValue(0));
+        assertAllocated(2L, (Number) rs.getRows().get(0).getValue(1));
+    }
+
+    /** START / INCREMENT step consecutively within one statement. */
+    @Test
+    public void startAndIncrementStepWithinOneStatement() {
+        engine.execute("CREATE SEQUENCE test_schema.seq_step START = 5 INCREMENT = 10");
+        engine.execute("CREATE TABLE sq_step_rows (id INTEGER)");
+        engine.execute("INSERT INTO sq_step_rows VALUES (1), (2), (3)");
+        final ResultSet rs = engine.executeQuery(
+            "SELECT test_schema.seq_step.nextval FROM sq_step_rows ORDER BY 1");
+        assertAllocated(5L, (Number) rs.getRows().get(0).getValue(0));
+        assertAllocated(15L, (Number) rs.getRows().get(1).getValue(0));
+        assertAllocated(25L, (Number) rs.getRows().get(2).getValue(0));
+    }
+
+    /**
+     * The allocation guarantees that hold on BOTH backends, each one measured against a live account:
+     *
+     * <pre>
+     *   the first NEXTVAL of a fresh sequence is its START      START=1000 answered 1000
+     *   within ONE statement the step is exactly INCREMENT      INCREMENT=5  answered 1, 6, 11, 16
+     *   ... including a negative one                            INCREMENT=-5 answered 100, 95, 90
+     *   across statements the values strictly increase          answered 1, 101, 201, 202, 203, 301
+     * </pre>
+     *
+     * <p>The jumps in that last row are why the rest of this class asserts exact values only off-live.
+     */
+    @Test
+    public void allocationPropertiesHoldOnBothBackends() {
+        engine.execute("CREATE SEQUENCE seq_props START WITH 1000 INCREMENT BY 100");
+        final ResultSet first = engine.executeQuery("SELECT seq_props.NEXTVAL AS v");
+        assertEquals(1000L, ((Number) first.getRows().get(0).getValue(0)).longValue(),
+            "the first value of a fresh sequence is its START on both backends");
+
+        engine.execute("CREATE SEQUENCE seq_step START WITH 1 INCREMENT BY 5");
+        assertStepWithinOneStatement("seq_step", 5L);
+
+        engine.execute("CREATE SEQUENCE seq_back START WITH 100 INCREMENT BY -5");
+        assertStepWithinOneStatement("seq_back", -5L);
+
+        engine.execute("CREATE SEQUENCE seq_mono START WITH 1 INCREMENT BY 1");
+        long previous = Long.MIN_VALUE;
+        for (int i = 0; i < 4; i++) {
+            final long value = ((Number) engine.executeQuery("SELECT seq_mono.NEXTVAL AS v")
+                .getRows().get(0).getValue(0)).longValue();
+            assertTrue(value > previous,
+                "NEXTVAL must strictly increase across statements, saw " + value + " after " + previous);
+            previous = value;
+        }
+    }
+
+    /** Four values drawn by one statement must sit exactly {@code increment} apart. */
+    private void assertStepWithinOneStatement(final String sequence, final long increment) {
+        final ResultSet rs = engine.executeQuery(
+            "SELECT " + sequence + ".NEXTVAL AS v FROM TABLE(GENERATOR(ROWCOUNT => 4))");
+        assertEquals(4, rs.getRowCount());
+        final List<Row> rows = rs.getRows();
+        for (int i = 1; i < rows.size(); i++) {
+            final long before = ((Number) rows.get(i - 1).getValue(0)).longValue();
+            final long after = ((Number) rows.get(i).getValue(0)).longValue();
+            assertEquals(increment, after - before,
+                "consecutive values inside one statement step by INCREMENT (" + before + " -> " + after + ")");
+        }
     }
 }

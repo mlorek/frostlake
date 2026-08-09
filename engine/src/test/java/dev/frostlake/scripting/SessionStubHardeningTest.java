@@ -139,14 +139,15 @@ public class SessionStubHardeningTest {
             HANDLER='CountNums.run'
             AS
             $$
-            import com.snowflake.snowpark_java.Session;
             import com.snowflake.snowpark_java.DataFrame;
+            import com.snowflake.snowpark_java.Row;
+            import com.snowflake.snowpark_java.Session;
 
             public class CountNums {
               public String run(Session session) {
                 DataFrame df = session.sql("SELECT COUNT(*) AS CNT FROM public.nums");
-                Object[] rows = df.collect();
-                return "count=" + ((dev.frostlake.storage.Row) rows[0]).getValue(0);
+                Row[] rows = df.collect();
+                return "count=" + rows[0].getLong(0);
               }
             }
             $$

@@ -18,6 +18,11 @@ package dev.frostlake.executor.commands;
 
 import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.executor.expressions.AntlrExpressionParser;
+import dev.frostlake.executor.udf.JavaFunctionCompiler;
+import dev.frostlake.executor.udf.UdfLanguageRuntime;
+import dev.frostlake.executor.udf.UdfRuntimes;
+import dev.frostlake.metastore.model.Function;
+import dev.frostlake.metastore.model.Procedure;
 import dev.frostlake.metastore.model.UdfLanguage;
 import dev.frostlake.parser.FrostlakeLexer;
 import dev.frostlake.parser.FrostlakeParser;
@@ -25,6 +30,8 @@ import dev.frostlake.parser.FrostlakeParser;
 import org.antlr.v4.runtime.CharStreams;
 import org.antlr.v4.runtime.CommonTokenStream;
 import org.antlr.v4.runtime.Token;
+
+import java.lang.reflect.Method;
 
 /**
  * Compiles the body of a {@code LANGUAGE SQL} routine at CREATE time, the way Snowflake does — a body that does
@@ -45,14 +52,36 @@ import org.antlr.v4.runtime.Token;
  *       takes no block: Snowflake reports the ordinary UDF syntax error for one.</li>
  * </ul>
  *
- * <p>Bodies declared in another language (JavaScript, Python, Java, Scala) are not SQL and are never inspected
- * here; their runtimes compile them.
+ * <p>A body declared in another language is not SQL and is never inspected by the two methods above; the
+ * {@code compile*Body(Function)} / {@code (Procedure)} pair below hands it to the language's own compiler
+ * instead, for the languages where a real account compiles at CREATE. Which those are is measured, and it
+ * is NOT "every language that has a compiler":
+ *
+ * <pre>
+ *                  FUNCTION   PROCEDURE
+ *   JAVASCRIPT       no          no
+ *   PYTHON          YES          no
+ *   JAVA            YES         YES
+ *   SCALA           YES         YES
+ * </pre>
+ *
+ * <p>So a JavaScript routine whose body is {@code 'not code at all'} is created without complaint and fails
+ * only when called, while the same body under LANGUAGE PYTHON is refused by CREATE — and a Python PROCEDURE
+ * with that body is created, though a Python FUNCTION with it is not. The table is transcribed rather than
+ * inferred, because no rule anyone would guess produces it.
+ *
+ * <p>These fail open on the same principle as the SQL checks: a language whose optional module is absent has
+ * no compiler to ask, an {@code IMPORTS} handler lives in a jar rather than in the body, and a routine with
+ * no body at all is somebody else's error. Refusing those would reject routines a real account accepts.
  *
  * <p>Every decision is made by the engine's own parser — {@link QueryExecutor#proceduralBlockOf(String)},
  * {@link QueryExecutor#queryStatementOf(String)} and {@link AntlrExpressionParser#parseTree(String)} —
  * never by sniffing the body text.
  */
 final class RoutineBodyCompiler {
+
+    /** Shared, like the UDF invoker's own: javac start-up is what costs, not the compile. */
+    private static final JavaFunctionCompiler JAVA_COMPILER = new JavaFunctionCompiler();
 
     private RoutineBodyCompiler() {
     }
@@ -146,5 +175,82 @@ final class RoutineBodyCompiler {
         final String text = token.getType() == Token.EOF ? "<EOF>" : token.getText();
         return "line " + token.getLine() + " at position " + token.getCharPositionInLine()
             + " unexpected '" + text + "'";
+    }
+
+    // ── the non-SQL half: hand the body to the language's own compiler ────────────
+
+    /** Compile {@code function}'s body, throwing whatever its compiler said if it will not build. */
+    static void compileFunctionBody(final Function function) {
+        if (function == null || !judgeable(function.getUdfLanguage(), function.getBody(),
+                function.getImports().isEmpty())) {
+            return;
+        }
+        if (function.getUdfLanguage() == UdfLanguage.JAVA) {
+            compileJava(function.getBody(), function.getHandler(),
+                function.getParameters() == null ? 0 : function.getParameters().size(),
+                function.getName());
+            return;
+        }
+        final UdfLanguageRuntime runtime = UdfRuntimes.installed(function.getUdfLanguage());
+        if (runtime != null) {
+            runtime.compileFunction(function);
+        }
+    }
+
+    /** Compile {@code procedure}'s body — see the language table for which languages that means. */
+    static void compileProcedureBody(final Procedure procedure) {
+        if (procedure == null || procedure.getUdfLanguage() == UdfLanguage.PYTHON
+                || !judgeable(procedure.getUdfLanguage(), procedure.getBody(),
+                    procedure.getImports().isEmpty())) {
+            return;
+        }
+        if (procedure.getUdfLanguage() == UdfLanguage.JAVA) {
+            // A Java procedure's handler takes a leading Session the declared parameter list does not
+            // mention, so its arity is one more than the signature. Live counts it the same way — a
+            // no-argument procedure whose handler cannot be found is refused "with 1 arguments".
+            compileJava(procedure.getBody(), procedure.getHandler(),
+                procedure.getParameters().size() + 1, procedure.getName());
+            return;
+        }
+        final UdfLanguageRuntime runtime = UdfRuntimes.installed(procedure.getUdfLanguage());
+        if (runtime != null) {
+            runtime.compileProcedure(procedure);
+        }
+    }
+
+    /** Whether a body of this language is the engine's to judge at all. */
+    private static boolean judgeable(final UdfLanguage language, final String body,
+                                     final boolean inlineBody) {
+        return inlineBody
+            && body != null
+            && !body.trim().isEmpty()
+            && (language == UdfLanguage.JAVA
+                || language == UdfLanguage.PYTHON
+                || language == UdfLanguage.SCALA);
+    }
+
+    /**
+     * Compile an inline Java body and confirm the handler is in it. An {@code arity} of -1 skips the
+     * argument-count check, which a procedure needs: its handler takes a leading session argument the
+     * declared parameter list does not mention.
+     */
+    private static void compileJava(final String body, final String handler, final int arity,
+                                    final String routineName) {
+        final int dot = handler == null ? -1 : handler.lastIndexOf('.');
+        if (dot < 0) {
+            return;
+        }
+        final String methodName = handler.substring(dot + 1);
+        final Class<?> compiled = JAVA_COMPILER.compile(body, handler.substring(0, dot));
+        if (arity < 0) {
+            return;
+        }
+        for (final Method method : compiled.getMethods()) {
+            if (method.getName().equals(methodName) && method.getParameterCount() == arity) {
+                return;
+            }
+        }
+        throw new RuntimeException("Failed to find a public method named \"" + methodName + "\" with "
+            + arity + " arguments in function " + routineName + " with handler " + handler);
     }
 }

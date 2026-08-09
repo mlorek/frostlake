@@ -38,9 +38,27 @@ public class User {
     private final LocalDateTime createdTime;
     private boolean enabled;
     private String comment;
+    private String loginName;
+    private String displayName;
+    private String firstName;
+    private String middleName;
+    private String lastName;
+    private String email;
+    private String defaultWarehouse;
+    private String defaultNamespace;
+    private String defaultSecondaryRoles = "[\"ALL\"]";
+    private boolean mustChangePassword;
+    private String userType = "PERSON";
 
     public User(final String name) {
         this.name = name.toUpperCase();
+        // A user created without one takes their own name for both, so the defaults are
+        // MATERIALISED here rather than substituted on read. Two behaviours depend on it: UNSET
+        // DISPLAY_NAME leaves nothing behind (a read-time fallback could not tell that apart from
+        // never having set one), and RENAME moves only the NAME — a renamed user keeps the login
+        // and display names they had, defaults included.
+        this.displayName = this.name;
+        this.loginName = this.name;
         this.grantedRoles = new HashSet<>();
         this.objectPrivileges = new HashMap<>();
         this.columnPrivileges = new HashMap<>();
@@ -223,6 +241,100 @@ public class User {
             result.put(entry.getKey(), new HashMap<>(entry.getValue()));
         }
         return result;
+    }
+
+    /** The name this user logs in with; live falls back to the user's name when it is unset. */
+    /** The user's login name: their own name unless one was given, and unchanged by a rename. */
+    public String getLoginName() {
+        return loginName;
+    }
+
+    public void setLoginName(final String loginName) {
+        this.loginName = loginName;
+    }
+
+    /** The user's display name: their own name unless one was given, and null once unset. */
+    public String getDisplayName() {
+        return displayName;
+    }
+
+    public void setDisplayName(final String displayName) {
+        this.displayName = displayName;
+    }
+
+    public String getFirstName() {
+        return firstName;
+    }
+
+    public void setFirstName(final String firstName) {
+        this.firstName = firstName;
+    }
+
+    public String getMiddleName() {
+        return middleName;
+    }
+
+    public void setMiddleName(final String middleName) {
+        this.middleName = middleName;
+    }
+
+    public String getLastName() {
+        return lastName;
+    }
+
+    public void setLastName(final String lastName) {
+        this.lastName = lastName;
+    }
+
+    public String getEmail() {
+        return email;
+    }
+
+    public void setEmail(final String email) {
+        this.email = email;
+    }
+
+    public String getDefaultWarehouse() {
+        return defaultWarehouse;
+    }
+
+    public void setDefaultWarehouse(final String defaultWarehouse) {
+        this.defaultWarehouse = defaultWarehouse;
+    }
+
+    /** The database.schema a new session starts in, as SHOW USERS' default_namespace. */
+    public String getDefaultNamespace() {
+        return defaultNamespace;
+    }
+
+    public void setDefaultNamespace(final String defaultNamespace) {
+        this.defaultNamespace = defaultNamespace;
+    }
+
+    /** The secondary roles a session activates, which live reports as a JSON array. */
+    public String getDefaultSecondaryRoles() {
+        return defaultSecondaryRoles;
+    }
+
+    public void setDefaultSecondaryRoles(final String defaultSecondaryRoles) {
+        this.defaultSecondaryRoles = defaultSecondaryRoles;
+    }
+
+    public boolean isMustChangePassword() {
+        return mustChangePassword;
+    }
+
+    public void setMustChangePassword(final boolean mustChangePassword) {
+        this.mustChangePassword = mustChangePassword;
+    }
+
+    /** PERSON, SERVICE or LEGACY_SERVICE — live defaults a new user to PERSON. */
+    public String getUserType() {
+        return userType;
+    }
+
+    public void setUserType(final String userType) {
+        this.userType = userType;
     }
 
     public LocalDateTime getCreatedTime() {

@@ -18,6 +18,7 @@ package dev.frostlake.executor;
 
 import dev.frostlake.DatabaseEngine;
 import dev.frostlake.executor.expressions.SqlTruth;
+import dev.frostlake.config.AccountIdentity;
 import dev.frostlake.config.EngineConfig;
 import dev.frostlake.config.S3PathResolver;
 import dev.frostlake.executor.copy.CopyCommandExecutor;
@@ -26,6 +27,8 @@ import dev.frostlake.executor.expressions.BinaryOperationExpression;
 import dev.frostlake.executor.expressions.BinaryOperator;
 import dev.frostlake.executor.expressions.ColumnReferenceExpression;
 import dev.frostlake.executor.expressions.Expression;
+import dev.frostlake.executor.expressions.ExpressionSource;
+import dev.frostlake.executor.expressions.SourcePosition;
 import dev.frostlake.executor.expressions.LiteralExpression;
 import dev.frostlake.executor.expressions.LiteralType;
 import dev.frostlake.executor.operators.*;
@@ -61,6 +64,7 @@ import dev.frostlake.metastore.model.Privilege;
 import dev.frostlake.metastore.model.TaskState;
 import dev.frostlake.parser.FrostlakeLexer;
 import dev.frostlake.parser.FrostlakeParser;
+import dev.frostlake.persistence.WalStatementKinds;
 import dev.frostlake.parser.SqlSyntaxException;
 import dev.frostlake.parser.SyntaxErrorListener;
 import dev.frostlake.security.SecurityManager;
@@ -70,6 +74,7 @@ import dev.frostlake.storage.Row;
 import dev.frostlake.storage.StorageEngine;
 import dev.frostlake.stream.StreamManager;
 import dev.frostlake.system.SystemViews;
+import dev.frostlake.system.UnmodeledSystemViews;
 import dev.frostlake.task.TaskScheduler;
 import dev.frostlake.transaction.StreamReadScope;
 import dev.frostlake.transaction.TransactionManager;
@@ -139,6 +144,7 @@ public class QueryExecutor {
     private final boolean deferredApply;   // transaction.deferredApply: buffer DML into a write set, apply on COMMIT
     private final boolean enforceTypes;    // constraints.enforce.types: coerce write values to the column type
     private final SystemViews systemViews;
+    private final UnmodeledSystemViews unmodeledSystemViews = new UnmodeledSystemViews();
     private StreamManager streamManager;
     // Stream consumption (Snowflake CDC): a stream read inside a consuming DML is registered on the current
     // transaction and its offset advances when that txn COMMITS (discarded on ROLLBACK); a plain SELECT reads
@@ -157,6 +163,10 @@ public class QueryExecutor {
     // Re-entry depth for execute(): 0 means the next call is the outermost (true top-level) statement.
     // Used to clear leftover procedural cursor/exception state only at the top level, never mid-block.
     private int executeReentryDepth = 0;
+    /** Set by WAL replay only; see {@link #setNextStatementInstant}. */
+    private Instant pendingStatementInstant;
+    /** What the last outermost statement called "now"; see {@link #currentStatementInstant}. */
+    private Instant lastStatementInstant;
     private final QueryResultCache resultCache;
     private final QueryHistoryTracker queryHistoryTracker;
     private final ShowCommandExecutor showExecutor;
@@ -232,7 +242,8 @@ public class QueryExecutor {
             config != null ? config.getQueryResultCacheSize() : 100);
         this.queryHistoryTracker = new QueryHistoryTracker(
             config != null ? config.getQueryHistorySize() : 10000);
-        this.showExecutor = new ShowCommandExecutor(catalog, transactionManager, queryHistoryTracker, sessionVariables, functionRegistry);
+        this.showExecutor = new ShowCommandExecutor(catalog, transactionManager, queryHistoryTracker, sessionVariables,
+            functionRegistry, AccountIdentity.of(config));
         // INFORMATION_SCHEMA.QUERY_HISTORY is a TABLE FUNCTION in Snowflake (the bare-object form
         // does not exist there, live-verified); registered here because it needs the tracker.
         functionRegistry.registerTableFunction(new QueryHistoryFunction(queryHistoryTracker));
@@ -259,6 +270,17 @@ public class QueryExecutor {
                 return results.isEmpty() ? null : results.get(results.size() - 1);
             }
         }));
+
+        // The general runner an optional function pack reaches through the registry — the same callback,
+        // published rather than captured, so a pack's function can run SQL without the executor knowing
+        // that pack exists.
+        functionRegistry.setQueryRunner(new QueryRunner() {
+            @Override
+            public ResultSet runQuery(final String sql) {
+                final List<ResultSet> results = execute(sql);
+                return results.isEmpty() ? null : results.get(results.size() - 1);
+            }
+        });
 
         // Register LAST_QUERY_ID() scalar function with access to result cache
         functionRegistry.register(new LastQueryId(resultCache));
@@ -353,6 +375,17 @@ public class QueryExecutor {
         final boolean outermost = executeReentryDepth == 0
             && !visitor.getProceduralExecutor().isExecutingBlock();
         executeReentryDepth++;
+        // Read the clock ONCE for this statement, and only for the outermost one: Snowflake's
+        // CURRENT_TIMESTAMP is statement-stable, so every row and every nested call inside a procedural
+        // block sees the same instant. See StatementClock.
+        final Instant displacedInstant = outermost ? StatementClock.pin(pendingStatementInstant) : null;
+        if (outermost) {
+            // Remember it as well as pinning it: the write-ahead log records the statement at COMMIT, by
+            // which point the pin has been released, and reading the clock again there would log the
+            // commit time instead of the statement's.
+            lastStatementInstant = StatementClock.instant();
+        }
+        pendingStatementInstant = null;
         try {
             if (outermost) {
                 visitor.getProceduralExecutor().clearCursorsAndExceptions();
@@ -360,6 +393,40 @@ public class QueryExecutor {
             return executeWithLateralContext(sql, null);
         } finally {
             executeReentryDepth--;
+            if (outermost) {
+                StatementClock.restore(displacedInstant);
+            }
+        }
+    }
+
+    /**
+     * Whether this SQL has anything the write-ahead log must replay, read from the parse tree rather
+     * than from the text. Uses the same cached parse the execution just did, so classifying costs a
+     * map lookup; SQL that does not parse is reported durable and the caller logs it, which never
+     * happens in practice because a statement that failed to parse also failed to execute.
+     */
+    /**
+     * The instant the NEXT statement should call "now", set only by write-ahead-log replay so a
+     * re-executed statement resolves CURRENT_TIMESTAMP to the value it was originally written with.
+     * Consumed by the next {@link #execute}; null means read the wall clock, which is every normal call.
+     */
+    public void setNextStatementInstant(final Instant instant) {
+        this.pendingStatementInstant = instant;
+    }
+
+    /**
+     * The instant the most recent outermost statement pinned, for the log to record alongside its SQL.
+     * Read after execution — at commit — so it is the remembered value, not a fresh clock reading.
+     */
+    public Instant currentStatementInstant() {
+        return lastStatementInstant != null ? lastStatementInstant : StatementClock.instant();
+    }
+
+    public boolean isDurableStatement(final String sql) {
+        try {
+            return WalStatementKinds.isDurable(parseScript(sql, true));
+        } catch (final RuntimeException unparseable) {
+            return true;
         }
     }
 
@@ -1590,7 +1657,14 @@ public class QueryExecutor {
             // empty inputs and under the streaming path alike. A pivot rewrites the referencable
             // columns, so its deferred WHERE is left to row-time resolution.
             if (whereExpr != null && !hasPivotSource && lateralContext == null) {
-                validateClauseScope(whereExpr, table, aliasToTable, allTables, selectItemAliasNames(ctx));
+                validateClauseScope(whereExpr, table, aliasToTable, allTables,
+                    selectItemAliasNames(ctx), ctx.whereClause(0).booleanExpr());
+            }
+            // A scalar subquery may not correlate to a table function's output unless it aggregates —
+            // plan-time, because live reports it as a compilation error rather than a row-time one.
+            if (lateralContext == null) {
+                new TableFunctionCorrelationRule(functionRegistry, catalog)
+                    .validate(ctx, tableExpr, aliasToTable);
             }
             if (lateralContext == null
                     && isStreamableSelect(ctx, stmtCtx, firstTableRef, allTables)) {
@@ -1765,17 +1839,31 @@ public class QueryExecutor {
                 }
             } else {
                 boolean orderByApplied = false;
+                boolean sortProjectedOutput = false;
 
                 // If we need projection and there's ORDER BY, apply ORDER BY first (before projection)
-                // so that ORDER BY can reference all columns from the FROM clause
+                // so that ORDER BY can reference all columns from the FROM clause — UNLESS every key
+                // matches a SELECT output column: then the sort runs AFTER projection over the output
+                // values, so each item evaluates exactly once (a side-effecting item like seq.NEXTVAL
+                // must not be drawn again as a sort key; live numbers ORDER BY 1 rows consecutively).
                 if (needsProjection && stmtCtx.orderByClause() != null) {
-                    rows = orderBy(rows, table, stmtCtx, aliasToTable, allTables);
-                    orderByApplied = true;
+                    if (orderByExecutor.allOrderKeysMatchOutput(stmtCtx)) {
+                        // The key-TYPE rejections stay plan-time on this route too.
+                        orderByExecutor.validateOrderKeyTypes(stmtCtx, table, aliasToTable, allTables);
+                        sortProjectedOutput = true;
+                    } else {
+                        rows = orderBy(rows, table, stmtCtx, aliasToTable, allTables);
+                        orderByApplied = true;
+                    }
                 }
 
                 // Apply projection
                 if (needsProjection) {
                     rows = applyProjection(rows, table, ctx, aliasToTable, allTables, lateralContext);
+                    if (sortProjectedOutput) {
+                        rows = orderByAfterGroupBy(rows, stmtCtx, null);
+                        orderByApplied = true;
+                    }
                 }
 
                 // Apply ORDER BY after GROUP BY/aggregates/window functions if not already applied
@@ -2712,7 +2800,11 @@ public class QueryExecutor {
             if (nameVal == null) {
                 throw new RuntimeException("IDENTIFIER() expression evaluated to null");
             }
-            return nameVal.toString();
+            // The value is an identifier reference, not an already-resolved name: an unquoted string
+            // folds to upper case, a double-quoted one keeps its case. Passing it through raw made
+            // IDENTIFIER('test_table') reach a table stored as TEST_TABLE only because lookup was
+            // case-insensitive; it is exact now.
+            return SqlIdentifiers.canonicalText(nameVal.toString());
         }
         // Fold the identifier parts (unquoted -> upper-case, quoted preserved) rather than returning the
         // raw text, so a created object's canonical name matches Snowflake.
@@ -2970,10 +3062,14 @@ public class QueryExecutor {
                 return systemViews.queryStages(database, null);
             case "PIPES":
                 return systemViews.queryPipes(database, null);
-            case "STREAMS":
-                return systemViews.queryStreams(database, null);
-            case "TASKS":
-                return systemViews.queryTasks(database, null);
+            case "FILE_FORMATS":
+                return systemViews.queryFileFormats(database, null);
+            case "HYBRID_TABLES":
+                return systemViews.queryHybridTables(database, null);
+            case "TABLE_STORAGE_METRICS":
+                return systemViews.queryTableStorageMetrics(database, null);
+            case "INFORMATION_SCHEMA_CATALOG_NAME":
+                return systemViews.queryInformationSchemaCatalogName(database);
             case "ENABLED_ROLES":
                 return systemViews.queryEnabledRoles();
             case "APPLICABLE_ROLES":
@@ -2984,12 +3080,15 @@ public class QueryExecutor {
                 return systemViews.queryObjectPrivileges();
             case "USAGE_PRIVILEGES":
                 return systemViews.queryUsagePrivileges();
-            case "TAGS":
-                return systemViews.queryTags(database, null);
-            case "TAG_REFERENCES":
-                return systemViews.queryTagReferences(database, null);
             default:
-                return null;
+                // Every other INFORMATION_SCHEMA view a real account exposes: present with its live
+                // column shape and no rows, because this engine does not model those objects. A
+                // name that is no INFORMATION_SCHEMA view at all falls through as null and is
+                // reported as a non-existent object, exactly as live does. NB: STREAMS, TASKS and
+                // TAGS deliberately live in NEITHER list — a real account has no such views (they
+                // exist only under ACCOUNT_USAGE), and TAG_REFERENCES is a table FUNCTION there,
+                // so answering any of them would accept a query Snowflake rejects.
+                return unmodeledSystemViews.query(viewName);
         }
     }
 
@@ -3851,12 +3950,26 @@ public class QueryExecutor {
     void validateClauseScope(final String expressionText, final Table table,
                              final Map<String, Table> aliasToTable, final List<Table> allTables,
                              final Set<String> outputNames) {
+        validateClauseScope(expressionText, table, aliasToTable, allTables, outputNames, null);
+    }
+
+    /** As above, reporting an unresolvable column at its place in the statement. */
+    void validateClauseScope(final String expressionText, final Table table,
+                             final Map<String, Table> aliasToTable, final List<Table> allTables,
+                             final Set<String> outputNames, final ParserRuleContext clause) {
         final ExpressionEvaluator scopeEval = new ExpressionEvaluator(table, functionRegistry, catalog, this);
         if (aliasToTable != null && allTables != null && !allTables.isEmpty()) {
             scopeEval.setMultiTableContext(aliasToTable, allTables);
         }
         scopeEval.setScopeExemptNames(outputNames);
-        scopeEval.validateStrict(ExpressionEvaluator.parse(expressionText));
+        final SourcePosition displacedOrigin = ExpressionSource.begin(clause == null ? null
+            : new SourcePosition(clause.getStart().getLine(),
+                                 clause.getStart().getCharPositionInLine()));
+        try {
+            scopeEval.validateStrict(ExpressionEvaluator.parse(expressionText));
+        } finally {
+            ExpressionSource.end(displacedOrigin);
+        }
     }
 
     /**
@@ -3890,6 +4003,9 @@ public class QueryExecutor {
         // Extract projection expressions from SELECT list
         List<String> projectionExpressions = new ArrayList<>();
         List<String> columnAliases = new ArrayList<>();
+        // Index-aligned with the expressions: where each item began in the statement, or null for the
+        // ones star-expansion synthesises (nobody wrote those, so they report no position).
+        final List<SourcePosition> projectionOrigins = new ArrayList<>();
 
         for (final FrostlakeParser.SelectItemContext item : ctx.selectList().selectItem()) {
             if (SelectItemAccessors.isStarItem(item)) {
@@ -3897,6 +4013,7 @@ public class QueryExecutor {
                 for (final StarColumn sc : expandStarColumns(item, starOrderedColumns(table), "")) {
                     projectionExpressions.add(sc.getExpression());
                     columnAliases.add(sc.isRenamed() ? sc.getOutputName() : null);
+                    projectionOrigins.add(null);
                 }
             } else if (SelectItemAccessors.isQualifiedStarItem(item)) {
                 // Expand t.* or t.** to all columns of the referenced table/alias
@@ -3912,16 +4029,22 @@ public class QueryExecutor {
                 for (final TableColumn col : target.getColumns()) {
                     projectionExpressions.add(qualifier + "." + col.getName());
                     columnAliases.add(null);
+                    projectionOrigins.add(null);
                 }
             } else if (SelectItemAccessors.isObjectStarItem(item)) {
                 // {*} builds ONE object over the row's columns — never the star's N columns.
                 projectionExpressions.add(objectStarExpression(item, table, aliasToTable));
+                projectionOrigins.add(null);
                 columnAliases.add(SelectItemAccessors.getItemAlias(item) != null
                     ? getIdentifier(SelectItemAccessors.getItemAlias(item)) : null);
             } else {
                 // Regular expression select item
-                String exprText = getOriginalText(SelectItemAccessors.getItemExpression(item));
+                final ParserRuleContext itemExpr =
+                    SelectItemAccessors.getItemExpression(item);
+                String exprText = getOriginalText(itemExpr);
                 projectionExpressions.add(exprText);
+                projectionOrigins.add(new SourcePosition(itemExpr.getStart().getLine(),
+                    itemExpr.getStart().getCharPositionInLine()));
 
                 // Get alias if present
                 String alias = null;
@@ -3994,7 +4117,14 @@ public class QueryExecutor {
         final Set<String> earlierOutputNames = new HashSet<>();
         strictEval.setScopeExemptNames(earlierOutputNames);
         for (int i = 0; i < projectionExpressions.size(); i++) {
-            strictEval.validateStrict(ExpressionEvaluator.parse(projectionExpressions.get(i)));
+            // Scope this item's origin around the walk that rejects it: the refusal is raised here,
+            // at plan time, not per row, so the origin has to be in force for the walk.
+            final SourcePosition displacedOrigin = ExpressionSource.begin(projectionOrigins.get(i));
+            try {
+                strictEval.validateStrict(ExpressionEvaluator.parse(projectionExpressions.get(i)));
+            } finally {
+                ExpressionSource.end(displacedOrigin);
+            }
             if (columnAliases.get(i) != null) {
                 earlierOutputNames.add(columnAliases.get(i).toUpperCase());
             }
@@ -4004,6 +4134,7 @@ public class QueryExecutor {
         // under a lateral/correlated execution the outer row's bindings are its per-row base).
         ProjectOperator projectOp = new ProjectOperator(projectionExpressions, columnAliases,
             expressionEvaluator, lateralAliases, lateralContext);
+        projectOp.setExpressionOrigins(projectionOrigins);
         return projectOp.execute(rows, context);
     }
 
@@ -5020,7 +5151,7 @@ public class QueryExecutor {
             if (nameVal == null) {
                 throw new RuntimeException("IDENTIFIER() expression evaluated to null");
             }
-            String dynamicTableName = nameVal.toString();
+            String dynamicTableName = SqlIdentifiers.canonicalText(nameVal.toString());
             // IDENTIFIER() can name a view / materialized view / dynamic table / stream, not only a base
             // table — resolve it the same way a direct FROM reference does. A common pattern is
             // `FROM IDENTIFIER(:src)` where :src toggles between a view or base table (backfill) and a
@@ -5109,12 +5240,20 @@ public class QueryExecutor {
         if (source.POSITIONAL_PARAMETER() != null) {
             final int back = Integer.parseInt(source.POSITIONAL_PARAMETER().getText().substring(1));
             if (flowChainResults == null) {
-                throw new RuntimeException(
-                    "$" + back + " table references are only valid after ->> in a flow chain");
+                // Live's own message embeds a dump of its internal AST node here
+                // ("invalid pipe reference 'SqlNamedExpression{ aliasName=<null>, expression=1}'"),
+                // which is a leak of Snowflake's internals rather than a shape worth reproducing.
+                // The phrase it leads with is kept; the reference is named as the user wrote it.
+                throw new RuntimeException(SqlCompilationError.at(1,
+                    source.POSITIONAL_PARAMETER().getSymbol().getCharPositionInLine(),
+                    "invalid pipe reference '$" + back + "'"));
             }
             if (back < 1 || back > flowChainResults.size()) {
-                throw new RuntimeException("$" + back
-                    + " does not reference a previous statement in the flow chain");
+                // Live reports a stage that is not in the chain as an unresolvable name, at a position
+                // it does not have — literally "error line 0 at position -1", because the reference was
+                // rewritten into a generated table name before anything knew where it came from.
+                throw new RuntimeException(
+                    SqlCompilationError.at(0, -1, "invalid identifier 'SQL_PIPE_" + back + "'"));
             }
             final ResultSet stageResult = flowChainResults.get(flowChainResults.size() - back);
             if (stageResult == null) {
@@ -5316,13 +5455,19 @@ public class QueryExecutor {
             // CHANGES clause
             if (ttCtx.changesClause() != null) {
                 List<Row> rows = executeChangesClause(ttCtx.changesClause(), tableStorage, table);
-                return new TableData(table, rows, alias);
+                // A change set carries the change-tracking metadata columns beside the table's own,
+                // exactly as a stream read does.
+                return new TableData(changeTrackingTable(table), rows, alias);
             }
 
             // AT / BEFORE
             boolean isBefore = ttCtx.BEFORE() != null && ttCtx.changesClause() == null;
             FrostlakeParser.TimeTravelPointContext ptCtx = ttCtx.timeTravelPoint();
             long targetMillis = resolveTimeTravelPoint(ptCtx);
+            if (targetMillis > System.currentTimeMillis()) {
+                throw new RuntimeException(
+                    "Future data is not yet available for table " + table.getName() + ".");
+            }
 
             StorageEngine.TableStorage.Snapshot snap =
                 isBefore ? tableStorage.snapshotBefore(targetMillis)
@@ -5477,6 +5622,11 @@ public class QueryExecutor {
             : stream.getUnconsumedNetRecordsWith(buffered);
     }
 
+    /** The appends in {@code stream}'s window — see {@link Stream#getUnconsumedAppendsWith}. */
+    private List<StreamRecord> unconsumedAppendRecords(final Stream stream) {
+        return stream.getUnconsumedAppendsWith(bufferedTransientRecords(stream));
+    }
+
     /** The current transaction's buffered changes to {@code stream}'s base table(s), synthesized as
      *  transient stream records (see {@link #unconsumedNetRecords}); empty outside a transaction. Also
      *  captured at consuming-read registration as the read's seen-scope, so commit can consume exactly
@@ -5526,6 +5676,9 @@ public class QueryExecutor {
                 + stream.getName() + ": " + stream.getSourceTableName());
         }
         final List<FrostlakeParser.SelectClauseContext> branches = resolveViewStreamBranches(view);
+        if (branches.size() == 1 && branchIsJoin(branches.get(0))) {
+            return buildJoinViewStreamTableData(stream, view, branches.get(0), alias);
+        }
 
         // Column shape follows the FIRST branch (a UNION ALL takes its output names/types from the
         // first query), then explicit view column names override when the counts match.
@@ -5616,6 +5769,193 @@ public class QueryExecutor {
         return columns;
     }
 
+    /**
+     * Materialize a JOIN-view stream by SNAPSHOT DIFF, which reproduces live's measured semantics
+     * for every mutation shape: the base tables' PRE state (their current rows with this window's
+     * net records reverse-applied) and CURRENT state each evaluate the view, and the multiset
+     * difference is the stream — a row insert with no join partner surfaces nothing, either side
+     * completing a match surfaces the joined row, an in-window insert+delete cancels, and a
+     * one-side update pairs into DELETE+INSERT with METADATA$ISUPDATE=true. The pre-state relations
+     * shadow the base tables as pre-computed CTEs, so no catalog or storage state is touched.
+     */
+    private TableData buildJoinViewStreamTableData(final Stream stream, final View view,
+                                                   final FrostlakeParser.SelectClauseContext branch,
+                                                   final String alias) {
+        // Current view result — through the normal read path, so a transaction's own buffered DML
+        // is visible exactly as it is to any other read.
+        final List<ResultSet> curResults = execute(view.getDefinition());
+        final ResultSet curResult = curResults.isEmpty() ? null : curResults.get(0);
+        if (curResult == null) {
+            throw new RuntimeException("Source view not found for stream "
+                + stream.getName() + ": " + stream.getSourceTableName());
+        }
+        final List<TableColumn> columns = new ArrayList<>();
+        for (int i = 0; i < curResult.getColumns().size(); i++) {
+            final String name = view.hasExplicitColumnNames()
+                    && view.getColumnNames().size() == curResult.getColumns().size()
+                ? view.getColumnNames().get(i).toUpperCase()
+                : curResult.getColumns().get(i).getName();
+            columns.add(new TableColumn(name, curResult.getColumns().get(i).getDataType(),
+                true, null, false, false, false));
+        }
+        appendStreamMetadataColumns(columns);
+        final Table virtual = new Table(alias != null ? alias : stream.getName(), columns, false);
+
+        final List<StreamRecord> netRecords = unconsumedNetRecords(stream);
+        if (netRecords.isEmpty()) {
+            return new TableData(virtual, new ArrayList<>(), alias);
+        }
+
+        // PRE state per base table, shadowing each table (bare and as-written spellings) as a CTE.
+        final Map<String, ResultSet> preCtes = new HashMap<>();
+        for (final String baseName : branchJoinTableNames(branch)) {
+            final String bare = QualifiedName.parse(baseName).last().toUpperCase();
+            if (preCtes.containsKey(bare)) {
+                continue;   // self-join: one pre-relation serves every reference
+            }
+            final List<StreamRecord> tableRecords = new ArrayList<>();
+            for (final StreamRecord record : netRecords) {
+                if (bare.equalsIgnoreCase(record.getSourceTable())) {
+                    tableRecords.add(record);
+                }
+            }
+            final List<ResultSet> tableResults = execute("SELECT * FROM " + baseName);
+            final ResultSet curTable = tableResults.isEmpty() ? null : tableResults.get(0);
+            if (curTable == null) {
+                throw new RuntimeException("Source view not found for stream "
+                    + stream.getName() + ": " + stream.getSourceTableName());
+            }
+            final ResultSet preTable = new ResultSet(curTable.getColumns(),
+                reverseApplyNetRecords(curTable.getRows(), tableRecords));
+            preCtes.put(bare, preTable);
+            preCtes.put(baseName, preTable);
+        }
+        final ResultSet preResult = executeSelectFromContextWithCTEs(
+            parseSelectStatement(view.getDefinition()), null, preCtes);
+
+        // Multiset diff: rows only in PRE were removed (DELETE), rows only in CURRENT were added
+        // (INSERT). Keys are normalized value vectors, and each key keeps sample rows to render.
+        final Map<List<Object>, Integer> balance = new LinkedHashMap<>();
+        final Map<List<Object>, Row> sampleRows = new HashMap<>();
+        for (final Row row : preResult.getRows()) {
+            final List<Object> key = normalizedRowKey(row);
+            final Integer count = balance.get(key);
+            balance.put(key, (count == null ? 0 : count) + 1);
+            sampleRows.putIfAbsent(key, row);
+        }
+        for (final Row row : curResult.getRows()) {
+            final List<Object> key = normalizedRowKey(row);
+            final Integer count = balance.get(key);
+            balance.put(key, (count == null ? 0 : count) - 1);
+            sampleRows.putIfAbsent(key, row);
+        }
+        final List<Row> removed = new ArrayList<>();
+        final List<Row> added = new ArrayList<>();
+        for (final Map.Entry<List<Object>, Integer> entry : balance.entrySet()) {
+            for (int i = 0; i < entry.getValue(); i++) {
+                removed.add(sampleRows.get(entry.getKey()));
+            }
+            for (int i = 0; i < -entry.getValue(); i++) {
+                added.add(sampleRows.get(entry.getKey()));
+            }
+        }
+
+        // An update window (every net record is an update half) pairs each removed row with the
+        // added row it most agrees with — live reports such a pair as DELETE+INSERT sharing a row
+        // id, METADATA$ISUPDATE=true. Any other window renders plain DELETEs and INSERTs.
+        final List<Row> rows = new ArrayList<>();
+        long syntheticRowId = 0;
+        boolean allUpdates = true;
+        for (final StreamRecord record : netRecords) {
+            allUpdates = allUpdates && record.isUpdate();
+        }
+        if (allUpdates && !removed.isEmpty() && removed.size() == added.size()) {
+            final boolean[] taken = new boolean[added.size()];
+            for (final Row gone : removed) {
+                int best = -1;
+                int bestAgreement = -1;
+                for (int i = 0; i < added.size(); i++) {
+                    if (taken[i]) {
+                        continue;
+                    }
+                    final int agreement = agreementCount(gone, added.get(i));
+                    if (agreement > bestAgreement) {
+                        bestAgreement = agreement;
+                        best = i;
+                    }
+                }
+                taken[best] = true;
+                final long rowId = syntheticRowId++;
+                rows.add(streamOutputRow(gone, ChangeType.DELETE, true, rowId));
+                rows.add(streamOutputRow(added.get(best), ChangeType.INSERT, true, rowId));
+            }
+        } else {
+            for (final Row gone : removed) {
+                rows.add(streamOutputRow(gone, ChangeType.DELETE, false, syntheticRowId++));
+            }
+            for (final Row fresh : added) {
+                rows.add(streamOutputRow(fresh, ChangeType.INSERT, false, syntheticRowId++));
+            }
+        }
+        return new TableData(virtual, rows, alias);
+    }
+
+    /** A base table's rows as they stood at the stream offset: the current rows with this window's
+     *  net records un-done in reverse order (an INSERT removes one matching row, a DELETE restores
+     *  its image; an update's DELETE+INSERT pair reverses back to the old image). */
+    private List<Row> reverseApplyNetRecords(final List<Row> currentRows, final List<StreamRecord> records) {
+        final List<Row> rows = new ArrayList<>(currentRows);
+        for (int i = records.size() - 1; i >= 0; i--) {
+            final StreamRecord record = records.get(i);
+            if (record.getChangeType() == ChangeType.INSERT) {
+                final List<Object> key = normalizedValues(record.getValues());
+                for (int r = rows.size() - 1; r >= 0; r--) {
+                    if (normalizedRowKey(rows.get(r)).equals(key)) {
+                        rows.remove(r);
+                        break;
+                    }
+                }
+            } else {
+                rows.add(new Row(new ArrayList<>(record.getValues())));
+            }
+        }
+        return rows;
+    }
+
+    private List<Object> normalizedRowKey(final Row row) {
+        return normalizedValues(row.getValues());
+    }
+
+    private List<Object> normalizedValues(final List<Object> values) {
+        final List<Object> normalized = new ArrayList<>(values.size());
+        for (final Object value : values) {
+            normalized.add(value == null ? null : ValueComparisons.normalizeValueForDistinct(value));
+        }
+        return normalized;
+    }
+
+    /** How many column positions two view rows agree on (normalized), for update-pairing. */
+    private int agreementCount(final Row left, final Row right) {
+        final List<Object> a = normalizedRowKey(left);
+        final List<Object> b = normalizedRowKey(right);
+        int agree = 0;
+        for (int i = 0; i < Math.min(a.size(), b.size()); i++) {
+            if (Objects.equals(a.get(i), b.get(i))) {
+                agree++;
+            }
+        }
+        return agree;
+    }
+
+    /** One stream output row: the view row's values plus the METADATA$ columns. */
+    private Row streamOutputRow(final Row viewRow, final ChangeType action, final boolean isUpdate,
+                                final long rowId) {
+        final List<Object> values = new ArrayList<>(viewRow.getValues());
+        appendStreamMetadataValues(values,
+            new StreamRecord(viewRow.getValues(), action, isUpdate, rowId));
+        return new Row(values);
+    }
+
     private void appendStreamMetadataColumns(final List<TableColumn> columns) {
         columns.add(new TableColumn("METADATA$ACTION", new StringType("VARCHAR", 16777216), true, null, false, false, false));
         columns.add(new TableColumn("METADATA$ISUPDATE", new BooleanType(), true, null, false, false, false));
@@ -5639,7 +5979,11 @@ public class QueryExecutor {
     public List<String> resolveViewStreamBaseTables(final View view) {
         final List<String> tables = new ArrayList<>();
         for (final FrostlakeParser.SelectClauseContext branch : resolveViewStreamBranches(view)) {
-            tables.add(branchBaseTable(branch));
+            if (branchIsJoin(branch)) {
+                tables.addAll(branchJoinTableNames(branch));
+            } else {
+                tables.add(branchBaseTable(branch));
+            }
         }
         return tables;
     }
@@ -5656,9 +6000,10 @@ public class QueryExecutor {
      */
     private List<FrostlakeParser.SelectClauseContext> resolveViewStreamBranches(final View view) {
         final String reject = "CREATE STREAM on view " + view.getName()
-            + ": change tracking supports projections, filters, and UNION ALL over single-table branches"
-            + " (SELECT ... FROM t [WHERE ...] [UNION ALL ...]); plain UNION, DISTINCT, GROUP BY, QUALIFY,"
-            + " LIMIT, joins, and subquery sources are not supported";
+            + ": change tracking supports projections, filters, inner/cross joins, and UNION ALL over"
+            + " single-table branches (SELECT ... FROM t [JOIN u ON ...] [WHERE ...] [UNION ALL ...]);"
+            + " plain UNION, DISTINCT, GROUP BY, QUALIFY, LIMIT, outer joins, joins inside UNION ALL"
+            + " branches, and subquery sources are not supported";
         final FrostlakeParser.SelectStatementContext sel;
         try {
             sel = parseSelectStatement(view.getDefinition());
@@ -5691,13 +6036,79 @@ public class QueryExecutor {
                 throw new RuntimeException(reject);
             }
             final FrostlakeParser.TableExpressionContext tableExpr = clause.tableExpression();
-            if (tableExpr.tableReference().size() != 1 || !tableExpr.joinClause().isEmpty()
-                    || tableExpr.tableReference(0).tableSource().tableQualifiedName() == null) {
+            if (branchIsJoin(clause)) {
+                // An INNER / CROSS join view is change-trackable (live supports it; outer joins are
+                // rejected with Snowflake's own per-type wording). Joins stay single-branch: a join
+                // inside a UNION ALL arm keeps the generic rejection.
+                if (sel.selectOperand().size() > 1) {
+                    throw new RuntimeException(reject);
+                }
+                validateJoinViewBranch(tableExpr, reject);
+            } else if (tableExpr.tableReference(0).tableSource().tableQualifiedName() == null) {
                 throw new RuntimeException(reject);
             }
             branches.add(clause);
         }
         return branches;
+    }
+
+    /** Whether a view-stream branch's FROM clause joins relations (explicit JOINs or comma tables). */
+    private boolean branchIsJoin(final FrostlakeParser.SelectClauseContext branch) {
+        final FrostlakeParser.TableExpressionContext tableExpr = branch.tableExpression();
+        return tableExpr.tableReference().size() > 1 || !tableExpr.joinClause().isEmpty();
+    }
+
+    /**
+     * Validate a JOIN view-stream branch: every relation must be a plain table, and every join must
+     * be INNER or CROSS. An outer join carries Snowflake's own rejection — measured:
+     * "Change tracking is not supported on queries with joins of type '[LEFT_OUTER_JOIN]'."
+     */
+    private void validateJoinViewBranch(final FrostlakeParser.TableExpressionContext tableExpr,
+                                        final String reject) {
+        for (final FrostlakeParser.TableReferenceContext ref : tableExpr.tableReference()) {
+            if (ref.tableSource().tableQualifiedName() == null || ref.LATERAL() != null) {
+                throw new RuntimeException(reject);
+            }
+        }
+        for (final FrostlakeParser.JoinClauseContext join : tableExpr.joinClause()) {
+            if (join.NATURAL() != null || join.ASOF() != null || join.LATERAL() != null
+                    || join.tableReference().tableSource().tableQualifiedName() == null) {
+                throw new RuntimeException(reject);
+            }
+            final FrostlakeParser.JoinTypeContext type = join.joinType();
+            if (type != null && (type.LEFT() != null || type.RIGHT() != null || type.FULL() != null)) {
+                final String kind = type.LEFT() != null ? "LEFT_OUTER_JOIN"
+                    : type.RIGHT() != null ? "RIGHT_OUTER_JOIN" : "FULL_OUTER_JOIN";
+                throw new RuntimeException(
+                    "Change tracking is not supported on queries with joins of type '[" + kind + "]'.");
+            }
+        }
+    }
+
+    /** Every base table of a JOIN view-stream branch (first relation + each join's right side),
+     *  fully qualified as written, upper-cased. */
+    private List<String> branchJoinTableNames(final FrostlakeParser.SelectClauseContext branch) {
+        final List<String> names = new ArrayList<>();
+        final FrostlakeParser.TableExpressionContext tableExpr = branch.tableExpression();
+        for (final FrostlakeParser.TableReferenceContext ref : tableExpr.tableReference()) {
+            names.add(qualifiedUpper(ref.tableSource().tableQualifiedName()));
+        }
+        for (final FrostlakeParser.JoinClauseContext join : tableExpr.joinClause()) {
+            names.add(qualifiedUpper(join.tableReference().tableSource().tableQualifiedName()));
+        }
+        return names;
+    }
+
+    private String qualifiedUpper(final FrostlakeParser.TableQualifiedNameContext ctx) {
+        final String[] parts = ParseTreeText.qualifiedNameParts(ctx);
+        final StringBuilder qualified = new StringBuilder();
+        for (int i = 0; i < parts.length; i++) {
+            if (i > 0) {
+                qualified.append('.');
+            }
+            qualified.append(parts[i].toUpperCase());
+        }
+        return qualified.toString();
     }
 
     /** Bare (upper-case) base table name of a single view-stream branch. */
@@ -5803,8 +6214,10 @@ public class QueryExecutor {
             }
             throw new RuntimeException("Query ID not found in history: " + queryId);
         } else if (ctx.STREAM() != null) {
-            throw new RuntimeException(
-                "Time travel AT (STREAM => ...) is not supported; query the stream object directly");
+            // Only CHANGES understands a stream offset; AT/BEFORE time travel over a plain table
+            // does not, and never reaches here for CHANGES (see executeChangesClause).
+            throw new RuntimeException(SqlCompilationError.of(
+                "Unsupported feature 'Time travel AT (STREAM => ...)'."));
         }
         throw new RuntimeException("Unknown time travel point type");
     }
@@ -5818,9 +6231,80 @@ public class QueryExecutor {
             : "(" + getOriginalText(argCtx.selectStatement()) + ")";
     }
 
+    /**
+     * CHANGES … AT (STREAM =&gt; '&lt;name&gt;') — the change set the named stream currently reports, as
+     * data columns plus METADATA$ACTION / METADATA$ISUPDATE / METADATA$ROW_ID. Reading it here does
+     * NOT advance the stream. A stream over a different table simply contributes nothing, matching a
+     * real account, which answers no rows rather than an error.
+     */
+    private List<Row> changesFromStreamOffset(final FrostlakeParser.ChangesClauseContext ctx,
+                                              final Table table) {
+        final String streamName = SqlStringLiterals.decode(
+            getOriginalText(ctx.timeTravelPoint(0).expression()).trim());
+        final Stream stream = findStream(streamName);
+        if (stream == null) {
+            // The name is echoed exactly as written, live-verified.
+            throw new RuntimeException("Stream '" + streamName + "' not found.");
+        }
+        // The END point is still checked: a window running into the future is refused before any
+        // change is read, live-verified.
+        if (ctx.END() != null && ctx.timeTravelPoint().size() > 1) {
+            final long endMillis =
+                resolveTimeTravelPoint(ctx.timeTravelPoint(ctx.timeTravelPoint().size() - 1));
+            if (endMillis > System.currentTimeMillis()) {
+                throw new RuntimeException(
+                    "Future data is not yet available for table " + table.getName() + ".");
+            }
+        }
+        final boolean appendOnly = changesAppendOnly(ctx);
+        final String targetBareName = table.getName().toUpperCase();
+        final List<Row> rows = new ArrayList<>();
+        final List<StreamRecord> changes = appendOnly
+            ? unconsumedAppendRecords(stream) : unconsumedNetRecords(stream);
+        for (final StreamRecord record : changes) {
+            if (!streamRecordTargets(record, stream, targetBareName)) {
+                continue;
+            }
+            final List<Object> values = new ArrayList<>(record.getValues());
+            appendStreamMetadataValues(values, record);
+            rows.add(new Row(values));
+        }
+        return rows;
+    }
+
+    /** {@code table} widened with METADATA$ACTION / METADATA$ISUPDATE / METADATA$ROW_ID. */
+    private Table changeTrackingTable(final Table table) {
+        final List<TableColumn> columns = new ArrayList<>(table.getColumns());
+        appendStreamMetadataColumns(columns);
+        return new Table(table.getName(), columns, false);
+    }
+
+    /** Whether a change record belongs to the table CHANGES is being read over. */
+    private boolean streamRecordTargets(final StreamRecord record, final Stream stream,
+                                        final String targetBareName) {
+        final String source = record.getSourceTable() != null
+            ? record.getSourceTable() : stream.getSourceTableName();
+        return source != null
+            && QualifiedName.parse(source).last().toUpperCase().equals(targetBareName);
+    }
+
+    /** CHANGES (INFORMATION =&gt; APPEND_ONLY) keeps only the inserts; DEFAULT keeps the whole delta. */
+    private boolean changesAppendOnly(final FrostlakeParser.ChangesClauseContext ctx) {
+        return ctx.identifier() != null
+            && "APPEND_ONLY".equalsIgnoreCase(getOriginalText(ctx.identifier()).trim());
+    }
+
     private List<Row> executeChangesClause(final FrostlakeParser.ChangesClauseContext ctx,
                                             final StorageEngine.TableStorage storage,
                                             final Table table) {
+        // AT (STREAM => '<name>') starts from a stream's own offset. That change set is what the
+        // stream itself reports, so it is taken from the stream rather than re-derived by diffing
+        // snapshots — CHANGES only READS it, leaving the stream's offset where it was.
+        if (ctx.AT_KEYWORD() != null && ctx.timeTravelPoint(0) != null
+                && ctx.timeTravelPoint(0).STREAM() != null) {
+            return changesFromStreamOffset(ctx, table);
+        }
+
         // Resolve start point
         long startMillis;
         if (ctx.AT_KEYWORD() != null && ctx.timeTravelPoint(0) != null) {
@@ -6064,28 +6548,17 @@ public class QueryExecutor {
 
                 FrostlakeParser.ExpressionContext argExpr = funcArgExprs(funcCtx).get(0);
 
-                // Check if argument is LAST_QUERY_ID()
-                if (argExpr instanceof FrostlakeParser.FunctionCallExprContext) {
-                    FrostlakeParser.FunctionCallExprContext argFunc =
-                        (FrostlakeParser.FunctionCallExprContext) argExpr;
-                    if ("LAST_QUERY_ID".equalsIgnoreCase(argFunc.functionName().getText())) {
-                        // Get last query ID from cache
-                        String lastQueryId = resultCache.getLastQueryId();
-                        if (lastQueryId == null) {
-                            throw new RuntimeException("No previous query results available");
-                        }
-                        return resultScan.execute(lastQueryId);
-                    }
-                }
-
-                // Otherwise, evaluate the expression to get query ID string
-                String argValueExpr = getOriginalText(argExpr);
-                Object queryIdObj = evaluateExpression(argValueExpr, null, null);
+                // Evaluate the argument like any other expression. It used to be special-cased by
+                // NAME when it was a LAST_QUERY_ID call, which silently dropped that call's own
+                // argument — RESULT_SCAN(LAST_QUERY_ID(-2)) then scanned the most recent query
+                // instead of the one before it.
+                Object queryIdObj = evaluateExpression(getOriginalText(argExpr), null, null);
                 if (queryIdObj == null) {
-                    throw new RuntimeException("Query ID cannot be null");
+                    throw new RuntimeException(isLastQueryIdCall(argExpr)
+                        ? "No previous query results available"
+                        : "Query ID cannot be null");
                 }
-                String queryId = queryIdObj.toString();
-                return resultScan.execute(queryId);
+                return resultScan.execute(queryIdObj.toString());
             }
 
             // Check if it's a known built-in table function callable with no/positional args
@@ -6195,7 +6668,9 @@ public class QueryExecutor {
         if (nameValue == null || nameValue.toString().trim().isEmpty()) {
             return null;
         }
-        final String name = nameValue.toString().trim();
+        // Snowflake's own words: "where TABLE() is supported, it is equivalent to using IDENTIFIER()" —
+        // so the value is an identifier reference and folds like one, unquoted to upper case.
+        final String name = SqlIdentifiers.canonicalText(nameValue.toString().trim());
         try {
             final TableData dynamic = resolveDynamicNamedSource(name, null);
             if (dynamic != null) {
@@ -7309,4 +7784,14 @@ public class QueryExecutor {
         }
     }
 
+
+    /** Whether a RESULT_SCAN argument is a LAST_QUERY_ID call, which gets its own "no results" wording. */
+    private boolean isLastQueryIdCall(final FrostlakeParser.ExpressionContext argExpr) {
+        if (!(argExpr instanceof FrostlakeParser.FunctionCallExprContext)) {
+            return false;
+        }
+        final FrostlakeParser.FunctionCallExprContext call =
+            (FrostlakeParser.FunctionCallExprContext) argExpr;
+        return "LAST_QUERY_ID".equalsIgnoreCase(call.functionName().getText());
+    }
 }

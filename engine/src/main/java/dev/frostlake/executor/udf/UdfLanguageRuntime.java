@@ -60,4 +60,27 @@ public interface UdfLanguageRuntime {
 
     /** Execute a table function (UDTF) call; languages without table functions throw. */
     ResultSet executeTableFunction(Function function, List<Object> arguments);
+
+    /**
+     * Compile a FUNCTION's body at CREATE time, throwing if the routine could never run — live-verified,
+     * a Python, Java or Scala function whose body will not compile, or whose HANDLER is not in it, is
+     * refused by CREATE rather than by the first call.
+     *
+     * <p>The default is a deliberate no-op, and it is what JavaScript wants: live compiles no JavaScript
+     * body at all, so {@code AS '}{@code '} is created happily and only fails when called. It is also
+     * the honest answer for a language whose module is absent — an engine that cannot judge a body must
+     * accept it, exactly as the SQL-body check fails open on a construct it cannot parse.
+     */
+    default void compileFunction(final Function function) {
+    }
+
+    /**
+     * Compile a PROCEDURE's body at CREATE time, as {@link #compileFunction} does for a function.
+     *
+     * <p>Not simply the same rule: a PYTHON procedure is NOT compiled at CREATE though a Python function
+     * is — measured both ways on the same account — so this defaults to a no-op separately rather than
+     * sharing the function's implementation.
+     */
+    default void compileProcedure(final Procedure procedure) {
+    }
 }

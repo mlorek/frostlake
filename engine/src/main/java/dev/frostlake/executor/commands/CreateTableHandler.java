@@ -70,7 +70,11 @@ public class CreateTableHandler implements CommandHandler {
         String qualifiedName = queryExecutor.resolveObjectName(ctx.objectName());
         String[] parts = qualifiedName.split("\\.");
         boolean isTransient = ctx.TRANSIENT() != null;
-        boolean isTemporary = ctx.TEMPORARY() != null || ctx.TEMP() != null;
+        // Snowflake spells one thing five ways. TEMPORARY, TEMP, LOCAL TEMPORARY, GLOBAL TEMPORARY and
+        // VOLATILE all produce a table SHOW TABLES reports as kind=TEMPORARY — measured, each created
+        // on a real account and read back. LOCAL/GLOBAL are accepted and ignored: Snowflake has no
+        // cross-session temporary table for either spelling to mean.
+        boolean isTemporary = ctx.TEMPORARY() != null || ctx.TEMP() != null || ctx.VOLATILE() != null;
         // CREATE HYBRID TABLE is accepted and stored as an ordinary table; the flag is kept only so
         // SHOW HYBRID TABLES and the reported kind reflect the declaration.
         boolean isHybrid = ctx.HYBRID() != null;
@@ -178,6 +182,7 @@ public class CreateTableHandler implements CommandHandler {
 
                 table.setClusterKeys(sourceTable.getClusterKeys());
                 table.setOwner(catalog.currentRoleForOwner());
+                InlineTags.applyFrom(table, ctx.tableTailOption());
                 table.setHybrid(isHybrid);
                 attachRowAccessPolicy(ctx, table);
                 schema.addTable(table);
@@ -229,6 +234,7 @@ public class CreateTableHandler implements CommandHandler {
 
                 table.setClusterKeys(sourceTable.getClusterKeys());
                 table.setOwner(catalog.currentRoleForOwner());
+                InlineTags.applyFrom(table, ctx.tableTailOption());
                 table.setHybrid(isHybrid);
                 attachRowAccessPolicy(ctx, table);
                 schema.addTable(table);
@@ -294,6 +300,7 @@ public class CreateTableHandler implements CommandHandler {
                 }
 
                 table.setOwner(catalog.currentRoleForOwner());
+                InlineTags.applyFrom(table, ctx.tableTailOption());
                 table.setHybrid(isHybrid);
                 attachRowAccessPolicy(ctx, table);
                 schema.addTable(table);
@@ -352,6 +359,7 @@ public class CreateTableHandler implements CommandHandler {
                 }
 
                 table.setOwner(catalog.currentRoleForOwner());
+                InlineTags.applyFrom(table, ctx.tableTailOption());
                 table.setHybrid(isHybrid);
                 attachRowAccessPolicy(ctx, table);
                 schema.addTable(table);

@@ -16,17 +16,23 @@
 
 package dev.frostlake.functions.scalar.datetime;
 
+import dev.frostlake.executor.StatementClock;
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.types.DateTimeType;
 
 import java.time.LocalDateTime;
 import java.util.List;
 
+/**
+ * SYSDATE() — the statement's instant in UTC, as TIMESTAMP_NTZ. It is NOT CURRENT_TIMESTAMP: that one
+ * answers in the session's zone and is TIMESTAMP_LTZ, so the two differ by the session offset and
+ * agree only when the session is on UTC (live-verified).
+ */
 public class Sysdate extends BuiltInFunction {
     public Sysdate() { super("SYSDATE", DateTimeType.TIMESTAMP_NTZ); }
 
     @Override
-    public Object evaluate(final List<Object> args) { return LocalDateTime.now(); }
+    public Object evaluate(final List<Object> args) { return StatementClock.nowUtc(); }
 
     @Override public int getMinArgCount() { return 0; }
     @Override public int getMaxArgCount() { return 0; }

@@ -24,8 +24,11 @@ import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.StatementErrors;
 import dev.frostlake.executor.procedural.ProceduralException;
 import dev.frostlake.metastore.Catalog;
+import dev.frostlake.metastore.InstanceFamilies;
 import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.Taggable;
+import dev.frostlake.metastore.model.ComputePool;
+import dev.frostlake.metastore.model.ComputePoolState;
 import dev.frostlake.metastore.model.Database;
 import dev.frostlake.metastore.model.ForeignKeyConstraint;
 import dev.frostlake.metastore.model.Pipe;
@@ -43,13 +46,20 @@ import dev.frostlake.metastore.model.TaskState;
 import dev.frostlake.metastore.model.User;
 import dev.frostlake.metastore.model.View;
 import dev.frostlake.metastore.model.Warehouse;
+import dev.frostlake.metastore.model.CortexSearchService;
 import dev.frostlake.parser.FrostlakeParser;
+import dev.frostlake.task.TaskScheduler;
 import dev.frostlake.types.DataType;
+
+import org.antlr.v4.runtime.tree.TerminalNode;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.time.Instant;
+
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 
 /**
@@ -93,6 +103,9 @@ public class AlterCommandHandler implements CommandHandler {
 
     public Object handle(final FrostlakeParser.AlterStatementContext ctx) {
         boolean ifExists = ctx.if_exists() != null;
+        // Set by the branches that gate IF EXISTS themselves (ALTER TABLE, ALTER COMPUTE POOL)
+        // instead of leaning on the blanket catch below.
+        boolean branchHandlesIfExists = false;
         try {
             if (ctx.DATABASE() != null) {
                 String dbName = visitor.getText(ctx.identifier());
@@ -174,11 +187,83 @@ public class AlterCommandHandler implements CommandHandler {
             } else if (ctx.DYNAMIC() != null && ctx.TABLE() != null) {
                 checkAlter(SecurableObjectType.DYNAMIC_TABLE, visitor.getText(ctx.qualifiedName()));
                 return ddlHandler.handleAlterStatement(ctx);
+            } else if (ctx.CORTEX() != null) {
+                final String serviceName = visitor.getText(ctx.qualifiedName());
+                // IF EXISTS forgives only the service's absence, as it does for a compute pool.
+                branchHandlesIfExists = true;
+                if (ifExists && !cortexSearchServiceExists(serviceName)) {
+                    logger.debug("Cortex search service does not exist (IF EXISTS): {}", serviceName);
+                } else {
+                    applyCortexSearchAction(catalog.resolveCortexSearchService(serviceName),
+                        ctx.cortexSearchAction());
+                }
+            } else if (ctx.COMPUTE() != null && ctx.POOL() != null) {
+                final String poolName = visitor.getText(ctx.identifier());
+                // IF EXISTS forgives only the pool's absence; an error the action itself raises
+                // still propagates, so this branch gates existence itself.
+                branchHandlesIfExists = true;
+                if (ifExists && !catalog.hasComputePool(poolName)) {
+                    logger.debug("Compute pool does not exist (IF EXISTS): {}", poolName);
+                } else {
+                    final ComputePool pool = catalog.getComputePool(poolName);
+                    final FrostlakeParser.ComputePoolActionContext action = ctx.computePoolAction();
+                    if (action.SUSPEND() != null) {
+                        // Idempotent: suspending a suspended pool succeeds.
+                        pool.setState(ComputePoolState.SUSPENDED);
+                        pool.touchUpdatedOn();
+                    } else if (action.RESUME() != null) {
+                        pool.setState(ComputePoolState.STARTING);
+                        pool.setResumedOn(Instant.now());
+                        pool.touchUpdatedOn();
+                    } else if (action.STOP() != null) {
+                        // STOP ALL stops the pool's workloads; none run here, so the pool is
+                        // untouched — but the OF TYPE list is validated exactly as a real account
+                        // validates it.
+                        validateStopAllWorkloadTypes(action.computePoolWorkloadType());
+                        logger.trace("STOP ALL on compute pool {}", poolName);
+                    } else if (action.tagSet() != null) {
+                        applyTagSet(pool, action.tagSet());
+                    } else if (action.tagUnset() != null) {
+                        applyTagUnset(pool, action.tagUnset());
+                    } else if (action.SET() != null) {
+                        applyComputePoolSetOptions(pool, action.computePoolSetOption());
+                    } else if (action.UNSET() != null) {
+                        for (final FrostlakeParser.ComputePoolUnsetKeyContext key
+                                : action.computePoolUnsetKey()) {
+                            if (key.COMMENT() != null) {
+                                pool.setComment(null);
+                            } else if (key.AUTO_SUSPEND_SECS() != null) {
+                                // UNSET restores the default, live-verified.
+                                pool.setAutoSuspendSecs(ComputePool.DEFAULT_AUTO_SUSPEND_SECS);
+                            } else if (key.AUTO_RESUME() != null) {
+                                pool.setAutoResume(true);
+                            } else if (key.PLACEMENT_GROUP() != null) {
+                                // The message says "set" even for UNSET, live-verified.
+                                requireSuspendedForPlacementGroup(pool);
+                                pool.setPlacementGroup(null);
+                            } else if (key.BACKUP_INSTANCE_FAMILIES() != null) {
+                                pool.setBackupInstanceFamilies(new ArrayList<>());
+                            }
+                        }
+                        pool.touchUpdatedOn();
+                    }
+                }
+
             } else if (ctx.TABLE() != null) {
                 String tableName = visitor.getText(ctx.qualifiedName());
 
-                try {
-                    Table table = catalog.resolveTable(QualifiedName.of(qualifiedNameParts(ctx.qualifiedName())));
+                // This branch decides IF EXISTS for itself (the pre-gate below), so the outer
+                // catch's blanket forgiveness must not apply: a missing SCHEMA and any error the
+                // action itself raises both propagate even under IF EXISTS, live-verified.
+                branchHandlesIfExists = true;
+                final String[] tableParts = qualifiedNameParts(ctx.qualifiedName());
+                if (ifExists && !alterTargetTableExists(tableParts)) {
+                    // IF EXISTS forgives ONLY the named table's absence, live-verified: a missing
+                    // SCHEMA still errors (alterTargetTableExists resolves it first), and an error
+                    // the action itself raises — an unknown column, a bad type change — propagates.
+                    logger.debug("Table does not exist (IF EXISTS): {}", tableName);
+                } else {
+                    Table table = catalog.resolveTable(QualifiedName.of(tableParts));
                     checkAlter(SecurableObjectType.TABLE, tableName);
 
                     if (ctx.tableAction().SWAP() != null) {
@@ -332,41 +417,9 @@ public class AlterCommandHandler implements CommandHandler {
                             col.setMaskingPolicyName(policyName.toUpperCase());
                         }
                         logger.trace("Set/unset masking policy on column {}.{}", tableName, colName);
-                    } else if (ctx.tableAction().ALTER() != null && ctx.tableAction().NULL() != null) {
-                        // ALTER COLUMN col SET/DROP NOT NULL
-                        String colName = visitor.getText(ctx.tableAction().identifier(0));
-                        table.getColumn(colName).setNullable(ctx.tableAction().DROP() != null);
-                        logger.trace("Set nullability on column {}.{}", tableName, colName);
-                    } else if (ctx.tableAction().ALTER() != null && ctx.tableAction().DEFAULT() != null) {
-                        // ALTER COLUMN col SET/DROP DEFAULT — route SET through the same default-expression
-                        // parser CREATE TABLE uses: raw getText() stored the literal WITH its quotes, so an
-                        // insert that omitted the column got the text 'X' (quotes included) instead of X.
-                        String colName = visitor.getText(ctx.tableAction().identifier(0));
-                        if (ctx.tableAction().SET() != null) {
-                            // Snowflake only allows setting a SEQUENCE default after creation
-                            // (live-verified: "Unsupported feature 'Alter Column Set Default'").
-                            final String defaultText =
-                                visitor.getOriginalText(ctx.tableAction().defaultExpression()).trim().toUpperCase();
-                            if (!defaultText.endsWith(".NEXTVAL")) {
-                                throw new RuntimeException("Unsupported feature 'Alter Column Set Default'.");
-                            }
-                        }
-                        table.getColumn(colName).setDefaultValue(ctx.tableAction().SET() != null
-                            ? ddlHandler.getColumnParser().parseDefaultExpression(ctx.tableAction().defaultExpression())
-                            : null);
-                        logger.trace("Set/drop default on column {}.{}", tableName, colName);
-                    } else if (ctx.tableAction().ALTER() != null) {
-                        // ALTER COLUMN data type — Snowflake only allows same-family changes
-                        // (live-verified: "cannot change column COL from type NUMBER(38,0) to VARCHAR").
-                        String colName = visitor.getText(ctx.tableAction().identifier(0));
-                        DataType newDataType = visitor.parseDataType(ctx.tableAction().dataTypeName(), ctx.tableAction().typeParameters());
-                        final DataType oldDataType = table.getColumn(colName).getDataType();
-                        if (!oldDataType.getClass().equals(newDataType.getClass())) {
-                            throw new RuntimeException("cannot change column " + colName.toUpperCase()
-                                + " from type " + oldDataType.getName() + " to " + newDataType.getName());
-                        }
-                        table.alterColumnType(colName, newDataType);
-                        logger.trace("Altered column {} type in table {}", colName, tableName);
+                    } else if (!ctx.tableAction().alterColumnItem().isEmpty()) {
+                        // ALTER/MODIFY [(] [COLUMN] c1 action [, [COLUMN] c2 action]* [)]
+                        applyAlterColumnItems(table, tableName, ctx.tableAction().alterColumnItem());
                     } else if (ctx.tableAction().COMMENT() != null) {
                         String comment = visitor.extractStringLiteral(ctx.tableAction().STRING_LITERAL());
                         table.setComment(comment);
@@ -391,6 +444,7 @@ public class AlterCommandHandler implements CommandHandler {
                             // PRIMARY KEY constraint - add to table's primary keys list
                             List<String> columns = new ArrayList<>();
                             for (final FrostlakeParser.IdentifierContext idCtx : constraintCtx.identifierList(0).identifier()) {
+                                requireColumn(table, visitor.getText(idCtx), idCtx);
                                 columns.add(visitor.getText(idCtx));
                             }
                             table.addPrimaryKeyConstraint(columns);
@@ -401,6 +455,7 @@ public class AlterCommandHandler implements CommandHandler {
                             // UNIQUE constraint — one constraint over every listed column, not one each.
                             List<String> columns = new ArrayList<>();
                             for (final FrostlakeParser.IdentifierContext idCtx : constraintCtx.identifierList(0).identifier()) {
+                                requireColumn(table, visitor.getText(idCtx), idCtx);
                                 columns.add(visitor.getText(idCtx));
                             }
                             table.addUniqueConstraint(constraintName, columns);
@@ -489,11 +544,6 @@ public class AlterCommandHandler implements CommandHandler {
                         // not modeled, so unsetting them is a no-op.
                         logger.trace("Ignored UNSET of table properties on {}", tableName);
                     }
-                } catch (final RuntimeException e) {
-                    if (!ifExists) {
-                        throw e;
-                    }
-                    logger.debug("Table does not exist (IF EXISTS): {}", tableName);
                 }
 
             } else if (ctx.VIEW() != null && ctx.MATERIALIZED() != null) {
@@ -578,7 +628,7 @@ public class AlterCommandHandler implements CommandHandler {
                 // Canonical scheduler key (DB.SCHEMA.TASK), built identically for RESUME and SUSPEND so the
                 // scheduler arms and later cancels the same entry.
                 final String taskDbName = taskParts.length == 3 ? taskParts[0] : catalog.getCurrentDatabase();
-                final String taskKey = (taskDbName + "." + schema.getName() + "." + taskName).toUpperCase();
+                final String taskKey = TaskScheduler.schedulerKey(taskDbName, schema.getName(), taskName);
 
                 if (ctx.taskAction().RESUME() != null) {
                     // RESUME flips state to STARTED AND arms the scheduler so the task fires on its SCHEDULE
@@ -599,7 +649,7 @@ public class AlterCommandHandler implements CommandHandler {
                     logger.trace("Suspended task: {}", taskName);
                 } else if (ctx.taskAction().SET() != null) {
                     for (final FrostlakeParser.TaskOptionContext opt : ctx.taskAction().taskOption()) {
-                        applyTaskOption(task, opt);
+                        applyTaskOption(task, opt, schema);
                     }
                     for (final FrostlakeParser.WarehouseClauseContext wc : ctx.taskAction().warehouseClause()) {
                         task.setWarehouse(warehouseClauseValue(wc));
@@ -713,14 +763,12 @@ public class AlterCommandHandler implements CommandHandler {
                     String newName = visitor.getText(ctx.userAction().identifier());
                     catalog.renameUser(userName, newName);
                     logger.trace("Renamed user {} to {}", userName, newName);
-                } else if (ctx.userAction().PASSWORD() != null) {
-                    String password = visitor.extractStringLiteral(ctx.userAction().STRING_LITERAL());
-                    user.setPassword(password);
-                    logger.trace("Changed password for user: {}", userName);
-                } else if (ctx.userAction().DEFAULT_ROLE() != null) {
-                    String defaultRole = visitor.getText(ctx.userAction().identifier());
-                    user.setDefaultRole(defaultRole);
-                    logger.trace("Set default role for user {}: {}", userName, defaultRole);
+                } else if (!ctx.userAction().userProperty().isEmpty()) {
+                    UserProperties.apply(user, ctx.userAction().userProperty());
+                    logger.trace("Set properties on user: {}", userName);
+                } else if (ctx.userAction().UNSET() != null) {
+                    UserProperties.unset(user, ctx.userAction().userUnsetProperty());
+                    logger.trace("Unset properties on user: {}", userName);
                 } else if (ctx.userAction().COMMENT() != null) {
                     String comment = visitor.extractStringLiteral(ctx.userAction().STRING_LITERAL());
                     user.setComment(comment);
@@ -813,7 +861,7 @@ public class AlterCommandHandler implements CommandHandler {
             return null;
 
         } catch (final Exception e) {
-            if (ifExists) {
+            if (ifExists && !branchHandlesIfExists) {
                 logger.debug("ALTER IF EXISTS: object not found, suppressing error: {}", e.getMessage());
                 return null;
             }
@@ -824,6 +872,190 @@ public class AlterCommandHandler implements CommandHandler {
     }
 
     /** Only an owner / administrative role / ALTER-granted role may alter the object. */
+    /**
+     * ALTER COMPUTE POOL ... SET: apply each option, then hold the resulting node range to the same
+     * rules CREATE enforces, with the same wording. INSTANCE_FAMILY only changes on a suspended
+     * pool, PLACEMENT_GROUP always fails the region-registry lookup (this engine has none), and
+     * every backup family must be in the catalog and differ from the primary — all live-verified.
+     */
+    private void applyComputePoolSetOptions(final ComputePool pool,
+            final List<FrostlakeParser.ComputePoolSetOptionContext> options) {
+        for (final FrostlakeParser.ComputePoolSetOptionContext option : options) {
+            if (option.MIN_NODES() != null) {
+                pool.setMinNodes(Integer.parseInt(option.INTEGER_LITERAL().getText()));
+            } else if (option.MAX_NODES() != null) {
+                pool.setMaxNodes(Integer.parseInt(option.INTEGER_LITERAL().getText()));
+            } else if (option.AUTO_RESUME() != null) {
+                pool.setAutoResume("TRUE".equalsIgnoreCase(option.booleanValue().getText()));
+            } else if (option.AUTO_SUSPEND_SECS() != null) {
+                pool.setAutoSuspendSecs(Integer.parseInt(option.INTEGER_LITERAL().getText()));
+            } else if (option.INSTANCE_FAMILY() != null) {
+                if (pool.getState() != ComputePoolState.SUSPENDED) {
+                    throw new RuntimeException("Invalid property 'INSTANCE_FAMILY' for"
+                        + " 'COMPUTE_POOL':\nCannot set INSTANCE_FAMILY for compute pool that is not"
+                        + " suspended. Please suspend the compute pool first.");
+                }
+                final String family = visitor.getText(option.identifier()).toUpperCase();
+                requireValidInstanceFamily(family);
+                pool.setInstanceFamily(family);
+            } else if (option.PLACEMENT_GROUP() != null) {
+                final String group = visitor.extractStringLiteral(option.STRING_LITERAL());
+                throw new RuntimeException("Invalid value '" + group + "' for property"
+                    + " 'PLACEMENT_GROUP':\nPlacement group '" + group
+                    + "' does not exist in this region.");
+            } else if (option.BACKUP_INSTANCE_FAMILIES() != null) {
+                final List<String> families = new ArrayList<>();
+                for (final TerminalNode literal : option.stringLiteralList().STRING_LITERAL()) {
+                    final String family = visitor.extractStringLiteral(literal);
+                    requireValidInstanceFamily(family);
+                    if (family.equalsIgnoreCase(pool.getInstanceFamily())) {
+                        throw new RuntimeException("Invalid BACKUP_INSTANCE_FAMILIES for compute"
+                            + " pool: BACKUP_INSTANCE_FAMILIES contains '" + family
+                            + "' which matches the primary INSTANCE_FAMILY. Each backup must be"
+                            + " different from the primary.");
+                    }
+                    families.add(family.toUpperCase());
+                }
+                pool.setBackupInstanceFamilies(families);
+            } else if (option.COMMENT() != null) {
+                pool.setComment(visitor.extractStringLiteral(option.STRING_LITERAL()));
+            }
+        }
+        if (pool.getMinNodes() < 1) {
+            throw new RuntimeException(SqlCompilationError.of(
+                "invalid value '" + pool.getMinNodes() + "' for property 'MIN_NODES'"));
+        }
+        if (pool.getMinNodes() > pool.getMaxNodes()) {
+            throw new RuntimeException(SqlCompilationError.of(
+                "invalid property combination 'MIN_NODES'='" + pool.getMinNodes()
+                + "' and 'MAX_NODES'='" + pool.getMaxNodes() + "'"));
+        }
+        pool.touchUpdatedOn();
+    }
+
+    /** The valid STOP ALL workload types, in the order a real account lists them. */
+    private static final List<String> COMPUTE_POOL_WORKLOAD_TYPES =
+        Arrays.asList("ALL", "USER", "NOTEBOOK", "MODEL_SERVING", "STREAMLIT", "ML_JOB");
+
+    /**
+     * STOP ALL OF TYPE list validation: each type must be one of the known set, reported in list
+     * order, and ALL must stand alone — both messages verbatim from a real account.
+     */
+    private void validateStopAllWorkloadTypes(
+            final List<FrostlakeParser.ComputePoolWorkloadTypeContext> typeContexts) {
+        final List<String> types = new ArrayList<>();
+        for (final FrostlakeParser.ComputePoolWorkloadTypeContext typeCtx : typeContexts) {
+            types.add(typeCtx.getText().toUpperCase());
+        }
+        final String tail = " Expected comma separated list like: 'type1, type2'."
+            + " Valid types are ALL, USER, NOTEBOOK, MODEL_SERVING, STREAMLIT, ML_JOB.";
+        for (final String type : types) {
+            if (!COMPUTE_POOL_WORKLOAD_TYPES.contains(type)) {
+                throw new RuntimeException("Invalid input for OF TYPE option: Invalid workload type '"
+                    + type + "'." + tail);
+            }
+        }
+        if (types.contains("ALL") && types.size() > 1) {
+            throw new RuntimeException("Invalid input for OF TYPE option: When 'ALL' is specified in '"
+                + String.join(",", types) + "', no other workload types should be included."
+                + " Use 'ALL' alone or specify individual types." + tail);
+        }
+    }
+
+    /** The "Cannot set" wording covers UNSET too, live-verified. */
+    private void requireSuspendedForPlacementGroup(final ComputePool pool) {
+        if (pool.getState() != ComputePoolState.SUSPENDED) {
+            throw new RuntimeException("Invalid property 'PLACEMENT_GROUP' for 'COMPUTE_POOL':"
+                + "\nCannot set PLACEMENT_GROUP for compute pool that is not suspended."
+                + " Please suspend the compute pool first.");
+        }
+    }
+
+    private void requireValidInstanceFamily(final String family) {
+        if (!InstanceFamilies.isValid(family)) {
+            throw new RuntimeException("Invalid instance family " + family
+                + ". Please refer to Snowflake documentation for supported instance families.");
+        }
+    }
+
+    /**
+     * Whether ALTER TABLE's target exists — for the IF EXISTS gate, which forgives only the TABLE's
+     * absence. The schema is resolved first and its absence THROWS even under IF EXISTS, exactly as
+     * a real account behaves ("Schema '&lt;db&gt;.&lt;schema&gt;' does not exist or not authorized.").
+     */
+    private boolean alterTargetTableExists(final String[] tableParts) {
+        if (tableParts.length == 1 && catalog.getCurrentSchema() == null) {
+            return false;
+        }
+        final Schema schema = tableParts.length >= 2
+            ? catalog.resolveSchema(QualifiedName.of(Arrays.copyOf(tableParts, tableParts.length - 1)))
+            : catalog.resolveSchema(QualifiedName.of(new String[] {catalog.getCurrentSchema()}));
+        return schema.hasTable(tableParts[tableParts.length - 1]);
+    }
+
+    /**
+     * The ALTER/MODIFY column-action list. Every item is validated before ANY is applied, so a list
+     * whose second item fails — an unknown column, an illegal type change — leaves the table
+     * untouched, exactly as a real account behaves.
+     */
+    private void applyAlterColumnItems(final Table table, final String tableName,
+            final List<FrostlakeParser.AlterColumnItemContext> items) {
+        for (final FrostlakeParser.AlterColumnItemContext item : items) {
+            validateAlterColumnItem(table, item);
+        }
+        for (final FrostlakeParser.AlterColumnItemContext item : items) {
+            applyAlterColumnItem(table, tableName, item);
+        }
+    }
+
+    private void validateAlterColumnItem(final Table table,
+            final FrostlakeParser.AlterColumnItemContext item) {
+        final String colName = visitor.getText(item.identifier());
+        final TableColumn column = table.getColumn(colName);
+        final FrostlakeParser.AlterColumnItemActionContext action = item.alterColumnItemAction();
+        if (action.dataTypeName() != null) {
+            // Snowflake only allows same-family changes
+            // (live-verified: "cannot change column COL from type NUMBER(38,0) to VARCHAR").
+            final DataType newDataType =
+                visitor.parseDataType(action.dataTypeName(), action.typeParameters());
+            if (!column.getDataType().getClass().equals(newDataType.getClass())) {
+                throw new RuntimeException("cannot change column " + colName.toUpperCase()
+                    + " from type " + column.getDataType().getName() + " to " + newDataType.getName());
+            }
+        } else if (action.SET() != null && action.DEFAULT() != null) {
+            // Snowflake only allows setting a SEQUENCE default after creation
+            // (live-verified: "Unsupported feature 'Alter Column Set Default'").
+            final String defaultText =
+                visitor.getOriginalText(action.defaultExpression()).trim().toUpperCase();
+            if (!defaultText.endsWith(".NEXTVAL")) {
+                throw new RuntimeException("Unsupported feature 'Alter Column Set Default'.");
+            }
+        }
+    }
+
+    private void applyAlterColumnItem(final Table table, final String tableName,
+            final FrostlakeParser.AlterColumnItemContext item) {
+        final String colName = visitor.getText(item.identifier());
+        final FrostlakeParser.AlterColumnItemActionContext action = item.alterColumnItemAction();
+        if (action.dataTypeName() != null) {
+            table.alterColumnType(colName,
+                visitor.parseDataType(action.dataTypeName(), action.typeParameters()));
+            logger.trace("Altered column {} type in table {}", colName, tableName);
+        } else if (action.NULL() != null) {
+            // SET NOT NULL / DROP NOT NULL
+            table.getColumn(colName).setNullable(action.DROP() != null);
+            logger.trace("Set nullability on column {}.{}", tableName, colName);
+        } else if (action.DEFAULT() != null) {
+            // SET DEFAULT routes through the same default-expression parser CREATE TABLE uses: raw
+            // getText() stored the literal WITH its quotes, so an insert that omitted the column got
+            // the text 'X' (quotes included) instead of X.
+            table.getColumn(colName).setDefaultValue(action.SET() != null
+                ? ddlHandler.getColumnParser().parseDefaultExpression(action.defaultExpression())
+                : null);
+            logger.trace("Set/drop default on column {}.{}", tableName, colName);
+        }
+    }
+
     private void checkAlter(final SecurableObjectType objectType, final String objectName) {
         if (queryExecutor.getSecurityManager() != null) {
             queryExecutor.getSecurityManager().checkAlter(objectType, objectName);
@@ -852,7 +1084,8 @@ public class AlterCommandHandler implements CommandHandler {
     }
 
     /** Apply one ALTER TASK … SET option to the task (mirrors CREATE TASK's option handling). */
-    private void applyTaskOption(final Task task, final FrostlakeParser.TaskOptionContext opt) {
+    private void applyTaskOption(final Task task, final FrostlakeParser.TaskOptionContext opt,
+                                 final Schema schema) {
         if (opt.scheduleClause() != null) {
             final String schedule = visitor.extractStringLiteral(opt.scheduleClause().STRING_LITERAL());
             task.setSchedule(schedule);
@@ -866,12 +1099,23 @@ public class AlterCommandHandler implements CommandHandler {
         } else if (opt.TASK_AUTO_RETRY_ATTEMPTS() != null) {
             task.setTaskAutoRetryAttempts(Integer.parseInt(opt.INTEGER_LITERAL().getText()));
         } else if (opt.USER_TASK_MANAGED_INITIAL_WAREHOUSE_SIZE() != null) {
-            task.setUserTaskManagedInitialWarehouseSize(visitor.extractStringLiteral(opt.STRING_LITERAL()));
+            // Serverless-only, so refused on a task that names a warehouse — same rule and wording
+            // as CREATE TASK (see TaskOptions).
+            final String managedSize = visitor.extractStringLiteral(opt.STRING_LITERAL());
+            TaskOptions.rejectServerlessOptionsOnWarehouseTask(task.getWarehouse(), managedSize,
+                null, null, schema, task.getName());
+            task.setUserTaskManagedInitialWarehouseSize(managedSize);
         } else if (opt.SERVERLESS_TASK_MAX_STATEMENT_SIZE() != null) {
-            task.setServerlessTaskMaxStatementSize(opt.STRING_LITERAL() != null
-                ? visitor.extractStringLiteral(opt.STRING_LITERAL()) : visitor.getText(opt.identifier()));
+            final String maxStatementSize = opt.STRING_LITERAL() != null
+                ? visitor.extractStringLiteral(opt.STRING_LITERAL()) : visitor.getText(opt.identifier());
+            TaskOptions.rejectServerlessOptionsOnWarehouseTask(task.getWarehouse(), null,
+                maxStatementSize, null, schema, task.getName());
+            task.setServerlessTaskMaxStatementSize(maxStatementSize);
         } else if (opt.TARGET_COMPLETION_INTERVAL() != null) {
-            task.setTargetCompletionInterval(visitor.extractStringLiteral(opt.STRING_LITERAL()));
+            final String interval = visitor.extractStringLiteral(opt.STRING_LITERAL());
+            TaskOptions.rejectServerlessOptionsOnWarehouseTask(task.getWarehouse(), null, null,
+                interval, schema, task.getName());
+            task.setTargetCompletionInterval(interval);
         } else if (opt.USER_TASK_MINIMUM_TRIGGER_INTERVAL_IN_SECONDS() != null) {
             task.setUserTaskMinimumTriggerIntervalInSeconds(Integer.parseInt(opt.INTEGER_LITERAL().getText()));
         } else if (opt.ERROR_INTEGRATION() != null) {
@@ -940,5 +1184,55 @@ public class AlterCommandHandler implements CommandHandler {
     private void applyWarehouseProperty(final Warehouse warehouse,
                                        final FrostlakeParser.WarehousePropertyContext prop) {
         ddlHandler.applyWarehousePropertyPublic(warehouse, prop);
+    }
+
+    /** Whether that Cortex search service resolves, without the throw a missing one raises. */
+    private boolean cortexSearchServiceExists(final String serviceName) {
+        try {
+            catalog.resolveCortexSearchService(serviceName);
+            return true;
+        } catch (final RuntimeException absent) {
+            return false;
+        }
+    }
+
+    /**
+     * ALTER CORTEX SEARCH SERVICE … SET / UNSET. Only COMMENT is mutable here: the warehouse, target
+     * lag and embedding model are settled when the index is built, and re-setting them would leave the
+     * catalog claiming an index the engine never rebuilt.
+     */
+    private void applyCortexSearchAction(final CortexSearchService service,
+                                         final FrostlakeParser.CortexSearchActionContext action) {
+        if (action.UNSET() != null) {
+            service.setComment(null);
+            return;
+        }
+        for (final FrostlakeParser.CortexSearchOptionContext option : action.cortexSearchOption()) {
+            if (option.COMMENT() != null) {
+                service.setComment(visitor.extractStringLiteral(option.STRING_LITERAL()));
+            } else {
+                throw new RuntimeException(SqlCompilationError.of(
+                    "Unsupported ALTER CORTEX SEARCH SERVICE option: " + option.getText()));
+            }
+        }
+    }
+
+    /**
+     * Confirm a constrained column exists, reporting an unknown one at the place it was written.
+     *
+     * <p>The check lives HERE rather than in {@code Table}, which raises the same refusal without a
+     * position: a model object holds no SQL text and should not learn to, so only a caller holding the
+     * statement can say where the name was. Table's own throw stays as the guard for the callers that
+     * hold none — snapshot restore among them.
+     */
+    private void requireColumn(final Table table, final String colName,
+                               final FrostlakeParser.IdentifierContext where) {
+        try {
+            table.getColumn(colName);
+        } catch (final RuntimeException unknown) {
+            throw new RuntimeException(SqlCompilationError.invalidIdentifier(
+                where.getStart().getLine(), where.getStart().getCharPositionInLine(),
+                colName.toUpperCase()), unknown);
+        }
     }
 }

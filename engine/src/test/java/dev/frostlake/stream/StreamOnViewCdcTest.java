@@ -117,19 +117,23 @@ public class StreamOnViewCdcTest extends BaseDatabaseTest {
         assertEquals(0, run("SELECT id FROM st").getRowCount());
     }
 
-    // Views beyond a simple single-table projection are rejected at CREATE STREAM.
+    // An INNER join view is change-trackable; an OUTER join carries Snowflake's own per-type
+    // rejection sentence (both live-verified).
     @Test
-    public void joinViewIsRejected() {
+    public void innerJoinViewIsSupportedAndOuterJoinIsRejected() {
         engine.execute("CREATE TABLE a (id INTEGER)");
         engine.execute("CREATE TABLE b (id INTEGER)");
         engine.execute("CREATE VIEW vw AS SELECT a.id FROM a JOIN b ON a.id = b.id");
+        engine.execute("CREATE STREAM st ON VIEW vw");
+        engine.execute("CREATE VIEW lvw AS SELECT a.id FROM a LEFT JOIN b ON a.id = b.id");
         final RuntimeException ex = assertThrows(RuntimeException.class, new Executable() {
             @Override
             public void execute() {
-                engine.execute("CREATE STREAM st ON VIEW vw");
+                engine.execute("CREATE STREAM lst ON VIEW lvw");
             }
         });
-        assertTrue(ex.getMessage().contains("change tracking supports"),
+        assertTrue(ex.getMessage().contains(
+                "Change tracking is not supported on queries with joins of type '[LEFT_OUTER_JOIN]'."),
             "unexpected message: " + ex.getMessage());
     }
 

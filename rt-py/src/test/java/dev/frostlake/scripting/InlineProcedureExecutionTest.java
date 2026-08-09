@@ -65,11 +65,12 @@ public class InlineProcedureExecutionTest extends BaseDatabaseTest {
             LANGUAGE JAVA
             HANDLER = 'P.run'
             AS $$
+            import com.snowflake.snowpark_java.Row;
             import com.snowflake.snowpark_java.Session;
             public class P {
               public String run(Session session) {
-                Object[] rows = session.sql("SELECT 'java-proc' AS v").collect();
-                return ((dev.frostlake.storage.Row) rows[0]).getValue(0).toString();
+                Row[] rows = session.sql("SELECT 'java-proc' AS v").collect();
+                return rows[0].getString(0);
               }
             }
             $$
@@ -84,6 +85,7 @@ public class InlineProcedureExecutionTest extends BaseDatabaseTest {
             CREATE OR REPLACE PROCEDURE py_proc()
             RETURNS STRING
             LANGUAGE PYTHON
+            RUNTIME_VERSION = '3.11'
             HANDLER = 'run'
             AS $$
             def run(session):

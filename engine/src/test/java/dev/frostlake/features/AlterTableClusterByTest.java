@@ -60,13 +60,13 @@ public class AlterTableClusterByTest {
 
         engine.execute("CREATE TABLE orders (order_id INTEGER, customer_id INTEGER, order_date VARCHAR)");
 
-        Table table = engine.getCatalog().resolveTable("orders");
+        Table table = engine.getCatalog().resolveTable("ORDERS");
         assertNotNull(table);
         assertEquals(0, table.getClusterKeys().size());
 
         engine.execute("ALTER TABLE orders CLUSTER BY (order_date)");
 
-        table = engine.getCatalog().resolveTable("orders");
+        table = engine.getCatalog().resolveTable("ORDERS");
         List<String> clusterKeys = table.getClusterKeys();
         assertEquals(1, clusterKeys.size());
         assertEquals("order_date", clusterKeys.get(0));
@@ -81,7 +81,7 @@ public class AlterTableClusterByTest {
         engine.execute("CREATE TABLE sales (id INTEGER, region VARCHAR, product VARCHAR, amount INTEGER)");
         engine.execute("ALTER TABLE sales CLUSTER BY (region, product)");
 
-        Table table = engine.getCatalog().resolveTable("sales");
+        Table table = engine.getCatalog().resolveTable("SALES");
         List<String> clusterKeys = table.getClusterKeys();
         assertEquals(2, clusterKeys.size());
         assertEquals("region", clusterKeys.get(0));
@@ -96,13 +96,13 @@ public class AlterTableClusterByTest {
 
         engine.execute("CREATE TABLE customers (id INTEGER, name VARCHAR, country VARCHAR, city VARCHAR) CLUSTER BY (country)");
 
-        Table table = engine.getCatalog().resolveTable("customers");
+        Table table = engine.getCatalog().resolveTable("CUSTOMERS");
         assertEquals(1, table.getClusterKeys().size());
         assertEquals("country", table.getClusterKeys().get(0));
 
         engine.execute("ALTER TABLE customers CLUSTER BY (city)");
 
-        table = engine.getCatalog().resolveTable("customers");
+        table = engine.getCatalog().resolveTable("CUSTOMERS");
         List<String> clusterKeys = table.getClusterKeys();
         assertEquals(1, clusterKeys.size());
         assertEquals("city", clusterKeys.get(0));
@@ -117,7 +117,7 @@ public class AlterTableClusterByTest {
         engine.execute("CREATE TABLE products (id INTEGER, category VARCHAR, brand VARCHAR, price INTEGER) CLUSTER BY (category)");
         engine.execute("ALTER TABLE products CLUSTER BY (category, brand)");
 
-        Table table = engine.getCatalog().resolveTable("products");
+        Table table = engine.getCatalog().resolveTable("PRODUCTS");
         List<String> clusterKeys = table.getClusterKeys();
         assertEquals(2, clusterKeys.size());
         assertEquals("category", clusterKeys.get(0));
@@ -133,7 +133,7 @@ public class AlterTableClusterByTest {
         engine.execute("CREATE TABLE users (id INTEGER, email VARCHAR, created_at VARCHAR)");
         engine.execute("ALTER TABLE users CLUSTER BY (UPPER(email))");
 
-        Table table = engine.getCatalog().resolveTable("users");
+        Table table = engine.getCatalog().resolveTable("USERS");
         List<String> clusterKeys = table.getClusterKeys();
         assertEquals(1, clusterKeys.size());
         assertTrue(clusterKeys.get(0).contains("UPPER"));
@@ -149,7 +149,7 @@ public class AlterTableClusterByTest {
         engine.execute("CREATE TABLE events (id INTEGER, name VARCHAR, timestamp VARCHAR)");
         engine.execute("ALTER TABLE events CLUSTER BY (UPPER(name), DATE(timestamp))");
 
-        Table table = engine.getCatalog().resolveTable("events");
+        Table table = engine.getCatalog().resolveTable("EVENTS");
         List<String> clusterKeys = table.getClusterKeys();
         assertEquals(2, clusterKeys.size());
         assertTrue(clusterKeys.get(0).contains("UPPER"));
@@ -165,7 +165,7 @@ public class AlterTableClusterByTest {
         engine.execute("CREATE TABLE metrics (id INTEGER, value INTEGER, multiplier INTEGER)");
         engine.execute("ALTER TABLE metrics CLUSTER BY (value * multiplier)");
 
-        Table table = engine.getCatalog().resolveTable("metrics");
+        Table table = engine.getCatalog().resolveTable("METRICS");
         List<String> clusterKeys = table.getClusterKeys();
         assertEquals(1, clusterKeys.size());
         assertTrue(clusterKeys.get(0).contains("value"));
@@ -181,7 +181,7 @@ public class AlterTableClusterByTest {
         engine.execute("CREATE TABLE transactions (id INTEGER, user_id INTEGER, date VARCHAR, amount INTEGER)");
         engine.execute("ALTER TABLE transactions CLUSTER BY (user_id, UPPER(date), amount * 100)");
 
-        Table table = engine.getCatalog().resolveTable("transactions");
+        Table table = engine.getCatalog().resolveTable("TRANSACTIONS");
         List<String> clusterKeys = table.getClusterKeys();
         assertEquals(3, clusterKeys.size());
         assertEquals("user_id", clusterKeys.get(0));
@@ -199,7 +199,7 @@ public class AlterTableClusterByTest {
         engine.execute("CREATE TABLE analytics.reports (id INTEGER, region VARCHAR, quarter VARCHAR)");
         engine.execute("ALTER TABLE analytics.reports CLUSTER BY (region, quarter)");
 
-        Table table = engine.getCatalog().resolveTable("analytics.reports");
+        Table table = engine.getCatalog().resolveTable("ANALYTICS.REPORTS");
         List<String> clusterKeys = table.getClusterKeys();
         assertEquals(2, clusterKeys.size());
         assertEquals("region", clusterKeys.get(0));
@@ -216,7 +216,7 @@ public class AlterTableClusterByTest {
         engine.execute("INSERT INTO items VALUES (1, 'Electronics'), (2, 'Furniture'), (3, 'Electronics')");
         engine.execute("ALTER TABLE items CLUSTER BY (category)");
 
-        Table table = engine.getCatalog().resolveTable("items");
+        Table table = engine.getCatalog().resolveTable("ITEMS");
         List<String> clusterKeys = table.getClusterKeys();
         assertEquals(1, clusterKeys.size());
         assertEquals("category", clusterKeys.get(0));
@@ -231,7 +231,7 @@ public class AlterTableClusterByTest {
         engine.execute("CREATE TABLE test1 (id INTEGER, name VARCHAR)");
         engine.execute("ALTER TABLE IF EXISTS test1 CLUSTER BY (name)");
 
-        Table table = engine.getCatalog().resolveTable("test1");
+        Table table = engine.getCatalog().resolveTable("TEST1");
         assertEquals(1, table.getClusterKeys().size());
 
         engine.execute("ALTER TABLE IF EXISTS nonexistent CLUSTER BY (col1)");
@@ -249,7 +249,7 @@ public class AlterTableClusterByTest {
         engine.execute("ALTER TABLE multi_alter ADD COLUMN col3 VARCHAR");
         engine.execute("ALTER TABLE multi_alter CLUSTER BY (col1, col2)");
 
-        Table table = engine.getCatalog().resolveTable("multi_alter");
+        Table table = engine.getCatalog().resolveTable("MULTI_ALTER");
         assertEquals(4, table.getColumns().size());
         assertEquals(2, table.getClusterKeys().size());
         assertEquals("col1", table.getClusterKeys().get(0));
@@ -265,7 +265,7 @@ public class AlterTableClusterByTest {
         engine.execute("CREATE TABLE data (id INTEGER, value VARCHAR, score DECIMAL)");
         engine.execute("ALTER TABLE data CLUSTER BY (CAST(value AS INTEGER))");
 
-        Table table = engine.getCatalog().resolveTable("data");
+        Table table = engine.getCatalog().resolveTable("DATA");
         List<String> clusterKeys = table.getClusterKeys();
         assertEquals(1, clusterKeys.size());
         assertTrue(clusterKeys.get(0).contains("CAST"));
@@ -280,12 +280,12 @@ public class AlterTableClusterByTest {
 
         engine.execute("CREATE TABLE clustered (id INTEGER, col1 VARCHAR, col2 VARCHAR) CLUSTER BY (col1, col2)");
 
-        Table table = engine.getCatalog().resolveTable("clustered");
+        Table table = engine.getCatalog().resolveTable("CLUSTERED");
         assertEquals(2, table.getClusterKeys().size());
 
         engine.execute("ALTER TABLE clustered CLUSTER BY (col1)");
 
-        table = engine.getCatalog().resolveTable("clustered");
+        table = engine.getCatalog().resolveTable("CLUSTERED");
         assertEquals(1, table.getClusterKeys().size());
         assertEquals("col1", table.getClusterKeys().get(0));
 
@@ -299,7 +299,7 @@ public class AlterTableClusterByTest {
         engine.execute("CREATE TABLE logs (id INTEGER, message VARCHAR, timestamp VARCHAR)");
         engine.execute("ALTER TABLE logs CLUSTER BY (SUBSTRING(message, 1, 10))");
 
-        Table table = engine.getCatalog().resolveTable("logs");
+        Table table = engine.getCatalog().resolveTable("LOGS");
         List<String> clusterKeys = table.getClusterKeys();
         assertEquals(1, clusterKeys.size());
         assertTrue(clusterKeys.get(0).contains("SUBSTRING"));
@@ -316,7 +316,7 @@ public class AlterTableClusterByTest {
         engine.execute("INSERT INTO preserve_test VALUES (1, 'US', 100), (2, 'EU', 200), (3, 'US', 150)");
         engine.execute("ALTER TABLE preserve_test CLUSTER BY (region)");
 
-        Table table = engine.getCatalog().resolveTable("preserve_test");
+        Table table = engine.getCatalog().resolveTable("PRESERVE_TEST");
         assertEquals(1, table.getClusterKeys().size());
 
         // Verify data is still present

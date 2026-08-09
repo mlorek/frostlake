@@ -17,27 +17,44 @@
 package dev.frostlake.executor;
 
 import dev.frostlake.storage.ResultSet;
-import java.util.ArrayDeque;
 
+import java.util.ArrayDeque;
+import java.util.Deque;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.UUID;
 
 /**
- * Cache for query results, storing them by query ID
- * Supports RESULT_SCAN table function
+ * Query results held by query ID so RESULT_SCAN can read them back, plus the per-session history of
+ * query IDs that LAST_QUERY_ID walks.
+ *
+ * <p>The history is keyed by SESSION, not by thread. A session's statements are not guaranteed to run
+ * on one thread — the HTTP server hands consecutive requests to whichever pool thread is free — so a
+ * thread-keyed history loses the previous statement's ID between two requests of the same session,
+ * and the {@code SHOW …} then {@code SELECT … FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))} pattern
+ * fails with "No previous query results available" while working in-process. Callers that serve more
+ * than one session bind the session around each statement with
+ * {@link #beginSessionScope(String)} / {@link #clearSessionScope()}; anything else shares one
+ * implicit session, which is what an embedded engine wants.
+ *
+ * <p>Cached RESULTS stay shared across sessions: a query ID is a handle anyone holding it can scan,
+ * which is how Snowflake behaves. Only the history of "what did I run last" is per session.
  */
 public class QueryResultCache {
 
     private static final int DEFAULT_MAX_CACHED_RESULTS = 500;
+    private static final int MAX_ID_HISTORY = 20;
+
+    /** How many sessions keep a history before the least recently used one is dropped. */
+    private static final int MAX_TRACKED_SESSIONS = 256;
+
+    /** The history every caller shares when no session is bound (an embedded engine, a test). */
+    private static final String IMPLICIT_SESSION = "";
 
     private final int maxCachedResults;
     private final Map<String, CachedResult> cache;
-    // Per-thread query ID history so concurrent sessions don't overwrite each other
-    // Index 0 = most recent, index 1 = one before, etc.
-    private final ThreadLocal<ArrayDeque<String>> queryIdHistory =
-        ThreadLocal.withInitial(ArrayDeque::new);
-    private static final int MAX_ID_HISTORY = 20;
+    private final Map<String, Deque<String>> historyBySession;
+    private final ThreadLocal<String> boundSession = new ThreadLocal<>();
 
     public QueryResultCache() {
         this(DEFAULT_MAX_CACHED_RESULTS);
@@ -45,13 +62,45 @@ public class QueryResultCache {
 
     public QueryResultCache(final int maxCachedResults) {
         this.maxCachedResults = maxCachedResults;
-        // Use LinkedHashMap with access order for LRU behavior
+        // Access-ordered for LRU behaviour. Every read and write goes through a synchronized block:
+        // in access order even a get() mutates the map, and statements from different sessions run
+        // concurrently under the engine's read lock.
         this.cache = new LinkedHashMap<String, CachedResult>(maxCachedResults + 1, 0.75f, true) {
             @Override
             protected boolean removeEldestEntry(final Map.Entry<String, CachedResult> eldest) {
                 return size() > maxCachedResults;
             }
         };
+        this.historyBySession = new LinkedHashMap<String, Deque<String>>(16, 0.75f, true) {
+            @Override
+            protected boolean removeEldestEntry(final Map.Entry<String, Deque<String>> eldest) {
+                return size() > MAX_TRACKED_SESSIONS;
+            }
+        };
+    }
+
+    /**
+     * Bind {@code sessionId} to the calling thread for the duration of one statement, so the query
+     * IDs it records land in that session's history. Pair with {@link #clearSessionScope()} in a
+     * finally block — pooled threads outlive the statements they serve.
+     */
+    public void beginSessionScope(final String sessionId) {
+        boundSession.set(sessionId != null ? sessionId : IMPLICIT_SESSION);
+    }
+
+    /** Drop this thread's session binding. Idempotent. */
+    public void clearSessionScope() {
+        boundSession.remove();
+    }
+
+    /** Forget a session's query-ID history, once that session is gone. */
+    public void forgetSession(final String sessionId) {
+        if (sessionId == null) {
+            return;
+        }
+        synchronized (historyBySession) {
+            historyBySession.remove(sessionId);
+        }
     }
 
     /**
@@ -61,8 +110,10 @@ public class QueryResultCache {
      * @return The generated query ID
      */
     public String cacheResult(final String sql, final ResultSet result) {
-        String queryId = generateQueryId();
-        cache.put(queryId, new CachedResult(sql, result));
+        final String queryId = generateQueryId();
+        synchronized (cache) {
+            cache.put(queryId, new CachedResult(sql, result));
+        }
         pushQueryId(queryId);
         return queryId;
     }
@@ -73,8 +124,10 @@ public class QueryResultCache {
      * @return The cached result, or null if not found
      */
     public ResultSet getResult(final String queryId) {
-        CachedResult cached = cache.get(queryId);
-        return cached != null ? cached.result : null;
+        synchronized (cache) {
+            final CachedResult cached = cache.get(queryId);
+            return cached != null ? cached.getResult() : null;
+        }
     }
 
     /**
@@ -83,8 +136,10 @@ public class QueryResultCache {
      * @return The SQL statement, or null if not found
      */
     public String getSql(final String queryId) {
-        CachedResult cached = cache.get(queryId);
-        return cached != null ? cached.sql : null;
+        synchronized (cache) {
+            final CachedResult cached = cache.get(queryId);
+            return cached != null ? cached.getSql() : null;
+        }
     }
 
     /**
@@ -98,22 +153,25 @@ public class QueryResultCache {
     /**
      * Get a query ID by relative index. Snowflake semantics:
      *   -1 = most recent (default), -2 = one before that, etc.
-     *   Index 0 is treated as -1 for compatibility.
-     */
-    /**
-     * Get a query ID by relative index. Snowflake semantics:
-     *   -1 = most recent (default), -2 = one before that, etc.
      *   0 is treated as -1 (most recent) for compatibility.
      */
     public String getQueryId(final int index) {
-        ArrayDeque<String> history = queryIdHistory.get();
-        if (history.isEmpty()) return null;
+        final Deque<String> history = historyForCurrentSession(false);
+        if (history == null || history.isEmpty()) {
+            return null;
+        }
         // -1 → offset 0 (newest), -2 → offset 1, 0 → offset 0
-        int offset = (index >= 0) ? 0 : (-index - 1);
-        if (offset >= history.size()) return null;
-        int i = 0;
-        for (final String id : history) {
-            if (i++ == offset) return id;
+        final int offset = index >= 0 ? 0 : -index - 1;
+        synchronized (historyBySession) {
+            if (offset >= history.size()) {
+                return null;
+            }
+            int i = 0;
+            for (final String id : history) {
+                if (i++ == offset) {
+                    return id;
+                }
+            }
         }
         return null;
     }
@@ -124,15 +182,21 @@ public class QueryResultCache {
      * @return true if the result is cached
      */
     public boolean hasResult(final String queryId) {
-        return cache.containsKey(queryId);
+        synchronized (cache) {
+            return cache.containsKey(queryId);
+        }
     }
 
     /**
      * Clear all cached results
      */
     public void clear() {
-        cache.clear();
-        queryIdHistory.remove();
+        synchronized (cache) {
+            cache.clear();
+        }
+        synchronized (historyBySession) {
+            historyBySession.clear();
+        }
     }
 
     /**
@@ -140,7 +204,9 @@ public class QueryResultCache {
      * @return The cache size
      */
     public int size() {
-        return cache.size();
+        synchronized (cache) {
+            return cache.size();
+        }
     }
 
     /**
@@ -150,16 +216,36 @@ public class QueryResultCache {
      * @return The generated query ID
      */
     public String generateQueryId(final String sql) {
-        String queryId = generateQueryId();
+        final String queryId = generateQueryId();
         pushQueryId(queryId);
         return queryId;
     }
 
     private void pushQueryId(final String queryId) {
-        ArrayDeque<String> history = queryIdHistory.get();
-        history.addFirst(queryId);
-        while (history.size() > MAX_ID_HISTORY) {
-            history.removeLast();
+        synchronized (historyBySession) {
+            final Deque<String> history = historyForCurrentSession(true);
+            history.addFirst(queryId);
+            while (history.size() > MAX_ID_HISTORY) {
+                history.removeLast();
+            }
+        }
+    }
+
+    /**
+     * The calling thread's session history, creating it when {@code create} is set. Callers that
+     * iterate the returned deque must hold the {@code historyBySession} monitor while they do.
+     */
+    private Deque<String> historyForCurrentSession(final boolean create) {
+        final String sessionId = boundSession.get();
+        final String key = sessionId != null ? sessionId : IMPLICIT_SESSION;
+        synchronized (historyBySession) {
+            final Deque<String> history = historyBySession.get(key);
+            if (history != null || !create) {
+                return history;
+            }
+            final Deque<String> created = new ArrayDeque<>();
+            historyBySession.put(key, created);
+            return created;
         }
     }
 
@@ -169,18 +255,5 @@ public class QueryResultCache {
      */
     private String generateQueryId() {
         return UUID.randomUUID().toString();
-    }
-
-    /**
-     * Internal class to hold cached query results
-     */
-    private static class CachedResult {
-        final String sql;
-        final ResultSet result;
-
-        CachedResult(final String sql, final ResultSet result) {
-            this.sql = sql;
-            this.result = result;
-        }
     }
 }

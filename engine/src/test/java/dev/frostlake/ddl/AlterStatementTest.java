@@ -18,6 +18,7 @@ package dev.frostlake.ddl;
 
 import dev.frostlake.DatabaseEngine;
 import dev.frostlake.storage.ResultSet;
+import dev.frostlake.storage.Row;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -167,14 +168,31 @@ public class AlterStatementTest {
         assertTrue(rs.getRowCount() > 0, "View should exist");
     }
 
+    /**
+     * RENAME moves the NAME and nothing else: the login and display names a user already had stay
+     * as they were, defaults included, so a renamed user still reports the name they were created
+     * with in those two columns.
+     */
     @Test
     public void testAlterUserRename() {
         engine.execute("CREATE USER old_user PASSWORD = 'pass123'");
         engine.execute("ALTER USER old_user RENAME TO new_user");
 
-        ResultSet rs = engine.executeQuery("SHOW USERS");
-        assertTrue(containsValue(rs, "new_user"), "User should be renamed to new_user");
-        assertFalse(containsValue(rs, "old_user"), "Old user name should not exist");
+        final ResultSet rs = engine.executeQuery("SHOW USERS");
+        final int nameIdx = rs.getColumnIndex("name");
+        final int loginIdx = rs.getColumnIndex("login_name");
+        final int displayIdx = rs.getColumnIndex("display_name");
+        Row renamed = null;
+        for (int i = 0; i < rs.getRowCount(); i++) {
+            if ("NEW_USER".equals(rs.getRows().get(i).getValue(nameIdx))) {
+                renamed = rs.getRows().get(i);
+            }
+            assertNotEquals("OLD_USER", rs.getRows().get(i).getValue(nameIdx),
+                "the old name must not survive as a user name");
+        }
+        assertNotNull(renamed, "User should be renamed to NEW_USER");
+        assertEquals("OLD_USER", renamed.getValue(loginIdx), "the login name is left as it was");
+        assertEquals("OLD_USER", renamed.getValue(displayIdx), "the display name is left as it was");
     }
 
     @Test

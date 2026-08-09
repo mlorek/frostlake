@@ -329,6 +329,7 @@ def multiply_handler(x, y):
             CREATE FUNCTION py_square(x INTEGER)
             RETURNS INTEGER
             LANGUAGE PYTHON
+            RUNTIME_VERSION = '3.11'
             HANDLER = 'square_it'
             AS $$
 def square_it(x):

@@ -64,7 +64,7 @@ public class AlterTableConstraintsTest {
         engine.execute("CREATE TABLE users (id INTEGER, name VARCHAR, email VARCHAR)");
         engine.execute("ALTER TABLE users ADD PRIMARY KEY (id)");
 
-        Table table = engine.getCatalog().resolveTable("users");
+        Table table = engine.getCatalog().resolveTable("USERS");
         TableColumn idColumn = table.getColumn("id");
         assertTrue(idColumn.isPrimaryKey());
 
@@ -78,7 +78,7 @@ public class AlterTableConstraintsTest {
         engine.execute("CREATE TABLE order_items (order_id INTEGER, item_id INTEGER, quantity INTEGER)");
         engine.execute("ALTER TABLE order_items ADD PRIMARY KEY (order_id, item_id)");
 
-        Table table = engine.getCatalog().resolveTable("order_items");
+        Table table = engine.getCatalog().resolveTable("ORDER_ITEMS");
         assertTrue(table.getColumn("order_id").isPrimaryKey());
         assertTrue(table.getColumn("item_id").isPrimaryKey());
         assertFalse(table.getColumn("quantity").isPrimaryKey());
@@ -93,7 +93,7 @@ public class AlterTableConstraintsTest {
         engine.execute("CREATE TABLE products (product_id INTEGER, name VARCHAR)");
         engine.execute("ALTER TABLE products ADD CONSTRAINT pk_products PRIMARY KEY (product_id)");
 
-        Table table = engine.getCatalog().resolveTable("products");
+        Table table = engine.getCatalog().resolveTable("PRODUCTS");
         assertTrue(table.getColumn("product_id").isPrimaryKey());
 
         logger.info("ALTER TABLE ADD named PRIMARY KEY works correctly");
@@ -106,7 +106,7 @@ public class AlterTableConstraintsTest {
         engine.execute("CREATE TABLE users (id INTEGER, email VARCHAR, phone VARCHAR)");
         engine.execute("ALTER TABLE users ADD UNIQUE (email)");
 
-        Table table = engine.getCatalog().resolveTable("users");
+        Table table = engine.getCatalog().resolveTable("USERS");
         assertTrue(table.getColumn("email").isUnique());
         assertFalse(table.getColumn("phone").isUnique());
 
@@ -120,7 +120,7 @@ public class AlterTableConstraintsTest {
         engine.execute("CREATE TABLE registrations (user_id INTEGER, event_id INTEGER, timestamp VARCHAR)");
         engine.execute("ALTER TABLE registrations ADD UNIQUE (user_id, event_id)");
 
-        Table table = engine.getCatalog().resolveTable("registrations");
+        Table table = engine.getCatalog().resolveTable("REGISTRATIONS");
         assertTrue(table.getColumn("user_id").isUnique());
         assertTrue(table.getColumn("event_id").isUnique());
         assertFalse(table.getColumn("timestamp").isUnique());
@@ -135,7 +135,7 @@ public class AlterTableConstraintsTest {
         engine.execute("CREATE TABLE employees (id INTEGER, email VARCHAR)");
         engine.execute("ALTER TABLE employees ADD CONSTRAINT uk_email UNIQUE (email)");
 
-        Table table = engine.getCatalog().resolveTable("employees");
+        Table table = engine.getCatalog().resolveTable("EMPLOYEES");
         assertTrue(table.getColumn("email").isUnique());
 
         logger.info("ALTER TABLE ADD named UNIQUE works correctly");
@@ -149,7 +149,7 @@ public class AlterTableConstraintsTest {
         engine.execute("CREATE TABLE employees (emp_id INTEGER, name VARCHAR, dept_id INTEGER)");
         engine.execute("ALTER TABLE employees ADD FOREIGN KEY (dept_id) REFERENCES departments (dept_id)");
 
-        Table table = engine.getCatalog().resolveTable("employees");
+        Table table = engine.getCatalog().resolveTable("EMPLOYEES");
         List<ForeignKeyConstraint> foreignKeys = table.getForeignKeys();
         assertEquals(1, foreignKeys.size());
 
@@ -169,7 +169,7 @@ public class AlterTableConstraintsTest {
         engine.execute("CREATE TABLE cities (city_id INTEGER, name VARCHAR, country_id INTEGER)");
         engine.execute("ALTER TABLE cities ADD CONSTRAINT fk_cities_countries FOREIGN KEY (country_id) REFERENCES countries (country_id)");
 
-        Table table = engine.getCatalog().resolveTable("cities");
+        Table table = engine.getCatalog().resolveTable("CITIES");
         List<ForeignKeyConstraint> foreignKeys = table.getForeignKeys();
         assertEquals(1, foreignKeys.size());
 
@@ -187,7 +187,7 @@ public class AlterTableConstraintsTest {
         engine.execute("CREATE TABLE posts (post_id INTEGER, user_id INTEGER)");
         engine.execute("ALTER TABLE posts ADD FOREIGN KEY (user_id) REFERENCES users (user_id) ON DELETE CASCADE");
 
-        Table table = engine.getCatalog().resolveTable("posts");
+        Table table = engine.getCatalog().resolveTable("POSTS");
         List<ForeignKeyConstraint> foreignKeys = table.getForeignKeys();
         assertEquals(1, foreignKeys.size());
 
@@ -205,7 +205,7 @@ public class AlterTableConstraintsTest {
         engine.execute("CREATE TABLE products (prod_id INTEGER, cat_id INTEGER)");
         engine.execute("ALTER TABLE products ADD FOREIGN KEY (cat_id) REFERENCES categories (cat_id) ON UPDATE CASCADE");
 
-        Table table = engine.getCatalog().resolveTable("products");
+        Table table = engine.getCatalog().resolveTable("PRODUCTS");
         List<ForeignKeyConstraint> foreignKeys = table.getForeignKeys();
         assertEquals(1, foreignKeys.size());
 
@@ -223,7 +223,7 @@ public class AlterTableConstraintsTest {
         engine.execute("CREATE TABLE order_items (item_id INTEGER, order_id INTEGER)");
         engine.execute("ALTER TABLE order_items ADD FOREIGN KEY (order_id) REFERENCES orders (order_id) ON DELETE CASCADE ON UPDATE CASCADE");
 
-        Table table = engine.getCatalog().resolveTable("order_items");
+        Table table = engine.getCatalog().resolveTable("ORDER_ITEMS");
         List<ForeignKeyConstraint> foreignKeys = table.getForeignKeys();
         assertEquals(1, foreignKeys.size());
 
@@ -242,7 +242,7 @@ public class AlterTableConstraintsTest {
         engine.execute("CREATE TABLE shipments (ship_id INTEGER, order_id INTEGER, customer_id INTEGER)");
         engine.execute("ALTER TABLE shipments ADD FOREIGN KEY (order_id, customer_id) REFERENCES order_headers (order_id, customer_id)");
 
-        Table table = engine.getCatalog().resolveTable("shipments");
+        Table table = engine.getCatalog().resolveTable("SHIPMENTS");
         List<ForeignKeyConstraint> foreignKeys = table.getForeignKeys();
         assertEquals(1, foreignKeys.size());
 
@@ -262,12 +262,12 @@ public class AlterTableConstraintsTest {
         engine.execute("CREATE TABLE child (id INTEGER, parent_id INTEGER)");
         engine.execute("ALTER TABLE child ADD CONSTRAINT fk_child_parent FOREIGN KEY (parent_id) REFERENCES parent (id)");
 
-        Table table = engine.getCatalog().resolveTable("child");
+        Table table = engine.getCatalog().resolveTable("CHILD");
         assertEquals(1, table.getForeignKeys().size());
 
         engine.execute("ALTER TABLE child DROP CONSTRAINT fk_child_parent");
 
-        table = engine.getCatalog().resolveTable("child");
+        table = engine.getCatalog().resolveTable("CHILD");
         assertEquals(0, table.getForeignKeys().size());
 
         logger.info("ALTER TABLE DROP CONSTRAINT works correctly");
@@ -282,7 +282,7 @@ public class AlterTableConstraintsTest {
         engine.execute("ALTER TABLE users ADD UNIQUE (email)");
         engine.execute("ALTER TABLE users ADD UNIQUE (phone)");
 
-        Table table = engine.getCatalog().resolveTable("users");
+        Table table = engine.getCatalog().resolveTable("USERS");
         assertTrue(table.getColumn("user_id").isPrimaryKey());
         assertTrue(table.getColumn("email").isUnique());
         assertTrue(table.getColumn("phone").isUnique());
@@ -298,7 +298,7 @@ public class AlterTableConstraintsTest {
         engine.execute("CREATE TABLE analytics.users (id INTEGER, name VARCHAR)");
         engine.execute("ALTER TABLE analytics.users ADD PRIMARY KEY (id)");
 
-        Table table = engine.getCatalog().resolveTable("analytics.users");
+        Table table = engine.getCatalog().resolveTable("ANALYTICS.USERS");
         assertTrue(table.getColumn("id").isPrimaryKey());
 
         logger.info("ALTER TABLE ADD constraint with qualified name works correctly");
@@ -311,7 +311,7 @@ public class AlterTableConstraintsTest {
         engine.execute("CREATE TABLE test1 (id INTEGER)");
         engine.execute("ALTER TABLE IF EXISTS test1 ADD PRIMARY KEY (id)");
 
-        Table table = engine.getCatalog().resolveTable("test1");
+        Table table = engine.getCatalog().resolveTable("TEST1");
         assertTrue(table.getColumn("id").isPrimaryKey());
 
         engine.execute("ALTER TABLE IF EXISTS nonexistent ADD PRIMARY KEY (id)");
@@ -329,7 +329,7 @@ public class AlterTableConstraintsTest {
         engine.execute("ALTER TABLE teams ADD UNIQUE (name)");
         engine.execute("ALTER TABLE teams CLUSTER BY (city)");
 
-        Table table = engine.getCatalog().resolveTable("teams");
+        Table table = engine.getCatalog().resolveTable("TEAMS");
         assertEquals(3, table.getColumns().size());
         assertTrue(table.getColumn("team_id").isPrimaryKey());
         assertTrue(table.getColumn("name").isUnique());
@@ -346,7 +346,7 @@ public class AlterTableConstraintsTest {
         engine.execute("CREATE TABLE employees (emp_id INTEGER, mgr_id INTEGER)");
         engine.execute("ALTER TABLE employees ADD FOREIGN KEY (mgr_id) REFERENCES managers (mgr_id) ON DELETE SET NULL");
 
-        Table table = engine.getCatalog().resolveTable("employees");
+        Table table = engine.getCatalog().resolveTable("EMPLOYEES");
         List<ForeignKeyConstraint> foreignKeys = table.getForeignKeys();
         assertEquals(1, foreignKeys.size());
 
@@ -364,7 +364,7 @@ public class AlterTableConstraintsTest {
         engine.execute("CREATE TABLE transactions (txn_id INTEGER, wallet_id INTEGER)");
         engine.execute("ALTER TABLE transactions ADD FOREIGN KEY (wallet_id) REFERENCES wallets (wallet_id) ON DELETE RESTRICT");
 
-        Table table = engine.getCatalog().resolveTable("transactions");
+        Table table = engine.getCatalog().resolveTable("TRANSACTIONS");
         List<ForeignKeyConstraint> foreignKeys = table.getForeignKeys();
         assertEquals(1, foreignKeys.size());
 
@@ -382,7 +382,7 @@ public class AlterTableConstraintsTest {
         engine.execute("CREATE TABLE products (prod_id INTEGER, vendor_id INTEGER)");
         engine.execute("ALTER TABLE products ADD FOREIGN KEY (vendor_id) REFERENCES vendors (vendor_id) ON UPDATE NO ACTION");
 
-        Table table = engine.getCatalog().resolveTable("products");
+        Table table = engine.getCatalog().resolveTable("PRODUCTS");
         List<ForeignKeyConstraint> foreignKeys = table.getForeignKeys();
         assertEquals(1, foreignKeys.size());
 

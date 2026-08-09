@@ -230,8 +230,17 @@ public class ShowModifierMatrixTest extends BaseDatabaseTest {
         final ResultSet databases = engine.executeQuery("SHOW TERSE DATABASES");
         assertEquals(standard, columnNames(databases));
         assertTrue(databases.getRowCount() >= 1);
-        assertEquals("STANDARD",
-            String.valueOf(databases.getRows().get(0).getValue(databases.getColumnIndex("kind"))));
+        // The row for THIS test's database, not row 0 — the listing is account-wide and its first row
+        // is whichever name sorts first, whose kind is its own business (live has STANDARD,
+        // APPLICATION, IMPORTED DATABASE and PERSONAL DATABASE in one listing).
+        String ownKind = null;
+        for (final Row row : databases.getRows()) {
+            if ("TEST_DB".equalsIgnoreCase(
+                    String.valueOf(row.getValue(databases.getColumnIndex("name"))))) {
+                ownKind = String.valueOf(row.getValue(databases.getColumnIndex("kind")));
+            }
+        }
+        assertEquals("STANDARD", ownKind);
     }
 
     /** STREAMS and TASKS take a sixth TERSE column apiece — tableOn and schedule. */

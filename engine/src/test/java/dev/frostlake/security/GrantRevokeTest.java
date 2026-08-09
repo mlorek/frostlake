@@ -23,6 +23,9 @@ import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
+import java.util.HashSet;
+import java.util.Set;
+
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
@@ -214,19 +217,44 @@ public class GrantRevokeTest extends BaseDatabaseTest {
 
         engine.execute("GRANT ALL PRIVILEGES ON TABLE all_priv_table TO ROLE all_priv_role");
 
+        // GRANT ALL stores the EXPANSION, never an ALL row (live-verified): the individual DML
+        // privileges appear, and no row is named ALL. A real account lists edition extras beyond
+        // this core, so the assertion is contains-not-equals.
         ResultSet grants = engine.executeQuery("SHOW GRANTS ON TABLE all_priv_table");
-        assertTrue(grants.getRowCount() >= 1);
-
-        // Check that ALL privilege is granted
-        boolean foundAll = false;
+        final Set<String> granted = new HashSet<>();
         for (int i = 0; i < grants.getRowCount(); i++) {
-            if ("ALL".equals(grants.getRows().get(i).getValue(1))) {
-                foundAll = true;
-                break;
-            }
+            granted.add(String.valueOf(grants.getRows().get(i).getValue(1)));
         }
+        assertFalse(granted.contains("ALL"), "no ALL marker row, got: " + granted);
+        for (final String core : new String[] {"SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE", "REFERENCES"}) {
+            assertTrue(granted.contains(core), "expected expanded privilege " + core + ", got: " + granted);
+        }
+    }
 
-        assertTrue(foundAll, "ALL privilege should be granted");
+    /** Revoking ONE expanded privilege leaves the rest; REVOKE ALL then clears them. */
+    @Test
+    public void testGrantAllExpansionRevokesIndividually() {
+        engine.execute("CREATE ROLE part_revoke_role");
+        engine.execute("CREATE TABLE part_revoke_table (id INTEGER)");
+        engine.execute("GRANT ALL ON TABLE part_revoke_table TO ROLE part_revoke_role");
+        engine.execute("REVOKE UPDATE ON TABLE part_revoke_table FROM ROLE part_revoke_role");
+
+        ResultSet grants = engine.executeQuery("SHOW GRANTS ON TABLE part_revoke_table");
+        final Set<String> granted = new HashSet<>();
+        for (int i = 0; i < grants.getRowCount(); i++) {
+            granted.add(String.valueOf(grants.getRows().get(i).getValue(1)));
+        }
+        assertFalse(granted.contains("UPDATE"), "UPDATE was revoked, got: " + granted);
+        assertTrue(granted.contains("SELECT") && granted.contains("DELETE"),
+            "the rest of the expansion remains, got: " + granted);
+
+        engine.execute("REVOKE ALL ON TABLE part_revoke_table FROM ROLE part_revoke_role");
+        ResultSet after = engine.executeQuery("SHOW GRANTS ON TABLE part_revoke_table");
+        for (int i = 0; i < after.getRowCount(); i++) {
+            final String privilege = String.valueOf(after.getRows().get(i).getValue(1));
+            assertTrue("OWNERSHIP".equals(privilege),
+                "only OWNERSHIP may remain after REVOKE ALL, got: " + privilege);
+        }
     }
 
     @Test
@@ -347,9 +375,11 @@ public class GrantRevokeTest extends BaseDatabaseTest {
 
         engine.execute("GRANT ALL PRIVILEGES ON TABLE t4 TO USER u4");
 
+        // GRANT ALL stores the expansion, not an ALL marker: the individual privileges are held.
         var user = engine.getCatalog().getUser("u4");
-        assertTrue(user.hasPrivilege("TABLE", "T4",
-            Privilege.ALL));
+        assertTrue(user.hasPrivilege("TABLE", "T4", Privilege.SELECT));
+        assertTrue(user.hasPrivilege("TABLE", "T4", Privilege.DELETE));
+        assertTrue(user.hasPrivilege("TABLE", "T4", Privilege.TRUNCATE));
     }
 
     @Test

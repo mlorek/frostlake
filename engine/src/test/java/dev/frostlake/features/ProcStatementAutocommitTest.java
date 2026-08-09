@@ -78,23 +78,23 @@ public class ProcStatementAutocommitTest extends BaseDatabaseTest {
         // Snowflake: ALTER SESSION is not transaction-committing DDL. Loaders set QUERY_TAG between
         // statements INSIDE their explicit transaction — if it committed, the transaction split and a
         // SECOND stream read within it saw an already-consumed empty window.
+        //
+        // At the TOP LEVEL, which is where a loader sets it: a real account refuses ALTER SESSION
+        // inside a stored procedure outright ("Unsupported statement type 'ALTER_SESSION'"), so the
+        // procedure form this once used could not have been what the loaders run.
         engine.execute("CREATE TABLE as_t (id INTEGER)");
         engine.execute("INSERT INTO as_t VALUES (1), (2)");
         engine.execute("CREATE STREAM as_s ON TABLE as_t");
         engine.execute("INSERT INTO as_t VALUES (3)");
         engine.execute("CREATE TABLE sink1 (id INTEGER)");
         engine.execute("CREATE TABLE sink2 (id INTEGER)");
-        engine.execute("""
-            CREATE OR REPLACE PROCEDURE tagged_loader() RETURNS VARCHAR LANGUAGE SQL AS $$
-            BEGIN
-              BEGIN TRANSACTION;
-              INSERT INTO sink1 SELECT id FROM as_s;
-              ALTER SESSION SET QUERY_TAG = 'mid-transaction';
-              INSERT INTO sink2 SELECT id FROM as_s;
-              COMMIT;
-              RETURN 'done';
-            END $$""");
-        engine.execute("CALL tagged_loader()");
+
+        engine.execute("BEGIN TRANSACTION");
+        engine.execute("INSERT INTO sink1 SELECT id FROM as_s");
+        engine.execute("ALTER SESSION SET QUERY_TAG = 'mid-transaction'");
+        engine.execute("INSERT INTO sink2 SELECT id FROM as_s");
+        engine.execute("COMMIT");
+
         assertEquals("1", one("SELECT COUNT(*) FROM sink1"), "first read sees the streamed insert");
         assertEquals("1", one("SELECT COUNT(*) FROM sink2"),
             "ALTER SESSION must not commit — the second read shares the same stream window");

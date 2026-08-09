@@ -17,12 +17,14 @@
 package dev.frostlake.features;
 
 import dev.frostlake.DatabaseEngine;
+import dev.frostlake.metastore.model.Task;
 import dev.frostlake.config.EngineConfig;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.model.ConstraintNames;
 import dev.frostlake.metastore.model.Privilege;
 import dev.frostlake.metastore.model.Role;
 import dev.frostlake.metastore.model.ScalingPolicy;
+import dev.frostlake.metastore.model.CortexSearchService;
 import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.UniqueConstraint;
@@ -36,11 +38,13 @@ import org.junit.jupiter.api.Test;
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
+import java.util.List;
 import java.nio.file.Path;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -91,6 +95,100 @@ public class PersistenceFieldFidelityTest {
 
     private Schema schema(final DatabaseEngine engine) {
         return engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
+    }
+
+    /** A Cortex search service is definition-only, and every part of that definition survives a reload. */
+    @Test
+    public void cortexSearchServiceSurvivesAReload() {
+        final DatabaseEngine engine1 = freshEngine();
+        engine1.execute("CREATE TABLE docs(id INT, body VARCHAR, cat VARCHAR)");
+        // The service NAMES this warehouse, and a named warehouse must exist (live-verified).
+        engine1.execute("CREATE WAREHOUSE IF NOT EXISTS wh");
+        engine1.execute("""
+            CREATE CORTEX SEARCH SERVICE persist_svc
+              ON body ATTRIBUTES cat
+              WAREHOUSE = wh TARGET_LAG = '30 minutes'
+              EMBEDDING_MODEL = 'snowflake-arctic-embed-l-v2.0'
+              COMMENT = 'kept'
+              AS (SELECT id, body, cat FROM docs)
+            """);
+        engine1.shutdown();
+
+        final DatabaseEngine engine2 = reopenEngine();
+        final CortexSearchService service = schema(engine2).getCortexSearchService("PERSIST_SVC");
+        assertEquals("BODY", service.getSearchColumn());
+        assertEquals(List.of("CAT"), service.getAttributeColumns());
+        assertEquals(List.of("ID", "BODY", "CAT"), service.getColumns());
+        assertEquals("WH", service.getWarehouse());
+        assertEquals("30 minutes", service.getTargetLag());
+        assertEquals("snowflake-arctic-embed-l-v2.0", service.getEmbeddingModel());
+        assertEquals("kept", service.getComment());
+        assertTrue(service.getDefinition().contains("FROM docs"));
+        engine2.shutdown();
+    }
+
+    /**
+     * The CREATE USER property set survives a save/reload — it was dropped entirely before, so a
+     * reopened engine reported a user with none of the details they were created with.
+     */
+    @Test
+    public void userPropertiesSurviveAReload() {
+        final DatabaseEngine engine1 = freshEngine();
+        engine1.execute("CREATE USER persist_u LOGIN_NAME = 'ln' DISPLAY_NAME = 'dn'"
+            + " FIRST_NAME = 'F' MIDDLE_NAME = 'M' LAST_NAME = 'L' EMAIL = 'e@x.com'"
+            + " DEFAULT_WAREHOUSE = 'WH1' DEFAULT_NAMESPACE = 'test_db.test_schema'"
+            + " MUST_CHANGE_PASSWORD = TRUE COMMENT = 'c'");
+        engine1.shutdown();
+
+        final DatabaseEngine engine2 = reopenEngine();
+        final User user = engine2.getCatalog().getUser("PERSIST_U");
+        assertEquals("LN", user.getLoginName());
+        assertEquals("dn", user.getDisplayName());
+        assertEquals("F", user.getFirstName());
+        assertEquals("M", user.getMiddleName());
+        assertEquals("L", user.getLastName());
+        assertEquals("e@x.com", user.getEmail());
+        assertEquals("WH1", user.getDefaultWarehouse());
+        assertEquals("TEST_DB.TEST_SCHEMA", user.getDefaultNamespace());
+        assertTrue(user.isMustChangePassword());
+        // PERSON, because the name properties above are person-only: a LEGACY_SERVICE user may
+        // keep a password but not a first/middle/last name (live-verified).
+        assertEquals("PERSON", user.getUserType());
+        assertEquals("c", user.getComment());
+        engine2.shutdown();
+    }
+
+    /**
+     * An UNSET property stays unset across a reload. This is what the snapshot's written-marker is
+     * for: the group is restored VERBATIM, so a null display name is not mistaken for a snapshot
+     * that predates the field and quietly refilled with the user's own name.
+     */
+    @Test
+    public void anUnsetUserPropertyStaysUnset() {
+        final DatabaseEngine engine1 = freshEngine();
+        engine1.execute("CREATE USER persist_u DISPLAY_NAME = 'dn' FIRST_NAME = 'F'");
+        engine1.execute("ALTER USER persist_u UNSET DISPLAY_NAME, FIRST_NAME");
+        assertNull(engine1.getCatalog().getUser("PERSIST_U").getDisplayName(),
+            "precondition: display name is unset");
+        engine1.shutdown();
+
+        final DatabaseEngine engine2 = reopenEngine();
+        final User user = engine2.getCatalog().getUser("PERSIST_U");
+        assertNull(user.getDisplayName(), "an unset display name must not come back as the name");
+        assertNull(user.getFirstName());
+        engine2.shutdown();
+    }
+
+    /** A user created without a display name still shows their own name after a reload. */
+    @Test
+    public void theDisplayNameDefaultSurvivesAReload() {
+        final DatabaseEngine engine1 = freshEngine();
+        engine1.execute("CREATE USER persist_u");
+        engine1.shutdown();
+
+        final DatabaseEngine engine2 = reopenEngine();
+        assertEquals("PERSIST_U", engine2.getCatalog().getUser("PERSIST_U").getDisplayName());
+        engine2.shutdown();
     }
 
     @Test
@@ -343,5 +441,36 @@ public class PersistenceFieldFidelityTest {
             }
         }
         file.delete();
+    }
+
+    /**
+     * A task's identity survives a reload. SHOW TASKS reports an id and a created_by_user, and live's
+     * are stable across time, so a snapshot that dropped them would hand back a different task to
+     * anything that recorded the id.
+     */
+    @Test
+    public void taskIdentityAndParameterLevelsSurvive() {
+        final DatabaseEngine engine1 = freshEngine();
+        engine1.execute("CREATE TABLE task_sink (k INTEGER)");
+        engine1.execute("CREATE TASK identity_task SCHEDULE = '60 MINUTE'"
+            + " USER_TASK_TIMEOUT_MS = 120000 AS INSERT INTO task_sink VALUES (1)");
+        final Task before = schema(engine1).getTask("identity_task");
+        final String idBefore = before.getId();
+        final String userBefore = before.getCreatedByUser();
+        assertNotNull(idBefore, "a task must have an id to persist");
+        engine1.shutdown();
+
+        final DatabaseEngine engine2 = reopenEngine();
+        final Task after = schema(engine2).getTask("identity_task");
+        assertEquals(idBefore, after.getId(), "the task id must survive a reload");
+        assertEquals(userBefore, after.getCreatedByUser(), "created_by_user must survive a reload");
+        // The parameter's VALUE always survived; without its level, SHOW PARAMETERS would report a
+        // task-set timeout as though it were inherited.
+        assertEquals(120000L, after.getUserTaskTimeoutMs());
+        assertTrue(after.isParameterSetOnTask("USER_TASK_TIMEOUT_MS"),
+            "a parameter set by the DDL must still report the TASK level after a reload");
+        assertFalse(after.isParameterSetOnTask("TASK_AUTO_RETRY_ATTEMPTS"),
+            "a parameter left at its default must not claim the TASK level");
+        engine2.shutdown();
     }
 }

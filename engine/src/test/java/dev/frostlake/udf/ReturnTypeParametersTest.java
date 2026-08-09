@@ -166,10 +166,12 @@ public class ReturnTypeParametersTest extends BaseJdbcTest {
         CREATE PROCEDURE get_message()
         RETURNS VARCHAR(50)
         LANGUAGE JAVA
+        PACKAGES = ('com.snowflake:snowpark:latest')
         HANDLER = 'MessageGetter.getMessage'
         AS $$
+        import com.snowflake.snowpark_java.Session;
         class MessageGetter {
-          public static String getMessage() {
+          public static String getMessage(Session session) {
             return "Hello from procedure";
           }
         }
@@ -189,10 +191,12 @@ public class ReturnTypeParametersTest extends BaseJdbcTest {
         CREATE PROCEDURE calculate_total()
         RETURNS DECIMAL(15,4)
         LANGUAGE JAVA
+        PACKAGES = ('com.snowflake:snowpark:latest')
         HANDLER = 'Calculator.calculateTotal'
         AS $$
+        import com.snowflake.snowpark_java.Session;
         class Calculator {
-          public static double calculateTotal() {
+          public static double calculateTotal(Session session) {
             return 1234.5678;
           }
         }
