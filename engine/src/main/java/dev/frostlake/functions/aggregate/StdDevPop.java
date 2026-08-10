@@ -20,7 +20,6 @@ import dev.frostlake.functions.AggregateFunction;
 import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.types.NumericType;
 
-import java.math.BigDecimal;
 import java.util.List;
 
 public class StdDevPop extends AggregateFunction {
@@ -32,8 +31,10 @@ public class StdDevPop extends AggregateFunction {
     @Override
     public Object evaluate(final List<Object> args) { return null; }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return 1; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return 1; }
 
     /** Live: "Invalid argument types for function '*': (OBJECT, OBJECT)" — see {@link StdDev}. */
     @Override
@@ -41,29 +42,4 @@ public class StdDevPop extends AggregateFunction {
         return SemiStructuredRejection.MULTIPLY_OPERANDS;
     }
 
-    private static class StdDevPopAccumulator implements Accumulator {
-        private long n = 0; private double sum = 0, sumSq = 0;
-
-        @Override
-        public void accumulate(final Object v) {
-            if (v == null) return;
-            double d = new BigDecimal(v.toString()).doubleValue();
-            n++; sum += d; sumSq += d * d;
-        }
-
-        @Override
-        public Object getResult() {
-            if (n == 0) return null;
-            return Math.sqrt(Math.max(0, sumSq / n - (sum / n) * (sum / n)));
-        }
-
-        @Override
-        public void reset() { n = 0; sum = 0; sumSq = 0; }
-
-        @Override
-        public void merge(final Accumulator other) {
-            StdDevPopAccumulator o = (StdDevPopAccumulator) other;
-            n += o.n; sum += o.sum; sumSq += o.sumSq;
-        }
-    }
 }

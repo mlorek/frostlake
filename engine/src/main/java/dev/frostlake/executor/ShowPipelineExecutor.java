@@ -16,11 +16,13 @@
 
 package dev.frostlake.executor;
 
+import dev.frostlake.executor.operators.ResultSetProvider;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.model.CortexSearchService;
 import dev.frostlake.metastore.model.Database;
 import dev.frostlake.metastore.model.DynamicTable;
 import dev.frostlake.metastore.model.Pipe;
+import dev.frostlake.metastore.model.RefreshMode;
 import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.metastore.model.Sequence;
 import dev.frostlake.metastore.model.Stream;
@@ -29,10 +31,9 @@ import dev.frostlake.metastore.model.Task;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
-import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.types.ArrayType;
-import dev.frostlake.types.NumericType;
 import dev.frostlake.types.DateTimeType;
+import dev.frostlake.types.NumericType;
 import dev.frostlake.types.StringType;
 import dev.frostlake.values.VariantValue;
 import java.time.LocalDateTime;
@@ -73,15 +74,15 @@ final class ShowPipelineExecutor {
     }
 
     public ResultSet showStreamsInDatabase(final String databaseName) {
-        String dbName = databaseName != null ? databaseName : catalog.getCurrentDatabase();
+        final String dbName = databaseName != null ? databaseName : catalog.getCurrentDatabase();
         if (dbName == null) throw new RuntimeException("No database specified");
-        List<Row> allRows = new ArrayList<>();
+        final List<Row> allRows = new ArrayList<>();
         List<ResultSetColumn> columns = null;
         try {
-            Database db = catalog.getDatabase(dbName);
+            final Database db = catalog.getDatabase(dbName);
             for (final Schema schema : db.getAllSchemas()) {
                 if (schema.getName().equalsIgnoreCase("INFORMATION_SCHEMA")) continue;
-                ResultSet rs = showStreams(dbName, schema.getName());
+                final ResultSet rs = showStreams(dbName, schema.getName());
                 if (columns == null) columns = rs.getColumns();
                 allRows.addAll(rs.getRows());
             }
@@ -99,7 +100,7 @@ final class ShowPipelineExecutor {
     }
 
     public ResultSet showStreams(final String databaseNameOverride, final String schemaName) {
-        List<ResultSetColumn> columns = Arrays.asList(
+        final List<ResultSetColumn> columns = Arrays.asList(
             new ResultSetColumn("created_on", DateTimeType.TIMESTAMP_LTZ),
             new ResultSetColumn("name", StringType.VARCHAR),
             new ResultSetColumn("database_name", StringType.VARCHAR),
@@ -116,12 +117,12 @@ final class ShowPipelineExecutor {
             new ResultSetColumn("invalid_reason", StringType.VARCHAR),
             new ResultSetColumn("owner_role_type", StringType.VARCHAR)
         );
-        String dbName = databaseNameOverride != null
+        final String dbName = databaseNameOverride != null
             ? databaseNameOverride
             : ShowResultHelpers.scopeDatabase(catalog, schemaName);
-        String scName = ShowResultHelpers.scopeSchemaName(catalog, schemaName);
+        final String scName = ShowResultHelpers.scopeSchemaName(catalog, schemaName);
         if (dbName == null || scName == null) throw new RuntimeException("No database or schema selected");
-        List<Row> rows = new ArrayList<>();
+        final List<Row> rows = new ArrayList<>();
         for (final Stream stream : catalog.getDatabase(dbName).getSchema(scName).getStreams()) {
             rows.add(new Row(Arrays.asList(
                 ShowResultHelpers.createdOn(stream.getCreatedAt()),
@@ -257,15 +258,15 @@ final class ShowPipelineExecutor {
 
     public ResultSet showTasksInDatabase(final String databaseName) {
         // Aggregate tasks from all schemas in the specified database
-        String dbName = databaseName != null ? databaseName : catalog.getCurrentDatabase();
+        final String dbName = databaseName != null ? databaseName : catalog.getCurrentDatabase();
         if (dbName == null) throw new RuntimeException("No database specified");
-        List<Row> allRows = new ArrayList<>();
+        final List<Row> allRows = new ArrayList<>();
         List<ResultSetColumn> columns = null;
         try {
-            Database db = catalog.getDatabase(dbName);
+            final Database db = catalog.getDatabase(dbName);
             for (final Schema schema : db.getAllSchemas()) {
                 if (schema.getName().equalsIgnoreCase("INFORMATION_SCHEMA")) continue;
-                ResultSet rs = showTasks(dbName, schema.getName());
+                final ResultSet rs = showTasks(dbName, schema.getName());
                 if (columns == null) columns = rs.getColumns();
                 allRows.addAll(rs.getRows());
             }
@@ -273,7 +274,7 @@ final class ShowPipelineExecutor {
             throw new RuntimeException("Failed to show tasks in database " + dbName + ": " + e.getMessage(), e);
         }
         if (columns == null) {
-            ResultSet empty = showTasks(null);
+            final ResultSet empty = showTasks(null);
             columns = empty.getColumns();
         }
         return new ResultSet(columns, allRows);
@@ -383,25 +384,9 @@ final class ShowPipelineExecutor {
         return stream.getCreatedAt().plusDays(MAX_DATA_EXTENSION_DAYS);
     }
 
-    /** SQL LIKE match (case-insensitive, {@code %} and {@code _} wildcards) for SHOW … LIKE filters. */
+    /** SQL LIKE match for SHOW … LIKE filters — shared via {@link ShowResultHelpers#matchesLike}. */
     private static boolean matchesLike(final String value, final String pattern) {
-        if (value == null) {
-            return false;
-        }
-        final StringBuilder regex = new StringBuilder();
-        for (int i = 0; i < pattern.length(); i++) {
-            final char c = pattern.charAt(i);
-            if (c == '%') {
-                regex.append(".*");
-            } else if (c == '_') {
-                regex.append('.');
-            } else if ("\\.[]{}()*+-?^$|".indexOf(c) >= 0) {
-                regex.append('\\').append(c);
-            } else {
-                regex.append(c);
-            }
-        }
-        return value.matches("(?i)" + regex);
+        return ShowResultHelpers.matchesLike(value, pattern);
     }
 
     public ResultSet showSequences(final String schemaName) {
@@ -474,16 +459,16 @@ final class ShowPipelineExecutor {
     }
 
     public ResultSet describeStream(final String streamName) {
-        List<Row> rows = new ArrayList<>();
-        List<ResultSetColumn> columns = Arrays.asList(
+        final List<Row> rows = new ArrayList<>();
+        final List<ResultSetColumn> columns = Arrays.asList(
             new ResultSetColumn("property", StringType.VARCHAR),
             new ResultSetColumn("value", StringType.VARCHAR)
         );
 
-        String dbName = catalog.getCurrentDatabase();
-        String scName = catalog.getCurrentSchema();
-        Schema schema = catalog.getDatabase(dbName).getSchema(scName);
-        Stream stream = schema.getStream(streamName);
+        final String dbName = catalog.getCurrentDatabase();
+        final String scName = catalog.getCurrentSchema();
+        final Schema schema = catalog.getDatabase(dbName).getSchema(scName);
+        final Stream stream = schema.getStream(streamName);
 
         rows.add(new Row(Arrays.asList("name", stream.getName())));
         rows.add(new Row(Arrays.asList("table_name", stream.getSourceTableName())));
@@ -527,7 +512,7 @@ final class ShowPipelineExecutor {
 
     public ResultSet describeSequence(final String sequenceName) {
         // Snowflake DESC SEQUENCE returns a single columnar row, not property/value rows (live-verified).
-        List<ResultSetColumn> columns = Arrays.asList(
+        final List<ResultSetColumn> columns = Arrays.asList(
             new ResultSetColumn("name", StringType.VARCHAR),
             new ResultSetColumn("database_name", StringType.VARCHAR),
             new ResultSetColumn("schema_name", StringType.VARCHAR),
@@ -540,12 +525,12 @@ final class ShowPipelineExecutor {
             new ResultSetColumn("ordered", StringType.VARCHAR)
         );
 
-        String dbName = catalog.getCurrentDatabase();
-        String scName = catalog.getCurrentSchema();
-        Schema schema = catalog.getDatabase(dbName).getSchema(scName);
-        Sequence sequence = schema.getSequence(sequenceName);
+        final String dbName = catalog.getCurrentDatabase();
+        final String scName = catalog.getCurrentSchema();
+        final Schema schema = catalog.getDatabase(dbName).getSchema(scName);
+        final Sequence sequence = schema.getSequence(sequenceName);
 
-        List<Row> rows = new ArrayList<>();
+        final List<Row> rows = new ArrayList<>();
         rows.add(new Row(Arrays.asList(
             sequence.getName(),
             dbName, scName,
@@ -733,18 +718,34 @@ final class ShowPipelineExecutor {
                 null, 0L, 0L,
                 dt.getOwner(),
                 dt.getTargetLag(),
-                dt.getRefreshMode().name(),
-                null, "OFF", "OFF",
-                dt.getSchedulingState(),
-                null, "N", "N",
-                dt.getLastRefreshedTime() != null ? dt.getLastRefreshedTime().toString() : null,
+                resolvedRefreshMode(dt),
+                null,
                 dt.getWarehouse(),
+                ShowResultHelpers.text(dt.getComment()),
                 dt.getQuery(),
-                dt.getComment()
+                "OFF",
+                dt.getSchedulingState(),
+                null, "N", "N", "N",
+                dt.getLastRefreshedTime() != null ? dt.getLastRefreshedTime().toString() : null,
+                ShowResultHelpers.OWNER_ROLE_TYPE,
+                null, null, null, null, null, null, null, null,
+                dt.getRefreshMode().name()
             )));
         }
     }
 
+    /**
+     * The refresh_mode CELL reports the RESOLVED mode: a dynamic table configured AUTO runs (and
+     * reads back) INCREMENTAL for the plain projections this engine evaluates, live-verified,
+     * while configured_refresh_mode keeps the declared word.
+     */
+    private static String resolvedRefreshMode(final DynamicTable dt) {
+        return dt.getRefreshMode() == RefreshMode.AUTO
+            ? RefreshMode.INCREMENTAL.name()
+            : dt.getRefreshMode().name();
+    }
+
+    /** SHOW DYNAMIC TABLES in live's column order — the definition column is named {@code text}. */
     private List<ResultSetColumn> dynamicTableColumns() {
         return Arrays.asList(
             new ResultSetColumn("created_on", DateTimeType.TIMESTAMP_LTZ),
@@ -758,38 +759,63 @@ final class ShowPipelineExecutor {
             new ResultSetColumn("target_lag", StringType.VARCHAR),
             new ResultSetColumn("refresh_mode", StringType.VARCHAR),
             new ResultSetColumn("refresh_mode_reason", StringType.VARCHAR),
-            new ResultSetColumn("compaction", StringType.VARCHAR),
-            new ResultSetColumn("enable_schema_evolution", StringType.VARCHAR),
+            new ResultSetColumn("warehouse", StringType.VARCHAR),
+            new ResultSetColumn("comment", StringType.VARCHAR),
+            new ResultSetColumn("text", StringType.VARCHAR),
+            new ResultSetColumn("automatic_clustering", StringType.VARCHAR),
             new ResultSetColumn("scheduling_state", StringType.VARCHAR),
             new ResultSetColumn("last_suspended_on", DateTimeType.TIMESTAMP_LTZ),
             new ResultSetColumn("is_clone", StringType.VARCHAR),
             new ResultSetColumn("is_replica", StringType.VARCHAR),
+            new ResultSetColumn("is_iceberg", StringType.VARCHAR),
             new ResultSetColumn("data_timestamp", StringType.VARCHAR),
-            new ResultSetColumn("warehouse", StringType.VARCHAR),
-            new ResultSetColumn("query", StringType.VARCHAR),
-            new ResultSetColumn("comment", StringType.VARCHAR)
+            new ResultSetColumn("owner_role_type", StringType.VARCHAR),
+            new ResultSetColumn("execute_as_user", StringType.VARCHAR),
+            new ResultSetColumn("secondary_role_names", StringType.VARCHAR),
+            new ResultSetColumn("insert_only_inputs", StringType.VARCHAR),
+            new ResultSetColumn("immutable_where", StringType.VARCHAR),
+            new ResultSetColumn("initialization_warehouse", StringType.VARCHAR),
+            new ResultSetColumn("backfill_from", StringType.VARCHAR),
+            new ResultSetColumn("scheduler", StringType.VARCHAR),
+            new ResultSetColumn("frozen_where", StringType.VARCHAR),
+            new ResultSetColumn("configured_refresh_mode", StringType.VARCHAR)
         );
     }
 
-    public ResultSet describeDynamicTable(final String tableName) {
-        List<ResultSetColumn> columns = Arrays.asList(
-            new ResultSetColumn("property", StringType.VARCHAR),
-            new ResultSetColumn("value", StringType.VARCHAR)
+    /**
+     * DESCRIBE DYNAMIC TABLE answers the COLUMN list, exactly as DESCRIBE TABLE does
+     * (live-verified) — never property/value rows. The dynamic table itself is resolved first, so
+     * a missing one refuses before the projection runs; the projection then supplies the columns.
+     */
+    public ResultSet describeDynamicTable(final String tableName, final ResultSetProvider projection) {
+        final String dbName = catalog.getCurrentDatabase();
+        final String scName = catalog.getCurrentSchema();
+        catalog.getDatabase(dbName).getSchema(scName).getDynamicTable(tableName.toUpperCase());
+
+        final List<ResultSetColumn> columns = Arrays.asList(
+            new ResultSetColumn("name", StringType.VARCHAR),
+            new ResultSetColumn("type", StringType.VARCHAR),
+            new ResultSetColumn("kind", StringType.VARCHAR),
+            new ResultSetColumn("null?", StringType.VARCHAR),
+            new ResultSetColumn("default", StringType.VARCHAR),
+            new ResultSetColumn("primary key", StringType.VARCHAR),
+            new ResultSetColumn("unique key", StringType.VARCHAR),
+            new ResultSetColumn("check", StringType.VARCHAR),
+            new ResultSetColumn("expression", StringType.VARCHAR),
+            new ResultSetColumn("comment", StringType.VARCHAR),
+            new ResultSetColumn("policy name", StringType.VARCHAR)
         );
-        String dbName = catalog.getCurrentDatabase();
-        String scName = catalog.getCurrentSchema();
-        DynamicTable dt =
-            catalog.getDatabase(dbName).getSchema(scName).getDynamicTable(tableName.toUpperCase());
-        List<Row> rows = new ArrayList<>();
-        rows.add(new Row(Arrays.asList("name", dt.getName())));
-        rows.add(new Row(Arrays.asList("target_lag", dt.getTargetLag())));
-        rows.add(new Row(Arrays.asList("warehouse", dt.getWarehouse())));
-        rows.add(new Row(Arrays.asList("refresh_mode", dt.getRefreshMode().name())));
-        rows.add(new Row(Arrays.asList("initialize", dt.getInitialize().name())));
-        rows.add(new Row(Arrays.asList("scheduling_state", dt.getSchedulingState())));
-        rows.add(new Row(Arrays.asList("data_retention_days", String.valueOf(dt.getDataRetentionDays()))));
-        rows.add(new Row(Arrays.asList("query", dt.getQuery())));
-        if (dt.getComment() != null) rows.add(new Row(Arrays.asList("comment", dt.getComment())));
+        final List<Row> rows = new ArrayList<>();
+        for (final ResultSetColumn column : projection.getResultSet().getColumns()) {
+            rows.add(new Row(Arrays.asList(
+                column.getName().toUpperCase(),
+                column.getDataType().getName(),
+                "COLUMN",
+                "Y",
+                null, "N", "N",
+                null, null, null, null
+            )));
+        }
         return new ResultSet(columns, rows);
     }
 }

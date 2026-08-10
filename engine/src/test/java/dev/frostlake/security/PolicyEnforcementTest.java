@@ -25,7 +25,13 @@ import org.junit.jupiter.api.function.Executable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class PolicyEnforcementTest {
 
@@ -54,7 +60,7 @@ public class PolicyEnforcementTest {
     @Test
     public void testCreateMaskingPolicy() {
         engine.execute("CREATE MASKING POLICY salary_mask AS (val DOUBLE) RETURNS DOUBLE -> IFF(CURRENT_ROLE() = 'HR_ADMIN', val, -1)");
-        var policy = engine.getCatalog().getDatabase("TEST_DB").getSchema("PUBLIC").getMaskingPolicy("SALARY_MASK");
+        final var policy = engine.getCatalog().getDatabase("TEST_DB").getSchema("PUBLIC").getMaskingPolicy("SALARY_MASK");
         assertNotNull(policy);
         assertEquals("SALARY_MASK", policy.getName());
         assertEquals(1, policy.getParameters().size());
@@ -64,9 +70,10 @@ public class PolicyEnforcementTest {
     public void testSetMaskingPolicyOnColumn() {
         engine.execute("CREATE MASKING POLICY salary_mask AS (val DOUBLE) RETURNS DOUBLE -> IFF(CURRENT_ROLE() = 'HR', val, -1)");
         engine.execute("ALTER TABLE employees ALTER COLUMN salary SET MASKING POLICY salary_mask");
-        var col = engine.getCatalog().getDatabase("TEST_DB").getSchema("PUBLIC").getTable("EMPLOYEES").getColumn("salary");
+        final var col = engine.getCatalog().getDatabase("TEST_DB").getSchema("PUBLIC").getTable("EMPLOYEES").getColumn("salary");
         assertTrue(col.hasMaskingPolicy());
-        assertEquals("SALARY_MASK", col.getMaskingPolicyName());
+        // Attachments record the policy in full, the way live reports one.
+        assertEquals("TEST_DB.PUBLIC.SALARY_MASK", col.getMaskingPolicyName());
     }
 
     @Test
@@ -76,12 +83,12 @@ public class PolicyEnforcementTest {
 
         // SYSADMIN bypasses masking
         engine.getSecurityManager().getSessionContext().setCurrentRole("SYSADMIN");
-        ResultSet rsAdmin = engine.executeQuery("SELECT salary FROM employees WHERE id = 1");
+        final ResultSet rsAdmin = engine.executeQuery("SELECT salary FROM employees WHERE id = 1");
         assertEquals(80000.0, ((Number) rsAdmin.getRows().get(0).getValue(0)).doubleValue(), 0.01);
 
         // PUBLIC role sees masked value
         engine.getSecurityManager().getSessionContext().setCurrentRole("PUBLIC");
-        ResultSet rsMasked = engine.executeQuery("SELECT salary FROM employees WHERE id = 1");
+        final ResultSet rsMasked = engine.executeQuery("SELECT salary FROM employees WHERE id = 1");
         assertEquals(-1.0, ((Number) rsMasked.getRows().get(0).getValue(0)).doubleValue(), 0.01);
         logger.info("Masking enforced: PUBLIC sees -1");
     }
@@ -91,7 +98,7 @@ public class PolicyEnforcementTest {
         engine.execute("CREATE OR REPLACE MASKING POLICY salary_mask AS (val DOUBLE) RETURNS DOUBLE -> IFF(CURRENT_ROLE() = 'HR_ADMIN', val, -1)");
         engine.execute("ALTER TABLE employees ALTER COLUMN salary SET MASKING POLICY salary_mask");
         engine.getSecurityManager().getSessionContext().setCurrentRole("SYSADMIN");
-        ResultSet rs = engine.executeQuery("SELECT salary FROM employees WHERE id = 1");
+        final ResultSet rs = engine.executeQuery("SELECT salary FROM employees WHERE id = 1");
         assertEquals(80000.0, ((Number) rs.getRows().get(0).getValue(0)).doubleValue(), 0.01);
     }
 
@@ -100,7 +107,7 @@ public class PolicyEnforcementTest {
         engine.execute("CREATE OR REPLACE MASKING POLICY salary_mask AS (val DOUBLE) RETURNS DOUBLE -> IFF(CURRENT_ROLE() = 'HR_ADMIN', val, -1)");
         engine.execute("ALTER TABLE employees ALTER COLUMN salary SET MASKING POLICY salary_mask");
         engine.getSecurityManager().getSessionContext().setCurrentRole("ACCOUNTADMIN");
-        ResultSet rs = engine.executeQuery("SELECT salary FROM employees WHERE id = 1");
+        final ResultSet rs = engine.executeQuery("SELECT salary FROM employees WHERE id = 1");
         assertEquals(80000.0, ((Number) rs.getRows().get(0).getValue(0)).doubleValue(), 0.01);
     }
 
@@ -109,7 +116,7 @@ public class PolicyEnforcementTest {
         engine.execute("CREATE MASKING POLICY name_mask AS (val VARCHAR) RETURNS VARCHAR -> '***'");
         engine.execute("ALTER TABLE employees ALTER COLUMN name SET MASKING POLICY name_mask");
         engine.execute("ALTER TABLE employees ALTER COLUMN name UNSET MASKING POLICY");
-        var col = engine.getCatalog().getDatabase("TEST_DB").getSchema("PUBLIC").getTable("EMPLOYEES").getColumn("name");
+        final var col = engine.getCatalog().getDatabase("TEST_DB").getSchema("PUBLIC").getTable("EMPLOYEES").getColumn("name");
         assertFalse(col.hasMaskingPolicy());
     }
 
@@ -186,7 +193,7 @@ public class PolicyEnforcementTest {
     public void testOrReplaceMaskingPolicy() {
         engine.execute("CREATE MASKING POLICY mp AS (v VARCHAR) RETURNS VARCHAR -> 'v1'");
         engine.execute("CREATE OR REPLACE MASKING POLICY mp AS (v VARCHAR) RETURNS VARCHAR -> 'v2'");
-        var policy = engine.getCatalog().getDatabase("TEST_DB").getSchema("PUBLIC").getMaskingPolicy("MP");
+        final var policy = engine.getCatalog().getDatabase("TEST_DB").getSchema("PUBLIC").getMaskingPolicy("MP");
         assertTrue(policy.getBody().contains("v2"));
     }
 
@@ -194,9 +201,9 @@ public class PolicyEnforcementTest {
     public void testRenameMaskingPolicy() {
         engine.execute("CREATE MASKING POLICY mp_old AS (v VARCHAR) RETURNS VARCHAR -> '***'");
         engine.execute("ALTER MASKING POLICY mp_old RENAME TO mp_new");
-        var schema = engine.getCatalog().getDatabase("TEST_DB").getSchema("PUBLIC");
+        final var schema = engine.getCatalog().getDatabase("TEST_DB").getSchema("PUBLIC");
         assertNull(schema.getMaskingPolicy("MP_OLD"), "Old name should be gone after rename");
-        var renamed = schema.getMaskingPolicy("MP_NEW");
+        final var renamed = schema.getMaskingPolicy("MP_NEW");
         assertNotNull(renamed, "New name should resolve after rename");
         assertEquals("MP_NEW", renamed.getName());
         assertTrue(renamed.getBody().contains("***"), "Body preserved across rename");
@@ -207,7 +214,7 @@ public class PolicyEnforcementTest {
         // The engine also accepts the bare RENAME TO <name> form (no TO), matching its other ALTER ... RENAME TO actions.
         engine.execute("CREATE MASKING POLICY mp_bare AS (v VARCHAR) RETURNS VARCHAR -> 'x'");
         engine.execute("ALTER MASKING POLICY mp_bare RENAME TO mp_bare2");
-        var schema = engine.getCatalog().getDatabase("TEST_DB").getSchema("PUBLIC");
+        final var schema = engine.getCatalog().getDatabase("TEST_DB").getSchema("PUBLIC");
         assertNull(schema.getMaskingPolicy("MP_BARE"));
         assertNotNull(schema.getMaskingPolicy("MP_BARE2"));
     }
@@ -245,7 +252,7 @@ public class PolicyEnforcementTest {
         engine.execute("ALTER TABLE employees ALTER COLUMN department SET MASKING POLICY tag_mask");
 
         engine.getSecurityManager().getSessionContext().setCurrentRole("PUBLIC");
-        ResultSet rs = engine.executeQuery("SELECT name, department FROM employees WHERE id = 1");
+        final ResultSet rs = engine.executeQuery("SELECT name, department FROM employees WHERE id = 1");
         // 'name' is tagged classification=PII -> masked; 'department' is PUBLIC -> left unmasked.
         assertEquals("***", rs.getRows().get(0).getValue(0));
         assertEquals("HR", rs.getRows().get(0).getValue(1));
@@ -262,7 +269,7 @@ public class PolicyEnforcementTest {
         engine.execute("ALTER TABLE employees ALTER COLUMN name SET MASKING POLICY tbl_mask");
 
         engine.getSecurityManager().getSessionContext().setCurrentRole("PUBLIC");
-        ResultSet rs = engine.executeQuery("SELECT name FROM employees WHERE id = 1");
+        final ResultSet rs = engine.executeQuery("SELECT name FROM employees WHERE id = 1");
         // The table is tagged classification=PII, so the column is masked.
         assertEquals("###", rs.getRows().get(0).getValue(0));
     }
@@ -272,7 +279,7 @@ public class PolicyEnforcementTest {
     @Test
     public void testCreateRowAccessPolicy() {
         engine.execute("CREATE ROW ACCESS POLICY dept_filter AS (dept VARCHAR) RETURNS BOOLEAN -> CURRENT_ROLE() = 'ADMIN'");
-        var policy = engine.getCatalog().getDatabase("TEST_DB").getSchema("PUBLIC").getRowAccessPolicy("DEPT_FILTER");
+        final var policy = engine.getCatalog().getDatabase("TEST_DB").getSchema("PUBLIC").getRowAccessPolicy("DEPT_FILTER");
         assertNotNull(policy);
         assertEquals("DEPT_FILTER", policy.getName());
     }
@@ -281,7 +288,7 @@ public class PolicyEnforcementTest {
     public void testAddRowAccessPolicyToTable() {
         engine.execute("CREATE ROW ACCESS POLICY dept_policy AS (dept VARCHAR) RETURNS BOOLEAN -> TRUE");
         engine.execute("ALTER TABLE employees ADD ROW ACCESS POLICY dept_policy ON (department)");
-        var table = engine.getCatalog().getDatabase("TEST_DB").getSchema("PUBLIC").getTable("EMPLOYEES");
+        final var table = engine.getCatalog().getDatabase("TEST_DB").getSchema("PUBLIC").getTable("EMPLOYEES");
         assertTrue(table.hasRowAccessPolicy());
         assertEquals("DEPT_POLICY", table.getRowAccessPolicyName());
     }
@@ -297,7 +304,7 @@ public class PolicyEnforcementTest {
 
         // PUBLIC sees only IT
         engine.getSecurityManager().getSessionContext().setCurrentRole("PUBLIC");
-        ResultSet restricted = engine.executeQuery("SELECT * FROM employees");
+        final ResultSet restricted = engine.executeQuery("SELECT * FROM employees");
         assertEquals(1, restricted.getRowCount());
         assertEquals("Bob", restricted.getRows().get(0).getValue(1).toString());
         logger.info("RLS: PUBLIC sees {} row(s)", restricted.getRowCount());
@@ -330,9 +337,9 @@ public class PolicyEnforcementTest {
     public void testRenameRowAccessPolicy() {
         engine.execute("CREATE ROW ACCESS POLICY rap_old AS (d VARCHAR) RETURNS BOOLEAN -> TRUE");
         engine.execute("ALTER ROW ACCESS POLICY rap_old RENAME TO rap_new");
-        var schema = engine.getCatalog().getDatabase("TEST_DB").getSchema("PUBLIC");
+        final var schema = engine.getCatalog().getDatabase("TEST_DB").getSchema("PUBLIC");
         assertNull(schema.getRowAccessPolicy("RAP_OLD"), "Old name should be gone after rename");
-        var renamed = schema.getRowAccessPolicy("RAP_NEW");
+        final var renamed = schema.getRowAccessPolicy("RAP_NEW");
         assertNotNull(renamed, "New name should resolve after rename");
         assertEquals("RAP_NEW", renamed.getName());
     }
@@ -357,7 +364,7 @@ public class PolicyEnforcementTest {
         engine.execute("ALTER TABLE employees ADD ROW ACCESS POLICY hr_only ON (department)");
 
         engine.getSecurityManager().getSessionContext().setCurrentRole("PUBLIC");
-        ResultSet rs = engine.executeQuery("SELECT name, salary FROM employees ORDER BY id");
+        final ResultSet rs = engine.executeQuery("SELECT name, salary FROM employees ORDER BY id");
 
         assertEquals(2, rs.getRowCount(), "Only HR rows visible");
         assertEquals(0.0, ((Number) rs.getRows().get(0).getValue(1)).doubleValue(), 0.01);

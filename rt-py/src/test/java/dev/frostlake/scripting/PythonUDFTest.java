@@ -20,9 +20,9 @@ import dev.frostlake.DatabaseEngine;
 import dev.frostlake.metastore.model.Function;
 import dev.frostlake.metastore.model.Parameter;
 import dev.frostlake.metastore.model.Schema;
+import dev.frostlake.rt.py.PythonExecutor;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.types.StringType;
-import dev.frostlake.rt.py.PythonExecutor;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -35,7 +35,6 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class PythonUDFTest {
 
@@ -73,8 +72,8 @@ public class PythonUDFTest {
             $$
             """);
 
-        Schema schema = engine.getCatalog().getDatabase("TEST_DB").getSchema("PUBLIC");
-        Function func = schema.getFunction("py_double");
+        final Schema schema = engine.getCatalog().getDatabase("TEST_DB").getSchema("PUBLIC");
+        final Function func = schema.getFunction("py_double");
 
         assertNotNull(func, "Function should be created");
         assertEquals("PY_DOUBLE", func.getName());
@@ -86,14 +85,14 @@ public class PythonUDFTest {
     public void testExecutePythonFunction() {
         logger.info("Testing Python function execution");
 
-        List<Parameter> parameters = new ArrayList<>();
+        final List<Parameter> parameters = new ArrayList<>();
         parameters.add(new Parameter("x", NumericType.INTEGER));
 
-        Function func = new Function("test_square", parameters, NumericType.INTEGER,
+        final Function func = new Function("test_square", parameters, NumericType.INTEGER,
                                     "return x * x", false, "PYTHON");
 
-        List<Object> args = Arrays.asList(7);
-        Object result = PythonExecutor.executePythonFunction(func, args);
+        final List<Object> args = Arrays.asList(7);
+        final Object result = PythonExecutor.executePythonFunction(func, args);
 
         assertNotNull(result, "Result should not be null");
         logger.info("Result: {}", result);
@@ -104,15 +103,15 @@ public class PythonUDFTest {
     public void testPythonFunctionWithMultipleParameters() {
         logger.info("Testing Python function with multiple parameters");
 
-        List<Parameter> parameters = new ArrayList<>();
+        final List<Parameter> parameters = new ArrayList<>();
         parameters.add(new Parameter("a", NumericType.INTEGER));
         parameters.add(new Parameter("b", NumericType.INTEGER));
 
-        Function func = new Function("test_add", parameters, NumericType.INTEGER,
+        final Function func = new Function("test_add", parameters, NumericType.INTEGER,
                                     "return a + b", false, "PYTHON");
 
-        List<Object> args = Arrays.asList(15, 27);
-        Object result = PythonExecutor.executePythonFunction(func, args);
+        final List<Object> args = Arrays.asList(15, 27);
+        final Object result = PythonExecutor.executePythonFunction(func, args);
 
         assertNotNull(result, "Result should not be null");
         logger.info("Result: {}", result);
@@ -123,14 +122,14 @@ public class PythonUDFTest {
     public void testPythonFunctionWithStringParameter() {
         logger.info("Testing Python function with string parameter");
 
-        List<Parameter> parameters = new ArrayList<>();
+        final List<Parameter> parameters = new ArrayList<>();
         parameters.add(new Parameter("s", StringType.VARCHAR));
 
-        Function func = new Function("test_upper", parameters, StringType.VARCHAR,
+        final Function func = new Function("test_upper", parameters, StringType.VARCHAR,
                                     "return s.upper()", false, "PYTHON");
 
-        List<Object> args = Arrays.asList("hello");
-        Object result = PythonExecutor.executePythonFunction(func, args);
+        final List<Object> args = Arrays.asList("hello");
+        final Object result = PythonExecutor.executePythonFunction(func, args);
 
         assertNotNull(result, "Result should not be null");
         logger.info("Result: {}", result);
@@ -141,10 +140,10 @@ public class PythonUDFTest {
     public void testPythonFunctionWithConditional() {
         logger.info("Testing Python function with conditional logic");
 
-        List<Parameter> parameters = new ArrayList<>();
+        final List<Parameter> parameters = new ArrayList<>();
         parameters.add(new Parameter("n", NumericType.INTEGER));
 
-        String body = """
+        final String body = """
             if n < 0:
                 return "negative"
             elif n == 0:
@@ -153,16 +152,16 @@ public class PythonUDFTest {
                 return "positive"
             """;
 
-        Function func = new Function("test_sign", parameters, StringType.VARCHAR,
+        final Function func = new Function("test_sign", parameters, StringType.VARCHAR,
                                     body, false, "PYTHON");
 
-        Object result1 = PythonExecutor.executePythonFunction(func, Arrays.asList(-5));
+        final Object result1 = PythonExecutor.executePythonFunction(func, Arrays.asList(-5));
         assertEquals("negative", result1.toString());
 
-        Object result2 = PythonExecutor.executePythonFunction(func, Arrays.asList(0));
+        final Object result2 = PythonExecutor.executePythonFunction(func, Arrays.asList(0));
         assertEquals("zero", result2.toString());
 
-        Object result3 = PythonExecutor.executePythonFunction(func, Arrays.asList(5));
+        final Object result3 = PythonExecutor.executePythonFunction(func, Arrays.asList(5));
         assertEquals("positive", result3.toString());
     }
 
@@ -170,20 +169,20 @@ public class PythonUDFTest {
     public void testPythonFunctionWithLoop() {
         logger.info("Testing Python function with loop");
 
-        List<Parameter> parameters = new ArrayList<>();
+        final List<Parameter> parameters = new ArrayList<>();
         parameters.add(new Parameter("n", NumericType.INTEGER));
 
-        String body = """
+        final String body = """
             total = 0
             for i in range(1, n + 1):
                 total += i
             return total
             """;
 
-        Function func = new Function("test_sum", parameters, NumericType.INTEGER,
+        final Function func = new Function("test_sum", parameters, NumericType.INTEGER,
                                     body, false, "PYTHON");
 
-        Object result = PythonExecutor.executePythonFunction(func, Arrays.asList(10));
+        final Object result = PythonExecutor.executePythonFunction(func, Arrays.asList(10));
         assertNotNull(result, "Result should not be null");
         logger.info("Sum of 1 to 10: {}", result);
         assertEquals(55, ((Number) result).intValue(), "Sum should be 55");
@@ -193,18 +192,18 @@ public class PythonUDFTest {
     public void testPythonFunctionWithListComprehension() {
         logger.info("Testing Python function with list comprehension");
 
-        List<Parameter> parameters = new ArrayList<>();
+        final List<Parameter> parameters = new ArrayList<>();
         parameters.add(new Parameter("n", NumericType.INTEGER));
 
-        String body = """
+        final String body = """
             squares = [i * i for i in range(1, n + 1)]
             return sum(squares)
             """;
 
-        Function func = new Function("test_squares_sum", parameters, NumericType.INTEGER,
+        final Function func = new Function("test_squares_sum", parameters, NumericType.INTEGER,
                                     body, false, "PYTHON");
 
-        Object result = PythonExecutor.executePythonFunction(func, Arrays.asList(5));
+        final Object result = PythonExecutor.executePythonFunction(func, Arrays.asList(5));
         assertNotNull(result, "Result should not be null");
         logger.info("Sum of squares 1-5: {}", result);
         // 1 + 4 + 9 + 16 + 25 = 55
@@ -215,18 +214,18 @@ public class PythonUDFTest {
     public void testPythonFunctionStringManipulation() {
         logger.info("Testing Python function with string manipulation");
 
-        List<Parameter> parameters = new ArrayList<>();
+        final List<Parameter> parameters = new ArrayList<>();
         parameters.add(new Parameter("text", StringType.VARCHAR));
 
-        String body = """
+        final String body = """
             words = text.split()
             return ' '.join(reversed(words))
             """;
 
-        Function func = new Function("test_reverse_words", parameters, StringType.VARCHAR,
+        final Function func = new Function("test_reverse_words", parameters, StringType.VARCHAR,
                                     body, false, "PYTHON");
 
-        Object result = PythonExecutor.executePythonFunction(func, Arrays.asList("Hello World Python"));
+        final Object result = PythonExecutor.executePythonFunction(func, Arrays.asList("Hello World Python"));
         assertNotNull(result, "Result should not be null");
         logger.info("Reversed: {}", result);
         assertEquals("Python World Hello", result.toString());
@@ -262,11 +261,11 @@ public class PythonUDFTest {
             $$
             """);
 
-        Schema schema = engine.getCatalog().getDatabase("TEST_DB").getSchema("PUBLIC");
+        final Schema schema = engine.getCatalog().getDatabase("TEST_DB").getSchema("PUBLIC");
 
-        Function sqlFunc = schema.getFunction("sql_triple");
-        Function jsFunc = schema.getFunction("js_triple");
-        Function pyFunc = schema.getFunction("py_triple");
+        final Function sqlFunc = schema.getFunction("sql_triple");
+        final Function jsFunc = schema.getFunction("js_triple");
+        final Function pyFunc = schema.getFunction("py_triple");
 
         assertEquals("SQL", sqlFunc.getLanguage());
         assertEquals("JAVASCRIPT", jsFunc.getLanguage());
@@ -279,10 +278,10 @@ public class PythonUDFTest {
     public void testPythonFunctionComplexLogic() {
         logger.info("Testing Python function with complex logic");
 
-        List<Parameter> parameters = new ArrayList<>();
+        final List<Parameter> parameters = new ArrayList<>();
         parameters.add(new Parameter("n", NumericType.INTEGER));
 
-        String body = """
+        final String body = """
             def fibonacci(n):
                 if n <= 1:
                     return n
@@ -292,10 +291,10 @@ public class PythonUDFTest {
                 return b
             """;
 
-        Function func = new Function("test_fib", parameters, NumericType.INTEGER,
+        final Function func = new Function("test_fib", parameters, NumericType.INTEGER,
                                     body, false, "PYTHON");
 
-        Object result = PythonExecutor.executePythonFunction(func, Arrays.asList(10));
+        final Object result = PythonExecutor.executePythonFunction(func, Arrays.asList(10));
         assertNotNull(result, "Result should not be null");
         logger.info("Fibonacci(10): {}", result);
         assertEquals(55, ((Number) result).intValue(), "Fibonacci(10) should be 55");

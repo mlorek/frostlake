@@ -19,7 +19,22 @@ package dev.frostlake.jdbc;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.sql.*;
+import java.sql.Array;
+import java.sql.Blob;
+import java.sql.CallableStatement;
+import java.sql.Clob;
+import java.sql.Connection;
+import java.sql.NClob;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.SQLClientInfoException;
+import java.sql.SQLException;
+import java.sql.SQLFeatureNotSupportedException;
+import java.sql.SQLWarning;
+import java.sql.SQLXML;
+import java.sql.Savepoint;
+import java.sql.Statement;
+import java.sql.Struct;
 import java.util.Map;
 import java.util.Properties;
 import java.util.concurrent.Executor;
@@ -35,15 +50,25 @@ public class DatabaseConnection implements Connection {
     private String schema;
     private boolean closed;
     private boolean autoCommit;
+    /** The session's MULTI_STATEMENT_COUNT (1 = single statement only, 0 = any). */
+    private int multiStatementCount = 1;
     private String catalog;
 
     public DatabaseConnection(final String baseUrl, final String database, final String schema, final Properties info) throws SQLException {
-        String sessionId = info.getProperty("sessionId");
+        final String sessionId = info.getProperty("sessionId");
         this.httpClient = new HttpClient(baseUrl, sessionId);
         this.database = database;
         this.schema = schema;
         this.closed = false;
         this.autoCommit = true;
+        final String multiCount = info.getProperty("MULTI_STATEMENT_COUNT");
+        if (multiCount != null) {
+            try {
+                this.multiStatementCount = Integer.parseInt(multiCount.trim());
+            } catch (final NumberFormatException ignored) {
+                // an unreadable property keeps the single-statement default
+            }
+        }
 
         // Verify connection
         if (!httpClient.isHealthy()) {
@@ -314,7 +339,14 @@ public class DatabaseConnection implements Connection {
         return httpClient.isHealthy();
     }
 
-    @Override
+    int getMultiStatementCount() {
+        return multiStatementCount;
+    }
+
+    void setMultiStatementCount(final int count) {
+        this.multiStatementCount = count;
+    }
+
     public void setClientInfo(final String name, final String value) throws SQLClientInfoException {
         // No-op
     }

@@ -27,7 +27,7 @@ public class SysdateExample {
 
     @Test
     public void demonstrateSysdate() {
-        DatabaseEngine engine = new DatabaseEngine();
+        final DatabaseEngine engine = new DatabaseEngine();
 
         try {
             engine.execute("CREATE DATABASE demo_db");
@@ -37,7 +37,7 @@ public class SysdateExample {
 
             // Example 1: Get current timestamp
             logger.info("\n1. Get current timestamp using SYSDATE():");
-            ResultSet rs1 = engine.executeQuery("SELECT SYSDATE() AS current_time");
+            final ResultSet rs1 = engine.executeQuery("SELECT SYSDATE() AS current_time");
             logger.info("Current time: {}", rs1.getRows().get(0).getValue(0));
 
             // Example 2: Use SYSDATE in INSERT
@@ -47,7 +47,7 @@ public class SysdateExample {
             engine.execute("INSERT INTO audit_log VALUES (2, 'File upload', SYSDATE())");
             engine.execute("INSERT INTO audit_log VALUES (3, 'Report generated', SYSDATE())");
 
-            ResultSet rs2 = engine.executeQuery("SELECT * FROM audit_log ORDER BY id");
+            final ResultSet rs2 = engine.executeQuery("SELECT * FROM audit_log ORDER BY id");
             logger.info("Audit log entries:");
             for (int i = 0; i < rs2.getRowCount(); i++) {
                 logger.info("  ID {}: {} at {}",
@@ -59,7 +59,7 @@ public class SysdateExample {
 
             // Example 3: Compare timestamps
             logger.info("\n3. Compare SYSDATE with past timestamp:");
-            ResultSet rs3 = engine.executeQuery(
+            final ResultSet rs3 = engine.executeQuery(
                 "SELECT SYSDATE() > TO_TIMESTAMP_NTZ('2020-01-01 00:00:00') AS is_after_2020"
             );
             logger.info("Is current time after 2020-01-01? {}", rs3.getRows().get(0).getValue(0));
@@ -71,7 +71,7 @@ public class SysdateExample {
             engine.execute("INSERT INTO orders VALUES (2, TO_TIMESTAMP_NTZ('2024-06-15 14:30:00'), 'completed')");
             engine.execute("INSERT INTO orders VALUES (3, SYSDATE(), 'pending')");
 
-            ResultSet rs4 = engine.executeQuery(
+            final ResultSet rs4 = engine.executeQuery(
                 "SELECT id, status FROM orders WHERE order_date <= SYSDATE() ORDER BY id"
             );
             logger.info("Orders up to now:");
@@ -84,14 +84,14 @@ public class SysdateExample {
 
             // Example 5: Use SYSDATE in WHERE clause
             logger.info("\n5. Find recent orders (current timestamp):");
-            ResultSet rs5 = engine.executeQuery(
+            final ResultSet rs5 = engine.executeQuery(
                 "SELECT COUNT(*) AS pending_count FROM orders WHERE order_date = SYSDATE() AND status = 'pending'"
             );
             logger.info("Pending orders created now: {}", rs5.getRows().get(0).getValue(0));
 
             // Example 6: Multiple SYSDATE calls
             logger.info("\n6. Multiple SYSDATE() calls in same query:");
-            ResultSet rs6 = engine.executeQuery(
+            final ResultSet rs6 = engine.executeQuery(
                 "SELECT SYSDATE() AS ts1, SYSDATE() AS ts2"
             );
             logger.info("First call: {}", rs6.getRows().get(0).getValue(0));
@@ -99,7 +99,7 @@ public class SysdateExample {
 
             // Example 7: SYSDATE in subquery
             logger.info("\n7. Use SYSDATE() in subquery:");
-            ResultSet rs7 = engine.executeQuery(
+            final ResultSet rs7 = engine.executeQuery(
                 "SELECT id, status FROM orders WHERE order_date < (SELECT SYSDATE())"
             );
             logger.info("Orders before now: {} records", rs7.getRowCount());
@@ -107,7 +107,7 @@ public class SysdateExample {
             // Example 8: CREATE TABLE AS SELECT with SYSDATE
             logger.info("\n8. Create snapshot table with current timestamp:");
             engine.execute("CREATE TABLE order_snapshot AS SELECT *, SYSDATE() AS snapshot_time FROM orders");
-            ResultSet rs8 = engine.executeQuery("SELECT id, snapshot_time FROM order_snapshot LIMIT 1");
+            final ResultSet rs8 = engine.executeQuery("SELECT id, snapshot_time FROM order_snapshot LIMIT 1");
             logger.info("Snapshot created at: {}", rs8.getRows().get(0).getValue(1));
 
         } finally {

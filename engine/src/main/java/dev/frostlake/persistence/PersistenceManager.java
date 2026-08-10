@@ -18,12 +18,12 @@ package dev.frostlake.persistence;
 
 import dev.frostlake.config.EngineConfig;
 import dev.frostlake.config.S3PathResolver;
-import dev.frostlake.metastore.*;
+import dev.frostlake.metastore.Catalog;
 import dev.frostlake.storage.StorageEngine;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.io.*;
+import java.io.IOException;
 import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -33,6 +33,7 @@ import java.nio.file.attribute.BasicFileAttributes;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Manages persistence of catalog metadata and table data to disk
@@ -47,6 +48,16 @@ public class PersistenceManager {
     private final Path tablesDirectory;
     private final ScheduledExecutorService scheduler;
     private volatile boolean running;
+    /** True when a statement has run since the last autosave; starts true so the first interval writes. */
+    private final AtomicBoolean dirtySinceAutoSave = new AtomicBoolean(true);
+
+    /**
+     * Note that a statement ran (or was attempted — a failed one can still leave a persistent
+     * change, e.g. an advanced sequence), so the next autosave interval must write.
+     */
+    public void noteStatementExecuted() {
+        dirtySinceAutoSave.set(true);
+    }
 
     public PersistenceManager(final EngineConfig config) {
         this.config = config;
@@ -81,16 +92,22 @@ public class PersistenceManager {
         }
 
         running = true;
-        int interval = config.getSaveIntervalSeconds();
+        final int interval = config.getSaveIntervalSeconds();
         scheduler.scheduleAtFixedRate(new Runnable() {
             @Override
             public void run() {
+                // Skip the interval entirely while no statement has run since the last save — an
+                // idle engine otherwise rewrote the whole catalog every interval. The flag is
+                // cleared BEFORE the write, so a statement landing mid-save re-dirties for the
+                // next interval instead of being lost.
+                if (!running || !dirtySinceAutoSave.getAndSet(false)) {
+                    return;
+                }
                 try {
-                    if (running) {
-                        saveCatalog(catalog, storageEngine);
-                        logger.debug("Auto-save completed");
-                    }
+                    saveCatalog(catalog, storageEngine);
+                    logger.debug("Auto-save completed");
                 } catch (final Exception e) {
+                    dirtySinceAutoSave.set(true);
                     logger.error("Auto-save failed", e);
                 }
             }

@@ -16,41 +16,28 @@
 
 package dev.frostlake.query;
 
-import dev.frostlake.DatabaseEngine;
+import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
 
-import org.junit.jupiter.api.AfterAll;
-import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * MINUS is Snowflake's synonym for the EXCEPT set operator. Verifies MINUS / MINUS ALL behave exactly like
- * EXCEPT / EXCEPT ALL, and that adding the MINUS keyword token did not stop {@code minus} being usable as an
- * identifier (it is listed in the grammar's {@code identifier} rule).
+ * EXCEPT / EXCEPT ALL, and the reservedness split between the two spellings: {@code MINUS} is a RESERVED
+ * word (refused in every identifier position, like UNION and INTERSECT), while {@code EXCEPT} is
+ * unreserved and freely usable as an alias, table, or column name.
  */
-public class MinusSetOperatorTest {
+public class MinusSetOperatorTest extends BaseDatabaseTest {
 
-    private static DatabaseEngine engine;
-
-    @BeforeAll
-    public static void setup() {
-        engine = new DatabaseEngine();
+    @Override
+    protected void setupTest() {
         engine.execute("CREATE DATABASE IF NOT EXISTS test_db");
-        engine.execute("USE DATABASE test_db");
-        engine.execute("USE SCHEMA public");
-    }
-
-    @AfterAll
-    public static void teardown() {
-        if (engine != null) {
-            engine.shutdown();
-        }
     }
 
     @BeforeEach
@@ -117,10 +104,70 @@ public class MinusSetOperatorTest {
     }
 
     @Test
-    public void minusStillUsableAsIdentifier() {
-        // Adding the MINUS keyword must not stop "minus" working as a column alias.
-        final ResultSet result = engine.executeQuery("SELECT id AS minus FROM set1 WHERE id = 1");
+    public void minusRefusedAsAlias() {
+        // MINUS is reserved: "SELECT id AS minus" is a syntax error at the alias.
+        final RuntimeException e = assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.executeQuery("SELECT id AS minus FROM set1 WHERE id = 1");
+            }
+        });
+        assertTrue(e.getMessage().toLowerCase().contains("syntax error"),
+            "unexpected message: " + e.getMessage());
+    }
+
+    @Test
+    public void minusRefusedAsTableAndColumnName() {
+        assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.execute("CREATE TABLE minus (i INT)");
+            }
+        });
+        assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.execute("CREATE TABLE tminus (minus INT)");
+            }
+        });
+    }
+
+    @Test
+    public void quotedMinusWorksAsIdentifier() {
+        // Reservedness applies to the bare word only; the quoted spelling is an ordinary identifier.
+        final ResultSet result = engine.executeQuery("SELECT id AS \"minus\" FROM set1 WHERE id = 1");
         assertEquals(1, result.getRows().size());
-        assertEquals("MINUS", result.getColumns().get(0).getName().toUpperCase());
+        assertEquals("minus", result.getColumns().get(0).getName());
+    }
+
+    @Test
+    public void exceptUsableAsIdentifier() {
+        // EXCEPT is unreserved: alias (with and without AS), table name and column name all work.
+        final ResultSet aliased = engine.executeQuery("SELECT id AS except FROM set1 WHERE id = 1");
+        assertEquals(1, aliased.getRows().size());
+        assertEquals("EXCEPT", aliased.getColumns().get(0).getName().toUpperCase());
+
+        final ResultSet bare = engine.executeQuery("SELECT 1 except");
+        assertEquals("EXCEPT", bare.getColumns().get(0).getName().toUpperCase());
+
+        engine.execute("CREATE TABLE except (i INT)");
+        engine.execute("INSERT INTO except VALUES (7)");
+        final ResultSet fromAliased = engine.executeQuery("SELECT except.i FROM except except");
+        assertEquals(1, fromAliased.getRows().size());
+        engine.execute("DROP TABLE except");
+
+        engine.execute("CREATE TABLE texcept (except INT)");
+        engine.execute("INSERT INTO texcept VALUES (8)");
+        final ResultSet column = engine.executeQuery("SELECT except FROM texcept");
+        assertEquals(8L, ((Number) column.getRows().get(0).getValue(0)).longValue());
+        engine.execute("DROP TABLE texcept");
+    }
+
+    @Test
+    public void exceptAliasThenExceptSetOperator() {
+        // The unreserved EXCEPT must still parse as the set operator right after an EXCEPT alias.
+        final ResultSet result = engine.executeQuery("SELECT 1 AS except EXCEPT SELECT 2");
+        assertEquals(1, result.getRows().size());
+        assertEquals(1L, ((Number) result.getRows().get(0).getValue(0)).longValue());
     }
 }

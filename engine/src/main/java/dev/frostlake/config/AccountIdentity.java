@@ -59,6 +59,15 @@ public final class AccountIdentity {
     private final String accountLocator;
     private final String region;
 
+    /**
+     * Assembles an identity from the four identifiers verbatim — nothing is folded or derived here;
+     * the URL accessors do their lower-casing on read.
+     *
+     * @param organization   the organization name, as {@code CURRENT_ORGANIZATION_NAME()} answers it
+     * @param accountName    the account's name, as {@code CURRENT_ACCOUNT_NAME()} answers it
+     * @param accountLocator the account's locator, as {@code CURRENT_ACCOUNT()} answers it
+     * @param region         the region, as {@code CURRENT_REGION()} answers it
+     */
     public AccountIdentity(final String organization, final String accountName,
                            final String accountLocator, final String region) {
         this.organization = organization;
@@ -67,7 +76,13 @@ public final class AccountIdentity {
         this.region = region;
     }
 
-    /** The identity a configuration describes. */
+    /**
+     * The identity a configuration describes.
+     *
+     * @param config the configuration whose organization, account name, locator and region to read;
+     *               null means a default {@link EngineConfig}
+     * @return the identity those four settings assemble
+     */
     public static AccountIdentity of(final EngineConfig config) {
         if (config == null) {
             return of(new EngineConfig());
@@ -76,29 +91,56 @@ public final class AccountIdentity {
             config.getAccountId(), config.getRegion());
     }
 
+    /**
+     * As {@code CURRENT_ORGANIZATION_NAME()} answers it.
+     *
+     * @return the organization name, verbatim as configured
+     */
     public String getOrganization() {
         return organization;
     }
 
+    /**
+     * As {@code CURRENT_ACCOUNT_NAME()} answers it — the account's NAME, not its locator.
+     *
+     * @return the account name, verbatim as configured
+     */
     public String getAccountName() {
         return accountName;
     }
 
+    /**
+     * As {@code CURRENT_ACCOUNT()} answers it — the account's LOCATOR, a different value than its name.
+     *
+     * @return the account locator, verbatim as configured
+     */
     public String getAccountLocator() {
         return accountLocator;
     }
 
-    /** As {@code CURRENT_REGION()} answers it — whatever was configured, prefix and all. */
+    /**
+     * As {@code CURRENT_REGION()} answers it — whatever was configured, prefix and all.
+     *
+     * @return the region, verbatim as configured
+     */
     public String getRegion() {
         return region;
     }
 
-    /** {@code https://<org>-<account>.snowflakecomputing.com}, lower-cased. */
+    /**
+     * {@code https://<org>-<account>.snowflakecomputing.com}, lower-cased.
+     *
+     * @return the account URL built from the organization and account name
+     */
     public String getAccountUrl() {
         return "https://" + lower(organization) + "-" + lower(accountName) + DOMAIN;
     }
 
-    /** {@code https://<locator>.<cloud-region>.snowflakecomputing.com}, lower-cased. */
+    /**
+     * {@code https://<locator>.<cloud-region>.snowflakecomputing.com}, lower-cased.
+     *
+     * @return the locator URL built from the locator and the cloud-region slug
+     */
     public String getAccountLocatorUrl() {
         return "https://" + lower(accountLocator) + "." + cloudRegionSlug() + DOMAIN;
     }

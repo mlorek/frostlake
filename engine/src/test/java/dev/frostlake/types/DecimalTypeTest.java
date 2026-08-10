@@ -16,10 +16,8 @@
 
 package dev.frostlake.types;
 
-import dev.frostlake.DatabaseEngine;
+import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -27,24 +25,9 @@ import org.slf4j.LoggerFactory;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 
-public class DecimalTypeTest {
+public class DecimalTypeTest extends BaseDatabaseTest {
 
     private static final Logger logger = LoggerFactory.getLogger(DecimalTypeTest.class);
-    private DatabaseEngine engine;
-
-    @BeforeEach
-    public void setUp() {
-        engine = new DatabaseEngine();
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
-    }
-
-    @AfterEach
-    public void tearDown() {
-        if (engine != null) {
-            engine.shutdown();
-        }
-    }
 
     @Test
     public void testDecimalWithPrecisionAndScale() {
@@ -52,7 +35,7 @@ public class DecimalTypeTest {
         engine.execute("CREATE TABLE prices (id INTEGER, amount DECIMAL(10, 2))");
         engine.execute("INSERT INTO prices VALUES (1, 123.45)");
 
-        ResultSet rs = engine.executeQuery("SELECT * FROM prices");
+        final ResultSet rs = engine.executeQuery("SELECT * FROM prices");
         assertEquals(1, rs.getRowCount());
         assertEquals(1L, ((Number) rs.getRows().get(0).getValue(0)).longValue());
         assertEquals(123.45, ((Number) rs.getRows().get(0).getValue(1)).doubleValue(), 0.001);
@@ -64,7 +47,7 @@ public class DecimalTypeTest {
         engine.execute("CREATE TABLE counts (id INTEGER, value DECIMAL(5))");
         engine.execute("INSERT INTO counts VALUES (1, 12345)");
 
-        ResultSet rs = engine.executeQuery("SELECT * FROM counts");
+        final ResultSet rs = engine.executeQuery("SELECT * FROM counts");
         assertEquals(1, rs.getRowCount());
         assertEquals(12345.0, ((Number) rs.getRows().get(0).getValue(1)).doubleValue(), 0.001);
     }
@@ -75,7 +58,7 @@ public class DecimalTypeTest {
         engine.execute("CREATE TABLE measurements (id INTEGER, value NUMBER(15, 4))");
         engine.execute("INSERT INTO measurements VALUES (1, 1234.5678)");
 
-        ResultSet rs = engine.executeQuery("SELECT * FROM measurements");
+        final ResultSet rs = engine.executeQuery("SELECT * FROM measurements");
         assertEquals(1, rs.getRowCount());
         assertEquals(1234.5678, ((Number) rs.getRows().get(0).getValue(1)).doubleValue(), 0.0001);
     }
@@ -86,7 +69,7 @@ public class DecimalTypeTest {
         engine.execute("CREATE TABLE names (id INTEGER, name VARCHAR(50))");
         engine.execute("INSERT INTO names VALUES (1, 'Alice')");
 
-        ResultSet rs = engine.executeQuery("SELECT * FROM names");
+        final ResultSet rs = engine.executeQuery("SELECT * FROM names");
         assertEquals(1, rs.getRowCount());
         assertEquals("Alice", rs.getRows().get(0).getValue(1));
     }
@@ -97,7 +80,7 @@ public class DecimalTypeTest {
         engine.execute("CREATE TABLE codes (id INTEGER, code CHAR(10))");
         engine.execute("INSERT INTO codes VALUES (1, 'ABC123')");
 
-        ResultSet rs = engine.executeQuery("SELECT * FROM codes");
+        final ResultSet rs = engine.executeQuery("SELECT * FROM codes");
         assertEquals(1, rs.getRowCount());
         assertEquals("ABC123", rs.getRows().get(0).getValue(1));
     }
@@ -116,7 +99,7 @@ public class DecimalTypeTest {
             """);
         engine.execute("INSERT INTO products VALUES (1, 'Widget', 99.99, 100, 5.50)");
 
-        ResultSet rs = engine.executeQuery("SELECT * FROM products");
+        final ResultSet rs = engine.executeQuery("SELECT * FROM products");
         assertEquals(1, rs.getRowCount());
         assertEquals(1L, ((Number) rs.getRows().get(0).getValue(0)).longValue());
         assertEquals("Widget", rs.getRows().get(0).getValue(1));
@@ -131,7 +114,7 @@ public class DecimalTypeTest {
         engine.execute("CREATE TABLE mixed (id INTEGER, amount DECIMAL, name VARCHAR)");
         engine.execute("INSERT INTO mixed VALUES (1, 123.45, 'Test')");
 
-        ResultSet rs = engine.executeQuery("SELECT * FROM mixed");
+        final ResultSet rs = engine.executeQuery("SELECT * FROM mixed");
         assertEquals(1, rs.getRowCount());
         assertNotNull(rs.getRows().get(0).getValue(0));
         assertNotNull(rs.getRows().get(0).getValue(1));

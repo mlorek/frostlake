@@ -17,6 +17,7 @@
 package dev.frostlake.features;
 
 import dev.frostlake.BaseDatabaseTest;
+import dev.frostlake.LiveFeatureGate;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -95,8 +96,21 @@ public class WarehouseReferenceTest extends BaseDatabaseTest {
         engine.execute("CREATE TASK tk WAREHOUSE = present_wh SCHEDULE = '1 minute' AS SELECT 1");
         engine.execute("CREATE DYNAMIC TABLE dt TARGET_LAG = '1 hour' WAREHOUSE = present_wh"
             + " AS SELECT id FROM src");
-        engine.execute("CREATE CORTEX SEARCH SERVICE svc ON body WAREHOUSE = present_wh"
-            + " TARGET_LAG = '1 hour' AS (SELECT id, body FROM src)");
+    }
+
+    /**
+     * The third warehouse-referencing statement, kept apart because a trial account has no Cortex:
+     * there the account's own refusal skips THIS test while the task and dynamic-table checks above
+     * still run.
+     */
+    @Test
+    public void anExistingWarehouseIsAcceptedByACortexService() {
+        try {
+            engine.execute("CREATE CORTEX SEARCH SERVICE svc ON body WAREHOUSE = present_wh"
+                + " TARGET_LAG = '1 hour' AS (SELECT id, body FROM src)");
+        } catch (final RuntimeException refused) {
+            LiveFeatureGate.skipIfAccountTierBlocks(refused);
+        }
     }
 
     /** A statement that names no warehouse at all is not a reference, so nothing is checked. */

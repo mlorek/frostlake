@@ -17,6 +17,7 @@
 package dev.frostlake.formats;
 
 import dev.frostlake.DatabaseEngine;
+import dev.frostlake.config.EngineConfig;
 import dev.frostlake.storage.ResultSet;
 import org.apache.avro.Schema;
 import org.apache.avro.generic.GenericData;
@@ -54,6 +55,9 @@ public class CopyParquetLoadTest {
     public void setUp() throws IOException {
         stageDir = Files.createTempDirectory("copy_parquet_");
         engine = new DatabaseEngine();
+        // The test stage points at a local file:// directory — opt in to the affordance the
+        // default config refuses (a real account refuses those URLs).
+        engine.getConfig().setProperty(EngineConfig.PROP_STAGE_FILE_URL_ENABLED, "true");
         engine.execute("CREATE DATABASE db");
         engine.execute("USE DATABASE db");
         engine.execute("CREATE SCHEMA s");

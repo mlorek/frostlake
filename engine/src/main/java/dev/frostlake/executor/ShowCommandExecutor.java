@@ -16,8 +16,9 @@
 
 package dev.frostlake.executor;
 
-import dev.frostlake.functions.FunctionRegistry;
 import dev.frostlake.config.AccountIdentity;
+import dev.frostlake.executor.operators.ResultSetProvider;
+import dev.frostlake.functions.FunctionRegistry;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.QueryHistoryTracker;
 import dev.frostlake.security.SecurityManager;
@@ -90,6 +91,18 @@ public class ShowCommandExecutor {
 
     public ResultSet showTables(final String schemaName) {
         return relationalExecutor.showTables(schemaName);
+    }
+
+    public ResultSet showTablesInAccount() {
+        return relationalExecutor.showTablesInAccount();
+    }
+
+    public ResultSet showSchemasInAccount() {
+        return relationalExecutor.showSchemasInAccount();
+    }
+
+    public ResultSet showObjectsInAccount() {
+        return relationalExecutor.showObjectsInAccount();
     }
 
     public ResultSet showViews(final String schemaName) {
@@ -226,6 +239,10 @@ public class ShowCommandExecutor {
         return relationalExecutor.describeView(viewName);
     }
 
+    public ResultSet describeRelation(final String name, final String reportedKind) {
+        return relationalExecutor.describeRelation(name, reportedKind);
+    }
+
     public ResultSet describeStream(final String streamName) {
         return pipelineExecutor.describeStream(streamName);
     }
@@ -322,6 +339,70 @@ public class ShowCommandExecutor {
         return routineExecutor.showFileFormatsInAccount();
     }
 
+    public ResultSet describeSearchOptimization(final String tableName) {
+        return routineExecutor.describeSearchOptimization(tableName);
+    }
+
+    public ResultSet showJoinPolicies(final String schemaName) {
+        return routineExecutor.showJoinPolicies(schemaName);
+    }
+
+    public ResultSet showJoinPoliciesInDatabase(final String databaseName) {
+        return routineExecutor.showJoinPoliciesInDatabase(databaseName);
+    }
+
+    public ResultSet showJoinPoliciesInAccount() {
+        return routineExecutor.showJoinPoliciesInAccount();
+    }
+
+    public ResultSet describeJoinPolicy(final String policyName) {
+        return routineExecutor.describeJoinPolicy(policyName);
+    }
+
+    public ResultSet showAggregationPolicies(final String schemaName) {
+        return routineExecutor.showAggregationPolicies(schemaName);
+    }
+
+    public ResultSet showAggregationPoliciesInDatabase(final String databaseName) {
+        return routineExecutor.showAggregationPoliciesInDatabase(databaseName);
+    }
+
+    public ResultSet showAggregationPoliciesInAccount() {
+        return routineExecutor.showAggregationPoliciesInAccount();
+    }
+
+    public ResultSet describeAggregationPolicy(final String policyName) {
+        return routineExecutor.describeAggregationPolicy(policyName);
+    }
+
+    public ResultSet showProjectionPolicies(final String schemaName) {
+        return routineExecutor.showProjectionPolicies(schemaName);
+    }
+
+    public ResultSet showProjectionPoliciesInDatabase(final String databaseName) {
+        return routineExecutor.showProjectionPoliciesInDatabase(databaseName);
+    }
+
+    public ResultSet showProjectionPoliciesInAccount() {
+        return routineExecutor.showProjectionPoliciesInAccount();
+    }
+
+    public ResultSet describeProjectionPolicy(final String policyName) {
+        return routineExecutor.describeProjectionPolicy(policyName);
+    }
+
+    public ResultSet showContacts(final String schemaName) {
+        return routineExecutor.showContacts(schemaName);
+    }
+
+    public ResultSet showContactsInDatabase(final String databaseName) {
+        return routineExecutor.showContactsInDatabase(databaseName);
+    }
+
+    public ResultSet showContactsInAccount() {
+        return routineExecutor.showContactsInAccount();
+    }
+
     public ResultSet showMaskingPolicies(final String schemaName) {
         return routineExecutor.showMaskingPolicies(schemaName);
     }
@@ -356,6 +437,18 @@ public class ShowCommandExecutor {
 
     public ResultSet showColumnsScoped(final String name, final boolean view) {
         return relationalExecutor.showColumnsScoped(name, view);
+    }
+
+    public ResultSet showColumnsInSchema(final String name) {
+        return relationalExecutor.showColumnsInSchema(name);
+    }
+
+    public ResultSet showColumnsInDatabase(final String databaseName) {
+        return relationalExecutor.showColumnsInDatabase(databaseName);
+    }
+
+    public ResultSet showColumnsInAccount() {
+        return relationalExecutor.showColumnsInAccount();
     }
 
     public ResultSet showViewsInAccount() {
@@ -420,8 +513,8 @@ public class ShowCommandExecutor {
         return pipelineExecutor.showDynamicTablesInAccount();
     }
 
-    public ResultSet describeDynamicTable(final String tableName) {
-        return pipelineExecutor.describeDynamicTable(tableName);
+    public ResultSet describeDynamicTable(final String tableName, final ResultSetProvider projection) {
+        return pipelineExecutor.describeDynamicTable(tableName, projection);
     }
 
     public ResultSet showParameters(final String likePattern) {
@@ -452,8 +545,8 @@ public class ShowCommandExecutor {
         return sessionExecutor.showAccounts();
     }
 
-    public ResultSet showLocks() {
-        return sessionExecutor.showLocks();
+    public ResultSet showLocks(final boolean inAccount) {
+        return sessionExecutor.showLocks(inAccount);
     }
 
     public ResultSet showTransactions(final String likePattern) {

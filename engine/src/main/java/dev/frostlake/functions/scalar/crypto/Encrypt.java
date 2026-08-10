@@ -34,22 +34,22 @@ import javax.crypto.spec.SecretKeySpec;
  * BINARY, matching Snowflake's return type.
  */
 public class Encrypt extends BuiltInFunction {
-    public Encrypt() { super("ENCRYPT", BinaryType.BINARY); }
+    public Encrypt() { super("ENCRYPT", BinaryType.VARBINARY); }
 
     @Override
     public Object evaluate(final List<Object> args) {
         if (args.get(0) == null || args.get(1) == null) return null;
         try {
-            byte[] key = Arrays.copyOf(
+            final byte[] key = Arrays.copyOf(
                 SharedFunctionHelpers.digest("SHA-256", SharedFunctionHelpers.toUtf8(args.get(1))), 32);
-            byte[] iv = new byte[12];
+            final byte[] iv = new byte[12];
             new SecureRandom().nextBytes(iv);
-            Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
+            final Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
             cipher.init(Cipher.ENCRYPT_MODE,
                 new SecretKeySpec(key, "AES"),
                 new GCMParameterSpec(128, iv));
-            byte[] enc = cipher.doFinal(SharedFunctionHelpers.toUtf8(args.get(0)));
-            byte[] combined = new byte[iv.length + enc.length];
+            final byte[] enc = cipher.doFinal(SharedFunctionHelpers.toUtf8(args.get(0)));
+            final byte[] combined = new byte[iv.length + enc.length];
             System.arraycopy(iv, 0, combined, 0, iv.length);
             System.arraycopy(enc, 0, combined, iv.length, enc.length);
             return BinaryValue.of(combined);
@@ -58,6 +58,8 @@ public class Encrypt extends BuiltInFunction {
         }
     }
 
-    @Override public int getMinArgCount() { return 2; }
-    @Override public int getMaxArgCount() { return 3; }
+    @Override
+    public int getMinArgCount() { return 2; }
+    @Override
+    public int getMaxArgCount() { return 3; }
 }

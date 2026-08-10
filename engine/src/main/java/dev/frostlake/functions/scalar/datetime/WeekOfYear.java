@@ -31,6 +31,8 @@ public class WeekOfYear extends BuiltInFunction {
         return SharedFunctionHelpers.datePart("WEEK", SharedFunctionHelpers.toLocalDateTime(args.get(0)));
     }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return 1; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return 1; }
 }

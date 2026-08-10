@@ -56,7 +56,10 @@ public class TimeSlice extends BuiltInFunction {
             else if (unit.startsWith("MINUTE")) unitSeconds = 60L;
             else if (unit.startsWith("HOUR")) unitSeconds = 3600L;
             else if (unit.startsWith("DAY")) unitSeconds = 86400L;
-            else if (unit.startsWith("WEEK")) { unitSeconds = 7L * 86400L; anchor = 4L * 86400L; }
+            else if (unit.startsWith("WEEK")) {
+                unitSeconds = 7L * 86400L;
+                anchor = 4L * 86400L;
+            }
             else throw new RuntimeException("Unsupported TIME_SLICE unit: " + unit);
             final long epoch = t.toEpochSecond(ZoneOffset.UTC);
             final long slice = Math.floorDiv(epoch - anchor, n * unitSeconds) * n * unitSeconds + anchor;
@@ -67,6 +70,8 @@ public class TimeSlice extends BuiltInFunction {
         return dateInput ? result.toLocalDate() : result;
     }
 
-    @Override public int getMinArgCount() { return 3; }
-    @Override public int getMaxArgCount() { return 4; }
+    @Override
+    public int getMinArgCount() { return 3; }
+    @Override
+    public int getMaxArgCount() { return 4; }
 }

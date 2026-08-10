@@ -17,11 +17,18 @@
 package dev.frostlake.console;
 
 import dev.frostlake.BuildInfo;
-import dev.frostlake.ExecutionResult;
 import dev.frostlake.DatabaseEngine;
+import dev.frostlake.ExecutionResult;
+import dev.frostlake.parser.FrostlakeLexer;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
+import org.antlr.v4.runtime.BaseErrorListener;
+import org.antlr.v4.runtime.CharStreams;
+import org.antlr.v4.runtime.CommonTokenStream;
+import org.antlr.v4.runtime.RecognitionException;
+import org.antlr.v4.runtime.Recognizer;
+import org.antlr.v4.runtime.Token;
 import org.jline.reader.History;
 import org.jline.reader.LineReader;
 import org.jline.reader.LineReaderBuilder;
@@ -80,11 +87,11 @@ public class ConsoleClient {
                     .build();
 
             // Create history
-            Path historyPath = Paths.get(HISTORY_FILE);
-            DefaultHistory history = new DefaultHistory();
+            final Path historyPath = Paths.get(HISTORY_FILE);
+            final DefaultHistory history = new DefaultHistory();
 
             // Create SQL completer
-            SQLCompleter completer = new SQLCompleter(engine);
+            final SQLCompleter completer = new SQLCompleter(engine);
 
             // Build line reader with history support and tab completion
             this.reader = LineReaderBuilder.builder()
@@ -111,7 +118,7 @@ public class ConsoleClient {
     }
 
     public static void main(final String[] args) {
-        ConsoleClient client = new ConsoleClient();
+        final ConsoleClient client = new ConsoleClient();
 
         // Parse arguments: -f <file> or --file <file> loads and executes a SQL file on startup
         String startupFile = null;
@@ -186,14 +193,14 @@ public class ConsoleClient {
     }
 
     private String readCommand() {
-        StringBuilder command = new StringBuilder();
+        final StringBuilder command = new StringBuilder();
         String line;
 
         while (true) {
             // Print prompt
-            String prompt;
+            final String prompt;
             if (command.length() == 0) {
-                String dbContext = getContextPrompt();
+                final String dbContext = getContextPrompt();
                 prompt = dbContext + "> ";
             } else {
                 prompt = "... ";
@@ -238,8 +245,8 @@ public class ConsoleClient {
     }
 
     private String getContextPrompt() {
-        String database = engine.getCatalog().getCurrentDatabase();
-        String schema = engine.getCatalog().getCurrentSchema();
+        final String database = engine.getCatalog().getCurrentDatabase();
+        final String schema = engine.getCatalog().getCurrentSchema();
 
         if (database != null && schema != null) {
             return database + "." + schema;
@@ -251,7 +258,7 @@ public class ConsoleClient {
     }
 
     private void handleMetaCommand(final String command) {
-        String cmd = command.toLowerCase().trim();
+        final String cmd = command.toLowerCase().trim();
 
         switch (cmd) {
             // Exit commands (SnowSQL: !quit, !exit)
@@ -429,7 +436,7 @@ public class ConsoleClient {
     }
 
     private void printHistory() {
-        History history = reader.getHistory();
+        final History history = reader.getHistory();
         terminal.writer().println();
         terminal.writer().println("Command History:");
 
@@ -447,13 +454,13 @@ public class ConsoleClient {
 
     private void executeSQL(final String sql) {
         // Safety guard: meta-commands should never reach here, but handle them if they do
-        String trimmedCheck = sql.trim();
+        final String trimmedCheck = sql.trim();
         if (trimmedCheck.startsWith("!") || trimmedCheck.startsWith("\\")) {
             handleMetaCommand(trimmedCheck);
             return;
         }
 
-        long startTime = System.currentTimeMillis();
+        final long startTime = System.currentTimeMillis();
 
         try {
             // Remove trailing semicolon if present
@@ -462,11 +469,11 @@ public class ConsoleClient {
                 trimmedSql = trimmedSql.substring(0, trimmedSql.length() - 1).trim();
             }
 
-            ExecutionResult result = engine.execute(trimmedSql);
-            long endTime = System.currentTimeMillis();
+            final ExecutionResult result = engine.execute(trimmedSql);
+            final long endTime = System.currentTimeMillis();
 
             if (!result.isSuccess()) {
-                String errorMsg = "ERROR: " + result.getErrorMessage();
+                final String errorMsg = "ERROR: " + result.getErrorMessage();
                 terminal.writer().println(errorMsg);
                 terminal.writer().println();
                 terminal.writer().flush();
@@ -478,9 +485,9 @@ public class ConsoleClient {
                 return;
             }
 
-            List<ResultSet> results = result.getResultSets();
+            final List<ResultSet> results = result.getResultSets();
             if (results == null || results.isEmpty()) {
-                String okMsg = "OK (" + (endTime - startTime) + " ms)";
+                final String okMsg = "OK (" + (endTime - startTime) + " ms)";
                 terminal.writer().println(okMsg);
                 if (spoolWriter != null) {
                     spoolWriter.println(okMsg);
@@ -489,7 +496,7 @@ public class ConsoleClient {
                 for (final ResultSet rs : results) {
                     if (rs != null) {
                         printResultSet(rs);
-                        String rowMsg = rs.getRowCount() + " row(s) returned (" + (endTime - startTime) + " ms)";
+                        final String rowMsg = rs.getRowCount() + " row(s) returned (" + (endTime - startTime) + " ms)";
                         terminal.writer().println(rowMsg);
                         if (spoolWriter != null) {
                             spoolWriter.println(rowMsg);
@@ -500,7 +507,7 @@ public class ConsoleClient {
 
             // Print query ID if available
             if (result.getQueryId() != null) {
-                String queryIdMsg = "query_id: " + result.getQueryId();
+                final String queryIdMsg = "query_id: " + result.getQueryId();
                 terminal.writer().println(queryIdMsg);
                 if (spoolWriter != null) {
                     spoolWriter.println(queryIdMsg);
@@ -515,7 +522,7 @@ public class ConsoleClient {
             }
 
         } catch (final Exception e) {
-            String errorMsg = "ERROR: " + e.getMessage();
+            final String errorMsg = "ERROR: " + e.getMessage();
             terminal.writer().println(errorMsg);
             terminal.writer().println();
             terminal.writer().flush();
@@ -529,7 +536,7 @@ public class ConsoleClient {
 
     private void printResultSet(final ResultSet rs) {
         if (rs.getRowCount() == 0) {
-            String noRowsMsg = "(No rows)";
+            final String noRowsMsg = "(No rows)";
             terminal.writer().println(noRowsMsg);
             if (spoolWriter != null) {
                 spoolWriter.println(noRowsMsg);
@@ -557,19 +564,19 @@ public class ConsoleClient {
     }
 
     private void printResultSetTable(final ResultSet rs) {
-        List<ResultSetColumn> columns = rs.getColumns();
-        List<Row> rows = rs.getRows();
+        final List<ResultSetColumn> columns = rs.getColumns();
+        final List<Row> rows = rs.getRows();
 
         // Calculate column widths
-        int[] widths = new int[columns.size()];
+        final int[] widths = new int[columns.size()];
         for (int i = 0; i < columns.size(); i++) {
             widths[i] = columns.get(i).getName().length();
         }
 
         for (final Row row : rows) {
             for (int i = 0; i < row.getValues().size(); i++) {
-                Object value = row.getValue(i);
-                String strValue = formatValue(value);
+                final Object value = row.getValue(i);
+                final String strValue = formatValue(value);
                 widths[i] = Math.max(widths[i], strValue.length());
             }
         }
@@ -581,7 +588,7 @@ public class ConsoleClient {
         terminal.writer().print("│");
         if (spoolWriter != null) spoolWriter.print("│");
         for (int i = 0; i < columns.size(); i++) {
-            String cell = " " + padRight(columns.get(i).getName(), widths[i]) + " │";
+            final String cell = " " + padRight(columns.get(i).getName(), widths[i]) + " │";
             terminal.writer().print(cell);
             if (spoolWriter != null) spoolWriter.print(cell);
         }
@@ -596,9 +603,9 @@ public class ConsoleClient {
             terminal.writer().print("│");
             if (spoolWriter != null) spoolWriter.print("│");
             for (int i = 0; i < row.getValues().size(); i++) {
-                Object value = row.getValue(i);
-                String strValue = formatValue(value);
-                String cell = " " + padRight(strValue, widths[i]) + " │";
+                final Object value = row.getValue(i);
+                final String strValue = formatValue(value);
+                final String cell = " " + padRight(strValue, widths[i]) + " │";
                 terminal.writer().print(cell);
                 if (spoolWriter != null) spoolWriter.print(cell);
             }
@@ -611,11 +618,11 @@ public class ConsoleClient {
     }
 
     private void printResultSetCSV(final ResultSet rs) {
-        List<ResultSetColumn> columns = rs.getColumns();
-        List<Row> rows = rs.getRows();
+        final List<ResultSetColumn> columns = rs.getColumns();
+        final List<Row> rows = rs.getRows();
 
         // Print header
-        StringBuilder header = new StringBuilder();
+        final StringBuilder header = new StringBuilder();
         for (int i = 0; i < columns.size(); i++) {
             if (i > 0) header.append(",");
             header.append(escapeCsv(columns.get(i).getName()));
@@ -625,10 +632,10 @@ public class ConsoleClient {
 
         // Print rows
         for (final Row row : rows) {
-            StringBuilder line = new StringBuilder();
+            final StringBuilder line = new StringBuilder();
             for (int i = 0; i < row.getValues().size(); i++) {
                 if (i > 0) line.append(",");
-                Object value = row.getValue(i);
+                final Object value = row.getValue(i);
                 line.append(escapeCsv(formatValue(value)));
             }
             terminal.writer().println(line.toString());
@@ -637,20 +644,20 @@ public class ConsoleClient {
     }
 
     private void printResultSetJSON(final ResultSet rs) {
-        List<ResultSetColumn> columns = rs.getColumns();
-        List<Row> rows = rs.getRows();
+        final List<ResultSetColumn> columns = rs.getColumns();
+        final List<Row> rows = rs.getRows();
 
         terminal.writer().println("[");
         if (spoolWriter != null) spoolWriter.println("[");
 
         for (int rowIdx = 0; rowIdx < rows.size(); rowIdx++) {
-            Row row = rows.get(rowIdx);
-            StringBuilder line = new StringBuilder("  {");
+            final Row row = rows.get(rowIdx);
+            final StringBuilder line = new StringBuilder("  {");
 
             for (int i = 0; i < columns.size(); i++) {
                 if (i > 0) line.append(", ");
                 line.append("\"").append(escapeJson(columns.get(i).getName())).append("\": ");
-                Object value = row.getValue(i);
+                final Object value = row.getValue(i);
                 if (value == null) {
                     line.append("null");
                 } else if (value instanceof Number) {
@@ -675,8 +682,8 @@ public class ConsoleClient {
     }
 
     private void printResultSetXML(final ResultSet rs) {
-        List<ResultSetColumn> columns = rs.getColumns();
-        List<Row> rows = rs.getRows();
+        final List<ResultSetColumn> columns = rs.getColumns();
+        final List<Row> rows = rs.getRows();
 
         terminal.writer().println("<?xml version=\"1.0\" encoding=\"UTF-8\"?>");
         terminal.writer().println("<resultset>");
@@ -690,9 +697,9 @@ public class ConsoleClient {
             if (spoolWriter != null) spoolWriter.println("  <row>");
 
             for (int i = 0; i < columns.size(); i++) {
-                String columnName = columns.get(i).getName();
-                Object value = row.getValue(i);
-                String line = "    <" + columnName + ">" + escapeXml(formatValue(value)) + "</" + columnName + ">";
+                final String columnName = columns.get(i).getName();
+                final Object value = row.getValue(i);
+                final String line = "    <" + columnName + ">" + escapeXml(formatValue(value)) + "</" + columnName + ">";
                 terminal.writer().println(line);
                 if (spoolWriter != null) spoolWriter.println(line);
             }
@@ -706,8 +713,8 @@ public class ConsoleClient {
     }
 
     private void printResultSetHTML(final ResultSet rs) {
-        List<ResultSetColumn> columns = rs.getColumns();
-        List<Row> rows = rs.getRows();
+        final List<ResultSetColumn> columns = rs.getColumns();
+        final List<Row> rows = rs.getRows();
 
         terminal.writer().println("<table border=\"1\">");
         terminal.writer().println("  <thead>");
@@ -719,7 +726,7 @@ public class ConsoleClient {
         }
 
         for (final ResultSetColumn column : columns) {
-            String line = "      <th>" + escapeHtml(column.getName()) + "</th>";
+            final String line = "      <th>" + escapeHtml(column.getName()) + "</th>";
             terminal.writer().println(line);
             if (spoolWriter != null) spoolWriter.println(line);
         }
@@ -738,8 +745,8 @@ public class ConsoleClient {
             if (spoolWriter != null) spoolWriter.println("    <tr>");
 
             for (int i = 0; i < row.getValues().size(); i++) {
-                Object value = row.getValue(i);
-                String line = "      <td>" + escapeHtml(formatValue(value)) + "</td>";
+                final Object value = row.getValue(i);
+                final String line = "      <td>" + escapeHtml(formatValue(value)) + "</td>";
                 terminal.writer().println(line);
                 if (spoolWriter != null) spoolWriter.println(line);
             }
@@ -802,7 +809,7 @@ public class ConsoleClient {
         terminal.writer().print("┼");
         if (spoolWriter != null) spoolWriter.print("┼");
         for (final int width : widths) {
-            String sep = "─" + "─".repeat(width) + "─┼";
+            final String sep = "─" + "─".repeat(width) + "─┼";
             terminal.writer().print(sep);
             if (spoolWriter != null) spoolWriter.print(sep);
         }
@@ -834,14 +841,14 @@ public class ConsoleClient {
 
         String result = sql;
         for (final Map.Entry<String, String> entry : variables.entrySet()) {
-            String varName = "&" + entry.getKey();
+            final String varName = "&" + entry.getKey();
             result = result.replace(varName, entry.getValue());
         }
         return result;
     }
 
     private void handleSetCommand(final String command) {
-        String[] parts = command.trim().split("\\s+", 3);
+        final String[] parts = command.trim().split("\\s+", 3);
 
         if (parts.length == 1) {
             // Show all settings
@@ -864,8 +871,8 @@ public class ConsoleClient {
             terminal.writer().flush();
         } else if (parts.length == 3) {
             // Set a variable
-            String name = parts[1];
-            String value = parts[2];
+            final String name = parts[1];
+            final String value = parts[2];
 
             // Handle special settings
             if (name.equalsIgnoreCase("output_format")) {
@@ -888,11 +895,11 @@ public class ConsoleClient {
     }
 
     private void handleDefineCommand(final String command) {
-        String[] parts = command.trim().split("\\s+", 3);
+        final String[] parts = command.trim().split("\\s+", 3);
 
         if (parts.length == 3) {
-            String name = parts[1];
-            String value = parts[2];
+            final String name = parts[1];
+            final String value = parts[2];
             variables.put(name, value);
             terminal.writer().println("Variable '" + name + "' defined: " + value);
             terminal.writer().flush();
@@ -903,7 +910,7 @@ public class ConsoleClient {
     }
 
     private void handlePrintCommand(final String command) {
-        String[] parts = command.trim().split("\\s+", 2);
+        final String[] parts = command.trim().split("\\s+", 2);
 
         if (parts.length == 1) {
             // Print all variables
@@ -920,7 +927,7 @@ public class ConsoleClient {
             terminal.writer().flush();
         } else {
             // Print specific variable
-            String varName = parts[1];
+            final String varName = parts[1];
             if (variables.containsKey(varName)) {
                 terminal.writer().println(varName + " = " + variables.get(varName));
             } else {
@@ -951,8 +958,33 @@ public class ConsoleClient {
         terminal.writer().flush();
     }
 
+    /**
+     * True when the accumulated script text ends at a statement boundary: it lexes cleanly (no
+     * unterminated string or $$ body at the tail) and its last token is a semicolon.
+     */
+    private boolean endsAtStatementBoundary(final String sqlSoFar) {
+        final FrostlakeLexer lexer = new FrostlakeLexer(CharStreams.fromString(sqlSoFar));
+        final boolean[] lexError = new boolean[1];
+        lexer.removeErrorListeners();
+        lexer.addErrorListener(new BaseErrorListener() {
+            @Override
+            public void syntaxError(final Recognizer<?, ?> recognizer, final Object offendingSymbol,
+                    final int line, final int charPositionInLine, final String msg,
+                    final RecognitionException e) {
+                lexError[0] = true;
+            }
+        });
+        final CommonTokenStream stream = new CommonTokenStream(lexer);
+        stream.fill();
+        if (lexError[0]) {
+            return false;
+        }
+        final List<Token> toks = stream.getTokens();
+        return toks.size() >= 2 && toks.get(toks.size() - 2).getType() == FrostlakeLexer.SEMI;
+    }
+
     private void handleSourceCommand(final String command) {
-        String[] parts = command.trim().split("\\s+", 2);
+        final String[] parts = command.trim().split("\\s+", 2);
 
         if (parts.length < 2) {
             terminal.writer().println("Usage: !source FILE");
@@ -960,66 +992,55 @@ public class ConsoleClient {
             return;
         }
 
-        String fileName = parts[1];
+        final String fileName = parts[1];
 
         try {
-            BufferedReader fileReader = new BufferedReader(new FileReader(fileName));
+            final BufferedReader fileReader = new BufferedReader(new FileReader(fileName));
             terminal.writer().println("Executing SQL from file: " + fileName);
             terminal.writer().println();
 
-            StringBuilder sqlBuffer = new StringBuilder();
+            final StringBuilder sqlBuffer = new StringBuilder();
             String line;
             int lineCount = 0;
-            boolean inDollarQuote = false; // inside $$ ... $$
 
             while ((line = fileReader.readLine()) != null) {
                 lineCount++;
 
-                // Skip blank lines and single-line comments only when not inside a block
-                if (!inDollarQuote) {
-                    String trimmed = line.trim();
+                // Skip blank lines and single-line comments only between statements; inside an
+                // accumulating statement the LEXER decides what a comment is.
+                if (sqlBuffer.length() == 0) {
+                    final String trimmed = line.trim();
                     if (trimmed.isEmpty() || trimmed.startsWith("--") || trimmed.startsWith("#")) {
                         continue;
                     }
+                }
 
-                    // Handle meta-commands
-                    if (trimmed.startsWith("!") || trimmed.startsWith("\\")) {
-                        if (sqlBuffer.length() > 0) {
-                            String sql = sqlBuffer.toString().trim();
-                            if (sql.endsWith(";")) sql = sql.substring(0, sql.length() - 1);
-                            terminal.writer().println("> " + sql);
-                            executeSQL(substituteVariables(sql));
-                            sqlBuffer.setLength(0);
-                        }
-                        terminal.writer().println("> " + trimmed);
-                        handleMetaCommand(trimmed);
-                        continue;
+                // Handle meta-commands (never legal SQL, so a meta line flushes pending SQL first)
+                final String trimmed = line.trim();
+                if (trimmed.startsWith("!") || trimmed.startsWith("\\")) {
+                    if (sqlBuffer.length() > 0) {
+                        String sql = sqlBuffer.toString().trim();
+                        if (sql.endsWith(";")) sql = sql.substring(0, sql.length() - 1);
+                        terminal.writer().println("> " + sql);
+                        executeSQL(substituteVariables(sql));
+                        sqlBuffer.setLength(0);
                     }
+                    terminal.writer().println("> " + trimmed);
+                    handleMetaCommand(trimmed);
+                    continue;
                 }
 
                 sqlBuffer.append(line).append("\n");
 
-                // Track $$ quoting — toggle on each occurrence
-                String bufStr = sqlBuffer.toString();
-                int dollarCount = 0;
-                for (int i = 0; i < bufStr.length() - 1; i++) {
-                    if (bufStr.charAt(i) == '$' && bufStr.charAt(i + 1) == '$') {
-                        dollarCount++;
-                        i++; // skip second $
-                    }
-                }
-                inDollarQuote = (dollarCount % 2 != 0);
-
-                // Statement is complete when a ; appears at top level (outside $$ blocks)
-                if (!inDollarQuote) {
-                    String trimmedLine = line.trim();
-                    if (trimmedLine.endsWith(";")) {
-                        String sql = sqlBuffer.toString().trim();
-                        if (sql.endsWith(";")) sql = sql.substring(0, sql.length() - 1);
-                        terminal.writer().println("> " + sql.replace("\n", " "));
-                        executeSQL(substituteVariables(sql));
-                        sqlBuffer.setLength(0);
-                    }
+                // A statement is complete when the buffer's LAST TOKEN is a semicolon — the lexer
+                // sees through string literals and $$-quoted bodies, where the old character scan
+                // flipped on a '$$' inside a literal and split at a line-trailing ';' mid-literal.
+                if (endsAtStatementBoundary(sqlBuffer.toString())) {
+                    String sql = sqlBuffer.toString().trim();
+                    if (sql.endsWith(";")) sql = sql.substring(0, sql.length() - 1);
+                    terminal.writer().println("> " + sql.replace("\n", " "));
+                    executeSQL(substituteVariables(sql));
+                    sqlBuffer.setLength(0);
                 }
             }
 
@@ -1044,7 +1065,7 @@ public class ConsoleClient {
     }
 
     private void handleSpoolCommand(final String command) {
-        String[] parts = command.trim().split("\\s+", 2);
+        final String[] parts = command.trim().split("\\s+", 2);
 
         if (parts.length == 1) {
             // Stop spooling
@@ -1059,7 +1080,7 @@ public class ConsoleClient {
             terminal.writer().flush();
         } else {
             // Start spooling
-            String fileName = parts[1];
+            final String fileName = parts[1];
 
             // Stop existing spool if active
             if (spoolWriter != null) {
@@ -1081,7 +1102,7 @@ public class ConsoleClient {
     }
 
     private void handleSystemCommand(final String command) {
-        String[] parts = command.trim().split("\\s+", 2);
+        final String[] parts = command.trim().split("\\s+", 2);
 
         if (parts.length < 2) {
             terminal.writer().println("Usage: !system COMMAND");
@@ -1089,14 +1110,14 @@ public class ConsoleClient {
             return;
         }
 
-        String shellCommand = parts[1];
+        final String shellCommand = parts[1];
 
         try {
-            Process process = Runtime.getRuntime().exec(shellCommand);
+            final Process process = Runtime.getRuntime().exec(shellCommand);
 
             // Read command output
-            BufferedReader stdInput = new BufferedReader(new InputStreamReader(process.getInputStream()));
-            BufferedReader stdError = new BufferedReader(new InputStreamReader(process.getErrorStream()));
+            final BufferedReader stdInput = new BufferedReader(new InputStreamReader(process.getInputStream()));
+            final BufferedReader stdError = new BufferedReader(new InputStreamReader(process.getErrorStream()));
 
             terminal.writer().println();
 
@@ -1109,7 +1130,7 @@ public class ConsoleClient {
                 terminal.writer().println(line);
             }
 
-            int exitCode = process.waitFor();
+            final int exitCode = process.waitFor();
             terminal.writer().println();
             terminal.writer().println("Command completed with exit code: " + exitCode);
             terminal.writer().println();

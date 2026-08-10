@@ -16,166 +16,186 @@
 
 package dev.frostlake.functions;
 
-import dev.frostlake.DatabaseEngine;
+import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 
-public class StringFunctionsExtTest {
-
-    private DatabaseEngine engine;
-
-    @BeforeEach
-    public void setUp() {
-        engine = new DatabaseEngine();
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
-        engine.execute("USE SCHEMA public");
-    }
-
-    @AfterEach
-    public void tearDown() {
-        if (engine != null) engine.shutdown();
-    }
+public class StringFunctionsExtTest extends BaseDatabaseTest {
 
     private Object q(final String sql) {
-        ResultSet rs = engine.executeQuery(sql);
+        final ResultSet rs = engine.executeQuery(sql);
         return rs.getRows().get(0).getValue(0);
     }
 
     // CHARINDEX / POSITION
-    @Test public void testCharindex() {
+    @Test
+    public void testCharindex() {
         assertEquals(4L, q("SELECT CHARINDEX('lo', 'hello world')"));
     }
-    @Test public void testCharindexNotFound() {
+    @Test
+    public void testCharindexNotFound() {
         assertEquals(0L, q("SELECT CHARINDEX('xyz', 'hello')"));
     }
-    @Test public void testCharindexWithStart() {
+    @Test
+    public void testCharindexWithStart() {
         // 'hello lo world': searching 'lo' from position 5 (1-based) → index 4 (0-based) → finds at index 6 → position 7
         assertEquals(7L, q("SELECT CHARINDEX('lo', 'hello lo world', 5)"));
     }
-    @Test public void testPosition() {
+    @Test
+    public void testPosition() {
         assertEquals(4L, q("SELECT POSITION('lo', 'hello world')"));
     }
 
     // CHR / ASCII / UNICODE
-    @Test public void testChr() {
+    @Test
+    public void testChr() {
         assertEquals("A", q("SELECT CHR(65)"));
     }
-    @Test public void testAscii() {
+    @Test
+    public void testAscii() {
         assertEquals(72L, q("SELECT ASCII('Hello')"));
     }
-    @Test public void testUnicode() {
+    @Test
+    public void testUnicode() {
         assertEquals(65L, q("SELECT UNICODE('A')"));
     }
 
     // REPEAT / SPACE
-    @Test public void testRepeat() {
+    @Test
+    public void testRepeat() {
         assertEquals("abcabcabc", q("SELECT REPEAT('abc', 3)"));
     }
-    @Test public void testRepeatZero() {
+    @Test
+    public void testRepeatZero() {
         assertEquals("", q("SELECT REPEAT('abc', 0)"));
     }
-    @Test public void testSpace() {
+    @Test
+    public void testSpace() {
         assertEquals("   ", q("SELECT SPACE(3)"));
     }
-    @Test public void testSpaceZero() {
+    @Test
+    public void testSpaceZero() {
         assertEquals("", q("SELECT SPACE(0)"));
     }
 
     // SPLIT_PART
-    @Test public void testSplitPart() {
+    @Test
+    public void testSplitPart() {
         assertEquals("b", q("SELECT SPLIT_PART('a.b.c', '.', 2)"));
     }
-    @Test public void testSplitPartFirst() {
+    @Test
+    public void testSplitPartFirst() {
         assertEquals("a", q("SELECT SPLIT_PART('a.b.c', '.', 1)"));
     }
-    @Test public void testSplitPartLast() {
+    @Test
+    public void testSplitPartLast() {
         assertEquals("c", q("SELECT SPLIT_PART('a.b.c', '.', 3)"));
     }
-    @Test public void testSplitPartOutOfRange() {
+    @Test
+    public void testSplitPartOutOfRange() {
         assertEquals("", q("SELECT SPLIT_PART('a.b.c', '.', 5)"));
     }
 
     // STRTOK
-    @Test public void testStrtok() {
+    @Test
+    public void testStrtok() {
         assertEquals("hello", q("SELECT STRTOK('hello world foo', ' ', 1)"));
     }
-    @Test public void testStrtokSecond() {
+    @Test
+    public void testStrtokSecond() {
         assertEquals("world", q("SELECT STRTOK('hello world foo', ' ', 2)"));
     }
-    @Test public void testStrtokDefaultPart() {
+    @Test
+    public void testStrtokDefaultPart() {
         assertEquals("hello", q("SELECT STRTOK('hello world')"));
     }
 
     // CONTAINS / STARTSWITH / ENDSWITH
-    @Test public void testContainsTrue() {
+    @Test
+    public void testContainsTrue() {
         assertEquals(true, q("SELECT CONTAINS('hello world', 'lo wo')"));
     }
-    @Test public void testContainsFalse() {
+    @Test
+    public void testContainsFalse() {
         assertEquals(false, q("SELECT CONTAINS('hello', 'xyz')"));
     }
-    @Test public void testStartswith() {
+    @Test
+    public void testStartswith() {
         assertEquals(true, q("SELECT STARTSWITH('hello world', 'hello')"));
         assertEquals(false, q("SELECT STARTSWITH('hello world', 'world')"));
     }
-    @Test public void testEndswith() {
+    @Test
+    public void testEndswith() {
         assertEquals(true, q("SELECT ENDSWITH('hello world', 'world')"));
         assertEquals(false, q("SELECT ENDSWITH('hello world', 'hello')"));
     }
 
     // TRANSLATE
-    @Test public void testTranslate() {
+    @Test
+    public void testTranslate() {
         assertEquals("h3ll0", q("SELECT TRANSLATE('hello', 'eo', '30')"));
     }
-    @Test public void testTranslateDelete() {
+    @Test
+    public void testTranslateDelete() {
         assertEquals("hll", q("SELECT TRANSLATE('hello', 'eo', '')"));
     }
 
     // REGEXP_REPLACE / REGEXP_LIKE / REGEXP_SUBSTR / REGEXP_COUNT
-    @Test public void testRegexpReplace() {
+    @Test
+    public void testRegexpReplace() {
         assertEquals("hXXXo", q("SELECT REGEXP_REPLACE('hello', 'el+', 'XXX')"));
     }
-    @Test public void testRegexpLikeTrue() {
+    @Test
+    public void testRegexpLikeTrue() {
         assertEquals(true, q("SELECT REGEXP_LIKE('hello123', '[a-z]+[0-9]+')"));
     }
-    @Test public void testRegexpLikeFalse() {
+    @Test
+    public void testRegexpLikeFalse() {
         assertEquals(false, q("SELECT REGEXP_LIKE('hello', '[0-9]+')"));
     }
-    @Test public void testRegexpSubstr() {
+    @Test
+    public void testRegexpSubstr() {
         assertEquals("123", q("SELECT REGEXP_SUBSTR('abc123def', '[0-9]+')"));
     }
-    @Test public void testRegexpCount() {
+    @Test
+    public void testRegexpCount() {
         // 'aababcabc': a at indices 0,1,3,6 = 4 occurrences
         assertEquals(4L, q("SELECT REGEXP_COUNT('aababcabc', 'a')"));
     }
 
     // EDITDISTANCE
-    @Test public void testEditdistanceSame() {
+    @Test
+    public void testEditdistanceSame() {
         assertEquals(0L, q("SELECT EDITDISTANCE('abc', 'abc')"));
     }
-    @Test public void testEditdistanceDiff() {
+    @Test
+    public void testEditdistanceDiff() {
         assertEquals(3L, q("SELECT EDITDISTANCE('kitten', 'sitting')"));
     }
 
     // SOUNDEX
-    @Test public void testSoundex() {
+    @Test
+    public void testSoundex() {
         assertEquals("R163", q("SELECT SOUNDEX('Robert')"));
         assertEquals("R163", q("SELECT SOUNDEX('Rupert')"));
     }
 
     // CONCAT_WS
-    @Test public void testConcatWs() {
+    @Test
+    public void testConcatWs() {
         assertEquals("a,b,c", q("SELECT CONCAT_WS(',', 'a', 'b', 'c')"));
     }
-    @Test public void testConcatWsNullPropagates() {
+    @Test
+    public void testConcatWsNullPropagates() {
         // Snowflake: CONCAT_WS returns NULL when ANY value is NULL — it does not skip NULLs (MySQL does).
         assertNull(q("SELECT CONCAT_WS(',', 'a', NULL, 'c')"));
     }
-    @Test public void testConcatNullPropagates() {
+    @Test
+    public void testConcatNullPropagates() {
         // Snowflake: CONCAT returns NULL when any input is NULL — the loader idiom
         // CONCAT(lookup.prefix, ':', NVL(x, '')) must be NULL on a missed lookup, not ':'.
         assertNull(q("SELECT CONCAT('a', NULL, 'c')"));
@@ -184,22 +204,27 @@ public class StringFunctionsExtTest {
     }
 
     // LEN / CHAR_LENGTH / OCTET_LENGTH / BIT_LENGTH
-    @Test public void testLen() {
+    @Test
+    public void testLen() {
         assertEquals(5L, q("SELECT LEN('hello')"));
     }
-    @Test public void testCharLength() {
-        assertEquals(5L, q("SELECT CHAR_LENGTH('hello')"));
+    @Test
+    public void testCharLength() {
+        assertEquals(5, ((Number) q("SELECT LENGTH('hello')")).intValue());
     }
-    @Test public void testOctetLength() {
+    @Test
+    public void testOctetLength() {
         assertEquals(5L, q("SELECT OCTET_LENGTH('hello')"));
     }
-    @Test public void testBitLength() {
+    @Test
+    public void testBitLength() {
         assertEquals(40L, q("SELECT BIT_LENGTH('hello')"));
     }
 
     // BASE64_ENCODE / BASE64_DECODE_STRING
-    @Test public void testBase64RoundTrip() {
-        String encoded = (String) q("SELECT BASE64_ENCODE('hello world')");
+    @Test
+    public void testBase64RoundTrip() {
+        final String encoded = (String) q("SELECT BASE64_ENCODE('hello world')");
         assertNotNull(encoded);
         engine.execute("CREATE TABLE b64_test (encoded VARCHAR)");
         engine.execute("INSERT INTO b64_test VALUES ('" + encoded + "')");
@@ -209,8 +234,9 @@ public class StringFunctionsExtTest {
     }
 
     // HEX_ENCODE / HEX_DECODE_STRING
-    @Test public void testHexRoundTrip() {
-        String hex = (String) q("SELECT HEX_ENCODE('hi')");
+    @Test
+    public void testHexRoundTrip() {
+        final String hex = (String) q("SELECT HEX_ENCODE('hi')");
         assertEquals("6869", hex);
         engine.execute("CREATE TABLE hex_test (h VARCHAR)");
         engine.execute("INSERT INTO hex_test VALUES ('" + hex + "')");
@@ -220,17 +246,20 @@ public class StringFunctionsExtTest {
     }
 
     // MD5 / SHA2
-    @Test public void testMd5() {
-        String hash = (String) q("SELECT MD5('hello')");
+    @Test
+    public void testMd5() {
+        final String hash = (String) q("SELECT MD5('hello')");
         assertEquals(32, hash.length());
         assertEquals("5d41402abc4b2a76b9719d911017c592", hash);
     }
-    @Test public void testSha2_256() {
-        String hash = (String) q("SELECT SHA2('hello')");
+    @Test
+    public void testSha2_256() {
+        final String hash = (String) q("SELECT SHA2('hello')");
         assertEquals(64, hash.length());
     }
-    @Test public void testSha2_512() {
-        String hash = (String) q("SELECT SHA2('hello', 512)");
+    @Test
+    public void testSha2_512() {
+        final String hash = (String) q("SELECT SHA2('hello', 512)");
         assertEquals(128, hash.length());
     }
 }

@@ -72,8 +72,8 @@ public class PrimaryKeyDemo extends AbstractDemo {
         printQuery("SELECT * FROM users ORDER BY id");
 
         // Show primary key info
-        Schema schema = engine.getCatalog().getDatabase("demo_db").getSchema("PUBLIC");
-        Table table = schema.getTable("users");
+        final Schema schema = engine.getCatalog().getDatabase("demo_db").getSchema("PUBLIC");
+        final Table table = schema.getTable("users");
         System.out.println("Primary key columns: " + table.getPrimaryKeys());
     }
 
@@ -102,8 +102,8 @@ public class PrimaryKeyDemo extends AbstractDemo {
         printQuery("SELECT * FROM order_items ORDER BY order_id, item_id");
 
         // Show primary key info
-        Schema schema = engine.getCatalog().getDatabase("demo_db").getSchema("PUBLIC");
-        Table table = schema.getTable("order_items");
+        final Schema schema = engine.getCatalog().getDatabase("demo_db").getSchema("PUBLIC");
+        final Table table = schema.getTable("order_items");
         System.out.println("Primary key columns: " + table.getPrimaryKeys());
     }
 
@@ -129,8 +129,8 @@ public class PrimaryKeyDemo extends AbstractDemo {
         System.out.println("\nProducts table:");
         printQuery("SELECT * FROM products ORDER BY product_id");
 
-        Schema schema = engine.getCatalog().getDatabase("demo_db").getSchema("PUBLIC");
-        Table table = schema.getTable("products");
+        final Schema schema = engine.getCatalog().getDatabase("demo_db").getSchema("PUBLIC");
+        final Table table = schema.getTable("products");
         System.out.println("Primary key columns: " + table.getPrimaryKeys());
         System.out.println("product_id is auto-increment: " +
             table.getColumn("product_id").isAutoIncrement());
@@ -151,8 +151,8 @@ public class PrimaryKeyDemo extends AbstractDemo {
         );
         printSuccess("Created table 'employees' with composite key (emp_id, dept_id)");
 
-        Schema schema = engine.getCatalog().getDatabase("demo_db").getSchema("PUBLIC");
-        Table table = schema.getTable("employees");
+        final Schema schema = engine.getCatalog().getDatabase("demo_db").getSchema("PUBLIC");
+        final Table table = schema.getTable("employees");
 
         System.out.println("\nPrimary Key Analysis:");
         System.out.println("  Total columns: " + table.getColumns().size());

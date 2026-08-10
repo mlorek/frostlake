@@ -25,11 +25,15 @@ import org.slf4j.LoggerFactory;
 /**
  * Example demonstrating Common Table Expressions (CTEs) with WITH clause
  */
-public class CTEExample {
+public final class CTEExample {
+
+    /** Static helpers only — never instantiated. */
+    private CTEExample() {
+    }
     private static final Logger logger = LoggerFactory.getLogger(CTEExample.class);
 
     public static void main(final String[] args) {
-        DatabaseEngine engine = new DatabaseEngine();
+        final DatabaseEngine engine = new DatabaseEngine();
 
         try {
             logger.info("=== Common Table Expressions (CTE) Examples ===\n");
@@ -56,7 +60,7 @@ public class CTEExample {
             logger.info("1. Simple CTE - High Earners:");
             logger.info("   {}", "-".repeat(60));
 
-            ResultSet result1 = engine.executeQuery("""
+            final ResultSet result1 = engine.executeQuery("""
                 WITH high_earners AS (
                     SELECT * FROM employees WHERE salary > 55000
                 )
@@ -73,7 +77,7 @@ public class CTEExample {
             logger.info("2. CTE with JOIN:");
             logger.info("   {}", "-".repeat(60));
 
-            ResultSet result2 = engine.executeQuery("""
+            final ResultSet result2 = engine.executeQuery("""
                 WITH eng_employees AS (
                     SELECT * FROM employees WHERE dept_id = 10
                 )
@@ -92,7 +96,7 @@ public class CTEExample {
             logger.info("3. Multiple CTEs:");
             logger.info("   {}", "-".repeat(60));
 
-            ResultSet result3 = engine.executeQuery("""
+            final ResultSet result3 = engine.executeQuery("""
                 WITH
                     engineering AS (
                         SELECT * FROM employees WHERE dept_id = 10
@@ -115,7 +119,7 @@ public class CTEExample {
             logger.info("4. CTE with Aggregation:");
             logger.info("   {}", "-".repeat(60));
 
-            ResultSet result4 = engine.executeQuery("""
+            final ResultSet result4 = engine.executeQuery("""
                 WITH dept_stats AS (
                     SELECT dept_id, COUNT(*) as emp_count, AVG(salary) as avg_salary
                     FROM employees
@@ -140,7 +144,7 @@ public class CTEExample {
             logger.info("5. CTE with UNION:");
             logger.info("   {}", "-".repeat(60));
 
-            ResultSet result5 = engine.executeQuery("""
+            final ResultSet result5 = engine.executeQuery("""
                 WITH
                     top_engineering AS (
                         SELECT name, salary FROM employees
@@ -169,7 +173,7 @@ public class CTEExample {
             logger.info("6. CTE Referenced Multiple Times:");
             logger.info("   {}", "-".repeat(60));
 
-            ResultSet result6 = engine.executeQuery("""
+            final ResultSet result6 = engine.executeQuery("""
                 WITH high_salary AS (
                     SELECT * FROM employees WHERE salary >= 60000
                 )

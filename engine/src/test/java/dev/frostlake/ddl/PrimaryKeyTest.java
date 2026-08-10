@@ -17,26 +17,22 @@
 package dev.frostlake.ddl;
 
 import dev.frostlake.BaseDatabaseTest;
-import dev.frostlake.metastore.model.Schema;
-import dev.frostlake.metastore.model.Table;
-import dev.frostlake.metastore.model.TableColumn;
 import dev.frostlake.storage.ResultSet;
-import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 
-import java.util.List;
-
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Comprehensive tests for PRIMARY KEY functionality
+ * PRIMARY KEY metadata, asserted through the SQL surface — {@code SHOW PRIMARY KEYS IN TABLE},
+ * {@code DESCRIBE TABLE}'s {@code primary key}/{@code null?} cells and {@code GET_DDL} — so every
+ * check runs against whichever engine executed the DDL, embedded or live.
  */
 public class PrimaryKeyTest extends BaseDatabaseTest {
 
-    private static final String CATALOG_ASSERTIONS =
-        "asserts through engine.getCatalog() / engine.showColumns(), which under SF_LIVE still read "
-        + "the embedded engine — the CREATE TABLE went to Snowflake, so the embedded catalog never "
-        + "saw the table; the DDL itself is still submitted to the account";
+    private ResultSet primaryKeys(final String table) {
+        return engine.executeQuery("SHOW PRIMARY KEYS IN TABLE " + table);
+    }
 
     @Test
     public void testSingleColumnPrimaryKey() {
@@ -48,25 +44,14 @@ public class PrimaryKeyTest extends BaseDatabaseTest {
             )
             """);
 
-        Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_ASSERTIONS);
-        Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
-        Table table = schema.getTable("users");
+        assertEquals(3, engine.executeQuery("DESCRIBE TABLE users").getRowCount());
+        assertEquals("Y", describeCell("users", "ID", "primary key"));
+        assertEquals("N", describeCell("users", "NAME", "primary key"));
+        assertEquals("N", describeCell("users", "EMAIL", "primary key"));
 
-        assertNotNull(table);
-        assertEquals(3, table.getColumns().size());
-
-        // Check that id column is marked as primary key
-        TableColumn idColumn = table.getColumn("id");
-        assertTrue(idColumn.isPrimaryKey(), "id should be primary key");
-
-        // Check that other columns are not primary keys
-        assertFalse(table.getColumn("name").isPrimaryKey());
-        assertFalse(table.getColumn("email").isPrimaryKey());
-
-        // Check primary keys list
-        List<String> primaryKeys = table.getPrimaryKeys();
-        assertEquals(1, primaryKeys.size());
-        assertTrue(primaryKeys.contains("id") || primaryKeys.contains("ID"));
+        final ResultSet pk = primaryKeys("users");
+        assertEquals(1, pk.getRowCount());
+        soleRowWhere(pk, "column_name", "ID");
     }
 
     @Test
@@ -78,13 +63,8 @@ public class PrimaryKeyTest extends BaseDatabaseTest {
             )
             """);
 
-        Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_ASSERTIONS);
-        Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
-        Table table = schema.getTable("users");
-
-        TableColumn idColumn = table.getColumn("id");
-        assertTrue(idColumn.isPrimaryKey());
-        assertFalse(idColumn.isNullable(), "Primary key should be NOT NULL");
+        assertEquals("Y", describeCell("users", "ID", "primary key"));
+        assertEquals("N", describeCell("users", "ID", "null?"), "Primary key should be NOT NULL");
     }
 
     @Test
@@ -93,14 +73,8 @@ public class PrimaryKeyTest extends BaseDatabaseTest {
         engine.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, name VARCHAR)");
         engine.execute("CREATE TABLE products (product_id INTEGER PRIMARY KEY, name VARCHAR)");
 
-        Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_ASSERTIONS);
-        Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
-
-        Table users = schema.getTable("users");
-        assertEquals(1, users.getPrimaryKeys().size());
-
-        Table products = schema.getTable("products");
-        assertEquals(1, products.getPrimaryKeys().size());
+        assertEquals(1, primaryKeys("users").getRowCount());
+        assertEquals(1, primaryKeys("products").getRowCount());
     }
 
     @Test
@@ -112,13 +86,12 @@ public class PrimaryKeyTest extends BaseDatabaseTest {
             )
             """);
 
-        Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_ASSERTIONS);
-        Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
-        Table table = schema.getTable("users");
-
-        TableColumn idColumn = table.getColumn("id");
-        assertTrue(idColumn.isPrimaryKey());
-        assertTrue(idColumn.isAutoIncrement());
+        assertEquals("Y", describeCell("users", "ID", "primary key"));
+        // AUTOINCREMENT is visible in the reconstructed DDL (rendered lower-case with its start
+        // and increment, the GET_DDL spelling).
+        final String ddl = engine.executeQuery("SELECT GET_DDL('TABLE', 'users')")
+            .getRows().get(0).getValue(0).toString();
+        assertTrue(ddl.toLowerCase().contains("autoincrement"), ddl);
     }
 
     @Test
@@ -130,13 +103,8 @@ public class PrimaryKeyTest extends BaseDatabaseTest {
             )
             """);
 
-        Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_ASSERTIONS);
-        Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
-        Table table = schema.getTable("users");
-
-        TableColumn idColumn = table.getColumn("id");
-        assertTrue(idColumn.isPrimaryKey());
-        assertEquals(1L, idColumn.getDefaultValue());
+        assertEquals("Y", describeCell("users", "ID", "primary key"));
+        assertEquals("1", describeCell("users", "ID", "default"));
     }
 
     @Test
@@ -151,7 +119,7 @@ public class PrimaryKeyTest extends BaseDatabaseTest {
         engine.execute("INSERT INTO users VALUES (1, 'Alice')");
         engine.execute("INSERT INTO users VALUES (2, 'Bob')");
 
-        ResultSet result = engine.executeQuery("SELECT * FROM users ORDER BY id");
+        final ResultSet result = engine.executeQuery("SELECT * FROM users ORDER BY id");
         assertEquals(2, result.getRowCount());
 
         result.next();
@@ -174,12 +142,9 @@ public class PrimaryKeyTest extends BaseDatabaseTest {
         // VARCHAR primary key
         engine.execute("CREATE TABLE t3 (id VARCHAR PRIMARY KEY, name VARCHAR)");
 
-        Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_ASSERTIONS);
-        Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
-
-        assertTrue(schema.getTable("t1").getColumn("id").isPrimaryKey());
-        assertTrue(schema.getTable("t2").getColumn("id").isPrimaryKey());
-        assertTrue(schema.getTable("t3").getColumn("id").isPrimaryKey());
+        assertEquals("Y", describeCell("t1", "ID", "primary key"));
+        assertEquals("Y", describeCell("t2", "ID", "primary key"));
+        assertEquals("Y", describeCell("t3", "ID", "primary key"));
     }
 
     @Test
@@ -192,34 +157,20 @@ public class PrimaryKeyTest extends BaseDatabaseTest {
             )
             """);
 
-        Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_ASSERTIONS);
-        Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
-        Table table = schema.getTable("users");
-
-        List<String> primaryKeys = table.getPrimaryKeys();
-        assertNotNull(primaryKeys);
-        assertEquals(1, primaryKeys.size());
-
-        String pkName = primaryKeys.get(0);
-        assertTrue(pkName.equalsIgnoreCase("id"));
+        final ResultSet pk = primaryKeys("users");
+        assertEquals(1, pk.getRowCount());
+        assertEquals("ID", cell(pk, pk.getRows().get(0), "column_name"));
+        assertEquals("1", cell(pk, pk.getRows().get(0), "key_sequence"));
     }
 
     @Test
     public void testTableWithNoPrimaryKey() {
         engine.execute("CREATE TABLE users (id INTEGER, name VARCHAR, email VARCHAR)");
 
-        Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_ASSERTIONS);
-        Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
-        Table table = schema.getTable("users");
-
-        List<String> primaryKeys = table.getPrimaryKeys();
-        assertNotNull(primaryKeys);
-        assertEquals(0, primaryKeys.size(), "Table should have no primary keys");
-
-        // Verify none of the columns are marked as primary key
-        for (final TableColumn col : table.getColumns()) {
-            assertFalse(col.isPrimaryKey(), col.getName() + " should not be primary key");
-        }
+        assertEquals(0, primaryKeys("users").getRowCount(), "Table should have no primary keys");
+        assertEquals("N", describeCell("users", "ID", "primary key"));
+        assertEquals("N", describeCell("users", "NAME", "primary key"));
+        assertEquals("N", describeCell("users", "EMAIL", "primary key"));
     }
 
     @Test
@@ -234,18 +185,10 @@ public class PrimaryKeyTest extends BaseDatabaseTest {
             )
             """);
 
-        Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_ASSERTIONS);
-        Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
-        Table table = schema.getTable("orders");
-
-        assertEquals(5, table.getColumns().size());
-
-        TableColumn orderIdCol = table.getColumn("order_id");
-        assertTrue(orderIdCol.isPrimaryKey());
-
-        TableColumn customerIdCol = table.getColumn("customer_id");
-        assertFalse(customerIdCol.isPrimaryKey());
-        assertFalse(customerIdCol.isNullable());
+        assertEquals(5, engine.executeQuery("DESCRIBE TABLE orders").getRowCount());
+        assertEquals("Y", describeCell("orders", "ORDER_ID", "primary key"));
+        assertEquals("N", describeCell("orders", "CUSTOMER_ID", "primary key"));
+        assertEquals("N", describeCell("orders", "CUSTOMER_ID", "null?"));
     }
 
     @Test
@@ -257,18 +200,8 @@ public class PrimaryKeyTest extends BaseDatabaseTest {
             )
             """);
 
-        Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_ASSERTIONS);
-        ResultSet columns = engine.showColumns("users");
-
-        boolean foundPrimaryKey = false;
-        while (columns.next()) {
-            String columnName = (String) columns.getValue("COLUMN_NAME");
-            if ("id".equalsIgnoreCase(columnName)) {
-                foundPrimaryKey = true;
-                break;
-            }
-        }
-
-        assertTrue(foundPrimaryKey, "Primary key column should be visible in SHOW COLUMNS");
+        final ResultSet columns = engine.executeQuery("SHOW COLUMNS IN TABLE users");
+        assertEquals(1, rowsWhere(columns, "column_name", "ID").size(),
+            "Primary key column should be visible in SHOW COLUMNS");
     }
 }

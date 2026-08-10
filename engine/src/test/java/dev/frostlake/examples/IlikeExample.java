@@ -27,7 +27,7 @@ public class IlikeExample {
 
     @Test
     public void demonstrateIlike() {
-        DatabaseEngine engine = new DatabaseEngine();
+        final DatabaseEngine engine = new DatabaseEngine();
 
         try {
             engine.execute("CREATE DATABASE demo_db");
@@ -42,10 +42,10 @@ public class IlikeExample {
             engine.execute("INSERT INTO products VALUES (2, 'SAMSUNG Galaxy')");
             engine.execute("INSERT INTO products VALUES (3, 'google Pixel')");
 
-            ResultSet rs1 = engine.executeQuery("SELECT name FROM products WHERE name LIKE 'apple%'");
+            final ResultSet rs1 = engine.executeQuery("SELECT name FROM products WHERE name LIKE 'apple%'");
             logger.info("LIKE 'apple%' (case-sensitive): {} results", rs1.getRowCount());
 
-            ResultSet rs2 = engine.executeQuery("SELECT name FROM products WHERE name ILIKE 'apple%'");
+            final ResultSet rs2 = engine.executeQuery("SELECT name FROM products WHERE name ILIKE 'apple%'");
             logger.info("ILIKE 'apple%' (case-insensitive): {} results", rs2.getRowCount());
             if (rs2.getRowCount() > 0) {
                 logger.info("  Found: {}", rs2.getRows().get(0).getValue(0));
@@ -58,7 +58,7 @@ public class IlikeExample {
             engine.execute("INSERT INTO emails VALUES (2, 'admin@test.org')");
             engine.execute("INSERT INTO emails VALUES (3, 'info@Example.com')");
 
-            ResultSet rs3 = engine.executeQuery(
+            final ResultSet rs3 = engine.executeQuery(
                 "SELECT address FROM emails WHERE address ILIKE '%example.com%' ORDER BY id"
             );
             logger.info("Emails matching '%example.com%':");
@@ -74,7 +74,7 @@ public class IlikeExample {
             engine.execute("INSERT INTO codes VALUES (3, 'B789')");
             engine.execute("INSERT INTO codes VALUES (4, 'A999')");
 
-            ResultSet rs4 = engine.executeQuery(
+            final ResultSet rs4 = engine.executeQuery(
                 "SELECT code FROM codes WHERE code ILIKE 'a___' ORDER BY id"
             );
             logger.info("Codes matching 'a___' (a followed by 3 chars):");
@@ -90,7 +90,7 @@ public class IlikeExample {
             engine.execute("INSERT INTO status_records VALUES (3, 'Pending')");
             engine.execute("INSERT INTO status_records VALUES (4, 'Active')");
 
-            ResultSet rs5 = engine.executeQuery(
+            final ResultSet rs5 = engine.executeQuery(
                 "SELECT status FROM status_records WHERE status NOT ILIKE 'active' ORDER BY id"
             );
             logger.info("Statuses NOT matching 'active':");
@@ -105,7 +105,7 @@ public class IlikeExample {
             engine.execute("INSERT INTO customers VALUES (2, 'Jane DOE', 'jane@sales.com')");
             engine.execute("INSERT INTO customers VALUES (3, 'Bob WILSON', 'bob@TECH.com')");
 
-            ResultSet rs6 = engine.executeQuery(
+            final ResultSet rs6 = engine.executeQuery(
                 "SELECT name, email FROM customers " +
                 "WHERE email ILIKE '%tech.com%' OR name ILIKE '%smith%' " +
                 "ORDER BY id"
@@ -120,7 +120,7 @@ public class IlikeExample {
 
             // Example 6: ILIKE in aggregate query
             logger.info("\n6. ILIKE in aggregate query:");
-            ResultSet rs7 = engine.executeQuery(
+            final ResultSet rs7 = engine.executeQuery(
                 "SELECT COUNT(*) as tech_customers FROM customers WHERE email ILIKE '%tech.com%'"
             );
             logger.info("Number of tech.com customers: {}", rs7.getRows().get(0).getValue(0));

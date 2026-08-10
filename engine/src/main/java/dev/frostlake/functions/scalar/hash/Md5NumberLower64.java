@@ -36,6 +36,8 @@ public class Md5NumberLower64 extends BuiltInFunction {
         return new BigDecimal(new BigInteger(1, Arrays.copyOfRange(d, 8, 16)));
     }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return 1; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return 1; }
 }

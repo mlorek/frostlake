@@ -56,8 +56,8 @@ final class OrderByExecutor {
     List<Row> orderBy(final List<Row> rows, final Table table, final FrostlakeParser.SelectStatementContext ctx,
                       final Map<String, Table> aliasToTable, final List<Table> allTables) {
         // Parse order items
-        List<String> orderColumns = new ArrayList<>();
-        List<Boolean> ascending = new ArrayList<>();
+        final List<String> orderColumns = new ArrayList<>();
+        final List<Boolean> ascending = new ArrayList<>();
         final List<Boolean> nullsFirst = new ArrayList<>();
 
         for (final FrostlakeParser.OrderItemContext item : ctx.orderByClause().orderItem()) {
@@ -88,16 +88,23 @@ final class OrderByExecutor {
         // i.e. O(n log n) resolutions; this is O(n)).
         final int keyCount = orderColumns.size();
         final Object[][] sortKeys = new Object[rows.size()][keyCount];
+        // Per-key resolution PLAN, learned once on the first row — a key's kind is row-invariant,
+        // so later rows skip the throw-and-fall-through chain (two exception constructions plus a
+        // fresh evaluator per row-and-key on the expression path).
+        final int[] keyKind = new int[keyCount];
+        final int[] keyIndex = new int[keyCount];
+        final ExpressionEvaluator[] keyEvaluator = new ExpressionEvaluator[keyCount];
         for (int r = 0; r < rows.size(); r++) {
-            Row row = rows.get(r);
+            final Row row = rows.get(r);
             for (int i = 0; i < keyCount; i++) {
-                sortKeys[r][i] = resolveOrderValue(row, orderColumns.get(i), table, aliasToTable, allTables);
+                sortKeys[r][i] = resolveOrderValuePlanned(row, orderColumns.get(i), table,
+                    aliasToTable, allTables, keyKind, keyIndex, keyEvaluator, i);
             }
         }
 
         // Sort an index array against the precomputed keys (TimSort is stable, so equal keys keep their
         // original order — identical to the previous rows.sort), then rebuild the list.
-        Integer[] order = new Integer[rows.size()];
+        final Integer[] order = new Integer[rows.size()];
         for (int i = 0; i < order.length; i++) {
             order[i] = i;
         }
@@ -105,7 +112,7 @@ final class OrderByExecutor {
             @Override
             public int compare(final Integer a, final Integer b) {
                 for (int i = 0; i < keyCount; i++) {
-                    int cmp = ValueComparisons.compareOrderKey(sortKeys[a][i], sortKeys[b][i], ascending.get(i), nullsFirst.get(i));
+                    final int cmp = ValueComparisons.compareOrderKey(sortKeys[a][i], sortKeys[b][i], ascending.get(i), nullsFirst.get(i));
                     if (cmp != 0) {
                         return cmp;
                     }
@@ -114,7 +121,7 @@ final class OrderByExecutor {
             }
         });
 
-        List<Row> sorted = new ArrayList<>(rows.size());
+        final List<Row> sorted = new ArrayList<>(rows.size());
         for (int i = 0; i < order.length; i++) {
             sorted.add(rows.get(order[i]));
         }
@@ -187,6 +194,65 @@ final class OrderByExecutor {
     }
 
     /**
+     * Resolve one ORDER BY key with the LEARNED per-key plan: after the first row establishes how a
+     * key resolves (multi-table resolver / bare column index / expression), later rows take that
+     * path directly. A row-specific miss on the learned resolver path falls back to the full
+     * original chain, so results are identical.
+     */
+    private Object resolveOrderValuePlanned(final Row row, final String colName, final Table table,
+                                            final Map<String, Table> aliasToTable, final List<Table> allTables,
+                                            final int[] keyKind, final int[] keyIndex,
+                                            final ExpressionEvaluator[] keyEvaluator, final int i) {
+        switch (keyKind[i]) {
+            case 1:
+                try {
+                    return executor.getQualifiedColumnValueFromTables(row, allTables, aliasToTable, colName,
+                        table != null ? table.getJoinKeyNames() : null);
+                } catch (final InvalidQualifierException invalidQualifier) {
+                    throw invalidQualifier;
+                } catch (final Exception rowSpecificMiss) {
+                    return resolveOrderValue(row, colName, table, aliasToTable, allTables);
+                }
+            case 2:
+                return row.getValue(keyIndex[i]);
+            case 3:
+                try {
+                    return keyEvaluator[i].evaluate(colName, row);
+                } catch (final Exception e3) {
+                    throw new RuntimeException(SqlCompilationError.invalidIdentifier(colName), e3);
+                }
+            default:
+                break;
+        }
+        // First row: run the original chain, remembering which branch answered.
+        try {
+            final Object value = executor.getQualifiedColumnValueFromTables(row, allTables, aliasToTable, colName,
+                table != null ? table.getJoinKeyNames() : null);
+            keyKind[i] = 1;
+            return value;
+        } catch (final InvalidQualifierException invalidQualifier) {
+            throw invalidQualifier;
+        } catch (final Exception notAQualifiedColumn) {
+            final int colIndex = table != null ? ValueComparisons.findColumnIndex(table, colName) : -1;
+            if (colIndex >= 0) {
+                keyKind[i] = 2;
+                keyIndex[i] = colIndex;
+                return row.getValue(colIndex);
+            }
+            try {
+                final ExpressionEvaluator evaluator =
+                    new ExpressionEvaluator(table, executor.getFunctionRegistry(), executor.getCatalog(), executor);
+                final Object value = evaluator.evaluate(colName, row);
+                keyKind[i] = 3;
+                keyEvaluator[i] = evaluator;
+                return value;
+            } catch (final Exception e3) {
+                throw new RuntimeException(SqlCompilationError.invalidIdentifier(colName), e3);
+            }
+        }
+    }
+
+    /**
      * Resolve one ORDER BY key for a row, preserving the original resolution order: qualified column
      * (table.column / alias.column), else a bare column-index lookup, else a "column not found" error.
      */
@@ -201,7 +267,7 @@ final class OrderByExecutor {
             throw invalidQualifier;
         } catch (final Exception e) {
             try {
-                int colIndex = ValueComparisons.getColumnIndex(table, colName);
+                final int colIndex = ValueComparisons.getColumnIndex(table, colName);
                 return row.getValue(colIndex);
             } catch (final Exception e2) {
                 // Not a plain column: evaluate as an expression against the row so ORDER BY can sort by an
@@ -225,8 +291,12 @@ final class OrderByExecutor {
             ? firstOp.selectClause()
             : firstOp.selectStatement().selectOperand(0).selectClause();
         for (final FrostlakeParser.SelectItemContext item : firstClause.selectList().selectItem()) {
+            // CANONICAL and EXACT: the alias arrives folded already, so comparing it case-insensitively
+            // to the key AS WRITTEN let an unquoted key answer to a quoted alias — live resolves
+            // `SELECT a AS "x" … ORDER BY x` to nothing at all.
             if (SelectItemAccessors.getItemAlias(item) != null
-                    && ParseTreeText.getIdentifier(SelectItemAccessors.getItemAlias(item)).equalsIgnoreCase(text)) {
+                    && (SelectItemAccessors.getItemAlias(item))
+                        .equals(SqlIdentifiers.canonicalText(text))) {
                 final ParserRuleContext e = SelectItemAccessors.getItemExpression(item);
                 if (e != null) {
                     return ParseTreeText.getOriginalText(e);
@@ -255,6 +325,20 @@ final class OrderByExecutor {
                 return ParseTreeText.getOriginalText(e);
             }
         }
+        // An ordinal beyond the select list is refused, as live refuses it — falling through would
+        // silently sort by the literal number. Star items make the output width unknowable here, so
+        // only a star-free list can be range-checked.
+        boolean starFree = true;
+        for (final FrostlakeParser.SelectItemContext item : items) {
+            if (!SelectItemAccessors.isExprItem(item)) {
+                starFree = false;
+                break;
+            }
+        }
+        if (starFree && (n < 1 || n > items.size())) {
+            throw new RuntimeException(SqlCompilationError.of(
+                "ORDER BY position " + n + " is not in select list"));
+        }
         return text;
     }
 
@@ -266,7 +350,8 @@ final class OrderByExecutor {
      * With no resolver an unmatched item is an error, as before.
      */
     List<Row> orderByAfterGroupBy(final List<Row> rows, final FrostlakeParser.SelectStatementContext ctx,
-                                  final GroupOrderKeyResolver resolver) {
+                                  final GroupOrderKeyResolver resolver, final Table table,
+                                  final Map<String, Table> aliasToTable) {
         // The first selectClause carries the SELECT-list structure (UNION parts must be compatible).
         final FrostlakeParser.SelectOperandContext firstOp = ctx.selectOperand(0);
         final FrostlakeParser.SelectClauseContext firstClause = firstOp.selectClause() != null
@@ -274,19 +359,48 @@ final class OrderByExecutor {
             : firstOp.selectStatement().selectOperand(0).selectClause();
         final List<FrostlakeParser.SelectItemContext> selectItems = firstClause.selectList().selectItem();
 
+        // Slot layout of the projected row: a star item spans its expanded columns, so ORDER BY
+        // keys resolve to SLOTS of the row, not select-item indexes.
+        final int[] itemStartSlot = new int[selectItems.size()];
+        final List<List<String>> starNamesByItem = new ArrayList<>();
+        int slotCount = 0;
+        for (int i = 0; i < selectItems.size(); i++) {
+            itemStartSlot[i] = slotCount;
+            final FrostlakeParser.SelectItemContext si = selectItems.get(i);
+            if (SelectItemAccessors.isStarItem(si) || SelectItemAccessors.isQualifiedStarItem(si)) {
+                final List<String> names = new ArrayList<String>();
+                try {
+                    for (final StarColumn sc : executor.starItemColumns(si, table, aliasToTable)) {
+                        names.add(sc.getOutputName().toUpperCase());
+                    }
+                } catch (final RuntimeException unresolvable) {
+                    // an unresolvable star leaves its columns unmatchable; the resolver may still serve
+                }
+                starNamesByItem.add(names);
+                slotCount += names.size();
+            } else {
+                starNamesByItem.add(null);
+                slotCount++;
+            }
+        }
+        final int totalSlots = slotCount;
+
         final List<FrostlakeParser.OrderItemContext> items = ctx.orderByClause().orderItem();
         final int nKeys = items.size();
-        final int[] colIndex = new int[nKeys];       // matched SELECT column, or -1 when resolved per-group
+        final int[] colIndex = new int[nKeys];       // matched projected-row SLOT, or -1 when resolved per-group
         final boolean[] ascending = new boolean[nKeys];
         final Boolean[] nullsFirst = new Boolean[nKeys];   // nullable — nullsFirstFlag returns null when unspecified
         for (int k = 0; k < nKeys; k++) {
             final FrostlakeParser.OrderItemContext item = items.get(k);
             ascending[k] = item.DESC() == null;
             nullsFirst[k] = ValueComparisons.nullsFirstFlag(item);
-            colIndex[k] = matchOrderItem(item.expression().getText(), selectItems, ctx.selectOperand().size() > 1);
+            colIndex[k] = matchOrderSlot(item.expression().getText(), selectItems, itemStartSlot,
+                starNamesByItem, totalSlots, ctx.selectOperand().size() > 1);
             if (colIndex[k] == -1 && resolver == null) {
-                throw new RuntimeException(
-                    "ORDER BY expression not found in SELECT list: " + item.expression().getText());
+                // AS WRITTEN, not getText(): the latter concatenates tokens with no whitespace, so a
+                // key with separators came back unreadable — ROW_NUMBER()OVER(ORDERBYc).
+                throw new RuntimeException("ORDER BY expression not found in SELECT list: "
+                    + ParseTreeText.getOriginalText(item.expression()));
             }
         }
 
@@ -578,10 +692,49 @@ final class OrderByExecutor {
     }
 
     /** The SELECT column index an ORDER BY expression matches (position, alias, or expression text), or -1. */
+    /**
+     * The projected-row SLOT an ORDER BY key addresses when rows are in SELECT-list shape — a star
+     * item spans its expanded columns, so an item match maps to the item's first slot, an ordinal
+     * counts OUTPUT columns through the expansion, and a star-expanded column is addressable by its
+     * (possibly qualified) name. -1 when nothing matches.
+     */
+    private int matchOrderSlot(final String orderExpr, final List<FrostlakeParser.SelectItemContext> selectItems,
+                               final int[] itemStartSlot, final List<List<String>> starNamesByItem,
+                               final int totalSlots, final boolean setOperation) {
+        if (orderExpr.matches("\\d+")) {
+            final int ord = Integer.parseInt(orderExpr);
+            if (ord >= 1 && ord <= totalSlots) {
+                return ord - 1;
+            }
+        }
+        final int itemMatch = matchOrderItem(orderExpr, selectItems, setOperation, false);
+        if (itemMatch >= 0) {
+            return itemStartSlot[itemMatch];
+        }
+        final int dot = orderExpr.lastIndexOf('.');
+        final String bare = (dot >= 0 ? orderExpr.substring(dot + 1) : orderExpr).toUpperCase();
+        for (int i = 0; i < selectItems.size(); i++) {
+            final List<String> names = starNamesByItem.get(i);
+            if (names == null) {
+                continue;
+            }
+            final int at = names.indexOf(bare);
+            if (at >= 0) {
+                return itemStartSlot[i] + at;
+            }
+        }
+        return -1;
+    }
+
     private int matchOrderItem(final String orderExpr, final List<FrostlakeParser.SelectItemContext> selectItems,
                                final boolean setOperation) {
+        return matchOrderItem(orderExpr, selectItems, setOperation, true);
+    }
+
+    private int matchOrderItem(final String orderExpr, final List<FrostlakeParser.SelectItemContext> selectItems,
+                               final boolean setOperation, final boolean matchOrdinals) {
         // ORDER BY <n> positional reference → the N-th SELECT column.
-        if (orderExpr.matches("\\d+")) {
+        if (matchOrdinals && orderExpr.matches("\\d+")) {
             final int ord = Integer.parseInt(orderExpr);
             if (ord >= 1 && ord <= selectItems.size()) {
                 return ord - 1;
@@ -590,8 +743,8 @@ final class OrderByExecutor {
         // Match by alias.
         for (int i = 0; i < selectItems.size(); i++) {
             if (SelectItemAccessors.getItemAlias(selectItems.get(i)) != null) {
-                final String alias = ParseTreeText.getIdentifier(SelectItemAccessors.getItemAlias(selectItems.get(i)));
-                if (alias.equalsIgnoreCase(orderExpr)) {
+                final String alias = (SelectItemAccessors.getItemAlias(selectItems.get(i)));
+                if (alias.equals(SqlIdentifiers.canonicalText(orderExpr))) {
                     return i;
                 }
             }

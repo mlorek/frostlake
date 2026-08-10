@@ -30,35 +30,9 @@ public class Corr extends AggregateFunction {
     @Override
     public Object evaluate(final List<Object> args) { return null; }
 
-    @Override public int getMinArgCount() { return 2; }
-    @Override public int getMaxArgCount() { return 2; }
+    @Override
+    public int getMinArgCount() { return 2; }
+    @Override
+    public int getMaxArgCount() { return 2; }
 
-    public static class CorrAccumulator implements Accumulator {
-        public long n = 0;
-        public double sumX = 0, sumY = 0, sumXX = 0, sumYY = 0, sumXY = 0;
-
-        @Override
-        public void accumulate(final Object v) {}
-
-        public void accumulate(final double x, final double y) {
-            n++; sumX += x; sumY += y; sumXX += x*x; sumYY += y*y; sumXY += x*y;
-        }
-
-        @Override
-        public Object getResult() {
-            if (n < 2) return null;
-            double num = n * sumXY - sumX * sumY;
-            double den = Math.sqrt((n * sumXX - sumX * sumX) * (n * sumYY - sumY * sumY));
-            return den == 0 ? null : num / den;
-        }
-
-        @Override
-        public void reset() { n = 0; sumX = sumY = sumXX = sumYY = sumXY = 0; }
-
-        @Override
-        public void merge(final Accumulator other) {
-            CorrAccumulator o = (CorrAccumulator) other;
-            n += o.n; sumX += o.sumX; sumY += o.sumY; sumXX += o.sumXX; sumYY += o.sumYY; sumXY += o.sumXY;
-        }
-    }
 }

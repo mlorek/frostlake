@@ -26,13 +26,15 @@ public class StdDevSamp extends AggregateFunction {
     public StdDevSamp() { super("STDDEV_SAMP", NumericType.DOUBLE); }
 
     @Override
-    public Accumulator createAccumulator() { return new StdDev.StdDevAccumulator(); }
+    public Accumulator createAccumulator() { return new StdDevAccumulator(); }
 
     @Override
     public Object evaluate(final List<Object> args) { return null; }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return 1; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return 1; }
 
     /** Live: "Invalid argument types for function '*': (OBJECT, OBJECT)" — see {@link StdDev}. */
     @Override

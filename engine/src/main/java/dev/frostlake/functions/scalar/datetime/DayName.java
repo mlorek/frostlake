@@ -28,10 +28,14 @@ public class DayName extends BuiltInFunction {
     @Override
     public Object evaluate(final List<Object> args) {
         if (args.get(0) == null) return null;
-        return SharedFunctionHelpers.toLocalDate(args.get(0)).getDayOfWeek().name().substring(0, 1)
-             + SharedFunctionHelpers.toLocalDate(args.get(0)).getDayOfWeek().name().substring(1).toLowerCase();
+        // Three letters, not the full name — live answers Mon,Tue,Wed,Thu,Fri,Sat,Sun, measured
+        // across a whole week, and NULL for NULL. A TIMESTAMP argument answers the same way.
+        final String day = SharedFunctionHelpers.toLocalDate(args.get(0)).getDayOfWeek().name();
+        return day.substring(0, 1) + day.substring(1, 3).toLowerCase();
     }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return 1; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return 1; }
 }

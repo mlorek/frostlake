@@ -46,6 +46,8 @@ public class CortexSentiment extends BuiltInFunction {
         return Double.valueOf(Math.max(-1.0, Math.min(1.0, score)));
     }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return 1; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return 1; }
 }

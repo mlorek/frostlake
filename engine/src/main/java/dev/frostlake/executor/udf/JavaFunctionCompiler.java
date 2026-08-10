@@ -20,26 +20,17 @@ import dev.frostlake.functions.scalar.ArrayFunctionHelper;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.node.ArrayNode;
 
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import javax.tools.Diagnostic;
 import javax.tools.DiagnosticCollector;
 import javax.tools.JavaCompiler;
 import javax.tools.JavaFileObject;
-import javax.tools.SimpleJavaFileObject;
-import javax.tools.StandardJavaFileManager;
 import javax.tools.ToolProvider;
-import java.io.ByteArrayOutputStream;
-import java.io.OutputStream;
-import java.lang.reflect.InvocationTargetException;
-import java.lang.reflect.Method;
-import java.net.URI;
-import java.util.Arrays;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
-import javax.tools.FileObject;
-import javax.tools.ForwardingJavaFileManager;
 
 /**
  * Compiles and executes inline Java user-defined functions
@@ -73,19 +64,19 @@ public class JavaFunctionCompiler {
      */
     public Class<?> compile(final String sourceCode, final String className) {
         // Use source code hash in cache key to allow same class name with different implementations
-        String cacheKey = className + "_" + sourceCode.hashCode();
+        final String cacheKey = className + "_" + sourceCode.hashCode();
         final Class<?> cached = compiledClasses.get(cacheKey);
         if (cached != null) {
             return cached;
         }
 
         try {
-            JavaCompiler compiler = ToolProvider.getSystemJavaCompiler();
+            final JavaCompiler compiler = ToolProvider.getSystemJavaCompiler();
             if (compiler == null) {
                 throw new RuntimeException("Java compiler not available. Make sure you are running with JDK, not JRE.");
             }
 
-            InMemoryJavaFileManager fileManager = new InMemoryJavaFileManager(
+            final InMemoryJavaFileManager fileManager = new InMemoryJavaFileManager(
                 compiler.getStandardFileManager(null, null, null)
             );
 
@@ -93,8 +84,8 @@ public class JavaFunctionCompiler {
             // compiler's own complaint in the error it raises ("Error while compiling source: …"), and
             // a body rejected at CREATE is useless to the caller without knowing which line broke it.
             final DiagnosticCollector<JavaFileObject> diagnostics = new DiagnosticCollector<>();
-            JavaFileObject javaFile = new InMemoryJavaFile(className, sourceCode);
-            JavaCompiler.CompilationTask task = compiler.getTask(
+            final JavaFileObject javaFile = new InMemoryJavaFile(className, sourceCode);
+            final JavaCompiler.CompilationTask task = compiler.getTask(
                 null,
                 fileManager,
                 diagnostics,
@@ -103,18 +94,18 @@ public class JavaFunctionCompiler {
                 Arrays.asList(javaFile)
             );
 
-            boolean success = task.call();
+            final boolean success = task.call();
             if (!success) {
                 throw new RuntimeException("Error while compiling source: " + describe(diagnostics));
             }
 
-            byte[] classBytes = fileManager.getClassBytes(className);
+            final byte[] classBytes = fileManager.getClassBytes(className);
             if (classBytes == null) {
                 throw new RuntimeException("No class bytes generated for: " + className);
             }
 
-            InMemoryClassLoader classLoader = new InMemoryClassLoader(classBytes, className);
-            Class<?> compiledClass = classLoader.loadClass(className);
+            final InMemoryClassLoader classLoader = new InMemoryClassLoader(classBytes, className);
+            final Class<?> compiledClass = classLoader.loadClass(className);
 
             compiledClasses.put(cacheKey, compiledClass);
             return compiledClass;
@@ -151,7 +142,7 @@ public class JavaFunctionCompiler {
     public Object invokeMethod(final Class<?> clazz, final String methodName, final Object... args) {
         Method method = null;
         try {
-            Class<?>[] paramTypes = new Class<?>[args.length];
+            final Class<?>[] paramTypes = new Class<?>[args.length];
             for (int i = 0; i < args.length; i++) {
                 // A null argument matches any reference parameter type (checked in the compatibility pass).
                 paramTypes[i] = args[i] != null ? args[i].getClass() : null;
@@ -227,7 +218,7 @@ public class JavaFunctionCompiler {
             // Try to find a compatible method considering primitive/boxed type conversions
             for (final Method method : clazz.getMethods()) {
                 if (method.getName().equals(methodName) && method.getParameterCount() == paramTypes.length) {
-                    Class<?>[] methodParamTypes = method.getParameterTypes();
+                    final Class<?>[] methodParamTypes = method.getParameterTypes();
                     boolean compatible = true;
                     for (int i = 0; i < paramTypes.length; i++) {
                         if (!isCompatibleType(paramTypes[i], methodParamTypes[i])) {
@@ -283,76 +274,4 @@ public class JavaFunctionCompiler {
         return false;
     }
 
-    /**
-     * In-memory Java file object
-     */
-    private static class InMemoryJavaFile extends SimpleJavaFileObject {
-        private final String sourceCode;
-
-        public InMemoryJavaFile(final String className, final String sourceCode) {
-            super(URI.create("string:///" + className.replace('.', '/') + Kind.SOURCE.extension), Kind.SOURCE);
-            this.sourceCode = sourceCode;
-        }
-
-        @Override
-        public CharSequence getCharContent(final boolean ignoreEncodingErrors) {
-            return sourceCode;
-        }
-    }
-
-    /**
-     * In-memory class loader
-     */
-    private static class InMemoryClassLoader extends ClassLoader {
-        private final byte[] classBytes;
-        private final String className;
-
-        public InMemoryClassLoader(final byte[] classBytes, final String className) {
-            this.classBytes = classBytes;
-            this.className = className;
-        }
-
-        @Override
-        protected Class<?> findClass(final String name) throws ClassNotFoundException {
-            if (name.equals(className)) {
-                return defineClass(name, classBytes, 0, classBytes.length);
-            }
-            return super.findClass(name);
-        }
-    }
-
-    /**
-     * In-memory file manager
-     */
-    private static class InMemoryJavaFileManager extends ForwardingJavaFileManager<StandardJavaFileManager> {
-        private final Map<String, ByteArrayOutputStream> classBytes;
-
-        public InMemoryJavaFileManager(final StandardJavaFileManager fileManager) {
-            super(fileManager);
-            this.classBytes = new HashMap<>();
-        }
-
-        @Override
-        public JavaFileObject getJavaFileForOutput(
-                final Location location,
-                final String className,
-                final JavaFileObject.Kind kind,
-                final FileObject sibling) {
-
-            ByteArrayOutputStream baos = new ByteArrayOutputStream();
-            classBytes.put(className, baos);
-
-            return new SimpleJavaFileObject(URI.create("string:///" + className), kind) {
-                @Override
-                public OutputStream openOutputStream() {
-                    return baos;
-                }
-            };
-        }
-
-        public byte[] getClassBytes(final String className) {
-            ByteArrayOutputStream baos = classBytes.get(className);
-            return baos != null ? baos.toByteArray() : null;
-        }
-    }
 }

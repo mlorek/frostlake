@@ -47,6 +47,8 @@ public class ToUuid extends BuiltInFunction {
         return input.toLowerCase();
     }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return 1; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return 1; }
 }

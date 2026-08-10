@@ -18,11 +18,10 @@ package dev.frostlake.functions.scalar.semistructured;
 
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
-import tools.jackson.databind.JsonNode;
-import java.util.List;
 import dev.frostlake.types.ArrayType;
 import dev.frostlake.values.VariantUndefined;
 import dev.frostlake.values.VariantValue;
+import java.util.List;
 import tools.jackson.databind.node.ArrayNode;
 import tools.jackson.databind.node.ObjectNode;
 
@@ -56,6 +55,8 @@ public class ArraysZip extends BuiltInFunction {
         return VariantValue.ofNode(result);
     }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return Integer.MAX_VALUE; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return Integer.MAX_VALUE; }
 }

@@ -38,13 +38,15 @@ public class NullIf extends BuiltInFunction {
 
     @Override
     public Object evaluate(final List<Object> args) {
-        Object val1 = args.get(0);
-        Object val2 = args.get(1);
+        final Object val1 = args.get(0);
+        final Object val2 = args.get(1);
         if (val1 == null || val2 == null) return val1;
         if (val1.equals(val2)) return null;
         return val1;
     }
 
-    @Override public int getMinArgCount() { return 2; }
-    @Override public int getMaxArgCount() { return 2; }
+    @Override
+    public int getMinArgCount() { return 2; }
+    @Override
+    public int getMaxArgCount() { return 2; }
 }

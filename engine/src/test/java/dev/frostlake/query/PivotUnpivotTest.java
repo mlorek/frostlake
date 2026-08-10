@@ -192,7 +192,7 @@ public class PivotUnpivotTest extends BaseDatabaseTest {
         engine.execute("INSERT INTO sales VALUES ('B', 'Q1', 200), ('B', 'Q2', 250), ('B', 'Q3', 300)");
 
         // Pivot: transform quarters into columns
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT * FROM sales PIVOT (SUM(amount) FOR quarter IN ('Q1', 'Q2', 'Q3'))"
         );
 
@@ -232,7 +232,7 @@ public class PivotUnpivotTest extends BaseDatabaseTest {
             INSERT INTO orders VALUES ('Bob', 'pending', 4), ('Bob', 'pending', 5), ('Bob', 'complete', 6)
             """);
 
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT * FROM orders PIVOT (COUNT(order_id) FOR status IN ('pending', 'complete'))"
         );
 
@@ -256,7 +256,7 @@ public class PivotUnpivotTest extends BaseDatabaseTest {
         engine.execute("INSERT INTO revenue VALUES ('East', 'Jan', 1000), ('East', 'Feb', 1200)");
         engine.execute("INSERT INTO revenue VALUES ('West', 'Jan', 900), ('West', 'Feb', 1100)");
 
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT * FROM revenue PIVOT (SUM(sales) FOR month IN ('Jan' AS January, 'Feb' AS February))"
         );
 
@@ -277,7 +277,7 @@ public class PivotUnpivotTest extends BaseDatabaseTest {
 
         // PIVOT does not order its groups; the ORDER BY makes the row order the assertions rely on
         // deterministic on any engine (Snowflake's grouping order is unspecified).
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT * FROM scores PIVOT (AVG(score) FOR subject IN ('Math')) ORDER BY student"
         );
 
@@ -301,7 +301,7 @@ public class PivotUnpivotTest extends BaseDatabaseTest {
         engine.execute("INSERT INTO quarterly_sales VALUES ('B', 200, 250, 300)");
 
         // Unpivot: transform quarter columns into rows
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT * FROM quarterly_sales UNPIVOT (amount FOR quarter IN (Q1, Q2, Q3))"
         );
 
@@ -347,7 +347,7 @@ public class PivotUnpivotTest extends BaseDatabaseTest {
         engine.execute("INSERT INTO data VALUES ('East', 'Widget', 100, 120)");
         engine.execute("INSERT INTO data VALUES ('West', 'Gadget', 200, 220)");
 
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT * FROM data UNPIVOT (sales FOR month IN (jan, feb))"
         );
 
@@ -382,20 +382,20 @@ public class PivotUnpivotTest extends BaseDatabaseTest {
 
         // Pivot then unpivot should give us back similar structure
         engine.execute("CREATE TABLE pivoted (product VARCHAR, Q1 INTEGER, Q2 INTEGER)");
-        ResultSet pivotResult = engine.executeQuery(
+        final ResultSet pivotResult = engine.executeQuery(
             "SELECT * FROM original PIVOT (SUM(amount) FOR quarter IN ('Q1', 'Q2'))"
         );
 
         // Insert pivoted data
         for (int i = 0; i < pivotResult.getRowCount(); i++) {
-            String product = pivotResult.getRows().get(i).getValue(0).toString();
-            Object q1 = pivotResult.getRows().get(i).getValue(1);
-            Object q2 = pivotResult.getRows().get(i).getValue(2);
+            final String product = pivotResult.getRows().get(i).getValue(0).toString();
+            final Object q1 = pivotResult.getRows().get(i).getValue(1);
+            final Object q2 = pivotResult.getRows().get(i).getValue(2);
             engine.execute(String.format("INSERT INTO pivoted VALUES ('%s', %s, %s)", product, q1, q2));
         }
 
         // Now unpivot
-        ResultSet unpivotResult = engine.executeQuery(
+        final ResultSet unpivotResult = engine.executeQuery(
             "SELECT * FROM pivoted UNPIVOT (amount FOR quarter IN (Q1, Q2))"
         );
 
@@ -411,7 +411,7 @@ public class PivotUnpivotTest extends BaseDatabaseTest {
         engine.execute("INSERT INTO temperatures VALUES ('LA', 'Summer', 95), ('LA', 'Winter', 55)");
 
         // Test MAX
-        ResultSet maxResult = engine.executeQuery(
+        final ResultSet maxResult = engine.executeQuery(
             "SELECT * FROM temperatures PIVOT (MAX(temp) FOR season IN ('Summer', 'Winter'))"
             + " ORDER BY city DESC"
         );
@@ -424,7 +424,7 @@ public class PivotUnpivotTest extends BaseDatabaseTest {
 
         // Test MIN
         engine.execute("INSERT INTO temperatures VALUES ('NYC', 'Summer', 80)");
-        ResultSet minResult = engine.executeQuery(
+        final ResultSet minResult = engine.executeQuery(
             "SELECT * FROM temperatures PIVOT (MIN(temp) FOR season IN ('Summer')) ORDER BY city DESC"
         );
 

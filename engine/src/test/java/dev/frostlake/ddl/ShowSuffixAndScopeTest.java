@@ -21,7 +21,6 @@ import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
 
-import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
@@ -197,18 +196,37 @@ public class ShowSuffixAndScopeTest extends BaseDatabaseTest {
             viewCols.getRows().get(0).getValue(viewCols.getColumnIndex("column_name"))).toUpperCase());
     }
 
+    /** The refusal an APPLICATION / APPLICATION PACKAGE / CLASS scope earns, full-message. */
+    private void assertScopeRefused(final String sql, final String message) {
+        final RuntimeException e = assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.executeQuery(sql);
+            }
+        });
+        assertEquals(message, e.getMessage());
+    }
+
     @Test
-    public void acceptedScopesThatListNothing() {
-        // The APPLICATION / APPLICATION PACKAGE / CLASS scopes are parsed and treated as empty here;
-        // a real account rejects them outright unless those object types exist, so the leniency is
-        // only meaningful embedded.
-        Assumptions.assumeFalse(isLiveSnowflake(),
-            "APPLICATION / CLASS scopes are Frostlake leniencies a real account rejects");
+    public void applicationAndClassScopesRefuseLikeLive() {
+        // ICEBERG TABLES is a legal, empty listing; the APPLICATION / APPLICATION PACKAGE / CLASS
+        // scopes PARSE and then refuse the named object (live-verified per kind — note the CLASS
+        // family's single-line spelling, the upper fold of unquoted names, and a quoted name kept
+        // verbatim, quotes included).
         assertEquals(0, engine.executeQuery("SHOW ICEBERG TABLES").getRowCount());
         assertEquals(0, engine.executeQuery("SHOW TERSE ICEBERG TABLES IN test_db.test_schema").getRowCount());
-        assertEquals(0, engine.executeQuery("SHOW PROCEDURES LIKE 'foo' IN APPLICATION app").getRowCount());
-        assertEquals(0, engine.executeQuery("SHOW PROCEDURES LIKE 'foo' IN APPLICATION PACKAGE pkg").getRowCount());
-        assertEquals(0, engine.executeQuery("SHOW FUNCTIONS LIKE 'foo' IN CLASS bla").getRowCount());
+        assertScopeRefused("SHOW PROCEDURES LIKE 'foo' IN APPLICATION app",
+            "SQL compilation error:\nApplication 'APP' does not exist or not authorized.");
+        assertScopeRefused("SHOW PROCEDURES LIKE 'foo' IN APPLICATION PACKAGE pkg",
+            "SQL compilation error:\nApplication package 'PKG' does not exist or not authorized.");
+        assertScopeRefused("SHOW FUNCTIONS LIKE 'foo' IN CLASS bla",
+            "SQL compilation error: Object type or Class 'BLA' does not exist or not authorized.");
+        assertScopeRefused("SHOW FUNCTIONS IN APPLICATION app",
+            "SQL compilation error:\nApplication 'APP' does not exist or not authorized.");
+        assertScopeRefused("SHOW PROCEDURES IN CLASS c1",
+            "SQL compilation error: Object type or Class 'C1' does not exist or not authorized.");
+        assertScopeRefused("SHOW PROCEDURES IN APPLICATION \"app\"",
+            "SQL compilation error:\nApplication '\"app\"' does not exist or not authorized.");
     }
 
     @Test
@@ -223,7 +241,10 @@ public class ShowSuffixAndScopeTest extends BaseDatabaseTest {
     @Test
     public void inertModifiersAreAccepted() {
         engine.execute("CREATE TABLE hist_t (id INTEGER)");
-        assertTrue(engine.executeQuery("SHOW DATABASES HISTORY").getRowCount() >= 1);
+        // LIMIT keeps the account-scope listing under Snowflake's 10000-row SHOW cap: on live,
+        // every test's CREATE OR REPLACE DATABASE leaves a dropped-database HISTORY row, so a
+        // day with full rounds pushes the unlimited listing past the cap.
+        assertTrue(engine.executeQuery("SHOW DATABASES HISTORY LIMIT 100").getRowCount() >= 1);
         assertTrue(engine.executeQuery("SHOW TABLES HISTORY IN test_db.test_schema").getRowCount() >= 1);
         engine.executeQuery("SHOW TERSE DATABASES HISTORY LIKE 'foo' STARTS WITH 'bla' LIMIT 5 FROM 'bob'");
         engine.executeQuery("SHOW USERS LIKE '_foo%' STARTS WITH 'bar' LIMIT 5 FROM 'baz'");

@@ -27,7 +27,7 @@ public class ToTimestampNtzExample {
 
     @Test
     public void demonstrateToTimestampNtz() {
-        DatabaseEngine engine = new DatabaseEngine();
+        final DatabaseEngine engine = new DatabaseEngine();
 
         try {
             engine.execute("CREATE DATABASE demo_db");
@@ -37,22 +37,22 @@ public class ToTimestampNtzExample {
 
             // Example 1: Convert string to timestamp
             logger.info("\n1. Convert ISO format string to timestamp:");
-            ResultSet rs1 = engine.executeQuery("SELECT TO_TIMESTAMP_NTZ('2024-01-15T10:30:45') AS timestamp_value");
+            final ResultSet rs1 = engine.executeQuery("SELECT TO_TIMESTAMP_NTZ('2024-01-15T10:30:45') AS timestamp_value");
             logger.info("Result: {}", rs1.getRows().get(0).getValue(0));
 
             // Example 2: Convert space-separated string
             logger.info("\n2. Convert space-separated string to timestamp:");
-            ResultSet rs2 = engine.executeQuery("SELECT TO_TIMESTAMP_NTZ('2024-01-15 10:30:45') AS timestamp_value");
+            final ResultSet rs2 = engine.executeQuery("SELECT TO_TIMESTAMP_NTZ('2024-01-15 10:30:45') AS timestamp_value");
             logger.info("Result: {}", rs2.getRows().get(0).getValue(0));
 
             // Example 3: Convert date-only string
             logger.info("\n3. Convert date string to timestamp (assumes midnight):");
-            ResultSet rs3 = engine.executeQuery("SELECT TO_TIMESTAMP_NTZ('2024-01-15') AS timestamp_value");
+            final ResultSet rs3 = engine.executeQuery("SELECT TO_TIMESTAMP_NTZ('2024-01-15') AS timestamp_value");
             logger.info("Result: {}", rs3.getRows().get(0).getValue(0));
 
             // Example 4: Convert epoch seconds
             logger.info("\n4. Convert Unix epoch seconds to timestamp:");
-            ResultSet rs4 = engine.executeQuery("SELECT TO_TIMESTAMP_NTZ(1705315845) AS timestamp_value");
+            final ResultSet rs4 = engine.executeQuery("SELECT TO_TIMESTAMP_NTZ(1705315845) AS timestamp_value");
             logger.info("Result: {}", rs4.getRows().get(0).getValue(0));
 
             // Example 5: Use in CREATE TABLE and INSERT
@@ -62,7 +62,7 @@ public class ToTimestampNtzExample {
             engine.execute("INSERT INTO events VALUES (2, 'Lunch', TO_TIMESTAMP_NTZ('2024-01-15 12:00:00'))");
             engine.execute("INSERT INTO events VALUES (3, 'Review', TO_TIMESTAMP_NTZ('2024-01-15 14:30:00'))");
 
-            ResultSet rs5 = engine.executeQuery("SELECT * FROM events ORDER BY event_time");
+            final ResultSet rs5 = engine.executeQuery("SELECT * FROM events ORDER BY event_time");
             logger.info("Events table:");
             for (int i = 0; i < rs5.getRowCount(); i++) {
                 logger.info("  Row {}: id={}, event_name={}, event_time={}",
@@ -75,7 +75,7 @@ public class ToTimestampNtzExample {
 
             // Example 6: Filter by timestamp
             logger.info("\n6. Filter events after a specific time:");
-            ResultSet rs6 = engine.executeQuery(
+            final ResultSet rs6 = engine.executeQuery(
                 "SELECT event_name, event_time FROM events WHERE event_time > TO_TIMESTAMP_NTZ('2024-01-15 11:00:00')"
             );
             logger.info("Events after 11:00:");
@@ -88,7 +88,7 @@ public class ToTimestampNtzExample {
 
             // Example 7: Compare timestamps
             logger.info("\n7. Compare two timestamps:");
-            ResultSet rs7 = engine.executeQuery(
+            final ResultSet rs7 = engine.executeQuery(
                 "SELECT TO_TIMESTAMP_NTZ('2024-01-15 10:30:00') < TO_TIMESTAMP_NTZ('2024-01-15 14:30:00') AS is_earlier"
             );
             logger.info("Is 10:30 earlier than 14:30? {}", rs7.getRows().get(0).getValue(0));
@@ -100,7 +100,7 @@ public class ToTimestampNtzExample {
             engine.execute("INSERT INTO raw_logs VALUES (2, 'User login', '2024-01-15 09:15:30')");
             engine.execute("INSERT INTO raw_logs VALUES (3, 'File uploaded', '2024-01-15 09:45:00')");
 
-            ResultSet rs8 = engine.executeQuery(
+            final ResultSet rs8 = engine.executeQuery(
                 "SELECT id, log_message, TO_TIMESTAMP_NTZ(log_time_str) AS log_time FROM raw_logs ORDER BY id"
             );
             logger.info("Parsed log times:");

@@ -16,13 +16,14 @@
 
 package dev.frostlake.functions.scalar.context;
 
+import dev.frostlake.executor.ShowResultHelpers;
 import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.table.QueryRunner;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.SqlObject;
-import dev.frostlake.metastore.model.DefaultValueExpression;
+import dev.frostlake.metastore.model.CheckConstraint;
 import dev.frostlake.metastore.model.ForeignKeyConstraint;
 import dev.frostlake.metastore.model.MaterializedView;
 import dev.frostlake.metastore.model.Schema;
@@ -34,7 +35,7 @@ import dev.frostlake.metastore.model.View;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.types.DataType;
-import dev.frostlake.types.NumericType;
+import dev.frostlake.types.SqlTypeNames;
 import dev.frostlake.types.StringType;
 
 import java.util.ArrayList;
@@ -116,12 +117,32 @@ public class GetDdl extends BuiltInFunction {
             lines.add("foreign key (" + String.join(", ", fk.getColumnNames()) + ") references "
                 + fk.getReferencedTable() + " (" + String.join(", ", fk.getReferencedColumns()) + ")");
         }
+        // Every CHECK constraint renders as a TABLE-level line, even one written on the column, and in
+        // declaration order (live-verified). An explicit name is spelled, a generated one is not.
+        for (final CheckConstraint check : table.getCheckConstraints()) {
+            lines.add((check.isAutoNamed() ? "" : "constraint " + check.getName() + " ")
+                + "check (" + check.getExpression() + ")");
+        }
         for (int i = 0; i < lines.size(); i++) {
             sb.append(i == 0 ? "\n\t" : ",\n\t").append(lines.get(i));
         }
         sb.append("\n)");
         if (!table.getClusterKeys().isEmpty()) {
             sb.append(" cluster by (").append(String.join(", ", table.getClusterKeys())).append(")");
+        }
+        // A join policy renders the same way an aggregation policy does.
+        if (table.hasJoinPolicy()) {
+            return sb.append(" WITH JOIN POLICY ").append(table.getJoinPolicyName()).append("\n;").toString();
+        }
+        // An aggregation policy is a TABLE-level attachment: it follows the closing paren, and live
+        // puts the semicolon on its own line after it.
+        if (table.hasAggregationPolicy()) {
+            sb.append(" WITH AGGREGATION POLICY ").append(table.getAggregationPolicyName());
+            if (!table.getAggregationEntityKey().isEmpty()) {
+                sb.append(" ENTITY KEY (").append(String.join(", ", table.getAggregationEntityKey()))
+                  .append(")");
+            }
+            return sb.append("\n;").toString();
         }
         return sb.append(";").toString();
     }
@@ -156,42 +177,30 @@ public class GetDdl extends BuiltInFunction {
         if (col.isUnique() && !col.isPrimaryKey() && !uniqueRenderedAtTableLevel) {
             c.append(" UNIQUE");
         }
+        // A projection policy renders before a masking one when a column carries both (live-verified).
+        if (col.hasProjectionPolicy()) {
+            c.append(" WITH PROJECTION POLICY ").append(col.getProjectionPolicyName());
+        }
+        // A masked column carries its policy here, fully qualified, and always spelled WITH MASKING
+        // POLICY even when the column was declared without the WITH. Live puts it after DEFAULT and
+        // before COMMENT — and refuses that order reversed, so the position is the measured one.
+        if (col.getMaskingPolicyName() != null && !col.getMaskingPolicyName().isEmpty()) {
+            c.append(" WITH MASKING POLICY ").append(col.getMaskingPolicyName());
+        }
         if (col.getComment() != null && !col.getComment().isEmpty()) {
             c.append(" COMMENT '").append(col.getComment().replace("'", "''")).append("'");
         }
         return c.toString();
     }
 
-    /** Render a column type back to SQL, restoring its length / precision-scale parameters. */
+    /** Render a column type back to SQL — canonically, exactly as DESCRIBE spells it. */
     private String renderType(final DataType type) {
-        if (type instanceof NumericType) {
-            final NumericType nt = (NumericType) type;
-            final String name = nt.getName();
-            if (name.equalsIgnoreCase("NUMBER") || name.equalsIgnoreCase("DECIMAL")
-                    || name.equalsIgnoreCase("NUMERIC")) {
-                return name + "(" + nt.getPrecision() + "," + nt.getScale() + ")";
-            }
-            return name;
-        }
-        if (type instanceof StringType) {
-            final StringType st = (StringType) type;
-            return st.getMaxLength() > 0 ? st.getName() + "(" + st.getMaxLength() + ")" : st.getName();
-        }
-        return type.getName();
+        return SqlTypeNames.canonical(type);
     }
 
     /** Render a DEFAULT value: expression text and keyword/number/boolean defaults bare, strings quoted. */
     private String renderDefault(final Object def) {
-        if (def instanceof DefaultValueExpression || def instanceof Number || def instanceof Boolean) {
-            return def.toString();
-        }
-        final String s = def.toString();
-        final String upper = s.toUpperCase();
-        if (upper.equals("CURRENT_TIMESTAMP") || upper.equals("CURRENT_DATE") || upper.equals("CURRENT_TIME")
-                || upper.equals("TRUE") || upper.equals("FALSE") || upper.equals("NULL") || upper.endsWith("()")) {
-            return s;
-        }
-        return "'" + s.replace("'", "''") + "'";
+        return ShowResultHelpers.renderDefaultExpression(def);
     }
 
     // ─────────────────────────── VIEW ───────────────────────────
@@ -282,6 +291,8 @@ public class GetDdl extends BuiltInFunction {
         return parts[parts.length - 1];
     }
 
-    @Override public int getMinArgCount() { return 2; }
-    @Override public int getMaxArgCount() { return 3; }
+    @Override
+    public int getMinArgCount() { return 2; }
+    @Override
+    public int getMaxArgCount() { return 3; }
 }

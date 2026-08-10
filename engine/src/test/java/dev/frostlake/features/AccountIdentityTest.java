@@ -28,7 +28,9 @@ import java.util.List;
 import java.util.Properties;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * An account carries FOUR identifiers and they are genuinely different values — measured together on
@@ -73,7 +75,12 @@ public class AccountIdentityTest extends BaseDatabaseTest {
     /** The region carries no region-group prefix unless one is configured. */
     @Test
     public void theRegionIsBareByDefault() {
-        assertEquals("AWS_US_EAST_1", scalar("SELECT CURRENT_REGION()"));
+        // The value is the ACCOUNT's region (AWS_EU_WEST_1 here, AWS_US_EAST_1 on another), so pin the
+        // shape the test is really about: a bare <cloud>_<region> with no region-group prefix. The
+        // prefixed spelling is exercised by the next test.
+        final String region = String.valueOf(scalar("SELECT CURRENT_REGION()"));
+        assertTrue(region.matches("[A-Z0-9]+_[A-Z0-9_]+"), "bare region shape, was: " + region);
+        assertFalse(region.contains("."), "no region-group prefix, was: " + region);
     }
 
     /** …and the prefixed spelling is still reachable, because that organization shape is real. */

@@ -55,7 +55,7 @@ public class CTEWithDMLTest extends BaseDatabaseTest {
             SELECT * FROM filtered
             """);
 
-        ResultSet result = engine.executeQuery("SELECT * FROM target ORDER BY id");
+        final ResultSet result = engine.executeQuery("SELECT * FROM target ORDER BY id");
         assertNotNull(result);
         assertEquals(2, result.getRowCount());
 
@@ -82,7 +82,7 @@ public class CTEWithDMLTest extends BaseDatabaseTest {
             SELECT * FROM renamed
             """);
 
-        ResultSet result = engine.executeQuery("SELECT COUNT(*) FROM target");
+        final ResultSet result = engine.executeQuery("SELECT COUNT(*) FROM target");
         assertNotNull(result);
         assertEquals(2, ((Number) result.getRows().get(0).getValue(0)).intValue());
 
@@ -107,7 +107,7 @@ public class CTEWithDMLTest extends BaseDatabaseTest {
             SELECT * FROM enriched
             """);
 
-        ResultSet result = engine.executeQuery("SELECT COUNT(*) FROM target");
+        final ResultSet result = engine.executeQuery("SELECT COUNT(*) FROM target");
         assertNotNull(result);
         assertEquals(2, ((Number) result.getRows().get(0).getValue(0)).intValue());
 
@@ -128,7 +128,7 @@ public class CTEWithDMLTest extends BaseDatabaseTest {
             SELECT cnt, 'Total records' FROM stats
             """);
 
-        ResultSet result = engine.executeQuery("SELECT total FROM summary");
+        final ResultSet result = engine.executeQuery("SELECT total FROM summary");
         assertNotNull(result);
         assertEquals(1, result.getRowCount());
         assertEquals(3, ((Number) result.getRows().get(0).getValue(0)).intValue());

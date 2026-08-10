@@ -20,7 +20,6 @@ import java.sql.Array;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Types;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -108,10 +107,10 @@ public class DirectArray implements Array {
             throw new SQLException("Index out of bounds: " + index);
         }
 
-        int startIndex = (int) (index - 1);
-        int actualCount = Math.min(count, elements.length - startIndex);
+        final int startIndex = (int) (index - 1);
+        final int actualCount = Math.min(count, elements.length - startIndex);
 
-        Object[] result = new Object[actualCount];
+        final Object[] result = new Object[actualCount];
         System.arraycopy(elements, startIndex, result, 0, actualCount);
         return result;
     }

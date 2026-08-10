@@ -18,8 +18,8 @@ package dev.frostlake.procedures;
 
 import dev.frostlake.BaseDatabaseTest;
 
-import org.junit.jupiter.api.Test;
 import java.util.List;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -110,6 +110,25 @@ public class ScopedTransactionTest extends BaseDatabaseTest {
         // SET is refused live too, but a bare SET inside a body reaches neither of the paths this
         // rule guards — it is a session variable the engine routes elsewhere. Left uncovered rather
         // than asserted against behaviour that has not been aligned.
+    }
+
+    /**
+     * The session rule is an OWNER's-rights rule: an EXECUTE AS CALLER body runs in the caller's
+     * session with the caller's privileges and changes session state freely — the same statements
+     * the owner's-rights form refuses.
+     */
+    @Test
+    public void aCallersRightsProcedureMayChangeTheSession() {
+        engine.execute("""
+            CREATE OR REPLACE PROCEDURE callers_rights_proc() RETURNS STRING LANGUAGE SQL
+            EXECUTE AS CALLER
+            AS $$ BEGIN
+                ALTER SESSION SET QUERY_TAG = 'from-callers-rights';
+                USE SCHEMA test_schema;
+                RETURN 'ok';
+            END $$""");
+        assertEquals("ok", engine.executeQuery("CALL callers_rights_proc()")
+            .getRows().get(0).getValue(0));
     }
 
     /** The statements a procedure body may run are untouched by that rule. */

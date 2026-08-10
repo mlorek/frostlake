@@ -16,11 +16,11 @@
 
 package dev.frostlake.http;
 
-import tools.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import tools.jackson.databind.ObjectMapper;
 
 import java.io.IOException;
 import java.net.URI;
@@ -28,7 +28,10 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Tests for HTTP server
@@ -68,12 +71,12 @@ public class HttpServerTest {
 
     @Test
     public void testHealthCheck() throws Exception {
-        HttpRequest request = HttpRequest.newBuilder()
+        final HttpRequest request = HttpRequest.newBuilder()
             .uri(URI.create(BASE_URL + "/api/health"))
             .GET()
             .build();
 
-        HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+        final HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
 
         assertEquals(200, response.statusCode());
         assertTrue(response.body().contains("\"status\":\"healthy\""));
@@ -81,22 +84,22 @@ public class HttpServerTest {
 
     @Test
     public void testCreateTable() throws Exception {
-        SqlRequest sqlRequest = new SqlRequest();
+        final SqlRequest sqlRequest = new SqlRequest();
         sqlRequest.setSql("CREATE DATABASE test_db");
 
-        String requestJson = MAPPER.writeValueAsString(sqlRequest);
+        final String requestJson = MAPPER.writeValueAsString(sqlRequest);
 
-        HttpRequest request = HttpRequest.newBuilder()
+        final HttpRequest request = HttpRequest.newBuilder()
             .uri(URI.create(BASE_URL + "/api/execute"))
             .header("Content-Type", "application/json")
             .POST(HttpRequest.BodyPublishers.ofString(requestJson))
             .build();
 
-        HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+        final HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
 
         assertEquals(200, response.statusCode());
 
-        SqlResponse sqlResponse = MAPPER.readValue(response.body(), SqlResponse.class);
+        final SqlResponse sqlResponse = MAPPER.readValue(response.body(), SqlResponse.class);
         assertTrue(sqlResponse.isSuccess());
         assertNotNull(sqlResponse.getSessionId());
     }
@@ -104,35 +107,35 @@ public class HttpServerTest {
     @Test
     public void testSessionPersistence() throws Exception {
         // First request: Create database
-        SqlRequest req1 = new SqlRequest();
+        final SqlRequest req1 = new SqlRequest();
         req1.setSql("CREATE DATABASE session_test_db");
 
-        HttpRequest request1 = HttpRequest.newBuilder()
+        final HttpRequest request1 = HttpRequest.newBuilder()
             .uri(URI.create(BASE_URL + "/api/execute"))
             .header("Content-Type", "application/json")
             .POST(HttpRequest.BodyPublishers.ofString(MAPPER.writeValueAsString(req1)))
             .build();
 
-        HttpResponse<String> response1 = httpClient.send(request1, HttpResponse.BodyHandlers.ofString());
-        SqlResponse sqlResponse1 = MAPPER.readValue(response1.body(), SqlResponse.class);
+        final HttpResponse<String> response1 = httpClient.send(request1, HttpResponse.BodyHandlers.ofString());
+        final SqlResponse sqlResponse1 = MAPPER.readValue(response1.body(), SqlResponse.class);
 
         assertTrue(sqlResponse1.isSuccess());
-        String sessionId = sqlResponse1.getSessionId();
+        final String sessionId = sqlResponse1.getSessionId();
         assertNotNull(sessionId);
 
         // Second request: Use the database (should work with same session)
-        SqlRequest req2 = new SqlRequest();
+        final SqlRequest req2 = new SqlRequest();
         req2.setSql("USE DATABASE session_test_db");
         req2.setSessionId(sessionId);
 
-        HttpRequest request2 = HttpRequest.newBuilder()
+        final HttpRequest request2 = HttpRequest.newBuilder()
             .uri(URI.create(BASE_URL + "/api/execute"))
             .header("Content-Type", "application/json")
             .POST(HttpRequest.BodyPublishers.ofString(MAPPER.writeValueAsString(req2)))
             .build();
 
-        HttpResponse<String> response2 = httpClient.send(request2, HttpResponse.BodyHandlers.ofString());
-        SqlResponse sqlResponse2 = MAPPER.readValue(response2.body(), SqlResponse.class);
+        final HttpResponse<String> response2 = httpClient.send(request2, HttpResponse.BodyHandlers.ofString());
+        final SqlResponse sqlResponse2 = MAPPER.readValue(response2.body(), SqlResponse.class);
 
         assertTrue(sqlResponse2.isSuccess());
         assertEquals(sessionId, sqlResponse2.getSessionId());
@@ -150,23 +153,23 @@ public class HttpServerTest {
         sessionId = executeSql("INSERT INTO users VALUES (2, 'Bob')", sessionId);
 
         // Execute query
-        SqlRequest queryReq = new SqlRequest();
+        final SqlRequest queryReq = new SqlRequest();
         queryReq.setSql("SELECT * FROM users");
         queryReq.setSessionId(sessionId);
 
-        HttpRequest request = HttpRequest.newBuilder()
+        final HttpRequest request = HttpRequest.newBuilder()
             .uri(URI.create(BASE_URL + "/api/execute"))
             .header("Content-Type", "application/json")
             .POST(HttpRequest.BodyPublishers.ofString(MAPPER.writeValueAsString(queryReq)))
             .build();
 
-        HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-        SqlResponse sqlResponse = MAPPER.readValue(response.body(), SqlResponse.class);
+        final HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+        final SqlResponse sqlResponse = MAPPER.readValue(response.body(), SqlResponse.class);
 
         assertTrue(sqlResponse.isSuccess());
         assertEquals(1, sqlResponse.getResultSets().size());
 
-        SqlResponse.ResultSetData resultSet = sqlResponse.getResultSets().get(0);
+        final ResultSetData resultSet = sqlResponse.getResultSets().get(0);
         assertEquals(2, resultSet.getRowCount());
         assertEquals(2, resultSet.getColumns().size());
         assertEquals(2, resultSet.getRows().size());
@@ -174,17 +177,17 @@ public class HttpServerTest {
 
     @Test
     public void testErrorHandling() throws Exception {
-        SqlRequest badRequest = new SqlRequest();
+        final SqlRequest badRequest = new SqlRequest();
         badRequest.setSql("SELECT * FROM nonexistent_table");
 
-        HttpRequest request = HttpRequest.newBuilder()
+        final HttpRequest request = HttpRequest.newBuilder()
             .uri(URI.create(BASE_URL + "/api/execute"))
             .header("Content-Type", "application/json")
             .POST(HttpRequest.BodyPublishers.ofString(MAPPER.writeValueAsString(badRequest)))
             .build();
 
-        HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-        SqlResponse sqlResponse = MAPPER.readValue(response.body(), SqlResponse.class);
+        final HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+        final SqlResponse sqlResponse = MAPPER.readValue(response.body(), SqlResponse.class);
 
         assertFalse(sqlResponse.isSuccess());
         assertNotNull(sqlResponse.getErrorMessage());
@@ -196,12 +199,12 @@ public class HttpServerTest {
         executeSql("CREATE DATABASE test_session_db1", null);
         executeSql("CREATE DATABASE test_session_db2", null);
 
-        HttpRequest request = HttpRequest.newBuilder()
+        final HttpRequest request = HttpRequest.newBuilder()
             .uri(URI.create(BASE_URL + "/api/sessions"))
             .GET()
             .build();
 
-        HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+        final HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
 
         assertEquals(200, response.statusCode());
         assertTrue(response.body().contains("\"activeSessions\""));
@@ -210,46 +213,46 @@ public class HttpServerTest {
     @Test
     public void testMethodNotAllowed() throws Exception {
         // Try GET on /api/execute (should only accept POST)
-        HttpRequest request = HttpRequest.newBuilder()
+        final HttpRequest request = HttpRequest.newBuilder()
             .uri(URI.create(BASE_URL + "/api/execute"))
             .GET()
             .build();
 
-        HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+        final HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
 
         assertEquals(405, response.statusCode());
     }
 
     @Test
     public void testEmptySql() throws Exception {
-        SqlRequest emptyRequest = new SqlRequest();
+        final SqlRequest emptyRequest = new SqlRequest();
         emptyRequest.setSql("");
 
-        HttpRequest request = HttpRequest.newBuilder()
+        final HttpRequest request = HttpRequest.newBuilder()
             .uri(URI.create(BASE_URL + "/api/execute"))
             .header("Content-Type", "application/json")
             .POST(HttpRequest.BodyPublishers.ofString(MAPPER.writeValueAsString(emptyRequest)))
             .build();
 
-        HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+        final HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
 
         assertEquals(400, response.statusCode());
     }
 
     // Helper method
     private String executeSql(final String sql, final String sessionId) throws Exception {
-        SqlRequest request = new SqlRequest();
+        final SqlRequest request = new SqlRequest();
         request.setSql(sql);
         request.setSessionId(sessionId);
 
-        HttpRequest httpRequest = HttpRequest.newBuilder()
+        final HttpRequest httpRequest = HttpRequest.newBuilder()
             .uri(URI.create(BASE_URL + "/api/execute"))
             .header("Content-Type", "application/json")
             .POST(HttpRequest.BodyPublishers.ofString(MAPPER.writeValueAsString(request)))
             .build();
 
-        HttpResponse<String> response = httpClient.send(httpRequest, HttpResponse.BodyHandlers.ofString());
-        SqlResponse sqlResponse = MAPPER.readValue(response.body(), SqlResponse.class);
+        final HttpResponse<String> response = httpClient.send(httpRequest, HttpResponse.BodyHandlers.ofString());
+        final SqlResponse sqlResponse = MAPPER.readValue(response.body(), SqlResponse.class);
 
         assertTrue(sqlResponse.isSuccess(), "SQL execution failed: " + sql);
         return sqlResponse.getSessionId();

@@ -18,14 +18,14 @@ package dev.frostlake.functions.scalar.string;
 
 import dev.frostlake.functions.TextArgumentFunction;
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
-import dev.frostlake.types.NumericType;
+import dev.frostlake.types.IntegerResultWidths;
 import dev.frostlake.values.BinaryValue;
 
 import java.util.List;
 
 /** CHARINDEX(needle, haystack [, start]) — POSITION's argument order; BINARY pairs search by BYTE. */
 public class CharIndex extends TextArgumentFunction {
-    public CharIndex() { super("CHARINDEX", NumericType.INTEGER); }
+    public CharIndex() { super("CHARINDEX", IntegerResultWidths.POSITION); }
 
     @Override
     public Object evaluate(final List<Object> args) {
@@ -42,12 +42,14 @@ public class CharIndex extends TextArgumentFunction {
             return SharedFunctionHelpers.indexOfBytes(((BinaryValue) args.get(1)).bytes(),
                 ((BinaryValue) args.get(0)).bytes(), startPos);
         }
-        String needle = args.get(0).toString();
-        String haystack = args.get(1).toString();
-        int idx = haystack.indexOf(needle, startPos);
+        final String needle = args.get(0).toString();
+        final String haystack = args.get(1).toString();
+        final int idx = haystack.indexOf(needle, startPos);
         return idx < 0 ? 0L : (long) (idx + 1);
     }
 
-    @Override public int getMinArgCount() { return 2; }
-    @Override public int getMaxArgCount() { return 3; }
+    @Override
+    public int getMinArgCount() { return 2; }
+    @Override
+    public int getMaxArgCount() { return 3; }
 }

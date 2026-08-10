@@ -31,3 +31,16 @@ only nominatively, to describe compatibility.
 
 See [`PROVENANCE.md`](PROVENANCE.md) for clean-room / independence details and [`NOTICE`](NOTICE)
 for third-party attributions.
+
+## Security
+
+The HTTP server is **unauthenticated by design** and binds **loopback** (`http.host=localhost`) by
+default, so it is reachable only from the machine running it. Setting `http.host=0.0.0.0` serves an
+engine that will run any SQL it is sent, to anything that can reach the port — see
+[`docs/scope.md`](docs/scope.md).
+
+## Changes
+
+[`CHANGELOG.md`](CHANGELOG.md) records what each release changed. Read the "Now refused" section
+before upgrading: Frostlake aims to answer SQL the way a real account does, so closing a fidelity gap
+can mean rejecting SQL an earlier version accepted.

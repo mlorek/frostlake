@@ -27,7 +27,7 @@ public class NullIfZero extends BuiltInFunction {
 
     @Override
     public Object evaluate(final List<Object> args) {
-        Object v = args.get(0);
+        final Object v = args.get(0);
         if (v == null) return null;
         try {
             if (new BigDecimal(v.toString()).compareTo(BigDecimal.ZERO) == 0) return null;
@@ -35,6 +35,8 @@ public class NullIfZero extends BuiltInFunction {
         return v;
     }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return 1; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return 1; }
 }

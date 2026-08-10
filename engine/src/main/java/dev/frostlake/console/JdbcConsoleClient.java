@@ -36,16 +36,11 @@ import java.io.PrintWriter;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.sql.Connection;
-import java.sql.DatabaseMetaData;
 import java.sql.DriverManager;
 import java.sql.ResultSet;
-import java.sql.ResultSetMetaData;
 import java.sql.SQLException;
 import java.sql.Statement;
-import java.time.Instant;
-import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.List;
 import java.util.Map;
 import java.util.Properties;
 import org.jline.reader.EndOfFileException;
@@ -89,8 +84,8 @@ public class JdbcConsoleClient {
                     .build();
 
             // Create history
-            Path historyPath = Paths.get(HISTORY_FILE);
-            DefaultHistory history = new DefaultHistory();
+            final Path historyPath = Paths.get(HISTORY_FILE);
+            final DefaultHistory history = new DefaultHistory();
 
             // Build line reader with history support
             this.reader = LineReaderBuilder.builder()
@@ -121,7 +116,7 @@ public class JdbcConsoleClient {
 
     private void connect() {
         try {
-            Properties props = new Properties();
+            final Properties props = new Properties();
             this.connection = DriverManager.getConnection(jdbcUrl, props);
             terminal.writer().println("Connected to: " + jdbcUrl);
             terminal.writer().flush();
@@ -135,7 +130,7 @@ public class JdbcConsoleClient {
         if (args.length > 0) {
             url = args[0];
         }
-        JdbcConsoleClient client = new JdbcConsoleClient(url);
+        final JdbcConsoleClient client = new JdbcConsoleClient(url);
         client.run();
     }
 
@@ -192,13 +187,13 @@ public class JdbcConsoleClient {
     }
 
     private String readCommand() {
-        StringBuilder command = new StringBuilder();
+        final StringBuilder command = new StringBuilder();
         String line;
 
         while (true) {
-            String prompt;
+            final String prompt;
             if (command.length() == 0) {
-                String dbContext = getContextPrompt();
+                final String dbContext = getContextPrompt();
                 prompt = dbContext + "> ";
             } else {
                 prompt = "... ";
@@ -237,8 +232,8 @@ public class JdbcConsoleClient {
 
     private String getContextPrompt() {
         try {
-            String catalog = connection.getCatalog();
-            String schema = connection.getSchema();
+            final String catalog = connection.getCatalog();
+            final String schema = connection.getSchema();
 
             if (catalog != null && schema != null) {
                 return catalog + "." + schema;
@@ -261,7 +256,7 @@ public class JdbcConsoleClient {
     }
 
     private void handleMetaCommand(final String command) {
-        String cmd = command.toLowerCase().trim();
+        final String cmd = command.toLowerCase().trim();
 
         if (cmd.equals("!quit") || cmd.equals("!exit") || cmd.equals("\\q") || cmd.equals("\\quit")) {
             running = false;
@@ -334,7 +329,7 @@ public class JdbcConsoleClient {
     }
 
     private void printHistory() {
-        History history = reader.getHistory();
+        final History history = reader.getHistory();
         terminal.writer().println();
         terminal.writer().println("Command History:");
 
@@ -351,7 +346,7 @@ public class JdbcConsoleClient {
     }
 
     private void handleSetCommand(final String command) {
-        String[] parts = command.split("\\s+", 3);
+        final String[] parts = command.split("\\s+", 3);
 
         if (parts.length == 1) {
             if (variables.isEmpty()) {
@@ -365,8 +360,8 @@ public class JdbcConsoleClient {
             terminal.writer().println();
             terminal.writer().flush();
         } else if (parts.length == 3) {
-            String varName = parts[1];
-            String varValue = parts[2];
+            final String varName = parts[1];
+            final String varValue = parts[2];
             if (varName.equalsIgnoreCase("output_format")) {
                 final OutputFormat parsed = OutputFormat.fromString(varValue);
                 if (parsed != null) {
@@ -385,10 +380,10 @@ public class JdbcConsoleClient {
     }
 
     private void handleDefineCommand(final String command) {
-        String[] parts = command.split("\\s+", 3);
+        final String[] parts = command.split("\\s+", 3);
         if (parts.length == 3) {
-            String varName = parts[1];
-            String varValue = parts[2];
+            final String varName = parts[1];
+            final String varValue = parts[2];
             variables.put(varName, varValue);
             terminal.writer().println("Variable defined: " + varName + " = " + varValue);
             terminal.writer().println();
@@ -397,7 +392,7 @@ public class JdbcConsoleClient {
     }
 
     private void handleSourceCommand(final String command) {
-        String[] parts = command.split("\\s+", 2);
+        final String[] parts = command.split("\\s+", 2);
         if (parts.length < 2) {
             terminal.writer().println("Usage: !source <filename>");
             terminal.writer().println();
@@ -405,9 +400,9 @@ public class JdbcConsoleClient {
             return;
         }
 
-        String filename = parts[1];
+        final String filename = parts[1];
         try {
-            BufferedReader fileReader = new BufferedReader(new FileReader(filename));
+            final BufferedReader fileReader = new BufferedReader(new FileReader(filename));
             StringBuilder sqlBuffer = new StringBuilder();
             String line;
 
@@ -417,7 +412,7 @@ public class JdbcConsoleClient {
                 }
                 sqlBuffer.append(line).append(" ");
                 if (line.trim().endsWith(";")) {
-                    String sql = sqlBuffer.toString().trim();
+                    final String sql = sqlBuffer.toString().trim();
                     terminal.writer().println("> " + sql);
                     terminal.writer().flush();
                     executeSQL(sql);
@@ -438,7 +433,7 @@ public class JdbcConsoleClient {
     }
 
     private void handleSpoolCommand(final String command) {
-        String[] parts = command.split("\\s+", 2);
+        final String[] parts = command.split("\\s+", 2);
 
         if (parts.length == 1) {
             if (spoolWriter != null) {
@@ -454,7 +449,7 @@ public class JdbcConsoleClient {
             return;
         }
 
-        String filename = parts[1];
+        final String filename = parts[1];
         try {
             if (spoolWriter != null) {
                 spoolWriter.close();
@@ -472,7 +467,7 @@ public class JdbcConsoleClient {
     }
 
     private void executeSQL(final String sql) {
-        long startTime = System.currentTimeMillis();
+        final long startTime = System.currentTimeMillis();
 
         try {
             String trimmedSql = sql.trim();
@@ -480,27 +475,24 @@ public class JdbcConsoleClient {
                 trimmedSql = trimmedSql.substring(0, trimmedSql.length() - 1).trim();
             }
 
-            Statement stmt = connection.createStatement();
-            boolean hasResultSet = stmt.execute(trimmedSql);
-            long endTime = System.currentTimeMillis();
+            final Statement stmt = connection.createStatement();
+            final boolean hasResultSet = stmt.execute(trimmedSql);
+            final long endTime = System.currentTimeMillis();
 
             if (hasResultSet) {
-                ResultSet rs = stmt.getResultSet();
-                printResultSet(rs);
-                int rowCount = 0;
-                rs.beforeFirst();
-                while (rs.next()) {
-                    rowCount++;
-                }
-                String rowMsg = rowCount + " row(s) returned (" + (endTime - startTime) + " ms)";
+                final ResultSet rs = stmt.getResultSet();
+                // The printer never rewinds and reports how many rows it rendered — result sets
+                // are forward-only on live's driver and on the direct transport.
+                final int rowCount = new ResultSetPrinter(terminal.writer(), spoolWriter).print(rs, outputFormat);
+                final String rowMsg = rowCount + " row(s) returned (" + (endTime - startTime) + " ms)";
                 terminal.writer().println(rowMsg);
                 if (spoolWriter != null) {
                     spoolWriter.println(rowMsg);
                 }
                 rs.close();
             } else {
-                int updateCount = stmt.getUpdateCount();
-                String okMsg = "OK, " + updateCount + " row(s) affected (" + (endTime - startTime) + " ms)";
+                final int updateCount = stmt.getUpdateCount();
+                final String okMsg = "OK, " + updateCount + " row(s) affected (" + (endTime - startTime) + " ms)";
                 terminal.writer().println(okMsg);
                 if (spoolWriter != null) {
                     spoolWriter.println(okMsg);
@@ -517,7 +509,7 @@ public class JdbcConsoleClient {
             stmt.close();
 
         } catch (final SQLException e) {
-            String errorMsg = "ERROR: " + e.getMessage();
+            final String errorMsg = "ERROR: " + e.getMessage();
             terminal.writer().println(errorMsg);
             terminal.writer().println();
             terminal.writer().flush();
@@ -526,195 +518,6 @@ public class JdbcConsoleClient {
                 spoolWriter.println();
                 spoolWriter.flush();
             }
-        }
-    }
-
-    private void printResultSet(final ResultSet rs) {
-        try {
-            ResultSetMetaData metaData = rs.getMetaData();
-            int columnCount = metaData.getColumnCount();
-
-            if (!rs.next()) {
-                String noRowsMsg = "(No rows)";
-                terminal.writer().println(noRowsMsg);
-                if (spoolWriter != null) {
-                    spoolWriter.println(noRowsMsg);
-                }
-                return;
-            }
-
-            rs.beforeFirst();
-
-            switch (outputFormat) {
-                case CSV:
-                    printResultSetCSV(rs, metaData, columnCount);
-                    break;
-                case JSON:
-                    printResultSetJSON(rs, metaData, columnCount);
-                    break;
-                default:
-                    printResultSetTable(rs, metaData, columnCount);
-            }
-
-        } catch (final SQLException e) {
-            terminal.writer().println("Error reading result set: " + e.getMessage());
-            terminal.writer().flush();
-        }
-    }
-
-    private void printResultSetTable(final ResultSet rs, final ResultSetMetaData metaData, final int columnCount) throws SQLException {
-        List<String[]> rows = new ArrayList<String[]>();
-        String[] headers = new String[columnCount];
-        int[] columnWidths = new int[columnCount];
-
-        for (int i = 0; i < columnCount; i++) {
-            headers[i] = metaData.getColumnName(i + 1);
-            columnWidths[i] = headers[i].length();
-        }
-
-        while (rs.next()) {
-            String[] row = new String[columnCount];
-            for (int i = 0; i < columnCount; i++) {
-                Object value = rs.getObject(i + 1);
-                row[i] = (value == null) ? "NULL" : value.toString();
-                columnWidths[i] = Math.max(columnWidths[i], row[i].length());
-            }
-            rows.add(row);
-        }
-
-        StringBuilder separator = new StringBuilder("+");
-        for (final int width : columnWidths) {
-            separator.append("-".repeat(width + 2)).append("+");
-        }
-
-        String sepLine = separator.toString();
-        terminal.writer().println(sepLine);
-        if (spoolWriter != null) {
-            spoolWriter.println(sepLine);
-        }
-
-        StringBuilder headerLine = new StringBuilder("|");
-        for (int i = 0; i < columnCount; i++) {
-            headerLine.append(" ").append(String.format("%-" + columnWidths[i] + "s", headers[i])).append(" |");
-        }
-        terminal.writer().println(headerLine.toString());
-        if (spoolWriter != null) {
-            spoolWriter.println(headerLine.toString());
-        }
-
-        terminal.writer().println(sepLine);
-        if (spoolWriter != null) {
-            spoolWriter.println(sepLine);
-        }
-
-        for (final String[] row : rows) {
-            StringBuilder rowLine = new StringBuilder("|");
-            for (int i = 0; i < columnCount; i++) {
-                rowLine.append(" ").append(String.format("%-" + columnWidths[i] + "s", row[i])).append(" |");
-            }
-            terminal.writer().println(rowLine.toString());
-            if (spoolWriter != null) {
-                spoolWriter.println(rowLine.toString());
-            }
-        }
-
-        terminal.writer().println(sepLine);
-        if (spoolWriter != null) {
-            spoolWriter.println(sepLine);
-        }
-
-        terminal.writer().flush();
-        if (spoolWriter != null) {
-            spoolWriter.flush();
-        }
-    }
-
-    private void printResultSetCSV(final ResultSet rs, final ResultSetMetaData metaData, final int columnCount) throws SQLException {
-        StringBuilder headerLine = new StringBuilder();
-        for (int i = 0; i < columnCount; i++) {
-            if (i > 0) {
-                headerLine.append(",");
-            }
-            headerLine.append(metaData.getColumnName(i + 1));
-        }
-        terminal.writer().println(headerLine.toString());
-        if (spoolWriter != null) {
-            spoolWriter.println(headerLine.toString());
-        }
-
-        while (rs.next()) {
-            StringBuilder rowLine = new StringBuilder();
-            for (int i = 0; i < columnCount; i++) {
-                if (i > 0) {
-                    rowLine.append(",");
-                }
-                Object value = rs.getObject(i + 1);
-                String strValue = (value == null) ? "" : value.toString();
-                if (strValue.contains(",") || strValue.contains("\"") || strValue.contains("\n")) {
-                    strValue = "\"" + strValue.replace("\"", "\"\"") + "\"";
-                }
-                rowLine.append(strValue);
-            }
-            terminal.writer().println(rowLine.toString());
-            if (spoolWriter != null) {
-                spoolWriter.println(rowLine.toString());
-            }
-        }
-
-        terminal.writer().flush();
-        if (spoolWriter != null) {
-            spoolWriter.flush();
-        }
-    }
-
-    private void printResultSetJSON(final ResultSet rs, final ResultSetMetaData metaData, final int columnCount) throws SQLException {
-        terminal.writer().println("[");
-        if (spoolWriter != null) {
-            spoolWriter.println("[");
-        }
-
-        boolean first = true;
-        while (rs.next()) {
-            if (!first) {
-                terminal.writer().println(",");
-                if (spoolWriter != null) {
-                    spoolWriter.println(",");
-                }
-            }
-            first = false;
-
-            StringBuilder rowLine = new StringBuilder("  {");
-            for (int i = 0; i < columnCount; i++) {
-                if (i > 0) {
-                    rowLine.append(", ");
-                }
-                rowLine.append("\"").append(metaData.getColumnName(i + 1)).append("\": ");
-                Object value = rs.getObject(i + 1);
-                if (value == null) {
-                    rowLine.append("null");
-                } else if (value instanceof Number) {
-                    rowLine.append(value);
-                } else {
-                    rowLine.append("\"").append(value.toString().replace("\"", "\\\"")).append("\"");
-                }
-            }
-            rowLine.append("}");
-            terminal.writer().print(rowLine.toString());
-            if (spoolWriter != null) {
-                spoolWriter.print(rowLine.toString());
-            }
-        }
-
-        terminal.writer().println();
-        terminal.writer().println("]");
-        if (spoolWriter != null) {
-            spoolWriter.println();
-            spoolWriter.println("]");
-        }
-
-        terminal.writer().flush();
-        if (spoolWriter != null) {
-            spoolWriter.flush();
         }
     }
 

@@ -50,6 +50,8 @@ public class ArrayGenerateRange extends BuiltInFunction {
         return VariantValue.ofNode(result);
     }
 
-    @Override public int getMinArgCount() { return 2; }
-    @Override public int getMaxArgCount() { return 3; }
+    @Override
+    public int getMinArgCount() { return 2; }
+    @Override
+    public int getMaxArgCount() { return 3; }
 }

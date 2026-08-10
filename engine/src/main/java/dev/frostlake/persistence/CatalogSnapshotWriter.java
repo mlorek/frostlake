@@ -16,17 +16,52 @@
 
 package dev.frostlake.persistence;
 
-import dev.frostlake.metastore.*;
-import dev.frostlake.metastore.model.*;
+import dev.frostlake.metastore.Catalog;
+import dev.frostlake.metastore.model.AggregationPolicy;
+import dev.frostlake.metastore.model.CheckConstraint;
+import dev.frostlake.metastore.model.Contact;
+import dev.frostlake.metastore.model.CortexSearchService;
+import dev.frostlake.metastore.model.Database;
+import dev.frostlake.metastore.model.DefaultValueExpression;
+import dev.frostlake.metastore.model.DynamicTable;
+import dev.frostlake.metastore.model.FileFormat;
+import dev.frostlake.metastore.model.ForeignKeyConstraint;
+import dev.frostlake.metastore.model.Function;
+import dev.frostlake.metastore.model.JoinPolicy;
+import dev.frostlake.metastore.model.MaskingPolicy;
+import dev.frostlake.metastore.model.Parameter;
+import dev.frostlake.metastore.model.Pipe;
 import dev.frostlake.metastore.model.Privilege;
+import dev.frostlake.metastore.model.Procedure;
+import dev.frostlake.metastore.model.ProjectionPolicy;
+import dev.frostlake.metastore.model.Role;
+import dev.frostlake.metastore.model.RowAccessPolicy;
+import dev.frostlake.metastore.model.Schema;
+import dev.frostlake.metastore.model.SearchOptimizationExpression;
+import dev.frostlake.metastore.model.Sequence;
+import dev.frostlake.metastore.model.Stage;
+import dev.frostlake.metastore.model.Stream;
+import dev.frostlake.metastore.model.StreamRecord;
+import dev.frostlake.metastore.model.Table;
+import dev.frostlake.metastore.model.TableColumn;
+import dev.frostlake.metastore.model.Tag;
+import dev.frostlake.metastore.model.Task;
+import dev.frostlake.metastore.model.UniqueConstraint;
+import dev.frostlake.metastore.model.User;
+import dev.frostlake.metastore.model.View;
+import dev.frostlake.metastore.model.Warehouse;
 import dev.frostlake.storage.Row;
 import dev.frostlake.storage.StorageEngine;
+import dev.frostlake.storage.TableStorage;
+import dev.frostlake.types.BinaryType;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.types.StringType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.io.*;
+import java.io.BufferedOutputStream;
+import java.io.IOException;
+import java.io.ObjectOutputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
@@ -68,14 +103,14 @@ final class CatalogSnapshotWriter {
      */
     static CatalogSnapshot buildSnapshot(final Catalog catalog, final StorageEngine storageEngine,
                                          final TableDataStore tableData) throws IOException {
-        CatalogSnapshot snapshot = new CatalogSnapshot();
+        final CatalogSnapshot snapshot = new CatalogSnapshot();
         snapshot.currentDatabase = catalog.getCurrentDatabase();
         snapshot.currentSchema = catalog.getCurrentSchema();
         snapshot.currentWarehouse = catalog.getCurrentWarehouse();
 
         // Save databases
         for (final Database db : catalog.getAllDatabases()) {
-            DatabaseSnapshot dbSnapshot = new DatabaseSnapshot();
+            final DatabaseSnapshot dbSnapshot = new DatabaseSnapshot();
             dbSnapshot.name = db.getName();
             dbSnapshot.comment = db.getComment();
             dbSnapshot.createdAt = db.getCreatedTime();
@@ -83,14 +118,14 @@ final class CatalogSnapshotWriter {
 
             // Save schemas
             for (final Schema schema : db.getAllSchemas()) {
-                SchemaSnapshot schemaSnapshot = new SchemaSnapshot();
+                final SchemaSnapshot schemaSnapshot = new SchemaSnapshot();
                 schemaSnapshot.name = schema.getName();
                 schemaSnapshot.comment = schema.getComment();
                 schemaSnapshot.createdAt = schema.getCreatedTime();
 
                 // Save table metadata
                 for (final Table table : schema.getTables()) {
-                    TableSnapshot tableSnapshot = new TableSnapshot();
+                    final TableSnapshot tableSnapshot = new TableSnapshot();
                     tableSnapshot.name = table.getName();
                     tableSnapshot.comment = table.getComment();
                     tableSnapshot.createdAt = table.getCreatedTime();
@@ -101,7 +136,7 @@ final class CatalogSnapshotWriter {
                         ? new ArrayList<>(table.getClusterKeys()) : null;
 
                     for (final TableColumn col : table.getColumns()) {
-                        ColumnSnapshot colSnapshot = new ColumnSnapshot();
+                        final ColumnSnapshot colSnapshot = new ColumnSnapshot();
                         colSnapshot.name = col.getName();
                         colSnapshot.dataType = col.getDataType().getName();
                         if (col.getDataType() instanceof NumericType) {
@@ -110,6 +145,12 @@ final class CatalogSnapshotWriter {
                             colSnapshot.scale = numericType.getScale();
                         } else if (col.getDataType() instanceof StringType) {
                             colSnapshot.maxLength = ((StringType) col.getDataType()).getMaxLength();
+                        } else if (col.getDataType() instanceof BinaryType) {
+                            // The width AND the fixedness: the name says BINARY for both spellings, so
+                            // neither survives on its own.
+                            colSnapshot.maxLength = ((BinaryType) col.getDataType()).getMaxLength();
+                            colSnapshot.binaryFixed =
+                                Boolean.valueOf(((BinaryType) col.getDataType()).isFixed());
                         }
                         colSnapshot.nullable = col.isNullable();
                         colSnapshot.primaryKey = col.isPrimaryKey();
@@ -117,6 +158,7 @@ final class CatalogSnapshotWriter {
                         colSnapshot.defaultIsExpression = col.getDefaultValue() instanceof DefaultValueExpression;
                         colSnapshot.comment = col.getComment();
                         colSnapshot.maskingPolicyName = col.getMaskingPolicyName();
+                        colSnapshot.projectionPolicyName = col.getProjectionPolicyName();
                         colSnapshot.unique = col.isUnique();
                         colSnapshot.autoIncrement = col.isAutoIncrement();
                         colSnapshot.identityStart = col.getIdentityStart();
@@ -143,7 +185,7 @@ final class CatalogSnapshotWriter {
                     if (!table.getDeclaredUniqueConstraints().isEmpty()) {
                         tableSnapshot.uniqueConstraints = new ArrayList<>();
                         for (final UniqueConstraint unique : table.getDeclaredUniqueConstraints()) {
-                            UniqueConstraintSnapshot uniqueSnapshot = new UniqueConstraintSnapshot();
+                            final UniqueConstraintSnapshot uniqueSnapshot = new UniqueConstraintSnapshot();
                             uniqueSnapshot.constraintName = unique.getConstraintName();
                             uniqueSnapshot.columnNames = new ArrayList<>(unique.getColumnNames());
                             tableSnapshot.uniqueConstraints.add(uniqueSnapshot);
@@ -154,7 +196,7 @@ final class CatalogSnapshotWriter {
                     if (!table.getForeignKeys().isEmpty()) {
                         tableSnapshot.foreignKeys = new ArrayList<>();
                         for (final ForeignKeyConstraint fk : table.getForeignKeys()) {
-                            ForeignKeyConstraintSnapshot fkSnapshot = new ForeignKeyConstraintSnapshot();
+                            final ForeignKeyConstraintSnapshot fkSnapshot = new ForeignKeyConstraintSnapshot();
                             fkSnapshot.constraintName = fk.getConstraintName();
                             fkSnapshot.columnNames = new ArrayList<>(fk.getColumnNames());
                             fkSnapshot.referencedTable = fk.getReferencedTable();
@@ -167,6 +209,28 @@ final class CatalogSnapshotWriter {
                     }
 
                     // ROW ACCESS POLICY binding (the definition is saved with the schema's policies)
+                    tableSnapshot.checkConstraints = new ArrayList<>();
+                    for (final CheckConstraint check : table.getCheckConstraints()) {
+                        final CheckConstraintSnapshot checkSnapshot = new CheckConstraintSnapshot();
+                        checkSnapshot.name = check.getName();
+                        checkSnapshot.expression = check.getExpression();
+                        checkSnapshot.autoNamed = check.isAutoNamed();
+                        checkSnapshot.referencedColumns = check.getReferencedColumns();
+                        tableSnapshot.checkConstraints.add(checkSnapshot);
+                    }
+                    tableSnapshot.aggregationPolicyName = table.getAggregationPolicyName();
+                    tableSnapshot.joinPolicyName = table.getJoinPolicyName();
+                    tableSnapshot.searchOptimization = new ArrayList<>();
+                    for (final SearchOptimizationExpression expression : table.getSearchOptimization()) {
+                        final SearchOptimizationSnapshot soSnapshot = new SearchOptimizationSnapshot();
+                        soSnapshot.expressionId = expression.getExpressionId();
+                        soSnapshot.method = expression.getMethod();
+                        soSnapshot.target = expression.getTarget();
+                        soSnapshot.targetDataType = expression.getTargetDataType();
+                        tableSnapshot.searchOptimization.add(soSnapshot);
+                    }
+                    tableSnapshot.aggregationEntityKey = table.getAggregationEntityKey();
+                    tableSnapshot.contacts = table.getContacts();
                     tableSnapshot.rowAccessPolicyName = table.getRowAccessPolicyName();
                     tableSnapshot.rowAccessPolicyColumns = table.getRowAccessPolicyName() != null
                         ? new ArrayList<>(table.getRowAccessPolicyColumns()) : null;
@@ -180,7 +244,7 @@ final class CatalogSnapshotWriter {
 
                 // Save view metadata
                 for (final View view : schema.getViews()) {
-                    ViewSnapshot viewSnapshot = new ViewSnapshot();
+                    final ViewSnapshot viewSnapshot = new ViewSnapshot();
                     viewSnapshot.name = view.getName();
                     viewSnapshot.query = view.getDefinition();
                     viewSnapshot.comment = view.getComment();
@@ -197,7 +261,7 @@ final class CatalogSnapshotWriter {
 
                 // Save sequences (definition + current value, so NEXTVAL continues after reload)
                 for (final Sequence seq : schema.getSequences()) {
-                    SequenceSnapshot seqSnapshot = new SequenceSnapshot();
+                    final SequenceSnapshot seqSnapshot = new SequenceSnapshot();
                     seqSnapshot.name = seq.getName();
                     seqSnapshot.startValue = seq.getStartValue();
                     seqSnapshot.increment = seq.getIncrement();
@@ -211,7 +275,7 @@ final class CatalogSnapshotWriter {
                 // Save stages (the DEFINITION — the local backing dir is recomputed on restore, like
                 // CREATE STAGE does — so @stage references in COPY / UDF IMPORTS keep resolving)
                 for (final Stage stage : schema.getStages()) {
-                    StageSnapshot stageSnapshot = new StageSnapshot();
+                    final StageSnapshot stageSnapshot = new StageSnapshot();
                     stageSnapshot.name = stage.getName();
                     stageSnapshot.type = stage.getType().name();
                     stageSnapshot.url = stage.getUrl();
@@ -239,7 +303,7 @@ final class CatalogSnapshotWriter {
 
                 // Save streams (definition + pending unconsumed change records)
                 for (final Stream stream : schema.getStreams()) {
-                    StreamSnapshot streamSnapshot = new StreamSnapshot();
+                    final StreamSnapshot streamSnapshot = new StreamSnapshot();
                     streamSnapshot.name = stream.getName();
                     streamSnapshot.sourceTableName = stream.getSourceTableName();
                     streamSnapshot.baseTableName = stream.getBaseTableName();
@@ -251,7 +315,7 @@ final class CatalogSnapshotWriter {
                     streamSnapshot.comment = stream.getComment();
                     streamSnapshot.owner = stream.getOwner();
                     for (final StreamRecord rec : stream.getUnconsumedRecords()) {
-                        StreamRecordSnapshot recSnapshot = new StreamRecordSnapshot();
+                        final StreamRecordSnapshot recSnapshot = new StreamRecordSnapshot();
                         recSnapshot.values = new ArrayList<>(rec.getValues());
                         recSnapshot.changeType = rec.getChangeType().name();
                         recSnapshot.update = rec.isUpdate();
@@ -264,7 +328,7 @@ final class CatalogSnapshotWriter {
 
                 // Save tasks (definition + STARTED/SUSPENDED state)
                 for (final Task task : schema.getTasks()) {
-                    TaskSnapshot taskSnapshot = new TaskSnapshot();
+                    final TaskSnapshot taskSnapshot = new TaskSnapshot();
                     taskSnapshot.name = task.getName();
                     taskSnapshot.id = task.getId();
                     taskSnapshot.createdByUser = task.getCreatedByUser();
@@ -290,16 +354,57 @@ final class CatalogSnapshotWriter {
                     schemaSnapshot.tasks.add(taskSnapshot);
                 }
 
+                // Save join policies (same shape again: a name and a body)
+                for (final JoinPolicy policy : schema.getJoinPolicies()) {
+                    final ProjectionPolicySnapshot policySnapshot = new ProjectionPolicySnapshot();
+                    policySnapshot.name = policy.getName();
+                    policySnapshot.body = policy.getBody();
+                    policySnapshot.comment = policy.getComment();
+                    policySnapshot.owner = policy.getOwner();
+                    schemaSnapshot.joinPolicies.add(policySnapshot);
+                }
+
+                // Save aggregation policies (same shape as a projection policy: a name and a body)
+                for (final AggregationPolicy policy : schema.getAggregationPolicies()) {
+                    final ProjectionPolicySnapshot policySnapshot = new ProjectionPolicySnapshot();
+                    policySnapshot.name = policy.getName();
+                    policySnapshot.body = policy.getBody();
+                    policySnapshot.comment = policy.getComment();
+                    policySnapshot.owner = policy.getOwner();
+                    schemaSnapshot.aggregationPolicies.add(policySnapshot);
+                }
+
+                // Save projection policies (the object; a column's attachment is saved on the column)
+                for (final ProjectionPolicy policy : schema.getProjectionPolicies()) {
+                    final ProjectionPolicySnapshot policySnapshot = new ProjectionPolicySnapshot();
+                    policySnapshot.name = policy.getName();
+                    policySnapshot.body = policy.getBody();
+                    policySnapshot.comment = policy.getComment();
+                    policySnapshot.owner = policy.getOwner();
+                    schemaSnapshot.projectionPolicies.add(policySnapshot);
+                }
+
+                // Save contacts (the object; a table's attachments are saved on the table)
+                for (final Contact contact : schema.getContacts()) {
+                    final ContactSnapshot contactSnapshot = new ContactSnapshot();
+                    contactSnapshot.name = contact.getName();
+                    contactSnapshot.comment = contact.getComment();
+                    contactSnapshot.url = contact.getUrl();
+                    contactSnapshot.emailDistributionList = contact.getEmailDistributionList();
+                    contactSnapshot.owner = contact.getOwner();
+                    schemaSnapshot.contacts.add(contactSnapshot);
+                }
+
                 // Save masking policies (definition; the policy-to-column binding is saved on the column)
                 for (final MaskingPolicy policy : schema.getMaskingPolicies()) {
-                    MaskingPolicySnapshot policySnapshot = new MaskingPolicySnapshot();
+                    final MaskingPolicySnapshot policySnapshot = new MaskingPolicySnapshot();
                     policySnapshot.name = policy.getName();
                     policySnapshot.returnType = policy.getReturnType();
                     policySnapshot.body = policy.getBody();
                     policySnapshot.comment = policy.getComment();
                     policySnapshot.owner = policy.getOwner();
                     for (final Parameter param : policy.getParameters()) {
-                        MaskingPolicyParameterSnapshot paramSnapshot = new MaskingPolicyParameterSnapshot();
+                        final MaskingPolicyParameterSnapshot paramSnapshot = new MaskingPolicyParameterSnapshot();
                         paramSnapshot.name = param.getName();
                         paramSnapshot.dataType = param.getDataType() != null ? param.getDataType().getName() : null;
                         paramSnapshot.defaultValue = param.getDefaultValue();
@@ -310,7 +415,7 @@ final class CatalogSnapshotWriter {
 
                 // Save file formats (TYPE + options map)
                 for (final FileFormat ff : schema.getFileFormats()) {
-                    FileFormatSnapshot ffSnapshot = new FileFormatSnapshot();
+                    final FileFormatSnapshot ffSnapshot = new FileFormatSnapshot();
                     ffSnapshot.name = ff.getName();
                     ffSnapshot.type = ff.getType();
                     ffSnapshot.options = new LinkedHashMap<>(ff.getOptions());
@@ -320,7 +425,7 @@ final class CatalogSnapshotWriter {
 
                 // Save user-defined functions (all languages, scalar and table)
                 for (final Function fn : schema.getFunctions()) {
-                    FunctionSnapshot fnSnapshot = new FunctionSnapshot();
+                    final FunctionSnapshot fnSnapshot = new FunctionSnapshot();
                     fnSnapshot.name = fn.getName();
                     fnSnapshot.parameters = snapshotParameters(fn.getParameters());
                     fnSnapshot.returnType = fn.getReturnType() != null ? fn.getReturnType().getName() : null;
@@ -341,7 +446,7 @@ final class CatalogSnapshotWriter {
 
                 // Save stored procedures (all languages)
                 for (final Procedure proc : schema.getProcedures()) {
-                    ProcedureSnapshot procSnapshot = new ProcedureSnapshot();
+                    final ProcedureSnapshot procSnapshot = new ProcedureSnapshot();
                     procSnapshot.name = proc.getName();
                     procSnapshot.parameters = snapshotParameters(proc.getParameters());
                     procSnapshot.returnType = proc.getReturnType() != null ? proc.getReturnType().getName() : null;
@@ -359,7 +464,7 @@ final class CatalogSnapshotWriter {
 
                 // Save pipes
                 for (final Pipe pipe : schema.getPipes()) {
-                    PipeSnapshot pipeSnapshot = new PipeSnapshot();
+                    final PipeSnapshot pipeSnapshot = new PipeSnapshot();
                     pipeSnapshot.name = pipe.getName();
                     pipeSnapshot.copyStatement = pipe.getCopyStatement();
                     pipeSnapshot.autoIngest = pipe.isAutoIngest();
@@ -377,7 +482,7 @@ final class CatalogSnapshotWriter {
 
                 // Save dynamic tables (definition; the materialized rows are rebuilt on refresh)
                 for (final DynamicTable dt : schema.getDynamicTables()) {
-                    DynamicTableSnapshot dtSnapshot = new DynamicTableSnapshot();
+                    final DynamicTableSnapshot dtSnapshot = new DynamicTableSnapshot();
                     dtSnapshot.name = dt.getName();
                     dtSnapshot.query = dt.getQuery();
                     dtSnapshot.targetLag = dt.getTargetLag();
@@ -392,7 +497,7 @@ final class CatalogSnapshotWriter {
 
                 // Save row access policies (the policy-to-table binding is saved on the table)
                 for (final RowAccessPolicy policy : schema.getRowAccessPolicies()) {
-                    RowAccessPolicySnapshot policySnapshot = new RowAccessPolicySnapshot();
+                    final RowAccessPolicySnapshot policySnapshot = new RowAccessPolicySnapshot();
                     policySnapshot.name = policy.getName();
                     policySnapshot.parameters = snapshotParameters(policy.getParameters());
                     policySnapshot.body = policy.getBody();
@@ -403,10 +508,9 @@ final class CatalogSnapshotWriter {
 
                 // Save tags
                 for (final Tag tag : schema.getTags()) {
-                    TagSnapshot tagSnapshot = new TagSnapshot();
+                    final TagSnapshot tagSnapshot = new TagSnapshot();
                     tagSnapshot.name = tag.getName();
                     tagSnapshot.allowedValues = new ArrayList<>(tag.getAllowedValues());
-                    tagSnapshot.masking = tag.isMasking();
                     tagSnapshot.comment = tag.getComment();
                     tagSnapshot.owner = tag.getOwner();
                     schemaSnapshot.tags.add(tagSnapshot);
@@ -420,7 +524,7 @@ final class CatalogSnapshotWriter {
 
         // Save warehouses
         for (final Warehouse wh : catalog.getAllWarehouses()) {
-            WarehouseSnapshot whSnapshot = new WarehouseSnapshot();
+            final WarehouseSnapshot whSnapshot = new WarehouseSnapshot();
             whSnapshot.name = wh.getName();
             whSnapshot.size = wh.getSize().name();
             whSnapshot.state = wh.getState().name();
@@ -439,7 +543,7 @@ final class CatalogSnapshotWriter {
 
         // Save users
         for (final User user : catalog.getAllUsers()) {
-            UserSnapshot userSnapshot = new UserSnapshot();
+            final UserSnapshot userSnapshot = new UserSnapshot();
             userSnapshot.name = user.getName();
             userSnapshot.password = user.getPassword();
             userSnapshot.defaultRole = user.getDefaultRole();
@@ -467,7 +571,7 @@ final class CatalogSnapshotWriter {
 
         // Save roles
         for (final Role role : catalog.getAllRoles()) {
-            RoleSnapshot roleSnapshot = new RoleSnapshot();
+            final RoleSnapshot roleSnapshot = new RoleSnapshot();
             roleSnapshot.name = role.getName();
             roleSnapshot.grantedRoles = new ArrayList<>(role.getGrantedRoles());
             roleSnapshot.comment = role.getComment();
@@ -570,9 +674,9 @@ final class CatalogSnapshotWriter {
     /** A table's rows as a snapshot value (each row's values defensively copied). */
     static TableDataSnapshot buildTableData(final String database, final String schema, final Table table,
                                             final StorageEngine storageEngine) {
-        String qualifiedName = database.toUpperCase() + "." + schema.toUpperCase() + "." + table.getName().toUpperCase();
-        StorageEngine.TableStorage storage = storageEngine.getTableStorage(qualifiedName);
-        TableDataSnapshot dataSnapshot = new TableDataSnapshot();
+        final String qualifiedName = database.toUpperCase() + "." + schema.toUpperCase() + "." + table.getName().toUpperCase();
+        final TableStorage storage = storageEngine.getTableStorage(qualifiedName);
+        final TableDataSnapshot dataSnapshot = new TableDataSnapshot();
         dataSnapshot.database = database;
         dataSnapshot.schema = schema;
         dataSnapshot.table = table.getName();

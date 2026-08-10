@@ -62,14 +62,38 @@ public final class SqlStringLiterals {
             final char c = content.charAt(i);
             if (c == '\\' && i + 1 < content.length()) {
                 final char next = content.charAt(i + 1);
-                if (next == '\'') { sb.append('\''); i++; }
-                else if (next == '"') { sb.append('"'); i++; }
-                else if (next == '\\') { sb.append('\\'); i++; }
-                else if (next == 'n') { sb.append('\n'); i++; }
-                else if (next == 't') { sb.append('\t'); i++; }
-                else if (next == 'r') { sb.append('\r'); i++; }
-                else if (next == 'b') { sb.append('\b'); i++; }
-                else if (next == 'f') { sb.append('\f'); i++; }
+                if (next == '\'') {
+                    sb.append('\'');
+                    i++;
+                }
+                else if (next == '"') {
+                    sb.append('"');
+                    i++;
+                }
+                else if (next == '\\') {
+                    sb.append('\\');
+                    i++;
+                }
+                else if (next == 'n') {
+                    sb.append('\n');
+                    i++;
+                }
+                else if (next == 't') {
+                    sb.append('\t');
+                    i++;
+                }
+                else if (next == 'r') {
+                    sb.append('\r');
+                    i++;
+                }
+                else if (next == 'b') {
+                    sb.append('\b');
+                    i++;
+                }
+                else if (next == 'f') {
+                    sb.append('\f');
+                    i++;
+                }
                 else if (next == 'x' || next == 'X') { i = appendHexEscape(sb, content, i, 2); }
                 else if (next == 'u' || next == 'U') { i = appendHexEscape(sb, content, i, 4); }
                 // OCTAL escapes, live-verified: '\2' is one character with code 2 (ASCII('\2') = 2), so a
@@ -77,9 +101,13 @@ public final class SqlStringLiterals {
                 else if (next >= '0' && next <= '7') { i = appendOctalEscape(sb, content, i); }
                 // Any other unknown escape DROPS the backslash and keeps the character —
                 // live-verified: 'x\dy' is "xdy" and LENGTH('\d') is 1.
-                else { sb.append(next); i++; }
+                else {
+                    sb.append(next);
+                    i++;
+                }
             } else if (c == '\'' && i + 1 < content.length() && content.charAt(i + 1) == '\'') {
-                sb.append('\''); i++;
+                sb.append('\'');
+                i++;
             } else {
                 sb.append(c);
             }

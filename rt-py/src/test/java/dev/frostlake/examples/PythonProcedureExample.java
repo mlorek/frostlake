@@ -20,9 +20,9 @@ import dev.frostlake.DatabaseEngine;
 import dev.frostlake.metastore.model.Parameter;
 import dev.frostlake.metastore.model.Procedure;
 import dev.frostlake.metastore.model.Schema;
+import dev.frostlake.rt.py.PythonProcedureExecutor;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.types.VariantType;
-import dev.frostlake.rt.py.PythonProcedureExecutor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -30,11 +30,15 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 
-public class PythonProcedureExample {
+public final class PythonProcedureExample {
+
+    /** Static helpers only — never instantiated. */
+    private PythonProcedureExample() {
+    }
     private static final Logger logger = LoggerFactory.getLogger(PythonProcedureExample.class);
 
     public static void main(final String[] args) {
-        DatabaseEngine engine = new DatabaseEngine();
+        final DatabaseEngine engine = new DatabaseEngine();
 
         try {
             engine.execute("CREATE DATABASE demo_db");
@@ -57,8 +61,8 @@ def run(session):
                 $$
                 """);
 
-            Schema schema = engine.getCatalog().getDatabase("DEMO_DB").getSchema("PUBLIC");
-            Procedure pysp = schema.getProcedure("pysp");
+            final Schema schema = engine.getCatalog().getDatabase("DEMO_DB").getSchema("PUBLIC");
+            final Procedure pysp = schema.getProcedure("pysp");
 
             logger.info("   Created procedure: " + pysp.getName());
             logger.info("   Language: " + pysp.getLanguage());
@@ -68,16 +72,16 @@ def run(session):
             logger.info("");
 
             logger.info("2. Execute Simple Python Procedure");
-            List<Parameter> params = new ArrayList<>();
-            String body = """
+            final List<Parameter> params = new ArrayList<>();
+            final String body = """
 def run(session):
     return "{}"
 """;
-            List<String> packages = Arrays.asList("snowflake-snowpark-python");
-            Procedure proc = new Procedure("simple_proc", params, VariantType.VARIANT,
+            final List<String> packages = Arrays.asList("snowflake-snowpark-python");
+            final Procedure proc = new Procedure("simple_proc", params, VariantType.VARIANT,
                                           body, "PYTHON", "run", "3.9", packages);
 
-            Object result = PythonProcedureExecutor.executePythonProcedure(proc, Arrays.asList(), engine);
+            final Object result = PythonProcedureExecutor.executePythonProcedure(proc, Arrays.asList(), engine);
             logger.info("   Result: " + result);
             logger.info("");
 
@@ -87,29 +91,29 @@ def run(session):
             engine.execute("INSERT INTO users VALUES (2, 'Bob', 25)");
             engine.execute("INSERT INTO users VALUES (3, 'Charlie', 35)");
 
-            String queryBody = """
+            final String queryBody = """
 def run(session):
     result = session.sql("SELECT COUNT(*) as cnt FROM users")
     return str(result.count())
 """;
 
-            Procedure queryProc = new Procedure("count_users", params, VariantType.VARIANT,
+            final Procedure queryProc = new Procedure("count_users", params, VariantType.VARIANT,
                                                queryBody, "PYTHON", "run", "3.9", packages);
 
-            Object countResult = PythonProcedureExecutor.executePythonProcedure(queryProc, Arrays.asList(), engine);
+            final Object countResult = PythonProcedureExecutor.executePythonProcedure(queryProc, Arrays.asList(), engine);
             logger.info("   User count query returned: " + countResult + " row(s)");
             logger.info("");
 
             logger.info("4. Python Procedure Returning Dictionary");
-            String dictBody = """
+            final String dictBody = """
 def run(session):
     return {"status": "success", "message": "Processing complete"}
 """;
 
-            Procedure dictProc = new Procedure("status_proc", params, VariantType.VARIANT,
+            final Procedure dictProc = new Procedure("status_proc", params, VariantType.VARIANT,
                                               dictBody, "PYTHON", "run", "3.9", packages);
 
-            Object dictResult = PythonProcedureExecutor.executePythonProcedure(dictProc, Arrays.asList(), engine);
+            final Object dictResult = PythonProcedureExecutor.executePythonProcedure(dictProc, Arrays.asList(), engine);
             logger.info("   Result type: " + dictResult.getClass().getSimpleName());
             logger.info("   Result: " + dictResult);
             logger.info("");
@@ -129,7 +133,7 @@ def process_data(session):
                 $$
                 """);
 
-            Procedure multiPkg = schema.getProcedure("multi_package_proc");
+            final Procedure multiPkg = schema.getProcedure("multi_package_proc");
             logger.info("   Procedure: " + multiPkg.getName());
             logger.info("   Packages:");
             for (final String pkg : multiPkg.getPackages()) {
@@ -138,7 +142,7 @@ def process_data(session):
             logger.info("");
 
             logger.info("6. Python Procedure with Complex Logic");
-            String complexBody = """
+            final String complexBody = """
 def run(session):
     users = session.sql("SELECT * FROM users")
     total_age = 0
@@ -151,21 +155,23 @@ def run(session):
     return "Average age calculated"
 """;
 
-            Procedure complexProc = new Procedure("analyze_users", params, VariantType.VARIANT,
+            final Procedure complexProc = new Procedure("analyze_users", params, VariantType.VARIANT,
                                                  complexBody, "PYTHON", "run", "3.9", packages);
 
-            Object complexResult = PythonProcedureExecutor.executePythonProcedure(complexProc, Arrays.asList(), engine);
+            final Object complexResult = PythonProcedureExecutor.executePythonProcedure(complexProc, Arrays.asList(), engine);
             logger.info("   Analysis result: " + complexResult);
             logger.info("");
 
             logger.info("7. Show All Procedures");
-            ResultSet procedures = engine.showProcedures();
+            final ResultSet procedures = engine.showProcedures();
             logger.info("   Total procedures: " + procedures.getRowCount());
-            int sqlCount = 0, jsCount = 0, pyCount = 0;
+            int sqlCount = 0;
+            int jsCount = 0;
+            int pyCount = 0;
             for (final var row : procedures.getRows()) {
-                String procName = row.getValue(0).toString();
+                final String procName = row.getValue(0).toString();
                 try {
-                    Procedure proc2 = schema.getProcedure(procName.split("\\.")[2]);
+                    final Procedure proc2 = schema.getProcedure(procName.split("\\.")[2]);
                     if ("SQL".equals(proc2.getLanguage())) sqlCount++;
                     else if ("JAVASCRIPT".equals(proc2.getLanguage())) jsCount++;
                     else if ("PYTHON".equals(proc2.getLanguage())) pyCount++;

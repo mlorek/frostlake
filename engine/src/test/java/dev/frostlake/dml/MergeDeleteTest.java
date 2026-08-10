@@ -16,10 +16,8 @@
 
 package dev.frostlake.dml;
 
-import dev.frostlake.DatabaseEngine;
+import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -29,24 +27,9 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 /**
  * Tests for MERGE statement DELETE operation
  */
-public class MergeDeleteTest {
+public class MergeDeleteTest extends BaseDatabaseTest {
 
     private static final Logger logger = LoggerFactory.getLogger(MergeDeleteTest.class);
-    private DatabaseEngine engine;
-
-    @BeforeEach
-    public void setUp() {
-        engine = new DatabaseEngine();
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
-    }
-
-    @AfterEach
-    public void tearDown() {
-        if (engine != null) {
-            engine.shutdown();
-        }
-    }
 
     @Test
     public void testMergeWithDeleteNoCondition() {
@@ -69,7 +52,7 @@ public class MergeDeleteTest {
             WHEN MATCHED THEN DELETE
             """);
 
-        ResultSet rs = engine.executeQuery("SELECT * FROM target ORDER BY id");
+        final ResultSet rs = engine.executeQuery("SELECT * FROM target ORDER BY id");
         assertEquals(1, rs.getRowCount());
         assertEquals(3L, ((Number) rs.getRows().get(0).getValue(0)).longValue());
         assertEquals("Charlie", rs.getRows().get(0).getValue(1));
@@ -98,7 +81,7 @@ public class MergeDeleteTest {
             WHEN MATCHED THEN DELETE
             """);
 
-        ResultSet rs = engine.executeQuery("SELECT * FROM target ORDER BY id");
+        final ResultSet rs = engine.executeQuery("SELECT * FROM target ORDER BY id");
         assertEquals(2, rs.getRowCount());
         assertEquals(2L, ((Number) rs.getRows().get(0).getValue(0)).longValue());
         assertEquals("Bob", rs.getRows().get(0).getValue(1));

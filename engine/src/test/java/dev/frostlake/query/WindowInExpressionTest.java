@@ -17,7 +17,6 @@
 package dev.frostlake.query;
 
 import dev.frostlake.BaseDatabaseTest;
-import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.Row;
 import org.junit.jupiter.api.Test;
 

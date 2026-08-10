@@ -16,45 +16,28 @@
 
 package dev.frostlake.scripting;
 
-import dev.frostlake.DatabaseEngine;
+import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Tests for NULL statement in Snowflake SQL scripting
  */
-public class NullStatementTest {
-
-    private DatabaseEngine engine;
-
-    @BeforeEach
-    public void setUp() {
-        engine = new DatabaseEngine();
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
-    }
-
-    @AfterEach
-    public void tearDown() {
-        if (engine != null) {
-            engine.shutdown();
-        }
-    }
+public class NullStatementTest extends BaseDatabaseTest {
 
     @Test
     public void testSimpleNullStatement() {
-        // NULL statement should execute without error
+        // A NULL statement executes without error inside a block.
         assertDoesNotThrow(new Executable() {
             @Override
             public void execute() {
-                engine.execute("NULL;");
+                engine.execute("BEGIN NULL; END;");
             }
         });
     }
@@ -78,13 +61,13 @@ public class NullStatementTest {
     public void testNullStatementWithOtherStatements() {
         // Mix NULL statements with other statements
         engine.execute("CREATE TABLE test (id INTEGER)");
-        engine.execute("NULL;");
+        engine.execute("BEGIN NULL; END;");
         engine.execute("INSERT INTO test VALUES (1)");
-        engine.execute("NULL;");
+        engine.execute("BEGIN NULL; END;");
         engine.execute("INSERT INTO test VALUES (2)");
-        engine.execute("NULL;");
+        engine.execute("BEGIN NULL; END;");
 
-        ResultSet rs = engine.executeQuery("SELECT COUNT(*) as cnt FROM test");
+        final ResultSet rs = engine.executeQuery("SELECT COUNT(*) as cnt FROM test");
         assertEquals(2, ((Number) rs.getRows().get(0).getValue(0)).intValue());
     }
 
@@ -112,14 +95,14 @@ public class NullStatementTest {
         engine.execute("CREATE TABLE test (id INTEGER)");
 
         // Standalone NULL
-        engine.execute("NULL;");
+        engine.execute("BEGIN NULL; END;");
 
         // NULL with other statements
         engine.execute("INSERT INTO test VALUES (1)");
-        engine.execute("NULL;");
+        engine.execute("BEGIN NULL; END;");
         engine.execute("INSERT INTO test VALUES (2)");
 
-        ResultSet rs = engine.executeQuery("SELECT COUNT(*) as cnt FROM test");
+        final ResultSet rs = engine.executeQuery("SELECT COUNT(*) as cnt FROM test");
         assertEquals(2, ((Number) rs.getRows().get(0).getValue(0)).intValue());
     }
 
@@ -140,13 +123,15 @@ public class NullStatementTest {
 
     @Test
     public void testNullStatementStandalone() {
-        // NULL statement as standalone statement (not in block)
-        assertDoesNotThrow(new Executable() {
+        // NULL is a SCRIPTING statement: outside a block live refuses it as a syntax error.
+        final RuntimeException e = assertThrows(RuntimeException.class, new Executable() {
             @Override
             public void execute() {
                 engine.execute("NULL;");
             }
         });
+        assertTrue(e.getMessage().toLowerCase().contains("syntax error"),
+            "unexpected message: " + e.getMessage());
     }
 
     @Test
@@ -155,14 +140,14 @@ public class NullStatementTest {
         engine.execute("CREATE TABLE test (id INTEGER)");
 
         // Execute a sequence with NULL statements interspersed
-        engine.execute("NULL;");
+        engine.execute("BEGIN NULL; END;");
         engine.execute("INSERT INTO test VALUES (1)");
-        engine.execute("NULL;");
-        engine.execute("NULL;");
+        engine.execute("BEGIN NULL; END;");
+        engine.execute("BEGIN NULL; END;");
         engine.execute("INSERT INTO test VALUES (2)");
-        engine.execute("NULL;");
+        engine.execute("BEGIN NULL; END;");
 
-        ResultSet rs = engine.executeQuery("SELECT COUNT(*) as cnt FROM test");
+        final ResultSet rs = engine.executeQuery("SELECT COUNT(*) as cnt FROM test");
         assertEquals(2, ((Number) rs.getRows().get(0).getValue(0)).intValue());
     }
 }

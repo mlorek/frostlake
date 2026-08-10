@@ -45,11 +45,11 @@ public class ArrayToString extends VariantAccessorFunction {
 
     @Override
     public Object evaluate(final List<Object> args) {
-        ArrayNode arr = ArrayFunctionHelper.parseArray(args.get(0));
+        final ArrayNode arr = ArrayFunctionHelper.parseArray(args.get(0));
         if (arr == null) return null;
         if (args.get(1) == null) return null;
-        String delimiter = args.get(1).toString();
-        List<String> parts = new ArrayList<>();
+        final String delimiter = args.get(1).toString();
+        final List<String> parts = new ArrayList<>();
         for (final JsonNode el : arr) {
             if (VariantUndefined.isUndefined(el)) {
                 // An `undefined` element is ABSENT, so it contributes an empty segment and keeps its
@@ -69,6 +69,8 @@ public class ArrayToString extends VariantAccessorFunction {
         return String.join(delimiter, parts);
     }
 
-    @Override public int getMinArgCount() { return 2; }
-    @Override public int getMaxArgCount() { return 2; }
+    @Override
+    public int getMinArgCount() { return 2; }
+    @Override
+    public int getMaxArgCount() { return 2; }
 }

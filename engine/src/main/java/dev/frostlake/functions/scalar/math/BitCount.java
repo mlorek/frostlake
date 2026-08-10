@@ -31,6 +31,8 @@ public class BitCount extends BuiltInFunction {
         return (long) new BigDecimal(args.get(0).toString()).toBigInteger().bitCount();
     }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return 1; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return 1; }
 }

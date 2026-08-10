@@ -30,19 +30,21 @@ public class ObjectPick extends BuiltInFunction {
 
     @Override
     public Object evaluate(final List<Object> args) {
-        JsonNode src = ArrayFunctionHelper.parseNode(args.get(0));
+        final JsonNode src = ArrayFunctionHelper.parseNode(args.get(0));
         if (src == null || !src.isObject()) return null;
-        ObjectNode result = ArrayFunctionHelper.MAPPER.createObjectNode();
+        final ObjectNode result = ArrayFunctionHelper.MAPPER.createObjectNode();
         for (int i = 1; i < args.size(); i++) {
             if (args.get(i) == null) continue;
-            String key = args.get(i).toString();
-            JsonNode val = src.get(key);
+            final String key = args.get(i).toString();
+            final JsonNode val = src.get(key);
             if (val != null) result.set(key, val);
         }
         // Snowflake serializes OBJECT members key-sorted; raw insertion order leaked argument order.
         return ArrayFunctionHelper.toCanonicalVariant(result);
     }
 
-    @Override public int getMinArgCount() { return 2; }
-    @Override public int getMaxArgCount() { return Integer.MAX_VALUE; }
+    @Override
+    public int getMinArgCount() { return 2; }
+    @Override
+    public int getMaxArgCount() { return Integer.MAX_VALUE; }
 }

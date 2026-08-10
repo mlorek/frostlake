@@ -17,15 +17,28 @@
 package dev.frostlake.functions.scalar.semistructured;
 
 import dev.frostlake.functions.BuiltInFunction;
-import dev.frostlake.functions.scalar.ArrayFunctionHelper;
+import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.functions.scalar.JsonTypeHelper;
 import dev.frostlake.types.StringType;
-import tools.jackson.databind.JsonNode;
 import java.util.List;
+import tools.jackson.databind.JsonNode;
 
-/** JSON_EXTRACT_PATH_TEXT(json, path) — parses the JSON text and returns the path's value as unquoted text. */
+/**
+ * JSON_EXTRACT_PATH_TEXT(json, path) — parses the JSON text and returns the path's value as unquoted
+ * text.
+ *
+ * <p>The first argument is JSON TEXT or a VARIANT; a statically OBJECT- or ARRAY-typed value is an
+ * argument-type error, not a document — live refuses
+ * {@code JSON_EXTRACT_PATH_TEXT(OBJECT_CONSTRUCT('a', 1), 'a')} at compile time while the same call
+ * over a VARIANT, over a string, and even over a number returns a value.
+ */
 public class JsonExtractPathText extends BuiltInFunction {
     public JsonExtractPathText() { super("JSON_EXTRACT_PATH_TEXT", StringType.VARCHAR); }
+
+    @Override
+    public SemiStructuredRejection semiStructuredRejection(final int position) {
+        return position == 0 ? SemiStructuredRejection.ARGUMENT_TYPES : SemiStructuredRejection.NONE;
+    }
 
     @Override
     public Object evaluate(final List<Object> args) {
@@ -54,6 +67,8 @@ public class JsonExtractPathText extends BuiltInFunction {
         return node.isTextual() ? node.asText() : node.toString();
     }
 
-    @Override public int getMinArgCount() { return 2; }
-    @Override public int getMaxArgCount() { return 2; }
+    @Override
+    public int getMinArgCount() { return 2; }
+    @Override
+    public int getMaxArgCount() { return 2; }
 }

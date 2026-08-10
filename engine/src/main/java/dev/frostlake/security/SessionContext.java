@@ -26,6 +26,28 @@ import java.util.UUID;
  * Manages the current user session context including active user and role
  */
 public class SessionContext {
+
+    private volatile String currentStatement;
+    private volatile String lastTransactionId;
+
+    /** The SQL text of the statement this session is currently executing. */
+    public String getCurrentStatement() {
+        return currentStatement;
+    }
+
+    public void setCurrentStatement(final String currentStatement) {
+        this.currentStatement = currentStatement;
+    }
+
+    /** The id of the session's last completed (committed or rolled-back) transaction. */
+    public String getLastTransactionId() {
+        return lastTransactionId;
+    }
+
+    public void setLastTransactionId(final String lastTransactionId) {
+        this.lastTransactionId = lastTransactionId;
+    }
+
     private final String sessionId = String.valueOf(Math.abs(UUID.randomUUID().getMostSignificantBits()));
     private String currentUser;
     private String currentRole;

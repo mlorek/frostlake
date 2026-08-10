@@ -25,6 +25,8 @@ public class BinaryOperationExpression implements Expression {
     private final BinaryOperator operator;
     /** For LIKE/ILIKE, the optional {@code ESCAPE <char>} expression; null when none is specified. */
     private final Expression escape;
+    /** Where the OPERATOR token itself sits — see {@link #getPosition()}. Null when unknown. */
+    private SourcePosition position;
 
     public BinaryOperationExpression(final Expression left, final BinaryOperator operator, final Expression right) {
         this(left, operator, right, null);
@@ -36,6 +38,23 @@ public class BinaryOperationExpression implements Expression {
         this.operator = operator;
         this.right = right;
         this.escape = escape;
+    }
+
+    /**
+     * Where the OPERATOR token sits — not the expression's start and not the enclosing select item's.
+     * An argument-type refusal is anchored here, which is what Snowflake points at: over
+     * {@code SELECT bn || s AS c FROM t} the refusal reads position 10, the offset of {@code ||},
+     * and over {@code SELECT n AS a, bn || s AS c FROM t} it reads 18 — it tracks the operator through
+     * a longer prefix, a parenthesis, an enclosing call and a second select item alike (live-verified).
+     *
+     * @return the operator's position, or null where the expression was not built from a parse tree
+     */
+    public SourcePosition getPosition() {
+        return position;
+    }
+
+    public void setPosition(final SourcePosition position) {
+        this.position = position;
     }
 
     public Expression getLeft() {

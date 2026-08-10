@@ -31,6 +31,8 @@ public class DatePart extends BuiltInFunction {
         return SharedFunctionHelpers.datePart(args.get(0).toString(), SharedFunctionHelpers.toLocalDateTime(args.get(1)));
     }
 
-    @Override public int getMinArgCount() { return 2; }
-    @Override public int getMaxArgCount() { return 2; }
+    @Override
+    public int getMinArgCount() { return 2; }
+    @Override
+    public int getMaxArgCount() { return 2; }
 }

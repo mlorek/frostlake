@@ -33,6 +33,8 @@ public class StMakeGeomPoint extends BuiltInFunction {
             ((Number) args.get(0)).doubleValue(), ((Number) args.get(1)).doubleValue()), false, 0);
     }
 
-    @Override public int getMinArgCount() { return 2; }
-    @Override public int getMaxArgCount() { return 2; }
+    @Override
+    public int getMinArgCount() { return 2; }
+    @Override
+    public int getMaxArgCount() { return 2; }
 }

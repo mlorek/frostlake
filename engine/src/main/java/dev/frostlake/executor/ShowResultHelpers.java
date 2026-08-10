@@ -19,6 +19,7 @@ package dev.frostlake.executor;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.model.Database;
+import dev.frostlake.metastore.model.DefaultValueExpression;
 import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
@@ -36,7 +37,7 @@ import java.util.List;
  * Small stateless helpers shared by more than one SHOW/DESCRIBE sub-executor. Kept in one place so the
  * describe-result plumbing is not duplicated across the {@code Show*Executor} family.
  */
-final class ShowResultHelpers {
+public final class ShowResultHelpers {
 
     private ShowResultHelpers() {
     }
@@ -127,6 +128,47 @@ final class ShowResultHelpers {
 
     public static String text(final String value) {
         return value == null ? "" : value;
+    }
+
+    /**
+     * A column default rendered as the EXPRESSION live prints — a string default keeps its quotes
+     * ({@code 'active'}, embedded quotes doubled), numbers/booleans/keyword defaults and sequence
+     * expressions print verbatim. DESCRIBE TABLE's {@code default} cell and GET_DDL share this
+     * one rendering (live-verified on the DESCRIBE side: {@code DEFAULT 'active'} reads back as
+     * {@code 'active'}, not {@code active}).
+     */
+    public static String renderDefaultExpression(final Object def) {
+        if (def instanceof DefaultValueExpression || def instanceof Number || def instanceof Boolean) {
+            return def.toString();
+        }
+        final String s = def.toString();
+        final String upper = s.toUpperCase();
+        if (upper.equals("CURRENT_TIMESTAMP") || upper.equals("CURRENT_DATE") || upper.equals("CURRENT_TIME")
+                || upper.equals("TRUE") || upper.equals("FALSE") || upper.equals("NULL") || upper.endsWith("()")) {
+            return s;
+        }
+        return "'" + s.replace("'", "''") + "'";
+    }
+
+    /** SQL LIKE match (case-insensitive, {@code %} and {@code _} wildcards) for SHOW … LIKE filters. */
+    public static boolean matchesLike(final String value, final String pattern) {
+        if (value == null) {
+            return false;
+        }
+        final StringBuilder regex = new StringBuilder();
+        for (int i = 0; i < pattern.length(); i++) {
+            final char c = pattern.charAt(i);
+            if (c == '%') {
+                regex.append(".*");
+            } else if (c == '_') {
+                regex.append('.');
+            } else if ("\\.[]{}()*+-?^$|".indexOf(c) >= 0) {
+                regex.append('\\').append(c);
+            } else {
+                regex.append(c);
+            }
+        }
+        return value.matches("(?i)" + regex);
     }
 
     /**

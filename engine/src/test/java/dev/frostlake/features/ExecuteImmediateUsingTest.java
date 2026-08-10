@@ -16,10 +16,8 @@
 
 package dev.frostlake.features;
 
-import dev.frostlake.DatabaseEngine;
+import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
@@ -33,23 +31,11 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
  * and with a :variable source, plus quote-escaping of a string bind. EXECUTE IMMEDIATE is a statement,
  * not an expression: embedding it in a RETURN expression is a syntax error.
  */
-public class ExecuteImmediateUsingTest {
+public class ExecuteImmediateUsingTest extends BaseDatabaseTest {
 
-    private DatabaseEngine engine;
-
-    @BeforeEach
-    public void setUp() {
-        engine = new DatabaseEngine();
+    @Override
+    protected void setupTest() {
         engine.execute("CREATE DATABASE IF NOT EXISTS test_db");
-        engine.execute("USE DATABASE test_db");
-        engine.execute("USE SCHEMA public");
-    }
-
-    @AfterEach
-    public void tearDown() {
-        if (engine != null) {
-            engine.shutdown();
-        }
     }
 
     @Test

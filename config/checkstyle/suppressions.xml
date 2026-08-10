@@ -1,0 +1,32 @@
+<?xml version="1.0"?>
+<!DOCTYPE suppressions PUBLIC
+    "-//Checkstyle//DTD SuppressionFilter Configuration 1.2//EN"
+    "https://checkstyle.org/dtds/suppressions_1_2.dtd">
+
+<!--
+  NARROW, JUSTIFIED EXCEPTIONS ONLY. This file is not a backlog and must not become one: a rule with
+  outstanding work is a `warning` in checkstyle.xml instead, so its count stays visible. Everything
+  suppressed here is a case where the rule is wrong for the code, and the reason is written down.
+-->
+<suppressions>
+
+    <!-- This test is ABOUT stdout and stderr: it installs its own PrintStreams and asserts that a Java
+         UDF's writes are captured while writes from outside a UDF still pass through to whatever the
+         embedder installed. The System.out calls are the subject under test — two of them are inside a
+         UDF source string that gets compiled — so routing them through SLF4J would delete the test. -->
+    <suppress checks="RegexpSingleline"
+              files="[\\/]executor[\\/]udf[\\/]JarHandlerTest\.java$"/>
+
+    <!-- Files.walk RETURNS a java.util.stream.Stream and is used here as a try-with-resources handle
+         for a directory listing. That is the JDK's API surface, not stream-style programming: the rule
+         bans building pipelines, and there is no non-Stream NIO equivalent that takes a depth. -->
+    <suppress checks="IllegalImport"
+              files="[\\/]metastore[\\/]model[\\/]Stage\.java$"/>
+
+    <!-- GraalVM's Context.Builder.allowHostClassLookup TAKES a java.util.function.Predicate — the type
+         is imposed by the third-party API, not chosen. The rule's real target is functional-style code,
+         and this honours it: the argument is written as an anonymous class, not a lambda. -->
+    <suppress checks="IllegalImport"
+              files="[\\/]rt[\\/]js[\\/]GraalJsEngine\.java$"/>
+
+</suppressions>

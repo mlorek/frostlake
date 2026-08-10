@@ -104,7 +104,7 @@ public final class Functions {
             if (i > 0) {
                 text.append(", ");
             }
-            text.append(columns[i].getSql());
+            text.append(columns[i].sql());
         }
         return new Column(text.append(")").toString());
     }
@@ -184,7 +184,7 @@ public final class Functions {
             if (i > 0) {
                 text.append(", ");
             }
-            text.append(arguments[i].getSql());
+            text.append(arguments[i].sql());
         }
         return new Column(text.append(")").toString());
     }

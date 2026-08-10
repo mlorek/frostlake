@@ -41,7 +41,7 @@ public class TypeOf extends StructuredArgumentFunction {
         // Snowflake: a SQL NULL input yields NULL (NULL in, NULL out); only a JSON null VALUE
         // (below) reports "NULL_VALUE".
         if (args.get(0) == null) return null;
-        Object v = args.get(0);
+        final Object v = args.get(0);
         if (v instanceof VariantValue) {
             // A typed semi-structured value reports its EXACT inner type from the parsed tree —
             // no text sniffing, so a variant string "123" is VARCHAR, never INTEGER.
@@ -94,6 +94,8 @@ public class TypeOf extends StructuredArgumentFunction {
         return "VARCHAR";
     }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return 1; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return 1; }
 }

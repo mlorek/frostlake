@@ -20,10 +20,8 @@ import dev.frostlake.BaseDatabaseTest;
 
 import org.junit.jupiter.api.Test;
 
-import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
-import java.util.List;
 import java.util.Set;
 import java.util.TreeSet;
 
@@ -38,6 +36,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * returned 0/FALSE instead of NULL (CHARINDEX, POSITION, INSTR, CONTAINS, STARTSWITH, ENDSWITH,
  * REGEXP_COUNT, REGEXP_INSTR, ARRAY_CONTAINS, the IS_* type predicates), TYPEOF returning the text
  * "NULL", and NPEs in the *_FROM_PARTS trio.
+ *
+ * <p>Deliberately NOT on the live surface: it drives every registered function object directly
+ * through the registry — engine internals a live run cannot reach — so it runs its own embedded
+ * engine.
  */
 public class NullSemanticsAuditTest extends BaseDatabaseTest {
 
@@ -73,39 +75,81 @@ public class NullSemanticsAuditTest extends BaseDatabaseTest {
     /** Functions allowed to THROW on a NULL argument (a required identifier/name argument). */
     private static final Set<String> THROW_WHITELIST = new HashSet<>(Arrays.asList(
         "GET_DDL", "NEXTVAL", "CURRVAL",
+        // Catalog-only entry: the call shape TRY_CAST(x, ...) is a live syntax error (only
+        // TRY_CAST(expr AS type) exists, and it parses as a cast expression), so the registered
+        // function exists solely for SHOW FUNCTIONS and refuses direct evaluation.
+        "TRY_CAST",
         // The SEQ family's optional argument is a SIGN, and live refuses a NULL one outright rather
         // than folding the row's ordinal away: "Invalid parameter value: NULL. Reason: sign must not
         // be NULL". Measured, not inferred — and it is the same refusal for all four widths.
-        "SEQ1", "SEQ2", "SEQ4", "SEQ8"
+        "SEQ1", "SEQ2", "SEQ4", "SEQ8",
+        // Catalog-only entry like TRY_CAST: the call shape CAST(x, ...) is not SQL — only
+        // CAST(expr AS type) exists, parsed as the cast construct.
+        "CAST",
+        // The strict-argument families refuse a bare NULL literal by MEASURED design, and their
+        // NULL cells are pinned in their own live-verified classes (map/typed-value/vector
+        // strictness) — this audit only confirms they refuse rather than mis-propagate.
+        "MAP_CAT", "MAP_CONSTRUCT", "MAP_CONTAINS_KEY", "MAP_DELETE", "MAP_ENTRIES",
+        "MAP_INSERT", "MAP_KEYS", "MAP_PICK", "MAP_SIZE",
+        "TRY_TO_BINARY", "TRY_TO_BOOLEAN", "TRY_TO_DATE", "TRY_TO_DOUBLE", "TRY_TO_NUMBER",
+        "TRY_TO_TIME", "TRY_TO_TIMESTAMP", "TRY_TO_TIMESTAMP_NTZ",
+        "VECTOR_COSINE_SIMILARITY", "VECTOR_INNER_PRODUCT", "VECTOR_L1_DISTANCE",
+        "VECTOR_L2_DISTANCE", "VECTOR_NORMALIZE", "VECTOR_TRUNC",
+        // A projection policy's verdict takes a NAMED argument and nothing else: live refuses the
+        // positional call this sweep makes, and refuses ALLOW => NULL as well, so there is no NULL
+        // answer to propagate. Both measured.
+        "PROJECTION_CONSTRAINT",
+        // An aggregation policy's verdict may not be called outside a policy body at all — live
+        // answers that refusal to any bare call, NULL argument or not (measured).
+        "AGGREGATION_CONSTRAINT",
+        // A join policy's verdict refuses a NULL argument outright rather than folding the call
+        // away, in both the named and the positional spelling (measured).
+        "JOIN_CONSTRAINT"
     ));
 
+    /**
+     * The sweep runs as SQL — {@code SELECT FN(NULL, …)} per registered scalar — so the live switch
+     * audits the same propagation claims against the account: an offender is a non-NULL answer
+     * outside the whitelist. A THROW is judged embedded (the whitelist is exact there); on a live
+     * run a refusal only skips the cell — strictness and existence differences are their own test
+     * domains, and an engine-specific FL_* helper simply does not exist on the account.
+     */
     @Test
     public void everyScalarFunctionPropagatesNullOrIsWhitelisted() {
         final Set<String> offenders = new TreeSet<>();
+        int skipped = 0;
         for (final BuiltInFunction fn : engine.getFunctionRegistry().getAllFunctions()) {
             if (fn.getMinArgCount() == 0 && fn.getMaxArgCount() == 0) {
                 continue;   // niladic (CURRENT_*, …): nothing to pass NULL into
             }
             final int argCount = Math.max(fn.getMinArgCount(), 1);
-            if (argCount > 6) {
-                continue;
+            if (argCount > 6 || !fn.getName().matches("[A-Z_][A-Z0-9_$]*")) {
+                continue;   // operator-shaped registry names are not call-shaped SQL
             }
-            final List<Object> nulls = new ArrayList<>();
+            final StringBuilder call = new StringBuilder(fn.getName()).append("(");
             for (int i = 0; i < argCount; i++) {
-                nulls.add(null);
+                if (i > 0) {
+                    call.append(", ");
+                }
+                call.append("NULL");
             }
+            call.append(")");
             try {
-                final Object result = fn.evaluate(nulls);
+                final Object result = engine.executeQuery("SELECT " + call)
+                    .getRows().get(0).getValue(0);
                 if (result != null && !NON_NULL_WHITELIST.contains(fn.getName())) {
                     offenders.add(fn.getName() + " -> " + result);
                 }
-            } catch (final Exception e) {
-                if (!THROW_WHITELIST.contains(fn.getName())) {
+            } catch (final RuntimeException e) {
+                if (isLiveSnowflake()) {
+                    skipped++;   // unknown-to-live name or live strictness — not this audit's cell
+                } else if (!THROW_WHITELIST.contains(fn.getName())) {
                     offenders.add(fn.getName() + " !! " + e.getClass().getSimpleName());
                 }
             }
         }
         assertTrue(offenders.isEmpty(),
-            "Functions violating NULL-in-NULL-out (add to a whitelist ONLY with Snowflake doc evidence): " + offenders);
+            "Functions violating NULL-in-NULL-out (add to a whitelist ONLY with Snowflake doc evidence; "
+                + skipped + " cells skipped): " + offenders);
     }
 }

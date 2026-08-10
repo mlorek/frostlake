@@ -21,7 +21,6 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assumptions.assumeFalse;
 
 /**
  * {@code FL_GET_ETAG(file)} — the descriptor's {@code ETAG} field.
@@ -59,7 +58,6 @@ public class FlGetEtagTest extends StagedFileTestSupport {
      */
     @Test
     public void computesTheMd5OfTheStagedBytes() {
-        assumeFalse(isLiveSnowflake(), stageOnlyReason());
         stage("hello.txt", HELLO_BYTES);
 
         assertEquals(HELLO_ETAG, etag("TO_FILE('@st/hello.txt')"));
@@ -68,7 +66,6 @@ public class FlGetEtagTest extends StagedFileTestSupport {
     /** Live: the digest is over the bytes alone, so two names holding the same content share an ETAG. */
     @Test
     public void identicalBytesUnderDifferentNamesShareAnEtag() {
-        assumeFalse(isLiveSnowflake(), stageOnlyReason());
         stage("hello.txt", HELLO_BYTES);
         stage("copy.log", HELLO_BYTES);
         stage("sub/deeper.txt", HELLO_BYTES);
@@ -80,7 +77,6 @@ public class FlGetEtagTest extends StagedFileTestSupport {
     /** Live: change one byte and the ETAG changes — it is a digest, not a stable file id. */
     @Test
     public void changingTheBytesChangesTheEtag() {
-        assumeFalse(isLiveSnowflake(), stageOnlyReason());
         stage("hello.txt", HELLO_BYTES);
         stage("changed.txt", "hello world\nsecond line!\n");
 

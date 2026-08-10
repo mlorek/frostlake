@@ -19,10 +19,9 @@ package dev.frostlake.functions;
 import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
 import org.junit.jupiter.api.Test;
-
+import org.junit.jupiter.api.function.Executable;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class MathFunctionsTest extends BaseDatabaseTest {
 
@@ -43,7 +42,7 @@ public class MathFunctionsTest extends BaseDatabaseTest {
 
     @Test
     public void testSignPositive() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT SIGN(value) as sign_val FROM test_numbers WHERE id = 1"
         );
         assertEquals(1, result.getRowCount());
@@ -52,7 +51,7 @@ public class MathFunctionsTest extends BaseDatabaseTest {
 
     @Test
     public void testSignNegative() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT SIGN(value) as sign_val FROM test_numbers WHERE id = 2"
         );
         assertEquals(1, result.getRowCount());
@@ -61,7 +60,7 @@ public class MathFunctionsTest extends BaseDatabaseTest {
 
     @Test
     public void testSignZero() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT SIGN(value) as sign_val FROM test_numbers WHERE id = 3"
         );
         assertEquals(1, result.getRowCount());
@@ -72,7 +71,7 @@ public class MathFunctionsTest extends BaseDatabaseTest {
 
     @Test
     public void testTruncNoScale() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT TRUNC(value) as truncated FROM test_numbers WHERE id = 1"
         );
         assertEquals(1, result.getRowCount());
@@ -82,7 +81,7 @@ public class MathFunctionsTest extends BaseDatabaseTest {
 
     @Test
     public void testTruncNegativeNoScale() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT TRUNC(value) as truncated FROM test_numbers WHERE id = 2"
         );
         assertEquals(1, result.getRowCount());
@@ -92,7 +91,7 @@ public class MathFunctionsTest extends BaseDatabaseTest {
 
     @Test
     public void testTruncWithScale() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT TRUNC(10.56789, 2) as truncated FROM test_numbers WHERE id = 1"
         );
         assertEquals(1, result.getRowCount());
@@ -102,7 +101,7 @@ public class MathFunctionsTest extends BaseDatabaseTest {
 
     @Test
     public void testTruncZeroScale() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT TRUNC(value, 0) as truncated FROM test_numbers WHERE id = 1"
         );
         assertEquals(1, result.getRowCount());
@@ -114,7 +113,7 @@ public class MathFunctionsTest extends BaseDatabaseTest {
 
     @Test
     public void testExpZero() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT EXP(0) as exp_val FROM test_numbers WHERE id = 1"
         );
         assertEquals(1, result.getRowCount());
@@ -124,7 +123,7 @@ public class MathFunctionsTest extends BaseDatabaseTest {
 
     @Test
     public void testExpOne() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT EXP(1) as exp_val FROM test_numbers WHERE id = 1"
         );
         assertEquals(1, result.getRowCount());
@@ -134,7 +133,7 @@ public class MathFunctionsTest extends BaseDatabaseTest {
 
     @Test
     public void testExpTwo() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT EXP(2) as exp_val FROM test_numbers WHERE id = 1"
         );
         assertEquals(1, result.getRowCount());
@@ -146,7 +145,7 @@ public class MathFunctionsTest extends BaseDatabaseTest {
 
     @Test
     public void testLnOne() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT LN(1) as ln_val FROM test_numbers WHERE id = 1"
         );
         assertEquals(1, result.getRowCount());
@@ -156,7 +155,7 @@ public class MathFunctionsTest extends BaseDatabaseTest {
 
     @Test
     public void testLnE() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT LN(value) as ln_val FROM test_numbers WHERE id = 5"
         );
         assertEquals(1, result.getRowCount());
@@ -166,26 +165,34 @@ public class MathFunctionsTest extends BaseDatabaseTest {
 
     @Test
     public void testLnPositive() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT LN(value) as ln_val FROM test_numbers WHERE id = 1"
         );
         assertEquals(1, result.getRowCount());
         // LN(10.5) ≈ 2.35
-        double expected = Math.log(10.5);
+        final double expected = Math.log(10.5);
         assertEquals(expected, ((Number) result.getRows().get(0).getValue(result.getColumnIndex("ln_val"))).doubleValue(), 0.0001);
     }
 
     @Test
     public void testLnNegativeThrowsError() {
-        assertThrows(RuntimeException.class, () -> {
-            engine.executeQuery("SELECT LN(value) as ln_val FROM test_numbers WHERE id = 2");
+        assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                engine.executeQuery("SELECT LN(value) as ln_val FROM test_numbers WHERE id = 2");
+                
+            }
         });
     }
 
     @Test
     public void testLnZeroThrowsError() {
-        assertThrows(RuntimeException.class, () -> {
-            engine.executeQuery("SELECT LN(value) as ln_val FROM test_numbers WHERE id = 3");
+        assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                engine.executeQuery("SELECT LN(value) as ln_val FROM test_numbers WHERE id = 3");
+                
+            }
         });
     }
 
@@ -193,7 +200,7 @@ public class MathFunctionsTest extends BaseDatabaseTest {
 
     @Test
     public void testLogBase10() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT LOG(10, value) as log_val FROM test_numbers WHERE id = 4"
         );
         assertEquals(1, result.getRowCount());
@@ -203,7 +210,7 @@ public class MathFunctionsTest extends BaseDatabaseTest {
 
     @Test
     public void testLogBase10Ten() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT LOG(10, 10) as log_val FROM test_numbers WHERE id = 1"
         );
         assertEquals(1, result.getRowCount());
@@ -213,7 +220,7 @@ public class MathFunctionsTest extends BaseDatabaseTest {
 
     @Test
     public void testLogCustomBase() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT LOG(2, 8) as log_val FROM test_numbers WHERE id = 1"
         );
         assertEquals(1, result.getRowCount());
@@ -223,7 +230,7 @@ public class MathFunctionsTest extends BaseDatabaseTest {
 
     @Test
     public void testLogCustomBase10() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT LOG(10, 1000) as log_val FROM test_numbers WHERE id = 1"
         );
         assertEquals(1, result.getRowCount());
@@ -235,7 +242,7 @@ public class MathFunctionsTest extends BaseDatabaseTest {
 
     @Test
     public void testExpLnInverse() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT EXP(LN(value)) as result FROM test_numbers WHERE id = 1"
         );
         assertEquals(1, result.getRowCount());
@@ -245,7 +252,7 @@ public class MathFunctionsTest extends BaseDatabaseTest {
 
     @Test
     public void testSignAbsCombination() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT SIGN(value) * ABS(value) as result FROM test_numbers WHERE id = 2"
         );
         assertEquals(1, result.getRowCount());
@@ -255,7 +262,7 @@ public class MathFunctionsTest extends BaseDatabaseTest {
 
     @Test
     public void testTruncVsRound() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT TRUNC(10.9) as trunc_val, ROUND(10.9) as round_val FROM test_numbers WHERE id = 1"
         );
         assertEquals(1, result.getRowCount());

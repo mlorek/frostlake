@@ -27,16 +27,19 @@ public class Haversine extends NumericArgumentFunction {
     @Override
     public Object evaluate(final List<Object> args) {
         if (args.get(0) == null || args.get(1) == null || args.get(2) == null || args.get(3) == null) return null;
-        double lat1 = Math.toRadians(((Number) args.get(0)).doubleValue());
-        double lon1 = Math.toRadians(((Number) args.get(1)).doubleValue());
-        double lat2 = Math.toRadians(((Number) args.get(2)).doubleValue());
-        double lon2 = Math.toRadians(((Number) args.get(3)).doubleValue());
-        double dlat = lat2 - lat1, dlon = lon2 - lon1;
-        double a = Math.pow(Math.sin(dlat / 2), 2)
+        final double lat1 = Math.toRadians(((Number) args.get(0)).doubleValue());
+        final double lon1 = Math.toRadians(((Number) args.get(1)).doubleValue());
+        final double lat2 = Math.toRadians(((Number) args.get(2)).doubleValue());
+        final double lon2 = Math.toRadians(((Number) args.get(3)).doubleValue());
+        final double dlat = lat2 - lat1;
+        final double dlon = lon2 - lon1;
+        final double a = Math.pow(Math.sin(dlat / 2), 2)
                  + Math.cos(lat1) * Math.cos(lat2) * Math.pow(Math.sin(dlon / 2), 2);
         return 6371.0 * 2 * Math.asin(Math.sqrt(a));
     }
 
-    @Override public int getMinArgCount() { return 4; }
-    @Override public int getMaxArgCount() { return 4; }
+    @Override
+    public int getMinArgCount() { return 4; }
+    @Override
+    public int getMaxArgCount() { return 4; }
 }

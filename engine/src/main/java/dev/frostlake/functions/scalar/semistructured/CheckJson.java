@@ -32,7 +32,7 @@ public class CheckJson extends BuiltInFunction {
     @Override
     public Object evaluate(final List<Object> args) {
         if (args.get(0) == null) return null;
-        String input = args.get(0).toString().trim();
+        final String input = args.get(0).toString().trim();
         try {
             // Snowflake accepts the bare `undefined` token: live, CHECK_JSON('[1,undefined,2]')
             // reports the text as VALID (SQL NULL, no error).
@@ -43,6 +43,8 @@ public class CheckJson extends BuiltInFunction {
         }
     }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return 1; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return 1; }
 }

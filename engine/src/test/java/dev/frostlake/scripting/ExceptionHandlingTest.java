@@ -16,10 +16,8 @@
 
 package dev.frostlake.scripting;
 
-import dev.frostlake.DatabaseEngine;
+import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 import org.slf4j.Logger;
@@ -32,36 +30,20 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 /**
  * Tests for exception handling in Snowflake SQL scripting
  */
-public class ExceptionHandlingTest {
+public class ExceptionHandlingTest extends BaseDatabaseTest {
 
     private static final Logger logger = LoggerFactory.getLogger(ExceptionHandlingTest.class);
-    private DatabaseEngine engine;
-
-    @BeforeEach
-    public void setUp() {
-        engine = new DatabaseEngine();
-        engine.getStorageEngine().setEnforcePrimaryKey(true); // tests rely on PK enforcement
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
-    }
-
-    @AfterEach
-    public void tearDown() {
-        if (engine != null) {
-            engine.shutdown();
-        }
-    }
 
     @Test
     public void testBasicExceptionHandling() {
-        engine.execute("CREATE TABLE test (id INTEGER PRIMARY KEY)");
+        engine.execute("CREATE TABLE test (id INTEGER NOT NULL)");
 
-        // Insert a row, then try to insert a duplicate (will cause an error)
+        // Insert a row, then insert NULL into the NOT NULL column (will cause an error)
         // The exception handler should catch it
         engine.execute("""
             BEGIN
                 INSERT INTO test VALUES (1);
-                INSERT INTO test VALUES (1);
+                INSERT INTO test VALUES (NULL);
             EXCEPTION
                 WHEN OTHER THEN
                     INSERT INTO test VALUES (2);
@@ -69,7 +51,7 @@ public class ExceptionHandlingTest {
             """);
 
         // Should have rows 1 and 2 (the second 1 failed, handler inserted 2)
-        ResultSet rs = engine.executeQuery("SELECT COUNT(*) as cnt FROM test");
+        final ResultSet rs = engine.executeQuery("SELECT COUNT(*) as cnt FROM test");
         assertEquals(2, ((Number) rs.getRows().get(0).getValue(0)).intValue());
     }
 
@@ -99,31 +81,31 @@ public class ExceptionHandlingTest {
 
     @Test
     public void testMultipleExceptionHandlers() {
-        engine.execute("CREATE TABLE test (id INTEGER PRIMARY KEY)");
+        engine.execute("CREATE TABLE test (id INTEGER NOT NULL)");
 
-        // Try to insert duplicate, first handler should catch it
+        // Insert NULL into the NOT NULL column; the first matching handler catches it
         engine.execute("""
             BEGIN
                 INSERT INTO test VALUES (1);
-                INSERT INTO test VALUES (1);
+                INSERT INTO test VALUES (NULL);
             EXCEPTION
-                WHEN RuntimeException THEN
+                WHEN STATEMENT_ERROR THEN
                     INSERT INTO test VALUES (2);
                 WHEN OTHER THEN
                     INSERT INTO test VALUES (3);
             END;
             """);
 
-        ResultSet rs = engine.executeQuery("SELECT COUNT(*) as cnt FROM test");
+        final ResultSet rs = engine.executeQuery("SELECT COUNT(*) as cnt FROM test");
         // Should have at least 1 row (the first insert succeeded)
-        int count = ((Number) rs.getRows().get(0).getValue(0)).intValue();
+        final int count = ((Number) rs.getRows().get(0).getValue(0)).intValue();
         logger.info("Row count after exception handling: {}", count);
         assertNotNull(rs);
     }
 
     @Test
     public void testNestedExceptionHandling() {
-        engine.execute("CREATE TABLE test (id INTEGER PRIMARY KEY)");
+        engine.execute("CREATE TABLE test (id INTEGER NOT NULL)");
 
         // Nested BEGIN/END blocks with exception handling
         engine.execute("""
@@ -131,7 +113,7 @@ public class ExceptionHandlingTest {
                 INSERT INTO test VALUES (1);
                 BEGIN
                     INSERT INTO test VALUES (2);
-                    INSERT INTO test VALUES (2);
+                    INSERT INTO test VALUES (NULL);
                 EXCEPTION
                     WHEN OTHER THEN
                         INSERT INTO test VALUES (3);
@@ -144,24 +126,24 @@ public class ExceptionHandlingTest {
             """);
 
         // Should have rows 1, 2, 3, 4
-        ResultSet rs = engine.executeQuery("SELECT COUNT(*) as cnt FROM test");
-        int count = ((Number) rs.getRows().get(0).getValue(0)).intValue();
+        final ResultSet rs = engine.executeQuery("SELECT COUNT(*) as cnt FROM test");
+        final int count = ((Number) rs.getRows().get(0).getValue(0)).intValue();
         logger.info("Row count after nested exception handling: {}", count);
         assertEquals(4, count);
     }
 
     @Test
     public void testExceptionNotHandled() {
-        engine.execute("CREATE TABLE test (id INTEGER PRIMARY KEY)");
+        engine.execute("CREATE TABLE test (id INTEGER NOT NULL)");
 
-        // Insert duplicate but no exception handler
+        // Insert NULL into the NOT NULL column with no exception handler
         assertThrows(RuntimeException.class, new Executable() {
             @Override
             public void execute() throws Throwable {
                 engine.execute("""
                     BEGIN
                         INSERT INTO test VALUES (1);
-                        INSERT INTO test VALUES (1);
+                        INSERT INTO test VALUES (NULL);
                     END;
                     """);
             }
@@ -170,14 +152,14 @@ public class ExceptionHandlingTest {
 
     @Test
     public void testExceptionHandlerWithStatements() {
-        engine.execute("CREATE TABLE test (id INTEGER PRIMARY KEY)");
+        engine.execute("CREATE TABLE test (id INTEGER NOT NULL)");
         engine.execute("CREATE TABLE error_log (error_msg VARCHAR)");
 
         // Exception handler with multiple statements
         engine.execute("""
             BEGIN
                 INSERT INTO test VALUES (1);
-                INSERT INTO test VALUES (1);
+                INSERT INTO test VALUES (NULL);
             EXCEPTION
                 WHEN OTHER THEN
                     INSERT INTO error_log VALUES ('Error occurred');
@@ -195,41 +177,42 @@ public class ExceptionHandlingTest {
     }
 
     @Test
-    public void testExceptionHandlingWithoutSemicolon() {
-        engine.execute("CREATE TABLE test (id INTEGER PRIMARY KEY)");
+    public void testExceptionHandlerBeforeBlockEnd() {
+        engine.execute("CREATE TABLE test (id INTEGER NOT NULL)");
 
-        // Exception section without semicolons
+        // Every statement carries its semicolon — live refuses a statement that runs into
+        // EXCEPTION or END without one.
         engine.execute("""
             BEGIN
                 INSERT INTO test VALUES (1);
-                INSERT INTO test VALUES (1)
-            EXCEPTION
-                WHEN OTHER THEN
-                    INSERT INTO test VALUES (2)
-            END
-            """);
-
-        ResultSet rs = engine.executeQuery("SELECT COUNT(*) as cnt FROM test");
-        assertEquals(2, ((Number) rs.getRows().get(0).getValue(0)).intValue());
-    }
-
-    @Test
-    public void testSimpleExceptionCatchAll() {
-        engine.execute("CREATE TABLE test (id INTEGER PRIMARY KEY)");
-
-        // Simple catch-all exception handler with duplicate key error
-        engine.execute("""
-            BEGIN
-                INSERT INTO test VALUES (1);
-                INSERT INTO test VALUES (1);
+                INSERT INTO test VALUES (NULL);
             EXCEPTION
                 WHEN OTHER THEN
                     INSERT INTO test VALUES (2);
             END;
             """);
 
-        ResultSet rs = engine.executeQuery("SELECT COUNT(*) as cnt FROM test");
-        // Handler should have caught the duplicate key error
+        final ResultSet rs = engine.executeQuery("SELECT COUNT(*) as cnt FROM test");
+        assertEquals(2, ((Number) rs.getRows().get(0).getValue(0)).intValue());
+    }
+
+    @Test
+    public void testSimpleExceptionCatchAll() {
+        engine.execute("CREATE TABLE test (id INTEGER NOT NULL)");
+
+        // Simple catch-all exception handler over a NOT NULL violation
+        engine.execute("""
+            BEGIN
+                INSERT INTO test VALUES (1);
+                INSERT INTO test VALUES (NULL);
+            EXCEPTION
+                WHEN OTHER THEN
+                    INSERT INTO test VALUES (2);
+            END;
+            """);
+
+        final ResultSet rs = engine.executeQuery("SELECT COUNT(*) as cnt FROM test");
+        // Handler should have caught the NOT NULL violation
         assertEquals(2, ((Number) rs.getRows().get(0).getValue(0)).intValue());
     }
 }

@@ -17,15 +17,16 @@
 package dev.frostlake.jdbc;
 
 import dev.frostlake.BaseJdbcTest;
-import org.junit.jupiter.api.Assumptions;
-import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 
 import java.sql.ResultSet;
 import java.sql.SQLException;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -35,17 +36,71 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 public class JdbcMultiStatementTest extends BaseJdbcTest {
 
-    @BeforeEach
-    public void onlyEmbedded() {
-        // Frostlake's driver runs every `;`-separated statement of one execute() by itself; the
-        // real Snowflake JDBC driver requires an explicit per-statement MULTI_STATEMENT_COUNT
-        // parameter, so this transport extension is not exercised against the live account.
-        Assumptions.assumeFalse(isLiveSnowflake(),
-            "multi-statement execute() is a Frostlake driver extension");
+    /** The gate's exact wording (live-verified — state 0A000, code 8, exact-count both ways). */
+    private void assertPackRefused(final String sql, final int actual, final int desired) {
+        final SQLException e = assertThrows(SQLException.class, new Executable() {
+            @Override
+            public void execute() throws SQLException {
+                statement.execute(sql);
+            }
+        });
+        assertEquals("Actual statement count " + actual + " did not match the desired statement count "
+            + desired + ".", e.getMessage());
+        assertEquals("0A000", e.getSQLState());
+        assertEquals(8, e.getErrorCode());
+    }
+
+    private void allowAnyCount() throws SQLException {
+        statement.execute("ALTER SESSION SET MULTI_STATEMENT_COUNT = 0");
+    }
+
+    @AfterEach
+    public void restoreSingleStatementDefault() throws SQLException {
+        // A live session is shared beyond this class — never leak the parameter. The statement
+        // parameter overrides whatever session count a test left behind, so the UNSET always runs.
+        setStatementCount(1);
+        statement.execute("ALTER SESSION UNSET MULTI_STATEMENT_COUNT");
+    }
+
+    @Test
+    public void aPackIsRefusedByDefault() {
+        assertPackRefused("SELECT 1; SELECT 2", 2, 1);
+    }
+
+    @Test
+    public void aTrailingSemicolonIsStillOneStatement() throws SQLException {
+        try (final ResultSet rs = statement.executeQuery("SELECT 1 AS x;")) {
+            assertTrue(rs.next());
+            assertEquals(1, rs.getInt(1));
+        }
+    }
+
+    /** The per-statement parameter, through each transport's own unwrap surface. */
+    private void setStatementCount(final int n) throws SQLException {
+        if (isLiveSnowflake()) {
+            statement.unwrap(net.snowflake.client.api.statement.SnowflakeStatement.class)
+                .setParameter("MULTI_STATEMENT_COUNT", n);
+        } else {
+            statement.unwrap(DirectStatement.class).setParameter("MULTI_STATEMENT_COUNT", n);
+        }
+    }
+
+    @Test
+    public void theCountMustMatchExactlyInBothDirections() throws SQLException {
+        statement.execute("ALTER SESSION SET MULTI_STATEMENT_COUNT = 2");
+        assertPackRefused("SELECT 1; SELECT 2; SELECT 3", 3, 2);
+        assertPackRefused("SELECT 1", 1, 2);
+        // The ALTER SESSION statement is gated like any other — under a count of 2 even the UNSET
+        // refuses as one statement; the per-statement parameter is the escape hatch.
+        assertPackRefused("ALTER SESSION UNSET MULTI_STATEMENT_COUNT", 1, 2);
+        setStatementCount(1);
+        statement.execute("ALTER SESSION UNSET MULTI_STATEMENT_COUNT");
+        assertPackRefused("SELECT 1; SELECT 2", 2, 1);
     }
 
     @Test
     public void multipleStatementsInOneExecuteAllRun() throws SQLException {
+        allowAnyCount();
         // DDL + several DML in a single execute — every statement takes effect.
         statement.execute(
             "CREATE TABLE mt (a NUMBER); INSERT INTO mt VALUES (1); INSERT INTO mt VALUES (2); INSERT INTO mt VALUES (3)");
@@ -57,6 +112,7 @@ public class JdbcMultiStatementTest extends BaseJdbcTest {
 
     @Test
     public void iterateMultipleResultSets() throws SQLException {
+        allowAnyCount();
         final boolean firstIsResultSet = statement.execute("SELECT 1 AS x; SELECT 2 AS y; SELECT 3 AS z");
         assertTrue(firstIsResultSet, "first statement produced a result set");
 
@@ -79,6 +135,7 @@ public class JdbcMultiStatementTest extends BaseJdbcTest {
 
     @Test
     public void mixedDmlAndSelectBatch() throws SQLException {
+        allowAnyCount();
         statement.execute("CREATE TABLE mt2 (a NUMBER)");
         // A batch that inserts then selects — the SELECT's result set is reachable.
         final boolean firstIsResultSet = statement.execute(

@@ -34,10 +34,12 @@ public class IsObject extends StructuredArgumentFunction {
             }
         }
         if (args.get(0) == null) return false;
-        JsonNode node = JsonTypeHelper.parse(args.get(0));
+        final JsonNode node = JsonTypeHelper.parse(args.get(0));
         return node != null && node.isObject();
     }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return 1; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return 1; }
 }

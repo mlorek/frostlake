@@ -20,17 +20,19 @@ import dev.frostlake.executor.StatementClock;
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.types.DateTimeType;
 
-import java.time.LocalDateTime;
 import java.util.List;
 
 public class CurrentTimestamp extends BuiltInFunction {
-    public CurrentTimestamp() { super("CURRENT_TIMESTAMP", DateTimeType.TIMESTAMP_NTZ); }
+    // Live types this TIMESTAMP_LTZ(9) — the session-timezone flavor, not NTZ.
+    public CurrentTimestamp() { super("CURRENT_TIMESTAMP", DateTimeType.TIMESTAMP_LTZ); }
 
     @Override
     public Object evaluate(final List<Object> args) { return StatementClock.now(); }
 
-    @Override public int getMinArgCount() { return 0; }
+    @Override
+    public int getMinArgCount() { return 0; }
     // Snowflake accepts an optional fractional-seconds precision argument (CURRENT_TIMESTAMP(3));
     // the engine renders full precision regardless, so the argument is accepted and ignored.
-    @Override public int getMaxArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return 1; }
 }

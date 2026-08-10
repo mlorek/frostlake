@@ -39,13 +39,13 @@ public class ArrayAppend extends VariantAccessorFunction {
     @Override
     public Object evaluate(final List<Object> args) {
         if (args.get(0) == null) return null;
-        String arrayStr = args.get(0).toString().trim();
-        Object value = args.get(1);
+        final String arrayStr = args.get(0).toString().trim();
+        final Object value = args.get(1);
 
         try {
             // The source array may already hold a VARIANT `undefined` element, whose canonical text is the
             // bare token no JSON parser accepts on its own — see VariantUndefined.
-            ArrayNode array = (ArrayNode) VariantUndefined.readTree(MAPPER, arrayStr);
+            final ArrayNode array = (ArrayNode) VariantUndefined.readTree(MAPPER, arrayStr);
             if (value == null) {
                 // Live: ARRAY_APPEND([1], NULL) is [1,undefined] and
                 // ARRAY_APPEND(PARSE_JSON('[1,null,2]'), NULL) is [1,null,2,undefined] — the appended SQL
@@ -58,9 +58,12 @@ public class ArrayAppend extends VariantAccessorFunction {
             } else if (value instanceof Number) {
                 array.add(((Number) value).doubleValue());
             } else {
-                String s = value.toString().trim();
+                final String s = value.toString().trim();
                 if ((s.startsWith("[") || s.startsWith("{")) && !s.isEmpty()) {
-                    try { array.add(MAPPER.readTree(s)); return VariantValue.ofNode(array); }
+                    try {
+                        array.add(MAPPER.readTree(s));
+                        return VariantValue.ofNode(array);
+                    }
                     catch (final Exception ignored) {}
                 }
                 array.add(s);
@@ -71,6 +74,8 @@ public class ArrayAppend extends VariantAccessorFunction {
         }
     }
 
-    @Override public int getMinArgCount() { return 2; }
-    @Override public int getMaxArgCount() { return 2; }
+    @Override
+    public int getMinArgCount() { return 2; }
+    @Override
+    public int getMaxArgCount() { return 2; }
 }

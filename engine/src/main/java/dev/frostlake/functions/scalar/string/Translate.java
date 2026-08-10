@@ -27,12 +27,12 @@ public class Translate extends TextArgumentFunction {
     @Override
     public Object evaluate(final List<Object> args) {
         if (args.get(0) == null) return null;
-        String str = args.get(0).toString();
-        String from = args.get(1) == null ? "" : args.get(1).toString();
-        String to   = args.get(2) == null ? "" : args.get(2).toString();
-        StringBuilder result = new StringBuilder();
+        final String str = args.get(0).toString();
+        final String from = args.get(1) == null ? "" : args.get(1).toString();
+        final String to   = args.get(2) == null ? "" : args.get(2).toString();
+        final StringBuilder result = new StringBuilder();
         for (final char c : str.toCharArray()) {
-            int idx = from.indexOf(c);
+            final int idx = from.indexOf(c);
             if (idx < 0) {
                 result.append(c);
             } else if (idx < to.length()) {
@@ -42,6 +42,8 @@ public class Translate extends TextArgumentFunction {
         return result.toString();
     }
 
-    @Override public int getMinArgCount() { return 3; }
-    @Override public int getMaxArgCount() { return 3; }
+    @Override
+    public int getMinArgCount() { return 3; }
+    @Override
+    public int getMaxArgCount() { return 3; }
 }

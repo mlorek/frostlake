@@ -16,7 +16,11 @@
 
 package dev.frostlake.demo;
 
-import dev.frostlake.metastore.model.*;
+import dev.frostlake.metastore.model.Schema;
+import dev.frostlake.metastore.model.Stream;
+import dev.frostlake.metastore.model.StreamRecord;
+import dev.frostlake.metastore.model.Task;
+import dev.frostlake.metastore.model.TaskExecution;
 import dev.frostlake.storage.ResultSet;
 
 /**
@@ -65,8 +69,8 @@ public class StreamsAndTasksDemo extends AbstractDemo {
             printSuccess("Inserted 3 customers\n");
 
             // Check stream
-            Schema schema = engine.getCatalog().getDatabase("analytics_db").getSchema("PUBLIC");
-            Stream stream = schema.getStream("customer_changes");
+            final Schema schema = engine.getCatalog().getDatabase("analytics_db").getSchema("PUBLIC");
+            final Stream stream = schema.getStream("customer_changes");
 
             System.out.println("Stream status:");
             System.out.println("  Unconsumed records: " + stream.getUnconsumedCount());
@@ -86,8 +90,8 @@ public class StreamsAndTasksDemo extends AbstractDemo {
             System.out.println("  Unconsumed records: " + stream.getUnconsumedCount());
             System.out.println("  Change types:");
             for (final StreamRecord record : stream.getUnconsumedRecords()) {
-                String type = record.getChangeType().toString();
-                String update = record.isUpdate() ? " (from UPDATE)" : "";
+                final String type = record.getChangeType().toString();
+                final String update = record.isUpdate() ? " (from UPDATE)" : "";
                 System.out.println("    - " + type + update);
             }
 
@@ -100,7 +104,7 @@ public class StreamsAndTasksDemo extends AbstractDemo {
             engine.execute("UPDATE orders SET amount = 800 WHERE order_id = 2");
             engine.execute("DELETE FROM orders WHERE order_id = 1");
 
-            Stream orderStream = schema.getStream("order_stream");
+            final Stream orderStream = schema.getStream("order_stream");
             System.out.println("\nAppend-only stream status:");
             System.out.println("  Unconsumed records: " + orderStream.getUnconsumedCount());
             System.out.println("  (Only tracks INSERTs, ignores UPDATEs and DELETEs)");
@@ -119,7 +123,7 @@ public class StreamsAndTasksDemo extends AbstractDemo {
             );
             printSuccess("Created task 'daily_summary_task' (runs every 60 minutes)");
 
-            Task task = schema.getTask("daily_summary_task");
+            final Task task = schema.getTask("daily_summary_task");
             System.out.println("\nTask details:");
             System.out.println("  Name: " + task.getName());
             System.out.println("  Schedule: " + task.getSchedule());
@@ -132,12 +136,12 @@ public class StreamsAndTasksDemo extends AbstractDemo {
             System.out.println("  State: " + task.getState());
 
             printSubsection("7. Manual Task Execution (For Demo)");
-            String qualifiedName = "analytics_db.PUBLIC.daily_summary_task";
+            final String qualifiedName = "analytics_db.PUBLIC.daily_summary_task";
             engine.getTaskScheduler().executeTaskNow(qualifiedName, task);
             printSuccess("Task executed manually");
 
             // Check results
-            ResultSet summary = engine.executeQuery("SELECT * FROM daily_summary");
+            final ResultSet summary = engine.executeQuery("SELECT * FROM daily_summary");
             System.out.println("\nTask execution results:");
             printResultSet(summary);
 
@@ -147,7 +151,7 @@ public class StreamsAndTasksDemo extends AbstractDemo {
             System.out.println("  Failed: " + task.getFailureCount());
 
             if (!task.getExecutionHistory().isEmpty()) {
-                TaskExecution lastExecution = task.getExecutionHistory().get(0);
+                final TaskExecution lastExecution = task.getExecutionHistory().get(0);
                 System.out.println("  Last execution:");
                 System.out.println("    State: " + lastExecution.getState());
                 System.out.println("    Rows affected: " + lastExecution.getRowsAffected());
@@ -206,7 +210,7 @@ public class StreamsAndTasksDemo extends AbstractDemo {
             );
             printSuccess("Created task to process inventory changes");
 
-            Task inventoryTask = schema.getTask("process_inventory_changes");
+            final Task inventoryTask = schema.getTask("process_inventory_changes");
             System.out.println("\nTask configuration:");
             System.out.println("  Schedule: Every 5 minutes");
             System.out.println("  Purpose: Process stream changes and write to audit table");
@@ -216,7 +220,7 @@ public class StreamsAndTasksDemo extends AbstractDemo {
             engine.execute("UPDATE inventory SET quantity = 120 WHERE product_id = 1");
             engine.execute("INSERT INTO inventory VALUES (3, 'Doohickey', 75, '2024-01-02')");
 
-            Stream inventoryStream = schema.getStream("inventory_stream");
+            final Stream inventoryStream = schema.getStream("inventory_stream");
             System.out.println("\nStream captured " + inventoryStream.getUnconsumedCount() + " change records:");
             for (final StreamRecord record : inventoryStream.getUnconsumedRecords()) {
                 System.out.println("  - " + record.getChangeType() +

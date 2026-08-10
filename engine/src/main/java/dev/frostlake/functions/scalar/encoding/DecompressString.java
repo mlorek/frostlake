@@ -40,6 +40,8 @@ public class DecompressString extends BuiltInFunction {
         return new String(CompressionCodec.decompress(data, method), StandardCharsets.UTF_8);
     }
 
-    @Override public int getMinArgCount() { return 2; }
-    @Override public int getMaxArgCount() { return 2; }
+    @Override
+    public int getMinArgCount() { return 2; }
+    @Override
+    public int getMaxArgCount() { return 2; }
 }

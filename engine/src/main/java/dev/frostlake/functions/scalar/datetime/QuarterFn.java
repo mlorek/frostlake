@@ -18,12 +18,12 @@ package dev.frostlake.functions.scalar.datetime;
 
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
-import dev.frostlake.types.NumericType;
+import dev.frostlake.types.IntegerResultWidths;
 
 import java.util.List;
 
 public class QuarterFn extends BuiltInFunction {
-    public QuarterFn() { super("QUARTER", NumericType.INTEGER); }
+    public QuarterFn() { super("QUARTER", IntegerResultWidths.DATE_PART_SMALL); }
 
     @Override
     public Object evaluate(final List<Object> args) {
@@ -31,6 +31,8 @@ public class QuarterFn extends BuiltInFunction {
         return SharedFunctionHelpers.datePart("QUARTER", SharedFunctionHelpers.toLocalDateTime(args.get(0)));
     }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return 1; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return 1; }
 }

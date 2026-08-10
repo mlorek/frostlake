@@ -18,6 +18,7 @@ package dev.frostlake.functions.scalar;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.regex.Pattern;
 
 /**
  * Small shared helper for the date/time functions. The engine represents both DATE and TIMESTAMP values
@@ -27,6 +28,9 @@ import java.time.LocalDateTime;
  * a DATE for day-or-larger units instead of widening them to a timestamp.
  */
 public final class DateTypeHelper {
+
+    // Compiled once — this ran String.matches (a fresh Pattern compile) per call.
+    private static final Pattern DASHED_DATE = Pattern.compile("\\d{4}-\\d{1,2}-\\d{1,2}");
 
     private DateTypeHelper() {
     }
@@ -44,7 +48,7 @@ public final class DateTypeHelper {
             return false;
         }
         if (value instanceof String) {
-            return ((String) value).trim().matches("\\d{4}-\\d{1,2}-\\d{1,2}");
+            return DASHED_DATE.matcher(((String) value).trim()).matches();
         }
         return false;
     }

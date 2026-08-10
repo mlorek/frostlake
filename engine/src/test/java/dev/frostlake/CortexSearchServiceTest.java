@@ -52,6 +52,24 @@ public class CortexSearchServiceTest extends BaseDatabaseTest {
      * engine accepts any name. So the class makes its own and takes it away again: warehouses are
      * account-level and would otherwise outlive the run, the way the compute pools did.
      */
+    /**
+     * A trial account carries no Cortex AI functions, so every service here would fail with the
+     * account's own refusal. Probe once and SKIP with that sentence rather than reporting nineteen
+     * errors that say nothing about fidelity. Embedded runs never probe.
+     */
+    @BeforeEach
+    public void requireCortexOnLiveAccount() {
+        if (!isLiveSnowflake()) {
+            return;
+        }
+        try {
+            engine.executeQuery(
+                "SELECT SNOWFLAKE.CORTEX.EMBED_TEXT_768('snowflake-arctic-embed-m', 'probe')");
+        } catch (final RuntimeException refused) {
+            LiveFeatureGate.skipIfAccountTierBlocks(refused);
+        }
+    }
+
     @BeforeEach
     public void createSourceTable() {
         for (final String warehouse : List.of("fl_cortex_wh", "fl_cortex_wh2")) {

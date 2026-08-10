@@ -16,10 +16,8 @@
 
 package dev.frostlake.features;
 
-import dev.frostlake.DatabaseEngine;
+import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
@@ -31,26 +29,10 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
  * Such literals — e.g. 20–22-digit synthetic row IDs — must parse as exact
  * BigDecimals rather than overflowing with "For input string".
  */
-public class LargeIntegerLiteralTest {
+public class LargeIntegerLiteralTest extends BaseDatabaseTest {
 
     /** 9000000000000000000001 — 22 digits, well beyond Long.MAX_VALUE (9223372036854775807, 19 digits). */
     private static final String BIG = "9000000000000000000001";
-
-    private DatabaseEngine engine;
-
-    @BeforeEach
-    public void setUp() {
-        engine = new DatabaseEngine();
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
-    }
-
-    @AfterEach
-    public void tearDown() {
-        if (engine != null) {
-            engine.shutdown();
-        }
-    }
 
     @Test
     public void testOversizedIntegerLiteralInSelect() {

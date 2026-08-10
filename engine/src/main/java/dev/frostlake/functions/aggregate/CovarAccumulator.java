@@ -21,7 +21,9 @@ import dev.frostlake.functions.AggregateFunction;
 public class CovarAccumulator implements AggregateFunction.Accumulator {
     private final boolean sample;
     public long n = 0;
-    public double sumX = 0, sumY = 0, sumXY = 0;
+    public double sumX = 0;
+    public double sumY = 0;
+    public double sumXY = 0;
 
     public CovarAccumulator(final boolean sample) { this.sample = sample; }
 
@@ -29,22 +31,31 @@ public class CovarAccumulator implements AggregateFunction.Accumulator {
     public void accumulate(final Object v) {}
 
     public void accumulate(final double x, final double y) {
-        n++; sumX += x; sumY += y; sumXY += x * y;
+        n++;
+        sumX += x;
+        sumY += y;
+        sumXY += x * y;
     }
 
     @Override
     public Object getResult() {
-        long denom = sample ? n - 1 : n;
+        final long denom = sample ? n - 1 : n;
         if (denom <= 0) return null;
         return (sumXY - sumX * sumY / n) / denom;
     }
 
     @Override
-    public void reset() { n = 0; sumX = sumY = sumXY = 0; }
+    public void reset() {
+        n = 0;
+        sumX = sumY = sumXY = 0;
+    }
 
     @Override
     public void merge(final AggregateFunction.Accumulator other) {
-        CovarAccumulator o = (CovarAccumulator) other;
-        n += o.n; sumX += o.sumX; sumY += o.sumY; sumXY += o.sumXY;
+        final CovarAccumulator o = (CovarAccumulator) other;
+        n += o.n;
+        sumX += o.sumX;
+        sumY += o.sumY;
+        sumXY += o.sumXY;
     }
 }

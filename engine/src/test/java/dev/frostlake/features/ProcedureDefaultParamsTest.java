@@ -16,30 +16,16 @@
 
 package dev.frostlake.features;
 
-import dev.frostlake.DatabaseEngine;
+import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import static org.junit.jupiter.api.Assertions.*;
-
-public class ProcedureDefaultParamsTest {
-
-    private DatabaseEngine engine;
-
-    @BeforeEach
-    public void setUp() {
-        engine = new DatabaseEngine();
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
-        engine.execute("USE SCHEMA public");
-    }
-
-    @AfterEach
-    public void tearDown() {
-        if (engine != null) engine.shutdown();
-    }
+public class ProcedureDefaultParamsTest extends BaseDatabaseTest {
 
     @Test
     public void testProcedureDefaultIntegerParam() {
@@ -50,7 +36,12 @@ public class ProcedureDefaultParamsTest {
             "AS $$ BEGIN RETURN 'ok'; END $$"
         );
         // Calling without arg should use default (no error)
-        assertDoesNotThrow(() -> engine.execute("CALL add_rows()"));
+        assertDoesNotThrow(new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                engine.execute("CALL add_rows()");
+            }
+        });
     }
 
     @Test
@@ -61,8 +52,18 @@ public class ProcedureDefaultParamsTest {
             "LANGUAGE SQL " +
             "AS $$ BEGIN RETURN 'hello'; END $$"
         );
-        assertDoesNotThrow(() -> engine.execute("CALL greet()"));
-        assertDoesNotThrow(() -> engine.execute("CALL greet('Alice')"));
+        assertDoesNotThrow(new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                engine.execute("CALL greet()");
+            }
+        });
+        assertDoesNotThrow(new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                engine.execute("CALL greet('Alice')");
+            }
+        });
     }
 
     @Test
@@ -74,8 +75,18 @@ public class ProcedureDefaultParamsTest {
             "AS $$ BEGIN RETURN x; END $$"
         );
         // x is required, y has default
-        assertDoesNotThrow(() -> engine.execute("CALL compute(5)"));
-        assertDoesNotThrow(() -> engine.execute("CALL compute(5, 20)"));
+        assertDoesNotThrow(new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                engine.execute("CALL compute(5)");
+            }
+        });
+        assertDoesNotThrow(new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                engine.execute("CALL compute(5, 20)");
+            }
+        });
     }
 
     @Test
@@ -86,7 +97,12 @@ public class ProcedureDefaultParamsTest {
             "LANGUAGE SQL " +
             "AS $$ BEGIN RETURN x; END $$"
         );
-        assertThrows(RuntimeException.class, () -> engine.execute("CALL strict_proc()"));
+        assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                engine.execute("CALL strict_proc()");
+            }
+        });
     }
 
     @Test
@@ -97,13 +113,13 @@ public class ProcedureDefaultParamsTest {
             "LANGUAGE SQL " +
             "AS $$ BEGIN RETURN i; END $$"
         );
-        ResultSet rs = engine.executeQuery("SHOW PROCEDURES");
+        final ResultSet rs = engine.executeQuery("SHOW PROCEDURES");
         assertNotNull(rs);
         boolean found = false;
         for (int i = 0; i < rs.getRowCount(); i++) {
             if ("WITH_DEFAULT".equalsIgnoreCase(rs.getRows().get(i).getValue(1).toString())) {
                 found = true;
-                String sig = rs.getRows().get(i).getValue(rs.getColumnIndex("arguments")).toString();
+                final String sig = rs.getRows().get(i).getValue(rs.getColumnIndex("arguments")).toString();
                 assertTrue(sig.contains("WITH_DEFAULT"), "Signature should contain procedure name");
             }
         }

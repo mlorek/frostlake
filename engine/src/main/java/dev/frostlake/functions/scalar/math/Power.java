@@ -27,11 +27,13 @@ public class Power extends NumericArgumentFunction {
     @Override
     public Object evaluate(final List<Object> args) {
         if (args.get(0) == null || args.get(1) == null) return null;
-        double base = ((Number) args.get(0)).doubleValue();
-        double exponent = ((Number) args.get(1)).doubleValue();
+        final double base = ((Number) args.get(0)).doubleValue();
+        final double exponent = ((Number) args.get(1)).doubleValue();
         return Math.pow(base, exponent);
     }
 
-    @Override public int getMinArgCount() { return 2; }
-    @Override public int getMaxArgCount() { return 2; }
+    @Override
+    public int getMinArgCount() { return 2; }
+    @Override
+    public int getMaxArgCount() { return 2; }
 }

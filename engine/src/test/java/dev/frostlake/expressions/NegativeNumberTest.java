@@ -16,41 +16,23 @@
 
 package dev.frostlake.expressions;
 
-import dev.frostlake.DatabaseEngine;
+import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
-public class NegativeNumberTest {
-
-    private DatabaseEngine engine;
-
-    @BeforeEach
-    public void setUp() {
-        engine = new DatabaseEngine();
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
-    }
-
-    @AfterEach
-    public void tearDown() {
-        if (engine != null) {
-            engine.shutdown();
-        }
-    }
+public class NegativeNumberTest extends BaseDatabaseTest {
 
     @Test
     public void testSelectNegativeInteger() {
-        ResultSet rs = engine.executeQuery("SELECT -1");
+        final ResultSet rs = engine.executeQuery("SELECT -1");
         assertEquals(-1L, ((Number) rs.getRows().get(0).getValue(0)).longValue());
     }
 
     @Test
     public void testSelectNegativeFloat() {
-        ResultSet rs = engine.executeQuery("SELECT -2.5");
+        final ResultSet rs = engine.executeQuery("SELECT -2.5");
         assertEquals(-2.5, ((Number) rs.getRows().get(0).getValue(0)).doubleValue(), 0.001);
     }
 
@@ -59,14 +41,14 @@ public class NegativeNumberTest {
         engine.execute("CREATE TABLE test (id INTEGER, value INTEGER)");
         engine.execute("INSERT INTO test VALUES (-1, -100)");
 
-        ResultSet rs = engine.executeQuery("SELECT * FROM test");
+        final ResultSet rs = engine.executeQuery("SELECT * FROM test");
         assertEquals(-1L, ((Number) rs.getRows().get(0).getValue(0)).longValue());
         assertEquals(-100L, ((Number) rs.getRows().get(0).getValue(1)).longValue());
     }
 
     @Test
     public void testSelectPositiveWithUnaryPlus() {
-        ResultSet rs = engine.executeQuery("SELECT +5");
+        final ResultSet rs = engine.executeQuery("SELECT +5");
         assertEquals(5L, ((Number) rs.getRows().get(0).getValue(0)).longValue());
     }
 
@@ -75,7 +57,7 @@ public class NegativeNumberTest {
         engine.execute("CREATE TABLE test (value INTEGER)");
         engine.execute("INSERT INTO test VALUES (10)");
 
-        ResultSet rs = engine.executeQuery("SELECT -value FROM test");
+        final ResultSet rs = engine.executeQuery("SELECT -value FROM test");
         assertEquals(-10L, ((Number) rs.getRows().get(0).getValue(0)).longValue());
     }
 }

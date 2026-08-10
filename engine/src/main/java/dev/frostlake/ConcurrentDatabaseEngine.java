@@ -16,9 +16,19 @@
 
 package dev.frostlake;
 
+import dev.frostlake.config.EngineConfig;
 import dev.frostlake.http.SessionContext;
 import dev.frostlake.http.SessionManager;
+import dev.frostlake.parser.FrostlakeLexer;
+import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.storage.ResultSet;
+
+import org.antlr.v4.runtime.BaseErrorListener;
+import org.antlr.v4.runtime.CharStreams;
+import org.antlr.v4.runtime.CommonTokenStream;
+import org.antlr.v4.runtime.RecognitionException;
+import org.antlr.v4.runtime.Recognizer;
+import org.antlr.v4.runtime.Token;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -42,8 +52,21 @@ public class ConcurrentDatabaseEngine {
     private final ConcurrentHashMap<String, SessionState> sessionStates;
 
     public ConcurrentDatabaseEngine() {
-        this.engine = new DatabaseEngine();
-        this.sessionManager = new SessionManager();
+        this(new DatabaseEngine());
+    }
+
+    /** A concurrent wrapper honoring the given configuration (database.default / schema.default). */
+    public ConcurrentDatabaseEngine(final EngineConfig config) {
+        this(new DatabaseEngine(config));
+    }
+
+    private ConcurrentDatabaseEngine(final DatabaseEngine engine) {
+        this.engine = engine;
+        // New sessions start where the engine's configuration points, exactly like the engine's
+        // own bootstrap session.
+        this.sessionManager = new SessionManager(
+            engine.getConfig().getDefaultDatabase().toUpperCase(),
+            engine.getConfig().getDefaultSchema().toUpperCase());
         // Non-fair: higher read throughput for this read-heavy engine. The JDK's non-fair RRWL still
         // blocks barging readers when a writer is queued, so writers are not badly starved.
         this.engineLock = new ReentrantReadWriteLock();
@@ -62,15 +85,24 @@ public class ConcurrentDatabaseEngine {
         session.touch();
 
         // Synchronize on session to prevent concurrent modifications to same session
-        SessionState state = sessionStates.computeIfAbsent(
-            session.getSessionId(),
-            (final var k) -> new SessionState()
-        );
+        // putIfAbsent rather than get/put: two requests for one session must synchronize on the
+        // SAME state object, so a lost race here would defeat the lock below.
+        final String sessionId = session.getSessionId();
+        SessionState state = sessionStates.get(sessionId);
+        if (state == null) {
+            state = new SessionState();
+            final SessionState raced = sessionStates.putIfAbsent(sessionId, state);
+            if (raced != null) {
+                state = raced;
+            }
+        }
 
         synchronized (state) {
             try {
-                // Read lock for SELECT queries, write lock for DDL/DML
-                if (isReadOnlyQuery(sql)) {
+                // Read lock for read-only scripts, write lock for anything that mutates — decided
+                // ONCE per request from the parse tree (the unlock below must mirror the decision).
+                final boolean readOnly = isReadOnlyQuery(sql);
+                if (readOnly) {
                     engineLock.readLock().lock();
                 } else {
                     engineLock.writeLock().lock();
@@ -80,9 +112,9 @@ public class ConcurrentDatabaseEngine {
                     // Apply session context before execution (inside lock for thread safety)
                     applySessionContext(session);
 
-                    long startTime = System.currentTimeMillis();
-                    ExecutionResult result = engine.execute(sql);
-                    long duration = System.currentTimeMillis() - startTime;
+                    final long startTime = System.currentTimeMillis();
+                    final ExecutionResult result = engine.execute(sql);
+                    final long duration = System.currentTimeMillis() - startTime;
 
                     logger.debug("Executed SQL in session {} ({}ms): {}",
                         session.getSessionId(), duration, sql.substring(0, Math.min(50, sql.length())));
@@ -99,7 +131,7 @@ public class ConcurrentDatabaseEngine {
                     engine.getCatalog().clearSessionScope();
                     engine.getTransactionManager().clearSessionAutoCommit();
                     engine.getQueryResultCache().clearSessionScope();
-                    if (isReadOnlyQuery(sql)) {
+                    if (readOnly) {
                         engineLock.readLock().unlock();
                     } else {
                         engineLock.writeLock().unlock();
@@ -117,7 +149,7 @@ public class ConcurrentDatabaseEngine {
      * Execute query and return single result set
      */
     public ResultSet executeQuery(final String sql, final SessionContext session) {
-        ExecutionResult result = execute(sql, session);
+        final ExecutionResult result = execute(sql, session);
         if (!result.isSuccess()) {
             throw new RuntimeException("Query execution failed: " + result.getErrorMessage());
         }
@@ -128,15 +160,59 @@ public class ConcurrentDatabaseEngine {
     }
 
     /**
-     * Check if query is read-only (can use read lock)
+     * Whether EVERY statement in {@code sql} may run under the SHARED read lock — decided from the
+     * PARSE TREE, not a text prefix: 'SELECT 1; DROP TABLE t' is a write, and so is
+     * 'SELECT seq1.NEXTVAL' (the sequence advances). Anything unparseable classifies as a WRITE,
+     * so the exclusive lock is the failure mode.
      */
     private boolean isReadOnlyQuery(final String sql) {
-        String upperSql = sql.trim().toUpperCase();
-        return upperSql.startsWith("SELECT") ||
-               upperSql.startsWith("SHOW") ||
-               upperSql.startsWith("DESCRIBE") ||
-               upperSql.startsWith("DESC") ||
-               upperSql.startsWith("EXPLAIN");
+        try {
+            final FrostlakeLexer lexer = new FrostlakeLexer(CharStreams.fromString(sql));
+            final CommonTokenStream tokens = new CommonTokenStream(lexer);
+            final FrostlakeParser parser = new FrostlakeParser(tokens);
+            final boolean[] failed = new boolean[1];
+            final BaseErrorListener silent = new BaseErrorListener() {
+                @Override
+                public void syntaxError(final Recognizer<?, ?> recognizer, final Object offendingSymbol,
+                        final int line, final int charPositionInLine, final String msg,
+                        final RecognitionException e) {
+                    failed[0] = true;
+                }
+            };
+            lexer.removeErrorListeners();
+            lexer.addErrorListener(silent);
+            parser.removeErrorListeners();
+            parser.addErrorListener(silent);
+            final FrostlakeParser.SqlScriptContext script = parser.sqlScript();
+            if (failed[0] || script.flowChain().isEmpty()) {
+                return false;
+            }
+            for (final Token token : tokens.getTokens()) {
+                if (token.getType() == FrostlakeLexer.NEXTVAL) {
+                    return false;   // seq.NEXTVAL advances the sequence even inside a SELECT
+                }
+            }
+            for (final FrostlakeParser.FlowChainContext chain : script.flowChain()) {
+                for (final FrostlakeParser.StatementContext stmt : chain.statement()) {
+                    if (!isReadOnlyStatement(stmt)) {
+                        return false;
+                    }
+                }
+            }
+            return true;
+        } catch (final RuntimeException e) {
+            return false;
+        }
+    }
+
+    /** A query (SELECT / WITH, however wrapped), EXPLAIN, SHOW or DESCRIBE — nothing else reads only. */
+    private boolean isReadOnlyStatement(final FrostlakeParser.StatementContext stmt) {
+        if (stmt.queryStatement() != null || stmt.explainStatement() != null) {
+            return true;
+        }
+        final int first = stmt.getStart().getType();
+        return first == FrostlakeParser.SHOW || first == FrostlakeParser.DESCRIBE
+            || first == FrostlakeParser.DESC;
     }
 
     /**
@@ -226,11 +302,4 @@ public class ConcurrentDatabaseEngine {
         sessionStates.clear();
     }
 
-    /**
-     * Per-session state synchronization object
-     */
-    private static class SessionState {
-        // Empty class used as synchronization monitor
-        // Ensures operations within same session are serialized
-    }
 }

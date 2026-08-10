@@ -19,15 +19,13 @@ package dev.frostlake.functions.window;
 import dev.frostlake.functions.aggregate.AggregateNumerics;
 import dev.frostlake.storage.Row;
 
-import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
 
 /**
  * Shared logic for Snowflake window functions.
  * All methods work on pre-sorted partition row lists.
  */
-public class WindowFunctionHelper {
+public final class WindowFunctionHelper {
 
     private WindowFunctionHelper() {}
 
@@ -35,19 +33,19 @@ public class WindowFunctionHelper {
      * NTILE(n) — divides the sorted partition into n equal buckets, returns bucket number (1-based).
      */
     public static long ntile(final List<Row> sortedRows, final Row currentRow, final int buckets) {
-        int n = sortedRows.size();
+        final int n = sortedRows.size();
         if (n == 0 || buckets <= 0) return 1L;
-        int pos = indexOf(sortedRows, currentRow);
+        final int pos = indexOf(sortedRows, currentRow);
         if (pos < 0) return 1L;
         // Bucket size: larger buckets come first when not evenly divisible
-        int largeSize = (int) Math.ceil((double) n / buckets);
+        final int largeSize = (int) Math.ceil((double) n / buckets);
         int largeCount = n % buckets == 0 ? 0 : n % buckets;  // how many "large" buckets
         if (largeCount == 0) largeCount = buckets;             // all same size
-        int splitPoint = largeCount * largeSize;
+        final int splitPoint = largeCount * largeSize;
         if (pos < splitPoint) {
             return (long) (pos / largeSize + 1);
         } else {
-            int smallSize = n / buckets;
+            final int smallSize = n / buckets;
             return (long) (largeCount + (pos - splitPoint) / smallSize + 1);
         }
     }
@@ -57,34 +55,34 @@ public class WindowFunctionHelper {
      */
     public static double percentRank(final List<Row> sortedRows, final Row currentRow,
                                       final List<Object> orderValues) {
-        int n = sortedRows.size();
+        final int n = sortedRows.size();
         if (n <= 1) return 0.0;
-        int pos = indexOf(sortedRows, currentRow);
+        final int pos = indexOf(sortedRows, currentRow);
         if (pos < 0) return 0.0;
-        Object curVal = pos < orderValues.size() ? orderValues.get(pos) : null;
+        final Object curVal = pos < orderValues.size() ? orderValues.get(pos) : null;
         // rank = 1 + number of rows with strictly smaller order value
         long rank = 1;
         for (int i = 0; i < pos; i++) {
-            Object v = i < orderValues.size() ? orderValues.get(i) : null;
+            final Object v = i < orderValues.size() ? orderValues.get(i) : null;
             if (compareValues(v, curVal) < 0) rank++;
         }
         return (double)(rank - 1) / (n - 1);
     }
 
     /**
-     * CUME_DIST — fraction of rows with order value <= current; ranges (0, 1].
+     * CUME_DIST — fraction of rows with order value {@code <=} current; ranges (0, 1].
      */
     public static double cumeDist(final List<Row> sortedRows, final Row currentRow,
                                    final List<Object> orderValues) {
-        int n = sortedRows.size();
+        final int n = sortedRows.size();
         if (n == 0) return 1.0;
-        int pos = indexOf(sortedRows, currentRow);
+        final int pos = indexOf(sortedRows, currentRow);
         if (pos < 0) return 1.0;
-        Object curVal = pos < orderValues.size() ? orderValues.get(pos) : null;
+        final Object curVal = pos < orderValues.size() ? orderValues.get(pos) : null;
         // count rows with value <= currentVal
         long count = 0;
         for (int i = 0; i < orderValues.size(); i++) {
-            Object v = orderValues.get(i);
+            final Object v = orderValues.get(i);
             if (compareValues(v, curVal) <= 0) count++;
         }
         return (double) count / n;
@@ -95,7 +93,7 @@ public class WindowFunctionHelper {
      */
     public static Object ratioToReport(final Object currentValue, final List<Object> allValues) {
         if (currentValue == null) return null;
-        double cur = toDouble(currentValue);
+        final double cur = toDouble(currentValue);
         double sum = 0;
         for (final Object v : allValues) {
             if (v != null) sum += toDouble(v);
@@ -167,7 +165,11 @@ public class WindowFunctionHelper {
 
     public static double toDouble(final Object v) {
         if (v instanceof Number) return ((Number) v).doubleValue();
-        try { return Double.parseDouble(v.toString()); } catch (final Exception e) { return 0; }
+        try {
+            return Double.parseDouble(v.toString());
+        } catch (final Exception e) {
+            return 0;
+        }
     }
 
     // ── window aggregates (SUM/AVG/MIN/MAX over a frame, nulls ignored) ──────────

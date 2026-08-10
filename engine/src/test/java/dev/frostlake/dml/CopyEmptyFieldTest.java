@@ -65,6 +65,7 @@ public class CopyEmptyFieldTest {
         stageDir = Files.createTempDirectory("copy_empty_field_stage_");
         final EngineConfig cfg = new EngineConfig();
         cfg.setProperty(EngineConfig.PROP_STAGE_INTERNAL_LOCAL_ROOT, internalRoot.toString());
+        cfg.setProperty(EngineConfig.PROP_STAGE_FILE_URL_ENABLED, "true");
         engine = new DatabaseEngine(cfg);
         engine.execute("CREATE DATABASE db");
         engine.execute("USE DATABASE db");
@@ -132,7 +133,7 @@ public class CopyEmptyFieldTest {
     private void stage(final String table, final String fileName, final String content) throws IOException {
         final Path file = localDir.resolve(fileName);
         Files.write(file, content.getBytes(StandardCharsets.UTF_8));
-        engine.executeQuery("PUT file://" + file + " @%" + table);
+        engine.executeQuery("PUT file://" + file + " @%" + table + " AUTO_COMPRESS=FALSE");
     }
 
     /** COPY with the given extra options folded INSIDE the FILE_FORMAT parens, where format options belong. */

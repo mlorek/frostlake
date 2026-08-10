@@ -20,7 +20,11 @@ import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.types.StringType;
 
-import java.sql.*;
+import java.sql.Connection;
+import java.sql.ResultSet;
+import java.sql.RowIdLifetime;
+import java.sql.SQLException;
+import java.sql.SQLFeatureNotSupportedException;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -50,7 +54,7 @@ public class DirectDatabaseMetaData implements java.sql.DatabaseMetaData {
     public java.sql.ResultSet getIndexInfo(final String catalog, final String schema, final String table, final boolean unique, final boolean approximate) throws SQLException {
         // Frostlake intentionally has no indexes, so index metadata is always empty. (The former query
         // referenced INFORMATION_SCHEMA.INDEXES / INDEX_COLUMNS, which do not exist, and always threw.)
-        List<ResultSetColumn> columns = new ArrayList<>();
+        final List<ResultSetColumn> columns = new ArrayList<>();
         columns.add(new ResultSetColumn("TABLE_CAT", new StringType("VARCHAR", 256)));
         columns.add(new ResultSetColumn("TABLE_SCHEM", new StringType("VARCHAR", 256)));
         columns.add(new ResultSetColumn("TABLE_NAME", new StringType("VARCHAR", 256)));
@@ -64,7 +68,7 @@ public class DirectDatabaseMetaData implements java.sql.DatabaseMetaData {
         columns.add(new ResultSetColumn("CARDINALITY", new NumericType("INTEGER", 10, 0)));
         columns.add(new ResultSetColumn("PAGES", new NumericType("INTEGER", 10, 0)));
         columns.add(new ResultSetColumn("FILTER_CONDITION", new StringType("VARCHAR", 256)));
-        dev.frostlake.storage.ResultSet empty =
+        final dev.frostlake.storage.ResultSet empty =
                 new dev.frostlake.storage.ResultSet(columns, new ArrayList<>());
         return new DirectResultSet(connection.createStatement(), empty);
     }
@@ -123,7 +127,7 @@ public class DirectDatabaseMetaData implements java.sql.DatabaseMetaData {
 
     @Override
     public String getDriverName() throws SQLException {
-        return "Frostlake Direct JDBC Driver";
+        return "Frostlake JDBC Driver";
     }
 
     @Override

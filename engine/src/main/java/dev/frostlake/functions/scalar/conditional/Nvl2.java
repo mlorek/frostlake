@@ -32,6 +32,8 @@ public class Nvl2 extends BuiltInFunction {
         return args.get(0) != null ? args.get(1) : args.get(2);
     }
 
-    @Override public int getMinArgCount() { return 3; }
-    @Override public int getMaxArgCount() { return 3; }
+    @Override
+    public int getMinArgCount() { return 3; }
+    @Override
+    public int getMaxArgCount() { return 3; }
 }

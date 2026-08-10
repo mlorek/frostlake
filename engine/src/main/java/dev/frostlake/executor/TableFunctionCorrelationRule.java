@@ -147,8 +147,8 @@ final class TableFunctionCorrelationRule {
     }
 
     private String aliasOf(final FrostlakeParser.TableReferenceContext reference, final String fallback) {
-        if (reference.identifier() != null) {
-            return SqlIdentifiers.canonical(reference.identifier());
+        if (reference.aliasName() != null) {
+            return ParseTreeText.getIdentifier(reference.aliasName()).toUpperCase();
         }
         if (reference.nonJoinKeywordIdentifier() != null) {
             return reference.nonJoinKeywordIdentifier().getText().toUpperCase();
@@ -229,7 +229,7 @@ final class TableFunctionCorrelationRule {
             // name as the writer typed it, and resolution matches the RESOLVED name (bare folded to upper,
             // quoted verbatim). This is a validation rule, so a name that does not resolve at all is simply
             // one that contributes no columns: it is the statement's own execution that reports it.
-            Table inner;
+            final Table inner;
             try {
                 inner = catalog.resolveTable(SqlIdentifiers.canonicalText(
                     reference.tableSource().tableQualifiedName().getText()));

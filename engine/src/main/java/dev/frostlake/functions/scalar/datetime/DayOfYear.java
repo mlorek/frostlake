@@ -18,12 +18,12 @@ package dev.frostlake.functions.scalar.datetime;
 
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
-import dev.frostlake.types.NumericType;
+import dev.frostlake.types.IntegerResultWidths;
 
 import java.util.List;
 
 public class DayOfYear extends BuiltInFunction {
-    public DayOfYear() { super("DAYOFYEAR", NumericType.INTEGER); }
+    public DayOfYear() { super("DAYOFYEAR", IntegerResultWidths.YEAR_PART); }
 
     @Override
     public Object evaluate(final List<Object> args) {
@@ -31,6 +31,8 @@ public class DayOfYear extends BuiltInFunction {
         return SharedFunctionHelpers.datePart("DAYOFYEAR", SharedFunctionHelpers.toLocalDateTime(args.get(0)));
     }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return 1; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return 1; }
 }

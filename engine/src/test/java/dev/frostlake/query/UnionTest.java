@@ -16,36 +16,21 @@
 
 package dev.frostlake.query;
 
-import dev.frostlake.DatabaseEngine;
+import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
-import org.junit.jupiter.api.AfterAll;
-import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Test UNION and UNION ALL operators
  */
-public class UnionTest {
+public class UnionTest extends BaseDatabaseTest {
 
-    private static DatabaseEngine engine;
-
-    @BeforeAll
-    public static void setup() {
-        engine = new DatabaseEngine();
+    @Override
+    protected void setupTest() {
         engine.execute("CREATE DATABASE IF NOT EXISTS test_db");
-        engine.execute("USE DATABASE test_db");
-        engine.execute("USE SCHEMA public");
-    }
-
-    @AfterAll
-    public static void teardown() {
-        if (engine != null) {
-            engine.shutdown();
-        }
     }
 
     @BeforeEach
@@ -73,7 +58,7 @@ public class UnionTest {
     @Test
     public void testUnionAll() {
         // UNION ALL keeps all rows including duplicates
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT id, name FROM table1
             UNION ALL
             SELECT id, name FROM table2
@@ -86,7 +71,7 @@ public class UnionTest {
     @Test
     public void testUnion() {
         // UNION removes duplicates
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT id, name FROM table1
             UNION
             SELECT id, name FROM table2
@@ -99,7 +84,7 @@ public class UnionTest {
     @Test
     public void testUnionWithOrderBy() {
         // UNION with ORDER BY at statement level
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT id, name FROM table1
             UNION
             SELECT id, name FROM table2
@@ -119,7 +104,7 @@ public class UnionTest {
     @Test
     public void testUnionAllWithOrderBy() {
         // UNION ALL with ORDER BY
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT id, name FROM table1
             UNION ALL
             SELECT id, name FROM table2
@@ -141,7 +126,7 @@ public class UnionTest {
     @Test
     public void testUnionWithLimit() {
         // UNION with LIMIT at statement level
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT id, name FROM table1
             UNION
             SELECT id, name FROM table2
@@ -160,7 +145,7 @@ public class UnionTest {
         engine.execute("INSERT INTO table3 VALUES (7, 'Grace')");
 
         // Multiple UNIONs
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT id, name FROM table1
             UNION ALL
             SELECT id, name FROM table2
@@ -175,7 +160,7 @@ public class UnionTest {
     @Test
     public void testUnionWithWhereClause() {
         // Each SELECT can have its own WHERE clause
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT id, name FROM table1 WHERE id < 3
             UNION
             SELECT id, name FROM table2 WHERE id > 3
@@ -195,7 +180,7 @@ public class UnionTest {
     @Test
     public void testUnionWithDifferentLiterals() {
         // UNION of literal values
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT 1 AS num, 'First' AS label
             UNION
             SELECT 2 AS num, 'Second' AS label

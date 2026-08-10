@@ -115,4 +115,15 @@ public class SessionExpressionAndSystemFuncTest extends BaseDatabaseTest {
         engine.execute("SET t = SYSTEM$TYPEOF(123)");
         assertNotNull(scalar("SELECT $t"));
     }
+
+    /** The cancel argument may be schema-qualified; the echo keeps the exact text passed. */
+    @Test
+    public void testUserTaskCancelAcceptsQualifiedName() {
+        engine.execute("CREATE TASK cancel_q SCHEDULE = '1 MINUTE' AS SELECT 1");
+        final Object outcome = scalar(
+            "SELECT SYSTEM$USER_TASK_CANCEL_ONGOING_EXECUTIONS('TEST_SCHEMA.CANCEL_Q')");
+        assertEquals("Task TEST_SCHEMA.CANCEL_Q has no currently running executions. If the task"
+            + " was dropped or replaced after a previous execution started, use SYSTEM$CANCEL_QUERY"
+            + " along with the query id to cancel the run.", outcome.toString());
+    }
 }

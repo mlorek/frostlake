@@ -160,7 +160,7 @@ public abstract class SqlObject implements Taggable {
     public boolean equals(final Object obj) {
         if (this == obj) return true;
         if (obj == null || getClass() != obj.getClass()) return false;
-        SqlObject other = (SqlObject) obj;
+        final SqlObject other = (SqlObject) obj;
         return name != null && name.equalsIgnoreCase(other.name);
     }
 

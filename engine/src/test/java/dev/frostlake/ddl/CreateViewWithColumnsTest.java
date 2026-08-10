@@ -25,7 +25,10 @@ import org.slf4j.LoggerFactory;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class CreateViewWithColumnsTest extends BaseJdbcTest {
     private static final Logger logger = LoggerFactory.getLogger(CreateViewWithColumnsTest.class);
@@ -40,7 +43,7 @@ public class CreateViewWithColumnsTest extends BaseJdbcTest {
 
         statement.execute("CREATE VIEW product_view (product_id, product_name, product_price) AS SELECT id, name, price FROM products");
 
-        ResultSet rs = statement.executeQuery("SELECT product_id, product_name, product_price FROM product_view ORDER BY product_id");
+        final ResultSet rs = statement.executeQuery("SELECT product_id, product_name, product_price FROM product_view ORDER BY product_id");
         assertTrue(rs.next());
         assertEquals(1, rs.getInt("product_id"));
         assertEquals("Apple", rs.getString("product_name"));
@@ -63,7 +66,7 @@ public class CreateViewWithColumnsTest extends BaseJdbcTest {
 
         statement.execute("CREATE VIEW emp_view AS SELECT id, name, salary FROM employees");
 
-        ResultSet rs = statement.executeQuery("SELECT id, name, salary FROM emp_view");
+        final ResultSet rs = statement.executeQuery("SELECT id, name, salary FROM emp_view");
         assertTrue(rs.next());
         assertEquals(1, rs.getInt("id"));
         assertEquals("John", rs.getString("name"));
@@ -99,7 +102,7 @@ public class CreateViewWithColumnsTest extends BaseJdbcTest {
 
         statement.execute("CREATE VIEW order_summary (id, cust, total) AS SELECT order_id, customer_id, amount FROM orders");
 
-        ResultSet rs = statement.executeQuery("SELECT id, cust, total FROM order_summary WHERE total > 200 ORDER BY id");
+        final ResultSet rs = statement.executeQuery("SELECT id, cust, total FROM order_summary WHERE total > 200 ORDER BY id");
         assertTrue(rs.next());
         assertEquals(100, rs.getInt("id"));
         assertEquals(1, rs.getInt("cust"));
@@ -123,7 +126,7 @@ public class CreateViewWithColumnsTest extends BaseJdbcTest {
 
         statement.execute("CREATE VIEW calculations (sum_col, diff_col, prod_col) AS SELECT a + b, a - b, a * b FROM numbers");
 
-        ResultSet rs = statement.executeQuery("SELECT sum_col, diff_col, prod_col FROM calculations ORDER BY sum_col");
+        final ResultSet rs = statement.executeQuery("SELECT sum_col, diff_col, prod_col FROM calculations ORDER BY sum_col");
         assertTrue(rs.next());
         assertEquals(15, rs.getInt("sum_col"));
         assertEquals(5, rs.getInt("diff_col"));
@@ -148,7 +151,7 @@ public class CreateViewWithColumnsTest extends BaseJdbcTest {
 
         statement.execute("CREATE VIEW sales_summary (product_name, total_qty, total_rev) AS SELECT product, SUM(quantity), SUM(revenue) FROM sales GROUP BY product");
 
-        ResultSet rs = statement.executeQuery("SELECT product_name, total_qty, total_rev FROM sales_summary ORDER BY product_name");
+        final ResultSet rs = statement.executeQuery("SELECT product_name, total_qty, total_rev FROM sales_summary ORDER BY product_name");
         assertTrue(rs.next());
         assertEquals("Apple", rs.getString("product_name"));
         assertEquals(15.0, rs.getDouble("total_qty"), 0.001);
@@ -177,7 +180,7 @@ public class CreateViewWithColumnsTest extends BaseJdbcTest {
 
         statement.execute("CREATE VIEW order_view (oid, customer, amt) AS SELECT order_id, cust_id, amount FROM orders_table");
 
-        ResultSet rs = statement.executeQuery(
+        final ResultSet rs = statement.executeQuery(
             "SELECT c.name, ov.oid, ov.amt FROM customers c JOIN order_view ov ON c.id = ov.customer ORDER BY ov.oid"
         );
 
@@ -229,7 +232,7 @@ public class CreateViewWithColumnsTest extends BaseJdbcTest {
 
         statement.execute("CREATE VIEW adult_users (user_id, user_name) AS SELECT id, name FROM users WHERE age >= 30");
 
-        ResultSet rs = statement.executeQuery("SELECT user_id, user_name FROM adult_users ORDER BY user_id");
+        final ResultSet rs = statement.executeQuery("SELECT user_id, user_name FROM adult_users ORDER BY user_id");
         assertTrue(rs.next());
         assertEquals(1, rs.getInt("user_id"));
         assertEquals("Alice", rs.getString("user_name"));
@@ -250,7 +253,7 @@ public class CreateViewWithColumnsTest extends BaseJdbcTest {
 
         statement.execute("CREATE VIEW simple_view (col_a, col_b) AS SELECT * FROM simple");
 
-        ResultSet rs = statement.executeQuery("SELECT col_a, col_b FROM simple_view");
+        final ResultSet rs = statement.executeQuery("SELECT col_a, col_b FROM simple_view");
         assertTrue(rs.next());
         assertEquals(1, rs.getInt("col_a"));
         assertEquals(2, rs.getInt("col_b"));

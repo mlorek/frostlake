@@ -17,11 +17,12 @@
 package dev.frostlake.transaction;
 
 import dev.frostlake.metastore.model.ChangeType;
+import dev.frostlake.metastore.model.Stream;
 import dev.frostlake.metastore.model.StreamRecord;
-import dev.frostlake.stream.StreamManager;
 import dev.frostlake.storage.Row;
 import dev.frostlake.storage.StorageEngine;
-import dev.frostlake.storage.StorageEngine.TableStorage;
+import dev.frostlake.storage.TableStorage;
+import dev.frostlake.stream.StreamManager;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -32,6 +33,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 
 /**
  * Per-transaction buffer of pending changes — the foundation of the deferred-apply / READ COMMITTED model
@@ -61,18 +63,83 @@ public class TransactionWriteSet {
     private final Map<String, Map<Long, Row>> updates = new LinkedHashMap<>();
     /** table → stable ids of base rows deleted by this transaction. */
     private final Map<String, Set<Long>> deletes = new LinkedHashMap<>();
+    /** table → the PARTITIONS lock the first touching statement took (SHOW LOCKS' rows). */
+    private final Map<String, TableLock> tableLocks = new LinkedHashMap<>();
+    /** Raw (as-passed) table spellings whose lock entry is known to exist — see {@link #recordTableTouch}. */
+    private final Set<String> lockNotedRaw = new HashSet<>();
+
+    // Copy-on-first-mutation statement savepoint: while one is active, each mutator snapshots a
+    // table's three entries the FIRST time the statement touches that table — the former full
+    // copy() paid O(all pending rows) per statement however few tables the statement touched.
+    private WriteSetSavepoint activeSavepoint;
+
+    /** Begin a statement savepoint (deferred-apply explicit transactions). */
+    public WriteSetSavepoint beginStatementSavepoint() {
+        activeSavepoint = new WriteSetSavepoint(new LinkedHashMap<>(tableLocks));
+        return activeSavepoint;
+    }
+
+    /** End the statement savepoint without restoring (the statement succeeded). */
+    public void endStatementSavepoint() {
+        activeSavepoint = null;
+    }
+
+    /** Restore exactly the entries the failed statement touched, and the lock map. */
+    public void rollbackToSavepoint(final WriteSetSavepoint savepoint) {
+        for (final String table : savepoint.touchedTables()) {
+            final List<Row> insertsPre = savepoint.insertsBefore(table);
+            if (insertsPre == null) {
+                inserts.remove(table);
+            } else {
+                inserts.put(table, insertsPre);
+            }
+            final Map<Long, Row> updatesPre = savepoint.updatesBefore(table);
+            if (updatesPre == null) {
+                updates.remove(table);
+            } else {
+                updates.put(table, updatesPre);
+            }
+            final Set<Long> deletesPre = savepoint.deletesBefore(table);
+            if (deletesPre == null) {
+                deletes.remove(table);
+            } else {
+                deletes.put(table, deletesPre);
+            }
+        }
+        tableLocks.clear();
+        tableLocks.putAll(savepoint.locksBefore());
+        lockNotedRaw.clear();
+        activeSavepoint = null;
+    }
+
+    private void snapshotForSavepoint(final String table) {
+        if (activeSavepoint == null || activeSavepoint.isTouched(table)) {
+            return;
+        }
+        final List<Row> ins = inserts.get(table);
+        final Map<Long, Row> upd = updates.get(table);
+        final Set<Long> del = deletes.get(table);
+        activeSavepoint.rememberTable(table,
+            ins == null ? null : new ArrayList<>(ins),
+            upd == null ? null : new LinkedHashMap<>(upd),
+            del == null ? null : new HashSet<>(del));
+    }
 
     public void recordInsert(final String table, final Row row) {
+        snapshotForSavepoint(table);
         List<Row> list = inserts.get(table);
         if (list == null) {
             list = new ArrayList<>();
             inserts.put(table, list);
         }
         list.add(row);
+        // No lock registration: an append-only INSERT holds no PARTITIONS lock (live-verified) —
+        // only partition-rewriting DML (UPDATE / DELETE / MERGE / TRUNCATE) surfaces in SHOW LOCKS.
     }
 
     /** Record a new value for an existing base row (by stable id). No-op if this txn already deleted it. */
     public void recordUpdate(final String table, final long rowId, final Row newValue) {
+        snapshotForSavepoint(table);
         final Set<Long> del = deletes.get(table);
         if (del != null && del.contains(rowId)) {
             return;
@@ -83,10 +150,12 @@ public class TransactionWriteSet {
             updates.put(table, map);
         }
         map.put(rowId, newValue);
+        recordTableTouch(table);
     }
 
     /** Record deletion of an existing base row (by stable id); supersedes any pending update of that row. */
     public void recordDelete(final String table, final long rowId) {
+        snapshotForSavepoint(table);
         final Map<Long, Row> upd = updates.get(table);
         if (upd != null) {
             upd.remove(rowId);
@@ -97,6 +166,28 @@ public class TransactionWriteSet {
             deletes.put(table, set);
         }
         set.add(rowId);
+        recordTableTouch(table);
+    }
+
+    /**
+     * Register the PARTITIONS lock a DML touch takes on a table; the first touch wins the cell. The
+     * raw-spelling memo skips the per-row upper-casing after a spelling's first touch; it is cleared
+     * wherever lock entries can be removed (statement rollback, {@link #clear}), since a memo entry
+     * must never outlive its lock.
+     */
+    private void recordTableTouch(final String table) {
+        if (!lockNotedRaw.add(table)) {
+            return;
+        }
+        final String key = table.toUpperCase();
+        if (!tableLocks.containsKey(key)) {
+            tableLocks.put(key, new TableLock(System.currentTimeMillis(), UUID.randomUUID().toString()));
+        }
+    }
+
+    /** The tables this write set touched, each with the lock its first touch acquired. */
+    public Map<String, TableLock> getTableLocks() {
+        return tableLocks;
     }
 
     /**
@@ -107,9 +198,11 @@ public class TransactionWriteSet {
      * the base store directly instead would let this transaction's buffered inserts reappear on next read.
      */
     public void recordTruncate(final String table, final List<Long> committedRowIds) {
+        snapshotForSavepoint(table);
         inserts.remove(table);
         updates.remove(table);
         deletes.put(table, new HashSet<>(committedRowIds));
+        recordTableTouch(table);
     }
 
     /**
@@ -145,6 +238,7 @@ public class TransactionWriteSet {
 
     /** Replace a not-yet-committed inserted row (in-transaction UPDATE of a row this txn just inserted). */
     public void setPendingInsert(final String table, final int index, final Row newRow) {
+        snapshotForSavepoint(table);
         final List<Row> ins = inserts.get(table);
         if (ins != null && index >= 0 && index < ins.size()) {
             ins.set(index, newRow);
@@ -153,6 +247,7 @@ public class TransactionWriteSet {
 
     /** Drop a not-yet-committed inserted row (in-transaction DELETE of a row this txn just inserted). */
     public void removePendingInsert(final String table, final int index) {
+        snapshotForSavepoint(table);
         final List<Row> ins = inserts.get(table);
         if (ins != null && index >= 0 && index < ins.size()) {
             ins.remove(index);
@@ -165,21 +260,31 @@ public class TransactionWriteSet {
      * the engine lock so {@code scan()} and {@code getRowIds()} stay index-aligned.
      */
     public List<Row> overlayRows(final String table, final TableStorage base) {
-        final List<Row> baseRows = base.scan();
-        final List<Long> baseIds = base.getRowIds();
         final Set<Long> del = deletes.get(table);
         final Map<Long, Row> upd = updates.get(table);
+        final List<Row> ins = inserts.get(table);
 
-        final List<Row> result = new ArrayList<>(baseRows.size());
-        for (int i = 0; i < baseRows.size(); i++) {
-            final long id = baseIds.get(i);
+        // Fast path: the write set holds NOTHING for this table — the base scan copy IS the view,
+        // with no per-row id walk and no rowIds copy at all.
+        if ((del == null || del.isEmpty()) && (upd == null || upd.isEmpty())) {
+            final List<Row> untouched = base.scan();
+            if (ins != null && !ins.isEmpty()) {
+                untouched.addAll(ins);
+            }
+            return untouched;
+        }
+
+        // Index iteration under the engine lock — no materialized scan()/getRowIds() copies.
+        final int rowCount = base.getRowCount();
+        final List<Row> result = new ArrayList<>(rowCount);
+        for (int i = 0; i < rowCount; i++) {
+            final long id = base.getRowId(i);
             if (del != null && del.contains(id)) {
                 continue;
             }
             final Row updated = upd == null ? null : upd.get(id);
-            result.add(updated != null ? updated : baseRows.get(i));
+            result.add(updated != null ? updated : base.getRow(i));
         }
-        final List<Row> ins = inserts.get(table);
         if (ins != null) {
             result.addAll(ins);
         }
@@ -288,15 +393,22 @@ public class TransactionWriteSet {
                 idToIndex = null;
             }
 
+            // Which streams (if any) capture this table is constant for the whole apply —
+            // resolved once, and with NO capturing stream the old-image copies and record
+            // construction are skipped entirely.
+            final List<Stream> capturing = streamManager != null
+                ? streamManager.capturingStreams(table) : Collections.emptyList();
+            final boolean captured = !capturing.isEmpty();
+
             // 1. Updates first.
             if (upd != null) {
                 for (final Map.Entry<Long, Row> entry : upd.entrySet()) {
                     final Integer idx = idToIndex.get(entry.getKey());
                     if (idx != null) {
-                        final Row oldRow = streamManager != null ? base.getRow(idx).copy() : null;
+                        final Row oldRow = captured ? base.getRow(idx).copy() : null;
                         base.update(idx, entry.getValue());
-                        if (streamManager != null) {
-                            streamManager.trackUpdate(table, oldRow, entry.getValue());
+                        if (captured) {
+                            streamManager.trackUpdate(capturing, table, oldRow, entry.getValue());
                         }
                     }
                 }
@@ -312,11 +424,15 @@ public class TransactionWriteSet {
                     }
                 }
                 Collections.sort(indices, Collections.reverseOrder());
+                // Capture the old images first, then delete ALL rows in one compaction pass.
+                final List<Row> oldRows = new ArrayList<>(indices.size());
                 for (final Integer idx : indices) {
-                    final Row oldRow = streamManager != null ? base.getRow(idx).copy() : null;
-                    base.delete(idx);
-                    if (streamManager != null) {
-                        streamManager.trackDelete(table, oldRow);
+                    oldRows.add(captured ? base.getRow(idx).copy() : null);
+                }
+                base.deleteAll(indices);
+                if (captured) {
+                    for (final Row oldRow : oldRows) {
+                        streamManager.trackDelete(capturing, table, oldRow);
                     }
                 }
             }
@@ -326,8 +442,8 @@ public class TransactionWriteSet {
             if (ins != null) {
                 for (final Row row : ins) {
                     base.insert(row);
-                    if (streamManager != null) {
-                        streamManager.trackInsert(table, row);
+                    if (captured) {
+                        streamManager.trackInsert(capturing, table, row);
                     }
                 }
             }
@@ -351,6 +467,8 @@ public class TransactionWriteSet {
         inserts.clear();
         updates.clear();
         deletes.clear();
+        tableLocks.clear();
+        lockNotedRaw.clear();
     }
 
     /**
@@ -369,6 +487,7 @@ public class TransactionWriteSet {
         for (final Map.Entry<String, Set<Long>> e : deletes.entrySet()) {
             c.deletes.put(e.getKey(), new HashSet<>(e.getValue()));
         }
+        c.tableLocks.putAll(tableLocks);
         return c;
     }
 
@@ -384,5 +503,6 @@ public class TransactionWriteSet {
         for (final Map.Entry<String, Set<Long>> e : savepoint.deletes.entrySet()) {
             deletes.put(e.getKey(), new HashSet<>(e.getValue()));
         }
+        tableLocks.putAll(savepoint.tableLocks);
     }
 }

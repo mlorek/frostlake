@@ -22,9 +22,9 @@ import dev.frostlake.metastore.model.UdfLanguage;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
-import org.graalvm.polyglot.Value;
 import dev.frostlake.types.StringType;
 import dev.frostlake.values.BinaryValue;
+import org.graalvm.polyglot.Value;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -39,7 +39,11 @@ import java.util.List;
  *     def process(self, *args) -> Iterator[tuple]   # called per row
  *     def end_partition(self) -> Iterator[tuple]    # called at partition end (optional)
  */
-public class PythonTableFunctionExecutor {
+public final class PythonTableFunctionExecutor {
+
+    /** Static helpers only — never instantiated. */
+    private PythonTableFunctionExecutor() {
+    }
 
     private static final Logger logger = LoggerFactory.getLogger(PythonTableFunctionExecutor.class);
 
@@ -62,13 +66,13 @@ public class PythonTableFunctionExecutor {
             throw new RuntimeException("Function is not a Python table function");
         }
 
-        String handlerClassName = function.getHandler();
+        final String handlerClassName = function.getHandler();
         if (handlerClassName == null || handlerClassName.isEmpty()) {
             throw new RuntimeException("HANDLER is required for Python table functions");
         }
 
-        List<ResultSetColumn> outputColumns = buildOutputColumns(function);
-        List<Row> outputRows = new ArrayList<>();
+        final List<ResultSetColumn> outputColumns = buildOutputColumns(function);
+        final List<Row> outputRows = new ArrayList<>();
 
         try {
             PythonRuntime.eval(dedent(function.getBody()));
@@ -77,9 +81,9 @@ public class PythonTableFunctionExecutor {
             PythonRuntime.eval("__handler_instance = " + handlerClassName + "()");
 
             // Call process() for each input row
-            List<Parameter> params = function.getParameters();
+            final List<Parameter> params = function.getParameters();
             for (final List<Object> rowArgs : rows) {
-                String callCode = buildProcessCall(params, rowArgs);
+                final String callCode = buildProcessCall(params, rowArgs);
                 PythonRuntime.eval("__process_result = __handler_instance.process(" + callCode + ")");
                 collectRows(PythonRuntime.global("__process_result"), outputColumns.size(), outputRows);
             }
@@ -103,11 +107,11 @@ public class PythonTableFunctionExecutor {
     }
 
     private static String buildProcessCall(final List<Parameter> params, final List<Object> args) {
-        StringBuilder sb = new StringBuilder();
-        int count = Math.min(params.size(), args.size());
+        final StringBuilder sb = new StringBuilder();
+        final int count = Math.min(params.size(), args.size());
         for (int i = 0; i < count; i++) {
             if (i > 0) sb.append(", ");
-            Object v = args.get(i);
+            final Object v = args.get(i);
             if (v == null) {
                 sb.append("None");
             } else if (v instanceof String) {
@@ -167,8 +171,8 @@ public class PythonTableFunctionExecutor {
     }
 
     private static List<ResultSetColumn> buildOutputColumns(final Function function) {
-        List<ResultSetColumn> cols = new ArrayList<>();
-        List<Parameter> returnCols = function.getReturnColumns();
+        final List<ResultSetColumn> cols = new ArrayList<>();
+        final List<Parameter> returnCols = function.getReturnColumns();
         if (returnCols != null && !returnCols.isEmpty()) {
             for (final Parameter p : returnCols) {
                 cols.add(new ResultSetColumn(p.getName(), p.getDataType()));
@@ -182,7 +186,7 @@ public class PythonTableFunctionExecutor {
 
     private static String dedent(final String text) {
         if (text == null || text.isEmpty()) return text;
-        String[] lines = text.split("\n");
+        final String[] lines = text.split("\n");
         int minIndent = Integer.MAX_VALUE;
         for (final String line : lines) {
             if (line.trim().isEmpty()) continue;
@@ -195,7 +199,7 @@ public class PythonTableFunctionExecutor {
             minIndent = Math.min(minIndent, indent);
         }
         if (minIndent == 0 || minIndent == Integer.MAX_VALUE) return text;
-        StringBuilder sb = new StringBuilder();
+        final StringBuilder sb = new StringBuilder();
         for (final String line : lines) {
             if (line.trim().isEmpty()) sb.append("\n");
             else sb.append(line.substring(Math.min(minIndent, line.length()))).append("\n");

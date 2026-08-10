@@ -17,34 +17,33 @@
 package dev.frostlake.features;
 
 import dev.frostlake.BaseDatabaseTest;
-import dev.frostlake.metastore.model.ScheduleType;
-import dev.frostlake.metastore.model.Schema;
-import dev.frostlake.metastore.model.Stream;
-import dev.frostlake.metastore.model.Task;
-import dev.frostlake.metastore.model.TaskExecution;
-import dev.frostlake.metastore.model.TaskState;
 import dev.frostlake.storage.ResultSet;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.function.Executable;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Tests for TASK feature
+ * TASK DDL and execution, asserted through the SQL surface — {@code SHOW TASKS} cells (state is
+ * spelled lower-case {@code started}/{@code suspended}; the schedule text distinguishes interval
+ * from CRON) and each task body's side effects — so every check runs against whichever engine
+ * executed the DDL, embedded or live. Execution RESULTS stay exempt on live: {@code EXECUTE TASK}
+ * is asynchronous there, so a shared session cannot observe the side effect deterministically.
  */
 public class TasksTest extends BaseDatabaseTest {
 
-    private static final String TASK_MODEL =
-        "asserts the parsed task straight off the in-memory catalog (engine.getCatalog()), which live "
-        + "Snowflake never populates, and names warehouse COMPUTE_WH which need not exist on the account";
+    private static final String LIVE_TASKS_ASYNC =
+        "live EXECUTE TASK is asynchronous — the shared session cannot await the task body's side "
+        + "effects, so execution results are asserted embedded only";
+
+    private String taskCell(final String name, final String column) {
+        final ResultSet tasks = engine.executeQuery("SHOW TASKS LIKE '" + name + "'");
+        return cell(tasks, soleRowWhere(tasks, "name", name.toUpperCase()), column);
+    }
 
     @Test
     public void testCreateTask() {
-        Assumptions.assumeFalse(isLiveSnowflake(), TASK_MODEL);
         engine.execute("""
             CREATE TASK daily_cleanup
             WAREHOUSE = 'COMPUTE_WH'
@@ -52,19 +51,12 @@ public class TasksTest extends BaseDatabaseTest {
             AS DELETE FROM logs WHERE timestamp < '2024-01-01'
             """);
 
-        Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
-        Task task = schema.getTask("daily_cleanup");
-
-        assertNotNull(task);
-        assertEquals("daily_cleanup", task.getName().toLowerCase());
-        assertEquals("60 MINUTES", task.getSchedule());
-        assertEquals(ScheduleType.MINUTES, task.getScheduleType());
-        assertEquals(TaskState.SUSPENDED, task.getState());
+        assertEquals("60 MINUTES", taskCell("daily_cleanup", "schedule"));
+        assertEquals("suspended", taskCell("daily_cleanup", "state"));
     }
 
     @Test
     public void testCreateTaskWithCronSchedule() {
-        Assumptions.assumeFalse(isLiveSnowflake(), TASK_MODEL);
         engine.execute("""
             CREATE TASK hourly_job
             WAREHOUSE = 'COMPUTE_WH'
@@ -72,15 +64,12 @@ public class TasksTest extends BaseDatabaseTest {
             AS INSERT INTO summary SELECT * FROM staging
             """);
 
-        Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
-        Task task = schema.getTask("hourly_job");
-
-        assertEquals(ScheduleType.CRON, task.getScheduleType());
+        assertTrue(taskCell("hourly_job", "schedule").startsWith("USING CRON"),
+            taskCell("hourly_job", "schedule"));
     }
 
     @Test
     public void testAlterTaskResume() {
-        Assumptions.assumeFalse(isLiveSnowflake(), TASK_MODEL);
         engine.execute("""
             CREATE TASK test_task
             WAREHOUSE = 'COMPUTE_WH'
@@ -90,15 +79,11 @@ public class TasksTest extends BaseDatabaseTest {
 
         engine.execute("ALTER TASK test_task RESUME");
 
-        Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
-        Task task = schema.getTask("test_task");
-
-        assertEquals(TaskState.STARTED, task.getState());
+        assertEquals("started", taskCell("test_task", "state"));
     }
 
     @Test
     public void testAlterTaskSuspend() {
-        Assumptions.assumeFalse(isLiveSnowflake(), TASK_MODEL);
         engine.execute("""
             CREATE TASK test_task
             WAREHOUSE = 'COMPUTE_WH'
@@ -109,15 +94,11 @@ public class TasksTest extends BaseDatabaseTest {
         engine.execute("ALTER TASK test_task RESUME");
         engine.execute("ALTER TASK test_task SUSPEND");
 
-        Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
-        Task task = schema.getTask("test_task");
-
-        assertEquals(TaskState.SUSPENDED, task.getState());
+        assertEquals("suspended", taskCell("test_task", "state"));
     }
 
     @Test
     public void testDropTask() {
-        Assumptions.assumeFalse(isLiveSnowflake(), TASK_MODEL);
         engine.execute("""
             CREATE TASK test_task
             WAREHOUSE = 'COMPUTE_WH'
@@ -127,19 +108,11 @@ public class TasksTest extends BaseDatabaseTest {
 
         engine.execute("DROP TASK test_task");
 
-        final Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
-
-        assertThrows(RuntimeException.class, new Executable() {
-            @Override
-            public void execute() {
-                schema.getTask("test_task");
-            }
-        });
+        assertEquals(0, engine.executeQuery("SHOW TASKS LIKE 'test_task'").getRowCount());
     }
 
     @Test
     public void testTaskExecution() {
-        Assumptions.assumeFalse(isLiveSnowflake(), TASK_MODEL);
         engine.execute("CREATE TABLE task_log (execution_time VARCHAR, message VARCHAR)");
 
         engine.execute("""
@@ -149,20 +122,17 @@ public class TasksTest extends BaseDatabaseTest {
             AS INSERT INTO task_log VALUES ('2024-01-01', 'Task executed')
             """);
 
-        Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
-        Task task = schema.getTask("test_task");
+        engine.execute("ALTER TASK test_task RESUME");
+        engine.execute("EXECUTE TASK test_task");
 
-        String qualifiedName = "test_db.test_schema.test_task";
-        engine.getTaskScheduler().executeTaskNow(qualifiedName, task);
-
-        assertEquals(1, task.getExecutionHistory().size());
-        TaskExecution execution = task.getExecutionHistory().get(0);
-        assertEquals("SUCCEEDED", execution.getState());
+        Assumptions.assumeFalse(isLiveSnowflake(), LIVE_TASKS_ASYNC);
+        final ResultSet rs = engine.executeQuery("SELECT COUNT(*) FROM task_log");
+        assertEquals(1, ((Number) rs.getRows().get(0).getValue(0)).intValue(),
+            "the task body should have run once");
     }
 
     @Test
     public void testStreamWithTaskIntegration() {
-        Assumptions.assumeFalse(isLiveSnowflake(), TASK_MODEL);
         engine.execute("CREATE TABLE orders (id INTEGER, amount INTEGER, status VARCHAR)");
         engine.execute("CREATE STREAM order_stream ON TABLE orders");
 
@@ -170,10 +140,8 @@ public class TasksTest extends BaseDatabaseTest {
 
         engine.execute("INSERT INTO orders VALUES (1, 100, 'pending'), (2, 200, 'completed')");
 
-        Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
-        Stream stream = schema.getStream("order_stream");
-
-        assertEquals(2, stream.getUnconsumedCount());
+        final ResultSet before = engine.executeQuery("SELECT COUNT(*) FROM order_stream");
+        assertEquals(2L, ((Number) before.getRows().get(0).getValue(0)).longValue());
 
         engine.execute("""
             CREATE TASK process_orders
@@ -182,16 +150,14 @@ public class TasksTest extends BaseDatabaseTest {
             AS INSERT INTO order_summary SELECT COUNT(*), SUM(amount) FROM orders
             """);
 
-        Task task = schema.getTask("process_orders");
-        assertNotNull(task);
-
-        assertEquals(2, stream.getUnconsumedCount());
-        assertEquals(TaskState.SUSPENDED, task.getState());
+        // Creating the task neither consumes the stream nor starts the task.
+        final ResultSet after = engine.executeQuery("SELECT COUNT(*) FROM order_stream");
+        assertEquals(2L, ((Number) after.getRows().get(0).getValue(0)).longValue());
+        assertEquals("suspended", taskCell("process_orders", "state"));
     }
 
     @Test
     public void testCreateTaskWithCallBodyExecutesProcedure() {
-        Assumptions.assumeFalse(isLiveSnowflake(), TASK_MODEL);
         // A task whose body is just CALL <procedure>() — a very common Snowflake pattern.
         engine.execute("CREATE TABLE ran_marker (v VARCHAR)");
         engine.execute("""
@@ -206,13 +172,13 @@ public class TasksTest extends BaseDatabaseTest {
             CALL refresh_data()
             """);
 
-        final Task task = engine.getCatalog().getDatabase("test_db").getSchema("test_schema").getTask("refresh_task");
-        assertNotNull(task);
-        assertTrue(task.getSqlStatement().toUpperCase().contains("CALL"), "task body should be the CALL statement");
+        assertTrue(taskCell("refresh_task", "definition").toUpperCase().contains("CALL"),
+            "task body should be the CALL statement");
 
         engine.execute("ALTER TASK refresh_task RESUME");
         engine.execute("EXECUTE TASK refresh_task");
 
+        Assumptions.assumeFalse(isLiveSnowflake(), LIVE_TASKS_ASYNC);
         final ResultSet rs = engine.executeQuery("SELECT COUNT(*) FROM ran_marker");
         assertEquals(1, ((Number) rs.getRows().get(0).getValue(0)).intValue(),
             "the CALL body should have executed the procedure");

@@ -46,17 +46,22 @@ public final class BinaryValue implements Comparable<BinaryValue>, Serializable 
         return new BinaryValue(bytes);
     }
 
-    /** Decodes a hex string (an optional {@code 0x}/{@code 0X} prefix is accepted and ignored). */
+    /**
+     * Decodes a hex string. <b>There is no {@code 0x} prefix</b>: Snowflake's decoder does not know
+     * one, and refuses {@code '0x48656C6C6F'} with the same sentence it gives any other non-hex text —
+     * from a {@code ::BINARY} cast, from {@code TO_BINARY} and from {@code HEX_DECODE_BINARY} alike.
+     * Frostlake used to strip it, so it read a spelling no account accepts. ({@code X'48656C6C6F'} is
+     * unaffected: the literal's own syntax carries the marker, and the text inside it is bare hex.)
+     */
     public static BinaryValue fromHex(final String hex) {
-        final String digits = hex.startsWith("0x") || hex.startsWith("0X") ? hex.substring(2) : hex;
-        if (digits.length() % 2 != 0) {
+        if (hex.length() % 2 != 0) {
             throw new RuntimeException(
                 "The following string is not a legal hex-encoded value: '" + hex + "'");
         }
-        final byte[] out = new byte[digits.length() / 2];
+        final byte[] out = new byte[hex.length() / 2];
         for (int i = 0; i < out.length; i++) {
-            final int hi = Character.digit(digits.charAt(2 * i), 16);
-            final int lo = Character.digit(digits.charAt(2 * i + 1), 16);
+            final int hi = Character.digit(hex.charAt(2 * i), 16);
+            final int lo = Character.digit(hex.charAt(2 * i + 1), 16);
             if (hi < 0 || lo < 0) {
                 throw new RuntimeException(
                     "The following string is not a legal hex-encoded value: '" + hex + "'");

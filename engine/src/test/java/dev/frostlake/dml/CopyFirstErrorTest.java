@@ -60,6 +60,7 @@ public class CopyFirstErrorTest {
         localDir = Files.createTempDirectory("copy_first_error_local_");
         final EngineConfig cfg = new EngineConfig();
         cfg.setProperty(EngineConfig.PROP_STAGE_INTERNAL_LOCAL_ROOT, internalRoot.toString());
+        cfg.setProperty(EngineConfig.PROP_STAGE_FILE_URL_ENABLED, "true");
         engine = new DatabaseEngine(cfg);
         engine.execute("CREATE DATABASE db");
         engine.execute("USE DATABASE db");
@@ -108,7 +109,7 @@ public class CopyFirstErrorTest {
     private void stage(final String table, final String fileName, final String content) throws IOException {
         final Path file = localDir.resolve(fileName);
         Files.write(file, content.getBytes(StandardCharsets.UTF_8));
-        engine.executeQuery("PUT file://" + file + " @%" + table);
+        engine.executeQuery("PUT file://" + file + " @%" + table + " AUTO_COMPRESS=FALSE");
     }
 
     private ResultSet copy(final String table, final String options) {
@@ -496,7 +497,8 @@ public class CopyFirstErrorTest {
 
         final ResultSet rs = engine.executeQuery("COPY INTO jt FROM (SELECT $1:id, $1:name FROM @js)"
             + " FILES = ('mixed.json') FILE_FORMAT = (TYPE = JSON) ON_ERROR = CONTINUE");
-        final Row row = fileRow(rs, "mixed.json");
+        // The per-file row spells a named-stage file with the lowercase stage prefix.
+        final Row row = fileRow(rs, "js/mixed.json");
         assertEquals(1, intCell(row, 5).intValue(), "errors_seen");
         assertNotNull(row.getValue(6), "first_error");
         assertEquals(2, intCell(row, 7).intValue(), "the SECOND record's ordinal");

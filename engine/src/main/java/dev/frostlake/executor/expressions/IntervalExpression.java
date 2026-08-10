@@ -39,6 +39,27 @@ public class IntervalExpression implements Expression {
         return valueExpression;
     }
 
+    /**
+     * Whether the unit was written INSIDE the quoted string ({@code INTERVAL '5 days'}) rather than as
+     * a keyword after it ({@code INTERVAL '5' DAY}). The two spellings are not interchangeable for a
+     * DAY amount added to a DATE: the in-string form leaves a DATE a DATE, the keyword form promotes it
+     * to TIMESTAMP_NTZ (live-verified, both spellings, on a column and on a literal alike). Every other
+     * unit agrees across the two — year and month preserve, hour and finer promote.
+     */
+    private boolean unitInString;
+
+    public boolean isUnitInString() {
+        return unitInString;
+    }
+
+    /** Marks this part, and every part chained behind it, as having its unit inside the string. */
+    public void markUnitInString() {
+        this.unitInString = true;
+        if (rest != null) {
+            rest.markUnitInString();
+        }
+    }
+
     public IntervalUnit getUnit() {
         return unit;
     }

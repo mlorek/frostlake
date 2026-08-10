@@ -16,11 +16,9 @@
 
 package dev.frostlake.scripting;
 
-import dev.frostlake.DatabaseEngine;
+import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
 
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -29,23 +27,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
  * Integer-range FOR loop — {@code FOR i IN [REVERSE] start TO end DO … END FOR} — executed in anonymous
  * BEGIN…END blocks. Covers ascending and REVERSE iteration order, variable bounds, and BREAK.
  */
-public class RangeForLoopTest {
-
-    private DatabaseEngine engine;
-
-    @BeforeEach
-    public void setUp() {
-        engine = new DatabaseEngine();
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
-    }
-
-    @AfterEach
-    public void tearDown() {
-        if (engine != null) {
-            engine.shutdown();
-        }
-    }
+public class RangeForLoopTest extends BaseDatabaseTest {
 
     private int runReturningInt(final String block) {
         final ResultSet rs = engine.executeQuery(block);

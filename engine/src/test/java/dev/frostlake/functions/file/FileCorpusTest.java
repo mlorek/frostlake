@@ -22,7 +22,6 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assumptions.assumeFalse;
 
 /**
  * A committed fixture corpus for the FILE family, staged as REAL files and classified END TO END.
@@ -30,14 +29,12 @@ import static org.junit.jupiter.api.Assumptions.assumeFalse;
  * <p><b>Why this class exists.</b> The per-function suites pin the two halves of the FILE pipeline
  * separately: {@code FlGetContentTypeTest} checks EXTENSION &rarr; {@code CONTENT_TYPE} for a handful of
  * extensions, and the {@code FlIs*} suites check {@code CONTENT_TYPE} &rarr; CATEGORY by feeding
- * {@code TRY_TO_FILE} a hand-built descriptor. Nothing joined them. So the entries that make the two
- * tables DISAGREE were unprotected: {@code FileContentTypes} maps {@code .gz} to
- * {@code application/x-gzip}, and that string is deliberately absent from the compressed set, but
- * "correcting" the map to {@code application/gzip} would not have failed a single test —
- * {@code FlIsCompressedTest} asserts {@code isCompressed("application/x-gzip")} is FALSE by passing the
- * content type in directly, and no test ever staged a {@code .gz}. The same hole covered {@code .avi},
- * {@code .png}, {@code .mp3} and {@code .tsv}. (Before this class, {@code TO_FILE('@st/a.gz')} appeared
- * in exactly one place in the test tree: a Javadoc sentence in {@code FlIsCompressedTest}.)
+ * {@code TRY_TO_FILE} a hand-built descriptor. Nothing joined them. So the entries where the JOIN of
+ * the two tables carries the surprise were unprotected: {@code .tsv} maps to
+ * {@code text/tab-separated-values}, which the document set does not hold, and {@code .7z} to
+ * {@code application/x-7z-compressed}, absent from the compressed set — mismatches no per-table test
+ * would catch, since each table is separately faithful. The same hole covered {@code .avi},
+ * {@code .png}, {@code .mp3} and {@code .gz}.
  *
  * <p><b>Where the expectations come from.</b> Every row below is a live Snowflake measurement,
  * re-read from the recorded transcripts rather than restated from memory. The
@@ -47,7 +44,7 @@ import static org.junit.jupiter.api.Assumptions.assumeFalse;
  * <pre>
  *   .png  image/png                   image      &lt;- image_real.png
  *   .jpg  image/jpeg                  image      &lt;- s.jpg
- *   .gz   application/x-gzip          unknown    &lt;- data.csv.gz   (NOT compressed)
+ *   .gz   application/gzip            compressed &lt;- c.gz
  *   .zip  application/zip             compressed &lt;- archive.zip
  *   .avi  video/x-msvideo             video      &lt;- s.avi         (video AND audio at once)
  *   .mp3  audio/mpeg                  audio      &lt;- sound.mp3
@@ -88,9 +85,6 @@ public class FileCorpusTest extends StagedFileTestSupport {
     @Override
     protected void setupTest() {
         super.setupTest();
-        if (isLiveSnowflake()) {
-            return;
-        }
         stageBytes("c.png", PNG_BYTES);
         stage("c.jpg", PAYLOAD);
         stage("c.gz", PAYLOAD);
@@ -116,11 +110,10 @@ public class FileCorpusTest extends StagedFileTestSupport {
      */
     @Test
     public void theCorpusClassifiesExactlyAsTheAccountDid() {
-        assumeFalse(isLiveSnowflake(), stageOnlyReason());
 
         assertEquals("image/png|image|TRUE|FALSE|FALSE|FALSE|FALSE", classification("c.png"));
         assertEquals("image/jpeg|image|TRUE|FALSE|FALSE|FALSE|FALSE", classification("c.jpg"));
-        assertEquals("application/x-gzip|unknown|FALSE|FALSE|FALSE|FALSE|FALSE", classification("c.gz"));
+        assertEquals("application/gzip|compressed|FALSE|FALSE|FALSE|FALSE|TRUE", classification("c.gz"));
         assertEquals("application/zip|compressed|FALSE|FALSE|FALSE|FALSE|TRUE", classification("c.zip"));
         assertEquals("video/x-msvideo|video|FALSE|TRUE|TRUE|FALSE|FALSE", classification("c.avi"));
         assertEquals("audio/mpeg|audio|FALSE|FALSE|TRUE|FALSE|FALSE", classification("c.mp3"));
@@ -136,28 +129,23 @@ public class FileCorpusTest extends StagedFileTestSupport {
     }
 
     /**
-     * Live: the two archive fixtures disagree, and the disagreement is the point. A real {@code .gz} is
-     * {@code application/x-gzip}, which is NOT in the compressed set, so {@code FL_IS_COMPRESSED} over an
-     * actual gzip file is FALSE and its category is {@code unknown} — while a {@code .zip} is
-     * {@code application/zip} and behaves as one would expect.
-     *
-     * <p>Snowflake does list {@code application/gzip} as compressed; it simply never assigns that
-     * spelling to a staged file. Aligning the extension map onto the compressed set would look like a
-     * tidy-up and would be a fidelity regression, so it is pinned from both ends here.
+     * Live: both archive fixtures classify compressed end to end — a staged {@code .gz} really gets
+     * the {@code application/gzip} spelling that sits in the compressed set, beside {@code .zip}'s
+     * {@code application/zip}. The {@code x-}-prefixed twin a hand-built object may carry stays
+     * outside the set, so the VALUE classification and the staged-file path are pinned apart here.
      */
     @Test
-    public void gzIsNotCompressedThoughZipIs() {
-        assumeFalse(isLiveSnowflake(), stageOnlyReason());
+    public void gzAndZipBothClassifyCompressed() {
 
-        assertEquals("application/x-gzip", contentTypeOf("c.gz"));
-        assertEquals("FALSE", predicate("SELECT FL_IS_COMPRESSED(TO_FILE('@st/c.gz'))"));
-        assertEquals("unknown", scalar("SELECT FL_GET_FILE_TYPE(TO_FILE('@st/c.gz'))"));
+        assertEquals("application/gzip", contentTypeOf("c.gz"));
+        assertEquals("TRUE", predicate("SELECT FL_IS_COMPRESSED(TO_FILE('@st/c.gz'))"));
+        assertEquals("compressed", scalar("SELECT FL_GET_FILE_TYPE(TO_FILE('@st/c.gz'))"));
 
         assertEquals("application/zip", contentTypeOf("c.zip"));
         assertEquals("TRUE", predicate("SELECT FL_IS_COMPRESSED(TO_FILE('@st/c.zip'))"));
 
-        // The spelling that IS compressed, to show the set membership is real and only the map differs.
-        assertEquals("TRUE", predicate("SELECT FL_IS_COMPRESSED(" + fileOf("application/gzip") + ")"));
+        // The x-prefixed spelling stays outside the set even as a claimed object value.
+        assertEquals("FALSE", predicate("SELECT FL_IS_COMPRESSED(" + fileOf("application/x-gzip") + ")"));
     }
 
     /**
@@ -168,7 +156,6 @@ public class FileCorpusTest extends StagedFileTestSupport {
      */
     @Test
     public void aviIsVideoAndAudioFromARealStagedFile() {
-        assumeFalse(isLiveSnowflake(), stageOnlyReason());
 
         assertEquals("TRUE", predicate("SELECT FL_IS_VIDEO(TO_FILE('@st/c.avi'))"));
         assertEquals("TRUE", predicate("SELECT FL_IS_AUDIO(TO_FILE('@st/c.avi'))"));
@@ -185,7 +172,6 @@ public class FileCorpusTest extends StagedFileTestSupport {
      */
     @Test
     public void identicalBytesClassifyByNameAloneYetShareSizeAndDigest() {
-        assumeFalse(isLiveSnowflake(), stageOnlyReason());
 
         assertEquals("image/png", contentTypeOf("c.png"));
         assertEquals("text/plain", contentTypeOf("png_bytes.txt"));
@@ -210,7 +196,6 @@ public class FileCorpusTest extends StagedFileTestSupport {
      */
     @Test
     public void oneSharedPayloadKeepsSizeAndEtagConstantAcrossEveryExtension() {
-        assumeFalse(isLiveSnowflake(), stageOnlyReason());
 
         final String[] fixtures = {"c.jpg", "c.gz", "c.zip", "c.avi", "c.mp3", "c.tsv", "c.txt",
             "noext", "sub/nested.png", AWKWARD_NAME};
@@ -226,7 +211,6 @@ public class FileCorpusTest extends StagedFileTestSupport {
      */
     @Test
     public void emptyFileHasZeroSizeAndTheDigestOfNoBytes() {
-        assumeFalse(isLiveSnowflake(), stageOnlyReason());
 
         assertEquals("0", scalar("SELECT FL_GET_SIZE(TO_FILE('@st/empty.txt'))"));
         assertEquals(EMPTY_ETAG, scalar("SELECT FL_GET_ETAG(TO_FILE('@st/empty.txt'))"));
@@ -246,7 +230,6 @@ public class FileCorpusTest extends StagedFileTestSupport {
      */
     @Test
     public void subDirectoriesAndAwkwardNamesRoundTrip() {
-        assumeFalse(isLiveSnowflake(), stageOnlyReason());
 
         assertEquals("sub/nested.png",
             scalar("SELECT FL_GET_RELATIVE_PATH(TO_FILE('@st/sub/nested.png'))"));
@@ -268,7 +251,6 @@ public class FileCorpusTest extends StagedFileTestSupport {
      */
     @Test
     public void everyFixtureCarriesAWellFormedLastModified() {
-        assumeFalse(isLiveSnowflake(), stageOnlyReason());
 
         final String[] fixtures = {"c.png", "c.gz", "noext", "empty.txt", "sub/nested.png", AWKWARD_NAME};
         for (final String fixture : fixtures) {
@@ -282,7 +264,6 @@ public class FileCorpusTest extends StagedFileTestSupport {
     /** The stage every fixture reports, so a corpus file is anchored to the stage it was staged on. */
     @Test
     public void everyFixtureReportsTheStageItLivesOn() {
-        assumeFalse(isLiveSnowflake(), stageOnlyReason());
 
         final String expected = scalar("SELECT FL_GET_STAGE(TO_FILE('@st/c.txt'))");
         assertNotNull(expected);

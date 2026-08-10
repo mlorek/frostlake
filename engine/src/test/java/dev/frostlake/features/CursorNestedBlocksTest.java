@@ -16,41 +16,31 @@
 
 package dev.frostlake.features;
 
-import dev.frostlake.DatabaseEngine;
+import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 
 /**
  * Tests for cursor operations inside nested BEGIN...END blocks.
  */
-public class CursorNestedBlocksTest {
+public class CursorNestedBlocksTest extends BaseDatabaseTest {
 
-    private DatabaseEngine engine;
-
-    @BeforeEach
-    public void setUp() {
-        engine = new DatabaseEngine();
+    @Override
+    protected void setupTest() {
         engine.execute("CREATE DATABASE IF NOT EXISTS test_db");
-        engine.execute("USE DATABASE test_db");
-        engine.execute("USE SCHEMA public");
-    }
-
-    @AfterEach
-    public void tearDown() {
-        if (engine != null) engine.shutdown();
     }
 
     // ── helper ────────────────────────────────────────────────────────────────
 
     private String exec(final String block) {
-        ResultSet rs = engine.executeQuery("EXECUTE IMMEDIATE $$\n" + block + "\n$$");
+        final ResultSet rs = engine.executeQuery("EXECUTE IMMEDIATE $$\n" + block + "\n$$");
         assertNotNull(rs);
         assertFalse(rs.getRows().isEmpty(), "Expected a RETURN value but got no rows");
-        Object val = rs.getRows().get(0).getValue(0);
+        final Object val = rs.getRows().get(0).getValue(0);
         return val == null ? "null" : val.toString();
     }
 
@@ -69,7 +59,7 @@ public class CursorNestedBlocksTest {
             "DECLARE total INT DEFAULT 0;\n" +
             "BEGIN\n" +
             "    BEGIN\n" +
-            "        LET cur CURSOR FOR SELECT v FROM test_db.public.nums;\n" +
+            "        LET cur CURSOR FOR SELECT v FROM test_db.test_schema.nums;\n" +
             "        FOR rec IN cur DO\n" +
             "            total := :total + rec.V;\n" +
             "        END FOR;\n" +
@@ -91,7 +81,7 @@ public class CursorNestedBlocksTest {
             "DECLARE result VARCHAR DEFAULT '';\n" +
             "BEGIN\n" +
             "    BEGIN\n" +
-            "        LET cur CURSOR FOR SELECT w FROM test_db.public.words ORDER BY w;\n" +
+            "        LET cur CURSOR FOR SELECT w FROM test_db.test_schema.words ORDER BY w;\n" +
             "        FOR rec IN cur DO\n" +
             "            result := :result || rec.W || ',';\n" +
             "        END FOR;\n" +
@@ -115,14 +105,14 @@ public class CursorNestedBlocksTest {
             "DECLARE total INT DEFAULT 0;\n" +
             "BEGIN\n" +
             "    BEGIN\n" +
-            "        LET c1 CURSOR FOR SELECT x FROM test_db.public.a_vals;\n" +
+            "        LET c1 CURSOR FOR SELECT x FROM test_db.test_schema.a_vals;\n" +
             "        FOR rec IN c1 DO\n" +
             "            total := :total + rec.X;\n" +
             "        END FOR;\n" +
             "        CLOSE c1;\n" +
             "    END;\n" +
             "    BEGIN\n" +
-            "        LET c2 CURSOR FOR SELECT x FROM test_db.public.b_vals;\n" +
+            "        LET c2 CURSOR FOR SELECT x FROM test_db.test_schema.b_vals;\n" +
             "        FOR rec IN c2 DO\n" +
             "            total := :total + rec.X;\n" +
             "        END FOR;\n" +
@@ -144,7 +134,7 @@ public class CursorNestedBlocksTest {
             "DECLARE result INT DEFAULT 0;\n" +
             "BEGIN\n" +
             "    IF (1 = 1) THEN\n" +
-            "        LET cur CURSOR FOR SELECT v FROM test_db.public.cond_data;\n" +
+            "        LET cur CURSOR FOR SELECT v FROM test_db.test_schema.cond_data;\n" +
             "        FOR rec IN cur DO\n" +
             "            result := rec.V;\n" +
             "        END FOR;\n" +
@@ -164,7 +154,7 @@ public class CursorNestedBlocksTest {
             "DECLARE result INT DEFAULT 0;\n" +
             "BEGIN\n" +
             "    IF (1 = 2) THEN\n" +
-            "        LET cur CURSOR FOR SELECT v FROM test_db.public.cond_data2;\n" +
+            "        LET cur CURSOR FOR SELECT v FROM test_db.test_schema.cond_data2;\n" +
             "        FOR rec IN cur DO\n" +
             "            result := rec.V;\n" +
             "        END FOR;\n" +
@@ -188,8 +178,8 @@ public class CursorNestedBlocksTest {
         assertEquals(7, execInt(
             "DECLARE total INT DEFAULT 0;\n" +
             "BEGIN\n" +
-            "    LET c1 CURSOR FOR SELECT n FROM test_db.public.mc_a;\n" +
-            "    LET c2 CURSOR FOR SELECT n FROM test_db.public.mc_b;\n" +
+            "    LET c1 CURSOR FOR SELECT n FROM test_db.test_schema.mc_a;\n" +
+            "    LET c2 CURSOR FOR SELECT n FROM test_db.test_schema.mc_b;\n" +
             "    FOR r1 IN c1 DO\n" +
             "        total := :total + r1.N;\n" +
             "    END FOR;\n" +
@@ -213,7 +203,7 @@ public class CursorNestedBlocksTest {
         assertEquals(15, execInt(
             "DECLARE total INT DEFAULT 0;\n" +
             "BEGIN\n" +
-            "    LET cur CURSOR FOR SELECT v FROM test_db.public.outer_cur;\n" +
+            "    LET cur CURSOR FOR SELECT v FROM test_db.test_schema.outer_cur;\n" +
             "    BEGIN\n" +
             "        FOR rec IN cur DO\n" +
             "            total := :total + rec.V;\n" +
@@ -238,10 +228,10 @@ public class CursorNestedBlocksTest {
         assertEquals("1,1,", exec(
             "DECLARE result VARCHAR DEFAULT '';\n" +
             "BEGIN\n" +
-            "    LET cx CURSOR FOR SELECT label FROM test_db.public.nfl_labels ORDER BY label;\n" +
+            "    LET cx CURSOR FOR SELECT label FROM test_db.test_schema.nfl_labels ORDER BY label;\n" +
             "    FOR rx IN cx DO\n" +
             "        BEGIN\n" +
-            "            LET cy CURSOR FOR SELECT cnt FROM test_db.public.nfl_single;\n" +
+            "            LET cy CURSOR FOR SELECT cnt FROM test_db.test_schema.nfl_single;\n" +
             "            FOR ry IN cy DO\n" +
             "                result := :result || ry.CNT || ',';\n" +
             "            END FOR;\n" +
@@ -266,7 +256,7 @@ public class CursorNestedBlocksTest {
             "BEGIN\n" +
             "    BEGIN\n" +
             "        BEGIN\n" +
-            "            LET cur CURSOR FOR SELECT v FROM test_db.public.deep_vals;\n" +
+            "            LET cur CURSOR FOR SELECT v FROM test_db.test_schema.deep_vals;\n" +
             "            FOR rec IN cur DO\n" +
             "                result := rec.V;\n" +
             "            END FOR;\n" +
@@ -288,7 +278,7 @@ public class CursorNestedBlocksTest {
             "DECLARE result VARCHAR DEFAULT 'default';\n" +
             "BEGIN\n" +
             "    BEGIN\n" +
-            "        LET cur CURSOR FOR SELECT v FROM test_db.public.empty_tbl;\n" +
+            "        LET cur CURSOR FOR SELECT v FROM test_db.test_schema.empty_tbl;\n" +
             "        FOR rec IN cur DO\n" +
             "            result := 'changed';\n" +
             "        END FOR;\n" +
@@ -313,12 +303,12 @@ public class CursorNestedBlocksTest {
             "DECLARE total INT DEFAULT 0;\n" +
             "BEGIN\n" +
             "    BEGIN\n" +
-            "        LET cur CURSOR FOR SELECT v FROM test_db.public.seq1;\n" +
+            "        LET cur CURSOR FOR SELECT v FROM test_db.test_schema.seq1;\n" +
             "        FOR rec IN cur DO total := :total + rec.V; END FOR;\n" +
             "        CLOSE cur;\n" +
             "    END;\n" +
             "    BEGIN\n" +
-            "        LET cur CURSOR FOR SELECT v FROM test_db.public.seq2;\n" +
+            "        LET cur CURSOR FOR SELECT v FROM test_db.test_schema.seq2;\n" +
             "        FOR rec IN cur DO total := :total + rec.V; END FOR;\n" +
             "        CLOSE cur;\n" +
             "    END;\n" +
@@ -338,7 +328,7 @@ public class CursorNestedBlocksTest {
             "DECLARE cnt INT DEFAULT 0;\n" +
             "BEGIN\n" +
             "    BEGIN\n" +
-            "        LET cur CURSOR FOR SELECT id FROM test_db.public.filter_data WHERE active = TRUE;\n" +
+            "        LET cur CURSOR FOR SELECT id FROM test_db.test_schema.filter_data WHERE active = TRUE;\n" +
             "        FOR rec IN cur DO\n" +
             "            cnt := :cnt + 1;\n" +
             "        END FOR;\n" +
@@ -362,7 +352,7 @@ public class CursorNestedBlocksTest {
             "    IF (1 = 2) THEN\n" +
             "        result := 'wrong';\n" +
             "    ELSE\n" +
-            "        LET cur CURSOR FOR SELECT v FROM test_db.public.else_data;\n" +
+            "        LET cur CURSOR FOR SELECT v FROM test_db.test_schema.else_data;\n" +
             "        FOR rec IN cur DO\n" +
             "            result := rec.V;\n" +
             "        END FOR;\n" +

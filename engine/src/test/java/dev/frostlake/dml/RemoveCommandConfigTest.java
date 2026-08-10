@@ -48,6 +48,7 @@ public class RemoveCommandConfigTest {
         stageDir = Files.createTempDirectory("remove_cfg_stage_");
         final EngineConfig config = new EngineConfig();
         config.setProperty(EngineConfig.PROP_COMMAND_REMOVE_ENABLED, String.valueOf(removeEnabled));
+        config.setProperty(EngineConfig.PROP_STAGE_FILE_URL_ENABLED, "true");
         engine = new DatabaseEngine(config);
         engine.execute("CREATE DATABASE db");
         engine.execute("USE DATABASE db");

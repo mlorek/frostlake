@@ -26,7 +26,9 @@ import java.sql.SQLException;
 import java.sql.Timestamp;
 import java.time.LocalDateTime;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class SysdateTest extends BaseJdbcTest {
     private static final Logger logger = LoggerFactory.getLogger(SysdateTest.class);
@@ -35,10 +37,10 @@ public class SysdateTest extends BaseJdbcTest {
     public void testSysdateReturnsTimestamp() throws SQLException {
         logger.info("Testing SYSDATE returns current timestamp");
 
-        ResultSet rs = statement.executeQuery("SELECT SYSDATE() AS current_time");
+        final ResultSet rs = statement.executeQuery("SELECT SYSDATE() AS current_time");
         assertTrue(rs.next());
 
-        Object result = rs.getObject("current_time");
+        final Object result = rs.getObject("current_time");
         assertNotNull(result);
         logger.info("SYSDATE result type: {}, value: {}", result.getClass().getName(), result);
 
@@ -54,7 +56,7 @@ public class SysdateTest extends BaseJdbcTest {
         logger.info("Testing SYSDATE without parentheses");
 
         // In Snowflake, SYSDATE can be called without parentheses
-        ResultSet rs = statement.executeQuery("SELECT SYSDATE() AS ts");
+        final ResultSet rs = statement.executeQuery("SELECT SYSDATE() AS ts");
         assertTrue(rs.next());
         assertNotNull(rs.getObject("ts"));
 
@@ -68,10 +70,10 @@ public class SysdateTest extends BaseJdbcTest {
         statement.execute("CREATE TABLE audit_log (id INTEGER, created_at TIMESTAMP_NTZ)");
         statement.execute("INSERT INTO audit_log VALUES (1, SYSDATE())");
 
-        ResultSet rs = statement.executeQuery("SELECT created_at FROM audit_log WHERE id = 1");
+        final ResultSet rs = statement.executeQuery("SELECT created_at FROM audit_log WHERE id = 1");
         assertTrue(rs.next());
 
-        Object createdAt = rs.getObject("created_at");
+        final Object createdAt = rs.getObject("created_at");
         assertNotNull(createdAt);
         logger.info("Inserted timestamp: {}", createdAt);
 
@@ -91,7 +93,7 @@ public class SysdateTest extends BaseJdbcTest {
         statement.execute("INSERT INTO events VALUES (2, SYSDATE())");
 
         // Query events from the past (before now)
-        ResultSet rs = statement.executeQuery(
+        final ResultSet rs = statement.executeQuery(
             "SELECT id FROM events WHERE event_time < SYSDATE() ORDER BY id"
         );
 
@@ -108,7 +110,7 @@ public class SysdateTest extends BaseJdbcTest {
     public void testSysdateComparison() throws SQLException {
         logger.info("Testing SYSDATE comparison with past timestamp");
 
-        ResultSet rs = statement.executeQuery(
+        final ResultSet rs = statement.executeQuery(
             "SELECT SYSDATE() > TO_TIMESTAMP_NTZ('2020-01-01 00:00:00') AS is_after"
         );
 
@@ -122,11 +124,11 @@ public class SysdateTest extends BaseJdbcTest {
     public void testMultipleSysdateCalls() throws SQLException {
         logger.info("Testing multiple SYSDATE calls in same query");
 
-        ResultSet rs = statement.executeQuery("SELECT SYSDATE() AS ts1, SYSDATE() AS ts2");
+        final ResultSet rs = statement.executeQuery("SELECT SYSDATE() AS ts1, SYSDATE() AS ts2");
         assertTrue(rs.next());
 
-        Object ts1 = rs.getObject("ts1");
-        Object ts2 = rs.getObject("ts2");
+        final Object ts1 = rs.getObject("ts1");
+        final Object ts2 = rs.getObject("ts2");
 
         assertNotNull(ts1);
         assertNotNull(ts2);
@@ -146,7 +148,7 @@ public class SysdateTest extends BaseJdbcTest {
         statement.execute("INSERT INTO logs (id, log_time) VALUES (1, SYSDATE())");
         statement.execute("INSERT INTO logs (id, log_time) VALUES (2, SYSDATE())");
 
-        ResultSet rs = statement.executeQuery("SELECT COUNT(*) AS cnt FROM logs WHERE log_time IS NOT NULL");
+        final ResultSet rs = statement.executeQuery("SELECT COUNT(*) AS cnt FROM logs WHERE log_time IS NOT NULL");
         assertTrue(rs.next());
         assertEquals(2, rs.getInt("cnt"));
 
@@ -160,7 +162,7 @@ public class SysdateTest extends BaseJdbcTest {
         statement.execute("CREATE TABLE task_list (id INTEGER, due_date TIMESTAMP_NTZ)");
         statement.execute("INSERT INTO task_list VALUES (1, SYSDATE())");
 
-        ResultSet rs = statement.executeQuery(
+        final ResultSet rs = statement.executeQuery(
             "SELECT id FROM task_list WHERE due_date <= SYSDATE()"
         );
 
@@ -178,7 +180,7 @@ public class SysdateTest extends BaseJdbcTest {
         statement.execute("INSERT INTO orders VALUES (1, TO_TIMESTAMP_NTZ('2024-01-01 10:00:00'))");
         statement.execute("INSERT INTO orders VALUES (2, TO_TIMESTAMP_NTZ('2024-06-01 10:00:00'))");
 
-        ResultSet rs = statement.executeQuery(
+        final ResultSet rs = statement.executeQuery(
             "SELECT id FROM orders WHERE order_date < (SELECT SYSDATE()) ORDER BY id"
         );
 
@@ -197,7 +199,7 @@ public class SysdateTest extends BaseJdbcTest {
 
         statement.execute("CREATE TABLE snapshot AS SELECT 1 AS id, SYSDATE() AS snapshot_time");
 
-        ResultSet rs = statement.executeQuery("SELECT snapshot_time FROM snapshot");
+        final ResultSet rs = statement.executeQuery("SELECT snapshot_time FROM snapshot");
         assertTrue(rs.next());
         assertNotNull(rs.getObject("snapshot_time"));
 

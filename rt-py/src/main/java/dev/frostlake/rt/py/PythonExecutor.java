@@ -22,21 +22,22 @@ import dev.frostlake.metastore.model.Parameter;
 import dev.frostlake.metastore.model.UdfLanguage;
 import dev.frostlake.types.TypeCategory;
 import dev.frostlake.values.BinaryValue;
-import tools.jackson.databind.JsonNode;
-import tools.jackson.databind.node.ArrayNode;
-import tools.jackson.databind.node.ObjectNode;
 import org.graalvm.polyglot.Value;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.node.ArrayNode;
+import tools.jackson.databind.node.ObjectNode;
 
-import java.time.LocalDate;
-import java.time.LocalDateTime;
-import java.time.LocalTime;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 
-public class PythonExecutor {
+public final class PythonExecutor {
+
+    /** Static helpers only — never instantiated. */
+    private PythonExecutor() {
+    }
 
     private static final Logger logger = LoggerFactory.getLogger(PythonExecutor.class);
 

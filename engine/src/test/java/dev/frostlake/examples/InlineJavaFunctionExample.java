@@ -26,7 +26,7 @@ public class InlineJavaFunctionExample {
 
     @Test
     public void demonstrateInlineJavaFunctions() {
-        DatabaseEngine engine = new DatabaseEngine();
+        final DatabaseEngine engine = new DatabaseEngine();
 
         try {
             engine.execute("CREATE DATABASE demo_db");
@@ -36,7 +36,7 @@ public class InlineJavaFunctionExample {
 
             // Example 1: Simple Java function with no parameters
             logger.info("\n1. Simple Java function with no parameters:");
-            String simpleFunction = """
+            final String simpleFunction = """
             CREATE OR REPLACE FUNCTION jfn()
             RETURNS STRING
             LANGUAGE JAVA
@@ -56,7 +56,7 @@ public class InlineJavaFunctionExample {
 
             // Example 2: Java function with single parameter
             logger.info("\n2. Java function with single String parameter:");
-            String greetFunction = """
+            final String greetFunction = """
             CREATE OR REPLACE FUNCTION greet(name STRING)
             RETURNS STRING
             LANGUAGE JAVA
@@ -76,7 +76,7 @@ public class InlineJavaFunctionExample {
 
             // Example 3: Java function with integer parameter
             logger.info("\n3. Java function with integer parameter:");
-            String doubleFunction = """
+            final String doubleFunction = """
             CREATE OR REPLACE FUNCTION double_value(x INTEGER)
             RETURNS INTEGER
             LANGUAGE JAVA
@@ -96,7 +96,7 @@ public class InlineJavaFunctionExample {
 
             // Example 4: Java function with multiple parameters
             logger.info("\n4. Java function with multiple parameters:");
-            String addFunction = """
+            final String addFunction = """
             CREATE OR REPLACE FUNCTION add_numbers(a INTEGER, b INTEGER)
             RETURNS INTEGER
             LANGUAGE JAVA
@@ -116,7 +116,7 @@ public class InlineJavaFunctionExample {
 
             // Example 5: Java function with boolean return type
             logger.info("\n5. Java function with boolean return type:");
-            String isEvenFunction = """
+            final String isEvenFunction = """
             CREATE OR REPLACE FUNCTION is_even(n INTEGER)
             RETURNS BOOLEAN
             LANGUAGE JAVA
@@ -136,7 +136,7 @@ public class InlineJavaFunctionExample {
 
             // Example 6: Java function with complex logic
             logger.info("\n6. Java function with complex logic (factorial):");
-            String factorialFunction = """
+            final String factorialFunction = """
             CREATE OR REPLACE FUNCTION factorial(n INTEGER)
             RETURNS INTEGER
             LANGUAGE JAVA
@@ -163,7 +163,7 @@ public class InlineJavaFunctionExample {
 
             // Example 7: Java function used in table operations
             logger.info("\n7. Java function used in table operations:");
-            String formatFunction = """
+            final String formatFunction = """
             CREATE OR REPLACE FUNCTION format_name(firstname STRING, lastname STRING)
             RETURNS STRING
             LANGUAGE JAVA
@@ -187,7 +187,7 @@ public class InlineJavaFunctionExample {
 
             // Example 8: Java function combined with built-in functions
             logger.info("\n8. Java function combined with built-in functions:");
-            String prefixFunction = """
+            final String prefixFunction = """
             CREATE OR REPLACE FUNCTION add_prefix(text STRING)
             RETURNS STRING
             LANGUAGE JAVA
@@ -208,7 +208,7 @@ public class InlineJavaFunctionExample {
 
             // Example 9: OR REPLACE behavior
             logger.info("\n9. CREATE OR REPLACE function:");
-            String version1 = """
+            final String version1 = """
             CREATE OR REPLACE FUNCTION versioned_func()
             RETURNS STRING
             LANGUAGE JAVA
@@ -224,7 +224,7 @@ public class InlineJavaFunctionExample {
             engine.execute(version1);
             logger.info("Created version 1: returns 'version 1'");
 
-            String version2 = """
+            final String version2 = """
             CREATE OR REPLACE FUNCTION versioned_func()
             RETURNS STRING
             LANGUAGE JAVA
@@ -243,7 +243,7 @@ public class InlineJavaFunctionExample {
 
             // Example 10: Function returning null
             logger.info("\n10. Java function returning null:");
-            String nullFunction = """
+            final String nullFunction = """
             CREATE OR REPLACE FUNCTION get_nullable()
             RETURNS STRING
             LANGUAGE JAVA

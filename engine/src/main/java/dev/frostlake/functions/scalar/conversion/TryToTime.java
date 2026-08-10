@@ -34,9 +34,15 @@ public class TryToTime extends BuiltInFunction {
     @Override
     public Object evaluate(final List<Object> args) {
         if (args.get(0) == null) return null;
-        try { return base.evaluate(args); } catch (final Exception e) { return null; }
+        try {
+            return base.evaluate(args);
+        } catch (final Exception e) {
+            return null;
+        }
     }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return 2; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return 2; }
 }

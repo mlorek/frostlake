@@ -17,11 +17,10 @@
 package dev.frostlake.features;
 
 import dev.frostlake.BaseJdbcTest;
-import org.junit.jupiter.api.Test;
-
 import java.sql.ResultSet;
 import java.sql.SQLException;
-
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -41,7 +40,7 @@ public class InformationSchemaPerDatabaseTest extends BaseJdbcTest {
         statement.execute("USE DATABASE db1");
         statement.execute("CREATE TABLE db1_table (id INTEGER)");
 
-        ResultSet rs1 = statement.executeQuery("SHOW SCHEMAS");
+        final ResultSet rs1 = statement.executeQuery("SHOW SCHEMAS");
         boolean foundInfoSchema1 = false;
         while (rs1.next()) {
             if ("INFORMATION_SCHEMA".equals(rs1.getString("name"))) {
@@ -53,7 +52,7 @@ public class InformationSchemaPerDatabaseTest extends BaseJdbcTest {
         rs1.close();
 
         // Verify INFORMATION_SCHEMA.TABLES shows db1's tables
-        ResultSet tables1 = statement.executeQuery(
+        final ResultSet tables1 = statement.executeQuery(
             "SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_CATALOG = 'DB1'"
         );
         boolean foundDb1Table = false;
@@ -70,7 +69,7 @@ public class InformationSchemaPerDatabaseTest extends BaseJdbcTest {
         statement.execute("USE DATABASE db2");
         statement.execute("CREATE TABLE db2_table (id INTEGER)");
 
-        ResultSet rs2 = statement.executeQuery("SHOW SCHEMAS");
+        final ResultSet rs2 = statement.executeQuery("SHOW SCHEMAS");
         boolean foundInfoSchema2 = false;
         while (rs2.next()) {
             if ("INFORMATION_SCHEMA".equals(rs2.getString("name"))) {
@@ -82,7 +81,7 @@ public class InformationSchemaPerDatabaseTest extends BaseJdbcTest {
         rs2.close();
 
         // Verify INFORMATION_SCHEMA.TABLES shows db2's tables (not db1's)
-        ResultSet tables2 = statement.executeQuery(
+        final ResultSet tables2 = statement.executeQuery(
             "SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_CATALOG = 'DB2'"
         );
         boolean foundDb2Table = false;
@@ -97,16 +96,16 @@ public class InformationSchemaPerDatabaseTest extends BaseJdbcTest {
 
         // Test fully qualified access to INFORMATION_SCHEMA in different database
         statement.execute("USE DATABASE db3");
-        ResultSet crossDbQuery = statement.executeQuery(
+        final ResultSet crossDbQuery = statement.executeQuery(
             "SELECT * FROM db1.INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = 'DB1_TABLE'"
         );
         assertTrue(crossDbQuery.next(), "Should be able to query INFORMATION_SCHEMA in db1 from db3 context");
         crossDbQuery.close();
 
         // Verify all databases show up in INFORMATION_SCHEMA.DATABASES regardless of current database
-        ResultSet allDbs = statement.executeQuery("SELECT COUNT(*) as db_count FROM INFORMATION_SCHEMA.DATABASES");
+        final ResultSet allDbs = statement.executeQuery("SELECT COUNT(*) as db_count FROM INFORMATION_SCHEMA.DATABASES");
         assertTrue(allDbs.next());
-        int dbCount = allDbs.getInt("db_count");
+        final int dbCount = allDbs.getInt("db_count");
         assertTrue(dbCount >= 4, "Should have at least 4 databases (TEST_DB, DB1, DB2, DB3)");
         allDbs.close();
     }
@@ -117,13 +116,15 @@ public class InformationSchemaPerDatabaseTest extends BaseJdbcTest {
         statement.execute("USE DATABASE test_drop_db");
 
         // Attempt to drop INFORMATION_SCHEMA should fail
-        assertThrows(SQLException.class, () ->
-            statement.execute("DROP SCHEMA INFORMATION_SCHEMA"),
-            "Should not be able to drop INFORMATION_SCHEMA"
-        );
+        assertThrows(SQLException.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                statement.execute("DROP SCHEMA INFORMATION_SCHEMA");
+            }
+        }, "Should not be able to drop INFORMATION_SCHEMA");
 
         // Verify INFORMATION_SCHEMA still exists
-        ResultSet rs = statement.executeQuery("SHOW SCHEMAS");
+        final ResultSet rs = statement.executeQuery("SHOW SCHEMAS");
         boolean found = false;
         while (rs.next()) {
             if ("INFORMATION_SCHEMA".equals(rs.getString("name"))) {
@@ -138,15 +139,19 @@ public class InformationSchemaPerDatabaseTest extends BaseJdbcTest {
     @Test
     public void testInformationSchemaIsReadOnly() throws SQLException {
         // Attempt to create a table in INFORMATION_SCHEMA should fail
-        assertThrows(SQLException.class, () ->
-            statement.execute("CREATE TABLE INFORMATION_SCHEMA.custom_table (id INTEGER)"),
-            "Should not be able to create tables in INFORMATION_SCHEMA"
-        );
+        assertThrows(SQLException.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                statement.execute("CREATE TABLE INFORMATION_SCHEMA.custom_table (id INTEGER)");
+            }
+        }, "Should not be able to create tables in INFORMATION_SCHEMA");
 
         // Attempt to drop a system view should fail
-        assertThrows(SQLException.class, () ->
-            statement.execute("DROP VIEW INFORMATION_SCHEMA.TABLES"),
-            "Should not be able to drop system views"
-        );
+        assertThrows(SQLException.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                statement.execute("DROP VIEW INFORMATION_SCHEMA.TABLES");
+            }
+        }, "Should not be able to drop system views");
     }
 }

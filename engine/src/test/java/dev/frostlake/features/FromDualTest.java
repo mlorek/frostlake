@@ -16,11 +16,9 @@
 
 package dev.frostlake.features;
 
-import dev.frostlake.DatabaseEngine;
+import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.Row;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -33,23 +31,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * a reference to it yields a single row against which the select-list expressions are evaluated. It is a
  * common idiom carried over from other SQL dialects.
  */
-public class FromDualTest {
-
-    private DatabaseEngine engine;
-
-    @BeforeEach
-    public void setUp() {
-        engine = new DatabaseEngine();
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
-    }
-
-    @AfterEach
-    public void tearDown() {
-        if (engine != null) {
-            engine.shutdown();
-        }
-    }
+public class FromDualTest extends BaseDatabaseTest {
 
     @Test
     public void testSelectConstantFromDual() {
@@ -93,14 +75,20 @@ public class FromDualTest {
     }
 
     @Test
-    public void testUserDualTableShadowsPseudoTable() {
-        // A real user table named DUAL takes precedence over the pseudo-table.
+    public void testUserDualTableDoesNotShadowPseudoTable() {
+        // A bare unquoted FROM DUAL is ALWAYS the pseudo-table (COLUMN1, one NULL row) — even
+        // beside a populated user table named DUAL, which only the QUOTED spelling reaches.
         engine.execute("CREATE TABLE DUAL (x INTEGER)");
         engine.execute("INSERT INTO DUAL VALUES (7), (8)");
-        final ResultSet rs = engine.executeQuery("SELECT * FROM DUAL ORDER BY x");
-        assertEquals("X", rs.getColumns().get(0).getName());
-        assertEquals(2, rs.getRowCount());
-        assertEquals(7L, ((Number) rs.getRows().get(0).getValue(0)).longValue());
+        final ResultSet pseudo = engine.executeQuery("SELECT * FROM DUAL");
+        assertEquals("COLUMN1", pseudo.getColumns().get(0).getName());
+        assertEquals(1, pseudo.getRowCount());
+        assertNull(pseudo.getRows().get(0).getValue(0));
+
+        final ResultSet real = engine.executeQuery("SELECT * FROM \"DUAL\" ORDER BY x");
+        assertEquals("X", real.getColumns().get(0).getName());
+        assertEquals(2, real.getRowCount());
+        assertEquals(7L, ((Number) real.getRows().get(0).getValue(0)).longValue());
     }
 
     private boolean catalogListContains(final String sql, final String column, final String wanted) {

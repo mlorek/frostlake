@@ -17,19 +17,67 @@
 package dev.frostlake.persistence;
 
 import dev.frostlake.config.S3PathResolver;
-import dev.frostlake.metastore.*;
-import dev.frostlake.metastore.model.*;
+import dev.frostlake.metastore.Catalog;
+import dev.frostlake.metastore.model.AggregationPolicy;
+import dev.frostlake.metastore.model.ChangeType;
+import dev.frostlake.metastore.model.CheckConstraint;
+import dev.frostlake.metastore.model.Contact;
+import dev.frostlake.metastore.model.CortexSearchService;
+import dev.frostlake.metastore.model.Database;
+import dev.frostlake.metastore.model.DefaultValueExpression;
+import dev.frostlake.metastore.model.DynamicTable;
+import dev.frostlake.metastore.model.FileFormat;
+import dev.frostlake.metastore.model.ForeignKeyConstraint;
+import dev.frostlake.metastore.model.Function;
+import dev.frostlake.metastore.model.JoinPolicy;
+import dev.frostlake.metastore.model.MaskingPolicy;
+import dev.frostlake.metastore.model.Parameter;
+import dev.frostlake.metastore.model.Pipe;
 import dev.frostlake.metastore.model.Privilege;
+import dev.frostlake.metastore.model.Procedure;
+import dev.frostlake.metastore.model.ProjectionPolicy;
+import dev.frostlake.metastore.model.Role;
+import dev.frostlake.metastore.model.RowAccessPolicy;
+import dev.frostlake.metastore.model.ScalingPolicy;
+import dev.frostlake.metastore.model.ScheduleType;
+import dev.frostlake.metastore.model.Schema;
+import dev.frostlake.metastore.model.SearchOptimizationExpression;
+import dev.frostlake.metastore.model.Sequence;
+import dev.frostlake.metastore.model.Stage;
 import dev.frostlake.metastore.model.StageType;
+import dev.frostlake.metastore.model.Stream;
+import dev.frostlake.metastore.model.StreamRecord;
+import dev.frostlake.metastore.model.StreamSourceType;
+import dev.frostlake.metastore.model.StreamType;
+import dev.frostlake.metastore.model.Table;
+import dev.frostlake.metastore.model.TableColumn;
+import dev.frostlake.metastore.model.Tag;
+import dev.frostlake.metastore.model.Task;
+import dev.frostlake.metastore.model.TaskState;
+import dev.frostlake.metastore.model.UniqueConstraint;
+import dev.frostlake.metastore.model.User;
+import dev.frostlake.metastore.model.View;
+import dev.frostlake.metastore.model.Warehouse;
 import dev.frostlake.metastore.model.WarehouseSize;
 import dev.frostlake.metastore.model.WarehouseState;
 import dev.frostlake.storage.Row;
 import dev.frostlake.storage.StorageEngine;
-import dev.frostlake.types.*;
+import dev.frostlake.storage.TableStorage;
+import dev.frostlake.types.ArrayType;
+import dev.frostlake.types.BinaryType;
+import dev.frostlake.types.BooleanType;
+import dev.frostlake.types.DataType;
+import dev.frostlake.types.DateTimeType;
+import dev.frostlake.types.NumericType;
+import dev.frostlake.types.ObjectType;
+import dev.frostlake.types.StringType;
+import dev.frostlake.types.VariantType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.io.*;
+import java.io.BufferedInputStream;
+import java.io.IOException;
+import java.io.ObjectInputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -57,7 +105,7 @@ final class CatalogSnapshotReader {
 
         logger.info("Loading catalog from: {}", catalogPath);
 
-        CatalogSnapshot snapshot;
+        final CatalogSnapshot snapshot;
         try (ObjectInputStream ois = new ObjectInputStream(
                 new BufferedInputStream(Files.newInputStream(catalogPath)))) {
             snapshot = (CatalogSnapshot) ois.readObject();
@@ -78,13 +126,13 @@ final class CatalogSnapshotReader {
         for (final DatabaseSnapshot dbSnapshot : snapshot.databases) {
             // Skip system database (will be created automatically)
             if ("SNOWFLAKE".equals(dbSnapshot.name)) {
-                Database db = catalog.getDatabase("SNOWFLAKE");
+                final Database db = catalog.getDatabase("SNOWFLAKE");
                 loadDatabaseContent(tableData, catalog, db, dbSnapshot, s3Resolver, storageEngine);
                 continue;
             }
 
             catalog.createDatabase(dbSnapshot.name);
-            Database db = catalog.getDatabase(dbSnapshot.name);
+            final Database db = catalog.getDatabase(dbSnapshot.name);
             db.setComment(dbSnapshot.comment);
             db.setReadOnly(dbSnapshot.readOnly);
             // Note: createdAt cannot be set (final field in SqlObject)
@@ -100,7 +148,7 @@ final class CatalogSnapshotReader {
             }
 
             catalog.createWarehouse(whSnapshot.name, WarehouseSize.valueOf(whSnapshot.size));
-            Warehouse wh = catalog.getWarehouse(whSnapshot.name);
+            final Warehouse wh = catalog.getWarehouse(whSnapshot.name);
             wh.setSize(WarehouseSize.valueOf(whSnapshot.size));
             wh.setState(WarehouseState.valueOf(whSnapshot.state));
             wh.setAutoSuspendSeconds(whSnapshot.autoSuspend);
@@ -133,7 +181,7 @@ final class CatalogSnapshotReader {
             } catch (final RuntimeException e) {
                 // User already exists (e.g. default user created during init) — skip creation
             }
-            User user = catalog.getUser(userSnapshot.name);
+            final User user = catalog.getUser(userSnapshot.name);
             user.setComment(userSnapshot.comment);
             // enabled is a nullable Boolean: null (a snapshot predating the field) means the user was never
             // disabled, so leave it enabled; only an explicit value flips it.
@@ -183,7 +231,7 @@ final class CatalogSnapshotReader {
         for (final RoleSnapshot roleSnapshot : snapshot.roles) {
             if (!catalog.isSystemRole(roleSnapshot.name)) {
                 catalog.createRole(roleSnapshot.name);
-                Role role = catalog.getRole(roleSnapshot.name);
+                final Role role = catalog.getRole(roleSnapshot.name);
                 role.setComment(roleSnapshot.comment);
                 if (roleSnapshot.owner != null) {
                     role.setOwner(roleSnapshot.owner);
@@ -194,7 +242,7 @@ final class CatalogSnapshotReader {
 
         // Grant role hierarchies
         for (final RoleSnapshot roleSnapshot : snapshot.roles) {
-            Role role = catalog.getRole(roleSnapshot.name);
+            final Role role = catalog.getRole(roleSnapshot.name);
             for (final String grantedRoleName : roleSnapshot.grantedRoles) {
                 try {
                     role.grantRole(grantedRoleName);
@@ -206,7 +254,7 @@ final class CatalogSnapshotReader {
 
         // Grant privileges to roles
         for (final RoleSnapshot roleSnapshot : snapshot.roles) {
-            Role role = catalog.getRole(roleSnapshot.name);
+            final Role role = catalog.getRole(roleSnapshot.name);
             for (final PrivilegeSnapshot privSnapshot : roleSnapshot.privileges) {
                 try {
                     if (privSnapshot.column != null) {
@@ -224,7 +272,7 @@ final class CatalogSnapshotReader {
 
         // Grant roles to users
         for (final UserSnapshot userSnapshot : snapshot.users) {
-            User user = catalog.getUser(userSnapshot.name);
+            final User user = catalog.getUser(userSnapshot.name);
             for (final String roleName : userSnapshot.grantedRoles) {
                 try {
                     user.grantRole(roleName);
@@ -252,13 +300,13 @@ final class CatalogSnapshotReader {
                                      final DatabaseSnapshot dbSnapshot, final S3PathResolver s3Resolver,
                                      final StorageEngine storageEngine) throws IOException, ClassNotFoundException {
         for (final SchemaSnapshot schemaSnapshot : dbSnapshot.schemas) {
-            Schema schema;
+            final Schema schema;
 
             // Get existing schema or create new one (skip default schemas)
             if ("PUBLIC".equals(schemaSnapshot.name) || "INFORMATION_SCHEMA".equals(schemaSnapshot.name)) {
                 schema = db.getSchema(schemaSnapshot.name);
             } else {
-                Schema newSchema = new Schema(schemaSnapshot.name);
+                final Schema newSchema = new Schema(schemaSnapshot.name);
                 newSchema.setComment(schemaSnapshot.comment);
                 db.addSchema(newSchema);
                 schema = newSchema;
@@ -267,7 +315,7 @@ final class CatalogSnapshotReader {
 
             // Load tables
             for (final TableSnapshot tableSnapshot : schemaSnapshot.tables) {
-                List<TableColumn> columns = new ArrayList<>();
+                final List<TableColumn> columns = new ArrayList<>();
                 for (final ColumnSnapshot colSnapshot : tableSnapshot.columns) {
                     // Identity start/increment only apply when autoIncrement; for other columns pass the
                     // model default (1/1). Old snapshots have autoIncrement=false, so identity is irrelevant.
@@ -276,9 +324,10 @@ final class CatalogSnapshotReader {
                     // Re-wrap an expression default so INSERT evaluates it again; a literal stays a plain value.
                     final Object columnDefault = colSnapshot.defaultIsExpression && colSnapshot.defaultValue != null
                         ? new DefaultValueExpression(colSnapshot.defaultValue) : colSnapshot.defaultValue;
-                    TableColumn col = new TableColumn(
+                    final TableColumn col = new TableColumn(
                         colSnapshot.name,
-                        parseDataType(colSnapshot.dataType, colSnapshot.precision, colSnapshot.scale, colSnapshot.maxLength),
+                        parseDataType(colSnapshot.dataType, colSnapshot.precision, colSnapshot.scale,
+                            colSnapshot.maxLength, colSnapshot.binaryFixed),
                         colSnapshot.nullable,
                         columnDefault,
                         colSnapshot.primaryKey,
@@ -289,6 +338,7 @@ final class CatalogSnapshotReader {
                     );
                     col.setComment(colSnapshot.comment);
                     col.setMaskingPolicyName(colSnapshot.maskingPolicyName);
+                    col.setProjectionPolicyName(colSnapshot.projectionPolicyName);
                     col.setCollation(colSnapshot.collation);
                     // Column-level FOREIGN KEY (REFERENCES) and its RELY flag, when present.
                     if (colSnapshot.referencedTable != null) {
@@ -301,7 +351,7 @@ final class CatalogSnapshotReader {
                     columns.add(col);
                 }
 
-                Table table = new Table(tableSnapshot.name, columns,
+                final Table table = new Table(tableSnapshot.name, columns,
                     tableSnapshot.temporary, tableSnapshot.isTransient);
                 table.setHybrid(tableSnapshot.hybrid);
                 table.setComment(tableSnapshot.comment);
@@ -317,6 +367,30 @@ final class CatalogSnapshotReader {
                 }
                 if (tableSnapshot.rowAccessPolicyName != null) {
                     table.setRowAccessPolicyName(tableSnapshot.rowAccessPolicyName);
+                    table.setAggregationPolicyName(tableSnapshot.aggregationPolicyName);
+                    table.setJoinPolicyName(tableSnapshot.joinPolicyName);
+                    if (tableSnapshot.searchOptimization != null) {
+                        for (final SearchOptimizationSnapshot soSnapshot : tableSnapshot.searchOptimization) {
+                            table.restoreSearchOptimization(new SearchOptimizationExpression(
+                                soSnapshot.expressionId, soSnapshot.method, soSnapshot.target,
+                                soSnapshot.targetDataType));
+                        }
+                    }
+                    if (tableSnapshot.aggregationEntityKey != null) {
+                        table.setAggregationEntityKey(tableSnapshot.aggregationEntityKey);
+                    }
+                    if (tableSnapshot.checkConstraints != null) {
+                        for (final CheckConstraintSnapshot checkSnapshot : tableSnapshot.checkConstraints) {
+                            table.addCheckConstraint(new CheckConstraint(checkSnapshot.name,
+                                checkSnapshot.expression, checkSnapshot.autoNamed,
+                                checkSnapshot.referencedColumns));
+                        }
+                    }
+                    if (tableSnapshot.contacts != null) {
+                        for (final Map.Entry<String, String> attached : tableSnapshot.contacts.entrySet()) {
+                            table.setContact(attached.getKey(), attached.getValue());
+                        }
+                    }
                     if (tableSnapshot.rowAccessPolicyColumns != null) {
                         table.setRowAccessPolicyColumns(tableSnapshot.rowAccessPolicyColumns);
                     }
@@ -338,7 +412,7 @@ final class CatalogSnapshotReader {
                 schema.addTable(table);
 
                 // Create storage for table
-                String qualifiedName = db.getName().toUpperCase() + "." + schema.getName().toUpperCase() + "." + table.getName().toUpperCase();
+                final String qualifiedName = db.getName().toUpperCase() + "." + schema.getName().toUpperCase() + "." + table.getName().toUpperCase();
                 storageEngine.createTable(qualifiedName, table);
 
                 // Load table data
@@ -348,7 +422,7 @@ final class CatalogSnapshotReader {
             // Load views (skip INFORMATION_SCHEMA views as they're system-generated)
             if (!"INFORMATION_SCHEMA".equals(schemaSnapshot.name)) {
                 for (final ViewSnapshot viewSnapshot : schemaSnapshot.views) {
-                    View view = viewSnapshot.columnNames != null
+                    final View view = viewSnapshot.columnNames != null
                         ? new View(viewSnapshot.name, viewSnapshot.columnNames, viewSnapshot.query)
                         : new View(viewSnapshot.name, viewSnapshot.query);
                     view.setComment(viewSnapshot.comment);
@@ -367,7 +441,7 @@ final class CatalogSnapshotReader {
             // deserialize them as null (field initializers do not run during Java deserialization).
             if (schemaSnapshot.sequences != null) {
                 for (final SequenceSnapshot seqSnapshot : schemaSnapshot.sequences) {
-                    Sequence seq = new Sequence(seqSnapshot.name, seqSnapshot.startValue,
+                    final Sequence seq = new Sequence(seqSnapshot.name, seqSnapshot.startValue,
                         seqSnapshot.increment, seqSnapshot.order, seqSnapshot.comment);
                     seq.setCurrentValue(seqSnapshot.currentValue);
                     if (seqSnapshot.owner != null) {
@@ -405,7 +479,7 @@ final class CatalogSnapshotReader {
             // Load streams (pending change records restored at offset 0 = all unconsumed)
             if (schemaSnapshot.streams != null) {
                 for (final StreamSnapshot streamSnapshot : schemaSnapshot.streams) {
-                    Stream stream = new Stream(streamSnapshot.name, streamSnapshot.sourceTableName,
+                    final Stream stream = new Stream(streamSnapshot.name, streamSnapshot.sourceTableName,
                         StreamSourceType.valueOf(streamSnapshot.sourceType),
                         StreamType.valueOf(streamSnapshot.streamType), streamSnapshot.showInitialRows);
                     if (streamSnapshot.baseTableNames != null && !streamSnapshot.baseTableNames.isEmpty()) {
@@ -433,7 +507,7 @@ final class CatalogSnapshotReader {
             // STARTED task is not actively scheduled until it is RESUMEd again (RESUME arms the timer).
             if (schemaSnapshot.tasks != null) {
                 for (final TaskSnapshot taskSnapshot : schemaSnapshot.tasks) {
-                    Task task = new Task(taskSnapshot.name, taskSnapshot.schedule,
+                    final Task task = new Task(taskSnapshot.name, taskSnapshot.schedule,
                         taskSnapshot.scheduleType != null ? ScheduleType.valueOf(taskSnapshot.scheduleType) : null,
                         taskSnapshot.sqlStatement, taskSnapshot.warehouse);
                     task.setId(taskSnapshot.id);
@@ -472,17 +546,67 @@ final class CatalogSnapshotReader {
                 }
             }
 
+            // Load join policies (the table's attachment is restored with the table above)
+            if (schemaSnapshot.joinPolicies != null) {
+                for (final ProjectionPolicySnapshot policySnapshot : schemaSnapshot.joinPolicies) {
+                    final JoinPolicy policy = new JoinPolicy(policySnapshot.name, policySnapshot.body);
+                    policy.setComment(policySnapshot.comment);
+                    if (policySnapshot.owner != null) {
+                        policy.setOwner(policySnapshot.owner);
+                    }
+                    schema.addJoinPolicy(policy);
+                }
+            }
+
+            // Load aggregation policies (the table's attachment is restored with the table above)
+            if (schemaSnapshot.aggregationPolicies != null) {
+                for (final ProjectionPolicySnapshot policySnapshot : schemaSnapshot.aggregationPolicies) {
+                    final AggregationPolicy policy = new AggregationPolicy(policySnapshot.name, policySnapshot.body);
+                    policy.setComment(policySnapshot.comment);
+                    if (policySnapshot.owner != null) {
+                        policy.setOwner(policySnapshot.owner);
+                    }
+                    schema.addAggregationPolicy(policy);
+                }
+            }
+
+            // Load projection policies (a column's attachment is restored with the column above)
+            if (schemaSnapshot.projectionPolicies != null) {
+                for (final ProjectionPolicySnapshot policySnapshot : schemaSnapshot.projectionPolicies) {
+                    final ProjectionPolicy policy = new ProjectionPolicy(policySnapshot.name, policySnapshot.body);
+                    policy.setComment(policySnapshot.comment);
+                    if (policySnapshot.owner != null) {
+                        policy.setOwner(policySnapshot.owner);
+                    }
+                    schema.addProjectionPolicy(policy);
+                }
+            }
+
+            // Load contacts (a table's attachments are restored with the table above)
+            if (schemaSnapshot.contacts != null) {
+                for (final ContactSnapshot contactSnapshot : schemaSnapshot.contacts) {
+                    final Contact contact = new Contact(contactSnapshot.name);
+                    contact.setComment(contactSnapshot.comment);
+                    contact.setUrl(contactSnapshot.url);
+                    contact.setEmailDistributionList(contactSnapshot.emailDistributionList);
+                    if (contactSnapshot.owner != null) {
+                        contact.setOwner(contactSnapshot.owner);
+                    }
+                    schema.addContact(contact);
+                }
+            }
+
             // Load masking policies (the policy-to-column binding is restored on the column above)
             if (schemaSnapshot.maskingPolicies != null) {
                 for (final MaskingPolicySnapshot policySnapshot : schemaSnapshot.maskingPolicies) {
-                    List<Parameter> params = new ArrayList<>();
+                    final List<Parameter> params = new ArrayList<>();
                     if (policySnapshot.parameters != null) {
                         for (final MaskingPolicyParameterSnapshot paramSnapshot : policySnapshot.parameters) {
                             params.add(new Parameter(paramSnapshot.name,
                                 parseDataType(paramSnapshot.dataType), paramSnapshot.defaultValue));
                         }
                     }
-                    MaskingPolicy policy = new MaskingPolicy(policySnapshot.name, params,
+                    final MaskingPolicy policy = new MaskingPolicy(policySnapshot.name, params,
                         policySnapshot.returnType, policySnapshot.body);
                     policy.setComment(policySnapshot.comment);
                     if (policySnapshot.owner != null) {
@@ -495,7 +619,7 @@ final class CatalogSnapshotReader {
             // Load file formats
             if (schemaSnapshot.fileFormats != null) {
                 for (final FileFormatSnapshot ffSnapshot : schemaSnapshot.fileFormats) {
-                    FileFormat ff = new FileFormat(ffSnapshot.name, ffSnapshot.type);
+                    final FileFormat ff = new FileFormat(ffSnapshot.name, ffSnapshot.type);
                     ff.setComment(ffSnapshot.comment);
                     if (ffSnapshot.options != null) {
                         for (final Map.Entry<String, String> opt : ffSnapshot.options.entrySet()) {
@@ -509,7 +633,7 @@ final class CatalogSnapshotReader {
             // Load user-defined functions
             if (schemaSnapshot.functions != null) {
                 for (final FunctionSnapshot fnSnapshot : schemaSnapshot.functions) {
-                    Function fn = new Function(fnSnapshot.name,
+                    final Function fn = new Function(fnSnapshot.name,
                         restoreParameters(fnSnapshot.parameters),
                         fnSnapshot.returnType != null ? parseDataType(fnSnapshot.returnType) : null,
                         restoreParameters(fnSnapshot.returnColumns),
@@ -534,7 +658,7 @@ final class CatalogSnapshotReader {
             // Load stored procedures
             if (schemaSnapshot.procedures != null) {
                 for (final ProcedureSnapshot procSnapshot : schemaSnapshot.procedures) {
-                    Procedure proc = new Procedure(procSnapshot.name,
+                    final Procedure proc = new Procedure(procSnapshot.name,
                         restoreParameters(procSnapshot.parameters),
                         procSnapshot.returnType != null ? parseDataType(procSnapshot.returnType) : null,
                         procSnapshot.body, procSnapshot.language,
@@ -554,7 +678,7 @@ final class CatalogSnapshotReader {
             // Load pipes
             if (schemaSnapshot.pipes != null) {
                 for (final PipeSnapshot pipeSnapshot : schemaSnapshot.pipes) {
-                    Pipe pipe = new Pipe(pipeSnapshot.name, pipeSnapshot.copyStatement,
+                    final Pipe pipe = new Pipe(pipeSnapshot.name, pipeSnapshot.copyStatement,
                         pipeSnapshot.autoIngest, pipeSnapshot.notificationChannel);
                     pipe.setPaused(pipeSnapshot.paused);
                     pipe.setErrorIntegration(pipeSnapshot.errorIntegration);
@@ -573,7 +697,7 @@ final class CatalogSnapshotReader {
             // Load dynamic tables (definition only; contents rebuild on the next refresh)
             if (schemaSnapshot.dynamicTables != null) {
                 for (final DynamicTableSnapshot dtSnapshot : schemaSnapshot.dynamicTables) {
-                    DynamicTable dt = new DynamicTable(dtSnapshot.name, dtSnapshot.query,
+                    final DynamicTable dt = new DynamicTable(dtSnapshot.name, dtSnapshot.query,
                         dtSnapshot.targetLag, dtSnapshot.warehouse);
                     dt.setComment(dtSnapshot.comment);
                     if (dtSnapshot.owner != null) {
@@ -586,7 +710,7 @@ final class CatalogSnapshotReader {
             // Load row access policies (the policy-to-table binding is restored on the table above)
             if (schemaSnapshot.rowAccessPolicies != null) {
                 for (final RowAccessPolicySnapshot policySnapshot : schemaSnapshot.rowAccessPolicies) {
-                    RowAccessPolicy policy = new RowAccessPolicy(policySnapshot.name,
+                    final RowAccessPolicy policy = new RowAccessPolicy(policySnapshot.name,
                         restoreParameters(policySnapshot.parameters), policySnapshot.body);
                     policy.setComment(policySnapshot.comment);
                     if (policySnapshot.owner != null) {
@@ -599,8 +723,8 @@ final class CatalogSnapshotReader {
             // Load tags
             if (schemaSnapshot.tags != null) {
                 for (final TagSnapshot tagSnapshot : schemaSnapshot.tags) {
-                    Tag tag = new Tag(tagSnapshot.name,
-                        tagSnapshot.allowedValues, tagSnapshot.masking, tagSnapshot.comment);
+                    final Tag tag = new Tag(tagSnapshot.name,
+                        tagSnapshot.allowedValues, tagSnapshot.comment);
                     if (tagSnapshot.owner != null) {
                         tag.setOwner(tagSnapshot.owner);
                     }
@@ -628,14 +752,14 @@ final class CatalogSnapshotReader {
     static void loadTableData(final TableDataStore tableData, final String database, final String schema,
                                final Table table, final StorageEngine storageEngine)
             throws IOException, ClassNotFoundException {
-        TableDataSnapshot dataSnapshot = tableData.load(database, schema, table.getName());
+        final TableDataSnapshot dataSnapshot = tableData.load(database, schema, table.getName());
         if (dataSnapshot == null) {
             logger.debug("No data recorded for table: {}.{}.{}", database, schema, table.getName());
             return;
         }
 
-        String qualifiedName = database.toUpperCase() + "." + schema.toUpperCase() + "." + table.getName().toUpperCase();
-        StorageEngine.TableStorage storage = storageEngine.getTableStorage(qualifiedName);
+        final String qualifiedName = database.toUpperCase() + "." + schema.toUpperCase() + "." + table.getName().toUpperCase();
+        final TableStorage storage = storageEngine.getTableStorage(qualifiedName);
 
         // Insert all rows — each row's values defensively copied, so a snapshot applied from memory
         // never shares mutable lists with the engine it builds.
@@ -679,6 +803,23 @@ final class CatalogSnapshotReader {
      */
     static DataType parseDataType(final String typeName, final Integer precision, final Integer scale,
                                   final Integer maxLength) {
+        return parseDataType(typeName, precision, scale, maxLength, null);
+    }
+
+    /**
+     * The same rebuild with a BINARY column's fixedness stated outright, which the type NAME cannot
+     * carry: both spellings report BINARY. Null restores the older behaviour, where the persisted name
+     * was still VARBINARY for the non-fixed spelling.
+     *
+     * @param typeName   the persisted type name
+     * @param precision  a number's precision, or null
+     * @param scale      a number's scale, or null
+     * @param maxLength  a string or binary width, or null
+     * @param fixedBinary whether a binary is the fixed spelling, or null on an older snapshot
+     * @return the rebuilt type
+     */
+    static DataType parseDataType(final String typeName, final Integer precision, final Integer scale,
+                                  final Integer maxLength, final Boolean fixedBinary) {
         if (typeName == null) {
             return StringType.VARCHAR; // default
         }
@@ -738,7 +879,13 @@ final class CatalogSnapshotReader {
                 return ObjectType.OBJECT;
             case "BINARY":
             case "VARBINARY":
-                return BinaryType.BINARY;
+                // Both the WIDTH and the FIXEDNESS have to survive a restart: the width is the column's
+                // declared one, and fixedness is the only thing SHOW COLUMNS' fixed cell reads. An
+                // older snapshot carried fixedness in the NAME, which is the fallback here.
+                final boolean fixed = fixedBinary != null ? fixedBinary.booleanValue()
+                    : !"VARBINARY".equals(upper);
+                return new BinaryType(maxLength != null && maxLength > 0
+                    ? maxLength.intValue() : BinaryType.BINARY.getMaxLength(), fixed);
             default:
                 return StringType.VARCHAR; // default
         }

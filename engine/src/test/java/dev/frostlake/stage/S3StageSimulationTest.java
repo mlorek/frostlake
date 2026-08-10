@@ -17,6 +17,7 @@
 package dev.frostlake.stage;
 
 import dev.frostlake.DatabaseEngine;
+import dev.frostlake.config.EngineConfig;
 import dev.frostlake.metastore.model.Stage;
 import dev.frostlake.metastore.model.StageFile;
 import dev.frostlake.storage.ResultSet;
@@ -27,11 +28,18 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
+import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 /**
  * Tests for S3 stage simulation using local filesystem
@@ -45,6 +53,9 @@ public class S3StageSimulationTest {
     @BeforeEach
     public void setUp() {
         engine = new DatabaseEngine();
+        // The tests point stages at local file:// directories - opt in to the affordance the
+        // default config refuses (a real account refuses those URLs).
+        engine.getConfig().setProperty(EngineConfig.PROP_STAGE_FILE_URL_ENABLED, "true");
         engine.execute("CREATE DATABASE test_db");
         engine.execute("USE DATABASE test_db");
         engine.execute("USE SCHEMA public");
@@ -89,7 +100,7 @@ public class S3StageSimulationTest {
     @Test
     public void testS3StageWithBucketOnly() {
         engine.execute("CREATE STAGE s3_bucket_only URL='s3://another-bucket'");
-        Stage stage = engine.getCatalog().getStage("s3_bucket_only");
+        final Stage stage = engine.getCatalog().getStage("s3_bucket_only");
 
         assertTrue(stage.isS3Simulated());
         assertEquals("another-bucket", stage.getS3Bucket());
@@ -100,7 +111,7 @@ public class S3StageSimulationTest {
     @Test
     public void testPutFileToS3Stage() throws IOException {
         // Create a temporary file
-        Path tempFile = Files.createTempFile("test", ".csv");
+        final Path tempFile = Files.createTempFile("test", ".csv");
         Files.writeString(tempFile, "id,name,value\n1,Alice,100\n2,Bob,200\n");
 
         // Put file into S3 stage
@@ -110,7 +121,7 @@ public class S3StageSimulationTest {
         assertTrue(s3Stage.fileExists(tempFile.getFileName().toString()));
 
         // List files
-        List<StageFile> files = s3Stage.listFiles();
+        final List<StageFile> files = s3Stage.listFiles();
         assertEquals(1, files.size());
         assertEquals(tempFile.getFileName().toString(), files.get(0).getName());
 
@@ -122,18 +133,18 @@ public class S3StageSimulationTest {
     @Test
     public void testGetFileFromS3Stage() throws IOException {
         // Create and put a file
-        Path tempFile = Files.createTempFile("test", ".json");
-        String content = "{\"key\": \"value\"}";
+        final Path tempFile = Files.createTempFile("test", ".json");
+        final String content = "{\"key\": \"value\"}";
         Files.writeString(tempFile, content);
         s3Stage.putFile(tempFile);
-        String fileName = tempFile.getFileName().toString();
+        final String fileName = tempFile.getFileName().toString();
 
         // Get the file
-        Path destFile = Files.createTempFile("dest", ".json");
+        final Path destFile = Files.createTempFile("dest", ".json");
         s3Stage.getFile(fileName, destFile);
 
         // Verify content
-        String retrievedContent = Files.readString(destFile);
+        final String retrievedContent = Files.readString(destFile);
         assertEquals(content, retrievedContent);
 
         // Clean up
@@ -146,22 +157,22 @@ public class S3StageSimulationTest {
     public void testListFilesInS3Stage() throws IOException {
         // Put multiple files
         for (int i = 1; i <= 3; i++) {
-            Path tempFile = Files.createTempFile("data" + i, ".csv");
+            final Path tempFile = Files.createTempFile("data" + i, ".csv");
             Files.writeString(tempFile, "data" + i);
             s3Stage.putFile(tempFile);
             Files.deleteIfExists(tempFile);
         }
 
         // List all files
-        List<StageFile> files = s3Stage.listFiles();
+        final List<StageFile> files = s3Stage.listFiles();
         assertEquals(3, files.size());
 
         // List with pattern
-        Path tempFile = Files.createTempFile("data1", ".csv");
-        String fileName = tempFile.getFileName().toString();
+        final Path tempFile = Files.createTempFile("data1", ".csv");
+        final String fileName = tempFile.getFileName().toString();
         Files.deleteIfExists(tempFile);
 
-        List<StageFile> filtered = s3Stage.listFiles("data1*.csv");
+        final List<StageFile> filtered = s3Stage.listFiles("data1*.csv");
         assertTrue(filtered.size() >= 1);
         logger.info("LIST files in S3 stage verified");
     }
@@ -169,16 +180,16 @@ public class S3StageSimulationTest {
     @Test
     public void testRemoveFileFromS3Stage() throws IOException {
         // Create and put a file
-        Path tempFile = Files.createTempFile("remove", ".txt");
+        final Path tempFile = Files.createTempFile("remove", ".txt");
         Files.writeString(tempFile, "to be removed");
         s3Stage.putFile(tempFile);
-        String fileName = tempFile.getFileName().toString();
+        final String fileName = tempFile.getFileName().toString();
 
         // Verify file exists
         assertTrue(s3Stage.fileExists(fileName));
 
         // Remove file
-        boolean removed = s3Stage.removeFile(fileName);
+        final boolean removed = s3Stage.removeFile(fileName);
         assertTrue(removed);
 
         // Verify file doesn't exist
@@ -193,7 +204,7 @@ public class S3StageSimulationTest {
     public void testS3StageListCommand() {
         // Create a file in the stage
         try {
-            Path tempFile = Files.createTempFile("list_test", ".csv");
+            final Path tempFile = Files.createTempFile("list_test", ".csv");
             Files.writeString(tempFile, "test data");
             s3Stage.putFile(tempFile);
             Files.deleteIfExists(tempFile);
@@ -202,7 +213,7 @@ public class S3StageSimulationTest {
         }
 
         // Execute LIST command
-        ResultSet result = engine.executeQuery("LIST @s3_stage");
+        final ResultSet result = engine.executeQuery("LIST @s3_stage");
         assertNotNull(result);
         assertTrue(result.getRowCount() > 0);
         logger.info("LIST @stage command for S3 stage verified");
@@ -215,9 +226,9 @@ public class S3StageSimulationTest {
         engine.execute("CREATE STAGE s3_processed URL='s3://data-lake/processed'");
         engine.execute("CREATE STAGE s3_archive URL='s3://archive-bucket/old-data'");
 
-        Stage raw = engine.getCatalog().getStage("s3_raw");
-        Stage processed = engine.getCatalog().getStage("s3_processed");
-        Stage archive = engine.getCatalog().getStage("s3_archive");
+        final Stage raw = engine.getCatalog().getStage("s3_raw");
+        final Stage processed = engine.getCatalog().getStage("s3_processed");
+        final Stage archive = engine.getCatalog().getStage("s3_archive");
 
         // Verify all stages have different local paths
         assertNotEquals(raw.getLocalPath(), processed.getLocalPath());
@@ -235,10 +246,10 @@ public class S3StageSimulationTest {
     @Test
     public void testFileStageVsS3Stage() {
         // Create a file:// stage for comparison
-        String tempDir = System.getProperty("java.io.tmpdir") + "/test_file_stage";
+        final String tempDir = System.getProperty("java.io.tmpdir") + "/test_file_stage";
         engine.execute("CREATE STAGE file_stage URL='file://" + tempDir + "'");
 
-        Stage fileStage = engine.getCatalog().getStage("file_stage");
+        final Stage fileStage = engine.getCatalog().getStage("file_stage");
 
         // Verify file stage is not S3 simulated
         assertFalse(fileStage.isS3Simulated());
@@ -254,16 +265,21 @@ public class S3StageSimulationTest {
     }
 
     private void deleteDirectory(final Path directory) throws IOException {
-        if (Files.exists(directory)) {
-            Files.walk(directory)
-                .sorted((final var a, final var b) -> -a.compareTo(b)) // Reverse order to delete children first
-                .forEach((final var path) -> {
-                    try {
-                        Files.deleteIfExists(path);
-                    } catch (final IOException e) {
-                        // Ignore
-                    }
-                });
+        if (!Files.exists(directory)) {
+            return;
+        }
+        // Children before the directory that holds them.
+        if (Files.isDirectory(directory)) {
+            try (DirectoryStream<Path> children = Files.newDirectoryStream(directory)) {
+                for (final Path child : children) {
+                    deleteDirectory(child);
+                }
+            }
+        }
+        try {
+            Files.deleteIfExists(directory);
+        } catch (final IOException e) {
+            // Ignore
         }
     }
 }

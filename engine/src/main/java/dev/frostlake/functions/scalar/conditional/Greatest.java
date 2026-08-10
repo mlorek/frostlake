@@ -16,6 +16,7 @@
 
 package dev.frostlake.functions.scalar.conditional;
 
+import dev.frostlake.executor.ValueComparisons;
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.types.VariantType;
@@ -40,8 +41,8 @@ public class Greatest extends BuiltInFunction {
     }
 
     @Override
-    @SuppressWarnings("unchecked")
-    public Object evaluate(final List<Object> args) {
+    public Object evaluate(final List<Object> rawArgs) {
+        final List<Object> args = OrderingCoercion.coerceAll(rawArgs);
         if (args.isEmpty()) return null;
 
         Object max = null;
@@ -53,17 +54,15 @@ public class Greatest extends BuiltInFunction {
             }
             if (max == null) {
                 max = arg;
-            } else if (arg instanceof Comparable && max instanceof Comparable) {
-                Comparable compArg = (Comparable) arg;
-                Comparable compMax = (Comparable) max;
-                if (compArg.compareTo(compMax) > 0) {
-                    max = arg;
-                }
+            } else if (ValueComparisons.compareValues(arg, max) > 0) {
+                max = arg;
             }
         }
         return max;
     }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return Integer.MAX_VALUE; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return Integer.MAX_VALUE; }
 }

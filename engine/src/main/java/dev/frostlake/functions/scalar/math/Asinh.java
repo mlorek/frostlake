@@ -35,6 +35,8 @@ public class Asinh extends NumericArgumentFunction {
         return Math.log(x + Math.sqrt(x * x + 1));
     }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return 1; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return 1; }
 }

@@ -19,7 +19,6 @@ package dev.frostlake.rt.py;
 import dev.frostlake.executor.udf.TruffleLogBridge;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
 import dev.frostlake.values.VariantValue;
-import java.io.File;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;

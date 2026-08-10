@@ -20,7 +20,8 @@ import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
 import org.junit.jupiter.api.Test;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 
 public class WindowFunctionsExtTest extends BaseDatabaseTest {
 
@@ -39,7 +40,7 @@ public class WindowFunctionsExtTest extends BaseDatabaseTest {
 
     @Test
     public void testNtile2() {
-        ResultSet rs = engine.executeQuery(
+        final ResultSet rs = engine.executeQuery(
             "SELECT id, NTILE(2) OVER (ORDER BY id) AS bucket FROM sales ORDER BY id");
         assertEquals(6, rs.getRowCount());
         // rows 1-3 → bucket 1, rows 4-6 → bucket 2
@@ -51,7 +52,7 @@ public class WindowFunctionsExtTest extends BaseDatabaseTest {
 
     @Test
     public void testNtile3() {
-        ResultSet rs = engine.executeQuery(
+        final ResultSet rs = engine.executeQuery(
             "SELECT id, NTILE(3) OVER (ORDER BY id) AS bucket FROM sales ORDER BY id");
         assertEquals(6, rs.getRowCount());
         assertEquals(1L, rs.getRows().get(0).getValue(1));
@@ -64,7 +65,7 @@ public class WindowFunctionsExtTest extends BaseDatabaseTest {
 
     @Test
     public void testPercentRank() {
-        ResultSet rs = engine.executeQuery(
+        final ResultSet rs = engine.executeQuery(
             "SELECT id, amount, PERCENT_RANK() OVER (ORDER BY amount) AS pr FROM sales ORDER BY amount");
         assertEquals(6, rs.getRowCount());
         assertEquals(0.0, ((Number) rs.getRows().get(0).getValue(2)).doubleValue(), 0.001);
@@ -75,7 +76,7 @@ public class WindowFunctionsExtTest extends BaseDatabaseTest {
     public void testPercentRankSingleRow() {
         engine.execute("CREATE TABLE one_row (v INTEGER)");
         engine.execute("INSERT INTO one_row VALUES (42)");
-        ResultSet rs = engine.executeQuery("SELECT v, PERCENT_RANK() OVER (ORDER BY v) AS pr FROM one_row");
+        final ResultSet rs = engine.executeQuery("SELECT v, PERCENT_RANK() OVER (ORDER BY v) AS pr FROM one_row");
         assertEquals(0.0, ((Number) rs.getRows().get(0).getValue(1)).doubleValue(), 0.001);
     }
 
@@ -83,7 +84,7 @@ public class WindowFunctionsExtTest extends BaseDatabaseTest {
 
     @Test
     public void testCumeDist() {
-        ResultSet rs = engine.executeQuery(
+        final ResultSet rs = engine.executeQuery(
             "SELECT id, CUME_DIST() OVER (ORDER BY id) AS cd FROM sales ORDER BY id");
         assertEquals(6, rs.getRowCount());
         // Last row is always 1.0
@@ -95,11 +96,11 @@ public class WindowFunctionsExtTest extends BaseDatabaseTest {
     @Test
     public void testCumeDistWithTies() {
         // rows 4 and 5 both have amount=150 → same cume_dist
-        ResultSet rs = engine.executeQuery(
+        final ResultSet rs = engine.executeQuery(
             "SELECT id, amount, CUME_DIST() OVER (ORDER BY amount) AS cd FROM sales ORDER BY amount, id");
         assertEquals(6, rs.getRowCount());
-        double cd4 = ((Number) rs.getRows().get(1).getValue(2)).doubleValue();
-        double cd5 = ((Number) rs.getRows().get(2).getValue(2)).doubleValue();
+        final double cd4 = ((Number) rs.getRows().get(1).getValue(2)).doubleValue();
+        final double cd5 = ((Number) rs.getRows().get(2).getValue(2)).doubleValue();
         assertEquals(cd4, cd5, 0.001);
     }
 
@@ -107,11 +108,11 @@ public class WindowFunctionsExtTest extends BaseDatabaseTest {
 
     @Test
     public void testRatioToReport() {
-        ResultSet rs = engine.executeQuery(
+        final ResultSet rs = engine.executeQuery(
             "SELECT id, RATIO_TO_REPORT(amount) OVER () AS ratio FROM sales ORDER BY id");
         assertEquals(6, rs.getRowCount());
         // Total = 100+200+300+150+150+400 = 1300
-        double total = 1300.0;
+        final double total = 1300.0;
         assertEquals(100.0 / total, ((Number) rs.getRows().get(0).getValue(1)).doubleValue(), 0.001);
         assertEquals(400.0 / total, ((Number) rs.getRows().get(5).getValue(1)).doubleValue(), 0.001);
         // All ratios sum to 1
@@ -124,7 +125,7 @@ public class WindowFunctionsExtTest extends BaseDatabaseTest {
 
     @Test
     public void testFirstValue() {
-        ResultSet rs = engine.executeQuery(
+        final ResultSet rs = engine.executeQuery(
             "SELECT id, FIRST_VALUE(amount) OVER (ORDER BY id) AS fv FROM sales ORDER BY id");
         assertEquals(6, rs.getRowCount());
         // FIRST_VALUE with default frame (UNBOUNDED PRECEDING to CURRENT ROW) = first in frame
@@ -138,7 +139,7 @@ public class WindowFunctionsExtTest extends BaseDatabaseTest {
 
     @Test
     public void testLastValue() {
-        ResultSet rs = engine.executeQuery(
+        final ResultSet rs = engine.executeQuery(
             "SELECT id, LAST_VALUE(amount) OVER (ORDER BY id) AS lv FROM sales ORDER BY id");
         assertEquals(6, rs.getRowCount());
         // Snowflake's default frame for LAST_VALUE is the WHOLE partition (RANGE BETWEEN UNBOUNDED
@@ -151,7 +152,7 @@ public class WindowFunctionsExtTest extends BaseDatabaseTest {
 
     @Test
     public void testNthValue2() {
-        ResultSet rs = engine.executeQuery(
+        final ResultSet rs = engine.executeQuery(
             "SELECT id, NTH_VALUE(amount, 2) OVER (ORDER BY id) AS nv FROM sales ORDER BY id");
         assertEquals(6, rs.getRowCount());
         // 2nd value in partition ordered by id is 200 (id=2)
@@ -160,7 +161,7 @@ public class WindowFunctionsExtTest extends BaseDatabaseTest {
 
     @Test
     public void testNthValueOutOfRange() {
-        ResultSet rs = engine.executeQuery(
+        final ResultSet rs = engine.executeQuery(
             "SELECT id, NTH_VALUE(amount, 99) OVER (ORDER BY id) AS nv FROM sales ORDER BY id");
         assertEquals(6, rs.getRowCount());
         assertNull(rs.getRows().get(0).getValue(1));
@@ -168,9 +169,9 @@ public class WindowFunctionsExtTest extends BaseDatabaseTest {
 
     @Test
     public void testNthValue1IsSameAsFirstValue() {
-        ResultSet rs1 = engine.executeQuery(
+        final ResultSet rs1 = engine.executeQuery(
             "SELECT id, NTH_VALUE(amount, 1) OVER (ORDER BY id) AS v FROM sales ORDER BY id");
-        ResultSet rs2 = engine.executeQuery(
+        final ResultSet rs2 = engine.executeQuery(
             "SELECT id, FIRST_VALUE(amount) OVER (ORDER BY id) AS v FROM sales ORDER BY id");
         for (int i = 0; i < rs1.getRowCount(); i++) {
             assertEquals(

@@ -30,6 +30,9 @@ import java.util.List;
  * {@code 343834353443} — valid-looking hex, entirely wrong.
  */
 public class HexEncode extends BuiltInFunction {
+
+    // Digit-table loop — String.format("%02X", b) parsed a format string PER BYTE.
+    private static final char[] HEX_UPPER = "0123456789ABCDEF".toCharArray();
     public HexEncode() { super("HEX_ENCODE", StringType.VARCHAR); }
 
     @Override
@@ -37,10 +40,14 @@ public class HexEncode extends BuiltInFunction {
         if (args.get(0) == null) return null;
         final byte[] bytes = SharedFunctionHelpers.toUtf8(args.get(0));
         final StringBuilder sb = new StringBuilder(bytes.length * 2);
-        for (final byte b : bytes) sb.append(String.format("%02X", b));
+        for (final byte b : bytes) {
+            sb.append(HEX_UPPER[(b >> 4) & 0xF]).append(HEX_UPPER[b & 0xF]);
+        }
         return sb.toString();
     }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return 1; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return 1; }
 }

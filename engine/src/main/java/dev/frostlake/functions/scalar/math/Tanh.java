@@ -30,6 +30,8 @@ public class Tanh extends NumericArgumentFunction {
         return Math.tanh(((Number) args.get(0)).doubleValue());
     }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return 1; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return 1; }
 }

@@ -18,6 +18,8 @@ package dev.frostlake.functions.aggregate;
 
 import dev.frostlake.functions.AggregateFunction;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
+import dev.frostlake.values.VariantValue;
+import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.node.ObjectNode;
 
 import java.util.LinkedHashMap;
@@ -42,7 +44,23 @@ public class ObjectAggAccumulator implements AggregateFunction.Accumulator {
         if (key == null || value == null) {
             return;
         }
-        entries.put(key.toString(), value);
+        entries.put(keyText(key), value);
+    }
+
+    /**
+     * The text a key CONTRIBUTES. A VARIANT key gives its VALUE, not its JSON rendering: live answers
+     * {@code OBJECT_AGG(k::VARIANT, v)} with {@code {"SENSOR_NOW":"s-1"}}, where reading the variant's
+     * own text spelled the key {@code "\"SENSOR_NOW\""} — quotes and all — and every later comparison
+     * against it failed. Measured for a column, a literal, a concatenation and a conditional alike.
+     */
+    private static String keyText(final Object key) {
+        if (key instanceof VariantValue) {
+            final JsonNode node = ((VariantValue) key).node();
+            if (node != null && !node.isObject() && !node.isArray()) {
+                return node.asString();
+            }
+        }
+        return key.toString();
     }
 
     @Override

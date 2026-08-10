@@ -19,7 +19,6 @@ package dev.frostlake.functions.scalar.semistructured;
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
 import dev.frostlake.types.ArrayType;
-import dev.frostlake.values.VariantUndefined;
 import dev.frostlake.values.VariantValue;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.node.ArrayNode;
@@ -34,8 +33,8 @@ public class ArrayExcept extends BuiltInFunction {
 
     @Override
     public Object evaluate(final List<Object> args) {
-        ArrayNode a1 = ArrayFunctionHelper.parseArray(args.get(0));
-        ArrayNode a2 = ArrayFunctionHelper.parseArray(args.get(1));
+        final ArrayNode a1 = ArrayFunctionHelper.parseArray(args.get(0));
+        final ArrayNode a2 = ArrayFunctionHelper.parseArray(args.get(1));
         if (a1 == null || a2 == null) return null;
         // MULTISET difference, not a set difference: with N copies in array1 and M in array2 the result keeps
         // max(0, N-M) copies, in array1's order. Live-verified: ARRAY_EXCEPT([1,1,2], []) is
@@ -62,6 +61,8 @@ public class ArrayExcept extends BuiltInFunction {
         return VariantValue.ofNode(result);
     }
 
-    @Override public int getMinArgCount() { return 2; }
-    @Override public int getMaxArgCount() { return 2; }
+    @Override
+    public int getMinArgCount() { return 2; }
+    @Override
+    public int getMaxArgCount() { return 2; }
 }

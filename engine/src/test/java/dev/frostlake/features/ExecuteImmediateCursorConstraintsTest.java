@@ -16,9 +16,7 @@
 
 package dev.frostlake.features;
 
-import dev.frostlake.DatabaseEngine;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
+import dev.frostlake.BaseDatabaseTest;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 import org.slf4j.Logger;
@@ -26,25 +24,13 @@ import org.slf4j.LoggerFactory;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 
-public class ExecuteImmediateCursorConstraintsTest {
+public class ExecuteImmediateCursorConstraintsTest extends BaseDatabaseTest {
     private static final Logger logger = LoggerFactory.getLogger(ExecuteImmediateCursorConstraintsTest.class);
 
-    private DatabaseEngine engine;
-
-    @BeforeEach
-    public void setUp() {
-        engine = new DatabaseEngine();
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
+    @Override
+    protected void setupTest() {
         engine.execute("CREATE SCHEMA s1");
         logger.info("DatabaseEngine initialized for EXECUTE IMMEDIATE foreign key tests");
-    }
-
-    @AfterEach
-    public void tearDown() {
-        if (engine != null) {
-            engine.shutdown();
-        }
     }
 
     @Test

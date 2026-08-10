@@ -38,6 +38,15 @@ public class ToVariant extends BuiltInFunction {
         if (value == null || value instanceof VariantValue) {
             return value;
         }
+        // Temporal and binary values keep their NATIVE type inside the variant — the AS_*/IS_*
+        // extractors and TYPEOF depend on it, exactly as a ::VARIANT cast preserves them.
+        if (value instanceof java.time.LocalDate || value instanceof java.time.LocalTime
+                || value instanceof java.time.LocalDateTime
+                || value instanceof java.time.OffsetDateTime
+                || value instanceof java.time.ZonedDateTime
+                || value instanceof dev.frostlake.values.BinaryValue) {
+            return value;
+        }
         if (value instanceof CharSequence) {
             return VariantValue.ofNode(
                 ArrayFunctionHelper.MAPPER.getNodeFactory().textNode(value.toString()));
@@ -47,6 +56,8 @@ public class ToVariant extends BuiltInFunction {
             ArrayFunctionHelper.toNode(ArrayFunctionHelper.MAPPER, value));
     }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return 1; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return 1; }
 }

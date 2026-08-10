@@ -24,7 +24,9 @@ import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class ScalaProcedureTest {
 
@@ -65,9 +67,9 @@ public class ScalaProcedureTest {
             $$
             """);
 
-        String db = engine.getCatalog().getCurrentDatabase();
-        String sc = engine.getCatalog().getCurrentSchema();
-        Procedure proc = engine.getCatalog().getDatabase(db).getSchema(sc).getProcedure("SCALA_SP");
+        final String db = engine.getCatalog().getCurrentDatabase();
+        final String sc = engine.getCatalog().getCurrentSchema();
+        final Procedure proc = engine.getCatalog().getDatabase(db).getSchema(sc).getProcedure("SCALA_SP");
 
         assertNotNull(proc, "Procedure should be created");
         assertEquals("SCALA_SP", proc.getName());
@@ -100,7 +102,7 @@ public class ScalaProcedureTest {
             $$
             """);
 
-        Procedure proc = engine.getCatalog()
+        final Procedure proc = engine.getCatalog()
             .getDatabase(engine.getCatalog().getCurrentDatabase())
             .getSchema(engine.getCatalog().getCurrentSchema())
             .getProcedure("GREET_SCALA");
@@ -138,7 +140,7 @@ public class ScalaProcedureTest {
             $$
             """);
 
-        Procedure proc = engine.getCatalog()
+        final Procedure proc = engine.getCatalog()
             .getDatabase(engine.getCatalog().getCurrentDatabase())
             .getSchema(engine.getCatalog().getCurrentSchema())
             .getProcedure("SP1");
@@ -165,7 +167,7 @@ public class ScalaProcedureTest {
         // Execution will succeed if scalac is on PATH, otherwise it will throw
         // a compilation error — both outcomes confirm the dispatch reached the executor.
         try {
-            var rs = engine.executeQuery("CALL scala_hello()");
+            final var rs = engine.executeQuery("CALL scala_hello()");
             assertNotNull(rs);
             assertEquals("hello from scala", rs.getRows().get(0).getValue(0).toString());
             logger.info("Scala procedure executed successfully");

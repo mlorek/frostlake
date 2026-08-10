@@ -38,6 +38,8 @@ public class StCentroid extends BuiltInFunction {
         return GeoValue.ofNode(GeoShapes.pointModel(c[0], c[1]), geo.isGeography(), geo.getSrid());
     }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return 1; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return 1; }
 }

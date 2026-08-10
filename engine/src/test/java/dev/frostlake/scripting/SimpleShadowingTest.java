@@ -16,34 +16,17 @@
 
 package dev.frostlake.scripting;
 
-import dev.frostlake.DatabaseEngine;
+import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
-public class SimpleShadowingTest {
+public class SimpleShadowingTest extends BaseDatabaseTest {
 
     private static final Logger logger = LoggerFactory.getLogger(SimpleShadowingTest.class);
-    private DatabaseEngine engine;
-
-    @BeforeEach
-    public void setUp() {
-        engine = new DatabaseEngine();
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
-    }
-
-    @AfterEach
-    public void tearDown() {
-        if (engine != null) {
-            engine.shutdown();
-        }
-    }
 
     @Test
     public void testSimpleShadowing() {
@@ -63,7 +46,7 @@ public class SimpleShadowingTest {
             END;
             """);
 
-        ResultSet rs = engine.executeQuery("SELECT * FROM results ORDER BY value");
+        final ResultSet rs = engine.executeQuery("SELECT * FROM results ORDER BY value");
         logger.info("Results: {}, {}, {}",
             rs.getRows().get(0).getValue(0),
             rs.getRows().get(1).getValue(0),
@@ -98,7 +81,7 @@ public class SimpleShadowingTest {
             END;
             """);
 
-        ResultSet rs = engine.executeQuery("SELECT * FROM results");
+        final ResultSet rs = engine.executeQuery("SELECT * FROM results");
         logger.info("Row count: {}", rs.getRowCount());
         for (int i = 0; i < rs.getRowCount(); i++) {
             logger.info("Row {}: {}", i, rs.getRows().get(i).getValue(0));

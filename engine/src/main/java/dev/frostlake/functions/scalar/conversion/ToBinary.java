@@ -30,7 +30,7 @@ import java.util.List;
  * UTF-8: the input's UTF-8 bytes. A binary input passes through unchanged. NULL → NULL.
  */
 public class ToBinary extends BuiltInFunction {
-    public ToBinary() { super("TO_BINARY", BinaryType.BINARY); }
+    public ToBinary() { super("TO_BINARY", BinaryType.VARBINARY); }
 
     @Override
     public Object evaluate(final List<Object> args) {
@@ -50,7 +50,7 @@ public class ToBinary extends BuiltInFunction {
         final byte[] bytes;
         switch (format) {
             case HEX:
-                bytes = hexToBytes(input);
+                bytes = BinaryValue.fromHex(input).bytes();
                 break;
             case BASE64:
                 bytes = Base64.getDecoder().decode(input);
@@ -64,17 +64,8 @@ public class ToBinary extends BuiltInFunction {
         return BinaryValue.of(bytes);
     }
 
-    private static byte[] hexToBytes(final String hex) {
-        if (hex.length() % 2 != 0) {
-            throw new RuntimeException("Invalid hex string length: " + hex);
-        }
-        final byte[] bytes = new byte[hex.length() / 2];
-        for (int i = 0; i < bytes.length; i++) {
-            bytes[i] = (byte) Integer.parseInt(hex.substring(2 * i, 2 * i + 2), 16);
-        }
-        return bytes;
-    }
-
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return 2; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return 2; }
 }

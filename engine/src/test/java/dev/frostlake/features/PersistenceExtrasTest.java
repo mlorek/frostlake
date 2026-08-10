@@ -139,7 +139,8 @@ public class PersistenceExtrasTest {
         final TableColumn col = engine2.getCatalog()
             .getDatabase("TEST_DB").getSchema("PUBLIC").getTable("EMPLOYEES").getColumn("salary");
         assertTrue(col.hasMaskingPolicy(), "the policy-to-column binding must be persisted");
-        assertEquals("SALARY_MASK", col.getMaskingPolicyName());
+        // Attachments record the policy in full, the way live reports one.
+        assertEquals("TEST_DB.PUBLIC.SALARY_MASK", col.getMaskingPolicyName());
         engine2.shutdown();
     }
 

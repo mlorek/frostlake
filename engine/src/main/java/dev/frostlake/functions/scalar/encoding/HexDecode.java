@@ -19,7 +19,6 @@ package dev.frostlake.functions.scalar.encoding;
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.types.StringType;
 
-import java.nio.charset.StandardCharsets;
 import java.util.List;
 
 public class HexDecode extends BuiltInFunction {
@@ -28,15 +27,17 @@ public class HexDecode extends BuiltInFunction {
     @Override
     public Object evaluate(final List<Object> args) {
         if (args.get(0) == null) return null;
-        String hex = args.get(0).toString();
+        final String hex = args.get(0).toString();
         if (hex.length() % 2 != 0) throw new RuntimeException("Invalid hex string length");
-        byte[] bytes = new byte[hex.length() / 2];
+        final byte[] bytes = new byte[hex.length() / 2];
         for (int i = 0; i < bytes.length; i++) {
             bytes[i] = (byte) Integer.parseInt(hex.substring(2 * i, 2 * i + 2), 16);
         }
-        return new String(bytes, StandardCharsets.UTF_8);
+        return DecodedText.strict(bytes, hex);
     }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return 1; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return 1; }
 }

@@ -24,7 +24,6 @@ import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
 
 /**
  * QUALIFY clause operator - filters rows based on window function results.
@@ -52,11 +51,11 @@ public class QualifyOperator implements Operator {
         logger.debug("Applying QUALIFY filter: {}", qualifyExpression);
 
         final Expression condition = ExpressionEvaluator.parse(qualifyExpression);
-        List<Row> filtered = new ArrayList<>();
+        final List<Row> filtered = new ArrayList<>();
         for (int rowIdx = 0; rowIdx < input.size(); rowIdx++) {
-            Row row = input.get(rowIdx);
+            final Row row = input.get(rowIdx);
             try {
-                boolean passes = qualifyEvaluator.evaluate(condition, row, rowIdx);
+                final boolean passes = qualifyEvaluator.evaluate(condition, row, rowIdx);
                 if (passes) {
                     filtered.add(row);
                 }

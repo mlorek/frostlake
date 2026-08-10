@@ -34,9 +34,6 @@ import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.node.ArrayNode;
 import tools.jackson.databind.node.ObjectNode;
 
-import javax.xml.XMLConstants;
-import javax.xml.parsers.DocumentBuilder;
-import javax.xml.parsers.DocumentBuilderFactory;
 import java.io.StringReader;
 import java.math.BigDecimal;
 import java.util.ArrayList;
@@ -45,6 +42,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
 import java.util.regex.Pattern;
+import javax.xml.XMLConstants;
+import javax.xml.parsers.DocumentBuilder;
+import javax.xml.parsers.DocumentBuilderFactory;
 
 /**
  * PARSE_XML(text [, disable_auto_convert]) — parses an XML document into Snowflake's XML-in-VARIANT
@@ -219,6 +219,8 @@ public class ParseXml extends BuiltInFunction {
         return ArrayFunctionHelper.MAPPER.getNodeFactory().textNode(text);
     }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return 2; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return 2; }
 }

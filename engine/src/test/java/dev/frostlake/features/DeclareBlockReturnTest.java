@@ -16,34 +16,23 @@
 
 package dev.frostlake.features;
 
-import dev.frostlake.DatabaseEngine;
+import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 
-public class DeclareBlockReturnTest {
+public class DeclareBlockReturnTest extends BaseDatabaseTest {
 
-    private DatabaseEngine engine;
-
-    @BeforeEach
-    public void setUp() {
-        engine = new DatabaseEngine();
+    @Override
+    protected void setupTest() {
         engine.execute("CREATE DATABASE IF NOT EXISTS test_db");
-        engine.execute("USE DATABASE test_db");
-        engine.execute("USE SCHEMA public");
-    }
-
-    @AfterEach
-    public void tearDown() {
-        if (engine != null) engine.shutdown();
     }
 
     @Test
     public void testBooleanBindVarIfReturn() {
-        ResultSet rs = engine.executeQuery(
+        final ResultSet rs = engine.executeQuery(
             "DECLARE\n" +
             "    s STRING DEFAULT '';\n" +
             "    b BOOLEAN DEFAULT TRUE;\n" +
@@ -56,14 +45,14 @@ public class DeclareBlockReturnTest {
         );
         assertNotNull(rs);
         assertEquals(1, rs.getRowCount());
-        Object val = rs.getRows().get(0).getValue(0);
+        final Object val = rs.getRows().get(0).getValue(0);
         assertNotNull(val);
         assertEquals(0L, Long.parseLong(val.toString()), "Expected block to return 0 when b=true");
     }
 
     @Test
     public void testBooleanFalseSkipsIf() {
-        ResultSet rs = engine.executeQuery(
+        final ResultSet rs = engine.executeQuery(
             "DECLARE\n" +
             "    b BOOLEAN DEFAULT FALSE;\n" +
             "BEGIN\n" +
@@ -75,7 +64,7 @@ public class DeclareBlockReturnTest {
         );
         assertNotNull(rs);
         assertEquals(1, rs.getRowCount());
-        Object val = rs.getRows().get(0).getValue(0);
+        final Object val = rs.getRows().get(0).getValue(0);
         assertNotNull(val);
         assertEquals(1L, Long.parseLong(val.toString()), "Expected block to return 1 when b=false");
     }

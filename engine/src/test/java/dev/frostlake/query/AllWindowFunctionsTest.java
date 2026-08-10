@@ -16,33 +16,24 @@
 
 package dev.frostlake.query;
 
-import dev.frostlake.DatabaseEngine;
+import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.Row;
-import org.junit.jupiter.api.AfterAll;
-import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Comprehensive test demonstrating all window functions together
  */
-public class AllWindowFunctionsTest {
+public class AllWindowFunctionsTest extends BaseDatabaseTest {
 
-    private static DatabaseEngine engine;
-
-    @BeforeAll
-    public static void setup() {
-        engine = new DatabaseEngine();
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
-        engine.execute("USE SCHEMA PUBLIC");
-
-        // Create test table with employee data
+    @Override
+    protected void setupTest() {
         engine.execute("CREATE TABLE employees (id INTEGER, name VARCHAR, department VARCHAR, salary INTEGER)");
-
-        // Insert test data
         engine.execute("INSERT INTO employees VALUES (1, 'Alice', 'Engineering', 100000)");
         engine.execute("INSERT INTO employees VALUES (2, 'Bob', 'Engineering', 95000)");
         engine.execute("INSERT INTO employees VALUES (3, 'Charlie', 'Engineering', 95000)");
@@ -50,15 +41,10 @@ public class AllWindowFunctionsTest {
         engine.execute("INSERT INTO employees VALUES (5, 'Eve', 'Sales', 90000)");
     }
 
-    @AfterAll
-    public static void teardown() {
-        engine.shutdown();
-    }
-
     @Test
     public void testAllWindowFunctionsTogether() {
         // Query that uses all window functions
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT
             name,
             department,
@@ -109,7 +95,7 @@ public class AllWindowFunctionsTest {
     @Test
     public void testWindowFunctionsWithLagLeadOffsets() {
         // Test LAG and LEAD with different offsets
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT
             name,
             salary,
@@ -154,7 +140,7 @@ public class AllWindowFunctionsTest {
     @Test
     public void testWindowFunctionsWithDefaults() {
         // Test LAG and LEAD with default values
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT
             name,
             salary,
@@ -191,7 +177,7 @@ public class AllWindowFunctionsTest {
     @Test
     public void testCompareCurrentWithPreviousAndNext() {
         // Practical example: using LAG and LEAD with defaults
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT
             name,
             salary,

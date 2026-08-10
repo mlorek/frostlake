@@ -16,15 +16,13 @@
 
 package dev.frostlake.query;
 
-import dev.frostlake.DatabaseEngine;
+import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
  * Tests for CTE alignment with Snowflake:
@@ -32,23 +30,9 @@ import static org.junit.jupiter.api.Assertions.*;
  * - Recursive CTEs
  * - CTEs in UPDATE / DELETE / MERGE
  */
-public class CTEAlignmentTest {
+public class CTEAlignmentTest extends BaseDatabaseTest {
 
     private static final Logger logger = LoggerFactory.getLogger(CTEAlignmentTest.class);
-    private DatabaseEngine engine;
-
-    @BeforeEach
-    public void setUp() {
-        engine = new DatabaseEngine();
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
-        engine.execute("USE SCHEMA public");
-    }
-
-    @AfterEach
-    public void tearDown() {
-        if (engine != null) engine.shutdown();
-    }
 
     private ResultSet q(final String sql) {
         return engine.executeQuery(sql);
@@ -58,7 +42,7 @@ public class CTEAlignmentTest {
 
     @Test
     public void testCteColumnAliases() {
-        ResultSet rs = q("""
+        final ResultSet rs = q("""
             WITH cte(a, b) AS (
                 SELECT 1, 'hello'
             )
@@ -75,7 +59,7 @@ public class CTEAlignmentTest {
         engine.execute("CREATE TABLE nums (x INTEGER, y INTEGER)");
         engine.execute("INSERT INTO nums VALUES (10, 20)");
 
-        ResultSet rs = q("""
+        final ResultSet rs = q("""
             WITH cte(val_a, val_b) AS (
                 SELECT x, y FROM nums
             )
@@ -91,7 +75,7 @@ public class CTEAlignmentTest {
         engine.execute("CREATE TABLE sales (dept VARCHAR, amount DOUBLE)");
         engine.execute("INSERT INTO sales VALUES ('A', 100), ('A', 200), ('B', 300)");
 
-        ResultSet rs = q("""
+        final ResultSet rs = q("""
             WITH dept_totals(department, total) AS (
                 SELECT dept, SUM(amount) FROM sales GROUP BY dept
             )
@@ -109,7 +93,7 @@ public class CTEAlignmentTest {
         // Snowflake: a CTE that references its own name as a table source recurses with or without
         // the RECURSIVE keyword. Requiring the keyword made a keywordless closure fail with
         // "Table does not exist" — the shape production transitive-relationship loaders use.
-        ResultSet rs = q("""
+        final ResultSet rs = q("""
             WITH counter AS (
                 SELECT 1 AS n
                 UNION ALL
@@ -124,7 +108,7 @@ public class CTEAlignmentTest {
     public void keywordlessClosureWithCycleGuardAndSecondCte() {
         engine.execute("CREATE TABLE edges (src VARCHAR, tgt VARCHAR)");
         engine.execute("INSERT INTO edges VALUES ('a1','a2'),('a2','a3'),('a3','a4')");
-        ResultSet rs = q("""
+        final ResultSet rs = q("""
             WITH walk AS (
                 SELECT src AS parent, tgt AS child, ARRAY_CONSTRUCT(src, tgt) AS vec FROM edges
                 UNION ALL
@@ -143,13 +127,13 @@ public class CTEAlignmentTest {
         // named like a column, function, or substring of other text must stay non-recursive.
         engine.execute("CREATE TABLE vals (r INTEGER, rr INTEGER)");
         engine.execute("INSERT INTO vals VALUES (1, 10), (2, 20)");
-        ResultSet rs = q("WITH r AS (SELECT r, rr, UPPER('rush') AS s FROM vals) SELECT COUNT(*) FROM r");
+        final ResultSet rs = q("WITH r AS (SELECT r, rr, UPPER('rush') AS s FROM vals) SELECT COUNT(*) FROM r");
         assertEquals(2L, ((Number) rs.getRows().get(0).getValue(0)).longValue());
     }
 
     @Test
     public void testRecursiveCteSimpleCounter() {
-        ResultSet rs = q("""
+        final ResultSet rs = q("""
             WITH RECURSIVE counter(n) AS (
                 SELECT 1
                 UNION ALL
@@ -176,7 +160,7 @@ public class CTEAlignmentTest {
         engine.execute("INSERT INTO employees VALUES (4, 'Dave', 2)");
 
         // All employees under Alice (id=1)
-        ResultSet rs = q("""
+        final ResultSet rs = q("""
             WITH RECURSIVE org(id, name, manager_id) AS (
                 SELECT id, name, manager_id FROM employees WHERE id = 1
                 UNION ALL
@@ -192,7 +176,7 @@ public class CTEAlignmentTest {
 
     @Test
     public void testRecursiveCteFactorial() {
-        ResultSet rs = q("""
+        final ResultSet rs = q("""
             WITH RECURSIVE fact(n, f) AS (
                 SELECT 1, 1
                 UNION ALL
@@ -207,7 +191,7 @@ public class CTEAlignmentTest {
 
     @Test
     public void testRecursiveCteWithColumnAliases() {
-        ResultSet rs = q("""
+        final ResultSet rs = q("""
             WITH RECURSIVE nums(val) AS (
                 SELECT 1
                 UNION ALL
@@ -235,7 +219,7 @@ public class CTEAlignmentTest {
             SELECT id FROM discounted)
             """);
 
-        ResultSet rs = q("SELECT price FROM products WHERE category = 'A' ORDER BY id");
+        final ResultSet rs = q("SELECT price FROM products WHERE category = 'A' ORDER BY id");
         assertEquals(2, rs.getRowCount());
         assertEquals(90.0, ((Number) rs.getRows().get(0).getValue(0)).doubleValue(), 0.01);
         assertEquals(135.0, ((Number) rs.getRows().get(1).getValue(0)).doubleValue(), 0.01);
@@ -255,7 +239,7 @@ public class CTEAlignmentTest {
             SELECT id FROM active_items)
             """);
 
-        ResultSet rs = q("SELECT id, score FROM items ORDER BY id");
+        final ResultSet rs = q("SELECT id, score FROM items ORDER BY id");
         assertEquals(3, rs.getRowCount());
         assertEquals(15L, ((Number) rs.getRows().get(0).getValue(1)).longValue()); // was 10, +5
         assertEquals(20L, ((Number) rs.getRows().get(1).getValue(1)).longValue()); // unchanged
@@ -277,9 +261,9 @@ public class CTEAlignmentTest {
             SELECT id FROM to_delete)
             """);
 
-        ResultSet rs = q("SELECT COUNT(*) FROM logs");
+        final ResultSet rs = q("SELECT COUNT(*) FROM logs");
         assertEquals(1L, ((Number) rs.getRows().get(0).getValue(0)).longValue());
-        ResultSet remaining = q("SELECT level FROM logs");
+        final ResultSet remaining = q("SELECT level FROM logs");
         assertEquals("ERROR", remaining.getRows().get(0).getValue(0).toString());
         logger.info("CTE in DELETE: INFO logs removed");
     }
@@ -298,10 +282,10 @@ public class CTEAlignmentTest {
             SELECT id FROM high_value)
             """);
 
-        ResultSet rs = q("SELECT COUNT(*) FROM orders");
+        final ResultSet rs = q("SELECT COUNT(*) FROM orders");
         // Only id=3 (200.0) has total >= 100; others deleted
         assertEquals(1L, ((Number) rs.getRows().get(0).getValue(0)).longValue());
-        ResultSet rows = q("SELECT total FROM orders");
+        final ResultSet rows = q("SELECT total FROM orders");
         assertEquals(200.0, ((Number) rows.getRows().get(0).getValue(0)).doubleValue(), 0.001);
     }
 
@@ -325,7 +309,7 @@ public class CTEAlignmentTest {
             WHEN NOT MATCHED THEN INSERT (id, val) VALUES (s.id, s.val)
             """);
 
-        ResultSet rs = q("SELECT id, val FROM target ORDER BY id");
+        final ResultSet rs = q("SELECT id, val FROM target ORDER BY id");
         assertEquals(3, rs.getRowCount());
         assertEquals("old1",    rs.getRows().get(0).getValue(1).toString());
         assertEquals("updated2", rs.getRows().get(1).getValue(1).toString());
@@ -349,7 +333,7 @@ public class CTEAlignmentTest {
             SELECT n FROM s
             """);
 
-        ResultSet rs = q("SELECT COUNT(*) FROM series");
+        final ResultSet rs = q("SELECT COUNT(*) FROM series");
         assertEquals(5L, ((Number) rs.getRows().get(0).getValue(0)).longValue());
     }
 }

@@ -22,7 +22,6 @@ import dev.frostlake.storage.Row;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * INFORMATION_SCHEMA.VIEWS.VIEW_DEFINITION and SHOW VIEWS' {@code text} column carry a view's FULL

@@ -87,6 +87,8 @@ public class JarowinklerSimilarity extends TextArgumentFunction {
         return (m / len1 + m / len2 + (m - transpositions) / m) / 3.0;
     }
 
-    @Override public int getMinArgCount() { return 2; }
-    @Override public int getMaxArgCount() { return 2; }
+    @Override
+    public int getMinArgCount() { return 2; }
+    @Override
+    public int getMaxArgCount() { return 2; }
 }

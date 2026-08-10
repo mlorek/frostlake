@@ -16,11 +16,9 @@
 
 package dev.frostlake.dml;
 
-import dev.frostlake.DatabaseEngine;
+import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.Row;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -28,24 +26,10 @@ import java.util.List;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 
-public class MergeOperationsTest {
+public class MergeOperationsTest extends BaseDatabaseTest {
 
-    private DatabaseEngine engine;
 
-    @BeforeEach
-    public void setup() {
-        engine = new DatabaseEngine();
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
-        engine.execute("USE SCHEMA PUBLIC");
-    }
 
-    @AfterEach
-    public void teardown() {
-        if (engine != null) {
-            engine.shutdown();
-        }
-    }
 
     // ==================== BASIC MERGE TESTS ====================
 
@@ -62,10 +46,10 @@ public class MergeOperationsTest {
             WHEN NOT MATCHED THEN INSERT VALUES (2, 'Gadget', 200)
             """);
 
-        ResultSet result = engine.executeQuery("SELECT * FROM products ORDER BY id");
+        final ResultSet result = engine.executeQuery("SELECT * FROM products ORDER BY id");
         assertEquals(2, result.getRowCount());
 
-        List<Row> rows = result.getRows();
+        final List<Row> rows = result.getRows();
         assertEquals(2L, rows.get(1).getValue(0));
         assertEquals("Gadget", rows.get(1).getValue(1));
     }
@@ -83,10 +67,10 @@ public class MergeOperationsTest {
             WHEN MATCHED THEN UPDATE SET price = 150
             """);
 
-        ResultSet result = engine.executeQuery("SELECT * FROM products WHERE id = 1");
+        final ResultSet result = engine.executeQuery("SELECT * FROM products WHERE id = 1");
         assertEquals(1, result.getRowCount());
 
-        Row row = result.getRows().get(0);
+        final Row row = result.getRows().get(0);
         assertEquals(150L, row.getValue(2));
     }
 
@@ -105,8 +89,8 @@ public class MergeOperationsTest {
             """);
 
         // Should update existing row
-        ResultSet result = engine.executeQuery("SELECT * FROM products WHERE id = 1");
-        Row row = result.getRows().get(0);
+        final ResultSet result = engine.executeQuery("SELECT * FROM products WHERE id = 1");
+        final Row row = result.getRows().get(0);
         assertEquals(120L, row.getValue(2));
     }
 
@@ -153,8 +137,8 @@ public class MergeOperationsTest {
             WHEN MATCHED THEN UPDATE SET salary = 95000, bonus = 6000
             """);
 
-        ResultSet result = engine.executeQuery("SELECT * FROM employees WHERE id = 1");
-        Row row = result.getRows().get(0);
+        final ResultSet result = engine.executeQuery("SELECT * FROM employees WHERE id = 1");
+        final Row row = result.getRows().get(0);
         assertEquals(95000L, row.getValue(2));
         assertEquals(6000L, row.getValue(3));
     }
@@ -171,10 +155,10 @@ public class MergeOperationsTest {
             WHEN NOT MATCHED THEN INSERT (id, name, price) VALUES (2, 'Gadget', 200)
             """);
 
-        ResultSet result = engine.executeQuery("SELECT * FROM products WHERE id = 2");
+        final ResultSet result = engine.executeQuery("SELECT * FROM products WHERE id = 2");
         assertEquals(1, result.getRowCount());
 
-        Row row = result.getRows().get(0);
+        final Row row = result.getRows().get(0);
         assertEquals(2L, row.getValue(0));
         assertEquals("Gadget", row.getValue(1));
         assertEquals(200L, row.getValue(2));
@@ -232,7 +216,7 @@ public class MergeOperationsTest {
             """);
 
         // No changes should occur
-        ResultSet result = engine.executeQuery("SELECT * FROM products");
+        final ResultSet result = engine.executeQuery("SELECT * FROM products");
         assertEquals(1, result.getRowCount());
         assertEquals(100L, result.getRows().get(0).getValue(2));
     }
@@ -250,7 +234,7 @@ public class MergeOperationsTest {
             """);
 
         // Should remain 2 rows (no insert)
-        ResultSet result = engine.executeQuery("SELECT * FROM products");
+        final ResultSet result = engine.executeQuery("SELECT * FROM products");
         assertEquals(2, result.getRowCount());
     }
 
@@ -266,7 +250,7 @@ public class MergeOperationsTest {
             WHEN NOT MATCHED THEN INSERT VALUES (1, 'Widget', 100)
             """);
 
-        ResultSet result = engine.executeQuery("SELECT * FROM products");
+        final ResultSet result = engine.executeQuery("SELECT * FROM products");
         assertEquals(1, result.getRowCount());
         assertEquals(100L, result.getRows().get(0).getValue(2));
     }
@@ -289,8 +273,8 @@ public class MergeOperationsTest {
             WHEN MATCHED THEN UPDATE SET str_val = 'updated', bool_val = false, float_val = 2.5
             """);
 
-        ResultSet result = engine.executeQuery("SELECT * FROM test_types");
-        Row row = result.getRows().get(0);
+        final ResultSet result = engine.executeQuery("SELECT * FROM test_types");
+        final Row row = result.getRows().get(0);
         assertEquals("updated", row.getValue(1));
         assertEquals(false, row.getValue(2));
         assertEquals(2.5, ((Number) row.getValue(3)).doubleValue(), 0.01);

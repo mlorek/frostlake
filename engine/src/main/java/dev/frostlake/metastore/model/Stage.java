@@ -27,7 +27,9 @@ import java.nio.file.StandardCopyOption;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.stream.Stream;
 
 /**
@@ -41,6 +43,7 @@ public class Stage extends SqlObject {
     private String url;                 // file:///path/to/dir or s3://bucket/path
     private String fileFormat;          // CSV, JSON, PARQUET, etc.
     private final boolean encryption;
+    private String encryptionType;
     private S3PathResolver s3Resolver;  // resolver for recomputing localPath when ALTER STAGE SET URL changes it
 
     // Base directory for simulating S3 stages
@@ -48,6 +51,30 @@ public class Stage extends SqlObject {
 
     // For local filesystem stages (also used for S3 simulation)
     private Path localPath;
+
+    // The FILE_FORMAT sub-options the stage was declared or altered with (SKIP_HEADER=1, …) beyond
+    // the TYPE kept in fileFormat — DESC STAGE overlays them on the per-type defaults.
+    private final Map<String, String> fileFormatOptions = new LinkedHashMap<>();
+    // COPY_OPTIONS = (ON_ERROR='SKIP_FILE', …), likewise overlaid by DESC STAGE.
+    private final Map<String, String> copyOptions = new LinkedHashMap<>();
+    // DIRECTORY = (ENABLE = TRUE) — surfaced by DESC STAGE and SHOW STAGES' directory_enabled.
+    private boolean directoryEnabled;
+
+    public Map<String, String> getFileFormatOptions() {
+        return fileFormatOptions;
+    }
+
+    public Map<String, String> getCopyOptions() {
+        return copyOptions;
+    }
+
+    public boolean isDirectoryEnabled() {
+        return directoryEnabled;
+    }
+
+    public void setDirectoryEnabled(final boolean directoryEnabled) {
+        this.directoryEnabled = directoryEnabled;
+    }
 
     public Stage(final String name, final StageType type, final String url) {
         this(name, type, url, "CSV", false, null, null);
@@ -129,6 +156,15 @@ public class Stage extends SqlObject {
         return encryption;
     }
 
+    /** The declared ENCRYPTION TYPE (e.g. SNOWFLAKE_SSE), or null for the account default. */
+    public String getEncryptionType() {
+        return encryptionType;
+    }
+
+    public void setEncryptionType(final String encryptionType) {
+        this.encryptionType = encryptionType;
+    }
+
     public Instant getCreatedAt() {
         return createdTime;
     }
@@ -137,10 +173,6 @@ public class Stage extends SqlObject {
         return localPath;
     }
 
-    @Override
-    public void rename(final String newName) {
-        throw new UnsupportedOperationException("Stages cannot be renamed");
-    }
 
     @Override
     public String getObjectType() {
@@ -166,14 +198,14 @@ public class Stage extends SqlObject {
             return new ArrayList<>();
         }
 
-        List<StageFile> files = new ArrayList<>();
+        final List<StageFile> files = new ArrayList<>();
 
         try (Stream<Path> paths = Files.walk(localPath, 1)) {
             // Collect paths into list manually
-            List<Path> fileList = new ArrayList<>();
-            Iterator<Path> iterator = paths.iterator();
+            final List<Path> fileList = new ArrayList<>();
+            final Iterator<Path> iterator = paths.iterator();
             while (iterator.hasNext()) {
-                Path p = iterator.next();
+                final Path p = iterator.next();
                 if (Files.isRegularFile(p)) {
                     if (pattern == null || matchPattern(p.getFileName().toString(), pattern)) {
                         fileList.add(p);
@@ -182,10 +214,10 @@ public class Stage extends SqlObject {
             }
 
             for (final Path file : fileList) {
-                String fileName = file.getFileName().toString();
-                long size = Files.size(file);
-                String lastModified = Files.getLastModifiedTime(file).toInstant().toString();
-                String md5 = ""; // Could compute MD5 if needed
+                final String fileName = file.getFileName().toString();
+                final long size = Files.size(file);
+                final String lastModified = Files.getLastModifiedTime(file).toInstant().toString();
+                final String md5 = ""; // Could compute MD5 if needed
 
                 files.add(new StageFile(fileName, size, lastModified, md5));
             }
@@ -203,7 +235,7 @@ public class Stage extends SqlObject {
         }
 
         // Convert wildcard pattern to regex
-        String regex = pattern
+        final String regex = pattern
             .replace(".", "\\.")
             .replace("*", ".*")
             .replace("?", ".");
@@ -219,7 +251,7 @@ public class Stage extends SqlObject {
             return false;
         }
 
-        Path filePath = localPath.resolve(fileName);
+        final Path filePath = localPath.resolve(fileName);
         return Files.exists(filePath);
     }
 
@@ -242,7 +274,7 @@ public class Stage extends SqlObject {
             throw new UnsupportedOperationException("PUT only supported for file:// and s3:// stages");
         }
 
-        Path destFile = localPath.resolve(sourceFile.getFileName());
+        final Path destFile = localPath.resolve(sourceFile.getFileName());
         Files.copy(sourceFile, destFile, StandardCopyOption.REPLACE_EXISTING);
     }
 
@@ -254,7 +286,7 @@ public class Stage extends SqlObject {
             throw new UnsupportedOperationException("GET only supported for file:// and s3:// stages");
         }
 
-        Path sourceFile = localPath.resolve(fileName);
+        final Path sourceFile = localPath.resolve(fileName);
         if (!Files.exists(sourceFile)) {
             throw new IOException("File not found in stage: " + fileName);
         }
@@ -270,7 +302,7 @@ public class Stage extends SqlObject {
             throw new UnsupportedOperationException("REMOVE only supported for file:// and s3:// stages");
         }
 
-        Path file = localPath.resolve(fileName);
+        final Path file = localPath.resolve(fileName);
         return Files.deleteIfExists(file);
     }
 
@@ -289,8 +321,8 @@ public class Stage extends SqlObject {
             return null;
         }
 
-        String path = url.substring(5); // Remove "s3://"
-        int slashIndex = path.indexOf('/');
+        final String path = url.substring(5); // Remove "s3://"
+        final int slashIndex = path.indexOf('/');
         if (slashIndex > 0) {
             return path.substring(0, slashIndex);
         }
@@ -305,8 +337,8 @@ public class Stage extends SqlObject {
             return null;
         }
 
-        String path = url.substring(5); // Remove "s3://"
-        int slashIndex = path.indexOf('/');
+        final String path = url.substring(5); // Remove "s3://"
+        final int slashIndex = path.indexOf('/');
         if (slashIndex > 0 && slashIndex < path.length() - 1) {
             return path.substring(slashIndex + 1);
         }

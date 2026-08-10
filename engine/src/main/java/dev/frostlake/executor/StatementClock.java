@@ -18,7 +18,6 @@ package dev.frostlake.executor;
 
 import java.time.Instant;
 import java.time.LocalDateTime;
-import java.time.ZoneId;
 import java.time.ZoneOffset;
 
 /**
@@ -36,8 +35,9 @@ import java.time.ZoneOffset;
  * a replayed row keeps the value it was written with.
  *
  * <p>Scoped to the thread because the engine runs a session's statements on the caller's thread; the
- * pin is taken by the OUTERMOST statement only, so a procedural block's body sees the block's instant
- * rather than each inner statement re-reading the clock.
+ * pin is taken by the OUTERMOST statement only. A procedural block's INNER statements each advance
+ * the pin to a fresh reading ({@link #advance}) — live gives every statement inside a block its own
+ * time — except during write-ahead-log replay, where the whole block keeps its recorded instant.
  *
  * <p>What is pinned is an INSTANT, not a wall-clock reading, because one instant has two renderings
  * and Snowflake uses both: CURRENT_TIMESTAMP and LOCALTIMESTAMP answer in the session's zone while
@@ -50,17 +50,42 @@ import java.time.ZoneOffset;
 public final class StatementClock {
 
     private static final ThreadLocal<Instant> PINNED = new ThreadLocal<Instant>();
+    private static final ThreadLocal<Boolean> REPLAY = new ThreadLocal<Boolean>();
 
     private StatementClock() {
     }
 
     /**
+     * Move the pinned instant forward to a fresh reading — the boundary between two statements
+     * INSIDE an outer one: a procedural block's statements each read their own clock
+     * (live-verified). A no-op when nothing is pinned (the fresh-read path already applies) and
+     * during write-ahead-log replay, where the outer statement keeps its recorded instant.
+     */
+    public static void advance() {
+        if (PINNED.get() != null && !Boolean.TRUE.equals(REPLAY.get())) {
+            PINNED.set(Instant.now());
+        }
+    }
+
+    /** Write-ahead-log replay marker: while set, {@link #advance} keeps the recorded instant. */
+    public static void setReplay(final boolean replaying) {
+        if (replaying) {
+            REPLAY.set(Boolean.TRUE);
+        } else {
+            REPLAY.remove();
+        }
+    }
+
+    /**
      * The current statement's reading in the session's zone — what CURRENT_TIMESTAMP, LOCALTIMESTAMP,
-     * CURRENT_DATE, CURRENT_TIME, GETDATE and NOW answer with. Unpinned, the clock is read afresh so a
-     * function called outside any statement still answers.
+     * CURRENT_DATE, CURRENT_TIME, GETDATE and NOW answer with. The engine's session zone IS UTC (its
+     * TIMEZONE parameter), so this renders the instant in UTC — never the host's zone, whose offset
+     * would otherwise leak into every epoch extraction ({@code DATE_PART(EPOCH_SECOND,
+     * CURRENT_TIMESTAMP())} answers the true instant on a real account, live-verified). Unpinned, the
+     * clock is read afresh so a function called outside any statement still answers.
      */
     public static LocalDateTime now() {
-        return LocalDateTime.ofInstant(instant(), ZoneId.systemDefault());
+        return LocalDateTime.ofInstant(instant(), ZoneOffset.UTC);
     }
 
     /** The same instant in UTC — what SYSDATE answers with. */

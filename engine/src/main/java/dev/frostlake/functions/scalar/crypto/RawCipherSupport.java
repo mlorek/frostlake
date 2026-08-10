@@ -22,6 +22,9 @@ package dev.frostlake.functions.scalar.crypto;
  */
 public final class RawCipherSupport {
 
+    // Digit-table loop — String.format("%02X", b) parsed a format string PER BYTE.
+    private static final char[] HEX_UPPER = "0123456789ABCDEF".toCharArray();
+
     /** GCM authentication-tag length used by ENCRYPT_RAW / DECRYPT_RAW, in bits and bytes. */
     public static final int GCM_TAG_BITS = 128;
     public static final int GCM_TAG_BYTES = GCM_TAG_BITS / 8;
@@ -45,6 +48,22 @@ public final class RawCipherSupport {
         }
     }
 
+    /**
+     * Read a BINARY argument's bytes. Snowflake types the crypto arguments (plaintext/ciphertext,
+     * key, IV, AAD, tag) as BINARY and rejects a VARCHAR with "Invalid argument types" — a hex
+     * string is NOT silently accepted. A {@code byte[]} is tolerated (an already-unwrapped BINARY).
+     */
+    public static byte[] binaryBytes(final String function, final Object arg) {
+        if (arg instanceof dev.frostlake.values.BinaryValue) {
+            return ((dev.frostlake.values.BinaryValue) arg).bytes();
+        }
+        if (arg instanceof byte[]) {
+            return (byte[]) arg;
+        }
+        throw new RuntimeException("Invalid argument types for function '" + function
+            + "': a BINARY value is required, not " + (arg == null ? "NULL" : "VARCHAR"));
+    }
+
     /** Decode an uppercase-or-lowercase hex BINARY string to bytes. */
     public static byte[] hexToBytes(final String function, final String hex) {
         if (hex.length() % 2 != 0) {
@@ -61,7 +80,7 @@ public final class RawCipherSupport {
     public static String bytesToHex(final byte[] bytes) {
         final StringBuilder hex = new StringBuilder(bytes.length * 2);
         for (final byte b : bytes) {
-            hex.append(String.format("%02X", b));
+            hex.append(HEX_UPPER[(b >> 4) & 0xF]).append(HEX_UPPER[b & 0xF]);
         }
         return hex.toString();
     }

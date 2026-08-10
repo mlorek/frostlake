@@ -16,11 +16,9 @@
 
 package dev.frostlake.scripting;
 
-import dev.frostlake.DatabaseEngine;
+import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
 
-import org.junit.jupiter.api.AfterAll;
-import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -30,28 +28,12 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
  * row expressions. These lock that in — especially boolean OR, which previously mis-evaluated as
  * string concatenation in the hand-rolled procedural evaluator.
  */
-public class ProceduralExpressionEvalTest {
+public class ProceduralExpressionEvalTest extends BaseDatabaseTest {
 
-    private static DatabaseEngine engine;
-
-    @BeforeAll
-    public static void setup() {
-        engine = new DatabaseEngine();
-        engine.execute("CREATE DATABASE IF NOT EXISTS test_db");
-        engine.execute("USE DATABASE test_db");
-        engine.execute("USE SCHEMA public");
-    }
-
-    @AfterAll
-    public static void teardown() {
-        if (engine != null) {
-            engine.shutdown();
-        }
-    }
 
     /** Run "BEGIN IF (<cond>) THEN RETURN 1; END IF; RETURN 0; END" and return the int result. */
-    private static int ifReturns(final String condition) {
-        ResultSet rs = engine.executeQuery(
+    private int ifReturns(final String condition) {
+        final ResultSet rs = engine.executeQuery(
             "BEGIN\n"
             + "    IF (" + condition + ") THEN\n"
             + "        RETURN 1;\n"

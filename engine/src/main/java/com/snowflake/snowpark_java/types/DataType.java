@@ -25,32 +25,23 @@ package com.snowflake.snowpark_java.types;
  */
 public abstract class DataType {
 
-    /** The name Snowpark prints for this type, e.g. {@code String} or {@code Decimal(38,2)}. */
+    /**
+     * The name Snowpark prints for a type: its CLASS name — {@code LongType}, {@code StringType},
+     * {@code DecimalType}. Live-verified, including for DECIMAL, whose precision and scale appear only
+     * in {@link #toString()} and never here.
+     */
     public String typeName() {
-        final String simple = getClass().getSimpleName();
-        return simple.endsWith("Type") ? simple.substring(0, simple.length() - "Type".length()) : simple;
+        return getClass().getSimpleName();
     }
 
     /**
-     * The name this type has in SQL, which is not the name Snowpark prints for it — Snowpark calls a
-     * string column {@code String} while a CAST has to say {@code VARCHAR}. Kept here rather than
-     * overridden in each subclass so the two vocabularies stay side by side.
+     * The short spelling a {@link StructField} prints for this type — {@code Long}, not
+     * {@code LongType}, so a field renders as {@code StructField(ID, Long, Nullable = false)}.
+     * Internal: real Snowpark publishes no such accessor.
      */
-    public String sqlTypeName() {
-        final String name = typeName();
-        if ("String".equals(name)) {
-            return "VARCHAR";
-        }
-        if ("Byte".equals(name) || "Short".equals(name) || "Integer".equals(name) || "Long".equals(name)) {
-            return "NUMBER";
-        }
-        if ("Float".equals(name) || "Double".equals(name)) {
-            return "DOUBLE";
-        }
-        if ("Struct".equals(name)) {
-            return "OBJECT";
-        }
-        return name.toUpperCase();
+    String shortName() {
+        final String simple = getClass().getSimpleName();
+        return simple.endsWith("Type") ? simple.substring(0, simple.length() - "Type".length()) : simple;
     }
 
     @Override

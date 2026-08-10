@@ -25,24 +25,20 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.List;
 import java.util.UUID;
-import java.util.concurrent.atomic.AtomicLong;
 
+/**
+ * UUID_STRING() — a random version-4 UUID, and UUID_STRING(namespace, name) — the RFC 4122 version-5
+ * name-based form, which is bit-exact with Snowflake.
+ *
+ * <p>The no-argument form is genuinely random, as Snowflake's is. It once packed a monotonic counter
+ * into the low 64 bits with a SplitMix64 scramble above it, for test reproducibility; that was removed
+ * because nothing depended on it — the tests assert shape and that two calls DIFFER, which random
+ * values satisfy more convincingly than a counter, and the vendor suite never calls it. The counter
+ * also restarted at zero in a fresh JVM, so it never gave the WAL-replay exactness it looked like it
+ * gave.
+ */
 public class UuidString extends BuiltInFunction {
     public UuidString() { super("UUID_STRING", StringType.VARCHAR); }
-
-    // TEMPORARY (test reproducibility): deterministic, still-unique UUIDs instead of UUID.randomUUID().
-    // The low 64 bits carry a monotonic counter (guarantees uniqueness); the high 64 bits are a SplitMix64
-    // scramble of it so the value still looks like a UUID. Revert this whole block to
-    // `return UUID.randomUUID().toString();` to restore real randomness. (The 2-argument NAMED form below
-    // is exact RFC 4122 and unaffected by this.)
-    private static final AtomicLong COUNTER = new AtomicLong();
-
-    private static long mix(final long value) {
-        long z = value;
-        z = (z ^ (z >>> 30)) * 0xBF58476D1CE4E5B9L;
-        z = (z ^ (z >>> 27)) * 0x94D049BB133111EBL;
-        return z ^ (z >>> 31);
-    }
 
     @Override
     public Object evaluate(final List<Object> args) {
@@ -52,17 +48,28 @@ public class UuidString extends BuiltInFunction {
         // example UUID_STRING('fe971b24-9572-4005-b22f-351e9c09274d','foo') yields
         // dc0b6f65-fca6-5b4b-9d37-ccc3fde1f3e2. A non-string name (e.g. HASH(...)) is used as its text.
         if (args.size() == 2) {
-            if (args.get(0) == null || args.get(1) == null) {
-                return null;
+            // Neither argument is null-propagating, and the two behave differently — live-measured:
+            // a NULL (or malformed) NAMESPACE is an error, while a NULL NAME hashes as the empty
+            // string and still yields a UUID.
+            if (args.get(0) == null) {
+                throw new RuntimeException(BADLY_FORMED);
             }
-            return namedUuid(args.get(0).toString(), args.get(1).toString());
+            return namedUuid(args.get(0).toString(),
+                args.get(1) == null ? "" : args.get(1).toString());
         }
-        final long n = COUNTER.incrementAndGet();
-        return new UUID(mix(n), n).toString();
+        return UUID.randomUUID().toString();
     }
 
+    /** Live's wording when the namespace is not a UUID, NULL or malformed alike. */
+    private static final String BADLY_FORMED = "Badly formed UUID on line 0";
+
     private String namedUuid(final String namespace, final String name) {
-        final UUID ns = UUID.fromString(namespace.trim());
+        final UUID ns;
+        try {
+            ns = UUID.fromString(namespace.trim());
+        } catch (final IllegalArgumentException notAUuid) {
+            throw new RuntimeException(BADLY_FORMED);
+        }
         final ByteBuffer nsBytes = ByteBuffer.allocate(16);
         nsBytes.putLong(ns.getMostSignificantBits());
         nsBytes.putLong(ns.getLeastSignificantBits());
@@ -81,6 +88,8 @@ public class UuidString extends BuiltInFunction {
         return new UUID(out.getLong(), out.getLong()).toString();
     }
 
-    @Override public int getMinArgCount() { return 0; }
-    @Override public int getMaxArgCount() { return 2; }
+    @Override
+    public int getMinArgCount() { return 0; }
+    @Override
+    public int getMaxArgCount() { return 2; }
 }

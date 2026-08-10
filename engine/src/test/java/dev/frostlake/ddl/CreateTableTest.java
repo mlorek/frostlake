@@ -17,35 +17,29 @@
 package dev.frostlake.ddl;
 
 import dev.frostlake.BaseDatabaseTest;
-import dev.frostlake.metastore.model.Schema;
-import dev.frostlake.metastore.model.Table;
 import dev.frostlake.storage.ResultSet;
-import org.junit.jupiter.api.Assumptions;
+import dev.frostlake.storage.Row;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Tests for CREATE TABLE command
+ * CREATE TABLE, asserted through the SQL surface — {@code SHOW TABLES}, {@code DESCRIBE TABLE}
+ * cells and {@code GET_DDL} — so every check runs against whichever engine executed the DDL,
+ * embedded or live.
  */
 public class CreateTableTest extends BaseDatabaseTest {
-
-    private static final String CATALOG_ASSERTIONS =
-        "asserts through engine.getCatalog(), which under SF_LIVE still reads the embedded engine — "
-        + "the CREATE TABLE went to Snowflake, so the embedded catalog never saw the table; the DDL "
-        + "itself is still submitted to the account";
 
     @Test
     public void testCreateSimpleTable() {
         engine.execute("CREATE TABLE users (id INTEGER, name VARCHAR, age INTEGER)");
 
-        Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_ASSERTIONS);
-        Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
-        Table table = schema.getTable("users");
-
-        assertNotNull(table, "Table should exist");
-        assertEquals("USERS", table.getName());
-        assertEquals(3, table.getColumns().size());
+        final ResultSet tables = engine.executeQuery("SHOW TABLES LIKE 'users'");
+        soleRowWhere(tables, "name", "USERS");
+        assertEquals(3, engine.executeQuery("DESCRIBE TABLE users").getRowCount());
     }
 
     @Test
@@ -58,12 +52,7 @@ public class CreateTableTest extends BaseDatabaseTest {
             )
             """);
 
-        Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_ASSERTIONS);
-        Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
-        Table table = schema.getTable("users");
-
-        assertNotNull(table);
-        assertTrue(table.getColumns().get(0).isPrimaryKey(), "First column should be primary key");
+        assertEquals("Y", describeCell("users", "ID", "primary key"), "First column should be primary key");
     }
 
     @Test
@@ -76,14 +65,9 @@ public class CreateTableTest extends BaseDatabaseTest {
             )
             """);
 
-        Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_ASSERTIONS);
-        Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
-        Table table = schema.getTable("users");
-
-        assertNotNull(table);
-        assertFalse(table.getColumns().get(0).isNullable(), "id should be NOT NULL");
-        assertFalse(table.getColumns().get(1).isNullable(), "name should be NOT NULL");
-        assertTrue(table.getColumns().get(2).isNullable(), "age should be nullable");
+        assertEquals("N", describeCell("users", "ID", "null?"), "id should be NOT NULL");
+        assertEquals("N", describeCell("users", "NAME", "null?"), "name should be NOT NULL");
+        assertEquals("Y", describeCell("users", "AGE", "null?"), "age should be nullable");
     }
 
     @Test
@@ -96,12 +80,8 @@ public class CreateTableTest extends BaseDatabaseTest {
             )
             """);
 
-        Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_ASSERTIONS);
-        Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
-        Table table = schema.getTable("users");
-
-        assertNotNull(table);
-        assertEquals("active", table.getColumns().get(2).getDefaultValue());
+        // The default cell shows the EXPRESSION as written — quotes included (live-verified).
+        assertEquals("'active'", describeCell("users", "STATUS", "default"));
     }
 
     @Test
@@ -113,12 +93,10 @@ public class CreateTableTest extends BaseDatabaseTest {
             )
             """);
 
-        Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_ASSERTIONS);
-        Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
-        Table table = schema.getTable("users");
-
-        assertNotNull(table);
-        assertTrue(table.getColumns().get(0).isAutoIncrement());
+        // AUTOINCREMENT is visible in the reconstructed DDL (the GET_DDL spelling).
+        final String ddl = engine.executeQuery("SELECT GET_DDL('TABLE', 'users')")
+            .getRows().get(0).getValue(0).toString();
+        assertTrue(ddl.toLowerCase().contains("autoincrement"), ddl);
     }
 
     @Test
@@ -145,12 +123,7 @@ public class CreateTableTest extends BaseDatabaseTest {
             )
             """);
 
-        Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_ASSERTIONS);
-        Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
-        Table table = schema.getTable("test_types");
-
-        assertNotNull(table);
-        assertEquals(17, table.getColumns().size());
+        assertEquals(17, engine.executeQuery("DESCRIBE TABLE test_types").getRowCount());
     }
 
     @Test
@@ -159,7 +132,7 @@ public class CreateTableTest extends BaseDatabaseTest {
         engine.execute("INSERT INTO users VALUES (1, 'Alice', 30)");
         engine.execute("INSERT INTO users VALUES (2, 'Bob', 25)");
 
-        ResultSet result = engine.executeQuery("SELECT * FROM users");
+        final ResultSet result = engine.executeQuery("SELECT * FROM users");
 
         assertEquals(2, result.getRowCount());
         assertEquals(3, result.getColumnCount());
@@ -170,23 +143,16 @@ public class CreateTableTest extends BaseDatabaseTest {
         engine.execute("CREATE SCHEMA other_schema");
         engine.execute("CREATE TABLE other_schema.users (id INTEGER, name VARCHAR)");
 
-        Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_ASSERTIONS);
-        Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("other_schema");
-        Table table = schema.getTable("users");
-
-        assertNotNull(table);
-        assertEquals("USERS", table.getName());
+        final ResultSet tables = engine.executeQuery("SHOW TABLES IN SCHEMA other_schema");
+        final Row row = soleRowWhere(tables, "name", "USERS");
+        assertEquals("OTHER_SCHEMA", cell(tables, row, "schema_name"));
     }
 
     @Test
     public void testCreateTableWithQualifiedName() {
         engine.execute("CREATE TABLE test_db.test_schema.products (id INTEGER, name VARCHAR)");
 
-        Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_ASSERTIONS);
-        Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
-        Table table = schema.getTable("products");
-
-        assertNotNull(table);
+        soleRowWhere(engine.executeQuery("SHOW TABLES LIKE 'products'"), "name", "PRODUCTS");
     }
 
     @Test
@@ -195,12 +161,16 @@ public class CreateTableTest extends BaseDatabaseTest {
         engine.execute("CREATE TABLE users (id INTEGER, name VARCHAR)");
 
         // Create with IF NOT EXISTS should not throw
-        assertDoesNotThrow(() -> {
-            engine.execute("CREATE TABLE IF NOT EXISTS users (id INTEGER, email VARCHAR)");
+        assertDoesNotThrow(new Executable() {
+            @Override
+            public void execute() {
+                engine.execute("CREATE TABLE IF NOT EXISTS users (id INTEGER, email VARCHAR)");
+            }
         }, "Creating table with IF NOT EXISTS should not fail");
 
-        // Verify original table structure is preserved
-        ResultSet tables = engine.executeQuery("SHOW TABLES");
-        assertTrue(tables.getRowCount() > 0, "Table should exist");
+        // Verify original table structure is preserved (the second column list was ignored).
+        final ResultSet described = engine.executeQuery("DESCRIBE TABLE users");
+        assertEquals(2, described.getRowCount());
+        assertEquals("NAME", cell(described, described.getRows().get(1), "name"));
     }
 }

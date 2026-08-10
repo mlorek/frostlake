@@ -35,6 +35,8 @@ public class CurrentRole extends BuiltInFunction {
         return sessionContext.getCurrentRole();
     }
 
-    @Override public int getMinArgCount() { return 0; }
-    @Override public int getMaxArgCount() { return 0; }
+    @Override
+    public int getMinArgCount() { return 0; }
+    @Override
+    public int getMaxArgCount() { return 0; }
 }

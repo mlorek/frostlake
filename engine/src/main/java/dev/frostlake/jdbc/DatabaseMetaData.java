@@ -16,7 +16,11 @@
 
 package dev.frostlake.jdbc;
 
-import java.sql.*;
+import java.sql.Connection;
+import java.sql.ResultSet;
+import java.sql.RowIdLifetime;
+import java.sql.SQLException;
+import java.sql.SQLFeatureNotSupportedException;
 
 /**
  * Simplified JDBC DatabaseMetaData implementation for Frostlake SQL Engine
@@ -163,7 +167,7 @@ public class DatabaseMetaData implements java.sql.DatabaseMetaData {
 
     @Override
     public String getSQLKeywords() throws SQLException {
-        return "WAREHOUSE,STREAM,TASK,LATERAL,VARIANT";
+        return "VARIANT,ARRAY,OBJECT,FLATTEN,LATERAL";
     }
 
     @Override
@@ -458,7 +462,7 @@ public class DatabaseMetaData implements java.sql.DatabaseMetaData {
 
     @Override
     public boolean supportsUnionAll() throws SQLException {
-        return false;
+        return true;
     }
 
     @Override
@@ -791,7 +795,7 @@ public class DatabaseMetaData implements java.sql.DatabaseMetaData {
 
     @Override
     public boolean supportsBatchUpdates() throws SQLException {
-        return false;
+        return true;
     }
 
     @Override

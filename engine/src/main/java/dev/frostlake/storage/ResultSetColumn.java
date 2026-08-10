@@ -28,6 +28,17 @@ public class ResultSetColumn {
     // rules gain the knowledge. Null by default: a column is only statically typed by saying so, so an
     // un-audited producer can never make an outer query trust a guess.
     private final DataType staticType;
+    // Whether this column is known to accept NULL. True unless a projection said otherwise: Snowflake
+    // carries a source column's NOT NULL out through a projection ONLY when the item is a column
+    // reference, so nullable is the answer for every expression, aggregate, literal and set operation,
+    // and for the null-extended side of an outer join.
+    private final boolean nullable;
+    // Whether the answer above is KNOWN or merely the default. The two metadata surfaces need
+    // different halves of this: INFORMATION_SCHEMA and DESCRIBE report an expression column nullable,
+    // while the JDBC driver reports columnNoNulls for it and columnNullable only for a column it knows
+    // accepts NULL (live-verified). A boolean alone cannot tell "nullable because we looked" from
+    // "nullable because we did not".
+    private final boolean nullabilityKnown;
 
     public ResultSetColumn(final String name, final DataType dataType) {
         this(name, dataType, null);
@@ -39,10 +50,25 @@ public class ResultSetColumn {
 
     public ResultSetColumn(final String name, final DataType dataType, final String tableName,
                            final DataType staticType) {
+        this(name, dataType, tableName, staticType, true);
+    }
+
+    public ResultSetColumn(final String name, final DataType dataType, final String tableName,
+                           final DataType staticType, final boolean nullable) {
+        // A NOT NULL answer is only ever reached by looking, so it is known by construction; a
+        // nullable one has to say whether it was.
+        this(name, dataType, tableName, staticType, nullable, !nullable);
+    }
+
+    public ResultSetColumn(final String name, final DataType dataType, final String tableName,
+                           final DataType staticType, final boolean nullable,
+                           final boolean nullabilityKnown) {
         this.name = name;
         this.dataType = dataType;
         this.tableName = tableName;
         this.staticType = staticType;
+        this.nullable = nullable;
+        this.nullabilityKnown = nullabilityKnown;
     }
 
     public String getName() {
@@ -64,5 +90,23 @@ public class ResultSetColumn {
      */
     public DataType getStaticType() {
         return staticType;
+    }
+
+    /**
+     * Whether this column accepts NULL. Only a projected COLUMN REFERENCE can answer false, and only
+     * when its source column is NOT NULL — an expression over that same column, a cast of it, an
+     * aggregate, a literal or either side of a set operation all accept NULL (live-verified).
+     */
+    public boolean isNullable() {
+        return nullable;
+    }
+
+    /**
+     * Whether {@link #isNullable()} was determined rather than defaulted. Only a projected COLUMN
+     * REFERENCE determines it — an expression, an aggregate and a literal all leave it unknown, which
+     * is exactly the distinction the JDBC driver reports and the catalog surfaces do not.
+     */
+    public boolean isNullabilityKnown() {
+        return nullabilityKnown;
     }
 }

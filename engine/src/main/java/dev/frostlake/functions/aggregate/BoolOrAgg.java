@@ -30,34 +30,18 @@ public class BoolOrAgg extends AggregateFunction {
     @Override
     public Object evaluate(final List<Object> args) { return null; }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return 1; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return 1; }
 
-    private static class BoolOrAccumulator implements Accumulator {
-        private boolean result = false; private boolean hasValue = false;
-
-        @Override
-        public void accumulate(final Object v) {
-            if (v == null) return; hasValue = true; result = result || isTruthy(v);
-        }
-
-        @Override
-        public Object getResult() { return hasValue ? result : null; }
-
-        @Override
-        public void reset() { result = false; hasValue = false; }
-
-        @Override
-        public void merge(final Accumulator other) {
-            BoolOrAccumulator o = (BoolOrAccumulator) other;
-            if (o.hasValue) { hasValue = true; result = result || o.result; }
-        }
-    }
-
-    static boolean isTruthy(final Object v) {
+static boolean isTruthy(final Object v) {
         if (v instanceof Boolean) return (Boolean) v;
         if (v instanceof Number) return ((Number) v).doubleValue() != 0;
-        if (v instanceof String) { String s = ((String) v).trim().toUpperCase(); return s.equals("TRUE") || s.equals("1"); }
+        if (v instanceof String) {
+            final String s = ((String) v).trim().toUpperCase();
+            return s.equals("TRUE") || s.equals("1");
+        }
         return false;
     }
 }

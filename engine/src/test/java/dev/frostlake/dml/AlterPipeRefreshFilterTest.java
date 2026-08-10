@@ -17,6 +17,7 @@
 package dev.frostlake.dml;
 
 import dev.frostlake.DatabaseEngine;
+import dev.frostlake.config.EngineConfig;
 import dev.frostlake.storage.ResultSet;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -51,6 +52,9 @@ public class AlterPipeRefreshFilterTest {
     public void setUp() throws IOException {
         stageDir = Files.createTempDirectory("pipe_refresh_test_");
         engine = new DatabaseEngine();
+        // The tests point stages at local file:// directories - opt in to the affordance the
+        // default config refuses (a real account refuses those URLs).
+        engine.getConfig().setProperty(EngineConfig.PROP_STAGE_FILE_URL_ENABLED, "true");
         engine.execute("CREATE DATABASE db");
         engine.execute("USE DATABASE db");
         engine.execute("CREATE SCHEMA s");

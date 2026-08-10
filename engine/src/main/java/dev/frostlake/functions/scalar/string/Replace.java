@@ -29,9 +29,9 @@ public class Replace extends TextArgumentFunction {
     @Override
     public Object evaluate(final List<Object> args) {
         if (args.get(0) == null) return null;
-        String str = args.get(0).toString();
-        String search = args.get(1) != null ? args.get(1).toString() : "";
-        String replacement = args.size() > 2 && args.get(2) != null ? args.get(2).toString() : "";
+        final String str = args.get(0).toString();
+        final String search = args.get(1) != null ? args.get(1).toString() : "";
+        final String replacement = args.size() > 2 && args.get(2) != null ? args.get(2).toString() : "";
         return str.replace(search, replacement);
     }
 

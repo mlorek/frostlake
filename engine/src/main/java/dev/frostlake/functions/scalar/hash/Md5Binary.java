@@ -24,7 +24,7 @@ import java.util.List;
 
 /** MD5_BINARY(msg) — the 16-byte MD5 digest as BINARY. */
 public class Md5Binary extends BuiltInFunction {
-    public Md5Binary() { super("MD5_BINARY", BinaryType.BINARY); }
+    public Md5Binary() { super("MD5_BINARY", new BinaryType("VARBINARY", 16)); }
 
     @Override
     public Object evaluate(final List<Object> args) {
@@ -32,6 +32,8 @@ public class Md5Binary extends BuiltInFunction {
         return BinaryValue.of(SharedFunctionHelpers.digest("MD5", SharedFunctionHelpers.toUtf8(args.get(0))));
     }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return 1; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return 1; }
 }

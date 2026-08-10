@@ -16,11 +16,9 @@
 
 package dev.frostlake.scripting;
 
-import dev.frostlake.DatabaseEngine;
+import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
 
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -34,25 +32,9 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
  * {@code CONTINUE} skipping the rest of an iteration, and {@code BREAK} inside a {@code WHILE} loop.
  * Complements the cursor-FOR / proc-body loop coverage elsewhere, which never asserts loop execution.
  */
-public class LoopBreakContinueTest {
+public class LoopBreakContinueTest extends BaseDatabaseTest {
 
     private static final Logger logger = LoggerFactory.getLogger(LoopBreakContinueTest.class);
-
-    private DatabaseEngine engine;
-
-    @BeforeEach
-    public void setUp() {
-        engine = new DatabaseEngine();
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
-    }
-
-    @AfterEach
-    public void tearDown() {
-        if (engine != null) {
-            engine.shutdown();
-        }
-    }
 
     private int runReturningInt(final String block) {
         final ResultSet rs = engine.executeQuery(block);

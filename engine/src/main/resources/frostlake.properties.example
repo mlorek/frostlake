@@ -8,7 +8,9 @@ http.port=8080
 http.host=localhost
 http.maxConnections=100
 
-# Database Defaults
+# Database Defaults — where every fresh session starts (the engine's bootstrap session and each
+# HTTP session alike). A non-default database is created on first boot, so this is the way to give
+# a server a writable landing database (the built-in SNOWFLAKE database is read-only).
 database.default=SNOWFLAKE
 schema.default=PUBLIC
 
@@ -71,6 +73,11 @@ tasks.autostart=false
 # REMOVE / RM @stage deletes the files backing a stage on the local filesystem. Off by default as a safety
 # guard against accidental data loss; set to true to allow it.
 command.removeEnabled=false
+
+# CREATE STAGE with a local URL (file:///dir, or a bare path) — a real account refuses those URLs,
+# and so does the default engine, with the account's own wording. Set to true to allow local
+# filesystem-backed stages for development and testing.
+stage.file.urlEnabled=false
 
 # Logging Configuration
 logging.level=INFO

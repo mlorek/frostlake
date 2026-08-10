@@ -22,10 +22,10 @@ import org.junit.jupiter.api.function.Executable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.sql.ResultSet;
 import java.sql.SQLException;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class CreateOrReplaceProcedureTest extends BaseJdbcTest {
     private static final Logger logger = LoggerFactory.getLogger(CreateOrReplaceProcedureTest.class);
@@ -60,8 +60,12 @@ public class CreateOrReplaceProcedureTest extends BaseJdbcTest {
         statement.execute("CREATE PROCEDURE uppercase_text(text VARCHAR) RETURNS VARCHAR AS 'BEGIN RETURN UPPER(text); END;'");
 
         // Trying to create again without OR REPLACE should fail
-        assertThrows(SQLException.class, () -> {
-            statement.execute("CREATE PROCEDURE uppercase_text(text VARCHAR) RETURNS VARCHAR AS 'BEGIN RETURN LOWER(text); END;'");
+        assertThrows(SQLException.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                statement.execute("CREATE PROCEDURE uppercase_text(text VARCHAR) RETURNS VARCHAR AS 'BEGIN RETURN LOWER(text); END;'");
+                
+            }
         });
     }
 

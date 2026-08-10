@@ -33,7 +33,9 @@ import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.time.temporal.IsoFields;
 import java.time.temporal.TemporalAccessor;
+import java.util.HashMap;
 import java.util.Locale;
+import java.util.Map;
 
 public final class SharedFunctionHelpers {
 
@@ -55,17 +57,39 @@ public final class SharedFunctionHelpers {
         return dividend.divide(divisor, resultScale, RoundingMode.HALF_UP);
     }
 
+    // One MessageDigest per (thread, algorithm): getInstance runs a JCA provider lookup, which the
+    // hash functions paid per ROW. MessageDigest is stateful, so instances are never shared across
+    // threads; digest() leaves the instance reset.
+    private static final ThreadLocal<Map<String, MessageDigest>> DIGESTS =
+        new ThreadLocal<Map<String, MessageDigest>>() {
+            @Override
+            protected Map<String, MessageDigest> initialValue() {
+                return new HashMap<String, MessageDigest>();
+            }
+        };
+
     public static byte[] digest(final String algo, final byte[] input) {
-        try {
-            return MessageDigest.getInstance(algo).digest(input);
-        } catch (final NoSuchAlgorithmException e) {
-            throw new RuntimeException("Algorithm not available: " + algo);
+        final Map<String, MessageDigest> byAlgo = DIGESTS.get();
+        MessageDigest md = byAlgo.get(algo);
+        if (md == null) {
+            try {
+                md = MessageDigest.getInstance(algo);
+            } catch (final NoSuchAlgorithmException e) {
+                throw new RuntimeException("Algorithm not available: " + algo);
+            }
+            byAlgo.put(algo, md);
         }
+        return md.digest(input);
     }
 
+    private static final char[] HEX_DIGITS = "0123456789abcdef".toCharArray();
+
     public static String toHex(final byte[] bytes) {
-        StringBuilder sb = new StringBuilder(bytes.length * 2);
-        for (final byte b : bytes) sb.append(String.format("%02x", b));
+        // Digit-table loop — String.format("%02x", b) parsed a format string PER BYTE.
+        final StringBuilder sb = new StringBuilder(bytes.length * 2);
+        for (final byte b : bytes) {
+            sb.append(HEX_DIGITS[(b >> 4) & 0xF]).append(HEX_DIGITS[b & 0xF]);
+        }
         return sb.toString();
     }
 
@@ -150,7 +174,7 @@ public final class SharedFunctionHelpers {
         if (v instanceof Boolean) return (Boolean) v;
         if (v instanceof Number) return ((Number) v).doubleValue() != 0;
         if (v instanceof String) {
-            String s = ((String) v).trim().toUpperCase();
+            final String s = ((String) v).trim().toUpperCase();
             return s.equals("TRUE") || s.equals("1");
         }
         return false;
@@ -226,7 +250,7 @@ public final class SharedFunctionHelpers {
         if (v == null) return null;
         if (v instanceof LocalDate) return (LocalDate) v;
         if (v instanceof LocalDateTime) return ((LocalDateTime) v).toLocalDate();
-        String s = v.toString().trim();
+        final String s = v.toString().trim();
         try { return LocalDate.parse(s); } catch (final Exception ignored) {}
         final LocalDate scanned = AutoTemporalParser.parseDate(s);
         if (scanned != null) return scanned;
@@ -237,7 +261,7 @@ public final class SharedFunctionHelpers {
         if (v == null) return null;
         if (v instanceof LocalDateTime) return (LocalDateTime) v;
         if (v instanceof LocalDate) return ((LocalDate) v).atStartOfDay();
-        String s = v.toString().trim();
+        final String s = v.toString().trim();
         try { return LocalDateTime.parse(s); } catch (final Exception ignored) {}
         // Snowflake's AUTO input detection covers far more than ISO-8601: a zone designator, MM/DD/YYYY,
         // DD-MON-YYYY, whitespace variation and non-canonical digit counts (see AutoTemporalParser).
@@ -420,7 +444,7 @@ public final class SharedFunctionHelpers {
     }
 
     public static long datePart(final String unitRaw, final LocalDateTime dt) {
-        String unit = unitRaw.toUpperCase().replaceAll("S$", "");
+        final String unit = stripPluralS(unitRaw.toUpperCase());
         switch (unit) {
             case "YEAR": case "Y": case "YY": case "YYYY": case "YR": return dt.getYear();
             case "QUARTER": case "Q": case "QTR":
@@ -460,4 +484,10 @@ public final class SharedFunctionHelpers {
             default: throw new RuntimeException("Unknown day of week: " + name);
         }
     }
+    /** {@code unit.toUpperCase()} with one trailing {@code S} removed — the plural strip without a
+     *  per-call regex compile. */
+    public static String stripPluralS(final String upper) {
+        return upper.endsWith("S") ? upper.substring(0, upper.length() - 1) : upper;
+    }
+
 }

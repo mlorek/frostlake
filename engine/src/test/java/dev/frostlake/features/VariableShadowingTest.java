@@ -16,13 +16,13 @@
 
 package dev.frostlake.features;
 
-import dev.frostlake.DatabaseEngine;
+import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 
 /**
  * Tests for variable shadowing and scoping in nested BEGIN...END blocks.
@@ -33,30 +33,20 @@ import static org.junit.jupiter.api.Assertions.*;
  * - Variables declared (LET / DECLARE) in an inner block shadow outer ones
  *   for the duration of that block and are discarded when the block exits.
  */
-public class VariableShadowingTest {
+public class VariableShadowingTest extends BaseDatabaseTest {
 
-    private DatabaseEngine engine;
-
-    @BeforeEach
-    public void setUp() {
-        engine = new DatabaseEngine();
+    @Override
+    protected void setupTest() {
         engine.execute("CREATE DATABASE IF NOT EXISTS test_db");
-        engine.execute("USE DATABASE test_db");
-        engine.execute("USE SCHEMA public");
-    }
-
-    @AfterEach
-    public void tearDown() {
-        if (engine != null) engine.shutdown();
     }
 
     // ── helper ────────────────────────────────────────────────────────────────
 
     private String exec(final String block) {
-        ResultSet rs = engine.executeQuery("EXECUTE IMMEDIATE $$\n" + block + "\n$$");
+        final ResultSet rs = engine.executeQuery("EXECUTE IMMEDIATE $$\n" + block + "\n$$");
         assertNotNull(rs);
         assertFalse(rs.getRows().isEmpty(), "Expected a RETURN value but got no rows");
-        Object val = rs.getRows().get(0).getValue(0);
+        final Object val = rs.getRows().get(0).getValue(0);
         return val == null ? "null" : val.toString();
     }
 
@@ -194,7 +184,7 @@ public class VariableShadowingTest {
     public void testSequentialInnerBlocksAreIndependent() {
         // Two sequential inner blocks each increment x.
         // :x + 1 returns a float, so normalise by parsing
-        String result = exec(
+        final String result = exec(
             "DECLARE x INT DEFAULT 0;\n" +
             "BEGIN\n" +
             "    BEGIN\n" +
@@ -263,7 +253,7 @@ public class VariableShadowingTest {
 
     @Test
     public void testForLoopAccumulatesIntoOuterVariable() {
-        String result = exec(
+        final String result = exec(
             "DECLARE total INT DEFAULT 0;\n" +
             "BEGIN\n" +
             "    LET cur CURSOR FOR SELECT 1 AS n UNION ALL SELECT 1 UNION ALL SELECT 1;\n" +

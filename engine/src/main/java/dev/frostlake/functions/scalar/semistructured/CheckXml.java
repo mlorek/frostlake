@@ -42,6 +42,8 @@ public class CheckXml extends BuiltInFunction {
         }
     }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return 2; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return 2; }
 }

@@ -18,8 +18,8 @@ package dev.frostlake.functions.scalar.semistructured;
 
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
-import tools.jackson.databind.JsonNode;
 import dev.frostlake.types.NumericType;
+import tools.jackson.databind.JsonNode;
 
 import java.math.BigDecimal;
 import java.util.List;
@@ -45,6 +45,8 @@ public class AsInteger extends BuiltInFunction {
         return null;
     }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return 2; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return 2; }
 }

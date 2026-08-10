@@ -31,15 +31,17 @@ public class ArrayCat extends BuiltInFunction {
 
     @Override
     public Object evaluate(final List<Object> args) {
-        ArrayNode a1 = ArrayFunctionHelper.parseArray(args.get(0));
-        ArrayNode a2 = ArrayFunctionHelper.parseArray(args.get(1));
+        final ArrayNode a1 = ArrayFunctionHelper.parseArray(args.get(0));
+        final ArrayNode a2 = ArrayFunctionHelper.parseArray(args.get(1));
         if (a1 == null || a2 == null) return null;
-        ArrayNode result = ArrayFunctionHelper.MAPPER.createArrayNode();
+        final ArrayNode result = ArrayFunctionHelper.MAPPER.createArrayNode();
         for (final JsonNode el : a1) result.add(el);
         for (final JsonNode el : a2) result.add(el);
         return VariantValue.ofNode(result);
     }
 
-    @Override public int getMinArgCount() { return 2; }
-    @Override public int getMaxArgCount() { return 2; }
+    @Override
+    public int getMinArgCount() { return 2; }
+    @Override
+    public int getMaxArgCount() { return 2; }
 }

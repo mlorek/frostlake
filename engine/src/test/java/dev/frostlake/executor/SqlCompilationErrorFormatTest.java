@@ -249,11 +249,12 @@ public class SqlCompilationErrorFormatTest extends BaseDatabaseTest {
             messageOf("SELECT qual_src.nosuchcol FROM qual_src"));
         assertEquals("SQL compilation error: error line 1 at position 7\ninvalid identifier 'X.NOSUCHCOL'",
             messageOf("SELECT x.nosuchcol FROM qual_src x"));
-        // The one shape still without its position: a qualifier that RESOLVES (qual_src really is in
-        // the FROM) passes the plan-time walk, so the refusal happens at row time inside an operator
-        // that was handed the predicate as extracted TEXT and no longer knows its offset. Live answers
-        // position 28 here. Threading operator offsets is the remaining half of task #143.
-        assertEquals("SQL compilation error:\ninvalid identifier 'QUAL_SRC.NOSUCHCOL'",
+        // A qualifier that RESOLVES still has to carry the column, and live refuses that at COMPILE
+        // time, before a row is read. This used to pass the plan-time walk on the strength of the
+        // qualifier alone and fail later inside an operator holding only extracted text, which lost
+        // both the moment and the position.
+        assertEquals("SQL compilation error: error line 1 at position 29\n"
+            + "invalid identifier 'QUAL_SRC.NOSUCHCOL'",
             messageOf("SELECT a FROM qual_src WHERE qual_src.nosuchcol = 1"));
     }
 

@@ -16,10 +16,8 @@
 
 package dev.frostlake.ddl;
 
-import dev.frostlake.DatabaseEngine;
+import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -28,28 +26,14 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /**
  * Tests for SHOW and DESCRIBE commands
  */
-public class ShowDescribeTest {
-
-    private DatabaseEngine engine;
-
-    @BeforeEach
-    public void setup() {
-        engine = new DatabaseEngine();
-    }
-
-    @AfterEach
-    public void teardown() {
-        if (engine != null) {
-            engine.shutdown();
-        }
-    }
+public class ShowDescribeTest extends BaseDatabaseTest {
 
     @Test
     public void testShowDatabases() {
         engine.execute("CREATE DATABASE test_db1");
         engine.execute("CREATE DATABASE test_db2");
 
-        ResultSet result = engine.executeQuery("SHOW DATABASES");
+        final ResultSet result = engine.executeQuery("SHOW DATABASES");
         assertTrue(result.getRowCount() >= 3); // SNOWFLAKE + test_db1 + test_db2
     }
 
@@ -58,7 +42,7 @@ public class ShowDescribeTest {
         engine.execute("CREATE TABLE employees (id INTEGER, name VARCHAR)");
         engine.execute("CREATE TABLE departments (id INTEGER, name VARCHAR)");
 
-        ResultSet result = engine.executeQuery("SHOW TABLES");
+        final ResultSet result = engine.executeQuery("SHOW TABLES");
         assertEquals(2, result.getRowCount());
     }
 
@@ -66,7 +50,7 @@ public class ShowDescribeTest {
     public void testShowColumns() {
         engine.execute("CREATE TABLE test_table (id INTEGER, name VARCHAR, active BOOLEAN)");
 
-        ResultSet result = engine.executeQuery("SHOW COLUMNS IN test_table");
+        final ResultSet result = engine.executeQuery("SHOW COLUMNS IN test_table");
         assertEquals(3, result.getRowCount());
     }
 
@@ -74,7 +58,7 @@ public class ShowDescribeTest {
     public void testDescribeTable() {
         engine.execute("CREATE TABLE test_table (id INTEGER, name VARCHAR)");
 
-        ResultSet result = engine.executeQuery("DESCRIBE TABLE test_table");
+        final ResultSet result = engine.executeQuery("DESCRIBE TABLE test_table");
         assertEquals(2, result.getRowCount());
     }
 
@@ -83,7 +67,7 @@ public class ShowDescribeTest {
         engine.execute("CREATE TABLE base_table (id INTEGER, value INTEGER)");
         engine.execute("CREATE VIEW test_view AS SELECT * FROM base_table");
 
-        ResultSet result = engine.executeQuery("SHOW VIEWS");
+        final ResultSet result = engine.executeQuery("SHOW VIEWS");
         assertEquals(1, result.getRowCount());
     }
 }

@@ -37,9 +37,9 @@ public class GetPath extends VariantAccessorFunction {
 
     @Override
     public Object evaluate(final List<Object> args) {
-        JsonNode src = ArrayFunctionHelper.parseNode(args.get(0));
+        final JsonNode src = ArrayFunctionHelper.parseNode(args.get(0));
         if (src == null || args.get(1) == null) return null;
-        String accessor = args.get(1).toString();
+        final String accessor = args.get(1).toString();
         JsonNode result;
         if (pathMode) {
             result = navigatePath(src, accessor);
@@ -58,7 +58,7 @@ public class GetPath extends VariantAccessorFunction {
 
     private JsonNode navigatePath(JsonNode node, final String path) {
         // Support paths like: a.b.c or a[0].b
-        String[] parts = path.split("(?<=\\])|(?=[\\[.])");
+        final String[] parts = path.split("(?<=\\])|(?=[\\[.])");
         for (String part : parts) {
             if (node == null) return null;
             part = part.replaceAll("^[\\[.]|\\]$", "").trim();
@@ -69,6 +69,8 @@ public class GetPath extends VariantAccessorFunction {
         return node;
     }
 
-    @Override public int getMinArgCount() { return 2; }
-    @Override public int getMaxArgCount() { return 2; }
+    @Override
+    public int getMinArgCount() { return 2; }
+    @Override
+    public int getMaxArgCount() { return 2; }
 }

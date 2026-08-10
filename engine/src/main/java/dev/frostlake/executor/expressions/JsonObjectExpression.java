@@ -39,7 +39,7 @@ public class JsonObjectExpression implements Expression {
 
     @Override
     public String toString() {
-        StringBuilder sb = new StringBuilder("{");
+        final StringBuilder sb = new StringBuilder("{");
         boolean first = true;
         for (final Map.Entry<String, Expression> entry : properties.entrySet()) {
             if (!first) sb.append(", ");

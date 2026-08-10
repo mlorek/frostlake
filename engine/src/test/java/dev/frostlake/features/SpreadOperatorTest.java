@@ -16,43 +16,32 @@
 
 package dev.frostlake.features;
 
-import dev.frostlake.DatabaseEngine;
+import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /**
  * Qualified star projection ({@code t.*}) versus the {@code **} spread, which does not exist in
  * Snowflake — live-verified: {@code t.**} is a syntax error in every position.
  */
-public class SpreadOperatorTest {
+public class SpreadOperatorTest extends BaseDatabaseTest {
 
-    private DatabaseEngine engine;
-
-    @BeforeEach
-    public void setUp() {
-        engine = new DatabaseEngine();
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
-        engine.execute("USE SCHEMA public");
+    @Override
+    protected void setupTest() {
         engine.execute("CREATE TABLE employees (id INTEGER, name VARCHAR, dept VARCHAR)");
         engine.execute("INSERT INTO employees VALUES (1, 'Alice', 'Engineering')");
         engine.execute("INSERT INTO employees VALUES (2, 'Bob', 'Marketing')");
     }
 
-    @AfterEach
-    public void tearDown() {
-        if (engine != null) engine.shutdown();
-    }
-
     @Test
     public void testQualifiedStar() {
         // SELECT t.* FROM table AS t
-        ResultSet rs = engine.executeQuery("SELECT e.* FROM employees e ORDER BY e.id");
+        final ResultSet rs = engine.executeQuery("SELECT e.* FROM employees e ORDER BY e.id");
         assertNotNull(rs);
         assertEquals(2, rs.getRowCount());
         assertEquals(3, rs.getColumns().size());
@@ -89,7 +78,7 @@ public class SpreadOperatorTest {
         engine.execute("INSERT INTO depts VALUES ('Engineering', 500000)");
         engine.execute("INSERT INTO depts VALUES ('Marketing', 200000)");
 
-        ResultSet rs = engine.executeQuery(
+        final ResultSet rs = engine.executeQuery(
             "SELECT e.*, d.budget FROM employees e JOIN depts d ON e.dept = d.dept ORDER BY e.id");
         assertNotNull(rs);
         assertEquals(2, rs.getRowCount());

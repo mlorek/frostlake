@@ -18,6 +18,7 @@ package dev.frostlake.scripting;
 
 import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -74,6 +75,11 @@ public class LoopContinueAndCursorScopeTest extends BaseDatabaseTest {
 
     @Test
     public void continueInRepeatLoopSkipsIteration() {
+        // Snowflake aborts this exact block with its own internal error ("Processing aborted due to
+        // error 300010:...; incident <n>") — reproduced on two separate runs under different incident
+        // numbers, so it is their defect, not a divergence. Frostlake's answer stays asserted embedded.
+        Assumptions.assumeFalse(isLiveSnowflake(),
+            "Snowflake raises SQL execution internal error 300010 for CONTINUE in a REPEAT loop");
         assertEquals(6L, retLong(
             "DECLARE i INTEGER DEFAULT 0; s INTEGER DEFAULT 0;"
             + " BEGIN REPEAT i := i + 1; IF (MOD(i,2) = 1) THEN CONTINUE; END IF;"

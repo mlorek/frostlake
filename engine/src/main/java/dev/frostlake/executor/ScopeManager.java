@@ -65,10 +65,10 @@ public class ScopeManager {
 
     public void exitScope() {
         if (!scopeStack.isEmpty()) {
-            Map<String, Object> parentSnapshot = scopeStack.pop();
-            Set<String> declaredHere = declaredInScopeStack.isEmpty()
+            final Map<String, Object> parentSnapshot = scopeStack.pop();
+            final Set<String> declaredHere = declaredInScopeStack.isEmpty()
                 ? Collections.emptySet() : declaredInScopeStack.pop();
-            boolean isolated = !isolatedScopeStack.isEmpty() && isolatedScopeStack.pop();
+            final boolean isolated = !isolatedScopeStack.isEmpty() && isolatedScopeStack.pop();
 
             if (isolated) {
                 variables.clear();
@@ -78,9 +78,9 @@ public class ScopeManager {
 
             // Propagate updates to variables inherited from parent (not re-declared here),
             // discard variables newly declared in this scope (including shadowed ones).
-            Map<String, Object> updatedVars = new HashMap<>(parentSnapshot);
+            final Map<String, Object> updatedVars = new HashMap<>(parentSnapshot);
             for (final Map.Entry<String, Object> entry : variables.entrySet()) {
-                String name = entry.getKey();
+                final String name = entry.getKey();
                 if (parentSnapshot.containsKey(name) && !declaredHere.contains(name)) {
                     // Inherited and not shadowed — propagate updated value to parent
                     updatedVars.put(name, entry.getValue());

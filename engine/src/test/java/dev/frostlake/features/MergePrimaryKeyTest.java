@@ -16,30 +16,20 @@
 
 package dev.frostlake.features;
 
-import dev.frostlake.DatabaseEngine;
+import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
-import static org.junit.jupiter.api.Assertions.*;
+public class MergePrimaryKeyTest extends BaseDatabaseTest {
 
-public class MergePrimaryKeyTest {
-
-    private DatabaseEngine engine;
-
-    @BeforeEach
-    public void setUp() {
-        engine = new DatabaseEngine();
+    @Override
+    protected void setupTest() {
         engine.execute("CREATE DATABASE IF NOT EXISTS test_db");
-        engine.execute("USE DATABASE test_db");
         engine.execute("CREATE SCHEMA IF NOT EXISTS app");
         engine.execute("USE SCHEMA app");
-    }
-
-    @AfterEach
-    public void tearDown() {
-        if (engine != null) engine.shutdown();
     }
 
     @Test
@@ -53,7 +43,10 @@ public class MergePrimaryKeyTest {
             ")"
         );
 
-        assertDoesNotThrow(() -> engine.execute(
+        assertDoesNotThrow(new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                engine.execute(
             "MERGE INTO app.sla_tier_bounds AS t " +
             "USING (" +
             "    SELECT $1, $2, $3 FROM VALUES" +
@@ -64,15 +57,20 @@ public class MergePrimaryKeyTest {
             "    SET days_lower_bound = s.days_lower_bound, days_upper_bound = s.days_upper_bound " +
             "WHEN NOT MATCHED THEN INSERT (severity_level, days_lower_bound, days_upper_bound) " +
             "    VALUES (s.severity_level, s.days_lower_bound, s.days_upper_bound)"
-        ), "First MERGE should insert 4 rows without duplicate key error");
+        );
+            }
+        }, "First MERGE should insert 4 rows without duplicate key error");
 
-        ResultSet rs = engine.executeQuery(
+        final ResultSet rs = engine.executeQuery(
             "SELECT COUNT(*) FROM app.sla_tier_bounds");
         assertEquals(4L, ((Number) rs.getRows().get(0).getValue(0)).longValue(),
             "Table should have 4 rows after first MERGE");
 
         // Second MERGE — no changes, should not throw
-        assertDoesNotThrow(() -> engine.execute(
+        assertDoesNotThrow(new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                engine.execute(
             "MERGE INTO app.sla_tier_bounds AS t " +
             "USING (" +
             "    SELECT $1, $2, $3 FROM VALUES" +
@@ -83,9 +81,11 @@ public class MergePrimaryKeyTest {
             "    SET days_lower_bound = s.days_lower_bound, days_upper_bound = s.days_upper_bound " +
             "WHEN NOT MATCHED THEN INSERT (severity_level, days_lower_bound, days_upper_bound) " +
             "    VALUES (s.severity_level, s.days_lower_bound, s.days_upper_bound)"
-        ), "Second MERGE with same data should not throw or insert duplicates");
+        );
+            }
+        }, "Second MERGE with same data should not throw or insert duplicates");
 
-        ResultSet rs2 = engine.executeQuery(
+        final ResultSet rs2 = engine.executeQuery(
             "SELECT COUNT(*) FROM app.sla_tier_bounds");
         assertEquals(4L, ((Number) rs2.getRows().get(0).getValue(0)).longValue(),
             "Table should still have 4 rows after second MERGE (no changes)");

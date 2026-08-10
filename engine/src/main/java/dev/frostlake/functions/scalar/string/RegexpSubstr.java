@@ -67,6 +67,8 @@ public class RegexpSubstr extends TextArgumentFunction {
         return matcher.group();
     }
 
-    @Override public int getMinArgCount() { return 2; }
-    @Override public int getMaxArgCount() { return 6; }
+    @Override
+    public int getMinArgCount() { return 2; }
+    @Override
+    public int getMaxArgCount() { return 6; }
 }

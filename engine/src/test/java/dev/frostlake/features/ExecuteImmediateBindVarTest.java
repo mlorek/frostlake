@@ -16,34 +16,23 @@
 
 package dev.frostlake.features;
 
-import dev.frostlake.DatabaseEngine;
+import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 
-public class ExecuteImmediateBindVarTest {
+public class ExecuteImmediateBindVarTest extends BaseDatabaseTest {
 
-    private DatabaseEngine engine;
-
-    @BeforeEach
-    public void setUp() {
-        engine = new DatabaseEngine();
+    @Override
+    protected void setupTest() {
         engine.execute("CREATE DATABASE IF NOT EXISTS test_db");
-        engine.execute("USE DATABASE test_db");
-        engine.execute("USE SCHEMA public");
-    }
-
-    @AfterEach
-    public void tearDown() {
-        if (engine != null) engine.shutdown();
     }
 
     @Test
     public void testExecuteImmediateWithBindVar() {
-        ResultSet rs = engine.executeQuery(
+        final ResultSet rs = engine.executeQuery(
             "DECLARE dyn_sql STRING DEFAULT 'SELECT 1 as c'; " +
             "BEGIN " +
             "  EXECUTE IMMEDIATE :dyn_sql; " +
@@ -56,7 +45,7 @@ public class ExecuteImmediateBindVarTest {
     public void testExecuteImmediateAssignThenExecute() {
         engine.execute("CREATE TABLE bind_t (n INTEGER)");
         engine.execute("INSERT INTO bind_t VALUES (42)");
-        ResultSet rs = engine.executeQuery(
+        final ResultSet rs = engine.executeQuery(
             "DECLARE q STRING DEFAULT 'SELECT n FROM bind_t'; " +
             "BEGIN " +
             "  RETURN q; " +

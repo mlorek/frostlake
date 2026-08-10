@@ -18,12 +18,12 @@ package dev.frostlake.functions.scalar.datetime;
 
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
-import dev.frostlake.types.NumericType;
+import dev.frostlake.types.IntegerResultWidths;
 
 import java.util.List;
 
 public class MinuteFn extends BuiltInFunction {
-    public MinuteFn() { super("MINUTE", NumericType.INTEGER); }
+    public MinuteFn() { super("MINUTE", IntegerResultWidths.DATE_PART_SMALL); }
 
     @Override
     public Object evaluate(final List<Object> args) {
@@ -31,6 +31,8 @@ public class MinuteFn extends BuiltInFunction {
         return (long) SharedFunctionHelpers.toLocalDateTime(args.get(0)).getMinute();
     }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return 1; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return 1; }
 }

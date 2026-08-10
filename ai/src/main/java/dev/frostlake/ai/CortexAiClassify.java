@@ -47,6 +47,8 @@ public class CortexAiClassify extends BuiltInFunction {
         return VariantValue.of(CortexJson.objectOfArray("labels", chosen));
     }
 
-    @Override public int getMinArgCount() { return 2; }
-    @Override public int getMaxArgCount() { return 3; }
+    @Override
+    public int getMinArgCount() { return 2; }
+    @Override
+    public int getMaxArgCount() { return 3; }
 }

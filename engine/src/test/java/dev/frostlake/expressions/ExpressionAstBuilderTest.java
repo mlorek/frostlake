@@ -16,6 +16,7 @@
 
 package dev.frostlake.expressions;
 
+import dev.frostlake.executor.ExpressionEvaluator;
 import dev.frostlake.executor.expressions.AstPrinterVisitor;
 import dev.frostlake.executor.expressions.ExpressionAstBuilder;
 import dev.frostlake.parser.FrostlakeLexer;
@@ -39,17 +40,17 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 public class ExpressionAstBuilderTest {
 
     private static FrostlakeParser.BooleanExprContext parse(final String text) {
-        FrostlakeLexer lexer = new FrostlakeLexer(CharStreams.fromString(text));
-        SyntaxErrorListener errorListener = new SyntaxErrorListener(text);
+        final FrostlakeLexer lexer = new FrostlakeLexer(CharStreams.fromString(text));
+        final SyntaxErrorListener errorListener = new SyntaxErrorListener(text);
         lexer.removeErrorListeners();
         lexer.addErrorListener(errorListener);
 
-        CommonTokenStream tokens = new CommonTokenStream(lexer);
-        FrostlakeParser parser = new FrostlakeParser(tokens);
+        final CommonTokenStream tokens = new CommonTokenStream(lexer);
+        final FrostlakeParser parser = new FrostlakeParser(tokens);
         parser.removeErrorListeners();
         parser.addErrorListener(errorListener);
 
-        FrostlakeParser.BooleanExprContext ctx = parser.booleanExpr();
+        final FrostlakeParser.BooleanExprContext ctx = parser.booleanExpr();
         errorListener.throwIfErrors();
         return ctx;
     }
@@ -65,8 +66,9 @@ public class ExpressionAstBuilderTest {
     public void testLiterals() {
         assertEquals("42", ast("42"));
         assertEquals("'hello'", ast("'hello'"));
-        assertEquals("true", ast("true"));
-        assertEquals("false", ast("false"));
+        // Booleans print UPPER — the refusal-bracket spelling a real account uses ([IFF(TRUE)]).
+        assertEquals("TRUE", ast("true"));
+        assertEquals("FALSE", ast("false"));
         assertEquals("null", ast("null"));
     }
 
@@ -196,10 +198,14 @@ public class ExpressionAstBuilderTest {
         // Snowflake forms only (live-verified): quoted string (plural units inside, multi-part,
         // bare number = seconds) and quoted number + SINGULAR unit suffix. Unquoted amounts and
         // plural suffixes are not interval syntax.
-        assertEquals("(INTERVAL 5 DAY)", ast("INTERVAL '5' DAY"));
-        assertEquals("(INTERVAL 10 DAYS)", ast("INTERVAL '10 days'"));
-        assertEquals("(INTERVAL 3 MONTHS)", ast("INTERVAL '3 months'"));
-        assertEquals("(INTERVAL 10 SECOND)", ast("INTERVAL '10'"));
+        // The printed form is CANONICAL in the UNIT — 'days' and DAY are one unit, not two — but it
+        // keeps WHICH SPELLING carried it, because that decides whether a DATE stays a DATE, and this
+        // print is used as an expression key.
+        assertEquals("(INTERVAL 5 DAY keyword)", ast("INTERVAL '5' DAY"));
+        assertEquals("(INTERVAL 10 DAY in-string)", ast("INTERVAL '10 days'"));
+        assertEquals("(INTERVAL 3 MONTH in-string)", ast("INTERVAL '3 months'"));
+        // A bare number is the STRING form with its unit defaulted, not the keyword form.
+        assertEquals("(INTERVAL 10 SECOND in-string)", ast("INTERVAL '10'"));
     }
 
     @Test
@@ -225,8 +231,12 @@ public class ExpressionAstBuilderTest {
 
     @Test
     public void testTupleIn() {
+        // The flat spellings still PARSE (so validation can refuse them with Snowflake's ROW-typed
+        // message); the tuple-row list is the semantically valid list form.
         assertEquals("((A, B) IN (1, 2))", ast("(a, b) IN (1, 2)"));
         assertEquals("((A, B) NOT IN (1, 2, 3, 4))", ast("(a, b) NOT IN (1, 2, 3, 4)"));
+        assertEquals("((A, B) IN ((1, 2), (3, 4)))", ast("(a, b) IN ((1, 2), (3, 4))"));
+        assertEquals("((A, B) NOT IN ((1, null)))", ast("(a, b) NOT IN ((1, NULL))"));
         assertEquals("((A, B) IN ((subquery SELECT x, y FROM t)))", ast("(a, b) IN (SELECT x, y FROM t)"));
     }
 
@@ -238,22 +248,28 @@ public class ExpressionAstBuilderTest {
         assertEquals("SUM(x) OVER (ORDER BY y)", ast("SUM(x) OVER (ORDER BY y)"));
     }
 
-    // EXECUTE IMMEDIATE is a statement, not an expression — the expression grammar rejects it
-    // outright (it previously built an ExecuteImmediateExpression).
+    // EXECUTE IMMEDIATE is a statement, not an expression (it previously built an
+    // ExecuteImmediateExpression). Asserted through ExpressionEvaluator.parse rather than the ast()
+    // helper above, because the two stop at different places: `execute` is a live-legal column name,
+    // so the grammar reads it as one and the helper — which does not check for trailing input —
+    // returns that name happily. The production entry point refuses the text as a whole, which is
+    // the property worth guarding.
     @Test
     public void testExecuteImmediateIsNotAnExpression() {
         assertThrows(RuntimeException.class, new Executable() {
             @Override
             public void execute() {
-                ast("EXECUTE IMMEDIATE 'select 1'");
+                ExpressionEvaluator.parse("EXECUTE IMMEDIATE 'select 1'");
             }
         });
         assertThrows(RuntimeException.class, new Executable() {
             @Override
             public void execute() {
-                ast("EXECUTE IMMEDIATE :s USING (1, 2)");
+                ExpressionEvaluator.parse("EXECUTE IMMEDIATE :s USING (1, 2)");
             }
         });
+        // And the leading word alone is just a name now.
+        assertEquals("EXECUTE", ast("EXECUTE"));
     }
 
     // Named function arguments (f(name => value)) now build a FunctionCallExpression that carries the

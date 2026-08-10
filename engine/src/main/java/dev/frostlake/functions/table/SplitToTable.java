@@ -24,117 +24,95 @@ import dev.frostlake.types.NumericType;
 import dev.frostlake.types.StringType;
 
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.regex.Pattern;
 
 /**
- * SPLIT_TO_TABLE table function - splits a string into multiple rows
- * Supports:
- * - STRING parameter (the string to split)
- * - DELIMITER parameter (the delimiter to split on)
- * Returns rows with SEQ (0-based index), INDEX (1-based index), and VALUE columns
+ * SPLIT_TO_TABLE — splits a string into one row per part, as SEQ, INDEX and VALUE.
+ *
+ * <p><b>Positional only.</b> Snowflake documents the two parameters as STRING and DELIMITER but does
+ * not accept them by name: {@code SPLIT_TO_TABLE(STRING =&gt; 'a,b', DELIMITER =&gt; ',')} is refused
+ * with {@code unexpected argument [STRING] at position 1}. Both arguments are required — there is no
+ * default delimiter. Those refusals are raised at compile time before this runs.
+ *
+ * <p>The measured row rules:
+ * <ul>
+ *   <li>SEQ numbers the INPUT RECORD, not the part: every row of one call carries the same SEQ, and it
+ *       starts at 1. INDEX is the 1-based position of the part.</li>
+ *   <li>A NULL string or a NULL delimiter yields NO rows.</li>
+ *   <li>An EMPTY delimiter does not split at all — the whole string comes back as one row.</li>
+ *   <li>An empty string yields one row whose VALUE is empty, and empty parts between consecutive
+ *       delimiters are kept, leading and trailing ones included.</li>
+ * </ul>
  */
 public class SplitToTable extends TableFunction {
+
+    /**
+     * Snowflake's SEQ is a sequence number for the INPUT RECORD, so one call numbers all its rows
+     * alike. Live increments it across the rows of a scanned column; a single call always reports 1.
+     */
+    private static final long INPUT_SEQUENCE = 1L;
 
     public SplitToTable() {
         super("SPLIT_TO_TABLE");
     }
 
-    /** Positional form {@code SPLIT_TO_TABLE(string [, delimiter])} — mapped onto the named arguments. */
+    /** The positional form {@code SPLIT_TO_TABLE(string, delimiter)} — the only one Snowflake takes. */
     @Override
     public ResultSet execute(final List<Object> positionalArgs) {
-        final Map<String, Object> namedArgs = new HashMap<>();
-        if (!positionalArgs.isEmpty()) {
-            namedArgs.put("STRING", positionalArgs.get(0));
-        }
-        if (positionalArgs.size() > 1) {
-            namedArgs.put("DELIMITER", positionalArgs.get(1));
-        }
-        return execute(namedArgs);
+        return split(positionalArgs.isEmpty() ? null : positionalArgs.get(0),
+            positionalArgs.size() > 1 ? positionalArgs.get(1) : null);
     }
 
+    /**
+     * The named-argument entry point of the {@link TableFunction} contract. SQL never reaches it —
+     * a named call is refused while the statement is compiled — so it serves callers inside the engine,
+     * which pass the two parameters under their documented names.
+     */
     @Override
     public ResultSet execute(final Map<String, Object> namedArgs) {
-        validateArgs(namedArgs);
+        return split(namedArgs.get("STRING"), namedArgs.get("DELIMITER"));
+    }
 
-        // Get string parameter
-        String inputString = "";
-        if (namedArgs.containsKey("STRING")) {
-            Object value = namedArgs.get("STRING");
-            if (value != null) {
-                inputString = value.toString();
-            }
-        }
-
-        // Get delimiter parameter (default to comma if not specified)
-        String delimiter = ",";
-        if (namedArgs.containsKey("DELIMITER")) {
-            Object value = namedArgs.get("DELIMITER");
-            if (value != null) {
-                delimiter = value.toString();
-            }
-        }
-
-        // Create result set with SEQ, INDEX, and VALUE columns
-        List<ResultSetColumn> columns = new ArrayList<>();
+    private ResultSet split(final Object stringValue, final Object delimiterValue) {
+        final List<ResultSetColumn> columns = new ArrayList<>();
         columns.add(new ResultSetColumn("SEQ", NumericType.INTEGER));
         columns.add(new ResultSetColumn("INDEX", NumericType.INTEGER));
         columns.add(new ResultSetColumn("VALUE", StringType.VARCHAR));
 
-        List<Row> rows = new ArrayList<>();
+        final List<Row> rows = new ArrayList<>();
+        // NULL in either parameter contributes nothing at all — not an empty-string row.
+        if (stringValue == null || delimiterValue == null) {
+            return new ResultSet(columns, rows);
+        }
 
-        // Split the string
-        if (inputString == null || inputString.isEmpty()) {
-            // Empty string results in one row with empty value
-            List<Object> values = new ArrayList<>();
-            values.add(0L);  // SEQ (0-based)
-            values.add(1L);  // INDEX (1-based)
-            values.add("");  // VALUE
-            rows.add(new Row(values));
+        final String input = stringValue.toString();
+        final String delimiter = delimiterValue.toString();
+        final List<String> parts = new ArrayList<>();
+        if (delimiter.isEmpty()) {
+            // An empty delimiter splits nowhere: live answers a single row holding the whole string.
+            parts.add(input);
         } else {
-            String[] parts;
-            if (delimiter.isEmpty()) {
-                // Empty delimiter means split into individual characters
-                parts = inputString.split("");
-            } else {
-                // Use the delimiter for splitting
-                // Use -1 as limit to include trailing empty strings
-                parts = inputString.split(Pattern.quote(delimiter), -1);
-            }
-
-            // Generate rows for each part
-            for (int i = 0; i < parts.length; i++) {
-                List<Object> values = new ArrayList<>();
-                values.add((long) i);      // SEQ (0-based)
-                values.add((long) (i + 1)); // INDEX (1-based)
-                values.add(parts[i]);       // VALUE
-                rows.add(new Row(values));
+            // -1 keeps trailing empty parts, which live also keeps.
+            for (final String part : input.split(Pattern.quote(delimiter), -1)) {
+                parts.add(part);
             }
         }
 
+        for (int i = 0; i < parts.size(); i++) {
+            final List<Object> values = new ArrayList<>();
+            values.add(INPUT_SEQUENCE);
+            values.add((long) (i + 1));
+            values.add(parts.get(i));
+            rows.add(new Row(values));
+        }
         return new ResultSet(columns, rows);
     }
 
     @Override
     public void validateArgs(final Map<String, Object> namedArgs) {
-        if (namedArgs.isEmpty()) {
-            throw new RuntimeException("SPLIT_TO_TABLE function requires at least one argument (STRING)");
-        }
-
-        // Check for valid argument names
-        for (final String key : namedArgs.keySet()) {
-            String upperKey = key.toUpperCase();
-            if (!upperKey.equals("STRING") && !upperKey.equals("DELIMITER")) {
-                throw new RuntimeException("Invalid argument for SPLIT_TO_TABLE: " + key +
-                    ". Valid arguments are STRING and DELIMITER");
-            }
-        }
-
-        // STRING parameter is required
-        if (!namedArgs.containsKey("STRING")) {
-            throw new RuntimeException("SPLIT_TO_TABLE function requires STRING argument");
-        }
+        // Argument names, count and types are all settled while the statement is compiled — see
+        // TableFunctionArguments. Nothing is left to check once a value is in hand.
     }
 }

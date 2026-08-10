@@ -33,7 +33,7 @@ public class VariantType extends DataType {
             return null;
         }
         try {
-            JsonNode node = MAPPER.readTree(value);
+            final JsonNode node = MAPPER.readTree(value);
             return node.toString();
         } catch (final Exception e) {
             return value;

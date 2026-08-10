@@ -29,13 +29,9 @@ public class ArrayType extends DataType {
         return elementType;
     }
 
+    /** Live prints the element type in the class-name vocabulary: {@code ArrayType[StringType]}. */
     @Override
-    public String sqlTypeName() {
-        return "ARRAY";
-    }
-
-    @Override
-    public String typeName() {
-        return "Array[" + elementType.typeName() + "]";
+    public String toString() {
+        return "ArrayType[" + elementType.typeName() + "]";
     }
 }

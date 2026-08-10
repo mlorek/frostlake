@@ -34,11 +34,15 @@ import java.util.Arrays;
  * - Returning complex objects
  * - Try-catch-finally error handling
  */
-public class JavaScriptProcedureExample {
+public final class JavaScriptProcedureExample {
+
+    /** Static helpers only — never instantiated. */
+    private JavaScriptProcedureExample() {
+    }
     private static final Logger logger = LoggerFactory.getLogger(JavaScriptProcedureExample.class);
 
     public static void main(final String[] args) {
-        DatabaseEngine engine = new DatabaseEngine();
+        final DatabaseEngine engine = new DatabaseEngine();
 
         try {
             engine.execute("CREATE DATABASE demo_db");
@@ -76,9 +80,9 @@ public class JavaScriptProcedureExample {
                 $$
                 """);
 
-            Schema schema = engine.getCatalog().getDatabase("DEMO_DB").getSchema("PUBLIC");
-            Procedure p1 = schema.getProcedure("p1");
-            Object result1 = JavaScriptProcedureExecutor.executeJavaScriptProcedure(
+            final Schema schema = engine.getCatalog().getDatabase("DEMO_DB").getSchema("PUBLIC");
+            final Procedure p1 = schema.getProcedure("p1");
+            final Object result1 = JavaScriptProcedureExecutor.executeJavaScriptProcedure(
                 p1,
                 Arrays.asList("test"),
                 engine
@@ -103,8 +107,8 @@ public class JavaScriptProcedureExample {
                 $$
                 """);
 
-            Procedure getNumber = schema.getProcedure("get_number");
-            Object result2 = JavaScriptProcedureExecutor.executeJavaScriptProcedure(
+            final Procedure getNumber = schema.getProcedure("get_number");
+            final Object result2 = JavaScriptProcedureExecutor.executeJavaScriptProcedure(
                 getNumber,
                 Arrays.asList(),
                 engine
@@ -143,8 +147,8 @@ public class JavaScriptProcedureExample {
                 $$
                 """);
 
-            Procedure listProducts = schema.getProcedure("list_products");
-            Object result3 = JavaScriptProcedureExecutor.executeJavaScriptProcedure(
+            final Procedure listProducts = schema.getProcedure("list_products");
+            final Object result3 = JavaScriptProcedureExecutor.executeJavaScriptProcedure(
                 listProducts,
                 Arrays.asList(),
                 engine
@@ -177,8 +181,8 @@ public class JavaScriptProcedureExample {
                 $$
                 """);
 
-            Procedure salesAbove = schema.getProcedure("sales_above");
-            Object result4 = JavaScriptProcedureExecutor.executeJavaScriptProcedure(
+            final Procedure salesAbove = schema.getProcedure("sales_above");
+            final Object result4 = JavaScriptProcedureExecutor.executeJavaScriptProcedure(
                 salesAbove,
                 Arrays.asList("150"),
                 engine
@@ -212,8 +216,8 @@ public class JavaScriptProcedureExample {
                 $$
                 """);
 
-            Procedure getEmployee = schema.getProcedure("get_employee");
-            Object result5 = JavaScriptProcedureExecutor.executeJavaScriptProcedure(
+            final Procedure getEmployee = schema.getProcedure("get_employee");
+            final Object result5 = JavaScriptProcedureExecutor.executeJavaScriptProcedure(
                 getEmployee,
                 Arrays.asList(),
                 engine
@@ -252,10 +256,10 @@ public class JavaScriptProcedureExample {
                 $$
                 """);
 
-            Procedure safeQuery = schema.getProcedure("safe_query");
+            final Procedure safeQuery = schema.getProcedure("safe_query");
 
             logger.info("   Query existing table (employees):");
-            Object result6a = JavaScriptProcedureExecutor.executeJavaScriptProcedure(
+            final Object result6a = JavaScriptProcedureExecutor.executeJavaScriptProcedure(
                 safeQuery,
                 Arrays.asList("employees"),
                 engine
@@ -263,7 +267,7 @@ public class JavaScriptProcedureExample {
             logger.info("   " + result6a);
 
             logger.info("   Query non-existent table:");
-            Object result6b = JavaScriptProcedureExecutor.executeJavaScriptProcedure(
+            final Object result6b = JavaScriptProcedureExecutor.executeJavaScriptProcedure(
                 safeQuery,
                 Arrays.asList("nonexistent"),
                 engine
@@ -313,8 +317,8 @@ public class JavaScriptProcedureExample {
                 $$
                 """);
 
-            Procedure computeStats = schema.getProcedure("compute_stats");
-            Object result7 = JavaScriptProcedureExecutor.executeJavaScriptProcedure(
+            final Procedure computeStats = schema.getProcedure("compute_stats");
+            final Object result7 = JavaScriptProcedureExecutor.executeJavaScriptProcedure(
                 computeStats,
                 Arrays.asList(),
                 engine

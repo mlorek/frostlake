@@ -34,8 +34,8 @@ public class UpdateTest extends BaseDatabaseTest {
         engine.execute("INSERT INTO users VALUES (1, 'Alice', 30)");
         engine.execute("UPDATE users SET age = 31");
 
-        ResultSet result = engine.executeQuery("SELECT * FROM users");
-        Row row = result.getRows().get(0);
+        final ResultSet result = engine.executeQuery("SELECT * FROM users");
+        final Row row = result.getRows().get(0);
         assertEquals(31L, row.getValue(2));
     }
 
@@ -63,8 +63,8 @@ public class UpdateTest extends BaseDatabaseTest {
 
         engine.execute("UPDATE users SET name = 'Alicia', age = 31 WHERE id = 1");
 
-        ResultSet result = engine.executeQuery("SELECT * FROM users");
-        Row row = result.getRows().get(0);
+        final ResultSet result = engine.executeQuery("SELECT * FROM users");
+        final Row row = result.getRows().get(0);
         assertEquals("Alicia", row.getValue(1));
         assertEquals(31L, row.getValue(2));
     }
@@ -76,7 +76,7 @@ public class UpdateTest extends BaseDatabaseTest {
 
         engine.execute("UPDATE users SET age = 100 WHERE age > 28 AND age < 35");
 
-        ResultSet result = engine.executeQuery("SELECT * FROM users WHERE age = 100");
+        final ResultSet result = engine.executeQuery("SELECT * FROM users WHERE age = 100");
         assertEquals(1, result.getRowCount());
     }
 
@@ -88,8 +88,8 @@ public class UpdateTest extends BaseDatabaseTest {
         engine.execute("UPDATE users SET age = 40 WHERE id = 999");
 
         // Original value should be unchanged
-        ResultSet result = engine.executeQuery("SELECT * FROM users");
-        Row row = result.getRows().get(0);
+        final ResultSet result = engine.executeQuery("SELECT * FROM users");
+        final Row row = result.getRows().get(0);
         assertEquals(30L, row.getValue(2));
     }
 
@@ -101,8 +101,8 @@ public class UpdateTest extends BaseDatabaseTest {
         // Update price with calculation
         engine.execute("UPDATE products SET price = 150 WHERE id = 1");
 
-        ResultSet result = engine.executeQuery("SELECT * FROM products WHERE id = 1");
-        Row row = result.getRows().get(0);
+        final ResultSet result = engine.executeQuery("SELECT * FROM products WHERE id = 1");
+        final Row row = result.getRows().get(0);
         assertEquals(150L, row.getValue(2));
     }
 
@@ -113,7 +113,7 @@ public class UpdateTest extends BaseDatabaseTest {
 
         engine.execute("UPDATE users SET salary = 120 WHERE department = 'Engineering'");
 
-        ResultSet result = engine.executeQuery("SELECT * FROM users WHERE department = 'Engineering'");
+        final ResultSet result = engine.executeQuery("SELECT * FROM users WHERE department = 'Engineering'");
         assertEquals(2, result.getRowCount());
 
         for (final Row row : result.getRows()) {
@@ -128,7 +128,7 @@ public class UpdateTest extends BaseDatabaseTest {
 
         engine.execute("UPDATE users SET status = 'active'");
 
-        ResultSet result = engine.executeQuery("SELECT * FROM users");
+        final ResultSet result = engine.executeQuery("SELECT * FROM users");
         assertEquals(3, result.getRowCount());
 
         for (final Row row : result.getRows()) {

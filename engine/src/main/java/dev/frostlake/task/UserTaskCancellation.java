@@ -45,16 +45,20 @@ public final class UserTaskCancellation {
     public static String cancel(final Catalog catalog, final TaskScheduler scheduler,
                                 final String taskName) {
         final String name = taskName == null ? "" : taskName.replaceAll("^'|'$", "");
-        final String databaseName = catalog.getCurrentDatabase();
-        final String schemaName = catalog.getCurrentSchema();
-        if (databaseName == null || schemaName == null) {
+        // The argument may be QUALIFIED (db.schema.task or schema.task); unqualified parts
+        // default to the session's. The messages echo the name exactly as it was passed.
+        final String[] parts = name.split("\\.");
+        final String databaseName = parts.length == 3 ? parts[0] : catalog.getCurrentDatabase();
+        final String schemaName = parts.length >= 2 ? parts[parts.length - 2] : catalog.getCurrentSchema();
+        final String bareName = parts[parts.length - 1];
+        if (databaseName == null || schemaName == null || catalog.getDatabase(databaseName) == null) {
             throw new RuntimeException(notFound(name));
         }
         final Schema schema = catalog.getDatabase(databaseName).getSchema(schemaName);
-        if (!schema.hasTask(name)) {
+        if (schema == null || !schema.hasTask(bareName)) {
             throw new RuntimeException(notFound(name));
         }
-        final String qualifiedName = (databaseName + "." + schemaName + "." + name).toUpperCase();
+        final String qualifiedName = (databaseName + "." + schemaName + "." + bareName).toUpperCase();
         if (scheduler == null || !scheduler.hasRunningExecutions(qualifiedName)) {
             return "Task " + name + " has no currently running executions." + CANCEL_QUERY_HINT;
         }

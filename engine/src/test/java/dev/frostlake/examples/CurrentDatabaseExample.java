@@ -27,14 +27,14 @@ public class CurrentDatabaseExample {
 
     @Test
     public void demonstrateCurrentDatabase() {
-        DatabaseEngine engine = new DatabaseEngine();
+        final DatabaseEngine engine = new DatabaseEngine();
 
         try {
             logger.info("=== CURRENT_DATABASE() Examples ===");
 
             // Example 1: Get current database
             logger.info("\n1. Get current database:");
-            ResultSet rs1 = engine.executeQuery("SELECT CURRENT_DATABASE() AS db_name");
+            final ResultSet rs1 = engine.executeQuery("SELECT CURRENT_DATABASE() AS db_name");
             logger.info("Current database: {}", rs1.getRows().get(0).getValue(0));
 
             // Example 2: Create and switch databases
@@ -43,11 +43,11 @@ public class CurrentDatabaseExample {
             engine.execute("CREATE DATABASE staging_db");
 
             engine.execute("USE DATABASE production_db");
-            ResultSet rs2 = engine.executeQuery("SELECT CURRENT_DATABASE()");
+            final ResultSet rs2 = engine.executeQuery("SELECT CURRENT_DATABASE()");
             logger.info("After switching to production: {}", rs2.getRows().get(0).getValue(0));
 
             engine.execute("USE DATABASE staging_db");
-            ResultSet rs3 = engine.executeQuery("SELECT CURRENT_DATABASE()");
+            final ResultSet rs3 = engine.executeQuery("SELECT CURRENT_DATABASE()");
             logger.info("After switching to staging: {}", rs3.getRows().get(0).getValue(0));
 
             // Example 3: Track database context in audit table
@@ -56,7 +56,7 @@ public class CurrentDatabaseExample {
             engine.execute("INSERT INTO audit_log VALUES (1, CURRENT_DATABASE(), 'Data loaded')");
             engine.execute("INSERT INTO audit_log VALUES (2, CURRENT_DATABASE(), 'Report generated')");
 
-            ResultSet rs4 = engine.executeQuery("SELECT * FROM audit_log ORDER BY id");
+            final ResultSet rs4 = engine.executeQuery("SELECT * FROM audit_log ORDER BY id");
             logger.info("Audit log entries:");
             for (int i = 0; i < rs4.getRowCount(); i++) {
                 logger.info("  ID {}: {} - {} ",
@@ -74,7 +74,7 @@ public class CurrentDatabaseExample {
             engine.execute("INSERT INTO database_configs VALUES ('STAGING_DB', 'max_connections', '50')");
             engine.execute("INSERT INTO database_configs VALUES ('PRODUCTION_DB', 'timeout', '30')");
 
-            ResultSet rs5 = engine.executeQuery(
+            final ResultSet rs5 = engine.executeQuery(
                 "SELECT setting, value FROM database_configs WHERE db_name = CURRENT_DATABASE()"
             );
             logger.info("Settings for current database:");
@@ -87,7 +87,7 @@ public class CurrentDatabaseExample {
 
             // Example 5: String concatenation with CURRENT_DATABASE
             logger.info("\n5. String concatenation:");
-            ResultSet rs6 = engine.executeQuery(
+            final ResultSet rs6 = engine.executeQuery(
                 "SELECT 'Connected to: ' || CURRENT_DATABASE() AS message"
             );
             logger.info("{}", rs6.getRows().get(0).getValue(0));

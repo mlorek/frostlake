@@ -40,6 +40,14 @@ public final class AntlrExpressionParser {
     private AntlrExpressionParser() {
     }
 
+    /**
+     * Parses the expression string into an {@link Expression} AST: {@link #parseTree(String)} for the
+     * grammar's parse tree, then {@link ExpressionAstBuilder} to turn it into AST nodes. Throws when
+     * the input is not one complete expression — the cue for callers to fall back.
+     *
+     * @param expression the expression source text, exactly as it appears in the SQL
+     * @return the expression AST, ready for {@link ExpressionEvaluatorVisitor} evaluation
+     */
     public static Expression parse(final String expression) {
         return new ExpressionAstBuilder().build(parseTree(expression));
     }
@@ -49,6 +57,9 @@ public final class AntlrExpressionParser {
      * inspect the expression's syntax rather than evaluate it (the CREATE-time SQL-UDF body check reads
      * which functions a body calls). Throws exactly as {@code parse} does on input that is not one
      * complete expression.
+     *
+     * @param expression the expression source text, exactly as it appears in the SQL
+     * @return the parse tree of the whole expression (the grammar's {@code booleanExpr} entry rule)
      */
     public static FrostlakeParser.BooleanExprContext parseTree(final String expression) {
         final FrostlakeLexer lexer = new FrostlakeLexer(CharStreams.fromString(expression));
@@ -75,6 +86,9 @@ public final class AntlrExpressionParser {
      * <p>Diagnostics only — the routine-body compiler renders it as Snowflake's
      * {@code syntax error line L at position P unexpected 'TOK'}. Kept here so the knowledge of HOW an
      * expression is parsed (grammar entry rule, bail strategy) stays in one place.
+     *
+     * @param expression the expression source text already known not to parse completely
+     * @return the token the parser stopped at — its line and position locate the syntax error
      */
     public static Token failurePoint(final String expression) {
         final FrostlakeLexer lexer = new FrostlakeLexer(CharStreams.fromString(expression));

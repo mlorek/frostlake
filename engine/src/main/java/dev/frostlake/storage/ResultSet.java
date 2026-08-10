@@ -60,7 +60,7 @@ public class ResultSet {
     }
 
     public Object getValue(final String columnName) {
-        int index = getColumnIndex(columnName);
+        final int index = getColumnIndex(columnName);
         return getValue(index);
     }
 

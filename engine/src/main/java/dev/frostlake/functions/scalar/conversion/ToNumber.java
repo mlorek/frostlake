@@ -23,8 +23,14 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.regex.Pattern;
 
 public class ToNumber extends BuiltInFunction {
+
+    // Compiled once — these ran String.matches/replaceAll (a fresh Pattern compile) per CALL.
+    private static final Pattern PLAIN_NUMBER =
+        Pattern.compile("[+-]?(\\d+(\\.\\d*)?|\\.\\d+)([eE][+-]?\\d+)?");
+    private static final Pattern SEPARATORS = Pattern.compile("[,$\\s]");
     public ToNumber() { super("TO_NUMBER", NumericType.NUMBER); }
 
     @Override
@@ -70,7 +76,7 @@ public class ToNumber extends BuiltInFunction {
         }
         final String text = o.toString().trim();
         if (format == null) {
-            if (!text.matches("[+-]?(\\d+(\\.\\d*)?|\\.\\d+)([eE][+-]?\\d+)?")) {
+            if (!PLAIN_NUMBER.matcher(text).matches()) {
                 throw new RuntimeException("Numeric value '" + text + "' is not recognized");
             }
             return new BigDecimal(text);
@@ -80,7 +86,7 @@ public class ToNumber extends BuiltInFunction {
                 || fractionDigits(text) > fractionDigits(format)) {
             throw new RuntimeException("Can't parse '" + text + "' as number with format '" + format + "'");
         }
-        return new BigDecimal(text.replaceAll("[,$\\s]", ""));
+        return new BigDecimal(SEPARATORS.matcher(text).replaceAll(""));
     }
 
     /** How many digits follow the decimal point in a numeric literal or a format model. */
@@ -113,6 +119,8 @@ public class ToNumber extends BuiltInFunction {
         return null;
     }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return 4; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return 4; }
 }

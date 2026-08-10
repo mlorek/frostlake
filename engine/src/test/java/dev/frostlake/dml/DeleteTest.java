@@ -23,7 +23,9 @@ import org.junit.jupiter.api.Test;
 
 import java.util.List;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Tests for DELETE command
@@ -37,7 +39,7 @@ public class DeleteTest extends BaseDatabaseTest {
 
         engine.execute("DELETE FROM users WHERE id = 1");
 
-        ResultSet result = engine.executeQuery("SELECT * FROM users");
+        final ResultSet result = engine.executeQuery("SELECT * FROM users");
         assertEquals(0, result.getRowCount());
     }
 
@@ -48,7 +50,7 @@ public class DeleteTest extends BaseDatabaseTest {
 
         engine.execute("DELETE FROM users WHERE age < 30");
 
-        ResultSet result = engine.executeQuery("SELECT * FROM users");
+        final ResultSet result = engine.executeQuery("SELECT * FROM users");
         assertEquals(2, result.getRowCount());
     }
 
@@ -61,13 +63,13 @@ public class DeleteTest extends BaseDatabaseTest {
 
         engine.execute("DELETE FROM users WHERE age > 25 AND age < 35");
 
-        ResultSet result = engine.executeQuery("SELECT * FROM users");
+        final ResultSet result = engine.executeQuery("SELECT * FROM users");
         assertEquals(2, result.getRowCount());
 
         // Verify remaining rows
-        List<Row> rows = result.getRows();
-        assertTrue(rows.stream().anyMatch((final var r) -> r.getValue(1).equals("Bob")));
-        assertTrue(rows.stream().anyMatch((final var r) -> r.getValue(1).equals("Charlie")));
+        final List<Row> rows = result.getRows();
+        assertTrue(hasName(rows, "Bob"));
+        assertTrue(hasName(rows, "Charlie"));
     }
 
     @Test
@@ -77,7 +79,7 @@ public class DeleteTest extends BaseDatabaseTest {
 
         engine.execute("DELETE FROM users WHERE id = 999");
 
-        ResultSet result = engine.executeQuery("SELECT * FROM users");
+        final ResultSet result = engine.executeQuery("SELECT * FROM users");
         assertEquals(1, result.getRowCount());
     }
 
@@ -88,7 +90,7 @@ public class DeleteTest extends BaseDatabaseTest {
 
         engine.execute("DELETE FROM users");
 
-        ResultSet result = engine.executeQuery("SELECT * FROM users");
+        final ResultSet result = engine.executeQuery("SELECT * FROM users");
         assertEquals(0, result.getRowCount());
     }
 
@@ -101,7 +103,7 @@ public class DeleteTest extends BaseDatabaseTest {
 
         engine.execute("DELETE FROM users WHERE age = 30 OR age > 33");
 
-        ResultSet result = engine.executeQuery("SELECT * FROM users");
+        final ResultSet result = engine.executeQuery("SELECT * FROM users");
         assertEquals(2, result.getRowCount());
     }
 
@@ -127,12 +129,21 @@ public class DeleteTest extends BaseDatabaseTest {
 
         engine.execute("DELETE FROM users WHERE id = 2");
 
-        ResultSet result = engine.executeQuery("SELECT * FROM users");
+        final ResultSet result = engine.executeQuery("SELECT * FROM users");
         assertEquals(2, result.getRowCount());
 
-        List<Row> rows = result.getRows();
-        assertTrue(rows.stream().anyMatch((final var r) -> r.getValue(1).equals("Alice")));
-        assertTrue(rows.stream().anyMatch((final var r) -> r.getValue(1).equals("Charlie")));
-        assertFalse(rows.stream().anyMatch((final var r) -> r.getValue(1).equals("Bob")));
+        final List<Row> rows = result.getRows();
+        assertTrue(hasName(rows, "Alice"));
+        assertTrue(hasName(rows, "Charlie"));
+        assertFalse(hasName(rows, "Bob"));
+    }
+    /** Whether any row carries the given value in its second column. */
+    private boolean hasName(final List<Row> rows, final String name) {
+        for (final Row row : rows) {
+            if (name.equals(row.getValue(1))) {
+                return true;
+            }
+        }
+        return false;
     }
 }

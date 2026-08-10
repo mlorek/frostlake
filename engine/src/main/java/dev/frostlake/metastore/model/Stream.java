@@ -19,7 +19,10 @@ package dev.frostlake.metastore.model;
 
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.IdentityHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 
 /**
@@ -150,6 +153,13 @@ public class Stream {
         }
 
         final List<StreamNetChange> net = new ArrayList<>();
+        // Hash-chained index of each OPEN entry's CURRENT image (scoped by source table): the
+        // former linear findByCurrentImage scan cost O(k²·cells) per stream read. Buckets are kept
+        // in NET (creation) order via the per-entry sequence, so the first-match rule for
+        // identical duplicate rows is exactly the scan's.
+        final Map<List<Object>, List<StreamNetChange>> byImage = new HashMap<>();
+        final Map<StreamNetChange, Integer> creationSeq = new IdentityHashMap<>();
+        int nextSeq = 0;
         for (int i = 0; i < raw.size(); i++) {
             final StreamRecord record = raw.get(i);
             final boolean isUpdatePair = record.isUpdate()
@@ -164,23 +174,38 @@ public class Stream {
                 final List<Object> oldImage = record.getValues();
                 final List<Object> newImage = raw.get(i + 1).getValues();
                 i++;
-                final StreamNetChange existing = findByCurrentImage(net, oldImage, record.getSourceTable());
+                final StreamNetChange existing = firstByImage(byImage, oldImage, record.getSourceTable());
                 if (existing != null) {
+                    unindexImage(byImage, existing);
                     existing.setNewValues(newImage);
+                    indexImage(byImage, creationSeq, existing);
                 } else {
-                    net.add(new StreamNetChange(oldImage, newImage, record.getRowId(), record.getSourceTable()));
+                    final StreamNetChange change =
+                        new StreamNetChange(oldImage, newImage, record.getRowId(), record.getSourceTable());
+                    creationSeq.put(change, Integer.valueOf(nextSeq++));
+                    net.add(change);
+                    indexImage(byImage, creationSeq, change);
                 }
             } else if (record.getChangeType() == ChangeType.INSERT) {
-                net.add(new StreamNetChange(null, record.getValues(), record.getRowId(), record.getSourceTable()));
+                final StreamNetChange change =
+                    new StreamNetChange(null, record.getValues(), record.getRowId(), record.getSourceTable());
+                creationSeq.put(change, Integer.valueOf(nextSeq++));
+                net.add(change);
+                indexImage(byImage, creationSeq, change);
             } else {
                 // Plain DELETE: cancel a row born in this window, close out an updated row, or
                 // record the delete of a pre-existing row.
-                final StreamNetChange existing = findByCurrentImage(net, record.getValues(), record.getSourceTable());
+                final StreamNetChange existing = firstByImage(byImage, record.getValues(), record.getSourceTable());
                 if (existing == null) {
-                    net.add(new StreamNetChange(record.getValues(), null, record.getRowId(), record.getSourceTable()));
+                    final StreamNetChange change =
+                        new StreamNetChange(record.getValues(), null, record.getRowId(), record.getSourceTable());
+                    creationSeq.put(change, Integer.valueOf(nextSeq++));
+                    net.add(change);
                 } else if (existing.getOldValues() == null) {
+                    unindexImage(byImage, existing);
                     net.remove(existing);
                 } else {
+                    unindexImage(byImage, existing);
                     existing.setNewValues(null);
                 }
             }
@@ -203,18 +228,59 @@ public class Stream {
         return out;
     }
 
-    /** The net entry whose CURRENT image equals the given row values (from the same source table), or
-     *  null. First match wins (identical duplicate rows are indistinguishable in a value-chained model).
-     *  Scoping by source table keeps UNION ALL branches over look-alike rows from cross-cancelling. */
-    private StreamNetChange findByCurrentImage(final List<StreamNetChange> net, final List<Object> image,
-                                               final String sourceTable) {
-        for (final StreamNetChange change : net) {
-            if (change.getNewValues() != null && change.getNewValues().equals(image)
-                    && Objects.equals(change.getSourceTable(), sourceTable)) {
-                return change;
+    private static List<Object> imageKey(final List<Object> image, final String sourceTable) {
+        final List<Object> key = new ArrayList<>(2);
+        key.add(sourceTable);
+        key.add(image);
+        return key;
+    }
+
+    /** Index an OPEN entry (a live current image) under its image key, keeping the bucket in net
+     *  (creation) order so {@link #firstByImage} answers exactly what the linear scan did. */
+    private static void indexImage(final Map<List<Object>, List<StreamNetChange>> byImage,
+                                   final Map<StreamNetChange, Integer> creationSeq,
+                                   final StreamNetChange change) {
+        if (change.getNewValues() == null) {
+            return;
+        }
+        final List<Object> key = imageKey(change.getNewValues(), change.getSourceTable());
+        List<StreamNetChange> bucket = byImage.get(key);
+        if (bucket == null) {
+            bucket = new ArrayList<>();
+            byImage.put(key, bucket);
+        }
+        final int seq = creationSeq.get(change).intValue();
+        int pos = bucket.size();
+        while (pos > 0 && creationSeq.get(bucket.get(pos - 1)).intValue() > seq) {
+            pos--;
+        }
+        bucket.add(pos, change);
+    }
+
+    private static void unindexImage(final Map<List<Object>, List<StreamNetChange>> byImage,
+                                     final StreamNetChange change) {
+        if (change.getNewValues() == null) {
+            return;
+        }
+        final List<Object> key = imageKey(change.getNewValues(), change.getSourceTable());
+        final List<StreamNetChange> bucket = byImage.get(key);
+        if (bucket != null) {
+            for (int i = 0; i < bucket.size(); i++) {
+                if (bucket.get(i) == change) {
+                    bucket.remove(i);
+                    break;
+                }
+            }
+            if (bucket.isEmpty()) {
+                byImage.remove(key);
             }
         }
-        return null;
+    }
+
+    private static StreamNetChange firstByImage(final Map<List<Object>, List<StreamNetChange>> byImage,
+                                                final List<Object> image, final String sourceTable) {
+        final List<StreamNetChange> bucket = byImage.get(imageKey(image, sourceTable));
+        return bucket == null || bucket.isEmpty() ? null : bucket.get(0);
     }
 
     public void consume() {

@@ -77,11 +77,7 @@ public class FileTypeTest extends BaseDatabaseTest {
         assertEquals("NUMBER", String.valueOf(integer.getRows().get(0).getValue(0)).toUpperCase());
     }
 
-    /**
-     * Live: {@code SHOW COLUMNS IN TABLE ft} names the type FILE in its {@code data_type}
-     * column ({@code {"type":"FILE","outputType":"OBJECT","nullable":true}} there; the engine renders the
-     * bare type name for every type, so the assertion is on the name being present).
-     */
+    /** FILE describes itself in SHOW COLUMNS' descriptor as an OBJECT-valued type. */
     @Test
     public void showColumnsReportsFileDataType() {
         engine.execute("CREATE TABLE ft_show (f FILE)");
@@ -89,8 +85,7 @@ public class FileTypeTest extends BaseDatabaseTest {
         final ResultSet rs = engine.executeQuery("SHOW COLUMNS IN TABLE ft_show");
         assertEquals(1, rs.getRows().size());
         final String dataType = String.valueOf(rs.getRows().get(0).getValue(columnIndex(rs, "data_type")));
-        assertTrue(dataType.toUpperCase().contains("FILE"),
-            "SHOW COLUMNS must report the FILE type, got: " + dataType);
+        assertEquals("{\"type\":\"FILE\",\"outputType\":\"OBJECT\",\"nullable\":true}", dataType);
     }
 
     /** Live: {@code GET_DDL('TABLE','ft')} renders the column as {@code F FILE} (no parameters). */

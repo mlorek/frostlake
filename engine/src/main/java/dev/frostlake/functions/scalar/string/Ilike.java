@@ -38,6 +38,8 @@ public class Ilike extends BuiltInFunction {
         return LikeMatcher.evaluateLike(args.get(0), args.get(1), BinaryOperator.ILIKE, '\\');
     }
 
-    @Override public int getMinArgCount() { return 2; }
-    @Override public int getMaxArgCount() { return 2; }
+    @Override
+    public int getMinArgCount() { return 2; }
+    @Override
+    public int getMaxArgCount() { return 2; }
 }

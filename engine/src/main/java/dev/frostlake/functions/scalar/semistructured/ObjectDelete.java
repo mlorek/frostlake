@@ -23,7 +23,6 @@ import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.node.ObjectNode;
 
 import java.util.HashSet;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -34,20 +33,22 @@ public class ObjectDelete extends BuiltInFunction {
 
     @Override
     public Object evaluate(final List<Object> args) {
-        JsonNode src = ArrayFunctionHelper.parseNode(args.get(0));
+        final JsonNode src = ArrayFunctionHelper.parseNode(args.get(0));
         if (src == null || !src.isObject()) return null;
-        Set<String> toRemove = new HashSet<>();
+        final Set<String> toRemove = new HashSet<>();
         for (int i = 1; i < args.size(); i++) {
             if (args.get(i) != null) toRemove.add(args.get(i).toString());
         }
-        ObjectNode result = ArrayFunctionHelper.MAPPER.createObjectNode();
-        Set<Map.Entry<String, JsonNode>> fields = src.properties();
+        final ObjectNode result = ArrayFunctionHelper.MAPPER.createObjectNode();
+        final Set<Map.Entry<String, JsonNode>> fields = src.properties();
         for(final Map.Entry<String, JsonNode> e:  fields) {
             if (!toRemove.contains(e.getKey())) result.set(e.getKey(), e.getValue());
         }
         return ArrayFunctionHelper.toCanonicalVariant(result);
     }
 
-    @Override public int getMinArgCount() { return 2; }
-    @Override public int getMaxArgCount() { return Integer.MAX_VALUE; }
+    @Override
+    public int getMinArgCount() { return 2; }
+    @Override
+    public int getMaxArgCount() { return Integer.MAX_VALUE; }
 }

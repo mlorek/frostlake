@@ -26,7 +26,7 @@ public class StreamOnViewExample {
 
     @Test
     public void demonstrateStreamOnView() {
-        DatabaseEngine engine = new DatabaseEngine();
+        final DatabaseEngine engine = new DatabaseEngine();
 
         try {
             engine.execute("CREATE DATABASE demo_db");

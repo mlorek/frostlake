@@ -20,7 +20,6 @@ import dev.frostlake.storage.Row;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -33,7 +32,7 @@ public class OperatorPipeline {
     private final List<Operator> operators;
     private final OperatorContext context;
 
-    private OperatorPipeline(final Builder builder) {
+    OperatorPipeline(final OperatorPipelineBuilder builder) {
         this.operators = builder.operators;
         this.context = builder.context;
     }
@@ -50,12 +49,12 @@ public class OperatorPipeline {
         logger.debug("Starting pipeline execution with {} rows", current.size());
 
         for (int i = 0; i < operators.size(); i++) {
-            Operator operator = operators.get(i);
+            final Operator operator = operators.get(i);
             logger.debug("Executing operator {}/{}: {}", i + 1, operators.size(), operator.getDescription());
 
-            long startTime = System.currentTimeMillis();
+            final long startTime = System.currentTimeMillis();
             current = operator.execute(current, context);
-            long elapsed = System.currentTimeMillis() - startTime;
+            final long elapsed = System.currentTimeMillis() - startTime;
 
             logger.debug("Operator {} completed in {}ms, output: {} rows",
                 operator.getDescription(), elapsed, current.size());
@@ -71,7 +70,7 @@ public class OperatorPipeline {
      * @return A human-readable description of all operators in the pipeline
      */
     public String getDescription() {
-        StringBuilder sb = new StringBuilder("Pipeline[");
+        final StringBuilder sb = new StringBuilder("Pipeline[");
         for (int i = 0; i < operators.size(); i++) {
             if (i > 0) sb.append(" -> ");
             sb.append(operators.get(i).getDescription());
@@ -80,29 +79,8 @@ public class OperatorPipeline {
         return sb.toString();
     }
 
-    public static Builder builder() {
-        return new Builder();
+    public static OperatorPipelineBuilder builder() {
+        return new OperatorPipelineBuilder();
     }
 
-    public static class Builder {
-        private final List<Operator> operators = new ArrayList<>();
-        private OperatorContext context;
-
-        public Builder addOperator(final Operator operator) {
-            this.operators.add(operator);
-            return this;
-        }
-
-        public Builder context(final OperatorContext context) {
-            this.context = context;
-            return this;
-        }
-
-        public OperatorPipeline build() {
-            if (context == null) {
-                throw new IllegalArgumentException("OperatorContext is required");
-            }
-            return new OperatorPipeline(this);
-        }
-    }
 }

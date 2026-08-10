@@ -126,10 +126,13 @@ public class ShowCommandLayoutTest extends BaseDatabaseTest {
         assertEquals(List.of(
             "created_on", "name", "is_default", "is_current", "database_name", "owner", "comment",
             "options", "retention_time", "owner_role_type", "classification_profile_database",
-            "classification_profile_schema", "classification_profile", "object_visibility"),
+            "classification_profile_schema", "classification_profile", "object_visibility",
+            "is_nested"),
             columnNames(rs));
         assertEquals("1", cell(rs, 0, "retention_time"));
         assertNull(cell(rs, 0, "object_visibility"));
+        // Spelled as the text false — not the Y/N convention of the flags beside it.
+        assertEquals("false", cell(rs, 0, "is_nested"));
 
         // An owned schema names its role; INFORMATION_SCHEMA, which nobody owns, leaves BOTH the
         // owner and its role type empty rather than naming a type for an absent owner.
@@ -793,12 +796,12 @@ public class ShowCommandLayoutTest extends BaseDatabaseTest {
         assertEquals("desc@example.com", userProperty(rs, "EMAIL"));
     }
 
-    /** Live lists 43 properties, in this order, whether or not the user set any of them. */
+    /** Live lists 44 properties, in this order, whether or not the user set any of them. */
     @Test
     public void describeUserListsEveryPropertyLiveLists() {
         engine.execute("CREATE USER desc_all_user");
         final ResultSet rs = engine.executeQuery("DESCRIBE USER desc_all_user");
-        assertEquals(43, rs.getRows().size());
+        assertEquals(44, rs.getRows().size());
         final List<String> names = new ArrayList<>();
         final int propertyIndex = columnNames(rs).indexOf("property");
         for (final Row row : rs.getRows()) {
@@ -808,6 +811,9 @@ public class ShowCommandLayoutTest extends BaseDatabaseTest {
         assertEquals("COMMENT", names.get(1));
         assertEquals("LOCK_DETAILS", names.get(names.size() - 1));
         assertTrue(names.contains("RSA_PUBLIC_KEY_2_LAST_SET_TIME"));
+        // Sits mid-list (after PASSWORD_LAST_SET_TIME), not appended at the end.
+        assertEquals("MINS_TO_BYPASS_SESSION_POLICY", names.get(38));
+        assertEquals("null", userProperty(rs, "MINS_TO_BYPASS_SESSION_POLICY"));
 
         // Both cells spell "nothing here" as the text null, not as a SQL NULL.
         assertEquals("null", userProperty(rs, "FIRST_NAME"));

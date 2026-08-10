@@ -24,6 +24,7 @@ import dev.frostlake.parser.FrostlakeParser;
 import org.antlr.v4.runtime.ParserRuleContext;
 import org.antlr.v4.runtime.tree.ParseTree;
 
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
@@ -31,8 +32,11 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * Snowflake's compile-time check on the SELECT list of a grouped query, applied to a PLAIN
- * {@code GROUP BY <expression-list>}:
+ * Snowflake's compile-time check on the SELECT list of a grouped query, applied to a plain
+ * {@code GROUP BY <expression-list>} and to the super-group forms (ROLLUP / CUBE / GROUPING SETS,
+ * whose caller passes the UNION of every grouping set's keys — live treats a column in ANY set as
+ * grouped and refuses one in none with the same sentence as the plain form, including a column
+ * reached through a {@code GROUPING()} argument):
  *
  * <ul>
  *   <li>a select item that reads a base-table COLUMN which is neither aggregated nor a grouping key is
@@ -46,10 +50,11 @@ import java.util.Set;
  *
  * <p>The check is deliberately one-sided: a false REJECTION breaks a query the engine could run, while a
  * missed rejection only leaves Frostlake more permissive than Snowflake. So everything whose provenance
- * cannot be established from the parse tree is ACCEPTED — star items, subqueries, window calls, lambda
- * bodies, unresolvable identifiers — and {@code GROUP BY ALL} / ROLLUP / CUBE / GROUPING SETS are not
- * validated at all (their callers never reach here). Any unexpected failure inside the validator abandons
- * validation for the statement rather than failing it.
+ * cannot be established from the parse tree is ACCEPTED — subqueries, window calls, lambda bodies,
+ * unresolvable identifiers — and {@code GROUP BY ALL} is not validated at all (its caller never
+ * reaches here). A star item IS validated: each expanded column must be grouped, and a miss is
+ * rejected at live's sentinel position (line 0, position -1) since nobody wrote the reference. Any
+ * unexpected failure inside the validator abandons validation for the statement rather than failing it.
  */
 final class GroupBySelectListValidator {
 
@@ -95,23 +100,60 @@ final class GroupBySelectListValidator {
     /** The first violation's message, or null while the list is still valid. */
     private String rejection;
 
+    /**
+     * Whether the walk is currently INSIDE a window call. Live holds a window's own references to the
+     * grouping — its arguments and its OVER keys alike — and answers with the BRACKETED sentence when
+     * one is not grouped, even where an explicit GROUP BY would otherwise produce the select-clause
+     * wording. Measured on the account:
+     *
+     * <pre>
+     *   … ROW_NUMBER() OVER (ORDER BY c)      GROUP BY a    [G.C] is not a valid group by expression
+     *   … ROW_NUMBER() OVER (PARTITION BY c…) GROUP BY a    the same
+     *   … LAG(c) OVER (ORDER BY a)            GROUP BY a    the same — an ARGUMENT counts too
+     *   … SUM(b) OVER (ORDER BY a)            GROUP BY a    [G.B] — a windowed aggregate is not an
+     *                                                       aggregate for this purpose
+     *   … LAG(MAX(c)) OVER (ORDER BY a)       GROUP BY a    reads: the nested aggregate settles it
+     * </pre>
+     */
+    private boolean insideWindowCall;
+
+    /**
+     * Whether this run validates IMPLICIT aggregation (an aggregate or HAVING with no GROUP BY):
+     * the same walk applies with an empty key set, but the refusal is live's OTHER family —
+     * {@code [<OWNER>.<COLUMN>] is not a valid group by expression}, bracketed, positionless, with
+     * identifiers spelled canonically (quoted when not plain upper-case, which is also what puts
+     * the {@code "values"} moniker on an unaliased derived table).
+     */
+    private final boolean implicitAggregation;
+
     GroupBySelectListValidator(final QueryExecutor executor, final Table table,
                                final Map<String, Table> aliasToTable, final List<Table> allTables) {
+        this(executor, table, aliasToTable, allTables, false);
+    }
+
+    GroupBySelectListValidator(final QueryExecutor executor, final Table table,
+                               final Map<String, Table> aliasToTable, final List<Table> allTables,
+                               final boolean implicitAggregation) {
         this.executor = executor;
         this.table = table;
         this.aliasToTable = aliasToTable;
         this.allTables = allTables;
+        this.implicitAggregation = implicitAggregation;
     }
 
     /**
-     * Validate the SELECT list of a plain grouped query. {@code aliasNames} is 1:1 with
+     * Validate the SELECT list of a grouped query. {@code aliasNames} is 1:1 with
      * {@code ctx.selectList().selectItem()} (null where an item carries no alias); {@code groupKeyForms}
      * holds every textual form of every grouping key — the source text plus its ordinal-, alias- and
      * nested-alias-resolved rewrites — so an item matches whichever spelling the key was written in.
+     * With {@code validateWhenKeyless} the check also runs over an EMPTY key union (a grouping-sets
+     * query whose only set is {@code ()} groups by nothing, so every bare column is ungrouped);
+     * without it, an empty {@code groupKeyForms} means the caller collected nothing and validation
+     * is abandoned rather than rejecting the whole list.
      */
     void validate(final FrostlakeParser.SelectClauseContext ctx, final List<String> aliasNames,
-                  final List<String> groupKeyForms) {
-        if (groupKeyForms.isEmpty()) {
+                  final List<String> groupKeyForms, final boolean validateWhenKeyless) {
+        if (groupKeyForms.isEmpty() && !validateWhenKeyless) {
             return;
         }
         for (final String form : groupKeyForms) {
@@ -129,7 +171,13 @@ final class GroupBySelectListValidator {
         for (int i = 0; i < items.size(); i++) {
             final ParserRuleContext itemExpr = SelectItemAccessors.getItemExpression(items.get(i));
             if (itemExpr == null) {
-                continue;   // a star / qualified-star / braced-star item projects columns wholesale
+                // A star projects each of its columns, and live holds every one to the same rule as
+                // a written reference; {@code {*}} builds ONE object and is left alone.
+                checkStarItem(items.get(i));
+                if (rejection != null) {
+                    throw new RuntimeException(rejection);
+                }
+                continue;
             }
             earlierAliases.clear();
             laterAliases.clear();
@@ -151,6 +199,41 @@ final class GroupBySelectListValidator {
             if (rejection != null) {
                 throw new RuntimeException(rejection);
             }
+        }
+        if (ctx.qualifyClause() != null) {
+            // QUALIFY's own window calls are held to the grouping exactly as the select list's are
+            // ({@code GROUP BY a QUALIFY ROW_NUMBER() OVER (ORDER BY c) = 1} is "[G.C] is not a valid
+            // group by expression"). Only its WINDOWS are walked here — that is the measured case, and
+            // the rest of a QUALIFY predicate has its own resolution rules. Every select alias is
+            // referencable from QUALIFY, so none of them counts as a forward reference.
+            earlierAliases.clear();
+            laterAliases.clear();
+            for (final String alias : aliasNames) {
+                if (alias != null) {
+                    earlierAliases.add(alias.toUpperCase());
+                }
+            }
+            checkWindowsWithin(ctx.qualifyClause());
+            if (rejection != null) {
+                throw new RuntimeException(rejection);
+            }
+        }
+    }
+
+    /** Runs the grouped walk over every window call inside {@code node}, leaving the rest alone. */
+    private void checkWindowsWithin(final ParseTree node) {
+        if (node == null || rejection != null) {
+            return;
+        }
+        if (node instanceof FrostlakeParser.SelectStatementContext) {
+            return;
+        }
+        if (isWindowCall(node)) {
+            checkNode(node);
+            return;
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            checkWindowsWithin(node.getChild(i));
         }
     }
 
@@ -177,8 +260,23 @@ final class GroupBySelectListValidator {
             checkColumnReference((FrostlakeParser.QualifiedNameExprContext) node);
             return;
         }
+        if (isWindowCall(node)) {
+            // A window's references are NOT settled by the window: they must be grouped like any
+            // other. Descend, remembering where we are so the refusal takes the bracketed form; a
+            // nested aggregate still settles its own subtree on the way down.
+            final boolean enclosing = insideWindowCall;
+            insideWindowCall = true;
+            try {
+                for (int i = 0; i < node.getChildCount(); i++) {
+                    checkNode(node.getChild(i));
+                }
+            } finally {
+                insideWindowCall = enclosing;
+            }
+            return;
+        }
         if (isAggregateOrWindowCall(node)) {
-            return;   // an aggregate's argument is per-row, a window's is computed after grouping
+            return;   // an aggregate's argument is per-row, whatever the grouping
         }
         for (int i = 0; i < node.getChildCount(); i++) {
             checkNode(node.getChild(i));
@@ -194,8 +292,14 @@ final class GroupBySelectListValidator {
             // else is a path INTO a column (a VARIANT field) or a qualifier this validator cannot see.
             final String qualifier = parts[parts.length - 2];
             if (namesATable(qualifier) && namesAColumn(last) && !keyColumns.contains(last)) {
-                reject(ref, "'" + qualifier.toUpperCase() + "." + last
-                    + "' in select clause is neither an aggregate nor in the group by clause.");
+                if (implicitAggregation || insideWindowCall) {
+                    final List<String> rawParts = rawNameParts(ref);
+                    rejectImplicit(spellWrittenIdentifier(rawParts.get(rawParts.size() - 2)) + "."
+                        + spellWrittenIdentifier(rawParts.get(rawParts.size() - 1)));
+                } else {
+                    reject(ref, "'" + qualifier.toUpperCase() + "." + last
+                        + "' in select clause is neither an aggregate nor in the group by clause.");
+                }
             }
             return;
         }
@@ -205,8 +309,14 @@ final class GroupBySelectListValidator {
         if (namesAColumn(last)) {
             // A real column outranks a same-named alias, so it must be grouped or aggregated.
             if (!keyColumns.contains(last)) {
-                reject(ref, "'" + owningName(last) + "." + last
-                    + "' in select clause is neither an aggregate nor in the group by clause.");
+                if (implicitAggregation || insideWindowCall) {
+                    final List<String> rawParts = rawNameParts(ref);
+                    rejectImplicit(owningNameSpelled(last) + "."
+                        + spellWrittenIdentifier(rawParts.get(rawParts.size() - 1)));
+                } else {
+                    reject(ref, "'" + owningName(last) + "." + last
+                        + "' in select clause is neither an aggregate nor in the group by clause.");
+                }
             }
             return;
         }
@@ -223,6 +333,101 @@ final class GroupBySelectListValidator {
     private void reject(final ParserRuleContext at, final String detail) {
         rejection = SqlCompilationError.at(at.getStart().getLine(),
             at.getStart().getCharPositionInLine(), detail);
+    }
+
+    /**
+     * A star item's expanded columns, each held to the grouped-select rule. An expanded column
+     * carries no source position — nobody wrote it — so the refusal reports live's sentinel
+     * (line 0, position -1), spelling the column with the star's own qualifier: the owning table
+     * for a bare {@code *}, the written qualifier for {@code t.*}.
+     */
+    private void checkStarItem(final FrostlakeParser.SelectItemContext item) {
+        final boolean qualified = SelectItemAccessors.isQualifiedStarItem(item);
+        if (!SelectItemAccessors.isStarItem(item) && !qualified) {
+            return;   // {*} builds ONE object; it is not a per-column projection
+        }
+        final List<StarColumn> columns;
+        try {
+            columns = executor.starItemColumns(item, table, aliasToTable);
+        } catch (final RuntimeException resolveFailure) {
+            return;   // an unresolvable star is the evaluator's problem, not the validator's
+        }
+        final String prefix = qualified ? SelectItemAccessors.getItemQualifier(item) + "." : "";
+        for (final StarColumn sc : columns) {
+            final String name = sc.getSourceName().toUpperCase();
+            if (!sc.getExpression().equalsIgnoreCase(prefix + sc.getSourceName())) {
+                continue;   // a REPLACE'd column projects an expression, not the column itself
+            }
+            if (namesAColumn(name) && !keyColumns.contains(name)) {
+                if (implicitAggregation) {
+                    final String owner = qualified
+                        ? SelectItemAccessors.getItemQualifier(item).toUpperCase()
+                        : owningNameSpelled(name);
+                    rejectImplicit(owner + "." + spellResolvedName(sc.getSourceName()));
+                    return;
+                }
+                final String owner = qualified
+                    ? SelectItemAccessors.getItemQualifier(item).toUpperCase() : owningName(name);
+                rejection = SqlCompilationError.at(0, -1, "'" + owner + "." + name
+                    + "' in select clause is neither an aggregate nor in the group by clause.");
+                return;
+            }
+        }
+    }
+
+    /** The reference's parts as WRITTEN — quoted parts keep their quotes. */
+    private static List<String> rawNameParts(final FrostlakeParser.QualifiedNameExprContext ref) {
+        final List<String> parts = new ArrayList<String>();
+        parts.add(ref.qualifiedName().nameStartPart().getText());
+        for (final FrostlakeParser.NamePartContext np : ref.qualifiedName().namePart()) {
+            parts.add(np.getText());
+        }
+        return parts;
+    }
+
+    /** The implicit-aggregation refusal — bracketed, positionless, live's other family. */
+    private void rejectImplicit(final String reference) {
+        rejection = SqlCompilationError.of("[" + reference + "] is not a valid group by expression");
+    }
+
+    /**
+     * An identifier as WRITTEN, spelled the way the implicit-aggregation message spells it: a
+     * quoted token stays verbatim with its quotes, an unquoted one folds to upper case.
+     */
+    private static String spellWrittenIdentifier(final String rawToken) {
+        // The RESOLVED name, not the written one: live prints [KW.A] whether the item was written A,
+        // "A", kw."A" or "KW"."A", and keeps quotes only for a name that needs them ([Q2."a"]).
+        return SqlIdentifiers.spellCanonical(SqlIdentifiers.canonicalText(rawToken));
+    }
+
+    /**
+     * A RESOLVED name (a table's or column's stored identity) spelled canonically: plain
+     * upper-case names stay bare, anything else — a quoted-created column, or the {@code values}
+     * moniker of an unaliased derived table — is quoted.
+     */
+    private static String spellResolvedName(final String name) {
+        return SqlIdentifiers.spellCanonical(name);
+    }
+
+    /** The owning relation of an unqualified column, spelled for the implicit-aggregation message. */
+    private String owningNameSpelled(final String column) {
+        if (aliasToTable != null) {
+            for (final Map.Entry<String, Table> entry : aliasToTable.entrySet()) {
+                if (entry.getKey() != null && entry.getValue() != null && entry.getValue().hasColumn(column)) {
+                    // An unaliased derived table goes by the internal "values" moniker, which the
+                    // message spells quoted; a written alias folds to upper case.
+                    return "values".equals(entry.getKey()) ? "\"values\"" : entry.getKey().toUpperCase();
+                }
+            }
+        }
+        if (allTables != null) {
+            for (final Table candidate : allTables) {
+                if (candidate != null && candidate.hasColumn(column) && candidate.getName() != null) {
+                    return spellResolvedName(candidate.getName());
+                }
+            }
+        }
+        return table != null && table.getName() != null ? spellResolvedName(table.getName()) : column;
     }
 
     // ── classification helpers ───────────────────────────────────────────────
@@ -242,6 +447,21 @@ final class GroupBySelectListValidator {
      * is per-row), a window call (computed after grouping), or a function the engine does not know — a
      * UDF, or a Snowflake aggregate this build has no entry for, either of which could be an aggregate.
      */
+
+    /** Whether the node is a function call carrying an {@code OVER} clause. */
+    private boolean isWindowCall(final ParseTree node) {
+        if (node instanceof FrostlakeParser.FunctionCallExprContext) {
+            return ((FrostlakeParser.FunctionCallExprContext) node).overClause() != null;
+        }
+        if (node instanceof FrostlakeParser.FunctionCallNamedArgsExprContext) {
+            return ((FrostlakeParser.FunctionCallNamedArgsExprContext) node).overClause() != null;
+        }
+        if (node instanceof FrostlakeParser.FunctionCallMixedArgsExprContext) {
+            return ((FrostlakeParser.FunctionCallMixedArgsExprContext) node).overClause() != null;
+        }
+        return false;
+    }
+
     private boolean isAggregateOrWindowCall(final ParseTree node) {
         if (node instanceof FrostlakeParser.FunctionCallStarExprContext) {
             return isOpaqueCall(((FrostlakeParser.FunctionCallStarExprContext) node).functionName());

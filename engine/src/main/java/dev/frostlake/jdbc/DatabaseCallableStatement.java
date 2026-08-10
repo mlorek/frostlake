@@ -20,7 +20,20 @@ import java.io.InputStream;
 import java.io.Reader;
 import java.math.BigDecimal;
 import java.net.URL;
-import java.sql.*;
+import java.sql.Array;
+import java.sql.Blob;
+import java.sql.CallableStatement;
+import java.sql.Clob;
+import java.sql.Date;
+import java.sql.NClob;
+import java.sql.Ref;
+import java.sql.ResultSetMetaData;
+import java.sql.RowId;
+import java.sql.SQLException;
+import java.sql.SQLFeatureNotSupportedException;
+import java.sql.SQLXML;
+import java.sql.Time;
+import java.sql.Timestamp;
 import java.util.Calendar;
 import java.util.HashMap;
 import java.util.Map;
@@ -78,7 +91,7 @@ public class DatabaseCallableStatement extends DatabasePreparedStatement impleme
     @Override
     public String getString(final int parameterIndex) throws SQLException {
         checkClosed();
-        Object value = out(parameterIndex);
+        final Object value = out(parameterIndex);
         if (value == null) {
             return null;
         }
@@ -88,7 +101,7 @@ public class DatabaseCallableStatement extends DatabasePreparedStatement impleme
     @Override
     public boolean getBoolean(final int parameterIndex) throws SQLException {
         checkClosed();
-        Object value = out(parameterIndex);
+        final Object value = out(parameterIndex);
         if (value == null) {
             return false;
         }
@@ -101,7 +114,7 @@ public class DatabaseCallableStatement extends DatabasePreparedStatement impleme
     @Override
     public byte getByte(final int parameterIndex) throws SQLException {
         checkClosed();
-        Object value = out(parameterIndex);
+        final Object value = out(parameterIndex);
         if (value == null) {
             return 0;
         }
@@ -114,7 +127,7 @@ public class DatabaseCallableStatement extends DatabasePreparedStatement impleme
     @Override
     public short getShort(final int parameterIndex) throws SQLException {
         checkClosed();
-        Object value = out(parameterIndex);
+        final Object value = out(parameterIndex);
         if (value == null) {
             return 0;
         }
@@ -127,7 +140,7 @@ public class DatabaseCallableStatement extends DatabasePreparedStatement impleme
     @Override
     public int getInt(final int parameterIndex) throws SQLException {
         checkClosed();
-        Object value = out(parameterIndex);
+        final Object value = out(parameterIndex);
         if (value == null) {
             return 0;
         }
@@ -140,7 +153,7 @@ public class DatabaseCallableStatement extends DatabasePreparedStatement impleme
     @Override
     public long getLong(final int parameterIndex) throws SQLException {
         checkClosed();
-        Object value = out(parameterIndex);
+        final Object value = out(parameterIndex);
         if (value == null) {
             return 0;
         }
@@ -153,7 +166,7 @@ public class DatabaseCallableStatement extends DatabasePreparedStatement impleme
     @Override
     public float getFloat(final int parameterIndex) throws SQLException {
         checkClosed();
-        Object value = out(parameterIndex);
+        final Object value = out(parameterIndex);
         if (value == null) {
             return 0;
         }
@@ -166,7 +179,7 @@ public class DatabaseCallableStatement extends DatabasePreparedStatement impleme
     @Override
     public double getDouble(final int parameterIndex) throws SQLException {
         checkClosed();
-        Object value = out(parameterIndex);
+        final Object value = out(parameterIndex);
         if (value == null) {
             return 0;
         }
@@ -189,7 +202,7 @@ public class DatabaseCallableStatement extends DatabasePreparedStatement impleme
     @Override
     public Date getDate(final int parameterIndex) throws SQLException {
         checkClosed();
-        Object value = out(parameterIndex);
+        final Object value = out(parameterIndex);
         if (value == null) {
             return null;
         }
@@ -205,7 +218,7 @@ public class DatabaseCallableStatement extends DatabasePreparedStatement impleme
     @Override
     public Time getTime(final int parameterIndex) throws SQLException {
         checkClosed();
-        Object value = out(parameterIndex);
+        final Object value = out(parameterIndex);
         if (value == null) {
             return null;
         }
@@ -226,7 +239,7 @@ public class DatabaseCallableStatement extends DatabasePreparedStatement impleme
     @Override
     public Timestamp getTimestamp(final int parameterIndex) throws SQLException {
         checkClosed();
-        Object value = out(parameterIndex);
+        final Object value = out(parameterIndex);
         if (value == null) {
             return null;
         }
@@ -246,7 +259,7 @@ public class DatabaseCallableStatement extends DatabasePreparedStatement impleme
     @Override
     public BigDecimal getBigDecimal(final int parameterIndex) throws SQLException {
         checkClosed();
-        Object value = out(parameterIndex);
+        final Object value = out(parameterIndex);
         if (value == null) {
             return null;
         }
@@ -303,7 +316,7 @@ public class DatabaseCallableStatement extends DatabasePreparedStatement impleme
 
     @Override
     public void registerOutParameter(final String parameterName, final int sqlType) throws SQLException {
-        Integer index = namedParameters.get(parameterName.toUpperCase());
+        final Integer index = namedParameters.get(parameterName.toUpperCase());
         if (index == null) {
             throw new SQLException("Parameter not found: " + parameterName);
         }
@@ -332,61 +345,61 @@ public class DatabaseCallableStatement extends DatabasePreparedStatement impleme
 
     @Override
     public void setNull(final String parameterName, final int sqlType) throws SQLException {
-        Integer index = getParameterIndex(parameterName);
+        final Integer index = getParameterIndex(parameterName);
         setNull(index, sqlType);
     }
 
     @Override
     public void setBoolean(final String parameterName, final boolean x) throws SQLException {
-        Integer index = getParameterIndex(parameterName);
+        final Integer index = getParameterIndex(parameterName);
         setBoolean(index, x);
     }
 
     @Override
     public void setByte(final String parameterName, final byte x) throws SQLException {
-        Integer index = getParameterIndex(parameterName);
+        final Integer index = getParameterIndex(parameterName);
         setByte(index, x);
     }
 
     @Override
     public void setShort(final String parameterName, final short x) throws SQLException {
-        Integer index = getParameterIndex(parameterName);
+        final Integer index = getParameterIndex(parameterName);
         setShort(index, x);
     }
 
     @Override
     public void setInt(final String parameterName, final int x) throws SQLException {
-        Integer index = getParameterIndex(parameterName);
+        final Integer index = getParameterIndex(parameterName);
         setInt(index, x);
     }
 
     @Override
     public void setLong(final String parameterName, final long x) throws SQLException {
-        Integer index = getParameterIndex(parameterName);
+        final Integer index = getParameterIndex(parameterName);
         setLong(index, x);
     }
 
     @Override
     public void setFloat(final String parameterName, final float x) throws SQLException {
-        Integer index = getParameterIndex(parameterName);
+        final Integer index = getParameterIndex(parameterName);
         setFloat(index, x);
     }
 
     @Override
     public void setDouble(final String parameterName, final double x) throws SQLException {
-        Integer index = getParameterIndex(parameterName);
+        final Integer index = getParameterIndex(parameterName);
         setDouble(index, x);
     }
 
     @Override
     public void setBigDecimal(final String parameterName, final BigDecimal x) throws SQLException {
-        Integer index = getParameterIndex(parameterName);
+        final Integer index = getParameterIndex(parameterName);
         setBigDecimal(index, x);
     }
 
     @Override
     public void setString(final String parameterName, final String x) throws SQLException {
-        Integer index = getParameterIndex(parameterName);
+        final Integer index = getParameterIndex(parameterName);
         setString(index, x);
     }
 
@@ -397,19 +410,19 @@ public class DatabaseCallableStatement extends DatabasePreparedStatement impleme
 
     @Override
     public void setDate(final String parameterName, final Date x) throws SQLException {
-        Integer index = getParameterIndex(parameterName);
+        final Integer index = getParameterIndex(parameterName);
         setDate(index, x);
     }
 
     @Override
     public void setTime(final String parameterName, final Time x) throws SQLException {
-        Integer index = getParameterIndex(parameterName);
+        final Integer index = getParameterIndex(parameterName);
         setTime(index, x);
     }
 
     @Override
     public void setTimestamp(final String parameterName, final Timestamp x) throws SQLException {
-        Integer index = getParameterIndex(parameterName);
+        final Integer index = getParameterIndex(parameterName);
         setTimestamp(index, x);
     }
 
@@ -425,19 +438,19 @@ public class DatabaseCallableStatement extends DatabasePreparedStatement impleme
 
     @Override
     public void setObject(final String parameterName, final Object x, final int targetSqlType, final int scale) throws SQLException {
-        Integer index = getParameterIndex(parameterName);
+        final Integer index = getParameterIndex(parameterName);
         setObject(index, x, targetSqlType, scale);
     }
 
     @Override
     public void setObject(final String parameterName, final Object x, final int targetSqlType) throws SQLException {
-        Integer index = getParameterIndex(parameterName);
+        final Integer index = getParameterIndex(parameterName);
         setObject(index, x, targetSqlType);
     }
 
     @Override
     public void setObject(final String parameterName, final Object x) throws SQLException {
-        Integer index = getParameterIndex(parameterName);
+        final Integer index = getParameterIndex(parameterName);
         setObject(index, x);
     }
 
@@ -468,49 +481,49 @@ public class DatabaseCallableStatement extends DatabasePreparedStatement impleme
 
     @Override
     public String getString(final String parameterName) throws SQLException {
-        Integer index = getParameterIndex(parameterName);
+        final Integer index = getParameterIndex(parameterName);
         return getString(index);
     }
 
     @Override
     public boolean getBoolean(final String parameterName) throws SQLException {
-        Integer index = getParameterIndex(parameterName);
+        final Integer index = getParameterIndex(parameterName);
         return getBoolean(index);
     }
 
     @Override
     public byte getByte(final String parameterName) throws SQLException {
-        Integer index = getParameterIndex(parameterName);
+        final Integer index = getParameterIndex(parameterName);
         return getByte(index);
     }
 
     @Override
     public short getShort(final String parameterName) throws SQLException {
-        Integer index = getParameterIndex(parameterName);
+        final Integer index = getParameterIndex(parameterName);
         return getShort(index);
     }
 
     @Override
     public int getInt(final String parameterName) throws SQLException {
-        Integer index = getParameterIndex(parameterName);
+        final Integer index = getParameterIndex(parameterName);
         return getInt(index);
     }
 
     @Override
     public long getLong(final String parameterName) throws SQLException {
-        Integer index = getParameterIndex(parameterName);
+        final Integer index = getParameterIndex(parameterName);
         return getLong(index);
     }
 
     @Override
     public float getFloat(final String parameterName) throws SQLException {
-        Integer index = getParameterIndex(parameterName);
+        final Integer index = getParameterIndex(parameterName);
         return getFloat(index);
     }
 
     @Override
     public double getDouble(final String parameterName) throws SQLException {
-        Integer index = getParameterIndex(parameterName);
+        final Integer index = getParameterIndex(parameterName);
         return getDouble(index);
     }
 
@@ -521,31 +534,31 @@ public class DatabaseCallableStatement extends DatabasePreparedStatement impleme
 
     @Override
     public Date getDate(final String parameterName) throws SQLException {
-        Integer index = getParameterIndex(parameterName);
+        final Integer index = getParameterIndex(parameterName);
         return getDate(index);
     }
 
     @Override
     public Time getTime(final String parameterName) throws SQLException {
-        Integer index = getParameterIndex(parameterName);
+        final Integer index = getParameterIndex(parameterName);
         return getTime(index);
     }
 
     @Override
     public Timestamp getTimestamp(final String parameterName) throws SQLException {
-        Integer index = getParameterIndex(parameterName);
+        final Integer index = getParameterIndex(parameterName);
         return getTimestamp(index);
     }
 
     @Override
     public Object getObject(final String parameterName) throws SQLException {
-        Integer index = getParameterIndex(parameterName);
+        final Integer index = getParameterIndex(parameterName);
         return getObject(index);
     }
 
     @Override
     public BigDecimal getBigDecimal(final String parameterName) throws SQLException {
-        Integer index = getParameterIndex(parameterName);
+        final Integer index = getParameterIndex(parameterName);
         return getBigDecimal(index);
     }
 
@@ -756,7 +769,7 @@ public class DatabaseCallableStatement extends DatabasePreparedStatement impleme
 
     @Override
     public <T> T getObject(final int parameterIndex, final Class<T> type) throws SQLException {
-        Object value = getObject(parameterIndex);
+        final Object value = getObject(parameterIndex);
         if (value == null) {
             return null;
         }
@@ -768,14 +781,14 @@ public class DatabaseCallableStatement extends DatabasePreparedStatement impleme
 
     @Override
     public <T> T getObject(final String parameterName, final Class<T> type) throws SQLException {
-        Integer index = getParameterIndex(parameterName);
+        final Integer index = getParameterIndex(parameterName);
         return getObject(index, type);
     }
 
     // Helper methods
 
     private Integer getParameterIndex(final String parameterName) throws SQLException {
-        Integer index = namedParameters.get(parameterName.toUpperCase());
+        final Integer index = namedParameters.get(parameterName.toUpperCase());
         if (index == null) {
             throw new SQLException("Parameter not found: " + parameterName);
         }
@@ -790,7 +803,7 @@ public class DatabaseCallableStatement extends DatabasePreparedStatement impleme
     @Override
     public boolean execute() throws SQLException {
         // Execute the procedure/function
-        boolean hasResultSet = super.execute();
+        final boolean hasResultSet = super.execute();
 
         // If there's a result set, extract OUT parameters from it
         if (hasResultSet && currentResultSet != null) {
@@ -806,9 +819,9 @@ public class DatabaseCallableStatement extends DatabasePreparedStatement impleme
      */
     private void extractOutParameters() throws SQLException {
         if (currentResultSet != null && currentResultSet.next()) {
-            ResultSetMetaData meta = currentResultSet.getMetaData();
+            final ResultSetMetaData meta = currentResultSet.getMetaData();
             for (int i = 1; i <= meta.getColumnCount(); i++) {
-                Object value = currentResultSet.getObject(i);
+                final Object value = currentResultSet.getObject(i);
                 outParameters.put(i, value);
             }
             currentResultSet.beforeFirst(); // Reset for user

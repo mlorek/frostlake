@@ -16,6 +16,7 @@
 
 package dev.frostlake.executor.expressions;
 
+import dev.frostlake.executor.ExpressionEvaluator;
 import dev.frostlake.storage.ResultSet;
 
 import java.util.HashMap;

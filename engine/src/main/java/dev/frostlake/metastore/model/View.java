@@ -30,6 +30,7 @@ public class View extends SqlObject {
     /** The view's column list as resolved when it was created — see {@link #getResolvedColumns()}. */
     private List<TableColumn> resolvedColumns;
     private boolean secure = false;
+    private boolean temporary = false;
     /** Attached row access policy (ALTER VIEW ... ADD ROW ACCESS POLICY p ON (cols)), or null. */
     private String rowAccessPolicyName;
     private List<String> rowAccessPolicyColumns = new ArrayList<>();
@@ -105,6 +106,16 @@ public class View extends SqlObject {
 
     public boolean isSecure() { return secure; }
     public void setSecure(final boolean secure) { this.secure = secure; }
+
+    /**
+     * A TEMPORARY (TEMP / VOLATILE) view lives only as long as the session that created it, the same
+     * lifetime Frostlake gives a temporary table. Live also makes it invisible to other sessions and
+     * lets it shadow a permanent object of the same name; Frostlake has one namespace per catalog, so
+     * it models the lifetime and not the isolation.
+     */
+    public boolean isTemporary() { return temporary; }
+
+    public void setTemporary(final boolean temporary) { this.temporary = temporary; }
 
     public String getRowAccessPolicyName() { return rowAccessPolicyName; }
     public void setRowAccessPolicyName(final String name) { this.rowAccessPolicyName = name; }

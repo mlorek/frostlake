@@ -20,7 +20,6 @@ import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assumptions.assumeFalse;
 
 /**
  * {@code FL_GET_STAGE(file)} — the descriptor's {@code STAGE} field, the stage the file lives on.
@@ -54,7 +53,6 @@ public class FlGetStageTest extends StagedFileTestSupport {
      */
     @Test
     public void namedStageIsAlwaysFullyQualifiedAndUpperCased() {
-        assumeFalse(isLiveSnowflake(), stageOnlyReason());
         stage("hello.txt", "hello world\nsecond line\n");
 
         assertEquals("@TEST_DB.TEST_SCHEMA.ST", stageOf("TO_FILE('@st/hello.txt')"));
@@ -65,7 +63,6 @@ public class FlGetStageTest extends StagedFileTestSupport {
     /** Live: every file on the stage reports the same STAGE, sub-directories included. */
     @Test
     public void subDirectoryFileReportsTheSameStage() {
-        assumeFalse(isLiveSnowflake(), stageOnlyReason());
         stage("sub/nested.txt", "nested file\n");
 
         assertEquals("@TEST_DB.TEST_SCHEMA.ST", stageOf("TO_FILE('@st/sub/nested.txt')"));

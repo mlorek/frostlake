@@ -22,6 +22,7 @@ import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.Row;
 import org.junit.jupiter.api.Assumptions;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 import org.slf4j.Logger;
@@ -34,258 +35,305 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Tests for PIPE feature - continuous data loading
+ * PIPE surface — CREATE (incl. AUTO_INGEST, OR REPLACE, IF NOT EXISTS), ALTER SET
+ * PIPE_EXECUTION_PAUSED, DROP, SHOW/DESC PIPES, SYSTEM$PIPE_STATUS — over stages the fixture
+ * really creates, so the cells run on every transport. A pipe whose COPY names a missing stage
+ * refuses at CREATE with the stage's does-not-exist shape (live-verified). Engine-internal reads
+ * ({@code engine.getCatalog()} pipe state) stay embedded-only beside the SQL-observable asserts;
+ * cells naming notification integrations or SNS topics stay embedded-only because the test
+ * account has no such integrations.
  */
 public class PipesTest extends BaseDatabaseTest {
 
     private static final Logger logger = LoggerFactory.getLogger(PipesTest.class);
 
-    private static final String PIPE_OVER_MISSING_STAGE =
-        "declares a pipe over a stage the suite never creates — Frostlake does not require the "
-        + "stage to pre-exist, while a real account rejects CREATE PIPE with \"Stage ... does not "
-        + "exist or not authorized\" — and then asserts through engine.getCatalog(), which under "
-        + "SF_LIVE still reads the embedded engine";
+    private static final String ACCOUNT_HAS_NO_INTEGRATIONS =
+        "names a notification/error integration (or SNS topic) that would have to exist on the "
+        + "account for a real run to accept the statement";
 
     private static final String PIPE_REFRESH_NEEDS_CLOUD_STORAGE =
         "ALTER PIPE ... REFRESH makes the account read the stage's cloud storage; the URL here is "
         + "a placeholder bucket the account has no credentials for, so Snowflake answers with "
         + "Access Denied (403)";
 
+    @BeforeEach
+    public void createStages() {
+        engine.execute("CREATE STAGE ps");
+        engine.execute("CREATE STAGE ps2");
+    }
+
+    /** Engine-internal pipe state — meaningful on the embedded engine the catalog belongs to. */
+    private Pipe catalogPipe(final String name) {
+        final Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
+        return schema.getPipe(name);
+    }
+
+    private String pipeStatus(final String name) {
+        return engine.executeQuery("SELECT SYSTEM$PIPE_STATUS('" + name + "')")
+            .getRows().get(0).getValue(0).toString();
+    }
+
+    private String pipeDefinition(final String name) {
+        final ResultSet rs = engine.executeQuery("DESCRIBE PIPE " + name);
+        assertEquals(1, rs.getRowCount());
+        // columns: created_on(0) name(1) database_name(2) schema_name(3) definition(4) ...
+        return rs.getRows().get(0).getValue(4).toString();
+    }
+
     @Test
     public void testCreateSimplePipe() {
-        Assumptions.assumeFalse(isLiveSnowflake(), PIPE_OVER_MISSING_STAGE);
         logger.info("Testing CREATE PIPE with basic configuration");
 
         engine.execute("CREATE TABLE target_table (id INTEGER, name VARCHAR, value DECIMAL(10,2))");
-
         engine.execute("""
             CREATE PIPE my_pipe
             AS COPY INTO target_table
-            FROM @my_stage
+            FROM @ps
             FILE_FORMAT = (TYPE = 'CSV')
             """);
 
-        Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
-        Pipe pipe = schema.getPipe("my_pipe");
+        assertTrue(pipeStatus("my_pipe").contains("RUNNING"));
+        if (!isLiveSnowflake()) {
+            final Pipe pipe = catalogPipe("my_pipe");
+            assertEquals("my_pipe", pipe.getName().toLowerCase());
+            assertFalse(pipe.isAutoIngest());
+            assertFalse(pipe.isPaused());
+            assertEquals("RUNNING", pipe.getStatus());
+        }
+    }
 
-        assertNotNull(pipe);
-        assertEquals("my_pipe", pipe.getName().toLowerCase());
-        assertFalse(pipe.isAutoIngest());
-        assertFalse(pipe.isPaused());
-        assertEquals("RUNNING", pipe.getStatus());
+    @Test
+    public void testCreatePipeOverMissingStageRefuses() {
+        engine.execute("CREATE TABLE target_table (id INTEGER)");
+        final RuntimeException e = assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.execute("CREATE PIPE bad_pipe AS COPY INTO target_table FROM @no_such_stage");
+            }
+        });
+        assertEquals("SQL compilation error:\n"
+            + "Stage 'TEST_DB.TEST_SCHEMA.NO_SUCH_STAGE' does not exist or not authorized.",
+            e.getMessage());
+    }
+
+    /** The target is compiled at CREATE too — its own sentence, without "or not authorized". */
+    @Test
+    public void testCreatePipeOverMissingTargetTableRefuses() {
+        final RuntimeException e = assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.execute("CREATE PIPE bad_pipe AS COPY INTO no_such_table FROM @ps");
+            }
+        });
+        assertEquals("SQL compilation error:\nTable 'NO_SUCH_TABLE' does not exist", e.getMessage());
+    }
+
+    @Test
+    public void testCreatePipeOverUserStageRefuses() {
+        engine.execute("CREATE TABLE target (id INTEGER)");
+        final RuntimeException e = assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.execute("CREATE PIPE user_pipe AS COPY INTO target FROM @~");
+            }
+        });
+        assertEquals("SQL compilation error: Stage: '~' cannot be a user stage in the pipe definition.",
+            e.getMessage());
+    }
+
+    /** VALIDATION_MODE and FILES have no place in a pipe's COPY; a table stage is fine. */
+    @Test
+    public void testPipeOnlyCopyOptionsRefuse() {
+        engine.execute("CREATE TABLE target (id INTEGER)");
+        final RuntimeException validation = assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.execute(
+                    "CREATE PIPE vm_pipe AS COPY INTO target FROM @ps VALIDATION_MODE = 'RETURN_ERRORS'");
+            }
+        });
+        assertEquals("SQL compilation error: Invalid copy option 'VALIDATION_MODE' in pipe definition.",
+            validation.getMessage());
+
+        final RuntimeException files = assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.execute("CREATE PIPE f_pipe AS COPY INTO target FROM @ps FILES = ('x.csv')");
+            }
+        });
+        assertEquals("SQL compilation error: Invalid copy option 'FILES' in pipe definition.",
+            files.getMessage());
+
+        engine.execute("CREATE PIPE table_stage_pipe AS COPY INTO target FROM @%target");
+        assertEquals(1, engine.executeQuery("SHOW PIPES LIKE 'table_stage_pipe'").getRowCount());
     }
 
     @Test
     public void testCreatePipeWithAutoIngest() {
-        Assumptions.assumeFalse(isLiveSnowflake(), PIPE_OVER_MISSING_STAGE);
         logger.info("Testing CREATE PIPE with AUTO_INGEST enabled");
 
-        engine.execute("CREATE TABLE target_table (id INTEGER, data VARCHAR)");
-
+        // A single VARIANT column: the pipe's COPY is compiled whole at CREATE on a real account,
+        // so a JSON pipe must satisfy the one-column rule there and then.
+        engine.execute("CREATE TABLE target_table (data VARIANT)");
         engine.execute("""
             CREATE PIPE auto_ingest_pipe
             AUTO_INGEST = TRUE
             AS COPY INTO target_table
-            FROM @s3_stage
+            FROM @ps
             FILE_FORMAT = (TYPE = 'JSON')
             """);
 
-        Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
-        Pipe pipe = schema.getPipe("auto_ingest_pipe");
-
-        assertNotNull(pipe);
-        assertTrue(pipe.isAutoIngest());
-        assertEquals("RUNNING", pipe.getStatus());
+        assertTrue(pipeStatus("auto_ingest_pipe").contains("RUNNING"));
+        if (!isLiveSnowflake()) {
+            assertTrue(catalogPipe("auto_ingest_pipe").isAutoIngest());
+        }
     }
 
     @Test
     public void testCreatePipeWithNotificationChannel() {
-        Assumptions.assumeFalse(isLiveSnowflake(), PIPE_OVER_MISSING_STAGE);
+        Assumptions.assumeFalse(isLiveSnowflake(), ACCOUNT_HAS_NO_INTEGRATIONS);
         logger.info("Testing CREATE PIPE with AWS SNS notification channel");
 
         engine.execute("CREATE TABLE events (event_id INTEGER, event_data VARCHAR)");
-
         engine.execute("""
             CREATE PIPE notification_pipe
             AUTO_INGEST = TRUE
             AWS_SNS_TOPIC = 'arn:aws:sns:us-west-2:123456789012:my-topic'
             AS COPY INTO events
-            FROM @s3_events_stage
+            FROM @ps
             FILE_FORMAT = (TYPE = 'JSON')
             """);
 
-        Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
-        Pipe pipe = schema.getPipe("notification_pipe");
-
+        final Pipe pipe = catalogPipe("notification_pipe");
         assertNotNull(pipe);
         assertTrue(pipe.isAutoIngest());
-        assertNotNull(pipe.getAwsSnsTopicArn());
         assertEquals("arn:aws:sns:us-west-2:123456789012:my-topic", pipe.getAwsSnsTopicArn());
     }
 
     @Test
     public void testAlterPipePause() {
-        Assumptions.assumeFalse(isLiveSnowflake(), PIPE_OVER_MISSING_STAGE);
         logger.info("Testing ALTER PIPE ... SET PIPE_EXECUTION_PAUSED = TRUE");
 
         engine.execute("CREATE TABLE target (id INTEGER)");
-        engine.execute("""
-            CREATE PIPE test_pipe
-            AS COPY INTO target
-            FROM @stage
-            """);
+        engine.execute("CREATE PIPE test_pipe AS COPY INTO target FROM @ps");
 
         engine.execute("ALTER PIPE test_pipe SET PIPE_EXECUTION_PAUSED = TRUE");
 
-        Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
-        Pipe pipe = schema.getPipe("test_pipe");
-
-        assertTrue(pipe.isPaused());
-        assertEquals("PAUSED", pipe.getStatus());
+        assertTrue(pipeStatus("test_pipe").contains("PAUSED"));
+        if (!isLiveSnowflake()) {
+            assertTrue(catalogPipe("test_pipe").isPaused());
+            assertEquals("PAUSED", catalogPipe("test_pipe").getStatus());
+        }
     }
 
     @Test
     public void testAlterPipeResume() {
-        Assumptions.assumeFalse(isLiveSnowflake(), PIPE_OVER_MISSING_STAGE);
         logger.info("Testing ALTER PIPE ... SET PIPE_EXECUTION_PAUSED = FALSE");
 
         engine.execute("CREATE TABLE target (id INTEGER)");
-        engine.execute("""
-            CREATE PIPE test_pipe
-            AS COPY INTO target
-            FROM @stage
-            """);
+        engine.execute("CREATE PIPE test_pipe AS COPY INTO target FROM @ps");
 
         engine.execute("ALTER PIPE test_pipe SET PIPE_EXECUTION_PAUSED = TRUE");
         engine.execute("ALTER PIPE test_pipe SET PIPE_EXECUTION_PAUSED = FALSE");
 
-        Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
-        Pipe pipe = schema.getPipe("test_pipe");
-
-        assertFalse(pipe.isPaused());
-        assertEquals("RUNNING", pipe.getStatus());
+        assertTrue(pipeStatus("test_pipe").contains("RUNNING"));
+        if (!isLiveSnowflake()) {
+            assertFalse(catalogPipe("test_pipe").isPaused());
+        }
     }
 
     @Test
     public void testAlterPipePauseResumeCycle() {
-        Assumptions.assumeFalse(isLiveSnowflake(), PIPE_OVER_MISSING_STAGE);
         logger.info("Testing multiple PAUSE/RESUME cycles");
 
         engine.execute("CREATE TABLE target (id INTEGER)");
-        engine.execute("""
-            CREATE PIPE cycle_pipe
-            AS COPY INTO target
-            FROM @stage
-            """);
+        engine.execute("CREATE PIPE cycle_pipe AS COPY INTO target FROM @ps");
 
-        Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
-
-        // Pause
         engine.execute("ALTER PIPE cycle_pipe SET PIPE_EXECUTION_PAUSED = TRUE");
-        assertTrue(schema.getPipe("cycle_pipe").isPaused());
+        assertTrue(pipeStatus("cycle_pipe").contains("PAUSED"));
 
-        // Resume
         engine.execute("ALTER PIPE cycle_pipe SET PIPE_EXECUTION_PAUSED = FALSE");
-        assertFalse(schema.getPipe("cycle_pipe").isPaused());
+        assertTrue(pipeStatus("cycle_pipe").contains("RUNNING"));
 
-        // Pause again
         engine.execute("ALTER PIPE cycle_pipe SET PIPE_EXECUTION_PAUSED = TRUE");
-        assertTrue(schema.getPipe("cycle_pipe").isPaused());
+        assertTrue(pipeStatus("cycle_pipe").contains("PAUSED"));
 
-        // Resume again
         engine.execute("ALTER PIPE cycle_pipe SET PIPE_EXECUTION_PAUSED = FALSE");
-        assertFalse(schema.getPipe("cycle_pipe").isPaused());
+        assertTrue(pipeStatus("cycle_pipe").contains("RUNNING"));
     }
 
     @Test
     public void testDropPipe() {
-        Assumptions.assumeFalse(isLiveSnowflake(), PIPE_OVER_MISSING_STAGE);
         logger.info("Testing DROP PIPE");
 
         engine.execute("CREATE TABLE target (id INTEGER)");
-        engine.execute("""
-            CREATE PIPE test_pipe
-            AS COPY INTO target
-            FROM @stage
-            """);
+        engine.execute("CREATE PIPE test_pipe AS COPY INTO target FROM @ps");
 
         engine.execute("DROP PIPE test_pipe");
 
-        Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
-
-        assertThrows(RuntimeException.class, () -> {
-            schema.getPipe("test_pipe");
-        });
+        assertEquals(0, engine.executeQuery("SHOW PIPES LIKE 'test_pipe'").getRowCount());
+        if (!isLiveSnowflake()) {
+            assertThrows(RuntimeException.class, new Executable() {
+                @Override
+                public void execute() {
+                    catalogPipe("test_pipe");
+                }
+            });
+        }
     }
 
     @Test
     public void testDropNonExistentPipe() {
         logger.info("Testing DROP PIPE on non-existent pipe");
 
-        assertThrows(RuntimeException.class, () -> {
-            engine.execute("DROP PIPE non_existent_pipe");
+        assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.execute("DROP PIPE non_existent_pipe");
+            }
         });
     }
 
     @Test
     public void testShowPipes() {
-        Assumptions.assumeFalse(isLiveSnowflake(), PIPE_OVER_MISSING_STAGE);
         logger.info("Testing SHOW PIPES");
 
         engine.execute("CREATE TABLE target1 (id INTEGER)");
         engine.execute("CREATE TABLE target2 (id INTEGER)");
-
-        engine.execute("""
-            CREATE PIPE pipe1
-            AS COPY INTO target1
-            FROM @stage1
-            """);
-
+        engine.execute("CREATE PIPE pipe1 AS COPY INTO target1 FROM @ps");
         engine.execute("""
             CREATE PIPE pipe2
             AUTO_INGEST = TRUE
             AS COPY INTO target2
-            FROM @stage2
+            FROM @ps2
             """);
 
-        ResultSet result = engine.executeQuery("SHOW PIPES");
-
-        assertEquals(2, result.getRowCount());
+        assertEquals(2, engine.executeQuery("SHOW PIPES").getRowCount());
     }
 
     @Test
     public void testShowPipesEmpty() {
         logger.info("Testing SHOW PIPES with no pipes");
 
-        ResultSet result = engine.executeQuery("SHOW PIPES");
-
-        assertEquals(0, result.getRowCount());
+        assertEquals(0, engine.executeQuery("SHOW PIPES").getRowCount());
     }
 
     @Test
     public void testShowPipesAfterDrop() {
-        Assumptions.assumeFalse(isLiveSnowflake(), PIPE_OVER_MISSING_STAGE);
         logger.info("Testing SHOW PIPES after dropping a pipe");
 
         engine.execute("CREATE TABLE target (id INTEGER)");
-        engine.execute("""
-            CREATE PIPE temp_pipe
-            AS COPY INTO target
-            FROM @stage
-            """);
+        engine.execute("CREATE PIPE temp_pipe AS COPY INTO target FROM @ps");
 
-        ResultSet result1 = engine.executeQuery("SHOW PIPES");
-        assertEquals(1, result1.getRowCount());
+        assertEquals(1, engine.executeQuery("SHOW PIPES").getRowCount());
 
         engine.execute("DROP PIPE temp_pipe");
 
-        ResultSet result2 = engine.executeQuery("SHOW PIPES");
-        assertEquals(0, result2.getRowCount());
+        assertEquals(0, engine.executeQuery("SHOW PIPES").getRowCount());
     }
 
     @Test
     public void testDescribePipe() {
-        Assumptions.assumeFalse(isLiveSnowflake(), PIPE_OVER_MISSING_STAGE);
         logger.info("Testing DESCRIBE PIPE");
 
         engine.execute("CREATE TABLE target (id INTEGER, name VARCHAR)");
@@ -293,12 +341,11 @@ public class PipesTest extends BaseDatabaseTest {
             CREATE PIPE detailed_pipe
             AUTO_INGEST = TRUE
             AS COPY INTO target
-            FROM @s3_stage
+            FROM @ps
             FILE_FORMAT = (TYPE = 'CSV')
             """);
 
-        ResultSet result = engine.executeQuery("DESCRIBE PIPE detailed_pipe");
-
+        final ResultSet result = engine.executeQuery("DESCRIBE PIPE detailed_pipe");
         assertNotNull(result);
         assertTrue(result.getRowCount() > 0);
     }
@@ -307,35 +354,31 @@ public class PipesTest extends BaseDatabaseTest {
     public void testDescribeNonExistentPipe() {
         logger.info("Testing DESCRIBE PIPE on non-existent pipe");
 
-        assertThrows(RuntimeException.class, () -> {
-            engine.executeQuery("DESCRIBE PIPE non_existent_pipe");
+        assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.executeQuery("DESCRIBE PIPE non_existent_pipe");
+            }
         });
     }
 
     @Test
     public void testCreatePipeDuplicateName() {
-        Assumptions.assumeFalse(isLiveSnowflake(), PIPE_OVER_MISSING_STAGE);
         logger.info("Testing CREATE PIPE with duplicate name");
 
         engine.execute("CREATE TABLE target (id INTEGER)");
-        engine.execute("""
-            CREATE PIPE duplicate_pipe
-            AS COPY INTO target
-            FROM @stage
-            """);
+        engine.execute("CREATE PIPE duplicate_pipe AS COPY INTO target FROM @ps");
 
-        assertThrows(RuntimeException.class, () -> {
-            engine.execute("""
-                CREATE PIPE duplicate_pipe
-                AS COPY INTO target
-                FROM @stage
-                """);
+        assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.execute("CREATE PIPE duplicate_pipe AS COPY INTO target FROM @ps");
+            }
         });
     }
 
     @Test
     public void testPipeWithComplexCopyStatement() {
-        Assumptions.assumeFalse(isLiveSnowflake(), PIPE_OVER_MISSING_STAGE);
         logger.info("Testing PIPE with complex COPY statement");
 
         engine.execute("""
@@ -352,7 +395,7 @@ public class PipesTest extends BaseDatabaseTest {
             CREATE PIPE complex_pipe
             AUTO_INGEST = TRUE
             AS COPY INTO sales (sale_id, product_name, quantity, price, sale_date)
-            FROM @s3_sales_stage
+            FROM @ps
             FILE_FORMAT = (
                 TYPE = 'CSV',
                 FIELD_DELIMITER = ',',
@@ -362,17 +405,16 @@ public class PipesTest extends BaseDatabaseTest {
             ON_ERROR = 'CONTINUE'
             """);
 
-        Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
-        Pipe pipe = schema.getPipe("complex_pipe");
-
-        assertNotNull(pipe);
-        assertTrue(pipe.isAutoIngest());
-        assertNotNull(pipe.getCopyStatement());
+        assertTrue(pipeDefinition("complex_pipe").contains("COPY INTO"));
+        if (!isLiveSnowflake()) {
+            assertTrue(catalogPipe("complex_pipe").isAutoIngest());
+            assertNotNull(catalogPipe("complex_pipe").getCopyStatement());
+        }
     }
 
     @Test
     public void testPipeWithErrorIntegration() {
-        Assumptions.assumeFalse(isLiveSnowflake(), PIPE_OVER_MISSING_STAGE);
+        Assumptions.assumeFalse(isLiveSnowflake(), ACCOUNT_HAS_NO_INTEGRATIONS);
         logger.info("Testing PIPE with error integration");
 
         engine.execute("CREATE TABLE target (id INTEGER)");
@@ -381,146 +423,95 @@ public class PipesTest extends BaseDatabaseTest {
             AUTO_INGEST = TRUE
             ERROR_INTEGRATION = 'my_error_integration'
             AS COPY INTO target
-            FROM @stage
+            FROM @ps
             """);
 
-        Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
-        Pipe pipe = schema.getPipe("error_pipe");
-
-        assertNotNull(pipe);
-        assertNotNull(pipe.getErrorIntegration());
-        assertEquals("my_error_integration", pipe.getErrorIntegration());
+        assertEquals("my_error_integration", catalogPipe("error_pipe").getErrorIntegration());
     }
 
     @Test
     public void testAlterNonExistentPipe() {
         logger.info("Testing ALTER PIPE on non-existent pipe");
 
-        assertThrows(RuntimeException.class, () -> {
-            engine.execute("ALTER PIPE non_existent_pipe SET PIPE_EXECUTION_PAUSED = TRUE");
+        assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.execute("ALTER PIPE non_existent_pipe SET PIPE_EXECUTION_PAUSED = TRUE");
+            }
         });
 
-        assertThrows(RuntimeException.class, () -> {
-            engine.execute("ALTER PIPE non_existent_pipe SET PIPE_EXECUTION_PAUSED = FALSE");
+        assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.execute("ALTER PIPE non_existent_pipe SET PIPE_EXECUTION_PAUSED = FALSE");
+            }
         });
     }
 
     @Test
     public void testPipeStatusTracking() {
-        Assumptions.assumeFalse(isLiveSnowflake(), PIPE_OVER_MISSING_STAGE);
         logger.info("Testing pipe status changes");
 
         engine.execute("CREATE TABLE target (id INTEGER)");
-        engine.execute("""
-            CREATE PIPE status_pipe
-            AS COPY INTO target
-            FROM @stage
-            """);
+        engine.execute("CREATE PIPE status_pipe AS COPY INTO target FROM @ps");
 
-        Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
-        Pipe pipe = schema.getPipe("status_pipe");
+        assertTrue(pipeStatus("status_pipe").contains("RUNNING"));
 
-        // Initial status should be RUNNING
-        assertEquals("RUNNING", pipe.getStatus());
-        assertFalse(pipe.isPaused());
-
-        // After pause
         engine.execute("ALTER PIPE status_pipe SET PIPE_EXECUTION_PAUSED = TRUE");
-        pipe = schema.getPipe("status_pipe");
-        assertEquals("PAUSED", pipe.getStatus());
-        assertTrue(pipe.isPaused());
+        assertTrue(pipeStatus("status_pipe").contains("PAUSED"));
 
-        // After resume
         engine.execute("ALTER PIPE status_pipe SET PIPE_EXECUTION_PAUSED = FALSE");
-        pipe = schema.getPipe("status_pipe");
-        assertEquals("RUNNING", pipe.getStatus());
-        assertFalse(pipe.isPaused());
+        assertTrue(pipeStatus("status_pipe").contains("RUNNING"));
     }
 
     @Test
     public void testMultiplePipesIndependence() {
-        Assumptions.assumeFalse(isLiveSnowflake(), PIPE_OVER_MISSING_STAGE);
         logger.info("Testing multiple pipes operate independently");
 
         engine.execute("CREATE TABLE target1 (id INTEGER)");
         engine.execute("CREATE TABLE target2 (id INTEGER)");
+        engine.execute("CREATE PIPE pipe1 AS COPY INTO target1 FROM @ps");
+        engine.execute("CREATE PIPE pipe2 AS COPY INTO target2 FROM @ps2");
 
-        engine.execute("""
-            CREATE PIPE pipe1
-            AS COPY INTO target1
-            FROM @stage1
-            """);
-
-        engine.execute("""
-            CREATE PIPE pipe2
-            AS COPY INTO target2
-            FROM @stage2
-            """);
-
-        Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
-
-        // Pause pipe1
         engine.execute("ALTER PIPE pipe1 SET PIPE_EXECUTION_PAUSED = TRUE");
+        assertTrue(pipeStatus("pipe1").contains("PAUSED"));
+        assertTrue(pipeStatus("pipe2").contains("RUNNING"));
 
-        Pipe pipe1 = schema.getPipe("pipe1");
-        Pipe pipe2 = schema.getPipe("pipe2");
-
-        assertTrue(pipe1.isPaused());
-        assertFalse(pipe2.isPaused());
-
-        // Resume pipe1 and pause pipe2
         engine.execute("ALTER PIPE pipe1 SET PIPE_EXECUTION_PAUSED = FALSE");
         engine.execute("ALTER PIPE pipe2 SET PIPE_EXECUTION_PAUSED = TRUE");
-
-        pipe1 = schema.getPipe("pipe1");
-        pipe2 = schema.getPipe("pipe2");
-
-        assertFalse(pipe1.isPaused());
-        assertTrue(pipe2.isPaused());
+        assertTrue(pipeStatus("pipe1").contains("RUNNING"));
+        assertTrue(pipeStatus("pipe2").contains("PAUSED"));
     }
 
     @Test
     public void testPipeCaseInsensitivity() {
-        Assumptions.assumeFalse(isLiveSnowflake(), PIPE_OVER_MISSING_STAGE);
         logger.info("Testing pipe name case insensitivity");
 
         engine.execute("CREATE TABLE target (id INTEGER)");
-        engine.execute("""
-            CREATE PIPE MyPipe
-            AS COPY INTO target
-            FROM @stage
-            """);
+        engine.execute("CREATE PIPE MyPipe AS COPY INTO target FROM @ps");
 
-        Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
+        assertEquals(1, engine.executeQuery("SHOW PIPES LIKE 'mypipe'").getRowCount());
+        assertEquals(1, engine.executeQuery("SHOW PIPES LIKE 'MYPIPE'").getRowCount());
 
-        // Should be accessible with different case variations
-        Pipe pipe1 = schema.getPipe("MyPipe");
-        Pipe pipe2 = schema.getPipe("MYPIPE");
-        Pipe pipe3 = schema.getPipe("mypipe");
-
-        assertNotNull(pipe1);
-        assertNotNull(pipe2);
-        assertNotNull(pipe3);
-
-        // All should reference the same pipe
-        assertEquals(pipe1.getName().toUpperCase(), pipe2.getName().toUpperCase());
-        assertEquals(pipe2.getName().toUpperCase(), pipe3.getName().toUpperCase());
+        if (!isLiveSnowflake()) {
+            assertNotNull(catalogPipe("MyPipe"));
+            assertNotNull(catalogPipe("MYPIPE"));
+            assertNotNull(catalogPipe("mypipe"));
+        }
     }
 
     @Test
     public void testAlterPipeSetExecutionPaused() {
-        Assumptions.assumeFalse(isLiveSnowflake(), PIPE_OVER_MISSING_STAGE);
         logger.info("Testing ALTER PIPE ... SET PIPE_EXECUTION_PAUSED (real Snowflake syntax)");
 
         engine.execute("CREATE TABLE target (id INTEGER)");
-        engine.execute("CREATE PIPE sep_pipe AS COPY INTO target FROM @stage");
-        Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
+        engine.execute("CREATE PIPE sep_pipe AS COPY INTO target FROM @ps");
 
         engine.execute("ALTER PIPE sep_pipe SET PIPE_EXECUTION_PAUSED = TRUE");
-        assertTrue(schema.getPipe("sep_pipe").isPaused());
+        assertTrue(pipeStatus("sep_pipe").contains("PAUSED"));
 
         engine.execute("ALTER PIPE sep_pipe SET PIPE_EXECUTION_PAUSED = FALSE");
-        assertFalse(schema.getPipe("sep_pipe").isPaused());
+        assertTrue(pipeStatus("sep_pipe").contains("RUNNING"));
     }
 
     @Test
@@ -537,24 +528,20 @@ public class PipesTest extends BaseDatabaseTest {
 
         engine.execute("ALTER PIPE refresh_pipe REFRESH");
 
-        Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
-        assertEquals("RUNNING", schema.getPipe("refresh_pipe").getStatus());
+        assertTrue(pipeStatus("refresh_pipe").contains("RUNNING"));
     }
 
     @Test
     public void testSystemPipeStatusReflectsState() {
-        Assumptions.assumeFalse(isLiveSnowflake(), PIPE_OVER_MISSING_STAGE);
         logger.info("Testing SYSTEM$PIPE_STATUS reflects RUNNING/PAUSED");
 
         engine.execute("CREATE TABLE target (id INTEGER)");
-        engine.execute("CREATE PIPE status_json_pipe AS COPY INTO target FROM @stage");
+        engine.execute("CREATE PIPE status_json_pipe AS COPY INTO target FROM @ps");
 
-        ResultSet running = engine.executeQuery("SELECT SYSTEM$PIPE_STATUS('status_json_pipe')");
-        assertTrue(running.getRows().get(0).getValue(0).toString().contains("RUNNING"));
+        assertTrue(pipeStatus("status_json_pipe").contains("RUNNING"));
 
         engine.execute("ALTER PIPE status_json_pipe SET PIPE_EXECUTION_PAUSED = TRUE");
-        ResultSet paused = engine.executeQuery("SELECT SYSTEM$PIPE_STATUS('status_json_pipe')");
-        assertTrue(paused.getRows().get(0).getValue(0).toString().contains("PAUSED"));
+        assertTrue(pipeStatus("status_json_pipe").contains("PAUSED"));
     }
 
     @Test
@@ -571,31 +558,29 @@ public class PipesTest extends BaseDatabaseTest {
 
     @Test
     public void testCreateOrReplacePipe() {
-        Assumptions.assumeFalse(isLiveSnowflake(), PIPE_OVER_MISSING_STAGE);
         logger.info("Testing CREATE OR REPLACE PIPE");
 
         engine.execute("CREATE TABLE t1 (id INTEGER)");
         engine.execute("CREATE TABLE t2 (id INTEGER)");
-        engine.execute("CREATE PIPE or_replace_pipe AS COPY INTO t1 FROM @stage1");
-        engine.execute("CREATE OR REPLACE PIPE or_replace_pipe AUTO_INGEST = TRUE AS COPY INTO t2 FROM @stage2");
+        engine.execute("CREATE PIPE or_replace_pipe AS COPY INTO t1 FROM @ps");
+        engine.execute("CREATE OR REPLACE PIPE or_replace_pipe AUTO_INGEST = TRUE AS COPY INTO t2 FROM @ps2");
 
-        Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
-        Pipe pipe = schema.getPipe("or_replace_pipe");
-        assertTrue(pipe.isAutoIngest());
-        assertTrue(pipe.getCopyStatement().contains("t2"));
+        assertTrue(pipeDefinition("or_replace_pipe").contains("t2"));
+        if (!isLiveSnowflake()) {
+            assertTrue(catalogPipe("or_replace_pipe").isAutoIngest());
+        }
     }
 
     @Test
     public void testCreatePipeIfNotExists() {
-        Assumptions.assumeFalse(isLiveSnowflake(), PIPE_OVER_MISSING_STAGE);
         logger.info("Testing CREATE PIPE IF NOT EXISTS keeps the original definition");
 
         engine.execute("CREATE TABLE target (id INTEGER)");
-        engine.execute("CREATE PIPE ine_pipe AS COPY INTO target FROM @stage_a");
-        engine.execute("CREATE PIPE IF NOT EXISTS ine_pipe AS COPY INTO target FROM @stage_b");
+        engine.execute("CREATE PIPE ine_pipe AS COPY INTO target FROM @ps");
+        engine.execute("CREATE PIPE IF NOT EXISTS ine_pipe AS COPY INTO target FROM @ps2");
 
-        Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
-        assertTrue(schema.getPipe("ine_pipe").getCopyStatement().contains("stage_a"));
+        assertTrue(pipeDefinition("ine_pipe").contains("@ps"));
+        assertFalse(pipeDefinition("ine_pipe").contains("@ps2"));
     }
 
     @Test
@@ -607,57 +592,52 @@ public class PipesTest extends BaseDatabaseTest {
 
     @Test
     public void testShowPipesLike() {
-        Assumptions.assumeFalse(isLiveSnowflake(), PIPE_OVER_MISSING_STAGE);
         logger.info("Testing SHOW PIPES LIKE filtering");
 
         engine.execute("CREATE TABLE t (id INTEGER)");
-        engine.execute("CREATE PIPE load_alpha AS COPY INTO t FROM @s1");
-        engine.execute("CREATE PIPE load_beta AS COPY INTO t FROM @s2");
-        engine.execute("CREATE PIPE other_pipe AS COPY INTO t FROM @s3");
+        engine.execute("CREATE PIPE load_alpha AS COPY INTO t FROM @ps");
+        engine.execute("CREATE PIPE load_beta AS COPY INTO t FROM @ps");
+        engine.execute("CREATE PIPE other_pipe AS COPY INTO t FROM @ps2");
 
-        ResultSet result = engine.executeQuery("SHOW PIPES LIKE 'load%'");
-        assertEquals(2, result.getRowCount());
+        assertEquals(2, engine.executeQuery("SHOW PIPES LIKE 'load%'").getRowCount());
     }
 
     @Test
     public void testShowPipesColumnContent() {
-        Assumptions.assumeFalse(isLiveSnowflake(), PIPE_OVER_MISSING_STAGE);
-        logger.info("Testing SHOW PIPES column contents (name / definition / auto_ingest / status)");
+        logger.info("Testing SHOW PIPES column contents (name / definition / kind / is_snowflake_managed)");
 
         engine.execute("CREATE TABLE t (id INTEGER)");
-        engine.execute("CREATE PIPE content_pipe AUTO_INGEST = TRUE AS COPY INTO t FROM @s");
+        engine.execute("CREATE PIPE content_pipe AUTO_INGEST = TRUE AS COPY INTO t FROM @ps");
 
-        ResultSet result = engine.executeQuery("SHOW PIPES LIKE 'content_pipe'");
+        final ResultSet result = engine.executeQuery("SHOW PIPES LIKE 'content_pipe'");
         assertEquals(1, result.getRowCount());
         final Row pipe = result.getRows().get(0);
         assertEquals("content_pipe", pipe.getValue(result.getColumnIndex("name")).toString().toLowerCase());
         assertTrue(pipe.getValue(result.getColumnIndex("definition")).toString().contains("COPY INTO"));
         assertEquals("STAGE", pipe.getValue(result.getColumnIndex("kind")));
-        assertEquals("false", pipe.getValue(result.getColumnIndex("is_snowflake_managed")));
+        assertEquals("false", String.valueOf(pipe.getValue(result.getColumnIndex("is_snowflake_managed"))));
     }
 
     @Test
     public void testCreatePipeWithIntegration() {
-        Assumptions.assumeFalse(isLiveSnowflake(), PIPE_OVER_MISSING_STAGE);
+        Assumptions.assumeFalse(isLiveSnowflake(), ACCOUNT_HAS_NO_INTEGRATIONS);
         logger.info("Testing CREATE PIPE with INTEGRATION (notification integration)");
 
         engine.execute("CREATE TABLE t (id INTEGER)");
         engine.execute("CREATE PIPE int_pipe AUTO_INGEST = TRUE INTEGRATION = 'my_notification_int' "
-            + "AS COPY INTO t FROM @s");
+            + "AS COPY INTO t FROM @ps");
 
-        Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
-        assertEquals("my_notification_int", schema.getPipe("int_pipe").getIntegration());
+        assertEquals("my_notification_int", catalogPipe("int_pipe").getIntegration());
     }
 
     @Test
     public void testDescribePipeColumnarRow() {
-        Assumptions.assumeFalse(isLiveSnowflake(), PIPE_OVER_MISSING_STAGE);
         logger.info("Testing DESCRIBE PIPE returns a single columnar row (name / definition)");
 
         engine.execute("CREATE TABLE t (id INTEGER, name VARCHAR)");
-        engine.execute("CREATE PIPE desc_pipe AS COPY INTO t FROM @s");
+        engine.execute("CREATE PIPE desc_pipe AS COPY INTO t FROM @ps");
 
-        ResultSet result = engine.executeQuery("DESCRIBE PIPE desc_pipe");
+        final ResultSet result = engine.executeQuery("DESCRIBE PIPE desc_pipe");
         assertEquals(1, result.getRowCount());
         // columns: created_on(0) name(1) database_name(2) schema_name(3) definition(4) ...
         assertEquals("desc_pipe", result.getRows().get(0).getValue(1).toString().toLowerCase());

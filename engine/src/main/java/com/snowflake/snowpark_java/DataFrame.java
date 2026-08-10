@@ -26,9 +26,8 @@ import dev.frostlake.types.NumericType;
 import dev.frostlake.types.TypeCategory;
 
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
+import java.util.Optional;
 
 /**
  * A Snowpark DataFrame: a PLAN, not a result.
@@ -68,6 +67,141 @@ public class DataFrame {
      */
     private ResultSet run() {
         return materialised != null ? materialised : session.runPlan(sql);
+    }
+
+    /**
+     * Project the given columns — a PLAN operation, so nothing runs until an action asks for rows.
+     * This and {@link #filter} are the paths a handler uses a {@link Column} through; the real API has
+     * no way to ask a Column for its SQL, so building one is only ever a means to one of these.
+     */
+    public DataFrame select(final Column... columns) {
+        final StringBuilder text = new StringBuilder("SELECT ");
+        for (int i = 0; i < columns.length; i++) {
+            if (i > 0) {
+                text.append(", ");
+            }
+            text.append(columns[i].sql());
+        }
+        return derived(text.append(" FROM (").append(sql).append(")").toString());
+    }
+
+    /** Keep the rows the condition holds for. A plan operation, like {@link #select}. */
+    public DataFrame filter(final Column condition) {
+        return derived("SELECT * FROM (" + sql + ") WHERE " + condition.sql());
+    }
+
+    /** Snowpark's spelling of {@link #filter}; both exist on the real DataFrame. */
+    public DataFrame where(final Column condition) {
+        return filter(condition);
+    }
+
+    // --- the rest of the real DataFrame surface, as plan operations --------------------------------
+    //
+    // Signatures measured by reflection on the account. Everything here is a PLAN operation, so it
+    // submits nothing until an action asks for rows, exactly like select/filter above.
+    //
+    // Absent on purpose, because each needs a type Frostlake has no model for: groupBy returns a
+    // RelationalGroupedDataFrame, join has eleven overloads spanning TableFunction and column maps,
+    // and write/na/stat/async return their own builder objects. Missing a method fails a handler at
+    // COMPILE time here, which is the loud, safe direction.
+
+    /** {@code ORDER BY}, taking the ordering columns as {@code asc()} / {@code desc_nulls_last()} etc. */
+    public DataFrame sort(final Column... columns) {
+        final StringBuilder text = new StringBuilder("SELECT * FROM (").append(sql).append(") ORDER BY ");
+        for (int i = 0; i < columns.length; i++) {
+            if (i > 0) {
+                text.append(", ");
+            }
+            text.append(columns[i].sql());
+        }
+        return derived(text.toString());
+    }
+
+    public DataFrame limit(final int count) {
+        return derived("SELECT * FROM (" + sql + ") LIMIT " + count);
+    }
+
+    public DataFrame distinct() {
+        return derived("SELECT DISTINCT * FROM (" + sql + ")");
+    }
+
+    /** Snowflake's {@code SELECT * EXCLUDE (…)} carries this one directly. */
+    public DataFrame drop(final String... columnNames) {
+        final StringBuilder text = new StringBuilder("SELECT * EXCLUDE (");
+        for (int i = 0; i < columnNames.length; i++) {
+            if (i > 0) {
+                text.append(", ");
+            }
+            text.append(columnNames[i]);
+        }
+        return derived(text.append(") FROM (").append(sql).append(")").toString());
+    }
+
+    public DataFrame union(final DataFrame other) {
+        return derived("(" + sql + ") UNION (" + other.sql + ")");
+    }
+
+    public DataFrame unionAll(final DataFrame other) {
+        return derived("(" + sql + ") UNION ALL (" + other.sql + ")");
+    }
+
+    public DataFrame except(final DataFrame other) {
+        return derived("(" + sql + ") EXCEPT (" + other.sql + ")");
+    }
+
+    public DataFrame intersect(final DataFrame other) {
+        return derived("(" + sql + ") INTERSECT (" + other.sql + ")");
+    }
+
+    public DataFrame crossJoin(final DataFrame other) {
+        return derived("SELECT * FROM (" + sql + ") CROSS JOIN (" + other.sql + ")");
+    }
+
+    /** Append a computed column, keeping the ones already there. */
+    public DataFrame withColumn(final String columnName, final Column value) {
+        return derived("SELECT *, " + value.sql() + " AS " + columnName + " FROM (" + sql + ")");
+    }
+
+    /** Rename one column, leaving the rest and their order alone — {@code SELECT * RENAME (…)}. */
+    public DataFrame rename(final String newName, final Column column) {
+        return derived("SELECT * RENAME (" + column.sql() + " AS " + newName + ") FROM (" + sql + ")");
+    }
+
+    /** Aggregate the whole frame, with no grouping. */
+    public DataFrame agg(final Column... aggregates) {
+        final StringBuilder text = new StringBuilder("SELECT ");
+        for (int i = 0; i < aggregates.length; i++) {
+            if (i > 0) {
+                text.append(", ");
+            }
+            text.append(aggregates[i].sql());
+        }
+        return derived(text.append(" FROM (").append(sql).append(")").toString());
+    }
+
+    /** A column of this frame, by name. */
+    public Column col(final String columnName) {
+        return new Column(columnName);
+    }
+
+    /** The first row, or empty when the frame has none. An ACTION: it runs the plan. */
+    public Optional<Row> first() {
+        final Row[] rows = limit(1).collect();
+        return rows.length == 0 ? Optional.<Row>empty() : Optional.of(rows[0]);
+    }
+
+    /** The first {@code count} rows. An ACTION. */
+    public Row[] first(final int count) {
+        return limit(count).collect();
+    }
+
+    /** A further plan over this one. A frame built over finished rows has no session to plan against. */
+    private DataFrame derived(final String derivedSql) {
+        if (session == null) {
+            throw new UnsupportedOperationException(
+                "this DataFrame holds a finished result, not a plan: select/filter need a session");
+        }
+        return new DataFrame(session, derivedSql);
     }
 
     /**
@@ -145,22 +279,11 @@ public class DataFrame {
         return run().getRowCount();
     }
 
-    public List<Map<String, Object>> toMapList() {
-        // One run for the whole action: rows and columns must come from the SAME execution, and running
-        // the plan per row would submit the statement once for every row it returned.
-        final ResultSet executed = run();
-        final List<ResultSetColumn> columns = executed.getColumns();
-        final List<Map<String, Object>> result = new ArrayList<>();
-        for (final dev.frostlake.storage.Row row : executed.getRows()) {
-            final Map<String, Object> map = new HashMap<>();
-            for (int i = 0; i < columns.size(); i++) {
-                map.put(columns.get(i).getName(), row.getValue(i));
-            }
-            result.add(map);
-        }
-        return result;
-    }
-
+    /**
+     * The engine's own result, for Frostlake's plumbing rather than for a handler. Its return type does
+     * not exist on Snowflake, so — unlike a method returning only JDK types — no portable handler can
+     * be written against it by accident.
+     */
     public ResultSet getResultSet() {
         return run();
     }

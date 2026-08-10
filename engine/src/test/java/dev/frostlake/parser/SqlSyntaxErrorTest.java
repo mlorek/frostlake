@@ -16,219 +16,158 @@
 
 package dev.frostlake.parser;
 
-import dev.frostlake.DatabaseEngine;
-import org.junit.jupiter.api.BeforeEach;
+import dev.frostlake.BaseDatabaseTest;
+import dev.frostlake.FrostlakeJdbc;
+
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Tests for SQL syntax error detection and logging
+ * SQL syntax error detection over malformed statement shapes — each cell refuses on every
+ * transport with live's {@code syntax error} wording somewhere in the message. The typed
+ * {@code SqlSyntaxException} API ({@code getFailedSql}, {@code getSyntaxErrors}) exists only on
+ * the plain embedded engine — JDBC flattens it to a message — so those asserts are guarded.
+ * Exact wording and positions are pinned in {@code SyntaxErrorShapeTest}.
  */
-public class SqlSyntaxErrorTest {
+public class SqlSyntaxErrorTest extends BaseDatabaseTest {
 
     private static final Logger logger = LoggerFactory.getLogger(SqlSyntaxErrorTest.class);
-    private DatabaseEngine engine;
 
-    @BeforeEach
-    public void setUp() {
-        engine = new DatabaseEngine();
-        engine.execute("CREATE DATABASE IF NOT EXISTS test_db");
-        engine.execute("USE DATABASE test_db");
-        engine.execute("USE SCHEMA public");
+    /** Whether the typed engine-side exception object survives to the test (no JDBC in between). */
+    private static boolean typedSurface() {
+        return !isLiveSnowflake() && !FrostlakeJdbc.enabled();
+    }
+
+    private RuntimeException refusal(final String sql) {
+        RuntimeException caught = null;
+        try {
+            engine.execute(sql);
+        } catch (final RuntimeException e) {
+            caught = e;
+        }
+        assertTrue(caught != null, "expected a refusal for: " + sql);
+        return caught;
+    }
+
+    /** Refuses everywhere; the message reads as a syntax error; typed API checked embedded. */
+    private void assertSyntaxRefusal(final String sql) {
+        final RuntimeException ex = refusal(sql);
+        assertTrue(ex.getMessage().contains("syntax error"),
+            "not a syntax refusal: " + ex.getMessage());
+        if (typedSurface()) {
+            assertTrue(ex instanceof SqlSyntaxException, "expected SqlSyntaxException, got " + ex);
+            final SqlSyntaxException typed = (SqlSyntaxException) ex;
+            assertEquals(sql, typed.getFailedSql());
+            assertFalse(typed.getSyntaxErrors().isEmpty());
+        }
+        logger.info("Caught expected syntax error: {}", ex.getMessage());
     }
 
     @Test
     public void testInvalidSelectSyntax() {
-        String sql = "SELECT * FORM users";  // FORM instead of FROM
-        SqlSyntaxException ex = assertThrows(SqlSyntaxException.class, () -> {
-            engine.execute(sql);
-        });
-
-        assertNotNull(ex.getFailedSql());
-        assertEquals(sql, ex.getFailedSql());
-        assertFalse(ex.getSyntaxErrors().isEmpty());
-        logger.info("Caught expected syntax error: {}", ex.getMessage());
+        assertSyntaxRefusal("SELECT * FORM users");  // FORM instead of FROM
     }
 
     @Test
     public void testMissingFromClause() {
-        // With WHERE allowed without FROM, this now parses but fails at runtime
-        String sql = "SELECT name WHERE age > 18";
-        assertThrows(RuntimeException.class, () -> {
-            engine.execute(sql);
-        });
+        // WHERE is allowed without FROM, so this parses and fails resolving the identifier.
+        refusal("SELECT name WHERE age > 18");
     }
 
     @Test
     public void testInvalidWhereClause() {
-        String sql = "SELECT * FROM users WHERE";  // Incomplete WHERE
-        SqlSyntaxException ex = assertThrows(SqlSyntaxException.class, () -> {
-            engine.execute(sql);
-        });
-
-        assertNotNull(ex.getFailedSql());
-        assertFalse(ex.getSyntaxErrors().isEmpty());
-        logger.info("Caught expected syntax error: {}", ex.getMessage());
+        assertSyntaxRefusal("SELECT * FROM users WHERE");  // Incomplete WHERE
     }
 
     @Test
     public void testInvalidInsertSyntax() {
-        String sql = "INSERT users VALUES (1, 'Alice')";  // Missing INTO
-        SqlSyntaxException ex = assertThrows(SqlSyntaxException.class, () -> {
-            engine.execute(sql);
-        });
-
-        assertTrue(ex.getMessage().contains("Syntax error"));
-        logger.info("Caught expected syntax error: {}", ex.getMessage());
+        assertSyntaxRefusal("INSERT users VALUES (1, 'Alice')");  // Missing INTO
     }
 
     @Test
     public void testUnclosedParenthesis() {
-        String sql = "SELECT * FROM users WHERE (age > 18";  // Missing )
-        SqlSyntaxException ex = assertThrows(SqlSyntaxException.class, () -> {
-            engine.execute(sql);
-        });
-
-        assertNotNull(ex.getFailedSql());
-        logger.info("Caught expected syntax error: {}", ex.getMessage());
+        assertSyntaxRefusal("SELECT * FROM users WHERE (age > 18");  // Missing )
     }
 
     @Test
     public void testInvalidColumnName() {
-        String sql = "SELECT * FROM users ORDER BY 123abc";  // Invalid identifier
-        SqlSyntaxException ex = assertThrows(SqlSyntaxException.class, () -> {
-            engine.execute(sql);
-        });
-
-        assertTrue(ex.getMessage().contains("Syntax error"));
-        logger.info("Caught expected syntax error: {}", ex.getMessage());
+        assertSyntaxRefusal("SELECT * FROM users ORDER BY 123abc");  // Invalid identifier
     }
 
     @Test
     public void testMultipleSyntaxErrors() {
-        String sql = "SELECT * FORM users WERE age > 18";  // Multiple errors
-        SqlSyntaxException ex = assertThrows(SqlSyntaxException.class, () -> {
-            engine.execute(sql);
-        });
-
-        assertNotNull(ex.getSyntaxErrors());
-        assertFalse(ex.getSyntaxErrors().isEmpty());
-        logger.info("Caught {} syntax error(s)", ex.getSyntaxErrors().size());
+        assertSyntaxRefusal("SELECT * FORM users WERE age > 18");  // Multiple errors
     }
 
     @Test
     public void testInvalidCreateTable() {
-        String sql = "CREATE TABLE users (id INT name VARCHAR)";  // Missing comma
-        SqlSyntaxException ex = assertThrows(SqlSyntaxException.class, () -> {
-            engine.execute(sql);
-        });
-
-        assertTrue(ex.getMessage().contains("Syntax error"));
-        logger.info("Caught expected syntax error: {}", ex.getMessage());
+        assertSyntaxRefusal("CREATE TABLE users (id INT name VARCHAR)");  // Missing comma
     }
 
     @Test
     public void testInvalidUpdate() {
-        String sql = "UPDATE users age = 25 WHERE id = 1";  // Missing SET
-        SqlSyntaxException ex = assertThrows(SqlSyntaxException.class, () -> {
-            engine.execute(sql);
-        });
-
-        assertNotNull(ex.getFailedSql());
-        logger.info("Caught expected syntax error: {}", ex.getMessage());
+        assertSyntaxRefusal("UPDATE users age = 25 WHERE id = 1");  // Missing SET
     }
 
     @Test
     public void testInvalidDelete() {
-        String sql = "DELETE users WHERE id = 1";  // Missing FROM
-        SqlSyntaxException ex = assertThrows(SqlSyntaxException.class, () -> {
-            engine.execute(sql);
-        });
-
-        assertTrue(ex.getMessage().contains("Syntax error"));
-        logger.info("Caught expected syntax error: {}", ex.getMessage());
+        assertSyntaxRefusal("DELETE users WHERE id = 1");  // Missing FROM
     }
 
     @Test
     public void testValidQueryDoesNotThrow() {
-        // Valid queries should not throw syntax errors
-        assertDoesNotThrow(() -> {
-            engine.execute("CREATE TABLE test_table (id INTEGER, name VARCHAR)");
-            engine.execute("INSERT INTO test_table VALUES (1, 'Alice')");
-            engine.execute("SELECT * FROM test_table WHERE id = 1");
-            engine.execute("UPDATE test_table SET name = 'Bob' WHERE id = 1");
-            engine.execute("DELETE FROM test_table WHERE id = 1");
+        assertDoesNotThrow(new Executable() {
+            @Override
+            public void execute() {
+                engine.execute("CREATE TABLE test_table (id INTEGER, name VARCHAR)");
+                engine.execute("INSERT INTO test_table VALUES (1, 'Alice')");
+                engine.execute("SELECT * FROM test_table WHERE id = 1");
+                engine.execute("UPDATE test_table SET name = 'Bob' WHERE id = 1");
+                engine.execute("DELETE FROM test_table WHERE id = 1");
+            }
         });
         logger.info("Valid queries executed successfully");
     }
 
     @Test
-    public void testErrorMessageContainsQuery() {
-        String sql = "SELEKT * FROM users";  // Typo in SELECT
-        SqlSyntaxException ex = assertThrows(SqlSyntaxException.class, () -> {
-            engine.execute(sql);
-        });
-
-        assertTrue(ex.getMessage().contains(sql) || ex.getFailedSql().equals(sql));
-        logger.info("Error message contains failed query");
+    public void testErrorCarriesTheFailedStatement() {
+        // SELEKT reads as a bare identifier expression, so the unexpected token is the '*'.
+        assertSyntaxRefusal("SELEKT * FROM users");
     }
 
     @Test
     public void testComplexInvalidQuery() {
-        String sql = """
+        assertSyntaxRefusal("""
             SELECT u.name, o.amount
             FROM users u
             JOIN orders o u.id = o.user_id
             WHERE o.amount > 100
-            """;  // Missing ON in JOIN
-
-        SqlSyntaxException ex = assertThrows(SqlSyntaxException.class, () -> {
-            engine.execute(sql);
-        });
-
-        assertNotNull(ex.getFailedSql());
-        assertTrue(ex.getFailedSql().contains("JOIN"));
-        logger.info("Caught expected syntax error in complex query");
+            """);  // Missing ON in JOIN
     }
 
     @Test
     public void testInvalidAggregateFunction() {
-        String sql = "SELECT COUNT(*) FORM users";  // FORM instead of FROM
-        SqlSyntaxException ex = assertThrows(SqlSyntaxException.class, () -> {
-            engine.execute(sql);
-        });
-
-        assertFalse(ex.getSyntaxErrors().isEmpty());
-        logger.info("Caught expected syntax error: {}", ex.getMessage());
+        assertSyntaxRefusal("SELECT COUNT(*) FORM users");  // FORM instead of FROM
     }
 
     @Test
     public void testInvalidGroupBy() {
-        String sql = "SELECT age FROM users GROUP age";  // Missing BY
-        SqlSyntaxException ex = assertThrows(SqlSyntaxException.class, () -> {
-            engine.execute(sql);
-        });
-
-        assertTrue(ex.getMessage().contains("Syntax error"));
-        logger.info("Caught expected syntax error: {}", ex.getMessage());
+        assertSyntaxRefusal("SELECT age FROM users GROUP age");  // Missing BY
     }
 
     @Test
     public void testPartiallyValidScript() {
-        // First statement is valid, second is invalid
-        String sql = """
+        // First statement is valid, second is invalid.
+        assertSyntaxRefusal("""
             CREATE TABLE test (id INTEGER);
             SELEKT * FROM test
-            """;
-
-        SqlSyntaxException ex = assertThrows(SqlSyntaxException.class, () -> {
-            engine.execute(sql);
-        });
-
-        assertNotNull(ex.getFailedSql());
-        logger.info("Caught syntax error in multi-statement script");
+            """);
     }
 }

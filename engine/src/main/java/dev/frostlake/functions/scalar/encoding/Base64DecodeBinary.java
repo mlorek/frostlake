@@ -24,7 +24,7 @@ import java.util.List;
 
 /** BASE64_DECODE_BINARY(string) — decodes a base64 string into a BINARY value. */
 public class Base64DecodeBinary extends BuiltInFunction {
-    public Base64DecodeBinary() { super("BASE64_DECODE_BINARY", BinaryType.BINARY); }
+    public Base64DecodeBinary() { super("BASE64_DECODE_BINARY", BinaryType.VARBINARY); }
 
     @Override
     public Object evaluate(final List<Object> args) {
@@ -32,6 +32,8 @@ public class Base64DecodeBinary extends BuiltInFunction {
         return BinaryValue.fromBase64(args.get(0).toString());
     }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return 1; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return 1; }
 }

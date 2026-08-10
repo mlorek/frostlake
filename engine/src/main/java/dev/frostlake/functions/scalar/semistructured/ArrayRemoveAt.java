@@ -20,7 +20,6 @@ import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
 import dev.frostlake.types.ArrayType;
 import dev.frostlake.values.VariantValue;
-import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.node.ArrayNode;
 
 import java.util.List;
@@ -31,17 +30,19 @@ public class ArrayRemoveAt extends BuiltInFunction {
 
     @Override
     public Object evaluate(final List<Object> args) {
-        ArrayNode src = ArrayFunctionHelper.parseArray(args.get(0));
+        final ArrayNode src = ArrayFunctionHelper.parseArray(args.get(0));
         if (src == null || args.get(1) == null) return null;
         int idx = ((Number) args.get(1)).intValue();
         if (idx < 0) idx = src.size() + idx;
-        ArrayNode result = ArrayFunctionHelper.MAPPER.createArrayNode();
+        final ArrayNode result = ArrayFunctionHelper.MAPPER.createArrayNode();
         for (int i = 0; i < src.size(); i++) {
             if (i != idx) result.add(src.get(i));
         }
         return VariantValue.ofNode(result);
     }
 
-    @Override public int getMinArgCount() { return 2; }
-    @Override public int getMaxArgCount() { return 2; }
+    @Override
+    public int getMinArgCount() { return 2; }
+    @Override
+    public int getMaxArgCount() { return 2; }
 }

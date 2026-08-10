@@ -78,11 +78,6 @@ public class StructType extends DataType implements Iterable<StructField> {
     }
 
     @Override
-    public String typeName() {
-        return "Struct";
-    }
-
-    @Override
     public String toString() {
         final StringBuilder text = new StringBuilder("StructType[");
         for (int i = 0; i < fields.size(); i++) {

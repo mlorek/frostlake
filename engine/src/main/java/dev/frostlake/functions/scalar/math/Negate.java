@@ -34,6 +34,8 @@ public class Negate extends BuiltInFunction {
         return new BigDecimal(args.get(0).toString()).negate();
     }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return 1; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return 1; }
 }

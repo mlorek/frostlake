@@ -122,9 +122,10 @@ public class SnowparkLazyPlanTest extends BaseDatabaseTest {
     public void aMaterialisedFrameNeedsNoSession() {
         engine.execute("CREATE TABLE lazy_rows (n INTEGER)");
         engine.execute("INSERT INTO lazy_rows VALUES (1), (2)");
-        final DataFrame df = new DataFrame(engine.executeQuery("SELECT * FROM lazy_rows"));
+        final DataFrame df = new DataFrame(engine.executeQuery(
+            "SELECT * FROM lazy_rows ORDER BY n"));
         assertEquals(2, df.count());
         assertEquals(2, df.collect().length);
-        assertEquals(2, df.toMapList().size());
+        assertEquals(1, df.collect()[0].getInt(0));
     }
 }

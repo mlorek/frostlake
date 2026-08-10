@@ -61,11 +61,11 @@ public class QueryHistoryTracker {
      * Get query history with limit
      */
     public List<QueryHistory> getHistory(final int limit) {
-        List<QueryHistory> result = new ArrayList<>();
+        final List<QueryHistory> result = new ArrayList<>();
         int count = 0;
 
         // Return most recent queries first (reverse order)
-        List<QueryHistory> allHistory = getAllHistory();
+        final List<QueryHistory> allHistory = getAllHistory();
         Collections.reverse(allHistory);
 
         for (final QueryHistory query : allHistory) {
@@ -93,7 +93,7 @@ public class QueryHistoryTracker {
      * Get history filtered by user
      */
     public List<QueryHistory> getHistoryByUser(final String user) {
-        List<QueryHistory> result = new ArrayList<>();
+        final List<QueryHistory> result = new ArrayList<>();
         for (final QueryHistory query : queryHistory) {
             if (user.equalsIgnoreCase(query.getUser())) {
                 result.add(query);
@@ -107,7 +107,7 @@ public class QueryHistoryTracker {
      * Get history filtered by database
      */
     public List<QueryHistory> getHistoryByDatabase(final String database) {
-        List<QueryHistory> result = new ArrayList<>();
+        final List<QueryHistory> result = new ArrayList<>();
         for (final QueryHistory query : queryHistory) {
             if (database != null && database.equalsIgnoreCase(query.getDatabase())) {
                 result.add(query);
@@ -121,7 +121,7 @@ public class QueryHistoryTracker {
      * Get history filtered by query type
      */
     public List<QueryHistory> getHistoryByQueryType(final String queryType) {
-        List<QueryHistory> result = new ArrayList<>();
+        final List<QueryHistory> result = new ArrayList<>();
         for (final QueryHistory query : queryHistory) {
             if (queryType.equalsIgnoreCase(query.getQueryType())) {
                 result.add(query);
@@ -135,7 +135,7 @@ public class QueryHistoryTracker {
      * Get history filtered by status
      */
     public List<QueryHistory> getHistoryByStatus(final String status) {
-        List<QueryHistory> result = new ArrayList<>();
+        final List<QueryHistory> result = new ArrayList<>();
         for (final QueryHistory query : queryHistory) {
             if (status.equalsIgnoreCase(query.getStatus())) {
                 result.add(query);

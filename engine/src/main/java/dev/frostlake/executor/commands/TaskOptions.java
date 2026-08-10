@@ -63,6 +63,39 @@ final class TaskOptions {
         }
     }
 
+    /**
+     * A task SCHEDULE is either {@code '<n> MINUTE[S]'} with a positive count, or
+     * {@code 'USING CRON <minute> <hour> <day-of-month> <month> <day-of-week> <time zone>'}.
+     * Anything else — a zero interval included — refuses with the account's one sentence for
+     * every malformed shape, live-verified.
+     */
+    static void requireValidSchedule(final String schedule) {
+        final String trimmed = schedule == null ? "" : schedule.trim();
+        final String upper = trimmed.toUpperCase();
+        if (upper.contains("CRON")) {
+            final String[] cronTokens = trimmed.split("\\s+");
+            final boolean shaped = cronTokens.length >= 8
+                && "USING".equalsIgnoreCase(cronTokens[0]) && "CRON".equalsIgnoreCase(cronTokens[1]);
+            if (!shaped) {
+                throw new RuntimeException(invalidScheduleMessage());
+            }
+            for (int fieldIndex = 2; fieldIndex < 7; fieldIndex++) {
+                if (!cronTokens[fieldIndex].matches("[0-9*,/\\-LW#?A-Za-z]+")) {
+                    throw new RuntimeException(invalidScheduleMessage());
+                }
+            }
+            return;
+        }
+        if (!upper.matches("[0-9]+\\s+MINUTES?") || Long.parseLong(upper.split("\\s+")[0]) < 1L) {
+            throw new RuntimeException(invalidScheduleMessage());
+        }
+    }
+
+    private static String invalidScheduleMessage() {
+        return "Invalid schedule was specified. Please refer to the docs on what constitutes a"
+            + " valid schedule.";
+    }
+
     /** The task's fully qualified upper-case name, the form live names it by in the
      *  TARGET_COMPLETION_INTERVAL rejection. */
     private static String qualifiedTaskName(final Schema schema, final String taskName) {

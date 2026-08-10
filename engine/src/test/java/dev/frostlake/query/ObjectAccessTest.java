@@ -55,7 +55,7 @@ public class ObjectAccessTest extends BaseDatabaseTest {
     public void testSimplePropertyAccess() {
         logger.info("Testing simple property access with :");
 
-        ResultSet result = engine.executeQuery("SELECT data:name::VARCHAR FROM json_data WHERE id = 1");
+        final ResultSet result = engine.executeQuery("SELECT data:name::VARCHAR FROM json_data WHERE id = 1");
 
         assertNotNull(result);
         assertEquals(1, result.getRowCount());
@@ -67,7 +67,7 @@ public class ObjectAccessTest extends BaseDatabaseTest {
     public void testMultiplePropertyAccess() {
         logger.info("Testing multiple properties with :");
 
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT data:name::VARCHAR as name, data:age as age FROM json_data WHERE id = 1
             """);
 
@@ -81,7 +81,7 @@ public class ObjectAccessTest extends BaseDatabaseTest {
     public void testNestedPropertyAccess() {
         logger.info("Testing nested property access with :");
 
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT data:address:city::VARCHAR FROM json_data WHERE id = 1
             """);
 
@@ -94,7 +94,7 @@ public class ObjectAccessTest extends BaseDatabaseTest {
     public void testPropertyAccessInWhere() {
         logger.info("Testing property access in WHERE clause");
 
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT id, data:name::VARCHAR FROM json_data WHERE data:age > 28
             """);
 
@@ -108,7 +108,7 @@ public class ObjectAccessTest extends BaseDatabaseTest {
     public void testPropertyAccessWithAlias() {
         logger.info("Testing property access with table alias");
 
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT j.data:name::VARCHAR, j.data:address:city::VARCHAR
             FROM json_data j
             WHERE j.id = 2

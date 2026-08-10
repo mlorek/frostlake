@@ -26,7 +26,7 @@ public class DropFunctionProcedureParametersExample {
 
     @Test
     public void demonstrateDropWithParameters() {
-        DatabaseEngine engine = new DatabaseEngine();
+        final DatabaseEngine engine = new DatabaseEngine();
 
         try {
             engine.execute("CREATE DATABASE demo_db");

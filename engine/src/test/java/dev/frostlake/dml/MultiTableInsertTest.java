@@ -16,10 +16,8 @@
 
 package dev.frostlake.dml;
 
-import dev.frostlake.DatabaseEngine;
+import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -28,24 +26,10 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
  * Snowflake multi-table INSERT — INSERT [OVERWRITE] ALL (unconditional) and
  * INSERT [OVERWRITE] {FIRST | ALL} WHEN … THEN INTO … [ELSE INTO …].
  */
-public class MultiTableInsertTest {
+public class MultiTableInsertTest extends BaseDatabaseTest {
 
-    private DatabaseEngine engine;
 
-    @BeforeEach
-    public void setUp() {
-        engine = new DatabaseEngine();
-        engine.execute("CREATE DATABASE IF NOT EXISTS test_db");
-        engine.execute("USE DATABASE test_db");
-        engine.execute("USE SCHEMA public");
-    }
 
-    @AfterEach
-    public void tearDown() {
-        if (engine != null) {
-            engine.shutdown();
-        }
-    }
 
     private int count(final String table) {
         return engine.executeQuery("SELECT * FROM " + table).getRows().size();

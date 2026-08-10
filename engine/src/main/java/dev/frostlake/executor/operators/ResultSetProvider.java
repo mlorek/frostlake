@@ -20,7 +20,7 @@ import dev.frostlake.storage.ResultSet;
 
 /**
  * Interface for providing ResultSets.
- * Replaces Supplier<ResultSet>.
+ * Replaces {@code Supplier<ResultSet>}.
  */
 public interface ResultSetProvider {
     /**

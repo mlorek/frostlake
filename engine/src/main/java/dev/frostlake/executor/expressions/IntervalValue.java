@@ -28,6 +28,20 @@ class IntervalValue {
         this(value, unit, null);
     }
 
+    /** Whether the unit was written inside the quoted string — see IntervalExpression#isUnitInString. */
+    private boolean unitInString;
+
+    boolean isUnitInString() {
+        return unitInString;
+    }
+
+    void markUnitInString() {
+        this.unitInString = true;
+        if (rest != null) {
+            rest.markUnitInString();
+        }
+    }
+
     public IntervalValue(final Object value, final IntervalUnit unit, final IntervalValue rest) {
         this.value = value;
         this.unit = unit;

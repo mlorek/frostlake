@@ -18,9 +18,9 @@ package dev.frostlake.functions.scalar.semistructured;
 
 import dev.frostlake.functions.StructuredArgumentFunction;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
-import tools.jackson.databind.JsonNode;
-import java.util.List;
 import dev.frostlake.types.BooleanType;
+import java.util.List;
+import tools.jackson.databind.JsonNode;
 
 /** IS_DECIMAL(v) — TRUE when the variant holds a fixed-point number (integral or decimal node). */
 public class IsDecimal extends StructuredArgumentFunction {
@@ -33,6 +33,8 @@ public class IsDecimal extends StructuredArgumentFunction {
         return node != null && (node.isIntegralNumber() || node.isBigDecimal());
     }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return 1; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return 1; }
 }

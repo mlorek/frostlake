@@ -50,54 +50,54 @@ public class SelectBasicTest extends BaseDatabaseTest {
 
     @Test
     public void testSelectAll() {
-        ResultSet result = engine.executeQuery("SELECT * FROM employees");
+        final ResultSet result = engine.executeQuery("SELECT * FROM employees");
         assertEquals(6, result.getRowCount());
         assertEquals(5, result.getColumnCount());
     }
 
     @Test
     public void testSelectSpecificColumns() {
-        ResultSet result = engine.executeQuery("SELECT name, department FROM employees");
+        final ResultSet result = engine.executeQuery("SELECT name, department FROM employees");
         assertEquals(6, result.getRowCount());
         assertEquals(2, result.getColumnCount());
     }
 
     @Test
     public void testSelectWithLimit() {
-        ResultSet result = engine.executeQuery("SELECT * FROM employees LIMIT 3");
+        final ResultSet result = engine.executeQuery("SELECT * FROM employees LIMIT 3");
         assertEquals(3, result.getRowCount());
     }
 
     @Test
     public void testSelectCount() {
-        ResultSet result = engine.executeQuery("SELECT COUNT(*) FROM employees");
+        final ResultSet result = engine.executeQuery("SELECT COUNT(*) FROM employees");
         assertEquals(1, result.getRowCount());
     }
 
     @Test
     public void testSelectFromEmptyTable() {
         engine.execute("CREATE TABLE empty_table (id INTEGER, name VARCHAR)");
-        ResultSet result = engine.executeQuery("SELECT * FROM empty_table");
+        final ResultSet result = engine.executeQuery("SELECT * FROM empty_table");
         assertEquals(0, result.getRowCount());
     }
 
     @Test
     public void testSelectWithTrailingComma() {
-        ResultSet result = engine.executeQuery("SELECT id, name, department, FROM employees");
+        final ResultSet result = engine.executeQuery("SELECT id, name, department, FROM employees");
         assertEquals(6, result.getRowCount());
         assertEquals(3, result.getColumnCount());
     }
 
     @Test
     public void testSelectWithTrailingCommaAndWhere() {
-        ResultSet result = engine.executeQuery("SELECT name, department, FROM employees WHERE age > 30");
+        final ResultSet result = engine.executeQuery("SELECT name, department, FROM employees WHERE age > 30");
         assertEquals(3, result.getRowCount());
         assertEquals(2, result.getColumnCount());
     }
 
     @Test
     public void testSelectWithTrailingCommaMultipleColumns() {
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT
                 id,
                 name,
@@ -111,7 +111,7 @@ public class SelectBasicTest extends BaseDatabaseTest {
 
     @Test
     public void testSelectWithTrailingCommaAndOrderBy() {
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT
                 name,
                 salary,
@@ -124,7 +124,7 @@ public class SelectBasicTest extends BaseDatabaseTest {
 
     @Test
     public void testSelectWithTrailingCommaAndGroupBy() {
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT
                 department,
                 COUNT(*),
@@ -142,7 +142,7 @@ public class SelectBasicTest extends BaseDatabaseTest {
         engine.execute("INSERT INTO departments VALUES ('Sales', 500000)");
         engine.execute("INSERT INTO departments VALUES ('HR', 300000)");
 
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT
                 e.name,
                 e.department,
@@ -156,7 +156,7 @@ public class SelectBasicTest extends BaseDatabaseTest {
 
     @Test
     public void testSelectWithTrailingCommaInSubquery() {
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT * FROM (
                 SELECT
                     id,
@@ -171,21 +171,21 @@ public class SelectBasicTest extends BaseDatabaseTest {
 
     @Test
     public void testSelectSingleColumnWithTrailingComma() {
-        ResultSet result = engine.executeQuery("SELECT name, FROM employees");
+        final ResultSet result = engine.executeQuery("SELECT name, FROM employees");
         assertEquals(6, result.getRowCount());
         assertEquals(1, result.getColumnCount());
     }
 
     @Test
     public void testSelectStarNotAffectedByTrailingComma() {
-        ResultSet result = engine.executeQuery("SELECT * FROM employees");
+        final ResultSet result = engine.executeQuery("SELECT * FROM employees");
         assertEquals(6, result.getRowCount());
         assertEquals(5, result.getColumnCount());
     }
 
     @Test
     public void testSelectWithTrailingCommaAndAlias() {
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT
                 id AS emp_id,
                 name AS emp_name,
@@ -198,7 +198,7 @@ public class SelectBasicTest extends BaseDatabaseTest {
 
     @Test
     public void testSelectWithTrailingCommaAndExpressions() {
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT
                 name,
                 salary * 12 AS annual_salary,

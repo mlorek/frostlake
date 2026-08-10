@@ -16,10 +16,8 @@
 
 package dev.frostlake.query;
 
-import dev.frostlake.DatabaseEngine;
+import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -27,30 +25,18 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 /**
  * Simple test for CASE ELSE clause
  */
-public class CaseElseTest {
+public class CaseElseTest extends BaseDatabaseTest {
 
-    private DatabaseEngine engine;
-
-    @BeforeEach
-    public void setUp() {
-        engine = new DatabaseEngine();
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
+    @Override
+    protected void setupTest() {
         engine.execute("CREATE TABLE test (id INTEGER, val INTEGER)");
         engine.execute("INSERT INTO test VALUES (1, 10)");
         engine.execute("INSERT INTO test VALUES (2, NULL)");
     }
 
-    @AfterEach
-    public void tearDown() {
-        if (engine != null) {
-            engine.shutdown();
-        }
-    }
-
     @Test
     public void testSimpleElse() {
-        ResultSet rs = engine.executeQuery(
+        final ResultSet rs = engine.executeQuery(
             "SELECT CASE WHEN 1 = 2 THEN 'no' ELSE 'yes' END as result"
         );
         assertEquals("yes", rs.getRows().get(0).getValue(0));
@@ -58,7 +44,7 @@ public class CaseElseTest {
 
     @Test
     public void testElseWithNull() {
-        ResultSet rs = engine.executeQuery("""
+        final ResultSet rs = engine.executeQuery("""
             SELECT id,
             CASE WHEN val > 5 THEN 'big' ELSE 'small' END as size
             FROM test ORDER BY id

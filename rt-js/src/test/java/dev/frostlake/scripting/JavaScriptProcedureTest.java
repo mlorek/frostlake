@@ -20,10 +20,10 @@ import dev.frostlake.DatabaseEngine;
 import dev.frostlake.metastore.model.Parameter;
 import dev.frostlake.metastore.model.Procedure;
 import dev.frostlake.metastore.model.Schema;
+import dev.frostlake.rt.js.JavaScriptProcedureExecutor;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.types.ObjectType;
 import dev.frostlake.types.StringType;
-import dev.frostlake.rt.js.JavaScriptProcedureExecutor;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -72,8 +72,8 @@ public class JavaScriptProcedureTest {
             $$
             """);
 
-        Schema schema = engine.getCatalog().getDatabase("TEST_DB").getSchema("PUBLIC");
-        Procedure proc = schema.getProcedure("js_add_proc");
+        final Schema schema = engine.getCatalog().getDatabase("TEST_DB").getSchema("PUBLIC");
+        final Procedure proc = schema.getProcedure("js_add_proc");
 
         assertNotNull(proc, "Procedure should be created");
         assertEquals("JS_ADD_PROC", proc.getName());
@@ -85,10 +85,10 @@ public class JavaScriptProcedureTest {
     public void testJavaScriptProcedureWithSnowflakeExecute() {
         logger.info("Testing JavaScript procedure with snowflake.execute()");
 
-        List<Parameter> parameters = new ArrayList<>();
+        final List<Parameter> parameters = new ArrayList<>();
         parameters.add(new Parameter("dummy", StringType.VARCHAR));
 
-        String body = """
+        final String body = """
             var cmd = "SELECT 42 as result";
             var rs = snowflake.execute({sqlText: cmd});
             if (rs.next()) {
@@ -97,9 +97,9 @@ public class JavaScriptProcedureTest {
             return null;
             """;
 
-        Procedure proc = new Procedure("test_proc", parameters, ObjectType.OBJECT, body, "JAVASCRIPT");
+        final Procedure proc = new Procedure("test_proc", parameters, ObjectType.OBJECT, body, "JAVASCRIPT");
 
-        Object result = JavaScriptProcedureExecutor.executeJavaScriptProcedure(
+        final Object result = JavaScriptProcedureExecutor.executeJavaScriptProcedure(
             proc,
             Arrays.asList("test"),
             engine
@@ -188,10 +188,10 @@ public class JavaScriptProcedureTest {
     public void testJavaScriptProcedureReturnObject() {
         logger.info("Testing JavaScript procedure returning object");
 
-        List<Parameter> parameters = new ArrayList<>();
+        final List<Parameter> parameters = new ArrayList<>();
         parameters.add(new Parameter("s", StringType.VARCHAR));
 
-        String body = """
+        final String body = """
             const obj = {
                 p: null
             };
@@ -211,9 +211,9 @@ public class JavaScriptProcedureTest {
             }
             """;
 
-        Procedure proc = new Procedure("p1", parameters, ObjectType.OBJECT, body, "JAVASCRIPT");
+        final Procedure proc = new Procedure("p1", parameters, ObjectType.OBJECT, body, "JAVASCRIPT");
 
-        Object result = JavaScriptProcedureExecutor.executeJavaScriptProcedure(
+        final Object result = JavaScriptProcedureExecutor.executeJavaScriptProcedure(
             proc,
             Arrays.asList("test_string"),
             engine
@@ -231,10 +231,10 @@ public class JavaScriptProcedureTest {
     public void testJavaScriptProcedureWithErrorHandling() {
         logger.info("Testing JavaScript procedure with try-catch-finally");
 
-        List<Parameter> parameters = new ArrayList<>();
+        final List<Parameter> parameters = new ArrayList<>();
         parameters.add(new Parameter("input", StringType.VARCHAR));
 
-        String body = """
+        final String body = """
             const result = {
                 success: false,
                 error: null,
@@ -254,9 +254,9 @@ public class JavaScriptProcedureTest {
             }
             """;
 
-        Procedure proc = new Procedure("test_error", parameters, ObjectType.OBJECT, body, "JAVASCRIPT");
+        final Procedure proc = new Procedure("test_error", parameters, ObjectType.OBJECT, body, "JAVASCRIPT");
 
-        Object result = JavaScriptProcedureExecutor.executeJavaScriptProcedure(
+        final Object result = JavaScriptProcedureExecutor.executeJavaScriptProcedure(
             proc,
             Arrays.asList("hello"),
             engine
@@ -270,9 +270,9 @@ public class JavaScriptProcedureTest {
     public void testJavaScriptProcedureGetColumnByName() {
         logger.info("Testing JavaScript procedure with getColumnValue by name");
 
-        List<Parameter> parameters = new ArrayList<>();
+        final List<Parameter> parameters = new ArrayList<>();
 
-        String body = """
+        final String body = """
             var cmd = "SELECT 'John' as name, 30 as age";
             var rs = snowflake.execute({sqlText: cmd});
             const result = {};
@@ -283,9 +283,9 @@ public class JavaScriptProcedureTest {
             return result;
             """;
 
-        Procedure proc = new Procedure("test_col_name", parameters, ObjectType.OBJECT, body, "JAVASCRIPT");
+        final Procedure proc = new Procedure("test_col_name", parameters, ObjectType.OBJECT, body, "JAVASCRIPT");
 
-        Object result = JavaScriptProcedureExecutor.executeJavaScriptProcedure(
+        final Object result = JavaScriptProcedureExecutor.executeJavaScriptProcedure(
             proc,
             Arrays.asList(),
             engine
@@ -302,9 +302,9 @@ public class JavaScriptProcedureTest {
         engine.execute("CREATE TABLE test_data (id INTEGER, value VARCHAR)");
         engine.execute("INSERT INTO test_data VALUES (1, 'A'), (2, 'B'), (3, 'C')");
 
-        List<Parameter> parameters = new ArrayList<>();
+        final List<Parameter> parameters = new ArrayList<>();
 
-        String body = """
+        final String body = """
             var cmd = "SELECT * FROM test_data ORDER BY id";
             var rs = snowflake.execute({sqlText: cmd});
             const items = [];
@@ -317,9 +317,9 @@ public class JavaScriptProcedureTest {
             return {count: items.length, items: items};
             """;
 
-        Procedure proc = new Procedure("test_multi_row", parameters, ObjectType.OBJECT, body, "JAVASCRIPT");
+        final Procedure proc = new Procedure("test_multi_row", parameters, ObjectType.OBJECT, body, "JAVASCRIPT");
 
-        Object result = JavaScriptProcedureExecutor.executeJavaScriptProcedure(
+        final Object result = JavaScriptProcedureExecutor.executeJavaScriptProcedure(
             proc,
             Arrays.asList(),
             engine
@@ -361,14 +361,14 @@ public class JavaScriptProcedureTest {
             $$
             """);
 
-        Schema schema = engine.getCatalog().getDatabase("TEST_DB").getSchema("PUBLIC");
-        Procedure proc = schema.getProcedure("p1");
+        final Schema schema = engine.getCatalog().getDatabase("TEST_DB").getSchema("PUBLIC");
+        final Procedure proc = schema.getProcedure("p1");
 
         assertNotNull(proc, "Procedure should be created");
         assertEquals("P1", proc.getName());
         assertEquals("JAVASCRIPT", proc.getLanguage());
 
-        Object result = JavaScriptProcedureExecutor.executeJavaScriptProcedure(
+        final Object result = JavaScriptProcedureExecutor.executeJavaScriptProcedure(
             proc,
             Arrays.asList("test"),
             engine
@@ -385,10 +385,10 @@ public class JavaScriptProcedureTest {
         engine.execute("CREATE TABLE numbers (n INTEGER)");
         engine.execute("INSERT INTO numbers VALUES (1), (2), (3), (4), (5)");
 
-        List<Parameter> parameters = new ArrayList<>();
+        final List<Parameter> parameters = new ArrayList<>();
         parameters.add(new Parameter("min_value", StringType.VARCHAR));
 
-        String body = """
+        final String body = """
             var cmd = "SELECT SUM(n) as total FROM numbers WHERE n > " + min_value;
             var rs = snowflake.execute({sqlText: cmd});
             if (rs.next()) {
@@ -397,9 +397,9 @@ public class JavaScriptProcedureTest {
             return null;
             """;
 
-        Procedure proc = new Procedure("sum_proc", parameters, ObjectType.OBJECT, body, "JAVASCRIPT");
+        final Procedure proc = new Procedure("sum_proc", parameters, ObjectType.OBJECT, body, "JAVASCRIPT");
 
-        Object result = JavaScriptProcedureExecutor.executeJavaScriptProcedure(
+        final Object result = JavaScriptProcedureExecutor.executeJavaScriptProcedure(
             proc,
             Arrays.asList("2"),
             engine
@@ -433,9 +433,9 @@ public class JavaScriptProcedureTest {
             $$
             """);
 
-        Schema schema = engine.getCatalog().getDatabase("TEST_DB").getSchema("PUBLIC");
-        Procedure sqlProc = schema.getProcedure("sql_proc");
-        Procedure jsProc = schema.getProcedure("js_proc");
+        final Schema schema = engine.getCatalog().getDatabase("TEST_DB").getSchema("PUBLIC");
+        final Procedure sqlProc = schema.getProcedure("sql_proc");
+        final Procedure jsProc = schema.getProcedure("js_proc");
 
         assertEquals("SQL", sqlProc.getLanguage());
         assertEquals("JAVASCRIPT", jsProc.getLanguage());

@@ -27,14 +27,14 @@ public class Soundex extends TextArgumentFunction {
     @Override
     public Object evaluate(final List<Object> args) {
         if (args.get(0) == null) return null;
-        String s = args.get(0).toString().toUpperCase().replaceAll("[^A-Z]", "");
+        final String s = args.get(0).toString().toUpperCase().replaceAll("[^A-Z]", "");
         if (s.isEmpty()) return "";
-        String codes = "01230120022455012623010202";
-        StringBuilder sb = new StringBuilder();
+        final String codes = "01230120022455012623010202";
+        final StringBuilder sb = new StringBuilder();
         sb.append(s.charAt(0));
         char prev = codes.charAt(s.charAt(0) - 'A');
         for (int i = 1; i < s.length() && sb.length() < 4; i++) {
-            char code = codes.charAt(s.charAt(i) - 'A');
+            final char code = codes.charAt(s.charAt(i) - 'A');
             if (code != '0' && code != prev) sb.append(code);
             prev = code;
         }
@@ -42,6 +42,8 @@ public class Soundex extends TextArgumentFunction {
         return sb.toString();
     }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return 1; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return 1; }
 }

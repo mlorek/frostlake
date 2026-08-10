@@ -39,7 +39,7 @@ public class ValuesWithPositionalParametersTest extends BaseDatabaseTest {
     public void testSelectPositionalParametersFromValues() {
         logger.info("Testing SELECT $1, $2 FROM VALUES");
 
-        ResultSet result = engine.executeQuery("SELECT $1, $2 FROM VALUES(1, 2)");
+        final ResultSet result = engine.executeQuery("SELECT $1, $2 FROM VALUES(1, 2)");
 
         assertEquals(1, result.getRowCount());
         assertEquals(2, result.getColumnCount());
@@ -51,7 +51,7 @@ public class ValuesWithPositionalParametersTest extends BaseDatabaseTest {
     public void testSelectPositionalParametersMultipleRows() {
         logger.info("Testing SELECT $1, $2 FROM VALUES with multiple rows");
 
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT $1, $2
             FROM VALUES(1, 2), (3, 4), (5, 6)
             """);
@@ -73,7 +73,7 @@ public class ValuesWithPositionalParametersTest extends BaseDatabaseTest {
     public void testSelectPositionalParametersWithStrings() {
         logger.info("Testing SELECT $1, $2 FROM VALUES with strings");
 
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT $1, $2
             FROM VALUES('Alice', 'Engineer'), ('Bob', 'Manager')
             """);
@@ -92,7 +92,7 @@ public class ValuesWithPositionalParametersTest extends BaseDatabaseTest {
     public void testSelectPositionalParametersOutOfOrder() {
         logger.info("Testing SELECT $2, $1 FROM VALUES (reverse order)");
 
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT $2, $1
             FROM VALUES(1, 2)
             """);
@@ -107,7 +107,7 @@ public class ValuesWithPositionalParametersTest extends BaseDatabaseTest {
     public void testSelectPositionalParametersSameColumnTwice() {
         logger.info("Testing SELECT $1, $1 FROM VALUES (same column twice)");
 
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT $1, $1
             FROM VALUES(42)
             """);
@@ -122,7 +122,7 @@ public class ValuesWithPositionalParametersTest extends BaseDatabaseTest {
     public void testSelectPositionalParametersWithExpressions() {
         logger.info("Testing SELECT with expressions on positional parameters");
 
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT $1 + $2 AS sum, $1 * $2 AS product
             FROM VALUES(3, 4)
             """);
@@ -137,7 +137,7 @@ public class ValuesWithPositionalParametersTest extends BaseDatabaseTest {
     public void testSelectPositionalParametersWithWhere() {
         logger.info("Testing SELECT with WHERE clause on positional parameters");
 
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT $1, $2
             FROM VALUES(1, 10), (2, 20), (3, 30)
             WHERE $1 > 1
@@ -157,7 +157,7 @@ public class ValuesWithPositionalParametersTest extends BaseDatabaseTest {
     public void testSelectPositionalParametersWithOrderBy() {
         logger.info("Testing SELECT with ORDER BY on positional parameters");
 
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT $1, $2
             FROM VALUES(3, 'C'), (1, 'A'), (2, 'B')
             ORDER BY COLUMN1
@@ -180,7 +180,7 @@ public class ValuesWithPositionalParametersTest extends BaseDatabaseTest {
     public void testSelectPositionalParametersThreeColumns() {
         logger.info("Testing SELECT $1, $2, $3 FROM VALUES");
 
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT $1, $2, $3
             FROM VALUES(1, 2, 3)
             """);
@@ -196,7 +196,7 @@ public class ValuesWithPositionalParametersTest extends BaseDatabaseTest {
     public void testSelectStarFromValues() {
         logger.info("Testing SELECT * FROM VALUES");
 
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT *
             FROM VALUES(1, 2, 3)
             """);
@@ -209,7 +209,7 @@ public class ValuesWithPositionalParametersTest extends BaseDatabaseTest {
     public void testSelectMixedPositionalAndStar() {
         logger.info("Testing SELECT $1, * FROM VALUES");
 
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT $1, *
             FROM VALUES(10, 20)
             """);
@@ -225,7 +225,7 @@ public class ValuesWithPositionalParametersTest extends BaseDatabaseTest {
     public void testSelectPositionalParametersWithGroupBy() {
         logger.info("Testing SELECT with GROUP BY on positional parameters");
 
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT COLUMN1, COUNT(*)
             FROM VALUES(1, 10), (1, 20), (2, 30)
             GROUP BY COLUMN1
@@ -242,7 +242,7 @@ public class ValuesWithPositionalParametersTest extends BaseDatabaseTest {
         engine.execute("CREATE TABLE test_table (id INTEGER, name VARCHAR)");
         engine.execute("INSERT INTO test_table VALUES (1, 'Alice'), (2, 'Bob')");
 
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT t.name, v.value
             FROM test_table t
             JOIN (SELECT $1 AS id, $2 AS value FROM VALUES(1, 100), (2, 200)) v
@@ -257,7 +257,7 @@ public class ValuesWithPositionalParametersTest extends BaseDatabaseTest {
     public void testSelectPositionalParametersWithAlias() {
         logger.info("Testing SELECT positional parameters with table alias");
 
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT v.$1, v.$2
             FROM VALUES(5, 10) AS v
             """);

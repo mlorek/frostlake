@@ -18,14 +18,14 @@ package dev.frostlake.functions.scalar.datetime;
 
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
-import dev.frostlake.types.NumericType;
+import dev.frostlake.types.IntegerResultWidths;
 import java.time.LocalDateTime;
 import java.time.temporal.WeekFields;
 import java.util.List;
 
 /** YEAROFWEEK(t) — the year the week belongs to (engine week = ISO week). */
 public class YearOfWeek extends BuiltInFunction {
-    public YearOfWeek() { super("YEAROFWEEK", NumericType.INTEGER); }
+    public YearOfWeek() { super("YEAROFWEEK", IntegerResultWidths.YEAR_PART); }
 
     @Override
     public Object evaluate(final List<Object> args) {
@@ -34,6 +34,8 @@ public class YearOfWeek extends BuiltInFunction {
         return (long) t.get(WeekFields.ISO.weekBasedYear());
     }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return 1; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return 1; }
 }

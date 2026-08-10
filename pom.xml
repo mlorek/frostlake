@@ -27,6 +27,11 @@
             <name>MLorek</name>
             <url>https://frostlake.dev</url>
         </developer>
+        <developer>
+            <id>AnnisL</id>
+            <name>AnnisL</name>
+            <url>https://frostlake.dev</url>
+        </developer>
     </developers>
 
     <scm>
@@ -62,6 +67,9 @@
         <!-- One RAT (license-header audit) version for every module. NOTE: RAT 0.17+ changed scan
              semantics — module configs must use <inputExclude> (see the engine pom for the details). -->
         <apache-rat-plugin.version>0.18</apache-rat-plugin.version>
+        <!-- Checkstyle audits the house rules; see the plugin declaration for why it is unbound. -->
+        <maven-checkstyle-plugin.version>3.6.0</maven-checkstyle-plugin.version>
+        <checkstyle.version>11.1.0</checkstyle.version>
         <!-- One Truffle line for every polyglot language. 25.0.2 keeps Java 17 base classes AND is the
              version downstream builds (e.g. the vendor test harness) already put on the classpath — a
              consumer resolving "newest wins" must not end up with our Python on a different Truffle
@@ -71,10 +79,12 @@
              NPEs ("moduleState is null" — see PythonSemiStructuredArgumentTest). The GraalPy venv used
              for numpy/pandas (python.venv) is also built with GraalPy 25.0.2 and must match. -->
         <graalvm.version>25.0.2</graalvm.version>
-        <!-- Publishing (see the release profile below): the aggregator parent and the perf-tests harness are
-             NOT published to Central; the two library jars (frostlake-db, frostlake-formats) override this to
-             false. The central-publishing-maven-plugin honours maven.deploy.skip, so a skipped module is left
-             out of the release bundle. -->
+        <!-- Publishing (see the release profile below): SEVEN modules publish to Central, each overriding
+             this to false — frostlake-db (the engine) and the six optional packs frostlake-ai,
+             frostlake-formats, frostlake-geo, frostlake-rt-js, frostlake-rt-py and frostlake-rt-scala.
+             Only the aggregator parent and the perf-tests harness keep it true. The
+             central-publishing-maven-plugin honours maven.deploy.skip, so a skipped module is left out of
+             the release bundle. -->
         <maven.deploy.skip>true</maven.deploy.skip>
     </properties>
 
@@ -111,14 +121,47 @@
                     </execution>
                 </executions>
             </plugin>
+
+            <!-- Checkstyle audits the house rules in config/checkstyle/checkstyle.xml. Deliberately
+                 NOT bound to a lifecycle phase: an ordinary `mvn test` or `mvn verify` stays as fast
+                 as it was, and CI invokes `mvn checkstyle:check` explicitly at the END of the run
+                 (the hygiene suite, beside the banned-term and import sweeps). It only ever REPORTS —
+                 there is no formatting goal here and none should be added.
+
+                 Rules the tree already satisfies are errors and fail the build; rules with a measured
+                 backlog are warnings, so violationSeverity=error keeps CI green while the counts stay
+                 visible on every run. -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-checkstyle-plugin</artifactId>
+                <version>${maven-checkstyle-plugin.version}</version>
+                <dependencies>
+                    <dependency>
+                        <groupId>com.puppycrawl.tools</groupId>
+                        <artifactId>checkstyle</artifactId>
+                        <version>${checkstyle.version}</version>
+                    </dependency>
+                </dependencies>
+                <configuration>
+                    <configLocation>${maven.multiModuleProjectDirectory}/config/checkstyle/checkstyle.xml</configLocation>
+                    <suppressionsLocation>${maven.multiModuleProjectDirectory}/config/checkstyle/suppressions.xml</suppressionsLocation>
+                    <suppressionsFileExpression>checkstyle.suppressions.file</suppressionsFileExpression>
+                    <includeTestSourceDirectory>true</includeTestSourceDirectory>
+                    <consoleOutput>true</consoleOutput>
+                    <logViolationsToConsole>true</logViolationsToConsole>
+                    <failOnViolation>true</failOnViolation>
+                    <violationSeverity>error</violationSeverity>
+                </configuration>
+            </plugin>
         </plugins>
     </build>
 
     <profiles>
-        <!-- Release/publish profile (activate with -Prelease). Lives here in the parent so BOTH published
-             library modules — frostlake-db and frostlake-formats — inherit the same source + javadoc + GPG
-             attach and the central-publishing hookup, and each publishes as its own separate jar. The
-             aggregator parent and perf-tests keep maven.deploy.skip=true, so they are left out of the bundle. -->
+        <!-- Release/publish profile (activate with -Prelease). Lives here in the parent so EVERY published
+             module — the engine plus the six optional packs, seven jars in all — inherits the same
+             source + javadoc + GPG attach and the central-publishing hookup, and each publishes as its own
+             separate jar. The aggregator parent and perf-tests keep maven.deploy.skip=true, so they are left
+             out of the bundle. -->
         <profile>
             <id>release</id>
             <build>
@@ -139,9 +182,22 @@
                         <artifactId>maven-javadoc-plugin</artifactId>
                         <version>3.12.0</version>
                         <configuration>
-                            <!-- The published modules are not javadoc-clean; don't fail the release on doc lint. -->
-                            <doclint>none</doclint>
-                            <failOnError>false</failOnError>
+                            <!--
+                              Lint everything javadoc can check EXCEPT the "missing" group, and fail the
+                              release when it finds something.
+
+                              The two halves are different in kind. A missing @param or an undocumented
+                              accessor is a style choice — this codebase documents in prose, on the types
+                              and methods where the reasoning lives, so several hundred such warnings are
+                              expected and say nothing. The rest are DEFECTS that silently mangle the
+                              published HTML: a bare `<query_id>` or `Supplier<ResultSet>` in prose is
+                              parsed as an HTML tag and swallows the text after it, an unbalanced brace
+                              inside {@code ...} eats the closing delimiter, and a broken {@link} points
+                              nowhere. Those are worth a build failure; they used to be tolerated only
+                              because failOnError hid them.
+                            -->
+                            <doclint>all,-missing</doclint>
+                            <failOnError>true</failOnError>
                         </configuration>
                         <executions>
                             <execution>

@@ -51,7 +51,7 @@ public final class XmlVariants {
 
     /**
      * Fast pre-check for canonical variant TEXT before parsing: every XML element's canonical JSON
-     * starts with {@code {"$":} because object keys sort and {@code $} precedes every other key.
+     * starts with <code>{"$":</code> because object keys sort and {@code $} precedes every other key.
      */
     public static boolean mightBeXmlText(final String canonicalJson) {
         return canonicalJson.startsWith("{\"$\":");

@@ -84,6 +84,7 @@ public class CopyNoFilesResultTest {
         localDir = Files.createTempDirectory("copy_nofiles_local_");
         final EngineConfig cfg = new EngineConfig();
         cfg.setProperty(EngineConfig.PROP_STAGE_INTERNAL_LOCAL_ROOT, internalRoot.toString());
+        cfg.setProperty(EngineConfig.PROP_STAGE_FILE_URL_ENABLED, "true");
         engine = new DatabaseEngine(cfg);
         engine.execute("CREATE DATABASE db");
         engine.execute("USE DATABASE db");
@@ -195,7 +196,7 @@ public class CopyNoFilesResultTest {
     @Test
     public void aStageWhoseOnlyFileIsAlreadyLoadedAnswersWithTheSummary() throws IOException {
         engine.execute("CREATE TABLE t (id INTEGER, name VARCHAR)");
-        engine.executeQuery("PUT " + localCsvUrl("u.csv", TWO_GOOD_ROWS) + " @%t");
+        engine.executeQuery("PUT " + localCsvUrl("u.csv", TWO_GOOD_ROWS) + " @%t AUTO_COMPRESS=FALSE");
 
         // Control: the first load of the very same stage reports the file, wide.
         final ResultSet first = engine.executeQuery("COPY INTO t FILE_FORMAT = (TYPE = CSV SKIP_HEADER = 1)");
@@ -209,8 +210,8 @@ public class CopyNoFilesResultTest {
     @Test
     public void aStageWhoseFilesAreAllAlreadyLoadedAnswersWithTheSummary() throws IOException {
         engine.execute("CREATE TABLE t (id INTEGER, name VARCHAR)");
-        engine.executeQuery("PUT " + localCsvUrl("a.csv", TWO_GOOD_ROWS) + " @%t");
-        engine.executeQuery("PUT " + localCsvUrl("b.csv", TWO_MORE_GOOD_ROWS) + " @%t");
+        engine.executeQuery("PUT " + localCsvUrl("a.csv", TWO_GOOD_ROWS) + " @%t AUTO_COMPRESS=FALSE");
+        engine.executeQuery("PUT " + localCsvUrl("b.csv", TWO_MORE_GOOD_ROWS) + " @%t AUTO_COMPRESS=FALSE");
 
         final ResultSet first = engine.executeQuery("COPY INTO t FILE_FORMAT = (TYPE = CSV SKIP_HEADER = 1)");
         assertPerFileShape(first, 2);
@@ -224,7 +225,7 @@ public class CopyNoFilesResultTest {
     public void aNamedStageWhoseFilesAreAllAlreadyLoadedAnswersWithTheSummary() throws IOException {
         engine.execute("CREATE TABLE t (id INTEGER, name VARCHAR)");
         engine.execute("CREATE STAGE st URL = 'file://" + namedStageDir + "'");
-        engine.executeQuery("PUT " + localCsvUrl("u.csv", TWO_GOOD_ROWS) + " @st");
+        engine.executeQuery("PUT " + localCsvUrl("u.csv", TWO_GOOD_ROWS) + " @st AUTO_COMPRESS=FALSE");
 
         engine.executeQuery("COPY INTO t FROM @st FILE_FORMAT = (TYPE = CSV SKIP_HEADER = 1)");
 
@@ -236,7 +237,7 @@ public class CopyNoFilesResultTest {
     @Test
     public void aPatternMatchingNothingAnswersWithTheSummary() throws IOException {
         engine.execute("CREATE TABLE t (id INTEGER, name VARCHAR)");
-        engine.executeQuery("PUT " + localCsvUrl("u.csv", TWO_GOOD_ROWS) + " @%t");
+        engine.executeQuery("PUT " + localCsvUrl("u.csv", TWO_GOOD_ROWS) + " @%t AUTO_COMPRESS=FALSE");
 
         assertNoFilesSummary(engine.executeQuery(
             "COPY INTO t PATTERN = '.*nosuchfile.*' FILE_FORMAT = (TYPE = CSV SKIP_HEADER = 1)"));
@@ -252,7 +253,7 @@ public class CopyNoFilesResultTest {
     @Test
     public void aPatternSelectingOnlyAnAlreadyLoadedFileAnswersWithTheSummary() throws IOException {
         engine.execute("CREATE TABLE t (id INTEGER, name VARCHAR)");
-        engine.executeQuery("PUT " + localCsvUrl("u.csv", TWO_GOOD_ROWS) + " @%t");
+        engine.executeQuery("PUT " + localCsvUrl("u.csv", TWO_GOOD_ROWS) + " @%t AUTO_COMPRESS=FALSE");
         engine.executeQuery("COPY INTO t FILE_FORMAT = (TYPE = CSV SKIP_HEADER = 1)");
 
         assertNoFilesSummary(engine.executeQuery(
@@ -268,7 +269,7 @@ public class CopyNoFilesResultTest {
     @Test
     public void aZeroByteFileKeepsThePerFileShape() throws IOException {
         engine.execute("CREATE TABLE t (id INTEGER, name VARCHAR)");
-        engine.executeQuery("PUT " + localCsvUrl("empty.csv", "") + " @%t");
+        engine.executeQuery("PUT " + localCsvUrl("empty.csv", "") + " @%t AUTO_COMPRESS=FALSE");
 
         final ResultSet rs = engine.executeQuery("COPY INTO t FILE_FORMAT = (TYPE = CSV)");
 
@@ -280,7 +281,7 @@ public class CopyNoFilesResultTest {
     @Test
     public void aHeaderOnlyFileKeepsThePerFileShape() throws IOException {
         engine.execute("CREATE TABLE t (id INTEGER, name VARCHAR)");
-        engine.executeQuery("PUT " + localCsvUrl("hdr.csv", HEADER_ONLY) + " @%t");
+        engine.executeQuery("PUT " + localCsvUrl("hdr.csv", HEADER_ONLY) + " @%t AUTO_COMPRESS=FALSE");
 
         final ResultSet rs = engine.executeQuery("COPY INTO t FILE_FORMAT = (TYPE = CSV SKIP_HEADER = 1)");
 
@@ -292,7 +293,7 @@ public class CopyNoFilesResultTest {
     @Test
     public void aWhollyRejectedFileKeepsThePerFileShape() throws IOException {
         engine.execute("CREATE TABLE t (id INTEGER, name VARCHAR)");
-        engine.executeQuery("PUT " + localCsvUrl("bad.csv", ALL_ROWS_BAD) + " @%t");
+        engine.executeQuery("PUT " + localCsvUrl("bad.csv", ALL_ROWS_BAD) + " @%t AUTO_COMPRESS=FALSE");
 
         final ResultSet rs = engine.executeQuery(
             "COPY INTO t FILE_FORMAT = (TYPE = CSV SKIP_HEADER = 1) ON_ERROR = CONTINUE");
@@ -310,10 +311,10 @@ public class CopyNoFilesResultTest {
     @Test
     public void aMixedRunReportsOnlyTheProcessedFile() throws IOException {
         engine.execute("CREATE TABLE t (id INTEGER, name VARCHAR)");
-        engine.executeQuery("PUT " + localCsvUrl("a.csv", TWO_GOOD_ROWS) + " @%t");
+        engine.executeQuery("PUT " + localCsvUrl("a.csv", TWO_GOOD_ROWS) + " @%t AUTO_COMPRESS=FALSE");
         engine.executeQuery("COPY INTO t FILE_FORMAT = (TYPE = CSV SKIP_HEADER = 1)");
 
-        engine.executeQuery("PUT " + localCsvUrl("b.csv", TWO_MORE_GOOD_ROWS) + " @%t");
+        engine.executeQuery("PUT " + localCsvUrl("b.csv", TWO_MORE_GOOD_ROWS) + " @%t AUTO_COMPRESS=FALSE");
         final ResultSet mixed = engine.executeQuery("COPY INTO t FILE_FORMAT = (TYPE = CSV SKIP_HEADER = 1)");
 
         assertEquals("LOADED", assertPerFileShape(mixed, 1));
@@ -328,7 +329,7 @@ public class CopyNoFilesResultTest {
     @Test
     public void anExplicitlyNamedAlreadyLoadedFileKeepsThePerFileShape() throws IOException {
         engine.execute("CREATE TABLE t (id INTEGER, name VARCHAR)");
-        engine.executeQuery("PUT " + localCsvUrl("u.csv", TWO_GOOD_ROWS) + " @%t");
+        engine.executeQuery("PUT " + localCsvUrl("u.csv", TWO_GOOD_ROWS) + " @%t AUTO_COMPRESS=FALSE");
         engine.executeQuery("COPY INTO t FILES = ('u.csv') FILE_FORMAT = (TYPE = CSV SKIP_HEADER = 1)");
 
         final ResultSet again = engine.executeQuery(

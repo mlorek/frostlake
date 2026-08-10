@@ -205,7 +205,7 @@ public class CopyColumnCountTest {
     private void stage(final String table, final String fileName, final String content) throws IOException {
         final Path file = localDir.resolve(fileName);
         Files.write(file, content.getBytes(StandardCharsets.UTF_8));
-        engine.executeQuery("PUT file://" + file + " @%" + table);
+        engine.executeQuery("PUT file://" + file + " @%" + table + " AUTO_COMPRESS=FALSE");
     }
 
     private ResultSet copy(final String table, final String options) {

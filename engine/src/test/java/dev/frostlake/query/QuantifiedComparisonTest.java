@@ -16,10 +16,8 @@
 
 package dev.frostlake.query;
 
-import dev.frostlake.DatabaseEngine;
+import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
-import org.junit.jupiter.api.AfterAll;
-import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -29,23 +27,11 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /**
  * Test quantified comparison operators: ANY, SOME, ALL
  */
-public class QuantifiedComparisonTest {
+public class QuantifiedComparisonTest extends BaseDatabaseTest {
 
-    private static DatabaseEngine engine;
-
-    @BeforeAll
-    public static void setup() {
-        engine = new DatabaseEngine();
+    @Override
+    protected void setupTest() {
         engine.execute("CREATE DATABASE IF NOT EXISTS test_db");
-        engine.execute("USE DATABASE test_db");
-        engine.execute("USE SCHEMA public");
-    }
-
-    @AfterAll
-    public static void teardown() {
-        if (engine != null) {
-            engine.shutdown();
-        }
     }
 
     @BeforeEach
@@ -76,7 +62,7 @@ public class QuantifiedComparisonTest {
     @Test
     public void testAnyComparison() {
         // Find employees earning more than ANY sales employee
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT name, salary FROM employees
             WHERE salary > ANY (SELECT salary FROM employees WHERE dept = 'Sales')
             ORDER BY name
@@ -94,7 +80,7 @@ public class QuantifiedComparisonTest {
     @Test
     public void testSomeComparison() {
         // SOME is synonymous with ANY
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT name, salary FROM employees
             WHERE salary > SOME (SELECT salary FROM employees WHERE dept = 'Sales')
             ORDER BY name
@@ -108,7 +94,7 @@ public class QuantifiedComparisonTest {
     @Test
     public void testAllComparison() {
         // Find employees earning more than ALL sales employees
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT name, salary FROM employees
             WHERE salary > ALL (SELECT salary FROM employees WHERE dept = 'Sales')
             ORDER BY name
@@ -125,7 +111,7 @@ public class QuantifiedComparisonTest {
     @Test
     public void testAllComparisonLessOrEqual() {
         // Find employees earning <= ALL engineering employees
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT name, salary FROM employees
             WHERE salary <= ALL (SELECT salary FROM employees WHERE dept = 'Engineering')
             ORDER BY name
@@ -142,7 +128,7 @@ public class QuantifiedComparisonTest {
     @Test
     public void testAnyComparisonEquals() {
         // Find employees in departments that exist in departments table
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT name FROM employees
             WHERE dept = ANY (SELECT dept_name FROM departments)
             ORDER BY name
@@ -155,7 +141,7 @@ public class QuantifiedComparisonTest {
     @Test
     public void testAllComparisonWithEmptySubquery() {
         // ALL with empty subquery should return all rows (vacuous truth)
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT name FROM employees
             WHERE salary > ALL (SELECT salary FROM employees WHERE dept = 'NonExistent')
             ORDER BY name
@@ -168,7 +154,7 @@ public class QuantifiedComparisonTest {
     @Test
     public void testAnyComparisonWithEmptySubquery() {
         // ANY with empty subquery should return no rows
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT name FROM employees
             WHERE salary > ANY (SELECT salary FROM employees WHERE dept = 'NonExistent')
             ORDER BY name
@@ -181,7 +167,7 @@ public class QuantifiedComparisonTest {
     @Test
     public void testNestedQuantifiedComparison() {
         // Find departments where min_salary is higher than any employee in Sales
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT dept_name FROM departments
             WHERE min_salary > ANY (SELECT salary FROM employees WHERE dept = 'Sales')
             ORDER BY dept_name
@@ -198,14 +184,14 @@ public class QuantifiedComparisonTest {
         // Test various comparison operators with ANY
 
         // >= ANY
-        ResultSet result1 = engine.executeQuery("""
+        final ResultSet result1 = engine.executeQuery("""
             SELECT name FROM employees
             WHERE salary >= ANY (SELECT min_salary FROM departments WHERE dept_name = 'Engineering')
             """);
         assertTrue(result1.getRows().size() > 0);
 
         // < ANY
-        ResultSet result2 = engine.executeQuery("""
+        final ResultSet result2 = engine.executeQuery("""
             SELECT name FROM employees
             WHERE salary < ANY (SELECT salary FROM employees WHERE dept = 'Engineering')
             ORDER BY name
@@ -214,7 +200,7 @@ public class QuantifiedComparisonTest {
         assertEquals(4, result2.getRows().size());
 
         // != ALL
-        ResultSet result3 = engine.executeQuery("""
+        final ResultSet result3 = engine.executeQuery("""
             SELECT name FROM employees
             WHERE name != ALL (SELECT name FROM employees WHERE dept = 'Sales')
             ORDER BY name

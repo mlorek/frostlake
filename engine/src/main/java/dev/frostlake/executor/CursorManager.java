@@ -53,7 +53,7 @@ public class CursorManager {
 
     /** Remove any cursors that were not present before the block entered. */
     public void restoreCursors(final Set<String> savedNames) {
-        Iterator<String> it = cursors.keySet().iterator();
+        final Iterator<String> it = cursors.keySet().iterator();
         while (it.hasNext()) {
             if (!savedNames.contains(it.next())) {
                 it.remove();

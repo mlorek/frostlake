@@ -16,41 +16,40 @@
 
 package dev.frostlake.features;
 
-import dev.frostlake.DatabaseEngine;
-import dev.frostlake.metastore.model.Table;
+import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Tests for CREATE TABLE AS SELECT (CTAS) with OR REPLACE and TEMP/TEMPORARY
+ * CREATE TABLE AS SELECT (CTAS) with OR REPLACE and TEMP/TEMPORARY, asserted through the SQL
+ * surface — the {@code SHOW TABLES} kind cell (TABLE / TEMPORARY / TRANSIENT), comment and
+ * cluster_by cells, {@code DESCRIBE TABLE} rows for the created columns, and the query results
+ * themselves — so every check runs against whichever engine executed the DDL, embedded or live.
  */
-public class CreateTableAsSelectTest {
+public class CreateTableAsSelectTest extends BaseDatabaseTest {
     private static final Logger logger = LoggerFactory.getLogger(CreateTableAsSelectTest.class);
 
-    private DatabaseEngine engine;
-
-    @BeforeEach
-    public void setUp() {
-        engine = new DatabaseEngine();
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
-        logger.info("DatabaseEngine initialized for CTAS tests");
+    /** One SHOW TABLES cell for the given table in the current schema. */
+    private String tableCell(final String table, final String column) {
+        final ResultSet rs = engine.executeQuery("SHOW TABLES LIKE '" + table + "'");
+        return cell(rs, soleRowWhere(rs, "name", table.toUpperCase()), column);
     }
 
-    @AfterEach
-    public void tearDown() {
-        if (engine != null) {
-            engine.shutdown();
-        }
+    private ResultSet describe(final String table) {
+        return engine.executeQuery("DESCRIBE TABLE " + table);
+    }
+
+    private int columnCount(final String table) {
+        return describe(table).getRowCount();
+    }
+
+    private boolean hasColumn(final String table, final String column) {
+        return !rowsWhere(describe(table), "name", column).isEmpty();
     }
 
     @Test
@@ -63,13 +62,11 @@ public class CreateTableAsSelectTest {
 
         engine.execute("CREATE TABLE target AS SELECT id, name FROM source");
 
-        Table table = engine.getCatalog().resolveTable("TARGET");
-        assertNotNull(table);
-        assertEquals(2, table.getColumns().size());
-        assertEquals("ID", table.getColumn("id").getName());
-        assertEquals("NAME", table.getColumn("name").getName());
+        assertEquals(2, columnCount("target"));
+        assertTrue(hasColumn("target", "ID"));
+        assertTrue(hasColumn("target", "NAME"));
 
-        ResultSet rs = engine.executeQuery("SELECT * FROM target");
+        final ResultSet rs = engine.executeQuery("SELECT * FROM target");
         assertEquals(2, rs.getRowCount());
 
         logger.info("Basic CTAS works correctly");
@@ -81,13 +78,11 @@ public class CreateTableAsSelectTest {
 
         engine.execute("CREATE TABLE tbl AS SELECT 1 as c, 2 as d");
 
-        Table table = engine.getCatalog().resolveTable("TBL");
-        assertNotNull(table);
-        assertEquals(2, table.getColumns().size());
-        assertEquals("C", table.getColumn("c").getName());
-        assertEquals("D", table.getColumn("d").getName());
+        assertEquals(2, columnCount("tbl"));
+        assertTrue(hasColumn("tbl", "C"));
+        assertTrue(hasColumn("tbl", "D"));
 
-        ResultSet rs = engine.executeQuery("SELECT * FROM tbl");
+        final ResultSet rs = engine.executeQuery("SELECT * FROM tbl");
         assertEquals(1, rs.getRowCount());
         rs.next();
         assertEquals(1L, rs.getValue(0));
@@ -103,18 +98,16 @@ public class CreateTableAsSelectTest {
         engine.execute("CREATE TABLE test (id INTEGER, name VARCHAR)");
         engine.execute("INSERT INTO test VALUES (1, 'First')");
 
-        ResultSet rs1 = engine.executeQuery("SELECT * FROM test");
+        final ResultSet rs1 = engine.executeQuery("SELECT * FROM test");
         assertEquals(1, rs1.getRowCount());
 
         engine.execute("CREATE OR REPLACE TABLE test (id INTEGER, value VARCHAR)");
         engine.execute("INSERT INTO test VALUES (2, 'Second')");
 
-        Table table = engine.getCatalog().resolveTable("TEST");
-        assertNotNull(table);
-        assertEquals(2, table.getColumns().size());
-        assertEquals("VALUE", table.getColumn("value").getName());
+        assertEquals(2, columnCount("test"));
+        assertTrue(hasColumn("test", "VALUE"));
 
-        ResultSet rs2 = engine.executeQuery("SELECT * FROM test");
+        final ResultSet rs2 = engine.executeQuery("SELECT * FROM test");
         assertEquals(1, rs2.getRowCount());
         rs2.next();
         assertEquals(2L, rs2.getValue(0));
@@ -128,12 +121,10 @@ public class CreateTableAsSelectTest {
 
         engine.execute("CREATE OR REPLACE TEMP TABLE tbl AS SELECT 1 as c, 2 as d");
 
-        Table table = engine.getCatalog().resolveTable("TBL");
-        assertNotNull(table);
-        assertTrue(table.isTemporary());
-        assertEquals(2, table.getColumns().size());
+        assertEquals("TEMPORARY", tableCell("tbl", "kind"));
+        assertEquals(2, columnCount("tbl"));
 
-        ResultSet rs = engine.executeQuery("SELECT * FROM tbl");
+        final ResultSet rs = engine.executeQuery("SELECT * FROM tbl");
         assertEquals(1, rs.getRowCount());
 
         logger.info("CREATE OR REPLACE TEMP TABLE AS SELECT works correctly");
@@ -145,10 +136,7 @@ public class CreateTableAsSelectTest {
 
         engine.execute("CREATE TEMP TABLE temp_tbl (id INTEGER, name VARCHAR)");
 
-        Table table = engine.getCatalog().resolveTable("TEMP_TBL");
-        assertNotNull(table);
-        assertTrue(table.isTemporary());
-        assertFalse(table.isTransient());
+        assertEquals("TEMPORARY", tableCell("temp_tbl", "kind"));
 
         logger.info("CREATE TEMP TABLE works correctly");
     }
@@ -159,10 +147,7 @@ public class CreateTableAsSelectTest {
 
         engine.execute("CREATE TEMPORARY TABLE temp_tbl (id INTEGER, name VARCHAR)");
 
-        Table table = engine.getCatalog().resolveTable("TEMP_TBL");
-        assertNotNull(table);
-        assertTrue(table.isTemporary());
-        assertFalse(table.isTransient());
+        assertEquals("TEMPORARY", tableCell("temp_tbl", "kind"));
 
         logger.info("CREATE TEMPORARY TABLE works correctly");
     }
@@ -176,11 +161,9 @@ public class CreateTableAsSelectTest {
 
         engine.execute("CREATE TEMP TABLE temp_target AS SELECT * FROM source");
 
-        Table table = engine.getCatalog().resolveTable("TEMP_TARGET");
-        assertNotNull(table);
-        assertTrue(table.isTemporary());
+        assertEquals("TEMPORARY", tableCell("temp_target", "kind"));
 
-        ResultSet rs = engine.executeQuery("SELECT * FROM temp_target");
+        final ResultSet rs = engine.executeQuery("SELECT * FROM temp_target");
         assertEquals(1, rs.getRowCount());
 
         logger.info("CREATE TEMP TABLE AS SELECT works correctly");
@@ -192,11 +175,9 @@ public class CreateTableAsSelectTest {
 
         engine.execute("CREATE TEMPORARY TABLE temp_tbl AS SELECT 10 as x, 20 as y");
 
-        Table table = engine.getCatalog().resolveTable("TEMP_TBL");
-        assertNotNull(table);
-        assertTrue(table.isTemporary());
+        assertEquals("TEMPORARY", tableCell("temp_tbl", "kind"));
 
-        ResultSet rs = engine.executeQuery("SELECT * FROM temp_tbl");
+        final ResultSet rs = engine.executeQuery("SELECT * FROM temp_tbl");
         assertEquals(1, rs.getRowCount());
         rs.next();
         assertEquals(10L, rs.getValue(0));
@@ -210,16 +191,14 @@ public class CreateTableAsSelectTest {
         logger.info("Testing CREATE OR REPLACE TABLE AS SELECT");
 
         engine.execute("CREATE TABLE tbl AS SELECT 1 as a");
-        ResultSet rs1 = engine.executeQuery("SELECT * FROM tbl");
+        final ResultSet rs1 = engine.executeQuery("SELECT * FROM tbl");
         assertEquals(1, rs1.getRowCount());
 
         engine.execute("CREATE OR REPLACE TABLE tbl AS SELECT 2 as b, 3 as c");
 
-        Table table = engine.getCatalog().resolveTable("TBL");
-        assertNotNull(table);
-        assertEquals(2, table.getColumns().size());
+        assertEquals(2, columnCount("tbl"));
 
-        ResultSet rs2 = engine.executeQuery("SELECT * FROM tbl");
+        final ResultSet rs2 = engine.executeQuery("SELECT * FROM tbl");
         assertEquals(1, rs2.getRowCount());
         rs2.next();
         assertEquals(2L, rs2.getValue(0));
@@ -239,7 +218,7 @@ public class CreateTableAsSelectTest {
 
         engine.execute("CREATE TABLE filtered AS SELECT id FROM source WHERE status = 'active'");
 
-        ResultSet rs = engine.executeQuery("SELECT * FROM filtered");
+        final ResultSet rs = engine.executeQuery("SELECT * FROM filtered");
         assertEquals(2, rs.getRowCount());
 
         logger.info("CTAS with WHERE clause works correctly");
@@ -256,11 +235,9 @@ public class CreateTableAsSelectTest {
 
         engine.execute("CREATE TABLE joined AS SELECT u.name, o.order_id FROM users u JOIN orders o ON u.id = o.user_id");
 
-        Table table = engine.getCatalog().resolveTable("JOINED");
-        assertNotNull(table);
-        assertEquals(2, table.getColumns().size());
+        assertEquals(2, columnCount("joined"));
 
-        ResultSet rs = engine.executeQuery("SELECT * FROM joined");
+        final ResultSet rs = engine.executeQuery("SELECT * FROM joined");
         assertEquals(1, rs.getRowCount());
 
         logger.info("CTAS with JOIN works correctly");
@@ -277,11 +254,9 @@ public class CreateTableAsSelectTest {
 
         engine.execute("CREATE TABLE summary AS SELECT product, SUM(amount) as total FROM sales GROUP BY product");
 
-        Table table = engine.getCatalog().resolveTable("SUMMARY");
-        assertNotNull(table);
-        assertEquals(2, table.getColumns().size());
+        assertEquals(2, columnCount("summary"));
 
-        ResultSet rs = engine.executeQuery("SELECT * FROM summary");
+        final ResultSet rs = engine.executeQuery("SELECT * FROM summary");
         assertEquals(2, rs.getRowCount());
 
         logger.info("CTAS with aggregation works correctly");
@@ -292,17 +267,16 @@ public class CreateTableAsSelectTest {
         logger.info("Testing CREATE OR REPLACE TEMP TABLE multiple times");
 
         engine.execute("CREATE OR REPLACE TEMP TABLE tbl AS SELECT 1 as x");
-        ResultSet rs1 = engine.executeQuery("SELECT * FROM tbl");
+        final ResultSet rs1 = engine.executeQuery("SELECT * FROM tbl");
         assertEquals(1, rs1.getRowCount());
 
         engine.execute("CREATE OR REPLACE TEMP TABLE tbl AS SELECT 2 as y");
-        ResultSet rs2 = engine.executeQuery("SELECT * FROM tbl");
+        final ResultSet rs2 = engine.executeQuery("SELECT * FROM tbl");
         assertEquals(1, rs2.getRowCount());
         rs2.next();
         assertEquals(2L, rs2.getValue(0));
 
-        Table table = engine.getCatalog().resolveTable("TBL");
-        assertTrue(table.isTemporary());
+        assertEquals("TEMPORARY", tableCell("tbl", "kind"));
 
         logger.info("Multiple CREATE OR REPLACE TEMP TABLE works correctly");
     }
@@ -314,17 +288,8 @@ public class CreateTableAsSelectTest {
         engine.execute("CREATE TRANSIENT TABLE trans_tbl (id INTEGER)");
         engine.execute("CREATE TEMP TABLE temp_tbl (id INTEGER)");
 
-        Table transTable = engine.getCatalog().resolveTable("TRANS_TBL");
-        Table tempTable = engine.getCatalog().resolveTable("TEMP_TBL");
-
-        assertNotNull(transTable);
-        assertNotNull(tempTable);
-
-        assertFalse(transTable.isTemporary());
-        assertTrue(transTable.isTransient());
-
-        assertTrue(tempTable.isTemporary());
-        assertFalse(tempTable.isTransient());
+        assertEquals("TRANSIENT", tableCell("trans_tbl", "kind"));
+        assertEquals("TEMPORARY", tableCell("temp_tbl", "kind"));
 
         logger.info("TRANSIENT vs TEMP table types work correctly");
     }
@@ -335,9 +300,7 @@ public class CreateTableAsSelectTest {
 
         engine.execute("CREATE OR REPLACE TABLE tbl (id INTEGER) COMMENT = 'Test table'");
 
-        Table table = engine.getCatalog().resolveTable("TBL");
-        assertNotNull(table);
-        assertEquals("Test table", table.getComment());
+        assertEquals("Test table", tableCell("tbl", "comment"));
 
         logger.info("CREATE OR REPLACE with COMMENT works correctly");
     }
@@ -350,13 +313,10 @@ public class CreateTableAsSelectTest {
         engine.execute("INSERT INTO source VALUES (1, 'US')");
         engine.execute("INSERT INTO source VALUES (2, 'EU')");
 
-        engine.execute("CREATE TEMP TABLE clustered AS SELECT * FROM source CLUSTER BY (region)");
+        engine.execute("CREATE TEMP TABLE clustered CLUSTER BY (region) AS SELECT * FROM source");
 
-        Table table = engine.getCatalog().resolveTable("CLUSTERED");
-        assertNotNull(table);
-        assertTrue(table.isTemporary());
-        assertEquals(1, table.getClusterKeys().size());
-        assertEquals("region", table.getClusterKeys().get(0));
+        assertEquals("TEMPORARY", tableCell("clustered", "kind"));
+        assertEquals("LINEAR(region)", tableCell("clustered", "cluster_by"));
 
         logger.info("CREATE TEMP TABLE AS SELECT with CLUSTER BY works correctly");
     }

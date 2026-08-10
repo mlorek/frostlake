@@ -17,12 +17,14 @@
 package dev.frostlake.ddl;
 
 import dev.frostlake.BaseJdbcTest;
-import org.junit.jupiter.api.Test;
-
 import java.sql.ResultSet;
 import java.sql.SQLException;
-
-import static org.junit.jupiter.api.Assertions.*;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Tests for CREATE IF NOT EXISTS statements
@@ -32,10 +34,20 @@ public class CreateIfNotExistsTest extends BaseJdbcTest {
     @Test
     public void testCreateDatabaseIfNotExists() throws SQLException {
         // Create database
-        assertDoesNotThrow(() -> statement.execute("CREATE DATABASE IF NOT EXISTS test_create_db"));
+        assertDoesNotThrow(new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                statement.execute("CREATE DATABASE IF NOT EXISTS test_create_db");
+            }
+        });
 
         // Create again should succeed with IF NOT EXISTS
-        assertDoesNotThrow(() -> statement.execute("CREATE DATABASE IF NOT EXISTS test_create_db"));
+        assertDoesNotThrow(new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                statement.execute("CREATE DATABASE IF NOT EXISTS test_create_db");
+            }
+        });
 
         // Create without IF NOT EXISTS should fail
 
@@ -46,10 +58,20 @@ public class CreateIfNotExistsTest extends BaseJdbcTest {
     @Test
     public void testCreateSchemaIfNotExists() throws SQLException {
         // Create schema
-        assertDoesNotThrow(() -> statement.execute("CREATE SCHEMA IF NOT EXISTS test_create_schema"));
+        assertDoesNotThrow(new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                statement.execute("CREATE SCHEMA IF NOT EXISTS test_create_schema");
+            }
+        });
 
         // Create again should succeed with IF NOT EXISTS
-        assertDoesNotThrow(() -> statement.execute("CREATE SCHEMA IF NOT EXISTS test_create_schema"));
+        assertDoesNotThrow(new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                statement.execute("CREATE SCHEMA IF NOT EXISTS test_create_schema");
+            }
+        });
 
         // Create without IF NOT EXISTS should fail
 
@@ -60,19 +82,34 @@ public class CreateIfNotExistsTest extends BaseJdbcTest {
     @Test
     public void testCreateTableIfNotExists() throws SQLException {
         // Create table
-        assertDoesNotThrow(() -> statement.execute(
+        assertDoesNotThrow(new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                statement.execute(
                 "CREATE TABLE IF NOT EXISTS test_create_table (id INTEGER, name VARCHAR)"
-        ));
+        );
+            }
+        });
 
         // Create again should succeed with IF NOT EXISTS
-        assertDoesNotThrow(() -> statement.execute(
+        assertDoesNotThrow(new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                statement.execute(
                 "CREATE TABLE IF NOT EXISTS test_create_table (id INTEGER, name VARCHAR)"
-        ));
+        );
+            }
+        });
 
         // Create without IF NOT EXISTS should fail
-        assertThrows(SQLException.class, () -> statement.execute(
+        assertThrows(SQLException.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                statement.execute(
                 "CREATE TABLE test_create_table (id INTEGER, name VARCHAR)"
-        ));
+        );
+            }
+        });
 
         // Cleanup
         statement.execute("DROP TABLE test_create_table");
@@ -84,19 +121,34 @@ public class CreateIfNotExistsTest extends BaseJdbcTest {
         statement.execute("CREATE TABLE test_table (id INTEGER, name VARCHAR)");
 
         // Create view
-        assertDoesNotThrow(() -> statement.execute(
+        assertDoesNotThrow(new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                statement.execute(
                 "CREATE VIEW IF NOT EXISTS test_create_view AS SELECT * FROM test_table"
-        ));
+        );
+            }
+        });
 
         // Create again should succeed with IF NOT EXISTS
-        assertDoesNotThrow(() -> statement.execute(
+        assertDoesNotThrow(new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                statement.execute(
                 "CREATE VIEW IF NOT EXISTS test_create_view AS SELECT * FROM test_table"
-        ));
+        );
+            }
+        });
 
         // Create without IF NOT EXISTS should fail
-        assertThrows(SQLException.class, () -> statement.execute(
+        assertThrows(SQLException.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                statement.execute(
                 "CREATE VIEW test_create_view AS SELECT * FROM test_table"
-        ));
+        );
+            }
+        });
 
         // Cleanup
         statement.execute("DROP VIEW test_create_view");
@@ -105,19 +157,34 @@ public class CreateIfNotExistsTest extends BaseJdbcTest {
     @Test
     public void testCreateFunctionIfNotExists() throws SQLException {
         // Create function
-        assertDoesNotThrow(() -> statement.execute(
+        assertDoesNotThrow(new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                statement.execute(
                 "CREATE FUNCTION IF NOT EXISTS test_create_func(x INTEGER) RETURNS INTEGER AS 'x + 1'"
-        ));
+        );
+            }
+        });
 
         // Create again should succeed with IF NOT EXISTS
-        assertDoesNotThrow(() -> statement.execute(
+        assertDoesNotThrow(new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                statement.execute(
                 "CREATE FUNCTION IF NOT EXISTS test_create_func(x INTEGER) RETURNS INTEGER AS 'x + 1'"
-        ));
+        );
+            }
+        });
 
         // Create without IF NOT EXISTS should fail
-        assertThrows(SQLException.class, () -> statement.execute(
+        assertThrows(SQLException.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                statement.execute(
                 "CREATE FUNCTION test_create_func(x INTEGER) RETURNS INTEGER AS 'x + 1'"
-        ));
+        );
+            }
+        });
 
         // Cleanup
         statement.execute("DROP FUNCTION test_create_func(INTEGER)");
@@ -126,22 +193,37 @@ public class CreateIfNotExistsTest extends BaseJdbcTest {
     @Test
     public void testCreateProcedureIfNotExists() throws SQLException {
         // Create procedure
-        assertDoesNotThrow(() -> statement.execute("""
+        assertDoesNotThrow(new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                statement.execute("""
                 CREATE PROCEDURE IF NOT EXISTS test_create_proc(x INTEGER) RETURNS INTEGER AS $$\
                 BEGIN RETURN x + 1; END;$$
-                """));
+                """);
+            }
+        });
 
         // Create again should succeed with IF NOT EXISTS
-        assertDoesNotThrow(() -> statement.execute("""
+        assertDoesNotThrow(new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                statement.execute("""
                 CREATE PROCEDURE IF NOT EXISTS test_create_proc(x INTEGER) RETURNS INTEGER AS $$\
                 BEGIN RETURN x + 1; END;$$
-                """));
+                """);
+            }
+        });
 
         // Create without IF NOT EXISTS should fail
-        assertThrows(SQLException.class, () -> statement.execute("""
+        assertThrows(SQLException.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                statement.execute("""
                 CREATE PROCEDURE test_create_proc(x INTEGER) RETURNS INTEGER AS $$\
                 BEGIN RETURN x + 1; END;$$
-                """));
+                """);
+            }
+        });
 
         // Cleanup
         statement.execute("DROP PROCEDURE test_create_proc(INTEGER)");
@@ -150,28 +232,43 @@ public class CreateIfNotExistsTest extends BaseJdbcTest {
     @Test
     public void testCreateTaskIfNotExists() throws SQLException {
         // Create task
-        assertDoesNotThrow(() -> statement.execute("""
+        assertDoesNotThrow(new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                statement.execute("""
                 CREATE TASK IF NOT EXISTS test_create_task
                 WAREHOUSE = 'compute_wh'
                 SCHEDULE = '60 MINUTES'
                 AS SELECT 1
-                """));
+                """);
+            }
+        });
 
         // Create again should succeed with IF NOT EXISTS
-        assertDoesNotThrow(() -> statement.execute("""
+        assertDoesNotThrow(new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                statement.execute("""
                 CREATE TASK IF NOT EXISTS test_create_task
                 WAREHOUSE = 'compute_wh'
                 SCHEDULE = '60 MINUTES'
                 AS SELECT 1
-                """));
+                """);
+            }
+        });
 
         // Create without IF NOT EXISTS should fail
-        assertThrows(SQLException.class, () -> statement.execute("""
+        assertThrows(SQLException.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                statement.execute("""
                 CREATE TASK test_create_task
                 WAREHOUSE = 'compute_wh'
                 SCHEDULE = '60 MINUTES'
                 AS SELECT 1
-                """));
+                """);
+            }
+        });
 
         // Cleanup
         statement.execute("DROP TASK test_create_task");
@@ -183,19 +280,34 @@ public class CreateIfNotExistsTest extends BaseJdbcTest {
         statement.execute("CREATE TABLE test_stream_table (id INTEGER, name VARCHAR)");
 
         // Create stream
-        assertDoesNotThrow(() -> statement.execute(
+        assertDoesNotThrow(new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                statement.execute(
                 "CREATE STREAM IF NOT EXISTS test_create_stream ON TABLE test_stream_table"
-        ));
+        );
+            }
+        });
 
         // Create again should succeed with IF NOT EXISTS
-        assertDoesNotThrow(() -> statement.execute(
+        assertDoesNotThrow(new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                statement.execute(
                 "CREATE STREAM IF NOT EXISTS test_create_stream ON TABLE test_stream_table"
-        ));
+        );
+            }
+        });
 
         // Create without IF NOT EXISTS should fail
-        assertThrows(SQLException.class, () -> statement.execute(
+        assertThrows(SQLException.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                statement.execute(
                 "CREATE STREAM test_create_stream ON TABLE test_stream_table"
-        ));
+        );
+            }
+        });
 
         // Cleanup
         statement.execute("DROP STREAM test_create_stream");
@@ -204,10 +316,20 @@ public class CreateIfNotExistsTest extends BaseJdbcTest {
     @Test
     public void testCreateWarehouseIfNotExists() throws SQLException {
         // Create warehouse
-        assertDoesNotThrow(() -> statement.execute("CREATE WAREHOUSE IF NOT EXISTS test_create_wh"));
+        assertDoesNotThrow(new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                statement.execute("CREATE WAREHOUSE IF NOT EXISTS test_create_wh");
+            }
+        });
 
         // Create again should succeed with IF NOT EXISTS
-        assertDoesNotThrow(() -> statement.execute("CREATE WAREHOUSE IF NOT EXISTS test_create_wh"));
+        assertDoesNotThrow(new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                statement.execute("CREATE WAREHOUSE IF NOT EXISTS test_create_wh");
+            }
+        });
 
         // Create without IF NOT EXISTS should fail
 
@@ -218,19 +340,34 @@ public class CreateIfNotExistsTest extends BaseJdbcTest {
     @Test
     public void testCreateStageIfNotExists() throws SQLException {
         // Create stage
-        assertDoesNotThrow(() -> statement.execute(
+        assertDoesNotThrow(new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                statement.execute(
                 "CREATE STAGE IF NOT EXISTS test_create_stage URL = 's3://bucket/path'"
-        ));
+        );
+            }
+        });
 
         // Create again should succeed with IF NOT EXISTS
-        assertDoesNotThrow(() -> statement.execute(
+        assertDoesNotThrow(new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                statement.execute(
                 "CREATE STAGE IF NOT EXISTS test_create_stage URL = 's3://bucket/path'"
-        ));
+        );
+            }
+        });
 
         // Create without IF NOT EXISTS should fail
-        assertThrows(SQLException.class, () -> statement.execute(
+        assertThrows(SQLException.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                statement.execute(
                 "CREATE STAGE test_create_stage URL = 's3://bucket/path'"
-        ));
+        );
+            }
+        });
 
         // Cleanup
         statement.execute("DROP STAGE test_create_stage");
@@ -239,10 +376,20 @@ public class CreateIfNotExistsTest extends BaseJdbcTest {
     @Test
     public void testCreateUserIfNotExists() throws SQLException {
         // Create user
-        assertDoesNotThrow(() -> statement.execute("CREATE USER IF NOT EXISTS test_create_user"));
+        assertDoesNotThrow(new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                statement.execute("CREATE USER IF NOT EXISTS test_create_user");
+            }
+        });
 
         // Create again should succeed with IF NOT EXISTS
-        assertDoesNotThrow(() -> statement.execute("CREATE USER IF NOT EXISTS test_create_user"));
+        assertDoesNotThrow(new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                statement.execute("CREATE USER IF NOT EXISTS test_create_user");
+            }
+        });
 
         // Create without IF NOT EXISTS should fail
 
@@ -253,10 +400,20 @@ public class CreateIfNotExistsTest extends BaseJdbcTest {
     @Test
     public void testCreateRoleIfNotExists() throws SQLException {
         // Create role
-        assertDoesNotThrow(() -> statement.execute("CREATE ROLE IF NOT EXISTS test_create_role"));
+        assertDoesNotThrow(new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                statement.execute("CREATE ROLE IF NOT EXISTS test_create_role");
+            }
+        });
 
         // Create again should succeed with IF NOT EXISTS
-        assertDoesNotThrow(() -> statement.execute("CREATE ROLE IF NOT EXISTS test_create_role"));
+        assertDoesNotThrow(new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                statement.execute("CREATE ROLE IF NOT EXISTS test_create_role");
+            }
+        });
 
         // Create without IF NOT EXISTS should fail
 
@@ -267,7 +424,7 @@ public class CreateIfNotExistsTest extends BaseJdbcTest {
     @Test
     public void testIdempotentSetup() throws SQLException {
         // Test that setup scripts can be run multiple times
-        String setupScript = """
+        final String setupScript = """
                 CREATE DATABASE IF NOT EXISTS app_db;
                 CREATE SCHEMA IF NOT EXISTS app_db.app_schema;
                 CREATE TABLE IF NOT EXISTS users (id INTEGER, name VARCHAR);
@@ -276,17 +433,27 @@ public class CreateIfNotExistsTest extends BaseJdbcTest {
 
         // Run setup script first time
         for (final String sqlLine : setupScript.split(";")) {
-            String sql = sqlLine.trim();
+            final String sql = sqlLine.trim();
             if (!sql.isEmpty()) {
-                assertDoesNotThrow(() -> statement.execute(sql));
+                assertDoesNotThrow(new Executable() {
+                    @Override
+                    public void execute() throws Throwable {
+                        statement.execute(sql);
+                    }
+                });
             }
         }
 
         // Run setup script second time - should succeed
         for (final String sqlLine : setupScript.split(";")) {
-            String sql = sqlLine.trim();
+            final String sql = sqlLine.trim();
             if (!sql.isEmpty()) {
-                assertDoesNotThrow(() -> statement.execute(sql));
+                assertDoesNotThrow(new Executable() {
+                    @Override
+                    public void execute() throws Throwable {
+                        statement.execute(sql);
+                    }
+                });
             }
         }
 
@@ -309,7 +476,7 @@ public class CreateIfNotExistsTest extends BaseJdbcTest {
         statement.execute("CREATE TABLE IF NOT EXISTS test_table (id INTEGER)");
 
         // Verify table exists
-        ResultSet rs = statement.executeQuery("SELECT COUNT(*) as cnt FROM test_table");
+        final ResultSet rs = statement.executeQuery("SELECT COUNT(*) as cnt FROM test_table");
         assertTrue(rs.next());
         assertEquals(0, rs.getInt("cnt"));
         rs.close();

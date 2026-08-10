@@ -16,40 +16,32 @@
 
 package dev.frostlake.features;
 
-import dev.frostlake.DatabaseEngine;
+import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
-public class SystemStreamHasDataTest {
+public class SystemStreamHasDataTest extends BaseDatabaseTest {
 
-    private DatabaseEngine engine;
-
-    @BeforeEach
-    public void setUp() {
-        engine = new DatabaseEngine();
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
-        engine.execute("USE SCHEMA public");
+    @Override
+    protected void setupTest() {
         engine.execute("CREATE TABLE events (id INTEGER, name VARCHAR)");
         engine.execute("CREATE STREAM events_stream ON TABLE events");
     }
 
-    @AfterEach
-    public void tearDown() {
-        if (engine != null) engine.shutdown();
-    }
-
     @Test
     public void testStreamHasDataFalseWhenEmpty() {
-        ResultSet rs = engine.executeQuery("SELECT SYSTEM$STREAM_HAS_DATA('events_stream')");
+        final ResultSet rs = engine.executeQuery("SELECT SYSTEM$STREAM_HAS_DATA('events_stream')");
         assertNotNull(rs);
         assertEquals(1, rs.getRowCount());
-        Object val = rs.getRows().get(0).getValue(0);
+        final Object val = rs.getRows().get(0).getValue(0);
         assertNotNull(val);
         assertFalse((Boolean) val, "Stream should report no data when table is empty");
     }
@@ -57,7 +49,7 @@ public class SystemStreamHasDataTest {
     @Test
     public void testStreamHasDataTrueAfterInsert() {
         engine.execute("INSERT INTO events VALUES (1, 'click')");
-        ResultSet rs = engine.executeQuery("SELECT SYSTEM$STREAM_HAS_DATA('events_stream')");
+        final ResultSet rs = engine.executeQuery("SELECT SYSTEM$STREAM_HAS_DATA('events_stream')");
         assertNotNull(rs);
         assertEquals(1, rs.getRowCount());
         // The stream storage may or may not track inserts depending on impl —
@@ -68,8 +60,18 @@ public class SystemStreamHasDataTest {
     @Test
     public void testStreamHasDataCallable() {
         // Should be callable without error multiple times
-        assertDoesNotThrow(() -> engine.executeQuery("SELECT SYSTEM$STREAM_HAS_DATA('events_stream')"));
-        assertDoesNotThrow(() -> engine.executeQuery("SELECT SYSTEM$STREAM_HAS_DATA('events_stream')"));
+        assertDoesNotThrow(new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                engine.executeQuery("SELECT SYSTEM$STREAM_HAS_DATA('events_stream')");
+            }
+        });
+        assertDoesNotThrow(new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                engine.executeQuery("SELECT SYSTEM$STREAM_HAS_DATA('events_stream')");
+            }
+        });
     }
 
     @Test
@@ -78,9 +80,9 @@ public class SystemStreamHasDataTest {
         // up as a bare name in the current schema, so the gate always said FALSE and whole loader
         // branches silently never ran.
         engine.execute("INSERT INTO events VALUES (1, 'click')");
-        assertTrue((Boolean) one("SELECT SYSTEM$STREAM_HAS_DATA('public.events_stream')"),
+        assertTrue((Boolean) one("SELECT SYSTEM$STREAM_HAS_DATA('test_schema.events_stream')"),
             "schema-qualified name must resolve");
-        assertTrue((Boolean) one("SELECT SYSTEM$STREAM_HAS_DATA('test_db.public.events_stream')"),
+        assertTrue((Boolean) one("SELECT SYSTEM$STREAM_HAS_DATA('test_db.test_schema.events_stream')"),
             "db.schema-qualified name must resolve");
     }
 
@@ -92,7 +94,14 @@ public class SystemStreamHasDataTest {
         engine.execute("INSERT INTO other_schema.t2 VALUES (1)");
         assertTrue((Boolean) one("SELECT SYSTEM$STREAM_HAS_DATA('other_schema.s2')"),
             "stream in a non-current schema must be reachable by qualified name");
-        assertFalse((Boolean) one("SELECT SYSTEM$STREAM_HAS_DATA('other_schema.no_such')"));
+        final RuntimeException qualifiedMissing = assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                one("SELECT SYSTEM$STREAM_HAS_DATA('other_schema.no_such')");
+            }
+        });
+        assertTrue(qualifiedMissing.getMessage().contains("must be a valid stream name"),
+            "unexpected message: " + qualifiedMissing.getMessage());
     }
 
     private Object one(final String sql) {
@@ -100,11 +109,17 @@ public class SystemStreamHasDataTest {
     }
 
     @Test
-    public void testNonExistentStreamReturnsFalse() {
-        ResultSet rs = engine.executeQuery("SELECT SYSTEM$STREAM_HAS_DATA('no_such_stream')");
-        assertNotNull(rs);
-        Object val = rs.getRows().get(0).getValue(0);
-        assertFalse((Boolean) val, "Non-existent stream should return false");
+    public void testNonExistentStreamIsRefused() {
+        // Live refuses an unknown stream at compile time, echoing the argument as written.
+        final RuntimeException e = assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.executeQuery("SELECT SYSTEM$STREAM_HAS_DATA('no_such_stream')");
+            }
+        });
+        assertTrue(e.getMessage().contains(
+                "Invalid value ['no_such_stream'] for function 'SYSTEM$STREAM_HAS_DATA', parameter 1: must be a valid stream name"),
+            "unexpected message: " + e.getMessage());
     }
 
     @Test

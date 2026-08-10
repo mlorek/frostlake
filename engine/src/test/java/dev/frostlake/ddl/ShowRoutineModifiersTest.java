@@ -37,12 +37,12 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * holding one user function and one user procedure:
  *
  * <pre>
- *   SHOW FUNCTIONS                       1135 rows / 20 cols   SHOW PROCEDURES                 33 / 16
- *   SHOW BUILTIN FUNCTIONS               1134 rows / 20 cols   SHOW BUILTIN PROCEDURES         32 / 16
- *   SHOW USER FUNCTIONS                     1 row  / 20 cols   SHOW USER PROCEDURES             1 / 16
- *   SHOW TERSE FUNCTIONS                 1135 rows / 20 cols   SHOW TERSE PROCEDURES           33 / 16
- *   SHOW TERSE BUILTIN FUNCTIONS         1134 rows / 20 cols   SHOW TERSE BUILTIN PROCEDURES   32 / 16
- *   SHOW TERSE USER FUNCTIONS               1 row  / 20 cols   SHOW TERSE USER PROCEDURES       1 / 16
+ *   SHOW FUNCTIONS                       1135 rows / 21 cols   SHOW PROCEDURES                 33 / 16
+ *   SHOW BUILTIN FUNCTIONS               1134 rows / 21 cols   SHOW BUILTIN PROCEDURES         32 / 16
+ *   SHOW USER FUNCTIONS                     1 row  / 21 cols   SHOW USER PROCEDURES             1 / 16
+ *   SHOW TERSE FUNCTIONS                 1135 rows / 21 cols   SHOW TERSE PROCEDURES           33 / 16
+ *   SHOW TERSE BUILTIN FUNCTIONS         1134 rows / 21 cols   SHOW TERSE BUILTIN PROCEDURES   32 / 16
+ *   SHOW TERSE USER FUNCTIONS               1 row  / 21 cols   SHOW TERSE USER PROCEDURES       1 / 16
  * </pre>
  *
  * <p>Two things stand out. TERSE is a <strong>no-op</strong> here: it neither drops rows nor trims
@@ -56,7 +56,7 @@ public class ShowRoutineModifiersTest extends BaseDatabaseTest {
     private static final int IS_BUILTIN = 3;
 
     /**
-     * The 20 columns every function listing returns, in order (live-verified — the same 20 for
+     * The 21 columns every function listing returns, in order (live-verified — the same 21 for
      * SHOW FUNCTIONS, SHOW BUILTIN FUNCTIONS, SHOW USER FUNCTIONS and each of their TERSE forms).
      */
     private static final String[] FUNCTION_COLUMNS = {
@@ -64,13 +64,14 @@ public class ShowRoutineModifiersTest extends BaseDatabaseTest {
         "min_num_arguments", "max_num_arguments", "arguments", "description", "catalog_name",
         "is_table_function", "valid_for_clustering", "is_secure", "secrets",
         "external_access_integrations", "is_external_function", "language", "is_memoizable",
-        "is_data_metric"
+        "is_data_metric", "is_ai_function"
     };
 
     /**
-     * A procedure listing returns exactly the first 16 of those — dropping the four a procedure has no
-     * answer for (is_external_function, language, is_memoizable, is_data_metric). Deriving the array
-     * rather than retyping it is the point: the shapes really are one prefix of the other.
+     * A procedure listing returns exactly the first 16 of those — dropping the five a procedure has no
+     * answer for (is_external_function, language, is_memoizable, is_data_metric, is_ai_function).
+     * Deriving the array rather than retyping it is the point: the shapes really are one prefix of the
+     * other.
      */
     private static final String[] PROCEDURE_COLUMNS = Arrays.copyOfRange(FUNCTION_COLUMNS, 0, 16);
 
@@ -115,21 +116,21 @@ public class ShowRoutineModifiersTest extends BaseDatabaseTest {
 
     // ──────────────────────────── TERSE is accepted and changes nothing ────────────────────────────
 
-    /** SHOW TERSE FUNCTIONS: 1134 rows / 20 cols live, identical to SHOW FUNCTIONS. */
+    /** SHOW TERSE FUNCTIONS: 1134 rows / 21 cols live, identical to SHOW FUNCTIONS. */
     @Test
     public void terseFunctionsIsIdenticalToFunctions() {
         assertSameListing("SHOW TERSE FUNCTIONS", "SHOW FUNCTIONS");
         assertColumns(FUNCTION_COLUMNS, "SHOW TERSE FUNCTIONS");
     }
 
-    /** SHOW TERSE BUILTIN FUNCTIONS: 1134 rows / 20 cols live, identical to SHOW BUILTIN FUNCTIONS. */
+    /** SHOW TERSE BUILTIN FUNCTIONS: 1134 rows / 21 cols live, identical to SHOW BUILTIN FUNCTIONS. */
     @Test
     public void terseBuiltinFunctionsIsIdenticalToBuiltinFunctions() {
         assertSameListing("SHOW TERSE BUILTIN FUNCTIONS", "SHOW BUILTIN FUNCTIONS");
         assertColumns(FUNCTION_COLUMNS, "SHOW TERSE BUILTIN FUNCTIONS");
     }
 
-    /** SHOW TERSE USER FUNCTIONS: 0 rows / 20 cols live on a database with no user functions. */
+    /** SHOW TERSE USER FUNCTIONS: 0 rows / 21 cols live on a database with no user functions. */
     @Test
     public void terseUserFunctionsListsNoBuiltins() {
         final ResultSet rs = show("SHOW TERSE USER FUNCTIONS");
@@ -270,7 +271,7 @@ public class ShowRoutineModifiersTest extends BaseDatabaseTest {
 
     // ──────────────────────────────────── LIKE and IN scope ────────────────────────────────────
 
-    /** SHOW TERSE FUNCTIONS LIKE 'ABS': 1 row / 20 cols live. */
+    /** SHOW TERSE FUNCTIONS LIKE 'ABS': 1 row / 21 cols live. */
     @Test
     public void likeFiltersTheTerseFunctionListing() {
         final ResultSet rs = show("SHOW TERSE FUNCTIONS LIKE 'ABS'");
@@ -305,7 +306,7 @@ public class ShowRoutineModifiersTest extends BaseDatabaseTest {
     }
 
     /**
-     * SHOW TERSE FUNCTIONS IN SCHEMA &lt;schema&gt;: 1134 rows / 20 cols live — the scope parses and is
+     * SHOW TERSE FUNCTIONS IN SCHEMA &lt;schema&gt;: 1134 rows / 21 cols live — the scope parses and is
      * then ignored, answering exactly what the unscoped listing does.
      */
     @Test

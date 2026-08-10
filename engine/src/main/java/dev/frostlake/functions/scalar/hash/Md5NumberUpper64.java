@@ -37,6 +37,8 @@ public class Md5NumberUpper64 extends BuiltInFunction {
         return new BigDecimal(new BigInteger(1, Arrays.copyOfRange(d, 0, 8)));
     }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return 1; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return 1; }
 }

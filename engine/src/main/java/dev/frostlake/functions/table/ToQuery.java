@@ -32,6 +32,9 @@ import java.util.Map;
  */
 public class ToQuery extends TableFunction {
 
+    /** The query text's parameter name — SQL, which is also what a leading positional argument fills. */
+    private static final String SQL_PARAMETER = "SQL";
+
     private final QueryRunner queryRunner;
 
     public ToQuery(final QueryRunner queryRunner) {
@@ -39,13 +42,18 @@ public class ToQuery extends TableFunction {
         this.queryRunner = queryRunner;
     }
 
+    /**
+     * The query text's parameter is named <b>SQL</b>, not INPUT — {@code TO_QUERY(SQL => '…')} runs
+     * and {@code TO_QUERY(INPUT => '…')} is refused for naming a parameter that does not exist. Every
+     * OTHER named argument is a bind for a {@code :name} placeholder inside the text.
+     */
     @Override
     public ResultSet execute(final Map<String, Object> namedArgs) {
         validateArgs(namedArgs);
-        final Object sqlText = namedArgs.get("INPUT");
+        final Object sqlText = namedArgs.get(SQL_PARAMETER);
         final Map<String, Object> binds = new HashMap<>();
         for (final Map.Entry<String, Object> arg : namedArgs.entrySet()) {
-            if (!"INPUT".equals(arg.getKey())) {
+            if (!SQL_PARAMETER.equals(arg.getKey())) {
                 binds.put(arg.getKey(), arg.getValue());
             }
         }
@@ -63,7 +71,7 @@ public class ToQuery extends TableFunction {
 
     @Override
     public void validateArgs(final Map<String, Object> namedArgs) {
-        if (!(namedArgs.get("INPUT") instanceof String)) {
+        if (!(namedArgs.get(SQL_PARAMETER) instanceof String)) {
             throw new RuntimeException("TO_QUERY requires a SQL text argument");
         }
     }

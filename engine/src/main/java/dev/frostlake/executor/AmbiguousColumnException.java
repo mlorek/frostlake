@@ -27,6 +27,11 @@ package dev.frostlake.executor;
  */
 public class AmbiguousColumnException extends RuntimeException {
 
+    /**
+     * Builds the SQL compilation error for a bare column name both sides of an ON join carry.
+     *
+     * @param columnName the ambiguous bare column name, quoted verbatim in the error message
+     */
     public AmbiguousColumnException(final String columnName) {
         super(SqlCompilationError.of("ambiguous column name '" + columnName + "'"));
     }

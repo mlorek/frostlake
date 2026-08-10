@@ -30,6 +30,8 @@ public class Atan2 extends NumericArgumentFunction {
         return Math.atan2(((Number) args.get(0)).doubleValue(), ((Number) args.get(1)).doubleValue());
     }
 
-    @Override public int getMinArgCount() { return 2; }
-    @Override public int getMaxArgCount() { return 2; }
+    @Override
+    public int getMinArgCount() { return 2; }
+    @Override
+    public int getMaxArgCount() { return 2; }
 }

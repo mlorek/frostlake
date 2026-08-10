@@ -25,10 +25,24 @@ public class TryDecryptRaw extends BuiltInFunction {
 
     private static final DecryptRaw BASE = new DecryptRaw();
 
-    public TryDecryptRaw() { super("TRY_DECRYPT_RAW", BinaryType.BINARY); }
+    public TryDecryptRaw() { super("TRY_DECRYPT_RAW", BinaryType.VARBINARY); }
 
     @Override
     public Object evaluate(final List<Object> args) {
+        // Argument-type errors surface as a compile error on live even for TRY_ — only a genuine
+        // decryption failure (wrong key/tag) yields NULL. Validate the BINARY-typed arguments up
+        // front so a VARCHAR raises "Invalid argument types" instead of being swallowed.
+        for (int i = 0; i < args.size() && i < 3; i++) {
+            if (args.get(i) != null) {
+                RawCipherSupport.binaryBytes("TRY_DECRYPT_RAW", args.get(i));
+            }
+        }
+        if (args.size() >= 4 && args.get(3) != null) {
+            RawCipherSupport.binaryBytes("TRY_DECRYPT_RAW", args.get(3));
+        }
+        if (args.size() >= 6 && args.get(5) != null) {
+            RawCipherSupport.binaryBytes("TRY_DECRYPT_RAW", args.get(5));
+        }
         try {
             return BASE.evaluate(args);
         } catch (final RuntimeException failed) {
@@ -36,6 +50,8 @@ public class TryDecryptRaw extends BuiltInFunction {
         }
     }
 
-    @Override public int getMinArgCount() { return 4; }
-    @Override public int getMaxArgCount() { return 6; }
+    @Override
+    public int getMinArgCount() { return 3; }
+    @Override
+    public int getMaxArgCount() { return 6; }
 }

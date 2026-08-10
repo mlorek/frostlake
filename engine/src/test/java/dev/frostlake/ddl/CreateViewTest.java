@@ -71,7 +71,7 @@ public class CreateViewTest extends BaseDatabaseTest {
 
         engine.execute("CREATE VIEW expensive_products AS SELECT * FROM products WHERE price > 150");
 
-        ResultSet result = engine.executeQuery("SELECT * FROM expensive_products");
+        final ResultSet result = engine.executeQuery("SELECT * FROM expensive_products");
         assertEquals(1, result.getRowCount(), "View should filter to 1 product");
     }
 

@@ -39,7 +39,7 @@ public class OperatorContext {
     private final RowExpressionEvaluator expressionEvaluator;
     private final QueryExecutor queryExecutor;
 
-    private OperatorContext(final Builder builder) {
+    OperatorContext(final OperatorContextBuilder builder) {
         this.table = builder.table;
         this.functionRegistry = builder.functionRegistry;
         this.aliasToTable = builder.aliasToTable != null ? builder.aliasToTable : new HashMap<>();
@@ -94,66 +94,8 @@ public class OperatorContext {
         return expressionEvaluator != null;
     }
 
-    public static Builder builder() {
-        return new Builder();
+    public static OperatorContextBuilder builder() {
+        return new OperatorContextBuilder();
     }
 
-    public static class Builder {
-        private Table table;
-        private FunctionRegistry functionRegistry;
-        private Map<String, Table> aliasToTable;
-        private List<Table> allTables;
-        private Map<String, Object> lateralContext;
-        private Map<String, Object> additionalContext;
-        private RowExpressionEvaluator expressionEvaluator;
-        private QueryExecutor queryExecutor;
-
-        public Builder table(final Table table) {
-            this.table = table;
-            return this;
-        }
-
-        public Builder functionRegistry(final FunctionRegistry functionRegistry) {
-            this.functionRegistry = functionRegistry;
-            return this;
-        }
-
-        public Builder aliasToTable(final Map<String, Table> aliasToTable) {
-            this.aliasToTable = aliasToTable;
-            return this;
-        }
-
-        public Builder allTables(final List<Table> allTables) {
-            this.allTables = allTables;
-            return this;
-        }
-
-        public Builder lateralContext(final Map<String, Object> lateralContext) {
-            this.lateralContext = lateralContext;
-            return this;
-        }
-
-        public Builder additionalContext(final Map<String, Object> additionalContext) {
-            this.additionalContext = additionalContext;
-            return this;
-        }
-
-        public Builder expressionEvaluator(final RowExpressionEvaluator expressionEvaluator) {
-            this.expressionEvaluator = expressionEvaluator;
-            return this;
-        }
-
-        public Builder queryExecutor(final QueryExecutor queryExecutor) {
-            this.queryExecutor = queryExecutor;
-            return this;
-        }
-
-        public OperatorContext build() {
-            // Table is optional for operators like TableFunctionOperator that don't need input tables
-            if (functionRegistry == null) {
-                throw new IllegalArgumentException("FunctionRegistry is required");
-            }
-            return new OperatorContext(this);
-        }
-    }
 }

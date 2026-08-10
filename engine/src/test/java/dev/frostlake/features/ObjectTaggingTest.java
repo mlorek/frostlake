@@ -16,11 +16,7 @@
 
 package dev.frostlake.features;
 
-import dev.frostlake.DatabaseEngine;
-import dev.frostlake.metastore.model.Schema;
-import dev.frostlake.storage.ResultSet;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
+import dev.frostlake.BaseDatabaseTest;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
@@ -30,92 +26,105 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Tests applying object tags via {@code ALTER <object> SET TAG} / {@code UNSET TAG} across the
+ * Applying object tags via {@code ALTER <object> SET TAG} / {@code UNSET TAG} across the
  * applicable object types (database, schema, table, column, view, warehouse), plus ALLOWED_VALUES
- * enforcement and the tag-must-exist requirement.
+ * enforcement and the tag-must-exist requirement — asserted through the SQL surface,
+ * {@code SYSTEM$GET_TAG}, so every check runs against whichever engine executed the DDL,
+ * embedded or live.
  */
-public class ObjectTaggingTest {
+public class ObjectTaggingTest extends BaseDatabaseTest {
 
-    private DatabaseEngine engine;
-
-    @BeforeEach
-    public void setUp() {
-        engine = new DatabaseEngine();
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
-        engine.execute("USE SCHEMA public");
+    @Override
+    protected void setupTest() {
         engine.execute("CREATE TAG cost_center");
         engine.execute("CREATE TAG sensitivity ALLOWED_VALUES 'PUBLIC', 'CONFIDENTIAL'");
         engine.execute("CREATE TABLE t (id INTEGER, name VARCHAR)");
         engine.execute("CREATE VIEW v AS SELECT id FROM t");
-        engine.execute("CREATE WAREHOUSE wh WITH WAREHOUSE_SIZE = 'SMALL'");
+        engine.execute("CREATE WAREHOUSE IF NOT EXISTS wh WITH WAREHOUSE_SIZE = 'SMALL' "
+            + "AUTO_SUSPEND = 60 INITIALLY_SUSPENDED = TRUE");
     }
 
-    @AfterEach
-    public void tearDown() {
-        if (engine != null) {
-            engine.shutdown();
-        }
+    @Override
+    protected void teardownTest() {
+        engine.execute("DROP WAREHOUSE IF EXISTS wh");
     }
 
-    private Schema schema() {
-        return engine.getCatalog().getDatabase("TEST_DB").getSchema("PUBLIC");
+    /** One SYSTEM$GET_TAG read: the tag's value on the object, or null when unassigned. */
+    private String tagOf(final String tag, final String object, final String domain) {
+        final Object value = engine.executeQuery(
+            "SELECT SYSTEM$GET_TAG('" + tag + "', '" + object + "', '" + domain + "')")
+            .getRows().get(0).getValue(0);
+        return value == null ? null : value.toString();
     }
 
     @Test
     public void testSetAndUnsetTagOnTable() {
         engine.execute("ALTER TABLE t SET TAG cost_center = 'engineering'");
-        assertEquals("engineering", schema().getTable("T").getTagValue("cost_center"));
+        assertEquals("engineering", tagOf("cost_center", "t", "TABLE"));
 
         engine.execute("ALTER TABLE t UNSET TAG cost_center");
-        assertNull(schema().getTable("T").getTagValue("cost_center"));
+        assertNull(tagOf("cost_center", "t", "TABLE"));
     }
 
     @Test
     public void testSetAndUnsetTagOnColumn() {
         engine.execute("ALTER TABLE t ALTER COLUMN name SET TAG cost_center = 'pii'");
-        assertEquals("pii", schema().getTable("T").getColumn("name").getTagValue("cost_center"));
+        assertEquals("pii", tagOf("cost_center", "t.name", "COLUMN"));
 
         engine.execute("ALTER TABLE t ALTER COLUMN name UNSET TAG cost_center");
-        assertNull(schema().getTable("T").getColumn("name").getTagValue("cost_center"));
+        assertNull(tagOf("cost_center", "t.name", "COLUMN"));
     }
 
     @Test
     public void testSetTagOnView() {
+        // A view is a table-like object: it answers under the TABLE domain (live-verified).
         engine.execute("ALTER VIEW v SET TAG cost_center = 'analytics'");
-        assertEquals("analytics", schema().getView("V").getTagValue("cost_center"));
+        assertEquals("analytics", tagOf("cost_center", "v", "TABLE"));
+    }
+
+    @Test
+    public void testViewDomainIsRefused() {
+        engine.execute("ALTER VIEW v SET TAG cost_center = 'analytics'");
+        final RuntimeException e = assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.executeQuery("SELECT SYSTEM$GET_TAG('cost_center', 'v', 'VIEW')");
+            }
+        });
+        assertTrue(e.getMessage().contains("Invalid value VIEW for argument OBJECT_TYPE. "
+            + "Please use object type TABLE for all kinds of table-like objects."), e.getMessage());
     }
 
     @Test
     public void testSetTagOnSchema() {
-        engine.execute("ALTER SCHEMA public SET TAG cost_center = 'shared'");
-        assertEquals("shared", schema().getTagValue("cost_center"));
+        engine.execute("ALTER SCHEMA test_schema SET TAG cost_center = 'shared'");
+        assertEquals("shared", tagOf("cost_center", "test_schema", "SCHEMA"));
     }
 
     @Test
     public void testSetTagOnDatabase() {
         engine.execute("ALTER DATABASE test_db SET TAG cost_center = 'corp'");
-        assertEquals("corp", engine.getCatalog().getDatabase("TEST_DB").getTagValue("cost_center"));
+        assertEquals("corp", tagOf("cost_center", "test_db", "DATABASE"));
     }
 
     @Test
     public void testSetTagOnWarehouse() {
         engine.execute("ALTER WAREHOUSE wh SET TAG cost_center = 'etl'");
-        assertEquals("etl", engine.getCatalog().getWarehouse("WH").getTagValue("cost_center"));
+        assertEquals("etl", tagOf("cost_center", "wh", "WAREHOUSE"));
     }
 
     @Test
     public void testMultipleTagsInOneStatement() {
         engine.execute("ALTER TABLE t SET TAG cost_center = 'eng', sensitivity = 'PUBLIC'");
-        assertEquals("eng", schema().getTable("T").getTagValue("cost_center"));
-        assertEquals("PUBLIC", schema().getTable("T").getTagValue("sensitivity"));
+        assertEquals("eng", tagOf("cost_center", "t", "TABLE"));
+        assertEquals("PUBLIC", tagOf("sensitivity", "t", "TABLE"));
     }
 
     @Test
     public void testTagLookupIsCaseInsensitive() {
         engine.execute("ALTER TABLE t SET TAG cost_center = 'eng'");
         // Tag association is keyed by the canonical upper-cased tag name.
-        assertEquals("eng", schema().getTable("T").getTagValue("COST_CENTER"));
+        assertEquals("eng", tagOf("COST_CENTER", "t", "TABLE"));
     }
 
     @Test
@@ -144,13 +153,10 @@ public class ObjectTaggingTest {
         engine.execute("ALTER TABLE t SET TAG cost_center = 'engineering'");
         engine.execute("ALTER TABLE t ALTER COLUMN name SET TAG cost_center = 'pii'");
 
-        assertEquals("engineering",
-            engine.executeQuery("SELECT SYSTEM$GET_TAG('cost_center', 't', 'TABLE')").getRows().get(0).getValue(0));
-        assertEquals("pii",
-            engine.executeQuery("SELECT SYSTEM$GET_TAG('cost_center', 't.name', 'COLUMN')").getRows().get(0).getValue(0));
+        assertEquals("engineering", tagOf("cost_center", "t", "TABLE"));
+        assertEquals("pii", tagOf("cost_center", "t.name", "COLUMN"));
         // A tag not assigned to the object returns NULL.
-        assertNull(
-            engine.executeQuery("SELECT SYSTEM$GET_TAG('sensitivity', 't', 'TABLE')").getRows().get(0).getValue(0));
+        assertNull(tagOf("sensitivity", "t", "TABLE"));
     }
 
     /**
@@ -173,9 +179,7 @@ public class ObjectTaggingTest {
         assertTrue(String.valueOf(error.getMessage()).contains("does not exist"),
             "expected a does-not-exist rejection, got: " + error.getMessage());
 
-        assertEquals("engineering", engine.executeQuery(
-            "SELECT SYSTEM$GET_TAG('cost_center', 't', 'TABLE')").getRows().get(0).getValue(0));
-        assertEquals("pii", engine.executeQuery(
-            "SELECT SYSTEM$GET_TAG('cost_center', 't.name', 'COLUMN')").getRows().get(0).getValue(0));
+        assertEquals("engineering", tagOf("cost_center", "t", "TABLE"));
+        assertEquals("pii", tagOf("cost_center", "t.name", "COLUMN"));
     }
 }

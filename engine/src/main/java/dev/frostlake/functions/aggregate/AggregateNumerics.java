@@ -45,6 +45,10 @@ public final class AggregateNumerics {
      * SUM of an empty set is NULL). All-integer input yields a Long/BigInteger; any decimal/float/VARIANT
      * input keeps the double sum (live-verified: SUM over a VARIANT column is DOUBLE even for whole-number
      * JSON values).
+     *
+     * @param values the aggregated argument values, in group order
+     * @return the sum — Long/BigInteger for all-integral input, BigDecimal for fixed-point, Double
+     *     otherwise — or null for an empty set
      */
     public static Object sum(final Iterable<Object> values) {
         return sum(values, false);
@@ -55,6 +59,11 @@ public final class AggregateNumerics {
      * runtime values arrive as plain numbers — live, {@code SUM(v:b)} over
      * whole-number JSON values is DOUBLE (7.0, SYSTEM$TYPEOF FLOAT): the declared type decides the
      * tier exactly as a runtime {@link VariantValue} does.
+     *
+     * @param values the aggregated argument values, in group order
+     * @param variantArgument whether the argument expression is statically VARIANT-typed, which forces
+     *     the DOUBLE tier
+     * @return the sum on the tier the inputs select, or null for an empty set
      */
     public static Object sum(final Iterable<Object> values, final boolean variantArgument) {
         // Three tiers, live-verified: integral inputs sum to an integer; FIXED-POINT decimals (incl.
@@ -114,12 +123,23 @@ public final class AggregateNumerics {
      * a BigDecimal with scale = (max input scale) + 6, rounded HALF_UP and with trailing zeros KEPT — AVG of
      * the integers 90 and 95 is exactly 92.500000 and AVG(2, 2) renders 2.000000, matching live Snowflake.
      * Any Double/Float or VARIANT input keeps the double average.
+     *
+     * @param values the aggregated argument values, in group order
+     * @return the average — a scaled BigDecimal for all fixed-point input, a Double otherwise — or
+     *     null for an empty set
      */
     public static Object avg(final Iterable<Object> values) {
         return avg(values, false);
     }
 
-    /** See {@link #sum(Iterable, boolean)} — the same declared-VARIANT rule applied to AVG. */
+    /**
+     * See {@link #sum(Iterable, boolean)} — the same declared-VARIANT rule applied to AVG.
+     *
+     * @param values the aggregated argument values, in group order
+     * @param variantArgument whether the argument expression is statically VARIANT-typed, which keeps
+     *     the average on the double path
+     * @return the average on the tier the inputs select, or null for an empty set
+     */
     public static Object avg(final Iterable<Object> values, final boolean variantArgument) {
         boolean any = false;
         boolean anyDouble = variantArgument;

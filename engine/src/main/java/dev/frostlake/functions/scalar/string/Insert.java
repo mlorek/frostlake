@@ -27,15 +27,17 @@ public class Insert extends TextArgumentFunction {
     @Override
     public Object evaluate(final List<Object> args) {
         if (args.get(0) == null) return null;
-        String base = args.get(0).toString();
+        final String base = args.get(0).toString();
         int pos = ((Number) args.get(1)).intValue() - 1;
-        int len = ((Number) args.get(2)).intValue();
-        String ins = args.get(3) == null ? "" : args.get(3).toString();
+        final int len = ((Number) args.get(2)).intValue();
+        final String ins = args.get(3) == null ? "" : args.get(3).toString();
         pos = Math.max(0, Math.min(pos, base.length()));
-        int end = Math.min(pos + len, base.length());
+        final int end = Math.min(pos + len, base.length());
         return base.substring(0, pos) + ins + base.substring(end);
     }
 
-    @Override public int getMinArgCount() { return 4; }
-    @Override public int getMaxArgCount() { return 4; }
+    @Override
+    public int getMinArgCount() { return 4; }
+    @Override
+    public int getMaxArgCount() { return 4; }
 }

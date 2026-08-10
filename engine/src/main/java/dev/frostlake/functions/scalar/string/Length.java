@@ -17,14 +17,14 @@
 package dev.frostlake.functions.scalar.string;
 
 import dev.frostlake.functions.TextArgumentFunction;
-import dev.frostlake.types.NumericType;
+import dev.frostlake.types.IntegerResultWidths;
 import dev.frostlake.values.BinaryValue;
 
 import java.util.List;
 
 public class Length extends TextArgumentFunction {
     public Length() {
-        super("LENGTH", NumericType.INTEGER);
+        super("LENGTH", IntegerResultWidths.COUNTER);
     }
 
     @Override

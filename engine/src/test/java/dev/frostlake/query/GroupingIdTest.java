@@ -48,9 +48,12 @@ public class GroupingIdTest extends BaseDatabaseTest {
         int grandTotal = 0;  // grp 3 — both rolled up
         for (final Row r : rs.getRows()) {
             switch ((int) ((Number) r.getValue(2)).longValue()) {
-                case 0: detail++; break;
-                case 1: regionSub++; break;
-                case 3: grandTotal++; break;
+                case 0: detail++;
+                break;
+                case 1: regionSub++;
+                break;
+                case 3: grandTotal++;
+                break;
                 default: break;
             }
         }

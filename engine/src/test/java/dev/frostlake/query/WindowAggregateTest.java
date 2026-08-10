@@ -16,11 +16,9 @@
 
 package dev.frostlake.query;
 
-import dev.frostlake.DatabaseEngine;
+import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
 
-import org.junit.jupiter.api.AfterAll;
-import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -31,25 +29,12 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
  * default. Computed over the whole partition (Snowflake's default frame without ORDER BY). Data: Eng
  * (100, 90) and Sales (80, 70, 60).
  */
-public class WindowAggregateTest {
+public class WindowAggregateTest extends BaseDatabaseTest {
 
-    private static DatabaseEngine engine;
-
-    @BeforeAll
-    public static void setup() {
-        engine = new DatabaseEngine();
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
-        engine.execute("USE SCHEMA PUBLIC");
+    @Override
+    protected void setupTest() {
         engine.execute("CREATE TABLE emp (id INTEGER, dept VARCHAR, salary INTEGER)");
         engine.execute("INSERT INTO emp VALUES (1,'Eng',100),(2,'Eng',90),(3,'Sales',80),(4,'Sales',70),(5,'Sales',60)");
-    }
-
-    @AfterAll
-    public static void teardown() {
-        if (engine != null) {
-            engine.shutdown();
-        }
     }
 
     private static double valueForId(final ResultSet rs, final int id, final String column) {

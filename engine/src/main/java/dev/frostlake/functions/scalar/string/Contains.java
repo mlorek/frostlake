@@ -36,6 +36,8 @@ public class Contains extends TextArgumentFunction {
         return args.get(0).toString().contains(args.get(1).toString());
     }
 
-    @Override public int getMinArgCount() { return 2; }
-    @Override public int getMaxArgCount() { return 2; }
+    @Override
+    public int getMinArgCount() { return 2; }
+    @Override
+    public int getMaxArgCount() { return 2; }
 }

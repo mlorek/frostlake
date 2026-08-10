@@ -51,7 +51,7 @@ public abstract class DataType implements Serializable {
     public boolean equals(final Object obj) {
         if (this == obj) return true;
         if (obj == null || getClass() != obj.getClass()) return false;
-        DataType dataType = (DataType) obj;
+        final DataType dataType = (DataType) obj;
         return name.equals(dataType.name);
     }
 

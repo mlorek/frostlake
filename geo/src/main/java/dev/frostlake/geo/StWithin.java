@@ -35,6 +35,8 @@ public class StWithin extends BuiltInFunction {
         return Boolean.valueOf(GeoShapes.within(a, b));
     }
 
-    @Override public int getMinArgCount() { return 2; }
-    @Override public int getMaxArgCount() { return 2; }
+    @Override
+    public int getMinArgCount() { return 2; }
+    @Override
+    public int getMaxArgCount() { return 2; }
 }

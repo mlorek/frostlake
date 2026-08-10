@@ -16,10 +16,8 @@
 
 package dev.frostlake.query;
 
-import dev.frostlake.DatabaseEngine;
+import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -28,15 +26,10 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 /**
  * Tests for CASE expressions (both simple and searched forms)
  */
-public class CaseExpressionsTest {
+public class CaseExpressionsTest extends BaseDatabaseTest {
 
-    private DatabaseEngine engine;
-
-    @BeforeEach
-    public void setUp() {
-        engine = new DatabaseEngine();
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
+    @Override
+    protected void setupTest() {
         engine.execute("""
             CREATE TABLE employees (id INTEGER, name VARCHAR, dept VARCHAR, salary INTEGER, status VARCHAR)
             """);
@@ -47,16 +40,9 @@ public class CaseExpressionsTest {
         engine.execute("INSERT INTO employees VALUES (5, 'Charlie Davis', 'HR', NULL, 'active')");
     }
 
-    @AfterEach
-    public void tearDown() {
-        if (engine != null) {
-            engine.shutdown();
-        }
-    }
-
     @Test
     public void testSimpleCaseExpression() {
-        ResultSet rs = engine.executeQuery("""
+        final ResultSet rs = engine.executeQuery("""
             SELECT name,
             CASE dept
               WHEN 'Sales' THEN 'Revenue'
@@ -77,7 +63,7 @@ public class CaseExpressionsTest {
 
     @Test
     public void testSimpleCaseWithoutElse() {
-        ResultSet rs = engine.executeQuery("""
+        final ResultSet rs = engine.executeQuery("""
             SELECT name,
             CASE dept
               WHEN 'Sales' THEN 'Revenue'
@@ -92,7 +78,7 @@ public class CaseExpressionsTest {
 
     @Test
     public void testSearchedCaseExpression() {
-        ResultSet rs = engine.executeQuery("""
+        final ResultSet rs = engine.executeQuery("""
             SELECT name,
             CASE
               WHEN salary >= 70000 THEN 'High'
@@ -113,7 +99,7 @@ public class CaseExpressionsTest {
 
     @Test
     public void testSearchedCaseWithComplexConditions() {
-        ResultSet rs = engine.executeQuery("""
+        final ResultSet rs = engine.executeQuery("""
             SELECT name,
             CASE
               WHEN dept = 'IT' AND salary > 65000 THEN 'Senior Tech'
@@ -134,7 +120,7 @@ public class CaseExpressionsTest {
 
     @Test
     public void testCaseInWhereClause() {
-        ResultSet rs = engine.executeQuery("""
+        final ResultSet rs = engine.executeQuery("""
             SELECT name FROM employees
             WHERE CASE dept
               WHEN 'IT' THEN 1
@@ -153,7 +139,7 @@ public class CaseExpressionsTest {
 
     @Test
     public void testNestedCaseExpressions() {
-        ResultSet rs = engine.executeQuery("""
+        final ResultSet rs = engine.executeQuery("""
             SELECT name,
             CASE dept
               WHEN 'IT' THEN
@@ -177,7 +163,7 @@ public class CaseExpressionsTest {
 
     @Test
     public void testCaseWithNullHandling() {
-        ResultSet rs = engine.executeQuery("""
+        final ResultSet rs = engine.executeQuery("""
             SELECT name,
             CASE
               WHEN salary IS NULL THEN 'No Salary'
@@ -194,7 +180,7 @@ public class CaseExpressionsTest {
 
     @Test
     public void testCaseWithArithmetic() {
-        ResultSet rs = engine.executeQuery("""
+        final ResultSet rs = engine.executeQuery("""
             SELECT name,
             CASE
               WHEN salary >= 60000 THEN salary * 1.1
@@ -213,7 +199,7 @@ public class CaseExpressionsTest {
 
     @Test
     public void testCaseWithStringConcatenation() {
-        ResultSet rs = engine.executeQuery("""
+        final ResultSet rs = engine.executeQuery("""
             SELECT
             CASE status
               WHEN 'active' THEN name || ' (Active)'
@@ -231,7 +217,7 @@ public class CaseExpressionsTest {
 
     @Test
     public void testCaseWithLikeOperator() {
-        ResultSet rs = engine.executeQuery("""
+        final ResultSet rs = engine.executeQuery("""
             SELECT name,
             CASE
               WHEN name LIKE 'J%' THEN 'Starts with J'
@@ -251,7 +237,7 @@ public class CaseExpressionsTest {
 
     @Test
     public void testMultipleCaseExpressionsInSelect() {
-        ResultSet rs = engine.executeQuery("""
+        final ResultSet rs = engine.executeQuery("""
             SELECT name,
             CASE dept WHEN 'IT' THEN 'Tech' ELSE 'Non-Tech' END as tech_status,
             CASE WHEN salary > 50000 THEN 'High' ELSE 'Standard' END as pay_level
@@ -265,7 +251,7 @@ public class CaseExpressionsTest {
 
     @Test
     public void testCaseWithBetweenOperator() {
-        ResultSet rs = engine.executeQuery("""
+        final ResultSet rs = engine.executeQuery("""
             SELECT name,
             CASE
               WHEN salary BETWEEN 40000 AND 50000 THEN 'Entry Level'

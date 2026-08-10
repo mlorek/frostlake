@@ -16,10 +16,8 @@
 
 package dev.frostlake.query;
 
-import dev.frostlake.DatabaseEngine;
+import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
-import org.junit.jupiter.api.AfterAll;
-import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
@@ -31,23 +29,11 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /**
  * Test set operators: UNION, INTERSECT, EXCEPT (and their ALL variants)
  */
-public class SetOperatorsTest {
+public class SetOperatorsTest extends BaseDatabaseTest {
 
-    private static DatabaseEngine engine;
-
-    @BeforeAll
-    public static void setup() {
-        engine = new DatabaseEngine();
+    @Override
+    protected void setupTest() {
         engine.execute("CREATE DATABASE IF NOT EXISTS test_db");
-        engine.execute("USE DATABASE test_db");
-        engine.execute("USE SCHEMA public");
-    }
-
-    @AfterAll
-    public static void teardown() {
-        if (engine != null) {
-            engine.shutdown();
-        }
     }
 
     @BeforeEach
@@ -78,7 +64,7 @@ public class SetOperatorsTest {
     // UNION tests
     @Test
     public void testUnion() {
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT id, value FROM set1
             UNION
             SELECT id, value FROM set2
@@ -93,7 +79,7 @@ public class SetOperatorsTest {
 
     @Test
     public void testUnionAll() {
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT id, value FROM set1
             UNION ALL
             SELECT id, value FROM set2
@@ -106,7 +92,7 @@ public class SetOperatorsTest {
     // INTERSECT tests
     @Test
     public void testIntersect() {
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT id, value FROM set1
             INTERSECT
             SELECT id, value FROM set2
@@ -136,7 +122,7 @@ public class SetOperatorsTest {
     @Test
     public void testIntersectEmpty() {
         // No common rows
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT id, value FROM set1 WHERE id < 3
             INTERSECT
             SELECT id, value FROM set2 WHERE id > 4
@@ -148,7 +134,7 @@ public class SetOperatorsTest {
     // EXCEPT tests
     @Test
     public void testExcept() {
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT id, value FROM set1
             EXCEPT
             SELECT id, value FROM set2
@@ -177,7 +163,7 @@ public class SetOperatorsTest {
 
     @Test
     public void testExceptReversed() {
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT id, value FROM set2
             EXCEPT
             SELECT id, value FROM set1
@@ -202,7 +188,7 @@ public class SetOperatorsTest {
 
         // INTERSECT binds tighter than UNION (Snowflake precedence), so this is
         // set1 UNION (set2 INTERSECT set3), NOT (set1 UNION set2) INTERSECT set3.
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT id, value FROM set1
             UNION
             SELECT id, value FROM set2
@@ -222,7 +208,7 @@ public class SetOperatorsTest {
 
     @Test
     public void testSetOperatorsWithWhereClause() {
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT id, value FROM set1 WHERE id <= 3
             EXCEPT
             SELECT id, value FROM set2 WHERE id >= 3
@@ -239,7 +225,7 @@ public class SetOperatorsTest {
 
     @Test
     public void testIntersectWithLiterals() {
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT 1 AS num, 'A' AS letter
             UNION
             SELECT 2, 'B'
@@ -257,7 +243,7 @@ public class SetOperatorsTest {
 
     @Test
     public void testExceptWithOrderByAndLimit() {
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT id, value FROM set1
             EXCEPT
             SELECT id, value FROM set2

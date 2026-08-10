@@ -20,9 +20,6 @@ import dev.frostlake.functions.AggregateFunction;
 import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.types.NumericType;
 
-import java.math.BigDecimal;
-import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
 
 public class Median extends AggregateFunction {
@@ -34,8 +31,10 @@ public class Median extends AggregateFunction {
     @Override
     public Object evaluate(final List<Object> args) { return null; }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return 1; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return 1; }
 
     /**
      * MEDIAN orders its input against a numeric accumulator, and refuses a semi-structured value with
@@ -49,27 +48,4 @@ public class Median extends AggregateFunction {
         return SemiStructuredRejection.INCOMPATIBLE_TYPES;
     }
 
-    private static class MedianAccumulator implements Accumulator {
-        private final List<Double> values = new ArrayList<>();
-
-        @Override
-        public void accumulate(final Object v) {
-            if (v != null) values.add(new BigDecimal(v.toString()).doubleValue());
-        }
-
-        @Override
-        public Object getResult() {
-            if (values.isEmpty()) return null;
-            List<Double> sorted = new ArrayList<>(values);
-            Collections.sort(sorted);
-            int n = sorted.size();
-            return n % 2 == 1 ? sorted.get(n / 2) : (sorted.get(n / 2 - 1) + sorted.get(n / 2)) / 2.0;
-        }
-
-        @Override
-        public void reset() { values.clear(); }
-
-        @Override
-        public void merge(final Accumulator other) { values.addAll(((MedianAccumulator) other).values); }
-    }
 }

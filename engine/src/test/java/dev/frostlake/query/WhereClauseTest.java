@@ -50,7 +50,7 @@ public class WhereClauseTest extends BaseDatabaseTest {
 
     @Test
     public void testWhereEquals() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT * FROM employees WHERE department = 'Engineering'"
         );
         assertEquals(3, result.getRowCount());
@@ -58,7 +58,7 @@ public class WhereClauseTest extends BaseDatabaseTest {
 
     @Test
     public void testWhereGreaterThan() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT * FROM employees WHERE salary > 80000"
         );
         assertEquals(3, result.getRowCount());
@@ -66,7 +66,7 @@ public class WhereClauseTest extends BaseDatabaseTest {
 
     @Test
     public void testWhereLessThanOrEqual() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT * FROM employees WHERE age <= 30"
         );
         assertEquals(3, result.getRowCount());
@@ -74,7 +74,7 @@ public class WhereClauseTest extends BaseDatabaseTest {
 
     @Test
     public void testWhereAnd() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT * FROM employees WHERE department = 'Engineering' AND salary > 85000"
         );
         assertEquals(2, result.getRowCount());
@@ -82,7 +82,7 @@ public class WhereClauseTest extends BaseDatabaseTest {
 
     @Test
     public void testWhereOr() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT * FROM employees WHERE department = 'HR' OR age >= 35"
         );
         assertEquals(2, result.getRowCount());
@@ -90,7 +90,7 @@ public class WhereClauseTest extends BaseDatabaseTest {
 
     @Test
     public void testWhereNotEqual() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT * FROM employees WHERE department <> 'Engineering'"
         );
         assertEquals(3, result.getRowCount());
@@ -98,7 +98,7 @@ public class WhereClauseTest extends BaseDatabaseTest {
 
     @Test
     public void testWhereComplexCondition() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT * FROM employees WHERE (salary > 70000 AND age < 35) OR department = 'HR'"
         );
         assertTrue(result.getRowCount() >= 1);
@@ -106,7 +106,7 @@ public class WhereClauseTest extends BaseDatabaseTest {
 
     @Test
     public void testWhereWithOrderBy() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT * FROM employees WHERE salary > 70000 ORDER BY salary DESC"
         );
         assertEquals(4, result.getRowCount());
@@ -114,7 +114,7 @@ public class WhereClauseTest extends BaseDatabaseTest {
 
     @Test
     public void testWhereWithGroupBy() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT department, COUNT(*) FROM employees WHERE salary > 70000 GROUP BY department"
         );
         assertTrue(result.getRowCount() >= 1);

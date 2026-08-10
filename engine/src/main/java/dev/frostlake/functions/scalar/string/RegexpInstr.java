@@ -17,7 +17,7 @@
 package dev.frostlake.functions.scalar.string;
 
 import dev.frostlake.functions.TextArgumentFunction;
-import dev.frostlake.types.NumericType;
+import dev.frostlake.types.IntegerResultWidths;
 
 import java.util.List;
 import java.util.regex.Matcher;
@@ -30,7 +30,7 @@ import java.util.regex.Matcher;
  * that capture group is reported instead of the whole match.
  */
 public class RegexpInstr extends TextArgumentFunction {
-    public RegexpInstr() { super("REGEXP_INSTR", NumericType.INTEGER); }
+    public RegexpInstr() { super("REGEXP_INSTR", IntegerResultWidths.COUNTER); }
 
     @Override
     public Object evaluate(final List<Object> args) {
@@ -79,6 +79,8 @@ public class RegexpInstr extends TextArgumentFunction {
         return (long) ((option == 1 ? spanEnd : spanStart) + 1);
     }
 
-    @Override public int getMinArgCount() { return 2; }
-    @Override public int getMaxArgCount() { return 7; }
+    @Override
+    public int getMinArgCount() { return 2; }
+    @Override
+    public int getMaxArgCount() { return 7; }
 }

@@ -24,7 +24,7 @@ import java.util.List;
 
 /** SHA1_BINARY(msg) — the 20-byte SHA-1 digest as BINARY. */
 public class Sha1Binary extends BuiltInFunction {
-    public Sha1Binary() { super("SHA1_BINARY", BinaryType.BINARY); }
+    public Sha1Binary() { super("SHA1_BINARY", new BinaryType("VARBINARY", 20)); }
 
     @Override
     public Object evaluate(final List<Object> args) {
@@ -32,6 +32,8 @@ public class Sha1Binary extends BuiltInFunction {
         return BinaryValue.of(SharedFunctionHelpers.digest("SHA-1", SharedFunctionHelpers.toUtf8(args.get(0))));
     }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return 1; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return 1; }
 }

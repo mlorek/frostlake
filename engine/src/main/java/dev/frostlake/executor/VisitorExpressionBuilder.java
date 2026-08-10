@@ -18,14 +18,23 @@ package dev.frostlake.executor;
 
 import dev.frostlake.executor.expressions.BinaryOperator;
 import dev.frostlake.executor.expressions.UnaryOperator;
-import dev.frostlake.executor.procedural.*;
+import dev.frostlake.executor.procedural.BaseExpression;
+import dev.frostlake.executor.procedural.BinaryExpression;
+import dev.frostlake.executor.procedural.FunctionCallExpression;
+import dev.frostlake.executor.procedural.LiteralExpression;
+import dev.frostlake.executor.procedural.SessionVarRefExpression;
+import dev.frostlake.executor.procedural.SqlScalarExpression;
+import dev.frostlake.executor.procedural.SubqueryExpression;
+import dev.frostlake.executor.procedural.UnaryExpression;
+import dev.frostlake.executor.procedural.VariableExpression;
 import dev.frostlake.functions.SystemFunctionNames;
-import dev.frostlake.metastore.*;
-import dev.frostlake.metastore.model.*;
+import dev.frostlake.metastore.Catalog;
+import dev.frostlake.metastore.model.Stream;
+import dev.frostlake.metastore.model.Task;
 import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.security.SecurityManager;
 import dev.frostlake.storage.ResultSet;
-import dev.frostlake.storage.StorageEngine;
+import dev.frostlake.storage.TableStorage;
 import dev.frostlake.task.TaskScheduler;
 import dev.frostlake.task.UserTaskCancellation;
 import org.antlr.v4.runtime.misc.Interval;
@@ -70,11 +79,11 @@ public class VisitorExpressionBuilder {
             return new UnaryExpression(UnaryOperator.NOT, buildExpression(((FrostlakeParser.NotExprContext) ctx).booleanExpr()));
         }
         if (ctx instanceof FrostlakeParser.AndExprContext) {
-            FrostlakeParser.AndExprContext b = (FrostlakeParser.AndExprContext) ctx;
+            final FrostlakeParser.AndExprContext b = (FrostlakeParser.AndExprContext) ctx;
             return new BinaryExpression(buildExpression(b.booleanExpr(0)), BinaryOperator.AND, buildExpression(b.booleanExpr(1)));
         }
         if (ctx instanceof FrostlakeParser.OrExprContext) {
-            FrostlakeParser.OrExprContext b = (FrostlakeParser.OrExprContext) ctx;
+            final FrostlakeParser.OrExprContext b = (FrostlakeParser.OrExprContext) ctx;
             return new BinaryExpression(buildExpression(b.booleanExpr(0)), BinaryOperator.OR, buildExpression(b.booleanExpr(1)));
         }
         return buildExpression(((FrostlakeParser.ValueExprContext) ctx).expression());
@@ -85,12 +94,12 @@ public class VisitorExpressionBuilder {
      */
     public BaseExpression buildExpression(final FrostlakeParser.ExpressionContext ctx) {
         if (ctx instanceof FrostlakeParser.LiteralExprContext) {
-            Object value = visitor.parseLiteral(((FrostlakeParser.LiteralExprContext) ctx).literal());
+            final Object value = visitor.parseLiteral(((FrostlakeParser.LiteralExprContext) ctx).literal());
             return new LiteralExpression(value);
         }
 
         if (ctx instanceof FrostlakeParser.QualifiedNameExprContext) {
-            String name = visitor.getText(((FrostlakeParser.QualifiedNameExprContext) ctx).qualifiedName());
+            final String name = visitor.getText(((FrostlakeParser.QualifiedNameExprContext) ctx).qualifiedName());
             return new VariableExpression(name);
         }
 
@@ -101,30 +110,30 @@ public class VisitorExpressionBuilder {
 
         if (ctx instanceof FrostlakeParser.BindVarExprContext) {
             // :varname — procedural variable binding, treat as variable reference
-            String varName = visitor.getText(((FrostlakeParser.BindVarExprContext) ctx).identifier());
+            final String varName = visitor.getText(((FrostlakeParser.BindVarExprContext) ctx).identifier());
             return new VariableExpression(varName, true);
         }
 
         if (ctx instanceof FrostlakeParser.SessionVarExprContext) {
             // $varname — treat as a session variable reference
-            String token = ((FrostlakeParser.SessionVarExprContext) ctx).SESSION_VAR_REF().getText();
-            String varName = token.substring(1); // strip leading $
+            final String token = ((FrostlakeParser.SessionVarExprContext) ctx).SESSION_VAR_REF().getText();
+            final String varName = token.substring(1); // strip leading $
             return new SessionVarRefExpression(varName);
         }
 
         if (ctx instanceof FrostlakeParser.FunctionCallStarExprContext) {
-            FrostlakeParser.FunctionCallStarExprContext funcCtx = (FrostlakeParser.FunctionCallStarExprContext) ctx;
-            String funcName = funcCtx.functionName().getText();
+            final FrostlakeParser.FunctionCallStarExprContext funcCtx = (FrostlakeParser.FunctionCallStarExprContext) ctx;
+            final String funcName = funcCtx.functionName().getText();
             // For COUNT(*) and similar, use special marker
-            List<BaseExpression> args = new ArrayList<>();
+            final List<BaseExpression> args = new ArrayList<>();
             args.add(new LiteralExpression("*"));
             return new FunctionCallExpression(funcName, args);
         }
 
         if (ctx instanceof FrostlakeParser.FunctionCallExprContext) {
-            FrostlakeParser.FunctionCallExprContext funcCtx = (FrostlakeParser.FunctionCallExprContext) ctx;
-            String funcName = funcCtx.functionName().getText();
-            List<BaseExpression> args = new ArrayList<>();
+            final FrostlakeParser.FunctionCallExprContext funcCtx = (FrostlakeParser.FunctionCallExprContext) ctx;
+            final String funcName = funcCtx.functionName().getText();
+            final List<BaseExpression> args = new ArrayList<>();
 
             if (funcCtx.functionArgList() != null) {
                 for (final FrostlakeParser.BooleanExprContext argCtx : ParseTreeText.functionBooleanArgs(funcCtx.functionArgList())) {
@@ -136,33 +145,33 @@ public class VisitorExpressionBuilder {
         }
 
         if (ctx instanceof FrostlakeParser.ConcatExprContext) {
-            FrostlakeParser.ConcatExprContext concatCtx = (FrostlakeParser.ConcatExprContext) ctx;
-            BaseExpression left = buildExpression(concatCtx.expression(0));
-            BaseExpression right = buildExpression(concatCtx.expression(1));
+            final FrostlakeParser.ConcatExprContext concatCtx = (FrostlakeParser.ConcatExprContext) ctx;
+            final BaseExpression left = buildExpression(concatCtx.expression(0));
+            final BaseExpression right = buildExpression(concatCtx.expression(1));
             return new BinaryExpression(left, BinaryOperator.CONCAT, right);
         }
 
         if (ctx instanceof FrostlakeParser.MultiplicativeExprContext) {
-            FrostlakeParser.MultiplicativeExprContext binCtx = (FrostlakeParser.MultiplicativeExprContext) ctx;
-            BaseExpression left = buildExpression(binCtx.expression(0));
-            BaseExpression right = buildExpression(binCtx.expression(1));
-            String operator = binCtx.op.getText();
+            final FrostlakeParser.MultiplicativeExprContext binCtx = (FrostlakeParser.MultiplicativeExprContext) ctx;
+            final BaseExpression left = buildExpression(binCtx.expression(0));
+            final BaseExpression right = buildExpression(binCtx.expression(1));
+            final String operator = binCtx.op.getText();
             return new BinaryExpression(left, BinaryOperator.fromSymbol(operator), right);
         }
 
         if (ctx instanceof FrostlakeParser.AdditiveExprContext) {
-            FrostlakeParser.AdditiveExprContext binCtx = (FrostlakeParser.AdditiveExprContext) ctx;
-            BaseExpression left = buildExpression(binCtx.expression(0));
-            BaseExpression right = buildExpression(binCtx.expression(1));
-            String operator = binCtx.op.getText();
+            final FrostlakeParser.AdditiveExprContext binCtx = (FrostlakeParser.AdditiveExprContext) ctx;
+            final BaseExpression left = buildExpression(binCtx.expression(0));
+            final BaseExpression right = buildExpression(binCtx.expression(1));
+            final String operator = binCtx.op.getText();
             return new BinaryExpression(left, BinaryOperator.fromSymbol(operator), right);
         }
 
         if (ctx instanceof FrostlakeParser.ComparisonExprContext) {
-            FrostlakeParser.ComparisonExprContext binCtx = (FrostlakeParser.ComparisonExprContext) ctx;
-            BaseExpression left = buildExpression(binCtx.expression(0));
-            BaseExpression right = buildExpression(binCtx.expression(1));
-            String operator = binCtx.op.getText();
+            final FrostlakeParser.ComparisonExprContext binCtx = (FrostlakeParser.ComparisonExprContext) ctx;
+            final BaseExpression left = buildExpression(binCtx.expression(0));
+            final BaseExpression right = buildExpression(binCtx.expression(1));
+            final String operator = binCtx.op.getText();
             return new BinaryExpression(left, BinaryOperator.fromSymbol(operator), right);
         }
 
@@ -171,8 +180,8 @@ public class VisitorExpressionBuilder {
         }
 
         if (ctx instanceof FrostlakeParser.UnaryExprContext) {
-            FrostlakeParser.UnaryExprContext unaryCtx = (FrostlakeParser.UnaryExprContext) ctx;
-            BaseExpression operand = buildExpression(unaryCtx.expression());
+            final FrostlakeParser.UnaryExprContext unaryCtx = (FrostlakeParser.UnaryExprContext) ctx;
+            final BaseExpression operand = buildExpression(unaryCtx.expression());
             // Grammar: op is PLUS or MINUS. Unary plus is the identity, so return the operand directly and
             // reserve UnaryExpression for the operators that map to a UnaryOperator constant.
             if ("+".equals(unaryCtx.op.getText())) {
@@ -182,16 +191,16 @@ public class VisitorExpressionBuilder {
         }
 
         if (ctx instanceof FrostlakeParser.ExistsExprContext) {
-            FrostlakeParser.ExistsExprContext existsCtx = (FrostlakeParser.ExistsExprContext) ctx;
+            final FrostlakeParser.ExistsExprContext existsCtx = (FrostlakeParser.ExistsExprContext) ctx;
             // Get original text with whitespace preserved from token stream
-            FrostlakeParser.SelectStatementContext selectCtx = existsCtx.selectStatement();
-            String subquery = selectCtx.start.getInputStream().getText(
+            final FrostlakeParser.SelectStatementContext selectCtx = existsCtx.selectStatement();
+            final String subquery = selectCtx.start.getInputStream().getText(
                 new Interval(
                     selectCtx.start.getStartIndex(),
                     selectCtx.stop.getStopIndex()
                 )
             );
-            SubqueryExpression subqueryExpr = new SubqueryExpression(subquery);
+            final SubqueryExpression subqueryExpr = new SubqueryExpression(subquery);
             return new UnaryExpression(UnaryOperator.EXISTS, subqueryExpr);
         }
 
@@ -231,20 +240,21 @@ public class VisitorExpressionBuilder {
             return visitor.parseLiteral(((FrostlakeParser.LiteralExprContext) ctx).literal());
         }
         if (ctx instanceof FrostlakeParser.SystemUserTaskCancelExprContext) {
-            FrostlakeParser.SystemUserTaskCancelExprContext sctx = (FrostlakeParser.SystemUserTaskCancelExprContext) ctx;
+            final FrostlakeParser.SystemUserTaskCancelExprContext sctx = (FrostlakeParser.SystemUserTaskCancelExprContext) ctx;
             final Object nameVal = evaluateExpression(sctx.expression(), scriptingNamesVisible);
             return UserTaskCancellation.cancel(queryExecutor.getCatalog(),
                 queryExecutor.getTaskScheduler(), nameVal == null ? null : nameVal.toString());
         }
         if (ctx instanceof FrostlakeParser.SystemStreamHasDataExprContext) {
-            FrostlakeParser.SystemStreamHasDataExprContext sshd = (FrostlakeParser.SystemStreamHasDataExprContext) ctx;
-            Object nameVal = evaluateExpression(sshd.expression(), scriptingNamesVisible);
-            String streamName = nameVal != null ? nameVal.toString().toUpperCase().replaceAll("^'|'$", "") : "";
+            final FrostlakeParser.SystemStreamHasDataExprContext sshd = (FrostlakeParser.SystemStreamHasDataExprContext) ctx;
+            final Object nameVal = evaluateExpression(sshd.expression(), scriptingNamesVisible);
+            final String streamName = nameVal != null ? nameVal.toString().toUpperCase().replaceAll("^'|'$", "") : "";
             try {
-                Catalog cat = queryExecutor.getCatalog();
-                String dbN = cat.getCurrentDatabase(), scN = cat.getCurrentSchema();
+                final Catalog cat = queryExecutor.getCatalog();
+                final String dbN = cat.getCurrentDatabase();
+                final String scN = cat.getCurrentSchema();
                 if (dbN == null || scN == null) return false;
-                Stream stream = cat.getDatabase(dbN).getSchema(scN).getStream(streamName);
+                final Stream stream = cat.getDatabase(dbN).getSchema(scN).getStream(streamName);
                 if (stream == null) return false;
                 // Pending changes live as the stream's unconsumed NET records (consolidated deltas),
                 // not in any table storage — the old storage probe always answered false.
@@ -257,9 +267,9 @@ public class VisitorExpressionBuilder {
             return evaluateSystemFunc((FrostlakeParser.SystemFuncExprContext) ctx, scriptingNamesVisible);
         }
         if (ctx instanceof FrostlakeParser.ConcatExprContext) {
-            FrostlakeParser.ConcatExprContext cc = (FrostlakeParser.ConcatExprContext) ctx;
-            Object left = evaluateExpression(cc.expression(0), scriptingNamesVisible);
-            Object right = evaluateExpression(cc.expression(1), scriptingNamesVisible);
+            final FrostlakeParser.ConcatExprContext cc = (FrostlakeParser.ConcatExprContext) ctx;
+            final Object left = evaluateExpression(cc.expression(0), scriptingNamesVisible);
+            final Object right = evaluateExpression(cc.expression(1), scriptingNamesVisible);
             if (left == null || right == null) return null;
             return left.toString() + right.toString();
         }
@@ -270,32 +280,32 @@ public class VisitorExpressionBuilder {
 
         if (ctx instanceof FrostlakeParser.BindVarExprContext) {
             // :varname — procedural variable binding, treat as variable reference
-            String varName = visitor.getText(((FrostlakeParser.BindVarExprContext) ctx).identifier());
+            final String varName = visitor.getText(((FrostlakeParser.BindVarExprContext) ctx).identifier());
             if (visitor.getProceduralExecutor() != null) {
-                Object v = visitor.getProceduralExecutor().getVariable(varName);
+                final Object v = visitor.getProceduralExecutor().getVariable(varName);
                 if (v != null) return v;
             }
             return null;
         }
         if (ctx instanceof FrostlakeParser.SessionVarExprContext) {
-            String token = ((FrostlakeParser.SessionVarExprContext) ctx).SESSION_VAR_REF().getText();
-            String name = token.substring(1).toUpperCase(); // strip leading $
-            SecurityManager sm = queryExecutor.getSecurityManager();
+            final String token = ((FrostlakeParser.SessionVarExprContext) ctx).SESSION_VAR_REF().getText();
+            final String name = token.substring(1).toUpperCase(); // strip leading $
+            final SecurityManager sm = queryExecutor.getSecurityManager();
             return sm != null ? sm.getSessionContext().getSessionParameter(name)
                               : queryExecutor.getSessionVariables().get(name);
         }
         if (ctx instanceof FrostlakeParser.QualifiedNameExprContext) {
             // This might be a variable reference
-            String varName = ((FrostlakeParser.QualifiedNameExprContext) ctx).qualifiedName().getText();
+            final String varName = ((FrostlakeParser.QualifiedNameExprContext) ctx).qualifiedName().getText();
             if (scriptingNamesVisible && visitor.getProceduralExecutor() != null) {
-                Object varValue = visitor.getProceduralExecutor().getVariable(varName);
+                final Object varValue = visitor.getProceduralExecutor().getVariable(varName);
                 if (varValue != null) {
                     return varValue;
                 }
             }
             // Fall back to session variables — those ARE referenceable from SQL in Snowflake.
-            SecurityManager sm = queryExecutor.getSecurityManager();
-            Object sessionVal = sm != null
+            final SecurityManager sm = queryExecutor.getSecurityManager();
+            final Object sessionVal = sm != null
                 ? sm.getSessionContext().getSessionParameter(varName)
                 : queryExecutor.getSessionVariables().get(varName.toUpperCase());
             if (sessionVal != null) {
@@ -312,9 +322,9 @@ public class VisitorExpressionBuilder {
         }
         if (ctx instanceof FrostlakeParser.UnaryExprContext) {
             // Handle unary expressions like -20002
-            FrostlakeParser.UnaryExprContext unaryCtx = (FrostlakeParser.UnaryExprContext) ctx;
-            Object operand = evaluateExpression(unaryCtx.expression(), scriptingNamesVisible);
-            String operator = unaryCtx.op.getText();
+            final FrostlakeParser.UnaryExprContext unaryCtx = (FrostlakeParser.UnaryExprContext) ctx;
+            final Object operand = evaluateExpression(unaryCtx.expression(), scriptingNamesVisible);
+            final String operator = unaryCtx.op.getText();
 
             if (operator.equals("-") && operand instanceof Number) {
                 if (operand instanceof Long) {
@@ -340,7 +350,7 @@ public class VisitorExpressionBuilder {
         }
         // A SQL context (or DDL-time constant evaluation): evaluate via SELECT <expr> at runtime, with no
         // scripting names in scope — a bare one surfaces Snowflake's identifier error from the query layer.
-        String exprText = visitor.getOriginalText(ctx);
+        final String exprText = visitor.getOriginalText(ctx);
         if (exprText != null && !exprText.isBlank() && queryExecutor != null) {
             if (!scriptingNamesVisible) {
                 // In a SQL context the failure IS the answer, so it propagates rather than degrading to
@@ -369,7 +379,7 @@ public class VisitorExpressionBuilder {
      */
     private Object evaluateSystemFunc(final FrostlakeParser.SystemFuncExprContext ctx,
                                       final boolean scriptingNamesVisible) {
-        String rawName = ctx.SYSTEM_FUNC().getText().toUpperCase(); // e.g. SYSTEM$WAIT
+        final String rawName = ctx.SYSTEM_FUNC().getText().toUpperCase(); // e.g. SYSTEM$WAIT
         // Same guard as SystemFunctionEvaluator: SystemFunctionNames is the single declaration of the
         // SYSTEM$ family, shared with SHOW FUNCTIONS via FunctionRegistry.allDispatchableNames(). This
         // parse-tree path and the expression-AST path both consult it, so neither switch can grow a name
@@ -377,7 +387,7 @@ public class VisitorExpressionBuilder {
         if (!SystemFunctionNames.contains(rawName)) {
             throw new RuntimeException("Unsupported system function: " + rawName);
         }
-        List<Object> args = new ArrayList<>();
+        final List<Object> args = new ArrayList<>();
         if (ctx.expressionList() != null) {
             for (final FrostlakeParser.ExpressionContext argCtx : ctx.expressionList().expression()) {
                 args.add(evaluateExpression(argCtx, scriptingNamesVisible));
@@ -426,8 +436,9 @@ public class VisitorExpressionBuilder {
                 // Resume the named root's transitive dependents (only that subtree).
                 if (!args.isEmpty() && args.get(0) != null) {
                     try {
-                        Catalog cat = queryExecutor.getCatalog();
-                        String dbN = cat.getCurrentDatabase(), scN = cat.getCurrentSchema();
+                        final Catalog cat = queryExecutor.getCatalog();
+                        final String dbN = cat.getCurrentDatabase();
+                        final String scN = cat.getCurrentSchema();
                         if (dbN != null && scN != null) {
                             SystemFunctionEvaluator.enableTaskDependents(
                                 args.get(0).toString().replaceAll("^'|'$", ""),
@@ -447,13 +458,14 @@ public class VisitorExpressionBuilder {
             // ── Stream ─────────────────────────────────────────────────────────
             case "SYSTEM$STREAM_BACKLOG": {
                 if (!args.isEmpty()) {
-                    String streamName = args.get(0) != null ? args.get(0).toString().replaceAll("^'|'$", "").toUpperCase() : "";
+                    final String streamName = args.get(0) != null ? args.get(0).toString().replaceAll("^'|'$", "").toUpperCase() : "";
                     try {
-                        Catalog cat = queryExecutor.getCatalog();
-                        String dbN = cat.getCurrentDatabase(), scN = cat.getCurrentSchema();
+                        final Catalog cat = queryExecutor.getCatalog();
+                        final String dbN = cat.getCurrentDatabase();
+                        final String scN = cat.getCurrentSchema();
                         if (dbN != null && scN != null) {
-                            String fq = dbN + "." + scN + "." + streamName;
-                            StorageEngine.TableStorage ts =
+                            final String fq = dbN + "." + scN + "." + streamName;
+                            final TableStorage ts =
                                 queryExecutor.getStorageEngine().getTableStorage(fq);
                             return ts != null ? (long) ts.getRowCount() : 0L;
                         }
@@ -463,7 +475,7 @@ public class VisitorExpressionBuilder {
             }
 
             case "SYSTEM$STREAM_GET_TABLE_TIMESTAMP": {
-                return LocalDateTime.now();
+                return StatementClock.now();
             }
 
             // ── Session / transaction ──────────────────────────────────────────
@@ -480,11 +492,11 @@ public class VisitorExpressionBuilder {
 
             // ── Clustering ─────────────────────────────────────────────────────
             case "SYSTEM$CLUSTERING_DEPTH": {
-                String tblName = args.isEmpty() || args.get(0) == null ? "" : args.get(0).toString().replaceAll("^'|'$", "");
+                final String tblName = args.isEmpty() || args.get(0) == null ? "" : args.get(0).toString().replaceAll("^'|'$", "");
                 return "{\"average_depth\": 1.0, \"table_name\": \"" + tblName + "\"}";
             }
             case "SYSTEM$CLUSTERING_INFORMATION": {
-                String tblName = args.isEmpty() || args.get(0) == null ? "" : args.get(0).toString().replaceAll("^'|'$", "");
+                final String tblName = args.isEmpty() || args.get(0) == null ? "" : args.get(0).toString().replaceAll("^'|'$", "");
                 return "{\"clustering_key\": null, \"total_partition_count\": 1, \"average_depth\": 1.0, \"table_name\": \"" + tblName + "\"}";
             }
             case "SYSTEM$CLUSTERING_RATIO":
@@ -493,9 +505,9 @@ public class VisitorExpressionBuilder {
             // ── Tags ───────────────────────────────────────────────────────────
             case "SYSTEM$GET_TAG": {
                 if (args.size() >= 3 && args.get(0) != null && args.get(1) != null) {
-                    String tagName = args.get(0).toString().replaceAll("^'|'$", "");
-                    String objectName = args.get(1).toString().replaceAll("^'|'$", "");
-                    String domain = args.get(2) == null ? null : args.get(2).toString().replaceAll("^'|'$", "");
+                    final String tagName = args.get(0).toString().replaceAll("^'|'$", "");
+                    final String objectName = args.get(1).toString().replaceAll("^'|'$", "");
+                    final String domain = args.get(2) == null ? null : args.get(2).toString().replaceAll("^'|'$", "");
                     return queryExecutor.getCatalog().getObjectTagValue(tagName, objectName, domain);
                 }
                 return null;
@@ -517,12 +529,12 @@ public class VisitorExpressionBuilder {
 
             case "SYSTEM$TYPEOF": {
                 if (!args.isEmpty() && args.get(0) != null) {
-                    Object v = args.get(0);
+                    final Object v = args.get(0);
                     if (v instanceof Boolean) return "BOOLEAN[LOB]";
                     if (v instanceof Long || v instanceof Integer) return "INTEGER[LOB]";
                     if (v instanceof Double || v instanceof BigDecimal) return "FLOAT[LOB]";
                     if (v instanceof LocalDateTime || v instanceof LocalDate) return "TIMESTAMP_NTZ[LOB]";
-                    String s = v.toString().trim();
+                    final String s = v.toString().trim();
                     if (s.startsWith("{")) return "OBJECT[LOB]";
                     if (s.startsWith("[")) return "ARRAY[LOB]";
                     return "VARCHAR[LOB]";
@@ -534,7 +546,7 @@ public class VisitorExpressionBuilder {
                 return "{\"token\": \"" + UUID.randomUUID() + "\", \"expires_at\": null}";
 
             case "SYSTEM$PIPE_STATUS": {
-                String pipeName = args.isEmpty() || args.get(0) == null ? "" : args.get(0).toString().replaceAll("^'|'$", "");
+                final String pipeName = args.isEmpty() || args.get(0) == null ? "" : args.get(0).toString().replaceAll("^'|'$", "");
                 // Reflect the pipe's actual state (RUNNING/PAUSED); getPipe throws on an unknown pipe, matching Snowflake.
                 if (queryExecutor != null && !pipeName.isEmpty()) {
                     return queryExecutor.getCatalog().getPipe(pipeName).getStatusJson();
@@ -568,7 +580,7 @@ public class VisitorExpressionBuilder {
             // ── Wait ───────────────────────────────────────────────────────────
             case "SYSTEM$WAIT": {
                 if (!args.isEmpty() && args.get(0) instanceof Number) {
-                    long ms = (long)(((Number) args.get(0)).doubleValue() * 1000);
+                    final long ms = (long)(((Number) args.get(0)).doubleValue() * 1000);
                     if (ms > 0 && ms <= 30_000) { // cap at 30s for safety
                         try { Thread.sleep(ms); } catch (final InterruptedException ignored) {}
                     }

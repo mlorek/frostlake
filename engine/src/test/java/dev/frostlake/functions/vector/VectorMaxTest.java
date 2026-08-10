@@ -18,7 +18,6 @@ package dev.frostlake.functions.vector;
 
 import org.junit.jupiter.api.Test;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 
 /** VECTOR_MAX — every expectation measured on a real Snowflake account. */

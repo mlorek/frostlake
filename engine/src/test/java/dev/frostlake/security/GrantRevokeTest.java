@@ -26,7 +26,11 @@ import org.junit.jupiter.api.function.Executable;
 import java.util.HashSet;
 import java.util.Set;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Tests for enhanced GRANT and REVOKE commands
@@ -51,7 +55,7 @@ public class GrantRevokeTest extends BaseDatabaseTest {
         engine.execute("GRANT ROLE child_role TO ROLE parent_role");
 
         // Verify the grant was successful
-        ResultSet grants = engine.executeQuery("SHOW GRANTS TO ROLE parent_role");
+        final ResultSet grants = engine.executeQuery("SHOW GRANTS TO ROLE parent_role");
         assertTrue(grants.getRowCount() >= 1);
 
         boolean found = false;
@@ -73,7 +77,7 @@ public class GrantRevokeTest extends BaseDatabaseTest {
         engine.execute("GRANT ROLE child_role TO ROLE parent_role");
         engine.execute("REVOKE ROLE child_role FROM ROLE parent_role");
 
-        ResultSet grants = engine.executeQuery("SHOW GRANTS TO ROLE parent_role");
+        final ResultSet grants = engine.executeQuery("SHOW GRANTS TO ROLE parent_role");
         for (int i = 0; i < grants.getRowCount(); i++) {
             assertNotEquals("CHILD_ROLE", grants.getRows().get(i).getValue(1));
         }
@@ -87,11 +91,21 @@ public class GrantRevokeTest extends BaseDatabaseTest {
         engine.execute("CREATE ROLE role_c");
 
         // Grant roles in a hierarchy: role_a <- role_b <- role_c
-        assertDoesNotThrow(() -> engine.execute("GRANT ROLE role_b TO ROLE role_a"));
-        assertDoesNotThrow(() -> engine.execute("GRANT ROLE role_c TO ROLE role_b"));
+        assertDoesNotThrow(new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                engine.execute("GRANT ROLE role_b TO ROLE role_a");
+            }
+        });
+        assertDoesNotThrow(new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                engine.execute("GRANT ROLE role_c TO ROLE role_b");
+            }
+        });
 
         // Verify role hierarchy works
-        ResultSet grants = engine.executeQuery("SHOW GRANTS TO ROLE role_a");
+        final ResultSet grants = engine.executeQuery("SHOW GRANTS TO ROLE role_a");
         assertTrue(grants.getRowCount() >= 1, "Should have role grants");
     }
 
@@ -103,7 +117,7 @@ public class GrantRevokeTest extends BaseDatabaseTest {
         // Test TRUNCATE privilege
         engine.execute("GRANT TRUNCATE ON TABLE test_table TO ROLE test_role");
 
-        ResultSet grants = engine.executeQuery("SHOW GRANTS ON TABLE test_table");
+        final ResultSet grants = engine.executeQuery("SHOW GRANTS ON TABLE test_table");
         assertTrue(grants.getRowCount() >= 1, "Should have at least one grant");
 
         boolean foundTruncate = false;
@@ -125,7 +139,7 @@ public class GrantRevokeTest extends BaseDatabaseTest {
         // Grant multiple privileges
         engine.execute("GRANT SELECT, INSERT, UPDATE ON TABLE employees TO ROLE data_role");
 
-        ResultSet grants = engine.executeQuery("SHOW GRANTS ON TABLE employees");
+        final ResultSet grants = engine.executeQuery("SHOW GRANTS ON TABLE employees");
         assertTrue(grants.getRowCount() >= 3);
 
         boolean hasSelect = false;
@@ -133,7 +147,7 @@ public class GrantRevokeTest extends BaseDatabaseTest {
         boolean hasUpdate = false;
 
         for (int i = 0; i < grants.getRowCount(); i++) {
-            String privilege = grants.getRows().get(i).getValue(1).toString();
+            final String privilege = grants.getRows().get(i).getValue(1).toString();
             if ("SELECT".equals(privilege)) hasSelect = true;
             if ("INSERT".equals(privilege)) hasInsert = true;
             if ("UPDATE".equals(privilege)) hasUpdate = true;
@@ -159,7 +173,7 @@ public class GrantRevokeTest extends BaseDatabaseTest {
         engine.execute("GRANT SELECT ON VIEW grant_test_view TO ROLE admin_role");
 
         // Verify database grant
-        ResultSet dbGrants = engine.executeQuery("SHOW GRANTS ON DATABASE grant_test_db");
+        final ResultSet dbGrants = engine.executeQuery("SHOW GRANTS ON DATABASE grant_test_db");
         assertTrue(dbGrants.getRowCount() >= 1);
     }
 
@@ -170,7 +184,7 @@ public class GrantRevokeTest extends BaseDatabaseTest {
 
         engine.execute("GRANT OWNERSHIP ON TABLE ownership_test TO ROLE owner_role");
 
-        ResultSet grants = engine.executeQuery("SHOW GRANTS ON TABLE ownership_test");
+        final ResultSet grants = engine.executeQuery("SHOW GRANTS ON TABLE ownership_test");
         boolean foundOwnership = false;
 
         for (int i = 0; i < grants.getRowCount(); i++) {
@@ -191,7 +205,7 @@ public class GrantRevokeTest extends BaseDatabaseTest {
         engine.execute("GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE revoke_table TO ROLE revoke_test_role");
         engine.execute("REVOKE INSERT, UPDATE ON TABLE revoke_table FROM ROLE revoke_test_role");
 
-        ResultSet grants = engine.executeQuery("SHOW GRANTS ON TABLE revoke_table");
+        final ResultSet grants = engine.executeQuery("SHOW GRANTS ON TABLE revoke_table");
 
         boolean hasSelect = false;
         boolean hasDelete = false;
@@ -199,7 +213,7 @@ public class GrantRevokeTest extends BaseDatabaseTest {
         boolean hasUpdate = false;
 
         for (int i = 0; i < grants.getRowCount(); i++) {
-            String privilege = grants.getRows().get(i).getValue(1).toString();
+            final String privilege = grants.getRows().get(i).getValue(1).toString();
             if ("SELECT".equals(privilege)) hasSelect = true;
             if ("DELETE".equals(privilege)) hasDelete = true;
             if ("INSERT".equals(privilege)) hasInsert = true;
@@ -220,7 +234,7 @@ public class GrantRevokeTest extends BaseDatabaseTest {
         // GRANT ALL stores the EXPANSION, never an ALL row (live-verified): the individual DML
         // privileges appear, and no row is named ALL. A real account lists edition extras beyond
         // this core, so the assertion is contains-not-equals.
-        ResultSet grants = engine.executeQuery("SHOW GRANTS ON TABLE all_priv_table");
+        final ResultSet grants = engine.executeQuery("SHOW GRANTS ON TABLE all_priv_table");
         final Set<String> granted = new HashSet<>();
         for (int i = 0; i < grants.getRowCount(); i++) {
             granted.add(String.valueOf(grants.getRows().get(i).getValue(1)));
@@ -239,7 +253,7 @@ public class GrantRevokeTest extends BaseDatabaseTest {
         engine.execute("GRANT ALL ON TABLE part_revoke_table TO ROLE part_revoke_role");
         engine.execute("REVOKE UPDATE ON TABLE part_revoke_table FROM ROLE part_revoke_role");
 
-        ResultSet grants = engine.executeQuery("SHOW GRANTS ON TABLE part_revoke_table");
+        final ResultSet grants = engine.executeQuery("SHOW GRANTS ON TABLE part_revoke_table");
         final Set<String> granted = new HashSet<>();
         for (int i = 0; i < grants.getRowCount(); i++) {
             granted.add(String.valueOf(grants.getRows().get(i).getValue(1)));
@@ -249,7 +263,7 @@ public class GrantRevokeTest extends BaseDatabaseTest {
             "the rest of the expansion remains, got: " + granted);
 
         engine.execute("REVOKE ALL ON TABLE part_revoke_table FROM ROLE part_revoke_role");
-        ResultSet after = engine.executeQuery("SHOW GRANTS ON TABLE part_revoke_table");
+        final ResultSet after = engine.executeQuery("SHOW GRANTS ON TABLE part_revoke_table");
         for (int i = 0; i < after.getRowCount(); i++) {
             final String privilege = String.valueOf(after.getRows().get(i).getValue(1));
             assertTrue("OWNERSHIP".equals(privilege),
@@ -265,7 +279,7 @@ public class GrantRevokeTest extends BaseDatabaseTest {
         engine.execute("GRANT ALL PRIVILEGES ON TABLE revoke_all_table TO ROLE revoke_all_role");
         engine.execute("REVOKE ALL PRIVILEGES ON TABLE revoke_all_table FROM ROLE revoke_all_role");
 
-        ResultSet grants = engine.executeQuery("SHOW GRANTS ON TABLE revoke_all_table");
+        final ResultSet grants = engine.executeQuery("SHOW GRANTS ON TABLE revoke_all_table");
 
         // Should have no grants for this role
         boolean hasAnyGrant = false;
@@ -291,7 +305,7 @@ public class GrantRevokeTest extends BaseDatabaseTest {
         // Grant using simple name (schema context is set)
         engine.execute("GRANT SELECT ON TABLE qname_table TO ROLE qualified_role");
 
-        ResultSet grants = engine.executeQuery("SHOW GRANTS ON TABLE qname_table");
+        final ResultSet grants = engine.executeQuery("SHOW GRANTS ON TABLE qname_table");
         assertTrue(grants.getRowCount() >= 1, "Should have at least one grant");
     }
 
@@ -305,7 +319,7 @@ public class GrantRevokeTest extends BaseDatabaseTest {
         engine.execute("GRANT ROLE bottom_role TO ROLE middle_role");
         engine.execute("GRANT ROLE middle_role TO ROLE top_role");
 
-        ResultSet topGrants = engine.executeQuery("SHOW GRANTS TO ROLE top_role");
+        final ResultSet topGrants = engine.executeQuery("SHOW GRANTS TO ROLE top_role");
         boolean foundMiddle = false;
 
         for (int i = 0; i < topGrants.getRowCount(); i++) {
@@ -329,7 +343,7 @@ public class GrantRevokeTest extends BaseDatabaseTest {
         engine.execute("GRANT SELECT ON TABLE t1 TO USER u1");
 
         // Verify the privilege was granted
-        var user = engine.getCatalog().getUser("u1");
+        final var user = engine.getCatalog().getUser("u1");
         assertTrue(user.hasPrivilege("TABLE", "T1",
             Privilege.SELECT),
             "User should have SELECT privilege on table");
@@ -344,7 +358,7 @@ public class GrantRevokeTest extends BaseDatabaseTest {
         engine.execute("GRANT SELECT ON TABLE t2 TO USER u2");
         engine.execute("REVOKE SELECT ON TABLE t2 FROM USER u2");
 
-        var user = engine.getCatalog().getUser("u2");
+        final var user = engine.getCatalog().getUser("u2");
         assertFalse(user.hasPrivilege("TABLE", "T2",
             Privilege.SELECT),
             "User should not have SELECT privilege after revoke");
@@ -358,7 +372,7 @@ public class GrantRevokeTest extends BaseDatabaseTest {
 
         engine.execute("GRANT SELECT, INSERT, UPDATE ON TABLE t3 TO USER u3");
 
-        var user = engine.getCatalog().getUser("u3");
+        final var user = engine.getCatalog().getUser("u3");
         assertTrue(user.hasPrivilege("TABLE", "T3",
             Privilege.SELECT));
         assertTrue(user.hasPrivilege("TABLE", "T3",
@@ -376,7 +390,7 @@ public class GrantRevokeTest extends BaseDatabaseTest {
         engine.execute("GRANT ALL PRIVILEGES ON TABLE t4 TO USER u4");
 
         // GRANT ALL stores the expansion, not an ALL marker: the individual privileges are held.
-        var user = engine.getCatalog().getUser("u4");
+        final var user = engine.getCatalog().getUser("u4");
         assertTrue(user.hasPrivilege("TABLE", "T4", Privilege.SELECT));
         assertTrue(user.hasPrivilege("TABLE", "T4", Privilege.DELETE));
         assertTrue(user.hasPrivilege("TABLE", "T4", Privilege.TRUNCATE));
@@ -390,7 +404,7 @@ public class GrantRevokeTest extends BaseDatabaseTest {
 
         engine.execute("GRANT USAGE ON DATABASE user_test_db TO USER u5");
 
-        var user = engine.getCatalog().getUser("u5");
+        final var user = engine.getCatalog().getUser("u5");
         assertTrue(user.hasPrivilege("DATABASE", "USER_TEST_DB",
             Privilege.USAGE));
     }
@@ -417,7 +431,7 @@ public class GrantRevokeTest extends BaseDatabaseTest {
         engine.execute("CREATE ROLE IF NOT EXISTS t6_owner_role");
         engine.execute("GRANT OWNERSHIP ON TABLE t6 TO ROLE t6_owner_role");
 
-        ResultSet grants = engine.executeQuery("SHOW GRANTS ON TABLE t6");
+        final ResultSet grants = engine.executeQuery("SHOW GRANTS ON TABLE t6");
         boolean foundOwnership = false;
         for (int i = 0; i < grants.getRowCount(); i++) {
             // Column 1 is the privilege (0=created_on, 1=privilege, 2=granted_on, ...).
@@ -440,8 +454,8 @@ public class GrantRevokeTest extends BaseDatabaseTest {
         engine.execute("GRANT SELECT ON TABLE mixed_table TO USER mixed_user");
         engine.execute("GRANT INSERT ON TABLE mixed_table TO ROLE mixed_role");
 
-        var user = engine.getCatalog().getUser("mixed_user");
-        var role = engine.getCatalog().getRole("mixed_role");
+        final var user = engine.getCatalog().getUser("mixed_user");
+        final var role = engine.getCatalog().getRole("mixed_role");
 
         assertTrue(user.hasPrivilege("TABLE", "MIXED_TABLE",
             Privilege.SELECT));

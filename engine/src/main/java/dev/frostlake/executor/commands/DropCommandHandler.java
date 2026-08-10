@@ -17,17 +17,23 @@
 package dev.frostlake.executor.commands;
 
 import dev.frostlake.executor.QueryExecutor;
+import dev.frostlake.executor.SqlAccessControlError;
+import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.StatementErrors;
-import dev.frostlake.metastore.*;
-import dev.frostlake.metastore.model.*;
-import dev.frostlake.parser.FrostlakeParser;
-import dev.frostlake.storage.ResultSet;
+import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.DroppedObject;
+import dev.frostlake.metastore.QualifiedName;
+import dev.frostlake.metastore.model.Database;
+import dev.frostlake.metastore.model.Privilege;
+import dev.frostlake.metastore.model.Schema;
+import dev.frostlake.metastore.model.SecurableObjectType;
+import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.Tag;
+import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.storage.Row;
 import dev.frostlake.storage.StorageEngine;
 import dev.frostlake.stream.StreamManager;
-import dev.frostlake.types.*;
+import dev.frostlake.types.DataType;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -100,16 +106,17 @@ public class DropCommandHandler implements CommandHandler {
             }
             out.put(fqn, new ArrayList<>(storage.getTableStorage(fqn).scan()));
             storage.dropTable(fqn);
+            queryExecutor.resetCopyLoadHistory(fqn);
             queryExecutor.getTransactionManager().discardBufferedWritesFor(fqn);
         }
     }
 
     public Object handleDropStatement(final FrostlakeParser.DropStatementContext ctx) {
-        boolean ifExists = ctx.if_exists() != null;
+        final boolean ifExists = ctx.if_exists() != null;
 
         try {
             if (ctx.DATABASE() != null) {
-                String dbName = getText(ctx.identifier());
+                final String dbName = getText(ctx.identifier());
                 try {
                     checkDrop(SecurableObjectType.DATABASE, dbName);
                     final Database droppedDb = catalog.getDatabase(dbName);
@@ -134,8 +141,8 @@ public class DropCommandHandler implements CommandHandler {
                     logger.debug("Database does not exist (IF EXISTS): {}", dbName);
                 }
             } else if (ctx.SCHEMA() != null) {
-                String schemaName = getText(ctx.qualifiedName());
-                String[] parts = qualifiedNameParts(ctx.qualifiedName());
+                final String schemaName = getText(ctx.qualifiedName());
+                final String[] parts = qualifiedNameParts(ctx.qualifiedName());
 
                 try {
                     checkDrop(SecurableObjectType.SCHEMA, schemaName);
@@ -170,9 +177,10 @@ public class DropCommandHandler implements CommandHandler {
                     logger.debug("Schema does not exist (IF EXISTS): {}", schemaName);
                 }
             } else if (ctx.DYNAMIC() != null && ctx.TABLE() != null) {
-                String qn = getText(ctx.qualifiedName()); String[] parts = qualifiedNameParts(ctx.qualifiedName());
+                final String qn = getText(ctx.qualifiedName());
+                final String[] parts = qualifiedNameParts(ctx.qualifiedName());
                 try {
-                    Schema schema = parts.length == 1 ? ddl.resolveCurrentSchema()
+                    final Schema schema = parts.length == 1 ? ddl.resolveCurrentSchema()
                         : parts.length == 2 ? catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0])
                         : catalog.getDatabase(parts[0]).getSchema(parts[1]);
                     checkDrop(SecurableObjectType.DYNAMIC_TABLE, qn);
@@ -183,15 +191,16 @@ public class DropCommandHandler implements CommandHandler {
                     logger.debug("Dynamic table does not exist (IF EXISTS): {}", qn);
                 }
             } else if (ctx.TABLE() != null) {
-                String qualifiedName = queryExecutor.resolveObjectName(ctx.objectName());
+                final String qualifiedName = queryExecutor.resolveObjectName(ctx.objectName());
 
                 try {
-                    Table table = catalog.resolveTable(qualifiedName);
-                    checkDrop(SecurableObjectType.TABLE, qualifiedName);
-                    String[] parts = qualifiedName.split("\\.");
-                    Schema schema;
-                    String databaseName;
-                    String tableName;
+                    // Parts come from the parse tree (or the IDENTIFIER() value per dotted level) —
+                    // never by re-splitting the joined spelling, which breaks a quoted name
+                    // containing a dot.
+                    final String[] parts = queryExecutor.resolveObjectNameParts(ctx.objectName());
+                    final Schema schema;
+                    final String databaseName;
+                    final String tableName;
 
                     if (parts.length == 1) {
                         schema = ddl.resolveCurrentSchema();
@@ -212,7 +221,17 @@ public class DropCommandHandler implements CommandHandler {
                         throw new RuntimeException("Invalid table name: " + qualifiedName);
                     }
 
-                    String fullyQualifiedName = databaseName.toUpperCase() + "." + schema.getName().toUpperCase() + "." + tableName.toUpperCase();
+                    // INFORMATION_SCHEMA is read-only, and its views are found before any kind
+                    // check — so even DROP TABLE on one refuses naming the VIEW (live-verified).
+                    if ("INFORMATION_SCHEMA".equals(schema.getName()) && schema.hasView(tableName)) {
+                        throw new RuntimeException(
+                            SqlAccessControlError.insufficientPrivileges("view", tableName.toUpperCase()));
+                    }
+
+                    final Table table = catalog.resolveTable(QualifiedName.of(parts));
+                    checkDrop(SecurableObjectType.TABLE, qualifiedName);
+
+                    final String fullyQualifiedName = databaseName.toUpperCase() + "." + schema.getName().toUpperCase() + "." + tableName.toUpperCase();
                     // Snapshot table metadata + rows for UNDROP before removing the storage.
                     final List<Row> snapshotRows =
                         new ArrayList<>(queryExecutor.getStorageEngine().getTableStorage(fullyQualifiedName).scan());
@@ -220,6 +239,7 @@ public class DropCommandHandler implements CommandHandler {
 
                     schema.dropTable(table.getName());
                     queryExecutor.getStorageEngine().dropTable(fullyQualifiedName);
+                    queryExecutor.resetCopyLoadHistory(fullyQualifiedName);
                     // Drop any buffered writes for this table so an uncommitted INSERT/UPDATE/DELETE earlier
                     // in the same transaction (e.g. a proc that seeds then drops a temp table) isn't flushed
                     // to now-missing storage at commit.
@@ -230,16 +250,19 @@ public class DropCommandHandler implements CommandHandler {
 
                     logger.trace("Dropped table: {}", qualifiedName);
                 } catch (final RuntimeException e) {
-                    if (!ifExists) throw e;
+                    // IF EXISTS forgives absence, never an access-control refusal.
+                    if (!ifExists || String.valueOf(e.getMessage()).startsWith(SqlAccessControlError.PREFIX)) {
+                        throw e;
+                    }
                     logger.debug("Table does not exist (IF EXISTS): {}", qualifiedName);
                 }
             } else if (ctx.VIEW() != null && ctx.MATERIALIZED() == null) {
-                String qualifiedName = getText(ctx.qualifiedName());
-                String[] parts = qualifiedNameParts(ctx.qualifiedName());
+                final String qualifiedName = getText(ctx.qualifiedName());
+                final String[] parts = qualifiedNameParts(ctx.qualifiedName());
 
                 try {
-                    Schema schema;
-                    String viewName;
+                    final Schema schema;
+                    final String viewName;
 
                     if (parts.length == 1) {
                         schema = ddl.resolveCurrentSchema();
@@ -261,16 +284,19 @@ public class DropCommandHandler implements CommandHandler {
                     schema.dropView(viewName);
                     logger.trace("Dropped view: {}", qualifiedName);
                 } catch (final RuntimeException e) {
-                    if (!ifExists) throw e;
+                    // IF EXISTS forgives absence, never an access-control refusal.
+                    if (!ifExists || String.valueOf(e.getMessage()).startsWith(SqlAccessControlError.PREFIX)) {
+                        throw e;
+                    }
                     logger.debug("View does not exist (IF EXISTS): {}", qualifiedName);
                 }
             } else if (ctx.VIEW() != null && ctx.MATERIALIZED() != null) {
-                String qualifiedName = getText(ctx.qualifiedName());
-                String[] parts = qualifiedNameParts(ctx.qualifiedName());
+                final String qualifiedName = getText(ctx.qualifiedName());
+                final String[] parts = qualifiedNameParts(ctx.qualifiedName());
 
                 try {
-                    Schema schema;
-                    String mvName;
+                    final Schema schema;
+                    final String mvName;
 
                     if (parts.length == 1) {
                         schema = ddl.resolveCurrentSchema();
@@ -296,11 +322,11 @@ public class DropCommandHandler implements CommandHandler {
                     logger.debug("Materialized view does not exist (IF EXISTS): {}", qualifiedName);
                 }
             } else if (ctx.STREAM() != null) {
-                String streamQn = getText(ctx.qualifiedName());
-                String streamName = ddl.extractObjectName(streamQn);
+                final String streamQn = getText(ctx.qualifiedName());
+                final String streamName = ddl.extractObjectName(streamQn);
 
                 try {
-                    Schema schema = ddl.resolveSchemaFromQualifiedName(streamQn);
+                    final Schema schema = ddl.resolveSchemaFromQualifiedName(streamQn);
                     checkDrop(SecurableObjectType.STREAM, streamQn);
                     schema.dropStream(streamName);
                     logger.trace("Dropped stream: {}", streamName);
@@ -309,11 +335,11 @@ public class DropCommandHandler implements CommandHandler {
                     logger.debug("Stream does not exist (IF EXISTS): {}", streamName);
                 }
             } else if (ctx.TASK() != null) {
-                String taskQn = getText(ctx.qualifiedName());
-                String taskName = ddl.extractObjectName(taskQn);
+                final String taskQn = getText(ctx.qualifiedName());
+                final String taskName = ddl.extractObjectName(taskQn);
 
                 try {
-                    Schema schema = ddl.resolveSchemaFromQualifiedName(taskQn);
+                    final Schema schema = ddl.resolveSchemaFromQualifiedName(taskQn);
                     checkDrop(SecurableObjectType.TASK, taskQn);
                     schema.dropTask(taskName);
                     logger.trace("Dropped task: {}", taskName);
@@ -322,10 +348,10 @@ public class DropCommandHandler implements CommandHandler {
                     logger.debug("Task does not exist (IF EXISTS): {}", taskName);
                 }
             } else if (ctx.PIPE() != null) {
-                String pipeName = getText(ctx.qualifiedName());
+                final String pipeName = getText(ctx.qualifiedName());
 
                 try {
-                    Schema schema = ddl.resolveCurrentSchema();
+                    final Schema schema = ddl.resolveCurrentSchema();
                     checkDrop(SecurableObjectType.PIPE, pipeName);
                     schema.dropPipe(pipeName);
                     logger.trace("Dropped pipe: {}", pipeName);
@@ -334,11 +360,11 @@ public class DropCommandHandler implements CommandHandler {
                     logger.debug("Pipe does not exist (IF EXISTS): {}", pipeName);
                 }
             } else if (ctx.SEQUENCE() != null) {
-                String seqQn = getText(ctx.qualifiedName());
-                String sequenceName = ddl.extractObjectName(seqQn);
+                final String seqQn = getText(ctx.qualifiedName());
+                final String sequenceName = ddl.extractObjectName(seqQn);
 
                 try {
-                    Schema schema = ddl.resolveSchemaFromQualifiedName(seqQn);
+                    final Schema schema = ddl.resolveSchemaFromQualifiedName(seqQn);
                     schema.dropSequence(sequenceName);
                     logger.trace("Dropped sequence: {}", sequenceName);
                 } catch (final RuntimeException e) {
@@ -347,9 +373,10 @@ public class DropCommandHandler implements CommandHandler {
                 }
             } else if (ctx.CORTEX() != null) {
                 final String serviceName = getText(ctx.qualifiedName());
+                final String[] serviceParts = qualifiedNameParts(ctx.qualifiedName());
                 try {
                     ddl.resolveSchemaFromQualifiedName(serviceName)
-                        .dropCortexSearchService(QualifiedName.parse(serviceName).last());
+                        .dropCortexSearchService(serviceParts[serviceParts.length - 1]);
                     logger.trace("Dropped Cortex search service: {}", serviceName);
                 } catch (final RuntimeException e) {
                     if (!ifExists) {
@@ -367,7 +394,7 @@ public class DropCommandHandler implements CommandHandler {
                     logger.debug("Compute pool does not exist (IF EXISTS): {}", poolName);
                 }
             } else if (ctx.WAREHOUSE() != null) {
-                String warehouseName = getText(ctx.identifier());
+                final String warehouseName = getText(ctx.identifier());
 
                 try {
                     catalog.dropWarehouse(warehouseName);
@@ -377,7 +404,7 @@ public class DropCommandHandler implements CommandHandler {
                     logger.debug("Warehouse does not exist (IF EXISTS): {}", warehouseName);
                 }
             } else if (ctx.STAGE() != null) {
-                String stageName = getText(ctx.qualifiedName());
+                final String stageName = getText(ctx.qualifiedName());
 
                 try {
                     checkDrop(SecurableObjectType.STAGE, stageName);
@@ -388,7 +415,7 @@ public class DropCommandHandler implements CommandHandler {
                     logger.debug("Stage does not exist (IF EXISTS): {}", stageName);
                 }
             } else if (ctx.FILE() != null && ctx.FORMAT() != null) {
-                String fileFormatName = getText(ctx.qualifiedName());
+                final String fileFormatName = getText(ctx.qualifiedName());
 
                 try {
                     catalog.dropFileFormat(fileFormatName);
@@ -398,12 +425,12 @@ public class DropCommandHandler implements CommandHandler {
                     logger.debug("File format does not exist (IF EXISTS): {}", fileFormatName);
                 }
             } else if (ctx.FUNCTION() != null) {
-                String qualifiedName = getText(ctx.qualifiedName());
-                String[] parts = qualifiedNameParts(ctx.qualifiedName());
+                final String qualifiedName = getText(ctx.qualifiedName());
+                final String[] parts = qualifiedNameParts(ctx.qualifiedName());
 
                 try {
-                    Schema schema;
-                    String functionName;
+                    final Schema schema;
+                    final String functionName;
 
                     if (parts.length == 1) {
                         schema = ddl.resolveCurrentSchema();
@@ -423,7 +450,7 @@ public class DropCommandHandler implements CommandHandler {
 
                     // Check if parameter types were provided
                     if (ctx.dataTypeList() != null) {
-                        List<DataType> argumentTypes = new ArrayList<>();
+                        final List<DataType> argumentTypes = new ArrayList<>();
                         for (final FrostlakeParser.DataTypeNameContext dtCtx : ctx.dataTypeList().dataTypeName()) {
                             argumentTypes.add(columnParser.parseDataType(dtCtx));
                         }
@@ -439,12 +466,12 @@ public class DropCommandHandler implements CommandHandler {
                     logger.debug("Function does not exist (IF EXISTS): {}", qualifiedName);
                 }
             } else if (ctx.PROCEDURE() != null) {
-                String qualifiedName = getText(ctx.qualifiedName());
-                String[] parts = qualifiedNameParts(ctx.qualifiedName());
+                final String qualifiedName = getText(ctx.qualifiedName());
+                final String[] parts = qualifiedNameParts(ctx.qualifiedName());
 
                 try {
-                    Schema schema;
-                    String procedureName;
+                    final Schema schema;
+                    final String procedureName;
 
                     if (parts.length == 1) {
                         schema = ddl.resolveCurrentSchema();
@@ -464,7 +491,7 @@ public class DropCommandHandler implements CommandHandler {
 
                     // Check if parameter types were provided
                     if (ctx.dataTypeList() != null) {
-                        List<DataType> argumentTypes = new ArrayList<>();
+                        final List<DataType> argumentTypes = new ArrayList<>();
                         for (final FrostlakeParser.DataTypeNameContext dtCtx : ctx.dataTypeList().dataTypeName()) {
                             argumentTypes.add(columnParser.parseDataType(dtCtx));
                         }
@@ -480,7 +507,7 @@ public class DropCommandHandler implements CommandHandler {
                     logger.debug("Procedure does not exist (IF EXISTS): {}", qualifiedName);
                 }
             } else if (ctx.USER() != null) {
-                String userName = getText(ctx.identifier());
+                final String userName = getText(ctx.identifier());
 
                 try {
                     catalog.dropUser(userName);
@@ -490,7 +517,7 @@ public class DropCommandHandler implements CommandHandler {
                     logger.debug("User does not exist (IF EXISTS): {}", userName);
                 }
             } else if (ctx.ROLE() != null) {
-                String roleName = getText(ctx.identifier());
+                final String roleName = getText(ctx.identifier());
 
                 try {
                     catalog.dropRole(roleName);
@@ -500,7 +527,7 @@ public class DropCommandHandler implements CommandHandler {
                     logger.debug("Role does not exist (IF EXISTS): {}", roleName);
                 }
             } else if (ctx.TAG() != null) {
-                String tagName = getText(ctx.qualifiedName());
+                final String tagName = getText(ctx.qualifiedName());
                 try {
                     checkDrop(SecurableObjectType.TAG, tagName);
                     final Tag droppedTag = catalog.getTag(tagName);
@@ -518,9 +545,9 @@ public class DropCommandHandler implements CommandHandler {
                     logger.debug("Tag does not exist (IF EXISTS): {}", tagName);
                 }
             } else if (ctx.MASKING() != null && ctx.POLICY() != null && ctx.ROW() == null) {
-                String[] parts = qualifiedNameParts(ctx.qualifiedName());
+                final String[] parts = qualifiedNameParts(ctx.qualifiedName());
                 try {
-                    Schema schema = parts.length == 1 ? ddl.resolveCurrentSchema()
+                    final Schema schema = parts.length == 1 ? ddl.resolveCurrentSchema()
                         : parts.length == 2 ? catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0])
                         : catalog.getDatabase(parts[0]).getSchema(parts[1]);
                     checkDrop(SecurableObjectType.MASKING_POLICY, getText(ctx.qualifiedName()));
@@ -532,9 +559,9 @@ public class DropCommandHandler implements CommandHandler {
                     logger.trace("Dropped masking policy: {}", getText(ctx.qualifiedName()));
                 } catch (final RuntimeException e) { if (!ifExists) throw e; }
             } else if (ctx.ROW() != null && ctx.ACCESS() != null && ctx.POLICY() != null) {
-                String[] parts = qualifiedNameParts(ctx.qualifiedName());
+                final String[] parts = qualifiedNameParts(ctx.qualifiedName());
                 try {
-                    Schema schema = parts.length == 1 ? ddl.resolveCurrentSchema()
+                    final Schema schema = parts.length == 1 ? ddl.resolveCurrentSchema()
                         : parts.length == 2 ? catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0])
                         : catalog.getDatabase(parts[0]).getSchema(parts[1]);
                     checkDrop(SecurableObjectType.ROW_ACCESS_POLICY, getText(ctx.qualifiedName()));
@@ -544,6 +571,75 @@ public class DropCommandHandler implements CommandHandler {
                     }
                     schema.dropRowAccessPolicy(parts[parts.length - 1].toUpperCase());
                     logger.trace("Dropped row access policy: {}", getText(ctx.qualifiedName()));
+                } catch (final RuntimeException e) { if (!ifExists) throw e; }
+            } else if (ctx.JOIN() != null && ctx.POLICY() != null) {
+                final String[] parts = qualifiedNameParts(ctx.qualifiedName());
+                try {
+                    final Schema schema = parts.length == 1 ? ddl.resolveCurrentSchema()
+                        : parts.length == 2 ? catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0])
+                        : catalog.getDatabase(parts[0]).getSchema(parts[1]);
+                    final String policyName = parts[parts.length - 1].toUpperCase();
+                    if (!schema.hasJoinPolicy(policyName)) {
+                        throw new RuntimeException(SqlCompilationError.doesNotExist("Join policy",
+                            schema.qualifiedName(policyName)));
+                    }
+                    if (catalog.isJoinPolicyInUse(policyName)) {
+                        throw new RuntimeException(SqlCompilationError.PREFIX + " Policy " + policyName
+                            + " cannot be dropped/replaced as it is associated with one or more entities.");
+                    }
+                    schema.dropJoinPolicy(policyName);
+                    logger.trace("Dropped join policy: {}", getText(ctx.qualifiedName()));
+                } catch (final RuntimeException e) { if (!ifExists) throw e; }
+            } else if (ctx.AGGREGATION() != null && ctx.POLICY() != null) {
+                final String[] parts = qualifiedNameParts(ctx.qualifiedName());
+                try {
+                    final Schema schema = parts.length == 1 ? ddl.resolveCurrentSchema()
+                        : parts.length == 2 ? catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0])
+                        : catalog.getDatabase(parts[0]).getSchema(parts[1]);
+                    final String policyName = parts[parts.length - 1].toUpperCase();
+                    if (!schema.hasAggregationPolicy(policyName)) {
+                        throw new RuntimeException(SqlCompilationError.doesNotExist("Aggregation policy",
+                            schema.qualifiedName(policyName)));
+                    }
+                    if (catalog.isAggregationPolicyInUse(policyName)) {
+                        throw new RuntimeException(SqlCompilationError.PREFIX + " Policy " + policyName
+                            + " cannot be dropped/replaced as it is associated with one or more entities.");
+                    }
+                    schema.dropAggregationPolicy(policyName);
+                    logger.trace("Dropped aggregation policy: {}", getText(ctx.qualifiedName()));
+                } catch (final RuntimeException e) { if (!ifExists) throw e; }
+            } else if (ctx.PROJECTION() != null && ctx.POLICY() != null) {
+                final String[] parts = qualifiedNameParts(ctx.qualifiedName());
+                try {
+                    final Schema schema = parts.length == 1 ? ddl.resolveCurrentSchema()
+                        : parts.length == 2 ? catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0])
+                        : catalog.getDatabase(parts[0]).getSchema(parts[1]);
+                    final String policyName = parts[parts.length - 1].toUpperCase();
+                    if (!schema.hasProjectionPolicy(policyName)) {
+                        throw new RuntimeException(SqlCompilationError.doesNotExist("Projection policy",
+                            schema.qualifiedName(policyName)));
+                    }
+                    if (catalog.isProjectionPolicyInUse(policyName)) {
+                        // Attached to a column: live refuses the drop rather than detaching it.
+                        throw new RuntimeException(SqlCompilationError.PREFIX + " Policy " + policyName
+                            + " cannot be dropped/replaced as it is associated with one or more entities.");
+                    }
+                    schema.dropProjectionPolicy(policyName);
+                    logger.trace("Dropped projection policy: {}", getText(ctx.qualifiedName()));
+                } catch (final RuntimeException e) { if (!ifExists) throw e; }
+            } else if (ctx.CONTACT() != null) {
+                final String[] parts = qualifiedNameParts(ctx.qualifiedName());
+                try {
+                    final Schema schema = parts.length == 1 ? ddl.resolveCurrentSchema()
+                        : parts.length == 2 ? catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0])
+                        : catalog.getDatabase(parts[0]).getSchema(parts[1]);
+                    final String contactName = parts[parts.length - 1].toUpperCase();
+                    if (!schema.hasContact(contactName)) {
+                        throw new RuntimeException(SqlCompilationError.doesNotExist("Contact",
+                            schema.qualifiedName(contactName)));
+                    }
+                    schema.dropContact(contactName);
+                    logger.trace("Dropped contact: {}", getText(ctx.qualifiedName()));
                 } catch (final RuntimeException e) { if (!ifExists) throw e; }
             }
 

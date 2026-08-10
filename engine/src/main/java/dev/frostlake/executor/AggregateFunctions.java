@@ -18,8 +18,8 @@ package dev.frostlake.executor;
 
 import dev.frostlake.functions.AggregateFunction;
 import dev.frostlake.functions.aggregate.AggregateNumerics;
-import dev.frostlake.functions.aggregate.PercentileCont;
-import dev.frostlake.functions.aggregate.PercentileDisc;
+import dev.frostlake.functions.aggregate.PercentileContAccumulator;
+import dev.frostlake.functions.aggregate.PercentileDiscAccumulator;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.storage.Row;
@@ -35,10 +35,33 @@ import java.util.List;
  */
 public final class AggregateFunctions {
 
+    /** Numeric comparison with the integral / same-type BigDecimal fast paths — MIN/MAX call this
+     *  per element, so the toString/BigDecimal bridge is reserved for Double/Float and mixed pairs. */
+    private static int compareNumbers(final Number a, final Number b) {
+        if (isIntegral(a) && isIntegral(b)) {
+            return Long.compare(a.longValue(), b.longValue());
+        }
+        if (a instanceof BigDecimal && b instanceof BigDecimal) {
+            return ((BigDecimal) a).compareTo((BigDecimal) b);
+        }
+        return new BigDecimal(a.toString()).compareTo(new BigDecimal(b.toString()));
+    }
+
+    private static boolean isIntegral(final Object value) {
+        return value instanceof Long || value instanceof Integer
+            || value instanceof Short || value instanceof Byte;
+    }
+
     private AggregateFunctions() {
     }
 
-    /** The ORDER BY of a trailing {@code WITHIN GROUP (...)} on this expression, or null if absent. */
+    /**
+     * The ORDER BY of a trailing {@code WITHIN GROUP (...)} on this expression, or null if absent.
+     *
+     * @param expr the aggregate call's expression parse tree (null tolerated), scanned child by child
+     *             for a {@code WITHIN GROUP} clause
+     * @return the clause's ORDER BY parse tree, or null when the expression carries no WITHIN GROUP
+     */
     public static FrostlakeParser.OrderByClauseContext withinGroupOrderBy(final FrostlakeParser.ExpressionContext expr) {
         if (expr == null) {
             return null;
@@ -57,6 +80,13 @@ public final class AggregateFunctions {
      * data values. Reuses the accumulators' interpolation / discrete logic (which sort internally, so
      * the ORDER BY direction is immaterial to the result). Name, argument and ORDER BY column all come
      * from the parse tree.
+     *
+     * @param funcCtx the PERCENTILE_CONT / PERCENTILE_DISC call's parse tree, carrying the function
+     *                name, the fraction argument and the WITHIN GROUP ORDER BY
+     * @param groupRows the rows of the current group, whose ORDER-BY-column values feed the accumulator
+     * @param table the table the group rows belong to, used to resolve the ORDER BY column to an index
+     * @return the continuous (interpolated) or discrete percentile of the group's values, or null for
+     *         an empty group
      */
     public static Object evaluatePercentile(final FrostlakeParser.FunctionCallExprContext funcCtx,
                                       final List<Row> groupRows, final Table table) {
@@ -78,14 +108,24 @@ public final class AggregateFunctions {
         final int colIndex = ValueComparisons.getColumnIndex(table,
             ParseTreeText.getOriginalText(withinGroup.orderItem(0).expression()));
         final AggregateFunction.Accumulator acc = "PERCENTILE_CONT".equalsIgnoreCase(funcCtx.functionName().getText())
-            ? new PercentileCont.PercentileContAccumulator(percentile)
-            : new PercentileDisc.PercentileDiscAccumulator(percentile);
+            ? new PercentileContAccumulator(percentile)
+            : new PercentileDiscAccumulator(percentile);
         for (final Row r : groupRows) {
             acc.accumulate(r.getValue(colIndex));
         }
         return acc.getResult();
     }
 
+    /**
+     * The simple aggregate value reducer: folds an already-collected list of values with COUNT / SUM /
+     * AVG / MIN / MAX, preserving Snowflake's result typing (SUM keeps integer-ness, AVG widens
+     * fixed-point inputs, MIN/MAX keep the winning value's original numeric type). COUNT counts every
+     * value it is handed — the caller collects exactly what its aggregate should see.
+     *
+     * @param funcName the aggregate's upper-cased name; anything but the five above yields null
+     * @param values the values collected for the group, in row order
+     * @return the folded aggregate value, or null for an empty list or an unrecognized function name
+     */
     public static Object applyAggregateFunction(final String funcName, final List<Object> values) {
         if (values.isEmpty()) {
             return null;
@@ -115,7 +155,7 @@ public final class AggregateFunctions {
                 Number minWinner = null;
                 for (final Object val : values) {
                     if (val instanceof Number && (minWinner == null
-                            || new BigDecimal(val.toString()).compareTo(new BigDecimal(minWinner.toString())) < 0)) {
+                            || compareNumbers((Number) val, minWinner) < 0)) {
                         minWinner = (Number) val;
                     }
                 }
@@ -125,7 +165,7 @@ public final class AggregateFunctions {
                 Number maxWinner = null;
                 for (final Object val : values) {
                     if (val instanceof Number && (maxWinner == null
-                            || new BigDecimal(val.toString()).compareTo(new BigDecimal(maxWinner.toString())) > 0)) {
+                            || compareNumbers((Number) val, maxWinner) > 0)) {
                         maxWinner = (Number) val;
                     }
                 }

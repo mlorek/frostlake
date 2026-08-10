@@ -39,6 +39,8 @@ public class CurrentSession extends BuiltInFunction {
         return sessionContext != null ? sessionContext.getSessionId() : FALLBACK_SESSION_ID;
     }
 
-    @Override public int getMinArgCount() { return 0; }
-    @Override public int getMaxArgCount() { return 0; }
+    @Override
+    public int getMinArgCount() { return 0; }
+    @Override
+    public int getMaxArgCount() { return 0; }
 }

@@ -33,6 +33,8 @@ public class ToTimestampNtz extends BuiltInFunction {
         return SharedFunctionHelpers.parseTimestampWithFormatOrScale(args.get(0), formatOrScale);
     }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return 2; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return 2; }
 }

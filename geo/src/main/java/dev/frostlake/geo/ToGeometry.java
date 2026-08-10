@@ -37,6 +37,8 @@ public class ToGeometry extends BuiltInFunction {
         return parsed;
     }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return 3; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return 3; }
 }

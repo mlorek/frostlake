@@ -40,8 +40,8 @@ public class EqualNull extends BuiltInFunction {
 
     @Override
     public Object evaluate(final List<Object> args) {
-        Object a = args.get(0);
-        Object b = args.get(1);
+        final Object a = args.get(0);
+        final Object b = args.get(1);
         if (a == null && b == null) return true;
         if (a == null || b == null) return false;
         if (a instanceof Number && b instanceof Number) {
@@ -50,6 +50,8 @@ public class EqualNull extends BuiltInFunction {
         return a.toString().equals(b.toString());
     }
 
-    @Override public int getMinArgCount() { return 2; }
-    @Override public int getMaxArgCount() { return 2; }
+    @Override
+    public int getMinArgCount() { return 2; }
+    @Override
+    public int getMaxArgCount() { return 2; }
 }

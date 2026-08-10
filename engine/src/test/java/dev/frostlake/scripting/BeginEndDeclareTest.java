@@ -16,34 +16,17 @@
 
 package dev.frostlake.scripting;
 
-import dev.frostlake.DatabaseEngine;
+import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
-public class BeginEndDeclareTest {
+public class BeginEndDeclareTest extends BaseDatabaseTest {
 
     private static final Logger logger = LoggerFactory.getLogger(BeginEndDeclareTest.class);
-    private DatabaseEngine engine;
-
-    @BeforeEach
-    public void setUp() {
-        engine = new DatabaseEngine();
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
-    }
-
-    @AfterEach
-    public void tearDown() {
-        if (engine != null) {
-            engine.shutdown();
-        }
-    }
 
     @Test
     public void testBeginWithDeclareDefault() {
@@ -58,10 +41,10 @@ public class BeginEndDeclareTest {
             END;
             """);
 
-        ResultSet rs = engine.executeQuery("SELECT * FROM results");
+        final ResultSet rs = engine.executeQuery("SELECT * FROM results");
         logger.info("Row count: {}", rs.getRowCount());
         if (rs.getRowCount() > 0) {
-            Object value = rs.getRows().get(0).getValue(0);
+            final Object value = rs.getRows().get(0).getValue(0);
             logger.info("Value: {}", value);
             if (value != null) {
                 assertEquals(10L, ((Number) value).longValue());
@@ -88,10 +71,10 @@ public class BeginEndDeclareTest {
             END;
             """);
 
-        ResultSet rs = engine.executeQuery("SELECT * FROM results");
+        final ResultSet rs = engine.executeQuery("SELECT * FROM results");
         logger.info("Row count: {}", rs.getRowCount());
         if (rs.getRowCount() > 0) {
-            Object value = rs.getRows().get(0).getValue(0);
+            final Object value = rs.getRows().get(0).getValue(0);
             logger.info("Value: {}", value);
             if (value != null) {
                 assertEquals(15L, ((Number) value).longValue());
@@ -103,5 +86,25 @@ public class BeginEndDeclareTest {
             logger.error("No rows found!");
             throw new AssertionError("Should have 1 row");
         }
+    }
+
+    /**
+     * A typed declaration's initializer sees an UNTYPED declaration above it — the two shapes are
+     * separate grammar alternatives, and the whole-block name check walks them in source order.
+     */
+    @Test
+    public void testTypedDeclarationSeesEarlierUntypedOne() {
+        logger.info("Testing typed declaration referencing an earlier untyped one");
+
+        final ResultSet result = engine.executeQuery("""
+            DECLARE
+                prefix := 'violations: ';
+                message STRING := prefix || 'none';
+            BEGIN
+                RETURN :message;
+            END;
+            """);
+
+        assertEquals("violations: none", result.getRows().get(0).getValue(0));
     }
 }

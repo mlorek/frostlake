@@ -24,7 +24,9 @@ import org.slf4j.LoggerFactory;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class CurrentDatabaseTest extends BaseJdbcTest {
     private static final Logger logger = LoggerFactory.getLogger(CurrentDatabaseTest.class);
@@ -36,7 +38,7 @@ public class CurrentDatabaseTest extends BaseJdbcTest {
         statement.execute("CREATE DATABASE IF NOT EXISTS test_db");
         statement.execute("USE DATABASE test_db");
 
-        ResultSet rs = statement.executeQuery("SELECT CURRENT_DATABASE()");
+        final ResultSet rs = statement.executeQuery("SELECT CURRENT_DATABASE()");
         assertTrue(rs.next());
         assertEquals("TEST_DB", rs.getString(1));
         assertFalse(rs.next());
@@ -49,7 +51,7 @@ public class CurrentDatabaseTest extends BaseJdbcTest {
         statement.execute("CREATE DATABASE IF NOT EXISTS my_database");
         statement.execute("USE DATABASE my_database");
 
-        ResultSet rs = statement.executeQuery("SELECT CURRENT_DATABASE() AS db_name");
+        final ResultSet rs = statement.executeQuery("SELECT CURRENT_DATABASE() AS db_name");
         assertTrue(rs.next());
         assertEquals("MY_DATABASE", rs.getString("db_name"));
         assertFalse(rs.next());
@@ -66,7 +68,7 @@ public class CurrentDatabaseTest extends BaseJdbcTest {
         statement.execute("INSERT INTO metadata VALUES ('ANALYTICS_DB', 'Main analytics database')");
         statement.execute("INSERT INTO metadata VALUES ('OTHER_DB', 'Other database')");
 
-        ResultSet rs = statement.executeQuery(
+        final ResultSet rs = statement.executeQuery(
             "SELECT description FROM metadata WHERE db_name = CURRENT_DATABASE()"
         );
         assertTrue(rs.next());
@@ -104,7 +106,7 @@ public class CurrentDatabaseTest extends BaseJdbcTest {
         statement.execute("INSERT INTO operations VALUES (1, CURRENT_DATABASE())");
         statement.execute("INSERT INTO operations VALUES (2, CURRENT_DATABASE())");
 
-        ResultSet rs = statement.executeQuery("SELECT DISTINCT db_name FROM operations");
+        final ResultSet rs = statement.executeQuery("SELECT DISTINCT db_name FROM operations");
         assertTrue(rs.next());
         assertEquals("TRACKER_DB", rs.getString(1));
         assertFalse(rs.next());
@@ -120,7 +122,7 @@ public class CurrentDatabaseTest extends BaseJdbcTest {
         statement.execute("CREATE TABLE logs (id INTEGER, context VARCHAR)");
         statement.execute("INSERT INTO logs VALUES (1, 'test')");
 
-        ResultSet rs = statement.executeQuery(
+        final ResultSet rs = statement.executeQuery(
             "SELECT id FROM logs WHERE context = 'test' AND 'SUBQUERY_DB' = (SELECT CURRENT_DATABASE())"
         );
         assertTrue(rs.next());
@@ -135,7 +137,7 @@ public class CurrentDatabaseTest extends BaseJdbcTest {
         statement.execute("CREATE DATABASE IF NOT EXISTS multi_db");
         statement.execute("USE DATABASE multi_db");
 
-        ResultSet rs = statement.executeQuery(
+        final ResultSet rs = statement.executeQuery(
             "SELECT CURRENT_DATABASE() AS db1, CURRENT_DATABASE() AS db2"
         );
         assertTrue(rs.next());
@@ -160,7 +162,7 @@ public class CurrentDatabaseTest extends BaseJdbcTest {
 
         statement.execute("INSERT INTO settings VALUES ('JOIN_DB', 'enabled')");
 
-        ResultSet rs = statement.executeQuery(
+        final ResultSet rs = statement.executeQuery(
             "SELECT s.config FROM databases d " +
             "JOIN settings s ON d.name = s.db_name " +
             "WHERE d.name = CURRENT_DATABASE()"
@@ -181,7 +183,7 @@ public class CurrentDatabaseTest extends BaseJdbcTest {
             "CREATE TABLE db_snapshot AS SELECT CURRENT_DATABASE() AS snapshot_db"
         );
 
-        ResultSet rs = statement.executeQuery("SELECT snapshot_db FROM db_snapshot");
+        final ResultSet rs = statement.executeQuery("SELECT snapshot_db FROM db_snapshot");
         assertTrue(rs.next());
         assertEquals("CTAS_DB", rs.getString(1));
         assertFalse(rs.next());
@@ -194,7 +196,7 @@ public class CurrentDatabaseTest extends BaseJdbcTest {
         statement.execute("CREATE DATABASE IF NOT EXISTS concat_db");
         statement.execute("USE DATABASE concat_db");
 
-        ResultSet rs = statement.executeQuery(
+        final ResultSet rs = statement.executeQuery(
             "SELECT 'Database: ' || CURRENT_DATABASE() AS info"
         );
         assertTrue(rs.next());

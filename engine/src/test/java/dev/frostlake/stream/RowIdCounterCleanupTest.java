@@ -18,11 +18,12 @@ package dev.frostlake.stream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
-import dev.frostlake.BaseDatabaseTest;
+import dev.frostlake.DatabaseEngine;
 import dev.frostlake.metastore.model.Stream;
 import dev.frostlake.metastore.model.StreamRecord;
 
-import org.junit.jupiter.api.Assumptions;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -34,20 +35,33 @@ import java.util.List;
  * table (or its schema / database) is dropped, so {@code rowIdCounters} cannot grow without bound as
  * objects are created and dropped. The cleanup is observable: a counter that is removed restarts at 1,
  * so a table recreated after a drop tracks from 1 again instead of inheriting the stale counter.
+ *
+ * <p>Deliberately NOT on the live surface: it asserts StreamManager bookkeeping through engine
+ * internals, with no live counterpart — it runs its own embedded engine.
  */
-public class RowIdCounterCleanupTest extends BaseDatabaseTest {
+public class RowIdCounterCleanupTest {
+
+    private DatabaseEngine engine;
+
+    @BeforeEach
+    public void setUp() {
+        engine = new DatabaseEngine();
+        engine.execute("CREATE DATABASE test_db");
+        engine.execute("USE DATABASE test_db");
+        engine.execute("CREATE SCHEMA test_schema");
+        engine.execute("USE SCHEMA test_schema");
+    }
+
+    @AfterEach
+    public void tearDown() {
+        engine.shutdown();
+    }
 
     private static final Logger log = LoggerFactory.getLogger(RowIdCounterCleanupTest.class);
-
-    private static final String ENGINE_INTERNALS =
-        "asserts StreamManager's per-table row-id counters through engine.getStreamManager() / "
-        + "engine.getCatalog() — embedded-only bookkeeping with no counterpart on a live account "
-        + "(it fails there with 'Database does not exist: TEST_DB')";
 
     /** End-to-end: a real DROP TABLE must clear the counter, so a recreated table restarts at row-id 1. */
     @Test
     public void dropTableResetsRowIdCounter() {
-        Assumptions.assumeFalse(isLiveSnowflake(), ENGINE_INTERNALS);
         engine.execute("CREATE TABLE t (id INT)");
         engine.execute("CREATE STREAM s ON TABLE t");
         engine.execute("INSERT INTO t VALUES (1)");
@@ -65,7 +79,6 @@ public class RowIdCounterCleanupTest extends BaseDatabaseTest {
     /** The schema-level (prefix) cleanup removes the counter for tables in that schema. */
     @Test
     public void onSchemaDroppedResetsRowIdCounter() {
-        Assumptions.assumeFalse(isLiveSnowflake(), ENGINE_INTERNALS);
         engine.execute("CREATE TABLE t (id INT)");
         engine.execute("CREATE STREAM s ON TABLE t");
         engine.execute("INSERT INTO t VALUES (1)");
@@ -81,7 +94,6 @@ public class RowIdCounterCleanupTest extends BaseDatabaseTest {
     /** The database-level (prefix) cleanup removes the counter for tables in that database. */
     @Test
     public void onDatabaseDroppedResetsRowIdCounter() {
-        Assumptions.assumeFalse(isLiveSnowflake(), ENGINE_INTERNALS);
         engine.execute("CREATE TABLE t (id INT)");
         engine.execute("CREATE STREAM s ON TABLE t");
         engine.execute("INSERT INTO t VALUES (1)");

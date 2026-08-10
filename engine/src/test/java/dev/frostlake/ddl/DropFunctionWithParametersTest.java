@@ -17,13 +17,12 @@
 package dev.frostlake.ddl;
 
 import dev.frostlake.BaseJdbcTest;
+import java.sql.SQLException;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
-import java.sql.SQLException;
-
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 public class DropFunctionWithParametersTest extends BaseJdbcTest {
     private static final Logger logger = LoggerFactory.getLogger(DropFunctionWithParametersTest.class);
@@ -35,13 +34,21 @@ public class DropFunctionWithParametersTest extends BaseJdbcTest {
         statement.execute("CREATE FUNCTION add_one(x INTEGER) RETURNS INTEGER LANGUAGE SQL AS 'SELECT x + 1'");
 
         // Snowflake requires the signature — the bare form is a syntax error.
-        assertThrows(SQLException.class, () -> {
-            statement.execute("DROP FUNCTION add_one");
+        assertThrows(SQLException.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                statement.execute("DROP FUNCTION add_one");
+                
+            }
         });
 
         statement.execute("DROP FUNCTION add_one(INTEGER)");
-        assertThrows(SQLException.class, () -> {
-            statement.executeQuery("SELECT add_one(5)");
+        assertThrows(SQLException.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                statement.executeQuery("SELECT add_one(5)");
+                
+            }
         });
     }
 
@@ -55,8 +62,12 @@ public class DropFunctionWithParametersTest extends BaseJdbcTest {
         statement.execute("DROP FUNCTION multiply(INTEGER, INTEGER)");
 
         // Verify function is dropped
-        assertThrows(SQLException.class, () -> {
-            statement.executeQuery("SELECT multiply(3, 4)");
+        assertThrows(SQLException.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                statement.executeQuery("SELECT multiply(3, 4)");
+                
+            }
         });
     }
 
@@ -70,8 +81,12 @@ public class DropFunctionWithParametersTest extends BaseJdbcTest {
         statement.execute("DROP FUNCTION get_constant()");
 
         // Verify function is dropped
-        assertThrows(SQLException.class, () -> {
-            statement.executeQuery("SELECT get_constant()");
+        assertThrows(SQLException.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                statement.executeQuery("SELECT get_constant()");
+                
+            }
         });
     }
 
@@ -82,8 +97,12 @@ public class DropFunctionWithParametersTest extends BaseJdbcTest {
         statement.execute("CREATE FUNCTION calc_func(x INTEGER, y INTEGER) RETURNS INTEGER LANGUAGE SQL AS 'x + y'");
 
         // Try to drop with wrong parameter types - should fail
-        assertThrows(SQLException.class, () -> {
-            statement.execute("DROP FUNCTION calc_func(VARCHAR, VARCHAR)");
+        assertThrows(SQLException.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                statement.execute("DROP FUNCTION calc_func(VARCHAR, VARCHAR)");
+                
+            }
         });
     }
 
@@ -94,8 +113,12 @@ public class DropFunctionWithParametersTest extends BaseJdbcTest {
         statement.execute("CREATE FUNCTION sum_func(x INTEGER, y INTEGER) RETURNS INTEGER LANGUAGE SQL AS 'x + y'");
 
         // Try to drop with wrong number of parameters - should fail
-        assertThrows(SQLException.class, () -> {
-            statement.execute("DROP FUNCTION sum_func(INTEGER)");
+        assertThrows(SQLException.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                statement.execute("DROP FUNCTION sum_func(INTEGER)");
+                
+            }
         });
     }
 
@@ -109,8 +132,12 @@ public class DropFunctionWithParametersTest extends BaseJdbcTest {
         statement.execute("DROP FUNCTION greet(VARCHAR)");
 
         // Verify function is dropped
-        assertThrows(SQLException.class, () -> {
-            statement.executeQuery("SELECT greet('Alice')");
+        assertThrows(SQLException.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                statement.executeQuery("SELECT greet('Alice')");
+                
+            }
         });
     }
 
@@ -137,8 +164,12 @@ public class DropFunctionWithParametersTest extends BaseJdbcTest {
         statement.execute("DROP FUNCTION format_data(INTEGER, VARCHAR, INTEGER)");
 
         // Verify function is dropped
-        assertThrows(SQLException.class, () -> {
-            statement.executeQuery("SELECT format_data(1, 'test', 1)");
+        assertThrows(SQLException.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                statement.executeQuery("SELECT format_data(1, 'test', 1)");
+                
+            }
         });
     }
 
@@ -153,8 +184,12 @@ public class DropFunctionWithParametersTest extends BaseJdbcTest {
         statement.execute("DROP FUNCTION test_schema.compute(INTEGER)");
 
         // Verify function is dropped
-        assertThrows(SQLException.class, () -> {
-            statement.executeQuery("SELECT test_schema.compute(5)");
+        assertThrows(SQLException.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                statement.executeQuery("SELECT test_schema.compute(5)");
+                
+            }
         });
     }
 
@@ -163,8 +198,12 @@ public class DropFunctionWithParametersTest extends BaseJdbcTest {
         logger.info("Testing DROP FUNCTION for non-existent function with parameters");
 
         // Try to drop non-existent function - should fail
-        assertThrows(SQLException.class, () -> {
-            statement.execute("DROP FUNCTION non_existent(INTEGER, VARCHAR)");
+        assertThrows(SQLException.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                statement.execute("DROP FUNCTION non_existent(INTEGER, VARCHAR)");
+                
+            }
         });
 
         // With IF EXISTS - should not fail

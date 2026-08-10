@@ -17,13 +17,12 @@
 package dev.frostlake.ddl;
 
 import dev.frostlake.BaseJdbcTest;
+import java.sql.SQLException;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
-import java.sql.SQLException;
-
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 public class DropProcedureWithParametersTest extends BaseJdbcTest {
     private static final Logger logger = LoggerFactory.getLogger(DropProcedureWithParametersTest.class);
@@ -35,13 +34,21 @@ public class DropProcedureWithParametersTest extends BaseJdbcTest {
         statement.execute("CREATE PROCEDURE increment_proc(x INTEGER) RETURNS INTEGER LANGUAGE SQL AS 'BEGIN RETURN x + 1; END'");
 
         // Snowflake requires the signature — the bare form is a syntax error.
-        assertThrows(SQLException.class, () -> {
-            statement.execute("DROP PROCEDURE increment_proc");
+        assertThrows(SQLException.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                statement.execute("DROP PROCEDURE increment_proc");
+                
+            }
         });
 
         statement.execute("DROP PROCEDURE increment_proc(INTEGER)");
-        assertThrows(SQLException.class, () -> {
-            statement.execute("CALL increment_proc(5)");
+        assertThrows(SQLException.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                statement.execute("CALL increment_proc(5)");
+                
+            }
         });
     }
 
@@ -55,8 +62,12 @@ public class DropProcedureWithParametersTest extends BaseJdbcTest {
         statement.execute("DROP PROCEDURE sum_proc(INTEGER, INTEGER)");
 
         // Verify procedure is dropped
-        assertThrows(SQLException.class, () -> {
-            statement.execute("CALL sum_proc(10, 20)");
+        assertThrows(SQLException.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                statement.execute("CALL sum_proc(10, 20)");
+                
+            }
         });
     }
 
@@ -70,8 +81,12 @@ public class DropProcedureWithParametersTest extends BaseJdbcTest {
         statement.execute("DROP PROCEDURE no_args_proc()");
 
         // Verify procedure is dropped
-        assertThrows(SQLException.class, () -> {
-            statement.execute("CALL no_args_proc()");
+        assertThrows(SQLException.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                statement.execute("CALL no_args_proc()");
+                
+            }
         });
     }
 
@@ -82,8 +97,12 @@ public class DropProcedureWithParametersTest extends BaseJdbcTest {
         statement.execute("CREATE PROCEDURE calc_proc(x INTEGER, y INTEGER) RETURNS INTEGER LANGUAGE SQL AS 'BEGIN RETURN 42; END'");
 
         // Try to drop with wrong parameter types - should fail
-        assertThrows(SQLException.class, () -> {
-            statement.execute("DROP PROCEDURE calc_proc(VARCHAR, INTEGER)");
+        assertThrows(SQLException.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                statement.execute("DROP PROCEDURE calc_proc(VARCHAR, INTEGER)");
+                
+            }
         });
     }
 
@@ -94,8 +113,12 @@ public class DropProcedureWithParametersTest extends BaseJdbcTest {
         statement.execute("CREATE PROCEDURE three_arg_proc(a INTEGER, b INTEGER, c INTEGER) RETURNS INTEGER LANGUAGE SQL AS 'BEGIN RETURN 100; END'");
 
         // Try to drop with wrong number of parameters - should fail
-        assertThrows(SQLException.class, () -> {
-            statement.execute("DROP PROCEDURE three_arg_proc(INTEGER, INTEGER)");
+        assertThrows(SQLException.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                statement.execute("DROP PROCEDURE three_arg_proc(INTEGER, INTEGER)");
+                
+            }
         });
     }
 
@@ -109,8 +132,12 @@ public class DropProcedureWithParametersTest extends BaseJdbcTest {
         statement.execute("DROP PROCEDURE string_proc(VARCHAR)");
 
         // Verify procedure is dropped
-        assertThrows(SQLException.class, () -> {
-            statement.execute("CALL string_proc('hello')");
+        assertThrows(SQLException.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                statement.execute("CALL string_proc('hello')");
+                
+            }
         });
     }
 
@@ -137,8 +164,12 @@ public class DropProcedureWithParametersTest extends BaseJdbcTest {
         statement.execute("DROP PROCEDURE mixed_proc(INTEGER, VARCHAR, INTEGER)");
 
         // Verify procedure is dropped
-        assertThrows(SQLException.class, () -> {
-            statement.execute("CALL mixed_proc(1, 'test', 10)");
+        assertThrows(SQLException.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                statement.execute("CALL mixed_proc(1, 'test', 10)");
+                
+            }
         });
     }
 
@@ -153,8 +184,12 @@ public class DropProcedureWithParametersTest extends BaseJdbcTest {
         statement.execute("DROP PROCEDURE proc_schema.double_value(INTEGER)");
 
         // Verify procedure is dropped
-        assertThrows(SQLException.class, () -> {
-            statement.execute("CALL proc_schema.double_value(7)");
+        assertThrows(SQLException.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                statement.execute("CALL proc_schema.double_value(7)");
+                
+            }
         });
     }
 
@@ -163,8 +198,12 @@ public class DropProcedureWithParametersTest extends BaseJdbcTest {
         logger.info("Testing DROP PROCEDURE for non-existent procedure with parameters");
 
         // Try to drop non-existent procedure - should fail
-        assertThrows(SQLException.class, () -> {
-            statement.execute("DROP PROCEDURE missing_proc(INTEGER, VARCHAR)");
+        assertThrows(SQLException.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                statement.execute("DROP PROCEDURE missing_proc(INTEGER, VARCHAR)");
+                
+            }
         });
 
         // With IF EXISTS - should not fail

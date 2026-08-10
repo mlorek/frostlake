@@ -40,8 +40,11 @@ public class Database extends SqlObject {
         // it: a real account reports its owner as absent, where PUBLIC and every created schema
         // name a role. SHOW SCHEMAS spells that absence as an empty string and
         // INFORMATION_SCHEMA.SCHEMATA as NULL, which is the usual split between the two surfaces.
-        Schema infoSchema = new Schema("INFORMATION_SCHEMA");
+        final Schema infoSchema = new Schema("INFORMATION_SCHEMA");
         infoSchema.setOwner(null);
+        // Its comment is fixed and account-wide — every database's INFORMATION_SCHEMA carries this
+        // exact sentence, where a created schema carries none (live-verified).
+        infoSchema.setComment("Views describing the contents of schemas in this database");
         registerSchema("INFORMATION_SCHEMA", infoSchema);
 
         // The INFORMATION_SCHEMA views a real account exposes, listed so they appear in
@@ -65,7 +68,12 @@ public class Database extends SqlObject {
             "STAGES", "STREAMLITS", "TABLES", "TABLE_CONSTRAINTS", "TABLE_PRIVILEGES",
             "TABLE_STORAGE_METRICS", "TYPES", "USAGE_PRIVILEGES", "VIEWS"
         }) {
-            infoSchema.addView(new View(v, "/* system view */"));
+            final View systemView = new View(v, "/* system view */");
+            // Owned by nobody, like the schema holding them: SHOW OBJECTS reports an empty owner for
+            // every INFORMATION_SCHEMA view, where a created view names the role that made it
+            // (live-verified). The default SYSADMIN would be an invented owner.
+            systemView.setOwner(null);
+            infoSchema.addView(systemView);
         }
     }
 
@@ -76,7 +84,7 @@ public class Database extends SqlObject {
     }
 
     public void addSchema(final Schema schema) {
-        String upperName = schema.getName().toUpperCase();
+        final String upperName = schema.getName().toUpperCase();
         if (schemas.containsKey(upperName)) {
             throw new RuntimeException("Schema already exists: " + schema.getName());
         }
@@ -84,7 +92,7 @@ public class Database extends SqlObject {
     }
 
     public void dropSchema(final String name, final boolean cascade) {
-        String upperName = name.toUpperCase();
+        final String upperName = name.toUpperCase();
         if ("INFORMATION_SCHEMA".equals(upperName)) {
             throw new RuntimeException("Cannot drop INFORMATION_SCHEMA schema");
         }
@@ -102,7 +110,7 @@ public class Database extends SqlObject {
      * {@link #schemaExact}.
      */
     public Schema getSchema(final String name) {
-        Schema schema = schemas.get(name.toUpperCase());
+        final Schema schema = schemas.get(name.toUpperCase());
         if (schema == null) {
             throw new RuntimeException(SqlCompilationError.doesNotExist("Schema", getName() + "." + name));
         }
@@ -130,25 +138,25 @@ public class Database extends SqlObject {
      * Clone this database with a new name
      */
     public Database clone(final String newName) {
-        Database clonedDb = new Database(newName);
+        final Database clonedDb = new Database(newName);
         clonedDb.setComment(this.getComment());
 
         // Clone all schemas
         for (final Schema schema : schemas.values()) {
-            String schemaName = schema.getName();
+            final String schemaName = schema.getName();
             if ("INFORMATION_SCHEMA".equals(schemaName)) {
                 // Skip INFORMATION_SCHEMA (it's a system schema with views that are auto-created)
                 continue;
             } else if ("PUBLIC".equals(schemaName)) {
                 // Clone PUBLIC schema content into the existing PUBLIC schema
-                Schema sourcePublic = schema;
-                Schema targetPublic = clonedDb.getSchema("PUBLIC");
+                final Schema sourcePublic = schema;
+                final Schema targetPublic = clonedDb.getSchema("PUBLIC");
 
                 // Clone tables from source PUBLIC to target PUBLIC
                 for (final Table table : sourcePublic.getTables()) {
-                    List<TableColumn> clonedColumns = new ArrayList<>();
+                    final List<TableColumn> clonedColumns = new ArrayList<>();
                     for (final TableColumn col : table.getColumns()) {
-                        TableColumn clonedCol = new TableColumn(
+                        final TableColumn clonedCol = new TableColumn(
                             col.getName(),
                             col.getDataType(),
                             col.isNullable(),
@@ -161,7 +169,7 @@ public class Database extends SqlObject {
                         clonedCol.setCollation(col.getCollation());
                         clonedColumns.add(clonedCol);
                     }
-                    Table clonedTable = new Table(table.getName(), clonedColumns, table.isTemporary(), table.isTransient());
+                    final Table clonedTable = new Table(table.getName(), clonedColumns, table.isTemporary(), table.isTransient());
                     clonedTable.setComment(table.getComment());
                     clonedTable.setClusterKeys(table.getClusterKeys());
                     targetPublic.addTable(clonedTable);
@@ -173,7 +181,7 @@ public class Database extends SqlObject {
                 }
             } else {
                 // Clone user-created schemas
-                Schema clonedSchema = schema.clone();
+                final Schema clonedSchema = schema.clone();
                 clonedDb.registerSchema(schemaName.toUpperCase(), clonedSchema);
             }
         }
@@ -185,8 +193,8 @@ public class Database extends SqlObject {
      * Clone a schema within this database
      */
     public Schema cloneSchema(final String sourceName, final String targetName) {
-        Schema sourceSchema = getSchema(sourceName);
-        Schema clonedSchema = sourceSchema.clone();
+        final Schema sourceSchema = getSchema(sourceName);
+        final Schema clonedSchema = sourceSchema.clone();
         clonedSchema.rename(targetName);
         addSchema(clonedSchema);
         return clonedSchema;
@@ -196,8 +204,8 @@ public class Database extends SqlObject {
      * Clone a schema from this database to another database
      */
     public Schema cloneSchemaTo(final String sourceName, final Database targetDb, final String targetName) {
-        Schema sourceSchema = getSchema(sourceName);
-        Schema clonedSchema = sourceSchema.clone();
+        final Schema sourceSchema = getSchema(sourceName);
+        final Schema clonedSchema = sourceSchema.clone();
         clonedSchema.rename(targetName);
         targetDb.addSchema(clonedSchema);
         return clonedSchema;

@@ -50,7 +50,7 @@ public class CTETest extends BaseDatabaseTest {
     public void testSimpleCTE() {
         logger.info("Testing simple CTE");
 
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             WITH high_earners AS (
                 SELECT * FROM employees WHERE salary > 55000
             )
@@ -68,7 +68,7 @@ public class CTETest extends BaseDatabaseTest {
     public void testCTEWithJoin() {
         logger.info("Testing CTE with JOIN");
 
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             WITH eng_employees AS (
                 SELECT * FROM employees WHERE dept_id = 10
             )
@@ -88,7 +88,7 @@ public class CTETest extends BaseDatabaseTest {
     public void testMultipleCTEs() {
         logger.info("Testing multiple CTEs");
 
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             WITH
                 high_earners AS (
                     SELECT * FROM employees WHERE salary > 55000
@@ -112,7 +112,7 @@ public class CTETest extends BaseDatabaseTest {
     public void testCTEWithAggregation() {
         logger.info("Testing CTE with aggregation");
 
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             WITH dept_stats AS (
                 SELECT dept_id, COUNT(*) as emp_count, AVG(salary) as avg_salary
                 FROM employees
@@ -132,7 +132,7 @@ public class CTETest extends BaseDatabaseTest {
     public void testCTEReferencedMultipleTimes() {
         logger.info("Testing CTE referenced multiple times");
 
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             WITH high_salary AS (
                 SELECT * FROM employees WHERE salary >= 60000
             )
@@ -153,7 +153,7 @@ public class CTETest extends BaseDatabaseTest {
     public void testCTEWithOrderByLimit() {
         logger.info("Testing CTE with ORDER BY and LIMIT");
 
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             WITH sorted_employees AS (
                 SELECT * FROM employees ORDER BY salary DESC
             )
@@ -174,7 +174,7 @@ public class CTETest extends BaseDatabaseTest {
     public void testCTEWithWhereClause() {
         logger.info("Testing CTE with WHERE clause in main query");
 
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             WITH all_employees AS (
                 SELECT * FROM employees
             )
@@ -192,7 +192,7 @@ public class CTETest extends BaseDatabaseTest {
     public void testCTEWithJoinOnCTE() {
         logger.info("Testing CTE used in JOIN");
 
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             WITH high_earners AS (
                 SELECT * FROM employees WHERE salary >= 60000
             )
@@ -211,7 +211,7 @@ public class CTETest extends BaseDatabaseTest {
     public void testNestedCTEQueries() {
         logger.info("Testing nested queries within CTE");
 
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             WITH dept_employees AS (
                 SELECT e.id, e.name, e.dept_id, e.salary, d.name as dept_name
                 FROM employees e
@@ -236,7 +236,7 @@ public class CTETest extends BaseDatabaseTest {
     public void testCTEWithUnion() {
         logger.info("Testing CTE with UNION");
 
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             WITH
                 eng_dept AS (SELECT * FROM employees WHERE dept_id = 10),
                 sales_dept AS (SELECT * FROM employees WHERE dept_id = 20)

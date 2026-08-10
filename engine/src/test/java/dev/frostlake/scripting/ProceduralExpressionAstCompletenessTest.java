@@ -16,10 +16,8 @@
 
 package dev.frostlake.scripting;
 
-import dev.frostlake.DatabaseEngine;
+import dev.frostlake.BaseDatabaseTest;
 
-import org.junit.jupiter.api.AfterAll;
-import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -34,27 +32,11 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
  * the condition was a {@code LiteralExpression} of its source text (a non-empty, truthy string), so
  * every IF would have been taken regardless of the actual predicate.
  */
-public class ProceduralExpressionAstCompletenessTest {
+public class ProceduralExpressionAstCompletenessTest extends BaseDatabaseTest {
 
-    private static DatabaseEngine engine;
-
-    @BeforeAll
-    public static void setup() {
-        engine = new DatabaseEngine();
-        engine.execute("CREATE DATABASE IF NOT EXISTS test_db");
-        engine.execute("USE DATABASE test_db");
-        engine.execute("USE SCHEMA public");
-    }
-
-    @AfterAll
-    public static void teardown() {
-        if (engine != null) {
-            engine.shutdown();
-        }
-    }
 
     /** Run "BEGIN IF (cond) THEN RETURN 1; END IF; RETURN 0; END" — the condition goes through buildExpression. */
-    private static int ifReturns(final String cond) {
+    private int ifReturns(final String cond) {
         final Object v = engine.executeQuery(
             "BEGIN\n    IF (" + cond + ") THEN\n        RETURN 1;\n    END IF;\n    RETURN 0;\nEND")
             .getRows().get(0).getValue(0);
@@ -97,7 +79,7 @@ public class ProceduralExpressionAstCompletenessTest {
     // the variable silently held the literal text "o:result:code" instead of the extracted value.
 
     /** CALL a proc that declares `r` from the given initializer over its OBJECT param `o`, and RETURN :r. */
-    private static String declInit(final String initializer) {
+    private String declInit(final String initializer) {
         engine.execute(
             "CREATE OR REPLACE PROCEDURE p_di(o OBJECT) RETURNS STRING LANGUAGE SQL AS $$\n"
             + "DECLARE r STRING := " + initializer + ";\n"

@@ -21,7 +21,13 @@ import dev.frostlake.types.VariantType;
 
 import java.util.List;
 
+/**
+ * ANY_VALUE(expr) — an arbitrary non-NULL value from the group (this implementation keeps the first
+ * one it sees), or NULL when the group holds none. Registered as VARIANT so it can carry a value of
+ * any type.
+ */
 public class AnyValue extends AggregateFunction {
+    /** Registers the aggregate as {@code ANY_VALUE} returning VARIANT. */
     public AnyValue() { super("ANY_VALUE", VariantType.VARIANT); }
 
     @Override
@@ -30,25 +36,9 @@ public class AnyValue extends AggregateFunction {
     @Override
     public Object evaluate(final List<Object> args) { return null; }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return 1; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return 1; }
 
-    private static class AnyValueAccumulator implements Accumulator {
-        private Object value = null; private boolean set = false;
-
-        @Override
-        public void accumulate(final Object v) { if (!set && v != null) { value = v; set = true; } }
-
-        @Override
-        public Object getResult() { return value; }
-
-        @Override
-        public void reset() { value = null; set = false; }
-
-        @Override
-        public void merge(final Accumulator other) {
-            AnyValueAccumulator o = (AnyValueAccumulator) other;
-            if (!set && o.set) { value = o.value; set = true; }
-        }
-    }
 }

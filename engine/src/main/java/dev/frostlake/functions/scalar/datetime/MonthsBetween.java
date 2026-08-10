@@ -20,9 +20,9 @@ import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.types.NumericType;
 
-import java.time.LocalDate;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.time.LocalDate;
 import java.util.List;
 
 public class MonthsBetween extends BuiltInFunction {
@@ -58,6 +58,8 @@ public class MonthsBetween extends BuiltInFunction {
         return BigDecimal.valueOf(months).setScale(RESULT_SCALE, RoundingMode.HALF_UP);
     }
 
-    @Override public int getMinArgCount() { return 2; }
-    @Override public int getMaxArgCount() { return 2; }
+    @Override
+    public int getMinArgCount() { return 2; }
+    @Override
+    public int getMaxArgCount() { return 2; }
 }

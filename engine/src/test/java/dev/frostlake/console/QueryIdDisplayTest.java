@@ -33,7 +33,7 @@ public class QueryIdDisplayTest extends BaseDatabaseTest {
         engine.execute("CREATE TABLE test (id INTEGER)");
         engine.execute("INSERT INTO test VALUES (1)");
 
-        ExecutionResult result = engine.execute("SELECT * FROM test");
+        final ExecutionResult result = engine.execute("SELECT * FROM test");
 
         assertNotNull(result.getQueryId(), "Query ID should be present for SELECT");
         assertTrue(result.getQueryId().matches("[0-9a-f-]+"), "Query ID should be a UUID format");
@@ -43,7 +43,7 @@ public class QueryIdDisplayTest extends BaseDatabaseTest {
     public void testQueryIdDisplayedForInsert() {
         engine.execute("CREATE TABLE test (id INTEGER)");
 
-        ExecutionResult result = engine.execute("INSERT INTO test VALUES (1)");
+        final ExecutionResult result = engine.execute("INSERT INTO test VALUES (1)");
 
         assertNotNull(result.getQueryId(), "Query ID should be present for INSERT");
         assertTrue(result.getQueryId().matches("[0-9a-f-]+"), "Query ID should be a UUID format");
@@ -54,7 +54,7 @@ public class QueryIdDisplayTest extends BaseDatabaseTest {
         engine.execute("CREATE TABLE test (id INTEGER)");
         engine.execute("INSERT INTO test VALUES (1)");
 
-        ExecutionResult result = engine.execute("UPDATE test SET id = 2");
+        final ExecutionResult result = engine.execute("UPDATE test SET id = 2");
 
         assertNotNull(result.getQueryId(), "Query ID should be present for UPDATE");
         assertTrue(result.getQueryId().matches("[0-9a-f-]+"), "Query ID should be a UUID format");
@@ -65,7 +65,7 @@ public class QueryIdDisplayTest extends BaseDatabaseTest {
         engine.execute("CREATE TABLE test (id INTEGER)");
         engine.execute("INSERT INTO test VALUES (1)");
 
-        ExecutionResult result = engine.execute("DELETE FROM test");
+        final ExecutionResult result = engine.execute("DELETE FROM test");
 
         assertNotNull(result.getQueryId(), "Query ID should be present for DELETE");
         assertTrue(result.getQueryId().matches("[0-9a-f-]+"), "Query ID should be a UUID format");
@@ -73,7 +73,7 @@ public class QueryIdDisplayTest extends BaseDatabaseTest {
 
     @Test
     public void testQueryIdDisplayedForDDL() {
-        ExecutionResult result = engine.execute("CREATE TABLE test (id INTEGER)");
+        final ExecutionResult result = engine.execute("CREATE TABLE test (id INTEGER)");
 
         assertNotNull(result.getQueryId(), "Query ID should be present for DDL");
         assertTrue(result.getQueryId().matches("[0-9a-f-]+"), "Query ID should be a UUID format");

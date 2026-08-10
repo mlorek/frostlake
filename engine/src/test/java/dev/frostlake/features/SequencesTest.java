@@ -63,7 +63,7 @@ public class SequencesTest extends BaseDatabaseTest {
 
         engine.execute("CREATE SEQUENCE seq1");
 
-        ResultSet sequences = engine.executeQuery("SHOW SEQUENCES");
+        final ResultSet sequences = engine.executeQuery("SHOW SEQUENCES");
         assertNotNull(sequences);
         assertEquals(1, sequences.getRowCount());
         assertEquals("SEQ1", sequences.getRows().get(0).getValue(sequences.getColumnIndex("name")));
@@ -76,7 +76,7 @@ public class SequencesTest extends BaseDatabaseTest {
 
         engine.execute("CREATE SEQUENCE seq_custom START WITH 100 INCREMENT BY 5");
 
-        ResultSet sequences = engine.executeQuery("SHOW SEQUENCES");
+        final ResultSet sequences = engine.executeQuery("SHOW SEQUENCES");
         assertNotNull(sequences);
         assertEquals(1, sequences.getRowCount());
         assertEquals("SEQ_CUSTOM", sequences.getRows().get(0).getValue(sequences.getColumnIndex("name")));
@@ -95,7 +95,7 @@ public class SequencesTest extends BaseDatabaseTest {
 
         engine.execute("CREATE SEQUENCE seq_comment COMMENT = 'Test sequence'");
 
-        ResultSet describe = engine.executeQuery("DESCRIBE SEQUENCE seq_comment");
+        final ResultSet describe = engine.executeQuery("DESCRIBE SEQUENCE seq_comment");
         assertNotNull(describe);
         // Live Snowflake DESC SEQUENCE returns one columnar row; the comment lands in its own column.
         assertEquals(1, describe.getRowCount());
@@ -112,7 +112,7 @@ public class SequencesTest extends BaseDatabaseTest {
         engine.execute("CREATE SEQUENCE seq_exists");
         engine.execute("CREATE SEQUENCE IF NOT EXISTS seq_exists");
 
-        ResultSet sequences = engine.executeQuery("SHOW SEQUENCES");
+        final ResultSet sequences = engine.executeQuery("SHOW SEQUENCES");
         assertEquals(1, sequences.getRowCount());
         logger.info("IF NOT EXISTS works correctly");
     }
@@ -122,8 +122,12 @@ public class SequencesTest extends BaseDatabaseTest {
         logger.info("Testing duplicate sequence creation fails");
 
         engine.execute("CREATE SEQUENCE seq_dup");
-        assertThrows(RuntimeException.class, () -> {
-            engine.execute("CREATE SEQUENCE seq_dup");
+        assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                engine.execute("CREATE SEQUENCE seq_dup");
+                
+            }
         });
         logger.info("Duplicate sequence creation correctly fails");
     }
@@ -135,7 +139,7 @@ public class SequencesTest extends BaseDatabaseTest {
         engine.execute("CREATE SEQUENCE seq_drop");
         engine.execute("DROP SEQUENCE seq_drop");
 
-        ResultSet sequences = engine.executeQuery("SHOW SEQUENCES");
+        final ResultSet sequences = engine.executeQuery("SHOW SEQUENCES");
         assertEquals(0, sequences.getRowCount());
         logger.info("Dropped sequence successfully");
     }
@@ -148,7 +152,7 @@ public class SequencesTest extends BaseDatabaseTest {
         engine.execute("DROP SEQUENCE IF EXISTS seq_drop_exists");
         engine.execute("DROP SEQUENCE IF EXISTS seq_drop_exists");
 
-        ResultSet sequences = engine.executeQuery("SHOW SEQUENCES");
+        final ResultSet sequences = engine.executeQuery("SHOW SEQUENCES");
         assertEquals(0, sequences.getRowCount());
         logger.info("IF EXISTS works correctly for DROP");
     }
@@ -157,8 +161,12 @@ public class SequencesTest extends BaseDatabaseTest {
     public void testDropNonExistentSequenceFails() {
         logger.info("Testing DROP of non-existent sequence fails");
 
-        assertThrows(RuntimeException.class, () -> {
-            engine.execute("DROP SEQUENCE seq_nonexistent");
+        assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                engine.execute("DROP SEQUENCE seq_nonexistent");
+                
+            }
         });
         logger.info("Drop non-existent sequence correctly fails");
     }
@@ -169,13 +177,13 @@ public class SequencesTest extends BaseDatabaseTest {
 
         engine.execute("CREATE SEQUENCE seq_nextval START WITH 1 INCREMENT BY 1");
 
-        ResultSet result1 = engine.executeQuery("SELECT seq_nextval.NEXTVAL as val");
+        final ResultSet result1 = engine.executeQuery("SELECT seq_nextval.NEXTVAL as val");
         assertAllocated(1L, (Number) result1.getRows().get(0).getValues().get(0));
 
-        ResultSet result2 = engine.executeQuery("SELECT seq_nextval.NEXTVAL as val");
+        final ResultSet result2 = engine.executeQuery("SELECT seq_nextval.NEXTVAL as val");
         assertAllocated(2L, (Number) result2.getRows().get(0).getValues().get(0));
 
-        ResultSet result3 = engine.executeQuery("SELECT seq_nextval.NEXTVAL as val");
+        final ResultSet result3 = engine.executeQuery("SELECT seq_nextval.NEXTVAL as val");
         assertAllocated(3L, (Number) result3.getRows().get(0).getValues().get(0));
 
         logger.info("NEXTVAL returns correct sequential values");
@@ -187,13 +195,13 @@ public class SequencesTest extends BaseDatabaseTest {
 
         engine.execute("CREATE SEQUENCE seq_inc START WITH 10 INCREMENT BY 10");
 
-        ResultSet result1 = engine.executeQuery("SELECT seq_inc.NEXTVAL as val");
+        final ResultSet result1 = engine.executeQuery("SELECT seq_inc.NEXTVAL as val");
         assertAllocated(10L, (Number) result1.getRows().get(0).getValues().get(0));
 
-        ResultSet result2 = engine.executeQuery("SELECT seq_inc.NEXTVAL as val");
+        final ResultSet result2 = engine.executeQuery("SELECT seq_inc.NEXTVAL as val");
         assertAllocated(20L, (Number) result2.getRows().get(0).getValues().get(0));
 
-        ResultSet result3 = engine.executeQuery("SELECT seq_inc.NEXTVAL as val");
+        final ResultSet result3 = engine.executeQuery("SELECT seq_inc.NEXTVAL as val");
         assertAllocated(30L, (Number) result3.getRows().get(0).getValues().get(0));
 
         logger.info("NEXTVAL respects custom INCREMENT");
@@ -205,13 +213,13 @@ public class SequencesTest extends BaseDatabaseTest {
 
         engine.execute("CREATE SEQUENCE seq_neg START WITH 100 INCREMENT BY -5");
 
-        ResultSet result1 = engine.executeQuery("SELECT seq_neg.NEXTVAL as val");
+        final ResultSet result1 = engine.executeQuery("SELECT seq_neg.NEXTVAL as val");
         assertAllocated(100L, (Number) result1.getRows().get(0).getValues().get(0));
 
-        ResultSet result2 = engine.executeQuery("SELECT seq_neg.NEXTVAL as val");
+        final ResultSet result2 = engine.executeQuery("SELECT seq_neg.NEXTVAL as val");
         assertAllocated(95L, (Number) result2.getRows().get(0).getValues().get(0));
 
-        ResultSet result3 = engine.executeQuery("SELECT seq_neg.NEXTVAL as val");
+        final ResultSet result3 = engine.executeQuery("SELECT seq_neg.NEXTVAL as val");
         assertAllocated(90L, (Number) result3.getRows().get(0).getValues().get(0));
 
         logger.info("NEXTVAL works with negative increment");
@@ -241,8 +249,12 @@ public class SequencesTest extends BaseDatabaseTest {
 
         engine.execute("CREATE SEQUENCE seq_currval_fail START WITH 1");
 
-        assertThrows(RuntimeException.class, () -> {
-            engine.executeQuery("SELECT CURRVAL('seq_currval_fail') as val");
+        assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                engine.executeQuery("SELECT CURRVAL('seq_currval_fail') as val");
+                
+            }
         });
 
         logger.info("CURRVAL correctly fails when NEXTVAL not called yet");
@@ -259,7 +271,7 @@ public class SequencesTest extends BaseDatabaseTest {
         engine.execute("INSERT INTO seq_table VALUES (seq_insert.NEXTVAL, 'Bob')");
         engine.execute("INSERT INTO seq_table VALUES (seq_insert.NEXTVAL, 'Charlie')");
 
-        ResultSet result = engine.executeQuery("SELECT id, name FROM seq_table ORDER BY id");
+        final ResultSet result = engine.executeQuery("SELECT id, name FROM seq_table ORDER BY id");
         assertEquals(3, result.getRowCount());
         assertAllocated(1L, (Number) result.getRows().get(0).getValues().get(0));
         assertAllocated(2L, (Number) result.getRows().get(1).getValues().get(0));
@@ -274,7 +286,7 @@ public class SequencesTest extends BaseDatabaseTest {
 
         engine.execute("CREATE SEQUENCE seq_restart START WITH 1 INCREMENT BY 1");
 
-        ResultSet val1 = engine.executeQuery("SELECT seq_restart.NEXTVAL as val");
+        final ResultSet val1 = engine.executeQuery("SELECT seq_restart.NEXTVAL as val");
         assertAllocated(1L, (Number) val1.getRows().get(0).getValues().get(0));
 
         // Live-verified: Snowflake ALTER SEQUENCE has no RESTART form.
@@ -312,7 +324,7 @@ public class SequencesTest extends BaseDatabaseTest {
         engine.execute("CREATE SEQUENCE seq_show1 START WITH 1");
         engine.execute("CREATE SEQUENCE seq_show2 START WITH 100 INCREMENT BY 10");
 
-        ResultSet sequences = engine.executeQuery("SHOW SEQUENCES");
+        final ResultSet sequences = engine.executeQuery("SHOW SEQUENCES");
         assertEquals(2, sequences.getRowCount());
         logger.info("SHOW SEQUENCES displays all sequences");
     }
@@ -323,7 +335,7 @@ public class SequencesTest extends BaseDatabaseTest {
 
         engine.execute("CREATE SEQUENCE seq_desc START WITH 50 INCREMENT BY 5");
 
-        ResultSet describe = engine.executeQuery("DESCRIBE SEQUENCE seq_desc");
+        final ResultSet describe = engine.executeQuery("DESCRIBE SEQUENCE seq_desc");
         assertNotNull(describe);
         // Live Snowflake DESC SEQUENCE returns ONE row with columns
         // name | database_name | schema_name | next_value | interval | created_on | owner |
@@ -347,10 +359,10 @@ public class SequencesTest extends BaseDatabaseTest {
         engine.execute("CREATE SEQUENCE seq_a START WITH 1 INCREMENT BY 1");
         engine.execute("CREATE SEQUENCE seq_b START WITH 1000 INCREMENT BY 100");
 
-        ResultSet valA1 = engine.executeQuery("SELECT seq_a.NEXTVAL as val");
-        ResultSet valB1 = engine.executeQuery("SELECT seq_b.NEXTVAL as val");
-        ResultSet valA2 = engine.executeQuery("SELECT seq_a.NEXTVAL as val");
-        ResultSet valB2 = engine.executeQuery("SELECT seq_b.NEXTVAL as val");
+        final ResultSet valA1 = engine.executeQuery("SELECT seq_a.NEXTVAL as val");
+        final ResultSet valB1 = engine.executeQuery("SELECT seq_b.NEXTVAL as val");
+        final ResultSet valA2 = engine.executeQuery("SELECT seq_a.NEXTVAL as val");
+        final ResultSet valB2 = engine.executeQuery("SELECT seq_b.NEXTVAL as val");
 
         assertAllocated(1L, (Number) valA1.getRows().get(0).getValues().get(0));
         assertAllocated(1000L, (Number) valB1.getRows().get(0).getValues().get(0));
@@ -366,9 +378,9 @@ public class SequencesTest extends BaseDatabaseTest {
 
         engine.execute("CREATE SEQUENCE SeQ_CaSe START WITH 1");
 
-        ResultSet val1 = engine.executeQuery("SELECT seq_case.NEXTVAL as val");
-        ResultSet val2 = engine.executeQuery("SELECT SEQ_CASE.NEXTVAL as val");
-        ResultSet val3 = engine.executeQuery("SELECT SeQ_CaSe.NEXTVAL as val");
+        final ResultSet val1 = engine.executeQuery("SELECT seq_case.NEXTVAL as val");
+        final ResultSet val2 = engine.executeQuery("SELECT SEQ_CASE.NEXTVAL as val");
+        final ResultSet val3 = engine.executeQuery("SELECT SeQ_CaSe.NEXTVAL as val");
 
         assertAllocated(1L, (Number) val1.getRows().get(0).getValues().get(0));
         assertAllocated(2L, (Number) val2.getRows().get(0).getValues().get(0));
@@ -389,8 +401,8 @@ public class SequencesTest extends BaseDatabaseTest {
         engine.execute("INSERT INTO table2 VALUES (shared_seq.NEXTVAL, 'info1')");
         engine.execute("INSERT INTO table1 VALUES (shared_seq.NEXTVAL, 'data2')");
 
-        ResultSet result1 = engine.executeQuery("SELECT id FROM table1 ORDER BY id");
-        ResultSet result2 = engine.executeQuery("SELECT id FROM table2 ORDER BY id");
+        final ResultSet result1 = engine.executeQuery("SELECT id FROM table1 ORDER BY id");
+        final ResultSet result2 = engine.executeQuery("SELECT id FROM table2 ORDER BY id");
 
         assertAllocated(1L, (Number) result1.getRows().get(0).getValues().get(0));
         assertAllocated(3L, (Number) result1.getRows().get(1).getValues().get(0));
@@ -405,7 +417,7 @@ public class SequencesTest extends BaseDatabaseTest {
 
         engine.execute("CREATE SEQUENCE seq_select START WITH 42 INCREMENT BY 7");
 
-        ResultSet result = engine.executeQuery("SELECT seq_select.NEXTVAL as next_value");
+        final ResultSet result = engine.executeQuery("SELECT seq_select.NEXTVAL as next_value");
         assertEquals(1, result.getRowCount());
         assertAllocated(42L, (Number) result.getRows().get(0).getValues().get(0));
 
@@ -418,8 +430,8 @@ public class SequencesTest extends BaseDatabaseTest {
 
         engine.execute("CREATE SEQUENCE seq_large START WITH 1000000 INCREMENT BY 1000000");
 
-        ResultSet val1 = engine.executeQuery("SELECT seq_large.NEXTVAL as val");
-        ResultSet val2 = engine.executeQuery("SELECT seq_large.NEXTVAL as val");
+        final ResultSet val1 = engine.executeQuery("SELECT seq_large.NEXTVAL as val");
+        final ResultSet val2 = engine.executeQuery("SELECT seq_large.NEXTVAL as val");
 
         assertAllocated(1000000L, (Number) val1.getRows().get(0).getValues().get(0));
         assertAllocated(2000000L, (Number) val2.getRows().get(0).getValues().get(0));
@@ -433,12 +445,12 @@ public class SequencesTest extends BaseDatabaseTest {
 
         engine.execute("CREATE SEQUENCE seq_order START WITH 1 INCREMENT BY 1 ORDER");
 
-        ResultSet sequences = engine.executeQuery("SHOW SEQUENCES");
+        final ResultSet sequences = engine.executeQuery("SHOW SEQUENCES");
         assertNotNull(sequences);
         assertTrue(sequences.getRowCount() >= 1);
 
         // Verify the sequence works
-        ResultSet val1 = engine.executeQuery("SELECT seq_order.NEXTVAL as val");
+        final ResultSet val1 = engine.executeQuery("SELECT seq_order.NEXTVAL as val");
         assertAllocated(1L, (Number) val1.getRows().get(0).getValues().get(0));
 
         logger.info("Created sequence with ORDER option");
@@ -450,15 +462,15 @@ public class SequencesTest extends BaseDatabaseTest {
 
         engine.execute("CREATE SEQUENCE seq_noorder START WITH 10 INCREMENT BY 2 NOORDER");
 
-        ResultSet sequences = engine.executeQuery("SHOW SEQUENCES");
+        final ResultSet sequences = engine.executeQuery("SHOW SEQUENCES");
         assertNotNull(sequences);
         assertTrue(sequences.getRowCount() >= 1);
 
         // Verify the sequence works
-        ResultSet val1 = engine.executeQuery("SELECT seq_noorder.NEXTVAL as val");
+        final ResultSet val1 = engine.executeQuery("SELECT seq_noorder.NEXTVAL as val");
         assertAllocated(10L, (Number) val1.getRows().get(0).getValues().get(0));
 
-        ResultSet val2 = engine.executeQuery("SELECT seq_noorder.NEXTVAL as val");
+        final ResultSet val2 = engine.executeQuery("SELECT seq_noorder.NEXTVAL as val");
         assertAllocated(12L, (Number) val2.getRows().get(0).getValues().get(0));
 
         logger.info("Created sequence with NOORDER option");
@@ -471,7 +483,7 @@ public class SequencesTest extends BaseDatabaseTest {
         engine.execute("CREATE SEQUENCE seq_default START WITH 1");
 
         // Default should be NOORDER (order = false)
-        ResultSet val1 = engine.executeQuery("SELECT seq_default.NEXTVAL as val");
+        final ResultSet val1 = engine.executeQuery("SELECT seq_default.NEXTVAL as val");
         assertAllocated(1L, (Number) val1.getRows().get(0).getValues().get(0));
 
         logger.info("Default sequence behavior verified");
@@ -483,14 +495,14 @@ public class SequencesTest extends BaseDatabaseTest {
 
         engine.execute("CREATE SEQUENCE seq_all_opts START WITH 100 INCREMENT BY 5 ORDER COMMENT = 'Full options'");
 
-        ResultSet sequences = engine.executeQuery("SHOW SEQUENCES");
+        final ResultSet sequences = engine.executeQuery("SHOW SEQUENCES");
         assertNotNull(sequences);
         assertTrue(sequences.getRowCount() >= 1);
 
-        ResultSet val1 = engine.executeQuery("SELECT seq_all_opts.NEXTVAL as val");
+        final ResultSet val1 = engine.executeQuery("SELECT seq_all_opts.NEXTVAL as val");
         assertAllocated(100L, (Number) val1.getRows().get(0).getValues().get(0));
 
-        ResultSet val2 = engine.executeQuery("SELECT seq_all_opts.NEXTVAL as val");
+        final ResultSet val2 = engine.executeQuery("SELECT seq_all_opts.NEXTVAL as val");
         assertAllocated(105L, (Number) val2.getRows().get(0).getValues().get(0));
 
         logger.info("Sequence with all options including ORDER works correctly");
@@ -502,11 +514,11 @@ public class SequencesTest extends BaseDatabaseTest {
 
         engine.execute("CREATE SEQUENCE seq_no_with START 200");
 
-        ResultSet sequences = engine.executeQuery("SHOW SEQUENCES");
+        final ResultSet sequences = engine.executeQuery("SHOW SEQUENCES");
         assertNotNull(sequences);
         assertTrue(sequences.getRowCount() >= 1);
 
-        ResultSet val1 = engine.executeQuery("SELECT seq_no_with.NEXTVAL as val");
+        final ResultSet val1 = engine.executeQuery("SELECT seq_no_with.NEXTVAL as val");
         assertAllocated(200L, (Number) val1.getRows().get(0).getValues().get(0));
 
         logger.info("START without WITH works correctly");
@@ -518,10 +530,10 @@ public class SequencesTest extends BaseDatabaseTest {
 
         engine.execute("CREATE SEQUENCE seq_no_by START 1 INCREMENT 10");
 
-        ResultSet val1 = engine.executeQuery("SELECT seq_no_by.NEXTVAL as val");
+        final ResultSet val1 = engine.executeQuery("SELECT seq_no_by.NEXTVAL as val");
         assertAllocated(1L, (Number) val1.getRows().get(0).getValues().get(0));
 
-        ResultSet val2 = engine.executeQuery("SELECT seq_no_by.NEXTVAL as val");
+        final ResultSet val2 = engine.executeQuery("SELECT seq_no_by.NEXTVAL as val");
         assertAllocated(11L, (Number) val2.getRows().get(0).getValues().get(0));
 
         logger.info("INCREMENT without BY works correctly");
@@ -533,13 +545,13 @@ public class SequencesTest extends BaseDatabaseTest {
 
         engine.execute("CREATE SEQUENCE seq_no_keywords START 50 INCREMENT 5");
 
-        ResultSet val1 = engine.executeQuery("SELECT seq_no_keywords.NEXTVAL as val");
+        final ResultSet val1 = engine.executeQuery("SELECT seq_no_keywords.NEXTVAL as val");
         assertAllocated(50L, (Number) val1.getRows().get(0).getValues().get(0));
 
-        ResultSet val2 = engine.executeQuery("SELECT seq_no_keywords.NEXTVAL as val");
+        final ResultSet val2 = engine.executeQuery("SELECT seq_no_keywords.NEXTVAL as val");
         assertAllocated(55L, (Number) val2.getRows().get(0).getValues().get(0));
 
-        ResultSet val3 = engine.executeQuery("SELECT seq_no_keywords.NEXTVAL as val");
+        final ResultSet val3 = engine.executeQuery("SELECT seq_no_keywords.NEXTVAL as val");
         assertAllocated(60L, (Number) val3.getRows().get(0).getValues().get(0));
 
         logger.info("START and INCREMENT without WITH/BY works correctly");
@@ -551,10 +563,10 @@ public class SequencesTest extends BaseDatabaseTest {
 
         engine.execute("CREATE SEQUENCE seq_equals START = 1000 INCREMENT = 100");
 
-        ResultSet val1 = engine.executeQuery("SELECT seq_equals.NEXTVAL as val");
+        final ResultSet val1 = engine.executeQuery("SELECT seq_equals.NEXTVAL as val");
         assertAllocated(1000L, (Number) val1.getRows().get(0).getValues().get(0));
 
-        ResultSet val2 = engine.executeQuery("SELECT seq_equals.NEXTVAL as val");
+        final ResultSet val2 = engine.executeQuery("SELECT seq_equals.NEXTVAL as val");
         assertAllocated(1100L, (Number) val2.getRows().get(0).getValues().get(0));
 
         logger.info("START = and INCREMENT = syntax works correctly");
@@ -566,10 +578,10 @@ public class SequencesTest extends BaseDatabaseTest {
 
         engine.execute("CREATE SEQUENCE seq_mixed START WITH 10 INCREMENT 3");
 
-        ResultSet val1 = engine.executeQuery("SELECT seq_mixed.NEXTVAL as val");
+        final ResultSet val1 = engine.executeQuery("SELECT seq_mixed.NEXTVAL as val");
         assertAllocated(10L, (Number) val1.getRows().get(0).getValues().get(0));
 
-        ResultSet val2 = engine.executeQuery("SELECT seq_mixed.NEXTVAL as val");
+        final ResultSet val2 = engine.executeQuery("SELECT seq_mixed.NEXTVAL as val");
         assertAllocated(13L, (Number) val2.getRows().get(0).getValues().get(0));
 
         logger.info("Mixed syntax (START WITH, INCREMENT without BY) works correctly");
@@ -580,13 +592,13 @@ public class SequencesTest extends BaseDatabaseTest {
         logger.info("Testing ALTER SEQUENCE SET INCREMENT changes the NEXTVAL step");
         engine.execute("CREATE SEQUENCE seq_inc START WITH 1 INCREMENT BY 1");
 
-        ResultSet v1 = engine.executeQuery("SELECT seq_inc.NEXTVAL as val");
+        final ResultSet v1 = engine.executeQuery("SELECT seq_inc.NEXTVAL as val");
         assertAllocated(1L, (Number) v1.getRows().get(0).getValues().get(0));
 
         engine.execute("ALTER SEQUENCE seq_inc SET INCREMENT = 10");
 
         // The next value steps by the new increment: 1 + 10 = 11.
-        ResultSet v2 = engine.executeQuery("SELECT seq_inc.NEXTVAL as val");
+        final ResultSet v2 = engine.executeQuery("SELECT seq_inc.NEXTVAL as val");
         assertAllocated(11L, (Number) v2.getRows().get(0).getValues().get(0));
     }
 
@@ -622,7 +634,7 @@ public class SequencesTest extends BaseDatabaseTest {
         engine.execute("INSERT INTO idef (name) VALUES ('a')");
         engine.execute("INSERT INTO idef (name) VALUES ('b')");
 
-        ResultSet rs = engine.executeQuery("SELECT id FROM idef ORDER BY id");
+        final ResultSet rs = engine.executeQuery("SELECT id FROM idef ORDER BY id");
         assertEquals(2, rs.getRowCount());
         assertAllocated(100L, (Number) rs.getRows().get(0).getValue(0));
         assertAllocated(101L, (Number) rs.getRows().get(1).getValue(0));
@@ -642,7 +654,7 @@ public class SequencesTest extends BaseDatabaseTest {
             "MERGE INTO mtgt t USING msrc s ON t.name = s.name"
             + " WHEN NOT MATCHED THEN INSERT (name) VALUES (s.name)");
 
-        ResultSet rs = engine.executeQuery("SELECT id FROM mtgt ORDER BY id");
+        final ResultSet rs = engine.executeQuery("SELECT id FROM mtgt ORDER BY id");
         assertEquals(2, rs.getRowCount());
         assertAllocated(100L, (Number) rs.getRows().get(0).getValue(0));
         assertAllocated(101L, (Number) rs.getRows().get(1).getValue(0));

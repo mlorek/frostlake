@@ -30,7 +30,7 @@ public class ArraySlice extends BuiltInFunction {
 
     @Override
     public Object evaluate(final List<Object> args) {
-        ArrayNode src = ArrayFunctionHelper.parseArray(args.get(0));
+        final ArrayNode src = ArrayFunctionHelper.parseArray(args.get(0));
         if (src == null) return null;
         int from = args.get(1) instanceof Number ? ((Number) args.get(1)).intValue() : 0;
         int to   = args.size() > 2 && args.get(2) instanceof Number ? ((Number) args.get(2)).intValue() : src.size();
@@ -38,11 +38,13 @@ public class ArraySlice extends BuiltInFunction {
         if (to < 0) to = Math.max(0, src.size() + to);
         from = Math.min(from, src.size());
         to   = Math.min(to,   src.size());
-        ArrayNode result = ArrayFunctionHelper.MAPPER.createArrayNode();
+        final ArrayNode result = ArrayFunctionHelper.MAPPER.createArrayNode();
         for (int i = from; i < to; i++) result.add(src.get(i));
         return VariantValue.ofNode(result);
     }
 
-    @Override public int getMinArgCount() { return 2; }
-    @Override public int getMaxArgCount() { return 3; }
+    @Override
+    public int getMinArgCount() { return 2; }
+    @Override
+    public int getMaxArgCount() { return 3; }
 }

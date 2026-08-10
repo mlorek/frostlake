@@ -16,6 +16,9 @@
 
 package dev.frostlake.functions.scalar.string;
 
+import java.util.Iterator;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Pattern;
 
 /**
@@ -61,9 +64,29 @@ public final class RegexpHelper {
         return parameters != null && parameters.indexOf('e') >= 0;
     }
 
-    /** Compile a Snowflake pattern honoring the {@code i}/{@code m}/{@code s} flags in {@code parameters}. */
+    // Every REGEXP_* function compiles per evaluate(), i.e. per ROW, while the pattern and flags
+    // are almost always query constants — the same problem LikeMatcher's pattern cache fixed.
+    private static final int PATTERN_CACHE_CAPACITY = 512;
+    private static final Map<String, Pattern> PATTERN_CACHE = new ConcurrentHashMap<>();
+
+    /** Compile a Snowflake pattern honoring the {@code i}/{@code m}/{@code s} flags in {@code parameters},
+     *  cached by (flags, pattern) — normally constant across rows. */
     public static Pattern compile(final String pattern, final String parameters) {
-        return Pattern.compile(pattern, toJavaFlags(parameters));
+        final String cacheKey = (parameters == null ? "" : parameters) + '\0' + pattern;
+        final Pattern existing = PATTERN_CACHE.get(cacheKey);
+        if (existing != null) {
+            return existing;
+        }
+        final Pattern compiled = Pattern.compile(pattern, toJavaFlags(parameters));
+        if (PATTERN_CACHE.size() >= PATTERN_CACHE_CAPACITY) {
+            final Iterator<String> it = PATTERN_CACHE.keySet().iterator();
+            if (it.hasNext()) {
+                it.next();
+                it.remove();
+            }
+        }
+        PATTERN_CACHE.put(cacheKey, compiled);
+        return compiled;
     }
 
     /**

@@ -16,19 +16,14 @@
 
 package dev.frostlake.ddl;
 
-import dev.frostlake.DatabaseEngine;
+import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.Row;
 
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.function.Executable;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Dropping (or replacing) a database or schema must RELEASE the storage of the tables it contained, exactly
@@ -37,24 +32,14 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * database appended to the stale rows instead of replacing them. The rows are still snapshotted at drop time,
  * so UNDROP restores both metadata and data.
  */
-public class DropReleasesStorageTest {
+public class DropReleasesStorageTest extends BaseDatabaseTest {
 
-    private DatabaseEngine engine;
-
-    @BeforeEach
-    public void setUp() {
-        engine = new DatabaseEngine();
+    @Override
+    protected void setupTest() {
         engine.execute("CREATE DATABASE seed");
         engine.execute("CREATE SCHEMA seed.s");
         engine.execute("CREATE TABLE seed.s.t (id INTEGER)");
         engine.execute("INSERT INTO seed.s.t VALUES (1), (2)");
-    }
-
-    @AfterEach
-    public void tearDown() {
-        if (engine != null) {
-            engine.shutdown();
-        }
     }
 
     private long count(final String table) {

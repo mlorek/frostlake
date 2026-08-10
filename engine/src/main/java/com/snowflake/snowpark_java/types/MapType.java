@@ -36,12 +36,7 @@ public class MapType extends DataType {
     }
 
     @Override
-    public String sqlTypeName() {
-        return "OBJECT";
-    }
-
-    @Override
-    public String typeName() {
-        return "Map[" + keyType.typeName() + ", " + valueType.typeName() + "]";
+    public String toString() {
+        return "MapType[" + keyType.typeName() + ", " + valueType.typeName() + "]";
     }
 }

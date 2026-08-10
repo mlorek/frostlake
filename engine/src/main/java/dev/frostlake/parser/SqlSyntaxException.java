@@ -44,7 +44,7 @@ public class SqlSyntaxException extends RuntimeException {
 
     @Override
     public String toString() {
-        StringBuilder sb = new StringBuilder();
+        final StringBuilder sb = new StringBuilder();
         sb.append("SqlSyntaxException: ");
         sb.append(getMessage());
         return sb.toString();

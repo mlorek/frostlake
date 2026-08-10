@@ -49,7 +49,7 @@ public class SecurityManager {
             return; // Security checks disabled
         }
 
-        String currentUser = sessionContext.getCurrentUser();
+        final String currentUser = sessionContext.getCurrentUser();
 
         // SYSTEM user always has all permissions
         if ("SYSTEM".equals(currentUser)) {
@@ -57,7 +57,7 @@ public class SecurityManager {
         }
 
         // Get all roles for the current user (including role hierarchy)
-        Set<String> effectiveRoles = getEffectiveRoles();
+        final Set<String> effectiveRoles = getEffectiveRoles();
 
         // Administrative roles have broad object authority — like the SYSTEM user but at role
         // granularity. Restriction applies to custom roles, matching Snowflake's built-in admins.
@@ -74,7 +74,7 @@ public class SecurityManager {
         // Check if any of the user's roles has the required privilege
         for (final String roleName : effectiveRoles) {
             try {
-                Role role = catalog.getRole(roleName);
+                final Role role = catalog.getRole(roleName);
 
                 // Check for specific privilege
                 if (role.hasPrivilege(objectType, objectName, requiredPrivilege)) {
@@ -104,7 +104,7 @@ public class SecurityManager {
         }
 
         // Permission denied
-        String message = String.format(
+        final String message = String.format(
             "Permission denied: User '%s' with roles %s does not have %s privilege on %s '%s'",
             currentUser, effectiveRoles, requiredPrivilege, objectType, objectName
         );
@@ -167,26 +167,26 @@ public class SecurityManager {
      * Get all effective roles for the current user, including role hierarchy
      */
     private Set<String> getEffectiveRoles() {
-        Set<String> effectiveRoles = new HashSet<>();
-        String currentUser = sessionContext.getCurrentUser();
+        final Set<String> effectiveRoles = new HashSet<>();
+        final String currentUser = sessionContext.getCurrentUser();
 
         // Add all active roles from session
         effectiveRoles.addAll(sessionContext.getActiveRoles());
 
         // Add roles granted to the user
         try {
-            User user = catalog.getUser(currentUser);
+            final User user = catalog.getUser(currentUser);
             effectiveRoles.addAll(user.getGrantedRoles());
         } catch (final RuntimeException e) {
             logger.debug("User {} not found while getting effective roles", currentUser);
         }
 
         // Add roles from role hierarchy (roles granted to roles)
-        Set<String> rolesToCheck = new HashSet<>(effectiveRoles);
-        Set<String> checkedRoles = new HashSet<>();
+        final Set<String> rolesToCheck = new HashSet<>(effectiveRoles);
+        final Set<String> checkedRoles = new HashSet<>();
 
         while (!rolesToCheck.isEmpty()) {
-            String roleName = rolesToCheck.iterator().next();
+            final String roleName = rolesToCheck.iterator().next();
             rolesToCheck.remove(roleName);
 
             if (checkedRoles.contains(roleName)) {
@@ -195,8 +195,8 @@ public class SecurityManager {
             checkedRoles.add(roleName);
 
             try {
-                Role role = catalog.getRole(roleName);
-                Set<String> grantedRoles = role.getGrantedRoles();
+                final Role role = catalog.getRole(roleName);
+                final Set<String> grantedRoles = role.getGrantedRoles();
                 for (final String grantedRole : grantedRoles) {
                     if (!checkedRoles.contains(grantedRole)) {
                         effectiveRoles.add(grantedRole);

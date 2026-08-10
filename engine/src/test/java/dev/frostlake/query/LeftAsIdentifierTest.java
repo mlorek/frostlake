@@ -16,10 +16,8 @@
 
 package dev.frostlake.query;
 
-import dev.frostlake.DatabaseEngine;
+import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -28,28 +26,12 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 /**
  * Test that LEFT keyword can be used as an identifier in appropriate contexts
  */
-public class LeftAsIdentifierTest {
-
-    private DatabaseEngine engine;
-
-    @BeforeEach
-    public void setup() {
-        engine = new DatabaseEngine();
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
-    }
-
-    @AfterEach
-    public void teardown() {
-        if (engine != null) {
-            engine.shutdown();
-        }
-    }
+public class LeftAsIdentifierTest extends BaseDatabaseTest {
 
     @Test
     public void testLeftAsColumnAlias() {
         // LEFT can be used as unquoted identifier (Snowflake compatible)
-        ResultSet rs = engine.executeQuery("SELECT 1 AS left");
+        final ResultSet rs = engine.executeQuery("SELECT 1 AS left");
         assertNotNull(rs);
         assertEquals(1, rs.getRowCount());
         rs.next();
@@ -59,7 +41,7 @@ public class LeftAsIdentifierTest {
     @Test
     public void testLeftAndRightAsIdentifiers() {
         // LEFT and RIGHT can be used as unquoted identifiers (Snowflake compatible)
-        ResultSet rs = engine.executeQuery("SELECT 10 AS left, 20 AS right");
+        final ResultSet rs = engine.executeQuery("SELECT 10 AS left, 20 AS right");
         assertNotNull(rs);
         rs.next();
         assertEquals(10L, rs.getValue("LEFT"));
@@ -72,7 +54,7 @@ public class LeftAsIdentifierTest {
         engine.execute("INSERT INTO test_table VALUES (1, 'test')");
 
         // LEFT as table alias with AS keyword (Snowflake compatible)
-        ResultSet rs = engine.executeQuery("SELECT * FROM test_table AS left");
+        final ResultSet rs = engine.executeQuery("SELECT * FROM test_table AS left");
         assertNotNull(rs);
         assertEquals(1, rs.getRowCount());
     }

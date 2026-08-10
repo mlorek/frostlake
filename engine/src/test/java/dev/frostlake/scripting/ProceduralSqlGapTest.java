@@ -16,10 +16,8 @@
 
 package dev.frostlake.scripting;
 
-import dev.frostlake.DatabaseEngine;
+import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -36,24 +34,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  *   <li>{@code OBJECT_CONSTRUCT(*)} / {@code OBJECT_CONSTRUCT(* EXCLUDE cols)} star expansion.</li>
  * </ul>
  */
-public class ProceduralSqlGapTest {
+public class ProceduralSqlGapTest extends BaseDatabaseTest {
 
     private static final Logger logger = LoggerFactory.getLogger(ProceduralSqlGapTest.class);
-    private DatabaseEngine engine;
-
-    @BeforeEach
-    public void setUp() {
-        engine = new DatabaseEngine();
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
-    }
-
-    @AfterEach
-    public void tearDown() {
-        if (engine != null) {
-            engine.shutdown();
-        }
-    }
 
     @Test
     public void testUntypedDeclareInfersType() {

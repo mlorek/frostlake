@@ -44,7 +44,7 @@ public class GeneratedKeysTest extends BaseJdbcTest {
         statement.executeUpdate("INSERT INTO gen_keys1 VALUES (1, 'Alice')");
 
         // Without RETURN_GENERATED_KEYS flag, should return empty result set
-        ResultSet rs = statement.getGeneratedKeys();
+        final ResultSet rs = statement.getGeneratedKeys();
         assertNotNull(rs);
         assertFalse(rs.next());
         rs.close();
@@ -59,11 +59,11 @@ public class GeneratedKeysTest extends BaseJdbcTest {
             Statement.RETURN_GENERATED_KEYS
         );
 
-        ResultSet rs = statement.getGeneratedKeys();
+        final ResultSet rs = statement.getGeneratedKeys();
         assertNotNull(rs);
         assertTrue(rs.next());
         // Should have a generated key
-        long key = rs.getLong(1);
+        final long key = rs.getLong(1);
         assertTrue(key > 0);
         assertFalse(rs.next());
         rs.close();
@@ -78,10 +78,10 @@ public class GeneratedKeysTest extends BaseJdbcTest {
             Statement.RETURN_GENERATED_KEYS
         );
 
-        ResultSet rs = statement.getGeneratedKeys();
+        final ResultSet rs = statement.getGeneratedKeys();
         assertNotNull(rs);
         assertTrue(rs.next());
-        long key = rs.getLong(1);
+        final long key = rs.getLong(1);
         assertTrue(key > 0);
         rs.close();
     }
@@ -95,10 +95,10 @@ public class GeneratedKeysTest extends BaseJdbcTest {
             new int[]{1}
         );
 
-        ResultSet rs = statement.getGeneratedKeys();
+        final ResultSet rs = statement.getGeneratedKeys();
         assertNotNull(rs);
         assertTrue(rs.next());
-        long key = rs.getLong(1);
+        final long key = rs.getLong(1);
         assertTrue(key > 0);
         rs.close();
     }
@@ -112,10 +112,10 @@ public class GeneratedKeysTest extends BaseJdbcTest {
             new String[]{"id"}
         );
 
-        ResultSet rs = statement.getGeneratedKeys();
+        final ResultSet rs = statement.getGeneratedKeys();
         assertNotNull(rs);
         assertTrue(rs.next());
-        long key = rs.getLong(1);
+        final long key = rs.getLong(1);
         assertTrue(key > 0);
         rs.close();
     }
@@ -125,7 +125,7 @@ public class GeneratedKeysTest extends BaseJdbcTest {
         Assumptions.assumeFalse(isLiveSnowflake(), RETURN_GENERATED_KEYS);
         statement.execute("CREATE TABLE gen_keys6 (id INTEGER, name VARCHAR)");
 
-        PreparedStatement pstmt = connection.prepareStatement(
+        final PreparedStatement pstmt = connection.prepareStatement(
             "INSERT INTO gen_keys6 VALUES (?, ?)",
             Statement.RETURN_GENERATED_KEYS
         );
@@ -134,10 +134,10 @@ public class GeneratedKeysTest extends BaseJdbcTest {
         pstmt.setString(2, "Alice");
         pstmt.executeUpdate();
 
-        ResultSet rs = pstmt.getGeneratedKeys();
+        final ResultSet rs = pstmt.getGeneratedKeys();
         assertNotNull(rs);
         assertTrue(rs.next());
-        long key = rs.getLong(1);
+        final long key = rs.getLong(1);
         assertTrue(key > 0);
         assertFalse(rs.next());
         rs.close();
@@ -150,7 +150,7 @@ public class GeneratedKeysTest extends BaseJdbcTest {
         Assumptions.assumeFalse(isLiveSnowflake(), RETURN_GENERATED_KEYS);
         statement.execute("CREATE TABLE gen_keys7 (id INTEGER, name VARCHAR)");
 
-        PreparedStatement pstmt = connection.prepareStatement(
+        final PreparedStatement pstmt = connection.prepareStatement(
             "INSERT INTO gen_keys7 VALUES (?, ?)",
             new int[]{1}
         );
@@ -159,10 +159,10 @@ public class GeneratedKeysTest extends BaseJdbcTest {
         pstmt.setString(2, "Alice");
         pstmt.executeUpdate();
 
-        ResultSet rs = pstmt.getGeneratedKeys();
+        final ResultSet rs = pstmt.getGeneratedKeys();
         assertNotNull(rs);
         assertTrue(rs.next());
-        long key = rs.getLong(1);
+        final long key = rs.getLong(1);
         assertTrue(key > 0);
         rs.close();
 
@@ -174,7 +174,7 @@ public class GeneratedKeysTest extends BaseJdbcTest {
         Assumptions.assumeFalse(isLiveSnowflake(), RETURN_GENERATED_KEYS);
         statement.execute("CREATE TABLE gen_keys8 (id INTEGER, name VARCHAR)");
 
-        PreparedStatement pstmt = connection.prepareStatement(
+        final PreparedStatement pstmt = connection.prepareStatement(
             "INSERT INTO gen_keys8 VALUES (?, ?)",
             new String[]{"id"}
         );
@@ -183,10 +183,10 @@ public class GeneratedKeysTest extends BaseJdbcTest {
         pstmt.setString(2, "Alice");
         pstmt.executeUpdate();
 
-        ResultSet rs = pstmt.getGeneratedKeys();
+        final ResultSet rs = pstmt.getGeneratedKeys();
         assertNotNull(rs);
         assertTrue(rs.next());
-        long key = rs.getLong(1);
+        final long key = rs.getLong(1);
         assertTrue(key > 0);
         rs.close();
 
@@ -203,9 +203,9 @@ public class GeneratedKeysTest extends BaseJdbcTest {
             Statement.RETURN_GENERATED_KEYS
         );
 
-        ResultSet rs1 = statement.getGeneratedKeys();
+        final ResultSet rs1 = statement.getGeneratedKeys();
         assertTrue(rs1.next());
-        long key1 = rs1.getLong(1);
+        final long key1 = rs1.getLong(1);
         rs1.close();
 
         // Second insert - should get different key
@@ -214,9 +214,9 @@ public class GeneratedKeysTest extends BaseJdbcTest {
             Statement.RETURN_GENERATED_KEYS
         );
 
-        ResultSet rs2 = statement.getGeneratedKeys();
+        final ResultSet rs2 = statement.getGeneratedKeys();
         assertTrue(rs2.next());
-        long key2 = rs2.getLong(1);
+        final long key2 = rs2.getLong(1);
         rs2.close();
 
         // Keys should be different
@@ -231,7 +231,7 @@ public class GeneratedKeysTest extends BaseJdbcTest {
         // SELECT should not generate keys
         statement.executeQuery("SELECT * FROM gen_keys10");
 
-        ResultSet rs = statement.getGeneratedKeys();
+        final ResultSet rs = statement.getGeneratedKeys();
         assertNotNull(rs);
         assertFalse(rs.next());
         rs.close();
@@ -249,7 +249,7 @@ public class GeneratedKeysTest extends BaseJdbcTest {
             Statement.RETURN_GENERATED_KEYS
         );
 
-        ResultSet rs = statement.getGeneratedKeys();
+        final ResultSet rs = statement.getGeneratedKeys();
         assertNotNull(rs);
         assertFalse(rs.next());
         rs.close();
@@ -264,7 +264,7 @@ public class GeneratedKeysTest extends BaseJdbcTest {
             Statement.RETURN_GENERATED_KEYS
         );
 
-        ResultSet rs = statement.getGeneratedKeys();
+        final ResultSet rs = statement.getGeneratedKeys();
         assertNotNull(rs);
 
         // Check metadata
@@ -279,7 +279,7 @@ public class GeneratedKeysTest extends BaseJdbcTest {
         Assumptions.assumeFalse(isLiveSnowflake(), RETURN_GENERATED_KEYS);
         statement.execute("CREATE TABLE gen_keys13 (id INTEGER, name VARCHAR)");
 
-        PreparedStatement pstmt = connection.prepareStatement(
+        final PreparedStatement pstmt = connection.prepareStatement(
             "INSERT INTO gen_keys13 VALUES (?, ?)",
             Statement.RETURN_GENERATED_KEYS
         );
@@ -288,10 +288,10 @@ public class GeneratedKeysTest extends BaseJdbcTest {
         pstmt.setString(2, "Alice");
         pstmt.execute();
 
-        ResultSet rs = pstmt.getGeneratedKeys();
+        final ResultSet rs = pstmt.getGeneratedKeys();
         assertNotNull(rs);
         assertTrue(rs.next());
-        long key = rs.getLong(1);
+        final long key = rs.getLong(1);
         assertTrue(key > 0);
         rs.close();
 
@@ -303,7 +303,7 @@ public class GeneratedKeysTest extends BaseJdbcTest {
         Assumptions.assumeFalse(isLiveSnowflake(), RETURN_GENERATED_KEYS);
         statement.execute("CREATE TABLE gen_keys14 (id INTEGER, name VARCHAR)");
 
-        PreparedStatement pstmt = connection.prepareStatement(
+        final PreparedStatement pstmt = connection.prepareStatement(
             "INSERT INTO gen_keys14 VALUES (?, ?)",
             Statement.RETURN_GENERATED_KEYS
         );
@@ -313,9 +313,9 @@ public class GeneratedKeysTest extends BaseJdbcTest {
         pstmt.setString(2, "Alice");
         pstmt.executeUpdate();
 
-        ResultSet rs1 = pstmt.getGeneratedKeys();
+        final ResultSet rs1 = pstmt.getGeneratedKeys();
         assertTrue(rs1.next());
-        long key1 = rs1.getLong(1);
+        final long key1 = rs1.getLong(1);
         rs1.close();
 
         // Second execution
@@ -323,9 +323,9 @@ public class GeneratedKeysTest extends BaseJdbcTest {
         pstmt.setString(2, "Bob");
         pstmt.executeUpdate();
 
-        ResultSet rs2 = pstmt.getGeneratedKeys();
+        final ResultSet rs2 = pstmt.getGeneratedKeys();
         assertTrue(rs2.next());
-        long key2 = rs2.getLong(1);
+        final long key2 = rs2.getLong(1);
         rs2.close();
 
         // Keys should be different
@@ -341,7 +341,7 @@ public class GeneratedKeysTest extends BaseJdbcTest {
         // Create without generated keys flag
         statement.execute("CREATE TABLE gen_keys15_temp (id INTEGER)");
 
-        ResultSet rs = statement.getGeneratedKeys();
+        final ResultSet rs = statement.getGeneratedKeys();
         assertNotNull(rs);
         assertFalse(rs.next());
         rs.close();

@@ -24,8 +24,8 @@ import dev.frostlake.security.SecurityManager;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
-import dev.frostlake.types.NumericType;
 import dev.frostlake.types.DateTimeType;
+import dev.frostlake.types.NumericType;
 import dev.frostlake.types.StringType;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -115,7 +115,7 @@ final class ShowSecurityExecutor {
     }
 
     public ResultSet showRoles() {
-        List<ResultSetColumn> columns = Arrays.asList(
+        final List<ResultSetColumn> columns = Arrays.asList(
             new ResultSetColumn("created_on", DateTimeType.TIMESTAMP_LTZ),
             new ResultSetColumn("name", StringType.VARCHAR),
             new ResultSetColumn("is_default", StringType.VARCHAR),
@@ -130,8 +130,8 @@ final class ShowSecurityExecutor {
         );
         final SecurityManager securityManager = facade.getSecurityManager();
         // is_current must reflect the session's actual current role, not a hard-coded SYSADMIN.
-        String curRole = securityManager != null ? securityManager.getSessionContext().getCurrentRole() : null;
-        List<Row> rows = new ArrayList<>();
+        final String curRole = securityManager != null ? securityManager.getSessionContext().getCurrentRole() : null;
+        final List<Row> rows = new ArrayList<>();
         for (final Role role : catalog.getAllRoles()) {
             rows.add(new Row(Arrays.asList(
                 ShowResultHelpers.createdOn(role.getCreatedTime()),
@@ -203,6 +203,7 @@ final class ShowSecurityExecutor {
             {"RSA_PUBLIC_KEY_2_LAST_SET_TIME", "null", "null", "The timestamp at which the second RSA public key was last set for the user. Defaults to null if no second RSA public key has been set yet."},
             {"SCIM_USER_NAME", "null", "null", "User name of an user (required for SCIM provisioning)"},
             {"PASSWORD_LAST_SET_TIME", "null", "null", "The timestamp on which the last non-null password was set for the user. Default to null if no password has been set yet."},
+            {"MINS_TO_BYPASS_SESSION_POLICY", "null", "null", "Temporarily bypass session policy for the given number of minutes."},
             {"CUSTOM_LANDING_PAGE_URL", "null", "null", "Custom Landing Page of the user"},
             {"CUSTOM_LANDING_PAGE_URL_FLUSH_NEXT_UI_LOAD", "false", "false", "Whether or not to flush the custom landing page of the user on next UI load"},
             {"IS_FROM_ORGANIZATION_USER", "false", "false", "Whether the user is imported from an organization user."},
@@ -344,7 +345,7 @@ final class ShowSecurityExecutor {
     }
 
     public ResultSet showGrantsTo(final String targetType, final String targetName) {
-        List<ResultSetColumn> columns = Arrays.asList(
+        final List<ResultSetColumn> columns = Arrays.asList(
             new ResultSetColumn("created_on", DateTimeType.TIMESTAMP_LTZ),
             new ResultSetColumn("privilege", StringType.VARCHAR),
             new ResultSetColumn("granted_on", StringType.VARCHAR),
@@ -354,9 +355,9 @@ final class ShowSecurityExecutor {
             new ResultSetColumn("grant_option", StringType.VARCHAR),
             new ResultSetColumn("granted_by", StringType.VARCHAR)
         );
-        List<Row> rows = new ArrayList<>();
+        final List<Row> rows = new ArrayList<>();
         if ("USER".equals(targetType)) {
-            User user = catalog.getUser(targetName);
+            final User user = catalog.getUser(targetName);
             for (final String roleName : user.getGrantedRoles()) {
                 // Live Snowflake never surfaces PUBLIC membership here — re-probed on a real account
                 //: a fresh user shows zero grants, and after an EXPLICIT
@@ -374,7 +375,7 @@ final class ShowSecurityExecutor {
                 )));
             }
         } else if ("ROLE".equals(targetType)) {
-            Role role = catalog.getRole(targetName);
+            final Role role = catalog.getRole(targetName);
             for (final String grantedRoleName : role.getGrantedRoles()) {
                 rows.add(new Row(Arrays.asList(
                     ShowResultHelpers.createdOn(role.getCreatedTime()),
@@ -384,9 +385,9 @@ final class ShowSecurityExecutor {
                 )));
             }
             for (final Map.Entry<String, Set<Privilege>> entry : role.getAllPrivileges().entrySet()) {
-                String[] parts = entry.getKey().split(":");
-                String objType = parts[0];
-                String objName = parts[1];
+                final String[] parts = entry.getKey().split(":");
+                final String objType = parts[0];
+                final String objName = parts[1];
                 for (final Privilege priv : entry.getValue()) {
                     rows.add(new Row(Arrays.asList(
                         ShowResultHelpers.createdOn(role.getCreatedTime()),

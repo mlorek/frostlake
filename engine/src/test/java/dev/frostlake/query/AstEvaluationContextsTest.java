@@ -16,12 +16,10 @@
 
 package dev.frostlake.query;
 
-import dev.frostlake.DatabaseEngine;
+import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.Row;
 
-import org.junit.jupiter.api.AfterAll;
-import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
 import java.util.Arrays;
@@ -37,16 +35,11 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
  * alias-aware multi-table resolution, the HAVING/QUALIFY result context, and the boolean-tier
  * grammar — the parts most likely to regress if expression evaluation changes.
  */
-public class AstEvaluationContextsTest {
+public class AstEvaluationContextsTest extends BaseDatabaseTest {
 
-    private static DatabaseEngine engine;
-
-    @BeforeAll
-    public static void setup() {
-        engine = new DatabaseEngine();
+    @Override
+    protected void setupTest() {
         engine.execute("CREATE DATABASE IF NOT EXISTS test_db");
-        engine.execute("USE DATABASE test_db");
-        engine.execute("USE SCHEMA public");
         engine.execute("CREATE TABLE emp (id INT, name VARCHAR, dept VARCHAR, salary INT)");
         engine.execute("INSERT INTO emp VALUES (1,'Alice','Eng',100),(2,'Bob','Eng',200),"
             + "(3,'Carol','Sales',150),(4,'Dave','Sales',50),(5,'Eve','HR',300)");
@@ -58,13 +51,6 @@ public class AstEvaluationContextsTest {
         engine.execute("INSERT INTO j2 VALUES (1,10),(2,99)");
     }
 
-    @AfterAll
-    public static void teardown() {
-        if (engine != null) {
-            engine.shutdown();
-        }
-    }
-
     private static long n(final Object v) {
         return ((Number) v).longValue();
     }
@@ -73,7 +59,7 @@ public class AstEvaluationContextsTest {
 
     @Test
     public void testJoinOnMultipleSameNamedColumns() {
-        ResultSet rs = engine.executeQuery(
+        final ResultSet rs = engine.executeQuery(
             "SELECT j1.id FROM j1 JOIN j2 ON j1.id = j2.id AND j1.k = j2.k");
         // (1,10)=(1,10) matches; (2,20) vs (2,99) does not — so exactly one row, id=1.
         assertEquals(1, rs.getRows().size());
@@ -82,7 +68,7 @@ public class AstEvaluationContextsTest {
 
     @Test
     public void testJoinArithmeticProjectionWithAliases() {
-        ResultSet rs = engine.executeQuery(
+        final ResultSet rs = engine.executeQuery(
             "SELECT e.salary + d.budget FROM emp e JOIN dept d ON e.dept = d.dept WHERE e.id = 1");
         assertEquals(1, rs.getRows().size());
         assertEquals(1100L, n(rs.getRows().get(0).getValue(0))); // Alice 100 + Eng 1000
@@ -92,9 +78,9 @@ public class AstEvaluationContextsTest {
 
     @Test
     public void testHavingByCountAlias() {
-        ResultSet rs = engine.executeQuery(
+        final ResultSet rs = engine.executeQuery(
             "SELECT dept, COUNT(*) AS cnt FROM emp GROUP BY dept HAVING cnt >= 2");
-        Set<String> depts = new HashSet<>();
+        final Set<String> depts = new HashSet<>();
         for (final Row r : rs.getRows()) {
             depts.add(String.valueOf(r.getValue(0)));
         }
@@ -103,7 +89,7 @@ public class AstEvaluationContextsTest {
 
     @Test
     public void testHavingMultiConditionByAliases() {
-        ResultSet rs = engine.executeQuery(
+        final ResultSet rs = engine.executeQuery(
             "SELECT dept, COUNT(*) AS cnt, SUM(salary) AS total FROM emp GROUP BY dept "
             + "HAVING cnt >= 2 AND total > 250");
         // Eng: cnt=2,total=300 (passes); Sales: cnt=2,total=200 (fails); HR: cnt=1 (fails) -> Eng only
@@ -115,11 +101,11 @@ public class AstEvaluationContextsTest {
 
     @Test
     public void testQualifyMultiCondition() {
-        ResultSet rs = engine.executeQuery(
+        final ResultSet rs = engine.executeQuery(
             "SELECT name, ROW_NUMBER() OVER (ORDER BY salary DESC) AS rn FROM emp "
             + "QUALIFY rn >= 2 AND rn <= 3");
         // salary desc: Eve(1),Bob(2),Carol(3),Alice(4),Dave(5); rn in [2,3] -> Bob, Carol
-        Set<String> names = new HashSet<>();
+        final Set<String> names = new HashSet<>();
         for (final Row r : rs.getRows()) {
             names.add(String.valueOf(r.getValue(0)));
         }
@@ -130,7 +116,7 @@ public class AstEvaluationContextsTest {
 
     @Test
     public void testCorrelatedScalarSubqueryWithAnd() {
-        ResultSet rs = engine.executeQuery(
+        final ResultSet rs = engine.executeQuery(
             "SELECT (SELECT COUNT(*) FROM emp e2 WHERE e2.dept = dept.dept AND e2.salary >= 100) AS c "
             + "FROM dept ORDER BY budget DESC");
         // dept by budget desc: Eng(1000), Sales(500), HR(300).
@@ -143,9 +129,9 @@ public class AstEvaluationContextsTest {
 
     @Test
     public void testBetweenThenAndOnColumns() {
-        ResultSet rs = engine.executeQuery(
+        final ResultSet rs = engine.executeQuery(
             "SELECT name FROM emp WHERE salary BETWEEN 100 AND 250 AND dept = 'Eng'");
-        Set<String> names = new HashSet<>();
+        final Set<String> names = new HashSet<>();
         for (final Row r : rs.getRows()) {
             names.add(String.valueOf(r.getValue(0)));
         }
@@ -154,7 +140,7 @@ public class AstEvaluationContextsTest {
 
     @Test
     public void testLikeThenAndOnColumns() {
-        ResultSet rs = engine.executeQuery(
+        final ResultSet rs = engine.executeQuery(
             "SELECT name FROM emp WHERE name LIKE 'A%' AND salary < 200");
         assertEquals(1, rs.getRows().size());
         assertEquals("Alice", String.valueOf(rs.getRows().get(0).getValue(0)));
@@ -167,7 +153,7 @@ public class AstEvaluationContextsTest {
         engine.execute("CREATE TABLE upd_t (id INT, v INT)");
         engine.execute("INSERT INTO upd_t VALUES (1, 10), (2, 20), (3, 30)");
         engine.execute("UPDATE upd_t SET v = (SELECT MAX(v) FROM upd_t) WHERE id = 1");
-        ResultSet rs = engine.executeQuery("SELECT v FROM upd_t WHERE id = 1");
+        final ResultSet rs = engine.executeQuery("SELECT v FROM upd_t WHERE id = 1");
         assertEquals(30L, n(rs.getRows().get(0).getValue(0)));
     }
 
@@ -179,8 +165,8 @@ public class AstEvaluationContextsTest {
         engine.execute("INSERT INTO del_child VALUES (1), (3)");
         engine.execute("DELETE FROM del_parent WHERE NOT EXISTS "
             + "(SELECT 1 FROM del_child WHERE del_child.pid = del_parent.id)");
-        ResultSet rs = engine.executeQuery("SELECT id FROM del_parent ORDER BY id");
-        Set<String> ids = new HashSet<>();
+        final ResultSet rs = engine.executeQuery("SELECT id FROM del_parent ORDER BY id");
+        final Set<String> ids = new HashSet<>();
         for (final Row r : rs.getRows()) {
             ids.add(String.valueOf(n(r.getValue(0))));
         }
@@ -191,7 +177,7 @@ public class AstEvaluationContextsTest {
 
     @Test
     public void testArrayElementAccess() {
-        ResultSet rs = engine.executeQuery("SELECT ARRAY_CONSTRUCT(10, 20, 30)[1]");
+        final ResultSet rs = engine.executeQuery("SELECT ARRAY_CONSTRUCT(10, 20, 30)[1]");
         assertEquals(20L, n(rs.getRows().get(0).getValue(0)));
     }
 }

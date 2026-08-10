@@ -32,15 +32,17 @@ public class ArraysOverlap extends BuiltInFunction {
 
     @Override
     public Object evaluate(final List<Object> args) {
-        ArrayNode a1 = ArrayFunctionHelper.parseArray(args.get(0));
-        ArrayNode a2 = ArrayFunctionHelper.parseArray(args.get(1));
+        final ArrayNode a1 = ArrayFunctionHelper.parseArray(args.get(0));
+        final ArrayNode a2 = ArrayFunctionHelper.parseArray(args.get(1));
         if (a1 == null || a2 == null) return null;
-        Set<String> set = new HashSet<>();
+        final Set<String> set = new HashSet<>();
         for (final JsonNode el : a1) set.add(el.toString());
         for (final JsonNode el : a2) { if (set.contains(el.toString())) return true; }
         return false;
     }
 
-    @Override public int getMinArgCount() { return 2; }
-    @Override public int getMaxArgCount() { return 2; }
+    @Override
+    public int getMinArgCount() { return 2; }
+    @Override
+    public int getMaxArgCount() { return 2; }
 }

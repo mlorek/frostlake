@@ -17,7 +17,6 @@
 package dev.frostlake.persistence;
 
 import java.time.Instant;
-import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -28,7 +27,7 @@ import java.util.List;
  * {@link WalRecordType#CHECKPOINT} record carries the reference of a durable state snapshot that supersedes
  * every record written before it. See {@link WriteAheadLog}.
  */
-public class WalRecord {
+public final class WalRecord {
 
     private final WalRecordType type;
     private final List<String> statements;

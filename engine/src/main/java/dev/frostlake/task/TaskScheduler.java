@@ -16,7 +16,8 @@
 
 package dev.frostlake.task;
 
-import dev.frostlake.metastore.*;
+import dev.frostlake.metastore.Catalog;
+import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.model.Database;
 import dev.frostlake.metastore.model.ScheduleType;
 import dev.frostlake.metastore.model.Schema;
@@ -34,7 +35,12 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.*;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Schedules and executes tasks
@@ -181,12 +187,17 @@ public class TaskScheduler {
         }
 
         // Parse schedule
-        long delayMinutes = parseSchedule(task.getSchedule(), task.getScheduleType());
+        final long delayMinutes = parseSchedule(task.getSchedule(), task.getScheduleType());
 
         // Schedule the task. The first run happens at the NEXT schedule tick (Snowflake semantics),
         // not immediately on RESUME.
-        ScheduledFuture<?> future = scheduler.scheduleAtFixedRate(
-            () -> executeTask(qualifiedTaskName, task),
+        final ScheduledFuture<?> future = scheduler.scheduleAtFixedRate(
+            new Runnable() {
+                @Override
+                public void run() {
+                    executeTask(qualifiedTaskName, task);
+                }
+            },
             delayMinutes,
             delayMinutes,
             TimeUnit.MINUTES
@@ -199,7 +210,7 @@ public class TaskScheduler {
     }
 
     public void unscheduleTask(final String qualifiedTaskName) {
-        ScheduledFuture<?> future = scheduledTasks.remove(qualifiedTaskName);
+        final ScheduledFuture<?> future = scheduledTasks.remove(qualifiedTaskName);
         if (future != null) {
             future.cancel(false);
             logger.info("Unscheduled task: {}", qualifiedTaskName);
@@ -276,11 +287,11 @@ public class TaskScheduler {
         // Evaluate WHEN condition — skip execution if condition is false
         if (task.getCondition() != null && !task.getCondition().isEmpty()) {
             try {
-                List<ResultSet> condResult =
+                final List<ResultSet> condResult =
                     taskExecutor.executeQuery("SELECT (" + task.getCondition() + ")");
                 if (!condResult.isEmpty() && !condResult.get(0).getRows().isEmpty()) {
-                    Object condVal = condResult.get(0).getRows().get(0).getValue(0);
-                    boolean condMet = condVal instanceof Boolean ? (Boolean) condVal
+                    final Object condVal = condResult.get(0).getRows().get(0).getValue(0);
+                    final boolean condMet = condVal instanceof Boolean ? (Boolean) condVal
                         : condVal != null && !"false".equalsIgnoreCase(condVal.toString())
                             && !"0".equals(condVal.toString());
                     if (!condMet) {
@@ -306,14 +317,14 @@ public class TaskScheduler {
             for (int attempt = 1; attempt <= maxAttempts; attempt++) {
                 final LocalDateTime startTime = LocalDateTime.now();
                 try {
-                    int rowsAffected = taskExecutor.execute(task.getSqlStatement());
+                    final int rowsAffected = taskExecutor.execute(task.getSqlStatement());
 
                     task.recordExecution(new TaskExecution(
                         scheduledTime, startTime, LocalDateTime.now(), TaskExecutionState.SUCCEEDED, null, rowsAffected));
 
                     // Calculate next run time (only for scheduled tasks)
                     if (task.getSchedule() != null) {
-                        long delayMinutes = parseSchedule(task.getSchedule(), task.getScheduleType());
+                        final long delayMinutes = parseSchedule(task.getSchedule(), task.getScheduleType());
                         task.setNextRunTime(LocalDateTime.now().plusMinutes(delayMinutes));
                     }
 
@@ -348,7 +359,7 @@ public class TaskScheduler {
     private long parseSchedule(final String schedule, final ScheduleType scheduleType) {
         if (scheduleType == ScheduleType.MINUTES) {
             // Format: "5 MINUTES", "60 MINUTES"
-            String[] parts = schedule.split("\\s+");
+            final String[] parts = schedule.split("\\s+");
             if (parts.length > 0) {
                 try {
                     return Long.parseLong(parts[0]);
@@ -458,9 +469,9 @@ public class TaskScheduler {
      */
     public void executeTaskManually(final String qualifiedTaskName) {
         // Parse qualified name to extract schema and task name
-        String[] parts = QualifiedName.parse(qualifiedTaskName).parts();
-        String schemaName;
-        String taskName;
+        final String[] parts = QualifiedName.parse(qualifiedTaskName).parts();
+        final String schemaName;
+        final String taskName;
 
         if (parts.length == 1) {
             // Just task name, use current schema
@@ -476,17 +487,17 @@ public class TaskScheduler {
             taskName = parts[2];
         }
 
-        Database db = catalog.getDatabase(catalog.getCurrentDatabase());
+        final Database db = catalog.getDatabase(catalog.getCurrentDatabase());
         if (db == null) {
             throw new RuntimeException("No current database selected");
         }
 
-        Schema schema = db.getSchema(schemaName);
+        final Schema schema = db.getSchema(schemaName);
         if (schema == null) {
             throw new RuntimeException("Schema not found: " + schemaName);
         }
 
-        Task task = schema.getTask(taskName);
+        final Task task = schema.getTask(taskName);
         if (task == null) {
             throw new RuntimeException("Task not found: " + qualifiedTaskName);
         }

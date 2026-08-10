@@ -34,35 +34,9 @@ public class Max extends AggregateFunction {
     @Override
     public Object evaluate(final List<Object> args) { return null; }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return 1; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return 1; }
 
-    private static class MaxAccumulator implements Accumulator {
-        private Comparable max = null;
-
-        @Override
-        @SuppressWarnings("unchecked")
-        public void accumulate(final Object value) {
-            if (value != null && value instanceof Comparable) {
-                if (max == null || ((Comparable) value).compareTo(max) > 0) {
-                    max = (Comparable) value;
-                }
-            }
-        }
-
-        @Override
-        public Object getResult() { return max; }
-
-        @Override
-        public void reset() { max = null; }
-
-        @Override
-        @SuppressWarnings("unchecked")
-        public void merge(final Accumulator other) {
-            Comparable otherMax = ((MaxAccumulator) other).max;
-            if (otherMax != null && (max == null || otherMax.compareTo(max) > 0)) {
-                max = otherMax;
-            }
-        }
-    }
 }

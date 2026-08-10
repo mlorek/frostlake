@@ -20,7 +20,6 @@ import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assumptions.assumeFalse;
 
 /**
  * {@code FL_GET_SIZE(file)} — the descriptor's {@code SIZE} field, the file's length in BYTES.
@@ -50,7 +49,6 @@ public class FlGetSizeTest extends StagedFileTestSupport {
     /** Live: the size is read from the file itself, so known byte lengths come back exactly. */
     @Test
     public void reportsTheStagedFilesByteLength() {
-        assumeFalse(isLiveSnowflake(), stageOnlyReason());
         stage("hello.txt", "hello world\nsecond line\n");
         stage("empty.txt", "");
         stage("one.txt", "x");
@@ -68,7 +66,6 @@ public class FlGetSizeTest extends StagedFileTestSupport {
      */
     @Test
     public void countsBytesNotCharacters() {
-        assumeFalse(isLiveSnowflake(), stageOnlyReason());
         stage("utf8.txt", "aé");
 
         assertEquals("3", size("TO_FILE('@st/utf8.txt')"));

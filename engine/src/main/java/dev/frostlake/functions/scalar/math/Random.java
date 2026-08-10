@@ -20,37 +20,35 @@ import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.types.NumericType;
 
 import java.util.List;
-import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.ThreadLocalRandom;
 
 /**
  * RANDOM([seed]) — a pseudo-random signed 64-bit integer (not a fraction in [0, 1)). Without a seed
  * each call is independent; with a seed the value is deterministic, so a constant seed yields the same
  * value for every row (matching Snowflake). java.util.Random is fully qualified because this class
  * shadows that name.
+ *
+ * <p>The seedless path is genuinely random, as Snowflake's is. It once returned a SplitMix64 scramble
+ * of a monotonic counter for test reproducibility; that was removed because nothing depended on it —
+ * no test asserts a value (they assert type, range and uniqueness, which real randomness satisfies and
+ * the counter satisfied only trivially) and the vendor suite never calls the function. The counter also
+ * restarted at zero in a fresh JVM, so it never delivered the WAL-replay exactness it appeared to
+ * promise: a replayed statement drew new values either way. Reproducing values across replay is a
+ * durability question about the log, not something a function can answer for itself.
  */
 public class Random extends BuiltInFunction {
     public Random() { super("RANDOM", NumericType.BIGINT); }
-
-    // TEMPORARY (test reproducibility): the seedless path yields a deterministic sequence (SplitMix64 over a
-    // monotonic counter) instead of ThreadLocalRandom. Revert to `ThreadLocalRandom.current().nextLong()`
-    // (and restore the import) for real randomness. The seeded path below is already deterministic.
-    private static final AtomicLong COUNTER = new AtomicLong();
-
-    private static long mix(final long value) {
-        long z = value;
-        z = (z ^ (z >>> 30)) * 0xBF58476D1CE4E5B9L;
-        z = (z ^ (z >>> 27)) * 0x94D049BB133111EBL;
-        return z ^ (z >>> 31);
-    }
 
     @Override
     public Object evaluate(final List<Object> args) {
         if (!args.isEmpty() && args.get(0) != null) {
             return new java.util.Random(((Number) args.get(0)).longValue()).nextLong();
         }
-        return mix(COUNTER.incrementAndGet());
+        return ThreadLocalRandom.current().nextLong();
     }
 
-    @Override public int getMinArgCount() { return 0; }
-    @Override public int getMaxArgCount() { return 1; }
+    @Override
+    public int getMinArgCount() { return 0; }
+    @Override
+    public int getMaxArgCount() { return 1; }
 }

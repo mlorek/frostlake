@@ -19,7 +19,7 @@ package dev.frostlake.ddl;
 import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.ExecutionResult;
 import org.junit.jupiter.api.Test;
-
+import org.junit.jupiter.api.function.Executable;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -31,7 +31,7 @@ public class UseCommandsTest extends BaseDatabaseTest {
     @Test
     public void testUseDatabase() {
         engine.execute("CREATE DATABASE use_test_db");
-        ExecutionResult result = engine.execute("USE DATABASE use_test_db");
+        final ExecutionResult result = engine.execute("USE DATABASE use_test_db");
 
         assertTrue(result.isSuccess(), "USE DATABASE should succeed");
     }
@@ -39,7 +39,7 @@ public class UseCommandsTest extends BaseDatabaseTest {
     @Test
     public void testUseSchema() {
         engine.execute("CREATE SCHEMA use_test_schema");
-        ExecutionResult result = engine.execute("USE SCHEMA use_test_schema");
+        final ExecutionResult result = engine.execute("USE SCHEMA use_test_schema");
 
         assertTrue(result.isSuccess(), "USE SCHEMA should succeed");
     }
@@ -54,8 +54,12 @@ public class UseCommandsTest extends BaseDatabaseTest {
         // Create table in new context
         engine.execute("CREATE TABLE test_table (id INTEGER)");
 
-        assertDoesNotThrow(() -> engine.execute("SELECT * FROM test_table"),
-            "Should be able to query table in current schema");
+        assertDoesNotThrow(new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                engine.execute("SELECT * FROM test_table");
+            }
+        }, "Should be able to query table in current schema");
     }
 
     @Test
@@ -71,11 +75,19 @@ public class UseCommandsTest extends BaseDatabaseTest {
 
         // Verify each schema has its own table
         engine.execute("USE SCHEMA schema1");
-        assertDoesNotThrow(() -> engine.executeQuery("SELECT * FROM users"),
-            "Should find users in schema1");
+        assertDoesNotThrow(new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                engine.executeQuery("SELECT * FROM users");
+            }
+        }, "Should find users in schema1");
 
         engine.execute("USE SCHEMA schema2");
-        assertDoesNotThrow(() -> engine.executeQuery("SELECT * FROM products"),
-            "Should find products in schema2");
+        assertDoesNotThrow(new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                engine.executeQuery("SELECT * FROM products");
+            }
+        }, "Should find products in schema2");
     }
 }

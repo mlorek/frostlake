@@ -23,8 +23,8 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
@@ -52,6 +52,29 @@ public class VariantStrictnessTest extends BaseDatabaseTest {
             final ResultSet rs = engine.executeQuery(sql);
             fail("expected rejection but got " + rs.getRowCount() + " rows for: " + sql);
         } catch (final RuntimeException e) {
+            assertTrue(e.getMessage().contains("Invalid argument types for function")
+                    && e.getMessage().contains("(" + expectedTypePrefixInMessage),
+                "unexpected: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Like {@link #assertRejected}, but live-tolerant: the account currently raises an incident
+     * ({@code SQL execution internal error: Processing aborted due to error 300010:…}) for
+     * GET_PATH over a non-variant first argument instead of its documented refusal. That is a
+     * live defect the engine deliberately does not emulate — embedded keeps the proper
+     * invalid-argument-types refusal, and a live run accepts either shape.
+     */
+    private void assertRejectedToleratingLiveIncident(final String sql,
+                                                      final String expectedTypePrefixInMessage) {
+        try {
+            final ResultSet rs = engine.executeQuery(sql);
+            fail("expected rejection but got " + rs.getRowCount() + " rows for: " + sql);
+        } catch (final RuntimeException e) {
+            if (isLiveSnowflake() && e.getMessage() != null
+                    && e.getMessage().startsWith("SQL execution internal error")) {
+                return;
+            }
             assertTrue(e.getMessage().contains("Invalid argument types for function")
                     && e.getMessage().contains("(" + expectedTypePrefixInMessage),
                 "unexpected: " + e.getMessage());
@@ -102,7 +125,7 @@ public class VariantStrictnessTest extends BaseDatabaseTest {
         engine.execute("CREATE TABLE vst_g (s VARCHAR, v VARIANT)");
         engine.execute("INSERT INTO vst_g SELECT 'x', PARSE_JSON('{\"a\":41}')");
         assertRejected("SELECT GET(s, 'a') FROM vst_g", "VARCHAR(");
-        assertRejected("SELECT GET_PATH(s, 'a') FROM vst_g", "VARCHAR(");
+        assertRejectedToleratingLiveIncident("SELECT GET_PATH(s, 'a') FROM vst_g", "VARCHAR(");
         assertEquals("41", String.valueOf(scalar("SELECT GET(v, 'a') FROM vst_g")));
     }
 

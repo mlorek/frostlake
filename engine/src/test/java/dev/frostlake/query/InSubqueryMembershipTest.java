@@ -16,11 +16,9 @@
 
 package dev.frostlake.query;
 
-import dev.frostlake.DatabaseEngine;
+import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
 
-import org.junit.jupiter.api.AfterAll;
-import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -32,16 +30,10 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
  * types (so an integer {@code 4} matches a double {@code 4.0}), {@code toString} equality for strings,
  * and NULLs that never match a non-NULL value.
  */
-public class InSubqueryMembershipTest {
+public class InSubqueryMembershipTest extends BaseDatabaseTest {
 
-    private static DatabaseEngine engine;
-
-    @BeforeAll
-    public static void setup() {
-        engine = new DatabaseEngine();
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
-        engine.execute("USE SCHEMA public");
+    @Override
+    protected void setupTest() {
         engine.execute("CREATE TABLE dim (i INTEGER, d DOUBLE, s VARCHAR)");
         engine.execute("INSERT INTO dim VALUES (10, 4.0, 'banana')");
         engine.execute("INSERT INTO dim VALUES (20, 8.0, 'cherry')");
@@ -52,14 +44,7 @@ public class InSubqueryMembershipTest {
         engine.execute("INSERT INTO facts VALUES (3, 99)");
     }
 
-    @AfterAll
-    public static void teardown() {
-        if (engine != null) {
-            engine.shutdown();
-        }
-    }
-
-    private static long count(final String sql) {
+    private long count(final String sql) {
         final ResultSet rs = engine.executeQuery(sql);
         return rs.getRowCount();
     }
@@ -78,8 +63,15 @@ public class InSubqueryMembershipTest {
 
     @Test
     public void testNotIn() {
-        // n NOT IN dim.i: n=4 and n=99 are not members -> 2 rows. (n=10 is a member.)
-        assertEquals(2, count("SELECT id FROM facts WHERE n NOT IN (SELECT i FROM dim)"));
+        // dim.i contains a NULL, so NOT IN is never TRUE: n=10 is a member (FALSE) and n=4/n=99
+        // are misses over a set with a NULL (UNKNOWN) — three-valued logic filters every row.
+        assertEquals(0, count("SELECT id FROM facts WHERE n NOT IN (SELECT i FROM dim)"));
+    }
+
+    @Test
+    public void testNotInWithoutNullMembers() {
+        // With the NULL member excluded the misses become definite: n=4 and n=99 -> 2 rows.
+        assertEquals(2, count("SELECT id FROM facts WHERE n NOT IN (SELECT i FROM dim WHERE i IS NOT NULL)"));
     }
 
     @Test

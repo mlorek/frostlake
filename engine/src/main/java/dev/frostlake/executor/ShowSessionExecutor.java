@@ -25,29 +25,30 @@ import dev.frostlake.metastore.model.Database;
 import dev.frostlake.metastore.model.ForeignKeyConstraint;
 import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.metastore.model.Table;
-import dev.frostlake.metastore.model.Task;
-import dev.frostlake.metastore.model.Warehouse;
 import dev.frostlake.metastore.model.TableColumn;
+import dev.frostlake.metastore.model.Task;
 import dev.frostlake.metastore.model.UniqueConstraint;
+import dev.frostlake.metastore.model.Warehouse;
 import dev.frostlake.security.SecurityManager;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
+import dev.frostlake.transaction.TableLock;
+import dev.frostlake.transaction.Transaction;
 import dev.frostlake.transaction.TransactionManager;
-import dev.frostlake.types.NumericType;
+import dev.frostlake.transaction.TransactionState;
 import dev.frostlake.types.DateTimeType;
+import dev.frostlake.types.NumericType;
 import dev.frostlake.types.StringType;
 import dev.frostlake.values.VariantJsonFormat;
-import java.sql.Timestamp;
 import java.time.Instant;
-import java.util.ArrayList;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.UUID;
 
 /**
  * SHOW / DESCRIBE handlers for session and runtime state: parameters, sessions, variables, locks,
@@ -70,6 +71,9 @@ final class ShowSessionExecutor {
     private final TransactionManager transactionManager;
     private final QueryHistoryTracker queryHistoryTracker;
     private final Map<String, Object> sessionVariables;
+    /** The number SHOW TRANSACTIONS' session cell and SHOW LOCKS IN ACCOUNT's session column carry —
+     *  live shows an opaque per-session number, so the engine mints one stable value per instance. */
+    private final long sessionNumber = System.currentTimeMillis();
 
     ShowSessionExecutor(final Catalog catalog, final ShowCommandExecutor facade,
                         final TransactionManager transactionManager,
@@ -98,9 +102,9 @@ final class ShowSessionExecutor {
 
     public ResultSet showParameters(final String likePattern) {
         final SecurityManager securityManager = facade.getSecurityManager();
-        List<ResultSetColumn> columns = parameterColumns();
+        final List<ResultSetColumn> columns = parameterColumns();
         // Built-in Snowflake session parameters with defaults
-        Object[][] params = {
+        final Object[][] params = {
             {"TIMEZONE",                     "UTC",   "UTC",   "ACCOUNT", "Time zone",                    "TEXT"},
             {"TIMESTAMP_OUTPUT_FORMAT",      "YYYY-MM-DD HH24:MI:SS.FF3 TZHTZM", "YYYY-MM-DD HH24:MI:SS.FF3 TZHTZM", "ACCOUNT", "Timestamp output format", "TEXT"},
             {"DATE_OUTPUT_FORMAT",           "YYYY-MM-DD", "YYYY-MM-DD", "ACCOUNT", "Date output format", "TEXT"},
@@ -116,23 +120,28 @@ final class ShowSessionExecutor {
                 "Width of indentation in JSON output (0 for compact)", "NUMBER"},
         };
         // Also include current session parameters
-        Map<String, Object> sessionParams = securityManager != null
+        final Map<String, Object> sessionParams = securityManager != null
             ? securityManager.getSessionContext().getAllSessionParameters()
             : new LinkedHashMap<>();
 
-        List<Row> rows = new ArrayList<>();
+        final List<Row> rows = new ArrayList<>();
         for (final Object[] p : params) {
-            String key = (String) p[0];
-            String sessionVal = sessionParams.containsKey(key) ? sessionParams.get(key).toString() : (String) p[1];
+            final String key = (String) p[0];
+            final String sessionVal = sessionParams.containsKey(key) ? sessionParams.get(key).toString() : (String) p[1];
             if (likePattern == null || key.toUpperCase().contains(likePattern.toUpperCase().replace("%", ""))) {
                 rows.add(new Row(Arrays.asList(key, sessionVal, p[2], p[3], p[4], p[5])));
             }
         }
         // Add any extra session-only parameters
         for (final Map.Entry<String, Object> e : sessionParams.entrySet()) {
-            String key = e.getKey();
+            final String key = e.getKey();
             boolean already = false;
-            for (final Object[] p : params) { if (key.equalsIgnoreCase((String) p[0])) { already = true; break; } }
+            for (final Object[] p : params) {
+                if (key.equalsIgnoreCase((String) p[0])) {
+                    already = true;
+                    break;
+                }
+            }
             if (!already && (likePattern == null || key.toUpperCase().contains(likePattern.toUpperCase().replace("%", "")))) {
                 rows.add(new Row(Arrays.asList(key, e.getValue() != null ? e.getValue().toString() : null, null, "SESSION", null, "TEXT")));
             }
@@ -316,71 +325,147 @@ final class ShowSessionExecutor {
         return new ResultSet(accountColumns(), List.of(accountRow()));
     }
 
-    public ResultSet showLocks() {
-        List<ResultSetColumn> columns = Arrays.asList(
-            new ResultSetColumn("transaction", NumericType.BIGINT),
-            new ResultSetColumn("created_on", DateTimeType.TIMESTAMP_LTZ),
-            new ResultSetColumn("resource", StringType.VARCHAR),
-            new ResultSetColumn("type", StringType.VARCHAR),
-            new ResultSetColumn("status", StringType.VARCHAR)
+    /**
+     * SHOW LOCKS, in live's shape: one row per (transaction, table) a partition-rewriting DML
+     * statement touched — UPDATE / DELETE / MERGE / TRUNCATE, while an append-only INSERT holds no
+     * lock — with {@code type=PARTITIONS} and {@code status=HOLDING}, the resource as the table's
+     * fully qualified name, and the lock's own {@code acquired_on} / {@code query_id} beside the
+     * owning transaction's id and start. {@code IN ACCOUNT} prepends a {@code session} column; the
+     * rows are otherwise identical.
+     */
+    public ResultSet showLocks(final boolean inAccount) {
+        final List<ResultSetColumn> columns = new ArrayList<>();
+        if (inAccount) {
+            columns.add(new ResultSetColumn("session", NumericType.BIGINT));
+        }
+        columns.add(new ResultSetColumn("resource", StringType.VARCHAR));
+        columns.add(new ResultSetColumn("type", StringType.VARCHAR));
+        columns.add(new ResultSetColumn("transaction", NumericType.BIGINT));
+        columns.add(new ResultSetColumn("transaction_started_on", DateTimeType.TIMESTAMP_LTZ));
+        columns.add(new ResultSetColumn("status", StringType.VARCHAR));
+        columns.add(new ResultSetColumn("acquired_on", DateTimeType.TIMESTAMP_LTZ));
+        columns.add(new ResultSetColumn("query_id", StringType.VARCHAR));
+        final List<Row> rows = new ArrayList<>();
+        for (final Transaction txn : transactionManager.getActiveTransactions()) {
+            if (txn.getState() != TransactionState.ACTIVE) {
+                continue;
+            }
+            for (final Map.Entry<String, TableLock> entry : txn.getAllTableLocks().entrySet()) {
+                final List<Object> cells = new ArrayList<>();
+                if (inAccount) {
+                    cells.add(sessionNumber);
+                }
+                cells.add(entry.getKey());
+                cells.add("PARTITIONS");
+                cells.add(transactionDisplayId(txn));
+                cells.add(ShowResultHelpers.createdOn(Instant.ofEpochMilli(txn.getStartTime())));
+                cells.add("HOLDING");
+                cells.add(ShowResultHelpers.createdOn(Instant.ofEpochMilli(entry.getValue().getAcquiredOn())));
+                cells.add(entry.getValue().getQueryId());
+                rows.add(new Row(cells));
+            }
+        }
+        return new ResultSet(columns, rows);
+    }
+
+    /**
+     * SHOW TRANSACTIONS, in live's shape: only OPEN transactions are listed (an idle session shows
+     * nothing), {@code state} is {@code running}, {@code scope} is 0, {@code name} is the
+     * transaction's system-generated UUID, and {@code id} carries the start instant at nanosecond
+     * scale — the sub-millisecond digits distinguish transactions that began in the same
+     * millisecond.
+     */
+    public ResultSet showTransactions(final String likePattern) {
+        final List<ResultSetColumn> columns = Arrays.asList(
+            new ResultSetColumn("id", NumericType.BIGINT),
+            new ResultSetColumn("user", StringType.VARCHAR),
+            new ResultSetColumn("session", NumericType.BIGINT),
+            new ResultSetColumn("name", StringType.VARCHAR),
+            new ResultSetColumn("started_on", DateTimeType.TIMESTAMP_LTZ),
+            new ResultSetColumn("state", StringType.VARCHAR),
+            new ResultSetColumn("scope", NumericType.BIGINT)
         );
-        List<Row> rows = new ArrayList<>();
-        for (final TransactionManager.Transaction txn : transactionManager.getActiveTransactions()) {
+        final List<Row> rows = new ArrayList<>();
+        for (final Transaction txn : transactionManager.getActiveTransactions()) {
+            if (txn.getState() != TransactionState.ACTIVE) {
+                continue;
+            }
+            if (likePattern != null && !ShowResultHelpers.matchesLike(txn.getName(), likePattern)) {
+                continue;
+            }
             rows.add(new Row(Arrays.asList(
-                txn.getId(),
-                new Timestamp(txn.getStartTime()).toString(),
-                "TABLE",
-                "DML",
-                "HOLDING"
+                transactionDisplayId(txn),
+                currentUserName(),
+                sessionNumber,
+                txn.getName(),
+                ShowResultHelpers.createdOn(Instant.ofEpochMilli(txn.getStartTime())),
+                "running",
+                0L
             )));
         }
         return new ResultSet(columns, rows);
     }
 
-    public ResultSet showTransactions(final String likePattern) {
-        List<ResultSetColumn> columns = Arrays.asList(
-            new ResultSetColumn("id", NumericType.BIGINT),
-            new ResultSetColumn("user_name", StringType.VARCHAR),
-            new ResultSetColumn("session_id", NumericType.BIGINT),
-            new ResultSetColumn("status", StringType.VARCHAR),
-            new ResultSetColumn("started_on", DateTimeType.TIMESTAMP_LTZ),
-            new ResultSetColumn("statement_count", NumericType.INTEGER)
-        );
-        List<Row> rows = new ArrayList<>();
-        for (final TransactionManager.Transaction txn : transactionManager.getActiveTransactions()) {
-            String status = txn.getState().name();
-            if (likePattern != null && !status.toUpperCase().contains(likePattern.toUpperCase())) continue;
-            rows.add(new Row(Arrays.asList(
-                txn.getId(),
-                "CURRENT_USER",
-                1L,
-                status,
-                new Timestamp(txn.getStartTime()).toString(),
-                (long) txn.getLogCount()
-            )));
+    /** The transaction id both listings display: the start instant at NANOSECOND scale (live's id
+     *  equals its {@code started_on} in epoch nanos), with the engine's own transaction counter in
+     *  the sub-millisecond digits so same-millisecond transactions stay distinct. */
+    private static long transactionDisplayId(final Transaction txn) {
+        return txn.getStartTime() * 1_000_000L + txn.getId() % 1_000_000L;
+    }
+
+    /** The session's user name, as SHOW TRANSACTIONS spells it. */
+    private String currentUserName() {
+        final SecurityManager securityManager = facade.getSecurityManager();
+        if (securityManager == null || securityManager.getSessionContext() == null) {
+            return null;
         }
-        return new ResultSet(columns, rows);
+        final String user = securityManager.getSessionContext().getCurrentUser();
+        return user == null ? null : user.toUpperCase();
     }
 
     public ResultSet showVariables() {
         final SecurityManager securityManager = facade.getSecurityManager();
-        List<ResultSetColumn> columns = Arrays.asList(
+        // Live layout: session_id | created_on | updated_on | name | value | type | comment —
+        // the variable NAME is folded upper, an unset comment is '', and type names the value's
+        // family (fixed / text / boolean).
+        final List<ResultSetColumn> columns = Arrays.asList(
+            new ResultSetColumn("session_id", NumericType.BIGINT),
+            new ResultSetColumn("created_on", DateTimeType.TIMESTAMP_LTZ),
+            new ResultSetColumn("updated_on", DateTimeType.TIMESTAMP_LTZ),
             new ResultSetColumn("name", StringType.VARCHAR),
-            new ResultSetColumn("value", StringType.VARCHAR)
+            new ResultSetColumn("value", StringType.VARCHAR),
+            new ResultSetColumn("type", StringType.VARCHAR),
+            new ResultSetColumn("comment", StringType.VARCHAR)
         );
-        List<Row> rows = new ArrayList<>();
-        Map<String, Object> vars = securityManager != null
+        final List<Row> rows = new ArrayList<>();
+        final Map<String, Object> vars = securityManager != null
             ? securityManager.getSessionContext().getAllSessionParameters()
             : sessionVariables;
         for (final Map.Entry<String, Object> e : vars.entrySet()) {
-            rows.add(new Row(Arrays.asList(e.getKey(), e.getValue() != null ? e.getValue().toString() : null)));
+            final Object value = e.getValue();
+            final String type;
+            if (value instanceof Number) {
+                type = "fixed";
+            } else if (value instanceof Boolean) {
+                type = "boolean";
+            } else {
+                type = "text";
+            }
+            rows.add(new Row(Arrays.asList(
+                sessionNumber,
+                ShowResultHelpers.createdOn(Instant.ofEpochMilli(sessionNumber)),
+                ShowResultHelpers.createdOn(Instant.ofEpochMilli(sessionNumber)),
+                e.getKey().toUpperCase(),
+                value != null ? value.toString() : null,
+                type,
+                "")));
         }
         return new ResultSet(columns, rows);
     }
 
     public ResultSet showQueryHistory(final Integer limit) {
-        List<Row> rows = new ArrayList<>();
-        List<ResultSetColumn> columns = Arrays.asList(
+        final List<Row> rows = new ArrayList<>();
+        final List<ResultSetColumn> columns = Arrays.asList(
             new ResultSetColumn("query_id", StringType.VARCHAR),
             new ResultSetColumn("query_text", StringType.VARCHAR),
             new ResultSetColumn("database_name", StringType.VARCHAR),
@@ -400,7 +485,7 @@ final class ShowSessionExecutor {
             new ResultSetColumn("error_message", StringType.VARCHAR)
         );
 
-        List<QueryHistory> history;
+        final List<QueryHistory> history;
         if (limit != null && limit > 0) {
             history = queryHistoryTracker.getHistory(limit);
         } else {
@@ -547,16 +632,50 @@ final class ShowSessionExecutor {
         final List<Row> rows = new ArrayList<>();
         for (final Schema schema : schemasInScope(scopeKind, scopeName)) {
             for (final Table table : tablesInScope(schema, scopeKind, scopeName)) {
+                // Inline column-level `REFERENCES parent[(col)]` is a single-column FK held on the
+                // column, not in getForeignKeys() — enumerate those too (the same source
+                // INFORMATION_SCHEMA.TABLE_CONSTRAINTS reads), or SHOW IMPORTED KEYS misses them.
+                for (final dev.frostlake.metastore.model.TableColumn col : table.getColumns()) {
+                    if (col.getReferencedTable() == null) {
+                        continue;
+                    }
+                    final String databaseName = databaseNameOf(schema);
+                    final String pkColumn = col.getReferencedColumn() != null
+                        ? col.getReferencedColumn()
+                        : firstPrimaryKeyColumn(schema, col.getReferencedTable());
+                    // A qualified REFERENCES target ("sc.parent" / "db.sc.parent") splits across the
+                    // pk_* columns; the raw dotted spelling is never a table NAME.
+                    final QualifiedName ref = QualifiedName.parse(col.getReferencedTable());
+                    rows.add(new Row(Arrays.asList(
+                        ShowResultHelpers.createdOn(table.getCreatedTime()),
+                        ref.size() >= 3 ? ref.part(0) : databaseName,
+                        ref.size() >= 2 ? ref.part(ref.size() - 2) : schema.getName(),
+                        ref.last(),
+                        pkColumn,
+                        databaseName,
+                        schema.getName(),
+                        table.getName(),
+                        col.getName(),
+                        1,
+                        col.getOnUpdate() != null ? col.getOnUpdate() : "NO ACTION",
+                        col.getOnDelete() != null ? col.getOnDelete() : "NO ACTION",
+                        table.columnForeignKeyConstraintName(col.getName()),
+                        referencedPrimaryKeyName(schema, col.getReferencedTable()),
+                        "NOT DEFERRABLE",
+                        relyText(col.getRely()),
+                        null)));
+                }
                 for (final ForeignKeyConstraint fk : table.getForeignKeys()) {
                     final List<String> fkColumns = fk.getColumnNames();
                     final List<String> pkColumns = fk.getReferencedColumns();
                     for (int i = 0; i < fkColumns.size(); i++) {
                         final String databaseName = databaseNameOf(schema);
+                        final QualifiedName ref = QualifiedName.parse(fk.getReferencedTable());
                         rows.add(new Row(Arrays.asList(
                             ShowResultHelpers.createdOn(table.getCreatedTime()),
-                            databaseName,
-                            schema.getName(),
-                            fk.getReferencedTable(),
+                            ref.size() >= 3 ? ref.part(0) : databaseName,
+                            ref.size() >= 2 ? ref.part(ref.size() - 2) : schema.getName(),
+                            ref.last(),
                             i < pkColumns.size() ? pkColumns.get(i) : null,
                             databaseName,
                             schema.getName(),
@@ -590,6 +709,28 @@ final class ShowSessionExecutor {
     }
 
     /** The name of the PRIMARY KEY constraint a foreign key points at, or null when it cannot be resolved. */
+    /** The referenced table's first primary-key column — the target of a bare {@code REFERENCES parent}. */
+    private String firstPrimaryKeyColumn(final Schema schema, final String referencedTable) {
+        final String bare = QualifiedName.parse(referencedTable).last();
+        Table target = schema.hasTable(bare) ? schema.getTable(bare) : null;
+        if (target == null) {
+            try {
+                target = catalog.resolveTable(referencedTable);
+            } catch (final RuntimeException gone) {
+                return null;
+            }
+        }
+        if (target == null) {
+            return null;
+        }
+        for (final dev.frostlake.metastore.model.TableColumn col : target.getColumns()) {
+            if (col.isPrimaryKey()) {
+                return col.getName();
+            }
+        }
+        return null;
+    }
+
     private String referencedPrimaryKeyName(final Schema schema, final String referencedTable) {
         final String bare = QualifiedName.parse(referencedTable).last();
         Table target = schema.hasTable(bare) ? schema.getTable(bare) : null;

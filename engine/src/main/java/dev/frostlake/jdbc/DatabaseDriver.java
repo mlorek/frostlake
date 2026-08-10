@@ -25,10 +25,15 @@ import java.io.File;
 import java.io.IOException;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.sql.*;
+import java.sql.Connection;
+import java.sql.Driver;
+import java.sql.DriverManager;
+import java.sql.DriverPropertyInfo;
+import java.sql.SQLException;
+import java.sql.SQLFeatureNotSupportedException;
+import java.sql.Statement;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Properties;
@@ -91,18 +96,18 @@ public class DatabaseDriver implements Driver {
 
         try {
             // Parse URL: jdbc:frostlake://host:port/database?schema=PUBLIC
-            String baseUrl = parseBaseUrl(url);
+            final String baseUrl = parseBaseUrl(url);
             String database = parseDatabase(url);
             // Fall back to ?database=... query parameter or Properties if not in path
             if (database == null) {
-                String dbParam = parseParameter(url, "database");
+                final String dbParam = parseParameter(url, "database");
                 if (dbParam != null && !dbParam.isEmpty()) database = dbParam.toUpperCase();
             }
             if (database == null && info != null) {
-                String dbProp = info.getProperty("database");
+                final String dbProp = info.getProperty("database");
                 if (dbProp != null && !dbProp.isEmpty()) database = dbProp.toUpperCase();
             }
-            String schema = info != null ? info.getProperty("schema", parseParameter(url, "schema"))
+            final String schema = info != null ? info.getProperty("schema", parseParameter(url, "schema"))
                                          : parseParameter(url, "schema");
 
             logger.debug("Connecting to {} (database: {}, schema: {})", baseUrl, database, schema);
@@ -363,7 +368,7 @@ public class DatabaseDriver implements Driver {
 
     @Override
     public DriverPropertyInfo[] getPropertyInfo(final String url, final Properties info) {
-        DriverPropertyInfo[] props = new DriverPropertyInfo[3];
+        final DriverPropertyInfo[] props = new DriverPropertyInfo[3];
 
         props[0] = new DriverPropertyInfo("database", info.getProperty("database"));
         props[0].description = "Database name";
@@ -404,11 +409,11 @@ public class DatabaseDriver implements Driver {
 
     private String parseBaseUrl(final String url) throws SQLException {
         // jdbc:frostlake://host:port/database -> http://host:port
-        String withoutPrefix = url.substring(URL_PREFIX.length());
-        int slashIndex = withoutPrefix.indexOf('/');
-        int questionIndex = withoutPrefix.indexOf('?');
+        final String withoutPrefix = url.substring(URL_PREFIX.length());
+        final int slashIndex = withoutPrefix.indexOf('/');
+        final int questionIndex = withoutPrefix.indexOf('?');
 
-        String hostPort;
+        final String hostPort;
         if (slashIndex > 0) {
             hostPort = withoutPrefix.substring(0, slashIndex);
         } else if (questionIndex > 0) {
@@ -422,14 +427,14 @@ public class DatabaseDriver implements Driver {
 
     private String parseDatabase(final String url) {
         // jdbc:frostlake://host:port/database
-        String withoutPrefix = url.substring(URL_PREFIX.length());
-        int slashIndex = withoutPrefix.indexOf('/');
+        final String withoutPrefix = url.substring(URL_PREFIX.length());
+        final int slashIndex = withoutPrefix.indexOf('/');
         if (slashIndex < 0) {
             return null;
         }
 
-        String database;
-        int questionIndex = withoutPrefix.indexOf('?', slashIndex);
+        final String database;
+        final int questionIndex = withoutPrefix.indexOf('?', slashIndex);
         if (questionIndex > 0) {
             database = withoutPrefix.substring(slashIndex + 1, questionIndex);
         } else {
@@ -441,16 +446,16 @@ public class DatabaseDriver implements Driver {
     }
 
     private static String parseParameter(final String url, final String paramName) {
-        int questionIndex = url.indexOf('?');
+        final int questionIndex = url.indexOf('?');
         if (questionIndex < 0) {
             return null;
         }
 
-        String queryString = url.substring(questionIndex + 1);
-        String[] params = queryString.split("&");
+        final String queryString = url.substring(questionIndex + 1);
+        final String[] params = queryString.split("&");
 
         for (final String param : params) {
-            String[] keyValue = param.split("=");
+            final String[] keyValue = param.split("=");
             if (keyValue.length == 2 && keyValue[0].equals(paramName)) {
                 return keyValue[1];
             }

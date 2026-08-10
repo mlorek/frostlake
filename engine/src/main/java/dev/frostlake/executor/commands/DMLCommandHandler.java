@@ -19,7 +19,6 @@ package dev.frostlake.executor.commands;
 import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.parser.FrostlakeParser;
-import dev.frostlake.storage.ResultSet;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 

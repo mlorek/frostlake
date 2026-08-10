@@ -31,13 +31,15 @@ public class ObjectKeys extends VariantAccessorFunction {
 
     @Override
     public Object evaluate(final List<Object> args) {
-        JsonNode src = ArrayFunctionHelper.parseNode(args.get(0));
+        final JsonNode src = ArrayFunctionHelper.parseNode(args.get(0));
         if (src == null || !src.isObject()) return null;
-        ArrayNode result = ArrayFunctionHelper.MAPPER.createArrayNode();
+        final ArrayNode result = ArrayFunctionHelper.MAPPER.createArrayNode();
         src.propertyNames().forEach(result::add);
         return VariantValue.ofNode(result);
     }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return 1; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return 1; }
 }

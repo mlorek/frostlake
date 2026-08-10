@@ -18,7 +18,7 @@ package dev.frostlake.functions.scalar.string;
 
 import dev.frostlake.functions.TextArgumentFunction;
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
-import dev.frostlake.types.NumericType;
+import dev.frostlake.types.IntegerResultWidths;
 import dev.frostlake.values.BinaryValue;
 
 import java.util.List;
@@ -31,7 +31,7 @@ import java.util.List;
  * searching the hex renderings found the digit pair at character 3.
  */
 public class Position extends TextArgumentFunction {
-    public Position() { super("POSITION", NumericType.INTEGER); }
+    public Position() { super("POSITION", IntegerResultWidths.POSITION); }
 
     @Override
     public Object evaluate(final List<Object> args) {
@@ -48,12 +48,14 @@ public class Position extends TextArgumentFunction {
             return SharedFunctionHelpers.indexOfBytes(((BinaryValue) args.get(1)).bytes(),
                 ((BinaryValue) args.get(0)).bytes(), startPos);
         }
-        String needle = args.get(0).toString();
-        String haystack = args.get(1).toString();
-        int idx = haystack.indexOf(needle, startPos);
+        final String needle = args.get(0).toString();
+        final String haystack = args.get(1).toString();
+        final int idx = haystack.indexOf(needle, startPos);
         return idx < 0 ? 0L : (long) (idx + 1);
     }
 
-    @Override public int getMinArgCount() { return 2; }
-    @Override public int getMaxArgCount() { return 3; }
+    @Override
+    public int getMinArgCount() { return 2; }
+    @Override
+    public int getMaxArgCount() { return 3; }
 }

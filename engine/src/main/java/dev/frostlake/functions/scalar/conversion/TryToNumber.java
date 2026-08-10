@@ -43,6 +43,8 @@ public class TryToNumber extends BuiltInFunction {
         }
     }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return 4; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return 4; }
 }

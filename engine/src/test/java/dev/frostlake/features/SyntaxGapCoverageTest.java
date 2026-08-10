@@ -21,7 +21,6 @@ import dev.frostlake.storage.ResultSet;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Grammar constructs that were each previously rejected as an "SQL syntax error", surfaced by a

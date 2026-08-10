@@ -22,7 +22,6 @@ import tools.jackson.databind.cfg.JsonNodeFeature;
 import tools.jackson.databind.json.JsonMapper;
 
 import java.io.IOException;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
@@ -37,7 +36,7 @@ public class JsonStageReader implements StageFileReader {
 
     @Override
     public List<JsonNode> readRecords(final Path file) throws IOException {
-        final String text = Files.readString(file).trim();
+        final String text = StagedFileIo.readString(file).trim();
         final List<JsonNode> records = new ArrayList<>();
         if (text.isEmpty()) {
             return records;

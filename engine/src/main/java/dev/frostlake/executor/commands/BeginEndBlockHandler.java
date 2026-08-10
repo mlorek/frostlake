@@ -20,20 +20,23 @@ import dev.frostlake.executor.ContinueHandler;
 import dev.frostlake.executor.ProceduralExecutor;
 import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.executor.SQLCommandVisitor;
+import dev.frostlake.executor.StatementClock;
+import dev.frostlake.executor.UndeclaredScriptVariableException;
 import dev.frostlake.executor.procedural.ProceduralException;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.parser.SqlSyntaxException;
 import dev.frostlake.storage.ResultSet;
-import dev.frostlake.transaction.TransactionManager;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
+import dev.frostlake.transaction.TransactionManager;
 import dev.frostlake.types.StringType;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
@@ -75,11 +78,25 @@ public class BeginEndBlockHandler implements CommandHandler {
     }
 
     public Object handle(final FrostlakeParser.BeginEndBlockContext ctx) {
+        // Compile the WHOLE block before running any of it, as Snowflake does: a name that resolves to
+        // nothing is refused even on a branch this run will not take. Seeded with what is already in
+        // scope — a stored procedure's parameters, or an enclosing block's variables.
+        final Set<String> inScope = new HashSet<String>(proceduralExecutor.getAllVariables().keySet());
+        inScope.addAll(proceduralExecutor.saveCursorNames());
+        inScope.addAll(proceduralExecutor.declaredExceptionNames());
+        ScriptingNameValidator.validate(ctx, inScope);
+
         // Enter a new scope for this block; also snapshot cursors so inner-declared
         // cursors are cleaned up when the block exits.
         proceduralExecutor.enterScope();
         proceduralExecutor.enterBlock();
-        Set<String> savedCursorNames = proceduralExecutor.saveCursorNames();
+        final boolean outermostBlock = proceduralExecutor.getBlockDepth() == 1;
+        if (outermostBlock) {
+            // A failure recorded by an EARLIER block must not label this one's — nothing between two
+            // top-level blocks runs through the per-statement clear.
+            proceduralExecutor.clearStatementFailure();
+        }
+        final Set<String> savedCursorNames = proceduralExecutor.saveCursorNames();
 
         try {
             // Process DECLARE section if present
@@ -109,18 +126,27 @@ public class BeginEndBlockHandler implements CommandHandler {
                     for (final FrostlakeParser.StatementContext stmtCtx : ctx.statementList().statement()) {
                         boolean exitBlock = false;
                         try {
+                            // Each statement in a block reads its own clock (live-verified).
+                            StatementClock.advance();
                             final Object stmtResult = visitor.visit(stmtCtx);
                             if (stmtResult instanceof ResultSet) {
                                 proceduralExecutor.recordSqlRowCount((ResultSet) stmtResult);
                                 queryExecutor.getResultCache().cacheResult(
                                     visitor.getOriginalText(stmtCtx), (ResultSet) stmtResult);
+                            } else if (stmtCtx.proceduralStatement() == null) {
+                                // A plain SQL statement (TRUNCATE, some DDL) that surfaced no result
+                                // set still resets the DML trio and counts one status line.
+                                proceduralExecutor.recordStatementWithoutResult();
                             }
                             // Snowflake: each statement of a stored procedure runs in its own autocommit
                             // transaction (unless an explicit BEGIN is open). Leaving one implicit
                             // transaction spanning the body let a later same-row DELETE consolidate away a
                             // buffered INSERT, so append-only streams missed changes Snowflake captures.
                             queryExecutor.getTransactionManager().autocommitStatementEnd();
+                            proceduralExecutor.clearStatementFailure();
                         } catch (final Exception e) {
+                            proceduralExecutor.recordStatementFailure(stmtCtx.getStart().getLine(),
+                                stmtCtx.getStart().getCharPositionInLine());
                             rollbackFailedStatement();
                             final FrostlakeParser.ExceptionHandlerContext handlerCtx =
                                 findMatchingHandler(ctx.exceptionSection(), e);
@@ -143,13 +169,27 @@ public class BeginEndBlockHandler implements CommandHandler {
             } else {
                 // No exception handling, execute statements directly
                 for (final FrostlakeParser.StatementContext stmtCtx : ctx.statementList().statement()) {
-                    Object stmtResult = visitor.visit(stmtCtx);
+                    StatementClock.advance();
+                    final Object stmtResult;
+                    try {
+                        stmtResult = visitor.visit(stmtCtx);
+                    } catch (final RuntimeException failure) {
+                        // Name the statement that failed, for the uncaught-exception message below.
+                        proceduralExecutor.recordStatementFailure(stmtCtx.getStart().getLine(),
+                            stmtCtx.getStart().getCharPositionInLine());
+                        throw failure;
+                    }
+                    proceduralExecutor.clearStatementFailure();
                     // Cache result sets produced by SHOW/SELECT statements so that
                     // RESULT_SCAN(LAST_QUERY_ID()) works inside BEGIN...END blocks
                     if (stmtResult instanceof ResultSet) {
                         proceduralExecutor.recordSqlRowCount((ResultSet) stmtResult);
                         queryExecutor.getResultCache().cacheResult(
                             visitor.getOriginalText(stmtCtx), (ResultSet) stmtResult);
+                    } else if (stmtCtx.proceduralStatement() == null) {
+                        // A plain SQL statement (TRUNCATE, some DDL) that surfaced no result set
+                        // still resets the DML trio and counts one status line.
+                        proceduralExecutor.recordStatementWithoutResult();
                     }
                     // Per-statement autocommit, as at top level (see the handler-path loop above).
                     queryExecutor.getTransactionManager().autocommitStatementEnd();
@@ -171,8 +211,8 @@ public class BeginEndBlockHandler implements CommandHandler {
                 if (proceduralExecutor.isNestedBlock()) {
                     return null;
                 }
-                Object returnValue = proceduralExecutor.getReturnValue();
-                boolean isReturnTable = proceduralExecutor.isReturnTable();
+                final Object returnValue = proceduralExecutor.getReturnValue();
+                final boolean isReturnTable = proceduralExecutor.isReturnTable();
 
                 // Clear the return state so it doesn't leak to next block
                 proceduralExecutor.clearReturnState();
@@ -184,15 +224,40 @@ public class BeginEndBlockHandler implements CommandHandler {
                 }
 
                 // Otherwise, return the value as a single-row, single-column ResultSet
-                List<ResultSetColumn> columns = new ArrayList<>();
+                final List<ResultSetColumn> columns = new ArrayList<>();
                 columns.add(new ResultSetColumn("RESULT", StringType.VARCHAR, null));
 
-                List<Row> rows = new ArrayList<>();
-                Row row = new Row(returnValue);
+                final List<Row> rows = new ArrayList<>();
+                final Row row = new Row(returnValue);
                 rows.add(row);
 
                 return new ResultSet(columns, rows);
             }
+        } catch (final ProceduralException uncaught) {
+            // An exception no handler caught reads with live's wording at the TOP of the script
+            // only — an enclosing block may still catch it by name, and SQLERRM must keep the raw
+            // text until then.
+            if (outermostBlock && uncaught.getExceptionName() != null) {
+                final ProceduralException formatted = new ProceduralException(
+                    uncaught.getErrorCode(), uncaught.uncaughtMessage(), uncaught.getExceptionName());
+                formatted.setSourcePosition(uncaught.getSourceLine(), uncaught.getSourcePosition());
+                throw formatted;
+            }
+            throw uncaught;
+        } catch (final RuntimeException uncaught) {
+            // A STATEMENT that failed and no handler caught reads the same way, live-verified:
+            // "Uncaught exception of type 'STATEMENT_ERROR' on line L at position P : <error>",
+            // anchored on the statement that failed however deeply it sat (a nested block, an IF
+            // branch, a loop body). Only the OUTERMOST block wraps — an enclosing block may still
+            // handle it, SQLERRM keeps the raw text, and a block that failed to COMPILE never gets
+            // here with a statement position, so a syntax error stays a plain syntax error.
+            if (outermostBlock && proceduralExecutor.getFailureLine() > 0
+                    && !(uncaught instanceof UndeclaredScriptVariableException)) {
+                throw new RuntimeException("Uncaught exception of type 'STATEMENT_ERROR' on line "
+                    + proceduralExecutor.getFailureLine() + " at position "
+                    + proceduralExecutor.getFailurePosition() + " : " + uncaught.getMessage(), uncaught);
+            }
+            throw uncaught;
         } finally {
             // Exit the scope and clean up cursors declared inside this block
             proceduralExecutor.exitScope();
@@ -227,6 +292,7 @@ public class BeginEndBlockHandler implements CommandHandler {
         proceduralExecutor.pushHandledException(e);
         try {
             for (final FrostlakeParser.StatementContext stmtCtx : handlerCtx.statementList().statement()) {
+                StatementClock.advance();
                 visitor.visit(stmtCtx);
                 queryExecutor.getTransactionManager().autocommitStatementEnd();
             }
@@ -310,7 +376,7 @@ public class BeginEndBlockHandler implements CommandHandler {
 
         // Check if it's a named exception handler
         if (condition.identifier() != null) {
-            String exceptionName = visitor.getText(condition.identifier()).toUpperCase();
+            final String exceptionName = visitor.getText(condition.identifier()).toUpperCase();
             return matchesSnowflakeException(exceptionName, e);
         }
 

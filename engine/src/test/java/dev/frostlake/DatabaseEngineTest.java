@@ -21,7 +21,9 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class DatabaseEngineTest {
 
@@ -41,10 +43,10 @@ public class DatabaseEngineTest {
 
     @Test
     public void testCreateDatabase() {
-        ExecutionResult result = engine.execute("CREATE DATABASE test_db");
+        final ExecutionResult result = engine.execute("CREATE DATABASE test_db");
         assertTrue(result.isSuccess(), "Database creation should succeed");
 
-        ResultSet databases = engine.showDatabases();
+        final ResultSet databases = engine.showDatabases();
         assertTrue(databases.getRowCount() > 0, "Should have at least one database");
     }
 
@@ -54,7 +56,7 @@ public class DatabaseEngineTest {
         engine.execute("USE DATABASE test_db");
         engine.execute("CREATE SCHEMA test_schema");
 
-        ResultSet schemas = engine.showSchemas();
+        final ResultSet schemas = engine.showSchemas();
         assertTrue(schemas.getRowCount() > 0, "Should have at least one schema");
     }
 
@@ -73,7 +75,7 @@ public class DatabaseEngineTest {
             )
             """);
 
-        ResultSet tables = engine.showTables();
+        final ResultSet tables = engine.showTables();
         assertEquals(1, tables.getRowCount(), "Should have one table");
     }
 
@@ -96,7 +98,7 @@ public class DatabaseEngineTest {
         engine.execute("INSERT INTO users VALUES (2, 'bob', 30)");
         engine.execute("INSERT INTO users VALUES (3, 'charlie', 35)");
 
-        ResultSet result = engine.executeQuery("SELECT * FROM users");
+        final ResultSet result = engine.executeQuery("SELECT * FROM users");
         assertEquals(3, result.getRowCount(), "Should have 3 rows");
         assertEquals(3, result.getColumnCount(), "Should have 3 columns");
     }
@@ -111,7 +113,7 @@ public class DatabaseEngineTest {
         engine.execute("CREATE TABLE users (id INTEGER, username VARCHAR)");
         engine.execute("CREATE VIEW active_users AS SELECT * FROM users");
 
-        ResultSet views = engine.showViews();
+        final ResultSet views = engine.showViews();
         assertEquals(1, views.getRowCount(), "Should have one view");
     }
 
@@ -163,12 +165,12 @@ public class DatabaseEngineTest {
         engine.execute("USE SCHEMA test_schema");
         engine.execute("CREATE TABLE users (id INTEGER, username VARCHAR)");
 
-        ResultSet tablesBefore = engine.showTables();
+        final ResultSet tablesBefore = engine.showTables();
         assertEquals(1, tablesBefore.getRowCount(), "Should have one table");
 
         engine.execute("DROP TABLE users");
 
-        ResultSet tablesAfter = engine.showTables();
+        final ResultSet tablesAfter = engine.showTables();
         assertEquals(0, tablesAfter.getRowCount(), "Should have no tables");
     }
 
@@ -177,7 +179,7 @@ public class DatabaseEngineTest {
         engine.execute("CREATE DATABASE db1");
         engine.execute("CREATE DATABASE db2");
 
-        ResultSet databases = engine.showDatabases();
+        final ResultSet databases = engine.showDatabases();
         assertTrue(databases.getRowCount() >= 2, "Should have at least 2 databases");
     }
 
@@ -189,7 +191,7 @@ public class DatabaseEngineTest {
         engine.execute("USE SCHEMA test_schema");
         engine.execute("CREATE TABLE users (id INTEGER, name VARCHAR)");
 
-        ResultSet columns = engine.showColumns("users");
+        final ResultSet columns = engine.showColumns("users");
         assertEquals(2, columns.getRowCount(), "Should have 2 columns");
     }
 }

@@ -51,7 +51,7 @@ public class GroupByTest extends BaseDatabaseTest {
 
     @Test
     public void testGroupByWithCount() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT department, COUNT(*) FROM employees GROUP BY department"
         );
 
@@ -59,8 +59,8 @@ public class GroupByTest extends BaseDatabaseTest {
 
         boolean foundEngineering = false;
         for (final Row row : result.getRows()) {
-            String dept = row.getValue(0).toString();
-            long count = ((Number) row.getValue(1)).longValue();
+            final String dept = row.getValue(0).toString();
+            final long count = ((Number) row.getValue(1)).longValue();
 
             if (dept.equals("Engineering")) {
                 foundEngineering = true;
@@ -72,15 +72,15 @@ public class GroupByTest extends BaseDatabaseTest {
 
     @Test
     public void testGroupByWithSum() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT department, SUM(salary) FROM employees GROUP BY department"
         );
 
         assertEquals(3, result.getRowCount());
 
         for (final Row row : result.getRows()) {
-            String dept = row.getValue(0).toString();
-            double totalSalary = ((Number) row.getValue(1)).doubleValue();
+            final String dept = row.getValue(0).toString();
+            final double totalSalary = ((Number) row.getValue(1)).doubleValue();
 
             if (dept.equals("Engineering")) {
                 assertEquals(270000.0, totalSalary, 1.0);
@@ -90,15 +90,15 @@ public class GroupByTest extends BaseDatabaseTest {
 
     @Test
     public void testGroupByWithAvg() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT department, AVG(salary) FROM employees GROUP BY department"
         );
 
         assertEquals(3, result.getRowCount());
 
         for (final Row row : result.getRows()) {
-            String dept = row.getValue(0).toString();
-            double avgSalary = ((Number) row.getValue(1)).doubleValue();
+            final String dept = row.getValue(0).toString();
+            final double avgSalary = ((Number) row.getValue(1)).doubleValue();
 
             if (dept.equals("Sales")) {
                 assertEquals(72500.0, avgSalary, 1.0);
@@ -108,7 +108,7 @@ public class GroupByTest extends BaseDatabaseTest {
 
     @Test
     public void testGroupByWithMinMax() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT department, MIN(age), MAX(age) FROM employees GROUP BY department"
         );
 
@@ -117,7 +117,7 @@ public class GroupByTest extends BaseDatabaseTest {
 
     @Test
     public void testGroupByWithMultipleAggregates() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT department, COUNT(*), AVG(salary), MAX(salary) FROM employees GROUP BY department"
         );
 
@@ -127,7 +127,7 @@ public class GroupByTest extends BaseDatabaseTest {
 
     @Test
     public void testGroupByWithOrderBy() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT department, COUNT(*) FROM employees GROUP BY department ORDER BY COUNT(*) DESC"
         );
 
@@ -140,7 +140,7 @@ public class GroupByTest extends BaseDatabaseTest {
 
     @Test
     public void testGroupByWithWhere() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT department, COUNT(*) FROM employees WHERE salary > 70000 GROUP BY department"
         );
 

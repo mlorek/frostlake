@@ -22,10 +22,10 @@ import org.junit.jupiter.api.function.Executable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.sql.ResultSet;
 import java.sql.SQLException;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class CreateOrReplaceFunctionTest extends BaseJdbcTest {
     private static final Logger logger = LoggerFactory.getLogger(CreateOrReplaceFunctionTest.class);
@@ -60,8 +60,12 @@ public class CreateOrReplaceFunctionTest extends BaseJdbcTest {
         statement.execute("CREATE FUNCTION subtract_numbers(a INTEGER, b INTEGER) RETURNS INTEGER AS 'a - b'");
 
         // Trying to create again without OR REPLACE should fail
-        assertThrows(SQLException.class, () -> {
-            statement.execute("CREATE FUNCTION subtract_numbers(a INTEGER, b INTEGER) RETURNS INTEGER AS 'b - a'");
+        assertThrows(SQLException.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                statement.execute("CREATE FUNCTION subtract_numbers(a INTEGER, b INTEGER) RETURNS INTEGER AS 'b - a'");
+                
+            }
         });
     }
 

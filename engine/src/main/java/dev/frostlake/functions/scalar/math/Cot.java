@@ -27,11 +27,13 @@ public class Cot extends NumericArgumentFunction {
     @Override
     public Object evaluate(final List<Object> args) {
         if (args.get(0) == null) return null;
-        double t = Math.tan(((Number) args.get(0)).doubleValue());
+        final double t = Math.tan(((Number) args.get(0)).doubleValue());
         if (t == 0) throw new RuntimeException("COT: division by zero (tan is 0)");
         return 1.0 / t;
     }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return 1; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return 1; }
 }

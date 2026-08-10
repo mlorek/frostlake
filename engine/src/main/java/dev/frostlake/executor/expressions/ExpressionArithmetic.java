@@ -16,17 +16,18 @@
 
 package dev.frostlake.executor.expressions;
 
+import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.values.BinaryValue;
 import dev.frostlake.values.VariantJsonNulls;
 import dev.frostlake.values.VariantValue;
 import dev.frostlake.values.XmlVariants;
-import tools.jackson.databind.JsonNode;
-import java.time.LocalTime;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.LocalTime;
 import java.time.temporal.ChronoUnit;
+import tools.jackson.databind.JsonNode;
 
 /**
  * Pure arithmetic, temporal and comparison helpers extracted from {@link ExpressionEvaluatorVisitor}:
@@ -155,6 +156,10 @@ final class ExpressionArithmetic {
     }
 
     static Object add(final Object left, final Object right) {
+        return add(left, right, null);
+    }
+
+    static Object add(final Object left, final Object right, final SourcePosition at) {
         if (isJsonNullOperand(left) || isJsonNullOperand(right)) {
             return null;
         }
@@ -168,7 +173,7 @@ final class ExpressionArithmetic {
                 return ((Number) left).doubleValue() + ((Number) right).doubleValue();
             }
             // Otherwise, use BigDecimal for precision
-            BigDecimal result = new BigDecimal(left.toString()).add(new BigDecimal(right.toString()));
+            final BigDecimal result = new BigDecimal(left.toString()).add(new BigDecimal(right.toString()));
             return result;
         }
         // Date/time addition (commutative): temporal + integer (days) or temporal + INTERVAL. Normalize so
@@ -180,7 +185,7 @@ final class ExpressionArithmetic {
                 return applyInterval(temporal, (IntervalValue) other, 1);
             }
             if (other instanceof Number) {
-                rejectTimestampPlusNumber(temporal, other, "+");
+                rejectTimestampPlusNumber(temporal, other, "+", at);
                 return addDays(temporal, ((Number) other).longValue());
             }
         }
@@ -201,7 +206,8 @@ final class ExpressionArithmetic {
      * (live: "Invalid argument types for function '+': (TIMESTAMP_NTZ(9), NUMBER(1,0))"). Only a real
      * TIMESTAMP runtime value rejects — a temporal-looking string stays on the lenient path.
      */
-    private static void rejectTimestampPlusNumber(final Object temporal, final Object number, final String op) {
+    private static void rejectTimestampPlusNumber(final Object temporal, final Object number,
+                                                  final String op, final SourcePosition at) {
         if (!(temporal instanceof LocalDateTime)) {
             return;
         }
@@ -212,8 +218,14 @@ final class ExpressionArithmetic {
         } else {
             numberType = "FLOAT";
         }
-        throw new RuntimeException("SQL compilation error:\nInvalid argument types for function '" + op
-            + "': (TIMESTAMP_NTZ(9), " + numberType + ")");
+        // The same sentence, and the same anchor, as the static channel's: Snowflake points at the
+        // OPERATOR token. The two refusal routes must agree — this one is reached when the value is
+        // computed before its type is (a projection with no FROM), and the static one otherwise.
+        final String detail = "Invalid argument types for function '" + op
+            + "': (TIMESTAMP_NTZ(9), " + numberType + ")";
+        throw new RuntimeException(at != null
+            ? SqlCompilationError.at(at.getLine(), at.getCharPositionInLine(), detail)
+            : SqlCompilationError.of(detail));
     }
 
     /** Whether the value is an approximate (FLOAT) number — Double or Float. */
@@ -222,6 +234,10 @@ final class ExpressionArithmetic {
     }
 
     static Object subtract(final Object left, final Object right) {
+        return subtract(left, right, null);
+    }
+
+    static Object subtract(final Object left, final Object right, final SourcePosition at) {
         if (isJsonNullOperand(left) || isJsonNullOperand(right)) {
             return null;
         }
@@ -245,7 +261,7 @@ final class ExpressionArithmetic {
                 return applyInterval(left, (IntervalValue) right, -1);
             }
             if (right instanceof Number) {
-                rejectTimestampPlusNumber(left, right, "-");
+                rejectTimestampPlusNumber(left, right, "-", at);
                 return addDays(left, -((Number) right).longValue());
             }
             final LocalDateTime rightTemporal = asTemporal(right);
@@ -342,31 +358,47 @@ final class ExpressionArithmetic {
     private static Object applyIntervalPart(final Object temporal, final IntervalValue interval, final int sign) {
         final long amount = sign * interval.getValueAsLong();
         LocalDateTime dt = asTemporal(temporal);
-        boolean preservesDate = false;
         switch (interval.getUnit()) {
-            case YEAR: case YEARS:
+            case YEAR:
                 dt = dt.plusYears(amount);
-                preservesDate = true;
                 break;
-            case MONTH: case MONTHS:
+            case QUARTER:
+                dt = dt.plusMonths(amount * 3);
+                break;
+            case MONTH:
                 dt = dt.plusMonths(amount);
-                preservesDate = true;
                 break;
-            case DAY: case DAYS:
+            case WEEK:
+                dt = dt.plusWeeks(amount);
+                break;
+            case DAY:
                 dt = dt.plusDays(amount);
                 break;
-            case HOUR: case HOURS:
+            case HOUR:
                 dt = dt.plusHours(amount);
                 break;
-            case MINUTE: case MINUTES:
+            case MINUTE:
                 dt = dt.plusMinutes(amount);
                 break;
-            case SECOND: case SECONDS:
+            case SECOND:
                 dt = dt.plusSeconds(amount);
+                break;
+            case MILLISECOND:
+                dt = dt.plusNanos(amount * 1_000_000L);
+                break;
+            case MICROSECOND:
+                dt = dt.plusNanos(amount * 1_000L);
+                break;
+            case NANOSECOND:
+                dt = dt.plusNanos(amount);
                 break;
             default:
                 throw new RuntimeException("Unsupported interval unit: " + interval.getUnit());
         }
+        // A whole-day unit leaves a DATE a DATE. DAY is the exception whose answer also depends on the
+        // SPELLING: `d + INTERVAL '5 days'` stays a DATE, `d + INTERVAL '5' DAY` promotes.
+        final boolean preservesDate = interval.getUnit().isWholeDay()
+            && (interval.getUnit() != IntervalUnit.DAY || interval.isUnitInString());
         return preservesDate && isDateOnly(temporal) ? dt.toLocalDate() : dt;
     }
 
@@ -403,7 +435,7 @@ final class ExpressionArithmetic {
             return null;
         }
         if (left instanceof Number && right instanceof Number) {
-            double divisor = ((Number) right).doubleValue();
+            final double divisor = ((Number) right).doubleValue();
             if (divisor == 0.0) {
                 throw new RuntimeException("Division by zero");
             }
@@ -458,6 +490,14 @@ final class ExpressionArithmetic {
             return false;
         }
         if (left instanceof Number && right instanceof Number) {
+            // Integral and same-type BigDecimal pairs compare directly — the toString/BigDecimal
+            // bridge stays only for Double/Float and mixed pairs, whose semantics it defines.
+            if (isIntegerType(left) && isIntegerType(right)) {
+                return ((Number) left).longValue() == ((Number) right).longValue();
+            }
+            if (left instanceof BigDecimal && right instanceof BigDecimal) {
+                return ((BigDecimal) left).compareTo((BigDecimal) right) == 0;
+            }
             return new BigDecimal(left.toString()).compareTo(new BigDecimal(right.toString())) == 0;
         }
         final Integer booleanNumeric = booleanVsNumber(left, right);
@@ -492,6 +532,13 @@ final class ExpressionArithmetic {
             return 0;
         }
         if (left instanceof Number && right instanceof Number) {
+            // Same fast paths as equals(); bit-identical results for integral types.
+            if (isIntegerType(left) && isIntegerType(right)) {
+                return Long.compare(((Number) left).longValue(), ((Number) right).longValue());
+            }
+            if (left instanceof BigDecimal && right instanceof BigDecimal) {
+                return ((BigDecimal) left).compareTo((BigDecimal) right);
+            }
             return new BigDecimal(left.toString()).compareTo(new BigDecimal(right.toString()));
         }
         final Integer booleanNumeric = booleanVsNumber(left, right);

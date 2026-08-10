@@ -29,9 +29,9 @@ public class AsBoolean extends StructuredArgumentFunction {
     @Override
     public Object evaluate(final List<Object> args) {
         if (args.get(0) == null) return null;
-        Object v = args.get(0);
+        final Object v = args.get(0);
         if (v instanceof Boolean) return v;
-        JsonNode node = JsonTypeHelper.parse(v);
+        final JsonNode node = JsonTypeHelper.parse(v);
         if (node != null) {
             if (node.isBoolean()) return node.asBoolean();
             return null;
@@ -39,6 +39,8 @@ public class AsBoolean extends StructuredArgumentFunction {
         return null;
     }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return 1; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return 1; }
 }

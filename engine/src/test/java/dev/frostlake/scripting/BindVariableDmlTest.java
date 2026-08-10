@@ -113,8 +113,11 @@ public class BindVariableDmlTest extends BaseDatabaseTest {
                 engine.executeQuery("BEGIN INSERT INTO t VALUES (:nope); RETURN 'ok'; END");
             }
         });
-        assertTrue(ex.getMessage().contains("Bind variable not defined"),
-            "unexpected message: " + ex.getMessage());
+        // Live does not call this a bind-variable problem: it reports the NAME as an unresolvable
+        // identifier, at the COLON's offset — measured across INSERT VALUES, UPDATE SET,
+        // UPDATE/DELETE WHERE and a subquery, the position is the colon every time.
+        assertEquals("SQL compilation error: error line 1 at position 28\n"
+            + "invalid identifier 'NOPE'", ex.getMessage());
     }
 
     @Test
@@ -129,5 +132,53 @@ public class BindVariableDmlTest extends BaseDatabaseTest {
         });
         assertTrue(e.getMessage().contains("Bind variable"),
             "expected a missing-bind error, got: " + e.getMessage());
+    }
+
+    /**
+     * Every statement family reports an unresolved {@code :name} at the COLON's offset — live-measured
+     * for INSERT VALUES, UPDATE SET, UPDATE WHERE and DELETE WHERE alike. The expected offset is taken
+     * from the statement itself rather than counted by hand, so the claim is the RULE and not a
+     * transcription of four numbers.
+     */
+    @Test
+    public void everyDmlFamilyReportsTheColonsPosition() {
+        engine.execute("CREATE TABLE bt (id INTEGER, v VARCHAR)");
+        engine.execute("INSERT INTO bt VALUES (1, 'a')");
+        assertBindRefusedAtItsColon("BEGIN INSERT INTO bt VALUES (2, :nope); RETURN 'ok'; END");
+        assertBindRefusedAtItsColon("BEGIN UPDATE bt SET v = :nope WHERE id = 1; RETURN 'ok'; END");
+        assertBindRefusedAtItsColon("BEGIN UPDATE bt SET v = 'z' WHERE id = :nope; RETURN 'ok'; END");
+        assertBindRefusedAtItsColon("BEGIN DELETE FROM bt WHERE id = :nope; RETURN 'ok'; END");
+    }
+
+    private void assertBindRefusedAtItsColon(final String sql) {
+        final RuntimeException ex = assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.executeQuery(sql);
+            }
+        }, sql);
+        assertEquals("SQL compilation error: error line 1 at position " + sql.indexOf(":nope")
+            + "\ninvalid identifier 'NOPE'", ex.getMessage(), sql);
+    }
+
+    /**
+     * A variant path step may be a KEYWORD the grammar admits as an identifier — the colon after
+     * it is still path syntax, not a bind variable, so {@code src:value:attributes:core.x} reads
+     * the nested field instead of refusing ":core" as a dotted bind.
+     */
+    @Test
+    public void testVariantPathStepAfterKeywordNamedField() {
+        engine.execute("CREATE TABLE vt (src VARIANT)");
+        engine.execute("INSERT INTO vt SELECT PARSE_JSON('{\"value\":{\"attributes\":{\"core\":{\"x\":\"deep\"}}}}')");
+
+        final ResultSet result = engine.executeQuery("""
+            DECLARE r STRING;
+            BEGIN
+                SELECT src:value:attributes:core.x::STRING INTO :r FROM vt;
+                RETURN :r;
+            END;
+            """);
+
+        assertEquals("deep", result.getRows().get(0).getValue(0));
     }
 }

@@ -23,13 +23,17 @@ import dev.frostlake.storage.Row;
 /**
  * Example usage of the Frostlake SQL Engine
  */
-public class Main {
+public final class Main {
+
+    /** Static helpers only — never instantiated. */
+    private Main() {
+    }
 
     public static void main(final String[] args) {
         System.out.println("=== Frostlake SQL Engine Demo ===\n");
 
         // Create and initialize the engine
-        DatabaseEngine engine = new DatabaseEngine();
+        final DatabaseEngine engine = new DatabaseEngine();
 
         try {
             // Example 1: Create a database and schema
@@ -62,7 +66,7 @@ public class Main {
 
             // Example 4: Query data
             System.out.println("4. Querying customer data...");
-            ResultSet result = engine.executeQuery("SELECT * FROM customers");
+            final ResultSet result = engine.executeQuery("SELECT * FROM customers");
             printResultSet(result);
 
             // Example 5: Create a view
@@ -72,15 +76,15 @@ public class Main {
 
             // Example 6: Show system information
             System.out.println("6. Showing databases...");
-            ResultSet databases = engine.showDatabases();
+            final ResultSet databases = engine.showDatabases();
             printResultSet(databases);
 
             System.out.println("\n7. Showing tables...");
-            ResultSet tables = engine.showTables();
+            final ResultSet tables = engine.showTables();
             printResultSet(tables);
 
             System.out.println("\n8. Showing columns for customers table...");
-            ResultSet columns = engine.showColumns("customers");
+            final ResultSet columns = engine.showColumns("customers");
             printResultSet(columns);
 
             // Example 9: Transaction example
@@ -101,7 +105,7 @@ public class Main {
             engine.execute("INSERT INTO products VALUES (2, 'Mouse', 29.99)");
             System.out.println("   ✓ Inventory database setup complete\n");
 
-            ResultSet products = engine.executeQuery("SELECT * FROM products");
+            final ResultSet products = engine.executeQuery("SELECT * FROM products");
             printResultSet(products);
 
             System.out.println("\n=== Demo Complete ===");
@@ -138,7 +142,7 @@ public class Main {
         for (final Row row : result.getRows()) {
             System.out.print("   ");
             for (final Object value : row.getValues()) {
-                String displayValue = value != null ? value.toString() : "NULL";
+                final String displayValue = value != null ? value.toString() : "NULL";
                 System.out.printf("%-20s", displayValue);
             }
             System.out.println();

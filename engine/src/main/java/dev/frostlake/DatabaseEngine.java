@@ -21,21 +21,24 @@ import dev.frostlake.config.S3PathResolver;
 import dev.frostlake.executor.ProceduralExecutor;
 import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.executor.QueryResultCache;
-import dev.frostlake.values.VariantJsonFormat;
+import dev.frostlake.executor.StatementClock;
 import dev.frostlake.executor.udf.UdfLanguageRuntime;
 import dev.frostlake.executor.udf.UdfRuntimes;
 import dev.frostlake.functions.FunctionRegistry;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.model.Database;
+import dev.frostlake.metastore.model.Function;
+import dev.frostlake.metastore.model.Procedure;
 import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.metastore.model.Table;
+import dev.frostlake.metastore.model.View;
 import dev.frostlake.parser.SqlSyntaxException;
 import dev.frostlake.persistence.CatalogSnapshot;
 import dev.frostlake.persistence.MemoryTableDataStore;
 import dev.frostlake.persistence.PersistenceManager;
-import dev.frostlake.persistence.WalStatementKinds;
 import dev.frostlake.persistence.WalRecord;
 import dev.frostlake.persistence.WalRecordType;
+import dev.frostlake.persistence.WalStatementKinds;
 import dev.frostlake.persistence.WriteAheadLog;
 import dev.frostlake.security.SecurityManager;
 import dev.frostlake.security.SessionContext;
@@ -46,20 +49,17 @@ import dev.frostlake.system.SystemViews;
 import dev.frostlake.task.TaskExecutor;
 import dev.frostlake.task.TaskScheduler;
 import dev.frostlake.transaction.TransactionManager;
-import dev.frostlake.transaction.TransactionWriteSet;
 import dev.frostlake.transaction.WalSink;
+import dev.frostlake.transaction.WriteSetSavepoint;
+import dev.frostlake.values.VariantJsonFormat;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.nio.file.DirectoryStream;
-import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Instant;
-import java.time.LocalDateTime;
-import java.nio.file.SimpleFileVisitor;
-import java.nio.file.attribute.BasicFileAttributes;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -124,18 +124,20 @@ public class DatabaseEngine {
         this.catalog.setS3PathResolver(queryExecutor.getS3PathResolver());
         // Let the catalog stamp the session's current role as owner on newly-created objects.
         this.catalog.setSessionContext(sessionContext);
+        this.transactionManager.setSessionContext(sessionContext);
 
         // Create TaskExecutor that delegates to QueryExecutor. Each task statement passes through the
         // same statement-end autocommit chokepoint as top-level execute(): the scheduler thread has
         // its own thread-local implicit transaction, and without the commit here a task's DML stayed
         // uncommitted forever — invisible to every other thread.
-        TaskExecutor taskExecutor = new TaskExecutor() {
+        final TaskExecutor taskExecutor = new TaskExecutor() {
             @Override
             public int execute(final String sql) {
                 // Serialize with direct-connection statements (same monitor): the scheduler thread
                 // must not interleave with an interactive statement inside the engine's procedural
                 // state.
                 synchronized (DatabaseEngine.this) {
+                    persistenceManager.noteStatementExecuted();
                     final List<ResultSet> results = queryExecutor.execute(sql);
                     transactionManager.autocommitStatementEnd();
                     // DML statements report their affected-row count as a Snowflake-style result set.
@@ -146,6 +148,7 @@ public class DatabaseEngine {
             @Override
             public List<ResultSet> executeQuery(final String sql) {
                 synchronized (DatabaseEngine.this) {
+                    persistenceManager.noteStatementExecuted();
                     final List<ResultSet> results = queryExecutor.execute(sql);
                     transactionManager.autocommitStatementEnd();
                     return results;
@@ -173,6 +176,10 @@ public class DatabaseEngine {
             checkpointSeq = scanMaxCheckpointSeq();
             replayWal();
         }
+
+        // After every restore path, so an existing database survives untouched and the
+        // exists-check sees the restored world.
+        applyConfiguredDefaults();
 
         // Last, so the arming scan sees every task both restore paths brought back.
         if (config.isTaskSchedulerAutoStart()) {
@@ -276,6 +283,9 @@ public class DatabaseEngine {
      * which is what it did before.
      */
     private void replayTransaction(final List<String> statements, final WalRecord record) {
+        // While replaying, a procedural block's inner statements must NOT advance the clock —
+        // the log recorded one instant per outer statement, and replay keeps it.
+        StatementClock.setReplay(true);
         try {
             if (statements.size() == 1) {
                 queryExecutor.setNextStatementInstant(record.getStatementInstant(0));
@@ -297,6 +307,8 @@ public class DatabaseEngine {
                     // best-effort — a failed replay must not abort recovery of the remaining records
                 }
             }
+        } finally {
+            StatementClock.setReplay(false);
         }
     }
 
@@ -463,7 +475,7 @@ public class DatabaseEngine {
         // Create the default user and set it as the current session user.
         // Security enforcement continues to use the SYSTEM bypass for existing behaviour;
         // the default user is visible via CURRENT_USER() and in query history.
-        String defaultUser = config.getDefaultUser();
+        final String defaultUser = config.getDefaultUser();
         try {
             catalog.getUser(defaultUser);
         } catch (final RuntimeException e) {
@@ -472,6 +484,30 @@ public class DatabaseEngine {
         catalog.grantRoleToUser("ORGADMIN", defaultUser);
         catalog.grantRoleToUser("ACCOUNTADMIN", defaultUser);
         sessionContext.setDisplayUser(defaultUser);
+    }
+
+    /**
+     * Point the fresh session at the configured default database/schema ({@code database.default}
+     * / {@code schema.default}), creating them on first boot. The built-in read-only SNOWFLAKE
+     * database stays the default when the properties are unset — which is exactly why the
+     * properties exist: a writable landing database for servers and containers.
+     */
+    private void applyConfiguredDefaults() {
+        final String defaultDatabase = config.getDefaultDatabase().toUpperCase();
+        final String defaultSchema = config.getDefaultSchema().toUpperCase();
+        try {
+            catalog.getDatabase(defaultDatabase);
+        } catch (final RuntimeException e) {
+            catalog.createDatabase(defaultDatabase);
+        }
+        catalog.useDatabase(defaultDatabase);
+        final Database database = catalog.getDatabase(defaultDatabase);
+        try {
+            database.getSchema(defaultSchema);
+        } catch (final RuntimeException e) {
+            database.addSchema(new Schema(defaultSchema));
+        }
+        catalog.useSchema(defaultSchema);
     }
 
     private void initializePersistence() {
@@ -503,6 +539,7 @@ public class DatabaseEngine {
      * Execute a SQL statement or script
      */
     public ExecutionResult execute(final String sql) {
+        sessionContext.setCurrentStatement(sql);
         logger.debug("Executing SQL: {}", sql);
 
         // Bind this session's JSON_INDENT for the statement's duration. Reading it per statement,
@@ -513,13 +550,15 @@ public class DatabaseEngine {
         // Snowflake: a failed statement inside an explicit transaction rolls back ITSELF but leaves the
         // transaction open. In deferred-apply mode, snapshot the write set so we can restore exactly this
         // statement's changes on failure (statement-level rollback); otherwise fall back to full rollback.
-        final TransactionWriteSet stmtSavepoint =
+        final WriteSetSavepoint stmtSavepoint =
             (config.isDeferredApply() && transactionManager.isExplicitTransaction())
-                ? transactionManager.getCurrentTransaction().getWriteSet().copy() : null;
+                ? transactionManager.getCurrentTransaction().getWriteSet().beginStatementSavepoint() : null;
 
         try {
-            // Parse and execute the SQL
-            List<ResultSet> results = queryExecutor.execute(sql);
+            // Parse and execute the SQL. Dirty-mark BEFORE executing: an attempt is enough (see
+            // noteStatementExecuted), and marking after a success would miss failure side effects.
+            persistenceManager.noteStatementExecuted();
+            final List<ResultSet> results = queryExecutor.execute(sql);
 
             // Record this statement for the WAL before the autocommit commit, so the commit logs it as part
             // of its transaction; an explicit BEGIN…COMMIT buffers each statement until COMMIT.
@@ -533,7 +572,11 @@ public class DatabaseEngine {
             maybeAutoCheckpoint();
 
             // Get the query ID from the result cache
-            String queryId = queryExecutor.getResultCache().getLastQueryId();
+            final String queryId = queryExecutor.getResultCache().getLastQueryId();
+
+            if (stmtSavepoint != null && transactionManager.isExplicitTransaction()) {
+                transactionManager.getCurrentTransaction().getWriteSet().endStatementSavepoint();
+            }
 
             return new ExecutionResult(true, results, null, queryId);
 
@@ -557,9 +600,9 @@ public class DatabaseEngine {
      * before the statement. Otherwise (implicit/autocommit txn, or legacy immediate-apply) roll back the
      * whole transaction, which for an autocommit statement is exactly that one statement.
      */
-    private void rollbackFailedStatement(final TransactionWriteSet stmtSavepoint) {
+    private void rollbackFailedStatement(final WriteSetSavepoint stmtSavepoint) {
         if (stmtSavepoint != null && transactionManager.isExplicitTransaction()) {
-            transactionManager.getCurrentTransaction().getWriteSet().restoreFrom(stmtSavepoint);
+            transactionManager.getCurrentTransaction().getWriteSet().rollbackToSavepoint(stmtSavepoint);
         } else if (transactionManager.hasActiveTransaction()) {
             try {
                 transactionManager.rollback();
@@ -573,7 +616,8 @@ public class DatabaseEngine {
      * Execute a query and return a single result set
      */
     public ResultSet executeQuery(final String sql) {
-        ExecutionResult result = execute(sql);
+        sessionContext.setCurrentStatement(sql);
+        final ExecutionResult result = execute(sql);
         if (!result.isSuccess()) {
             throw new RuntimeException("Query execution failed: " + result.getErrorMessage());
         }
@@ -587,7 +631,7 @@ public class DatabaseEngine {
      * Execute an update statement (INSERT, UPDATE, DELETE)
      */
     public int executeUpdate(final String sql) {
-        ExecutionResult result = execute(sql);
+        final ExecutionResult result = execute(sql);
         if (!result.isSuccess()) {
             throw new RuntimeException("Update execution failed: " + result.getErrorMessage());
         }
@@ -825,17 +869,45 @@ public class DatabaseEngine {
         return sessionContext.getCurrentRole();
     }
 
-    private void dropTemporaryTables() {
+    /**
+     * Discard everything created TEMPORARY when the session ends — tables, and equally the views,
+     * functions and procedures the temporary spellings can now create.
+     *
+     * <p>A temporary object's lifetime is the session, live-verified for all four kinds: a second
+     * session sees neither the view ({@code Object 'V' does not exist or not authorized}) nor the
+     * routine ({@code Unknown function F}). Frostlake keeps one namespace per catalog, so it models
+     * that lifetime rather than the isolation — see the divergence recorded on the temporary-object
+     * tests.
+     */
+    private void dropTemporaryObjects() {
         for (final Database db : catalog.getAllDatabases()) {
             for (final Schema schema : db.getAllSchemas()) {
                 for (final Table table : new ArrayList<>(schema.getTables())) {
                     if (table.isTemporary()) {
-                        String fqn = db.getName() + "." + schema.getName() + "." + table.getName();
+                        final String fqn = db.getName() + "." + schema.getName() + "." + table.getName();
                         schema.dropTable(table.getName());
                         if (storageEngine.hasTable(fqn)) {
                             storageEngine.dropTable(fqn);
                         }
                         logger.debug("Dropped temporary table: {}", fqn);
+                    }
+                }
+                for (final View view : new ArrayList<>(schema.getViews())) {
+                    if (view.isTemporary()) {
+                        schema.dropView(view.getName());
+                        logger.debug("Dropped temporary view: {}", view.getName());
+                    }
+                }
+                for (final Function function : new ArrayList<>(schema.getFunctions())) {
+                    if (function.isTemporary()) {
+                        schema.dropFunction(function.getName());
+                        logger.debug("Dropped temporary function: {}", function.getName());
+                    }
+                }
+                for (final Procedure procedure : new ArrayList<>(schema.getProcedures())) {
+                    if (procedure.isTemporary()) {
+                        schema.dropProcedure(procedure.getName());
+                        logger.debug("Dropped temporary procedure: {}", procedure.getName());
                     }
                 }
             }
@@ -865,7 +937,7 @@ public class DatabaseEngine {
             wal.close();
         }
 
-        dropTemporaryTables();
+        dropTemporaryObjects();
 
         // Save catalog before shutdown (snapshot-persistence mode only: with the WAL on, the log
         // already holds everything committed and startup ignores snapshot persistence anyway).

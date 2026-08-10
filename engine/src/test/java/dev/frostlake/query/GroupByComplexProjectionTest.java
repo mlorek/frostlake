@@ -16,12 +16,10 @@
 
 package dev.frostlake.query;
 
-import dev.frostlake.DatabaseEngine;
+import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.Row;
 
-import org.junit.jupiter.api.AfterAll;
-import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
 import java.util.Arrays;
@@ -37,30 +35,18 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
  * boolean, function of the group keys); these now evaluate on a representative group row via the
  * AST evaluator (group keys are constant within a group).
  */
-public class GroupByComplexProjectionTest {
+public class GroupByComplexProjectionTest extends BaseDatabaseTest {
 
-    private static DatabaseEngine engine;
-
-    @BeforeAll
-    public static void setup() {
-        engine = new DatabaseEngine();
+    @Override
+    protected void setupTest() {
         engine.execute("CREATE DATABASE IF NOT EXISTS test_db");
-        engine.execute("USE DATABASE test_db");
-        engine.execute("USE SCHEMA public");
         engine.execute("CREATE TABLE gp (a INT, b INT, name VARCHAR)");
         engine.execute("INSERT INTO gp VALUES (1, 1, 'x'), (1, 0, 'x'), (0, 0, 'y')");
     }
 
-    @AfterAll
-    public static void teardown() {
-        if (engine != null) {
-            engine.shutdown();
-        }
-    }
-
-    private static Set<String> projectedColumn0(final String sql) {
-        ResultSet rs = engine.executeQuery(sql);
-        Set<String> vals = new HashSet<>();
+    private Set<String> projectedColumn0(final String sql) {
+        final ResultSet rs = engine.executeQuery(sql);
+        final Set<String> vals = new HashSet<>();
         for (final Row r : rs.getRows()) {
             vals.add(String.valueOf(r.getValue(0)));
         }

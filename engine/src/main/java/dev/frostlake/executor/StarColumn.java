@@ -29,13 +29,27 @@ public final class StarColumn {
     private final String outputName;
     private final String sourceName;
     private final DataType dataType;
+    private final boolean nullable;
+    private final boolean nullabilityKnown;
 
     public StarColumn(final String expression, final String outputName, final String sourceName,
                       final DataType dataType) {
+        this(expression, outputName, sourceName, dataType, true);
+    }
+
+    public StarColumn(final String expression, final String outputName, final String sourceName,
+                      final DataType dataType, final boolean nullable) {
+        this(expression, outputName, sourceName, dataType, nullable, !nullable);
+    }
+
+    public StarColumn(final String expression, final String outputName, final String sourceName,
+                      final DataType dataType, final boolean nullable, final boolean nullabilityKnown) {
         this.expression = expression;
         this.outputName = outputName;
         this.sourceName = sourceName;
         this.dataType = dataType;
+        this.nullable = nullable;
+        this.nullabilityKnown = nullabilityKnown;
     }
 
     public String getExpression() {
@@ -52,6 +66,18 @@ public final class StarColumn {
 
     public DataType getDataType() {
         return dataType;
+    }
+
+    /** Whether the projected column accepts NULL — false only for a NOT NULL source column that the
+     *  star projects as itself, since a REPLACE substitutes an expression. */
+    public boolean isNullable() {
+        return nullable;
+    }
+
+    /** Whether the nullability above was read off a real column rather than defaulted — false for a
+     *  REPLACE'd column, which projects an expression. */
+    public boolean isNullabilityKnown() {
+        return nullabilityKnown;
     }
 
     /** Whether the output name differs from the source column name (RENAME applied). */

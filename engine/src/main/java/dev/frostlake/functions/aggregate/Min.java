@@ -34,35 +34,9 @@ public class Min extends AggregateFunction {
     @Override
     public Object evaluate(final List<Object> args) { return null; }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return 1; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return 1; }
 
-    private static class MinAccumulator implements Accumulator {
-        private Comparable min = null;
-
-        @Override
-        @SuppressWarnings("unchecked")
-        public void accumulate(final Object value) {
-            if (value != null && value instanceof Comparable) {
-                if (min == null || ((Comparable) value).compareTo(min) < 0) {
-                    min = (Comparable) value;
-                }
-            }
-        }
-
-        @Override
-        public Object getResult() { return min; }
-
-        @Override
-        public void reset() { min = null; }
-
-        @Override
-        @SuppressWarnings("unchecked")
-        public void merge(final Accumulator other) {
-            Comparable otherMin = ((MinAccumulator) other).min;
-            if (otherMin != null && (min == null || otherMin.compareTo(min) < 0)) {
-                min = otherMin;
-            }
-        }
-    }
 }

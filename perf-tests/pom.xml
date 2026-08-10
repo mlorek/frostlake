@@ -47,10 +47,18 @@
 
         <!-- Embedded in-memory databases (Derby, H2, SQLite, HSQLDB, DuckDB) compared against
              the engine in the perf harness. -->
+        <!-- 10.16 is Derby's Java 17 line (10.17 requires a newer JDK than the engine targets),
+             and since 10.15 the embedded JDBC driver class ships in derbytools, not derby. -->
         <dependency>
             <groupId>org.apache.derby</groupId>
             <artifactId>derby</artifactId>
-            <version>10.17.1.0</version>
+            <version>10.16.1.1</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.derby</groupId>
+            <artifactId>derbytools</artifactId>
+            <version>10.16.1.1</version>
             <scope>test</scope>
         </dependency>
         <dependency>
@@ -75,6 +83,28 @@
             <groupId>org.duckdb</groupId>
             <artifactId>duckdb_jdbc</artifactId>
             <version>1.5.3.0</version>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- The UDF harness benchmarks one UDF per language, so every optional runtime module
+             has to be on the harness classpath — the engine itself only discovers them through
+             the UdfLanguageRuntime SPI. -->
+        <dependency>
+            <groupId>dev.frostlake</groupId>
+            <artifactId>frostlake-rt-js</artifactId>
+            <version>${project.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>dev.frostlake</groupId>
+            <artifactId>frostlake-rt-py</artifactId>
+            <version>${project.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>dev.frostlake</groupId>
+            <artifactId>frostlake-rt-scala</artifactId>
+            <version>${project.version}</version>
             <scope>test</scope>
         </dependency>
     </dependencies>

@@ -16,13 +16,15 @@
 
 package dev.frostlake.executor.expressions;
 
+import dev.frostlake.executor.ParseTreeText;
+import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.executor.SqlStringLiterals;
 import dev.frostlake.executor.commands.DataTypeParser;
 import dev.frostlake.parser.FrostlakeBaseVisitor;
-import dev.frostlake.executor.ParseTreeText;
 import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.types.DataType;
+import dev.frostlake.types.NumericLiteralTypes;
 import dev.frostlake.types.StructuredTypes;
 import dev.frostlake.types.VectorType;
 import dev.frostlake.values.BinaryValue;
@@ -97,7 +99,8 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
             }
         }
         if (lit.FLOAT_LITERAL() != null) {
-            return new LiteralExpression(new BigDecimal(lit.getText()), LiteralType.DECIMAL);
+            return new LiteralExpression(NumericLiteralTypes.exactValue(lit.getText()),
+                LiteralType.DECIMAL);
         }
         if (lit.STRING_LITERAL() != null) {
             return new LiteralExpression(unquoteString(lit.getText()), LiteralType.STRING);
@@ -169,7 +172,28 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
         final SourcePosition position =
             new SourcePosition(qn.getStart().getLine(), qn.getStart().getCharPositionInLine());
         if (parts.length == 1) {
-            return new ColumnReferenceExpression(null, parts[0], position);
+            // An UNQUOTED bare DEFAULT never resolves to a column, even when one of that name exists:
+            // live answers "invalid identifier 'DEFAULT'" for `SELECT default FROM d` over a table that
+            // HAS a DEFAULT column, while `SELECT "DEFAULT" FROM d` reads it. The word is the DML
+            // marker, and outside the two places that marker stands (a SET value, a VALUES item) it is
+            // a name that cannot be found. The quoted spelling arrives through identifier() and is
+            // untouched by this.
+            if (qn.nameStartPart().identifier() == null && qn.nameStartPart().DEFAULT() != null) {
+                // A MARKER, not a refusal: standing alone as a DML value the word means "this column's
+                // declared default", and the write paths take it there. Every other route evaluates it,
+                // and the evaluator raises live's "invalid identifier 'DEFAULT'" — which is what live
+                // answers for `SET c = DEFAULT + 1` and for `SELECT default FROM d` alike.
+                return new DefaultMarkerExpression(position);
+            }
+            // A single-part $N keeps its canonical COLUMN<N> name but is marked POSITIONAL, so
+            // resolution can read the Nth column by place when no relation carries that name.
+            final FrostlakeParser.IdentifierContext soleName = qn.nameStartPart().identifier();
+            final int ordinal = soleName != null && soleName.POSITIONAL_PARAMETER() != null
+                ? Integer.parseInt(soleName.POSITIONAL_PARAMETER().getText().substring(1)) : 0;
+            final ColumnReferenceExpression bare =
+                new ColumnReferenceExpression(null, parts[0], position, ordinal);
+            bare.setWrittenName(writtenQualifiedName(qn));
+            return bare;
         }
         final String column = parts[parts.length - 1];
         final StringBuilder table = new StringBuilder();
@@ -179,7 +203,23 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
             }
             table.append(parts[i]);
         }
-        return new ColumnReferenceExpression(table.toString(), column, position);
+        final ColumnReferenceExpression qualified =
+            new ColumnReferenceExpression(table.toString(), column, position);
+        qualified.setWrittenName(writtenQualifiedName(qn));
+        return qualified;
+    }
+
+    /**
+     * The reference AS WRITTEN — each part quoted-verbatim or upper-cased, joined by dots. This is the
+     * spelling live echoes when the name resolves to nothing.
+     */
+    private String writtenQualifiedName(final FrostlakeParser.QualifiedNameContext qn) {
+        final StringBuilder written = new StringBuilder(
+            SqlIdentifiers.spellAsWritten(qn.nameStartPart().getText()));
+        for (final FrostlakeParser.NamePartContext part : qn.namePart()) {
+            written.append('.').append(SqlIdentifiers.spellAsWritten(part.getText()));
+        }
+        return written.toString();
     }
 
     @Override
@@ -241,7 +281,7 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
                 op = BinaryOperator.MODULO;
                 break;
         }
-        return binary(ctx.expression(0), op, ctx.expression(1));
+        return binary(ctx.expression(0), op, ctx.expression(1), ctx.op);
     }
 
     @Override
@@ -249,12 +289,13 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
         final BinaryOperator op = ctx.op.getType() == FrostlakeParser.PLUS
             ? BinaryOperator.ADD
             : BinaryOperator.SUBTRACT;
-        return binary(ctx.expression(0), op, ctx.expression(1));
+        return binary(ctx.expression(0), op, ctx.expression(1), ctx.op);
     }
 
     @Override
     public Expression visitConcatExpr(final FrostlakeParser.ConcatExprContext ctx) {
-        return binary(ctx.expression(0), BinaryOperator.CONCAT, ctx.expression(1));
+        return binary(ctx.expression(0), BinaryOperator.CONCAT, ctx.expression(1),
+            ctx.PIPE_PIPE() != null ? ctx.PIPE_PIPE().getSymbol() : null);
     }
 
     @Override
@@ -376,12 +417,12 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
     @Override
     public Expression visitSimpleCaseExpr(final FrostlakeParser.SimpleCaseExprContext ctx) {
         final Expression operand = visit(ctx.expression());
-        final List<CaseExpression.WhenClause> whens = new ArrayList<>();
+        final List<WhenClause> whens = new ArrayList<>();
         for (final FrostlakeParser.WhenClauseContext when : ctx.whenClause()) {
             // CASE x WHEN v THEN r  ==>  condition (x = v); booleanExpr(0)=WHEN value, booleanExpr(1)=THEN result
             final Expression condition = new BinaryOperationExpression(
                 operand, BinaryOperator.EQUAL, visit(when.booleanExpr(0)));
-            whens.add(new CaseExpression.WhenClause(condition, visit(when.booleanExpr(1))));
+            whens.add(new WhenClause(condition, visit(when.booleanExpr(1))));
         }
         final Expression elseExpr = ctx.booleanExpr() != null ? visit(ctx.booleanExpr()) : null;
         return new CaseExpression(whens, elseExpr);
@@ -389,9 +430,9 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
 
     @Override
     public Expression visitSearchedCaseExpr(final FrostlakeParser.SearchedCaseExprContext ctx) {
-        final List<CaseExpression.WhenClause> whens = new ArrayList<>();
+        final List<WhenClause> whens = new ArrayList<>();
         for (final FrostlakeParser.WhenClauseContext when : ctx.whenClause()) {
-            whens.add(new CaseExpression.WhenClause(visit(when.booleanExpr(0)), visit(when.booleanExpr(1))));
+            whens.add(new WhenClause(visit(when.booleanExpr(0)), visit(when.booleanExpr(1))));
         }
         // SearchedCase has a single (optional) ELSE booleanExpr directly under the rule.
         final Expression elseExpr = ctx.booleanExpr() != null ? visit(ctx.booleanExpr()) : null;
@@ -545,7 +586,7 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
         try {
             return new IntervalExpression(
                 new LiteralExpression(Long.parseLong(amount), LiteralType.INTEGER),
-                IntervalUnit.valueOf(ctx.intervalUnitSingular().getText().toUpperCase()));
+                IntervalUnit.fromSpelling(ctx.intervalUnitSingular().getText()));
         } catch (final NumberFormatException badNumber) {
             throw notPorted("INTERVAL literal (non-integer amount '" + amount + "')", ctx);
         }
@@ -577,10 +618,11 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
             if (unitStr.isEmpty()) {
                 unit = IntervalUnit.SECOND;
             } else {
-                try {
-                    unit = IntervalUnit.valueOf(unitStr);
-                } catch (final IllegalArgumentException unknownUnit) {
-                    throw notPorted("INTERVAL string literal (unrecognized unit '" + unitStr + "')", ctx);
+                unit = IntervalUnit.fromSpelling(unitStr);
+                if (unit == null) {
+                    // Live's own sentence for a unit word it does not know, echoing it AS WRITTEN.
+                    throw new RuntimeException(SqlCompilationError.of(
+                        part.substring(digitEnd).trim() + " is not recognized as a date type."));
                 }
             }
             try {
@@ -590,7 +632,38 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
                 throw notPorted("INTERVAL string literal (non-integer amount '" + numStr + "')", ctx);
             }
         }
+        chain.markUnitInString();
         return chain;
+    }
+
+    @Override
+    public Expression visitPositionInExpr(final FrostlakeParser.PositionInExprContext ctx) {
+        // ANSI POSITION(<needle> IN <haystack>) — the same call the two-argument function form makes,
+        // in the argument order live uses: POSITION('b' IN 'abcabc') is 2, exactly as POSITION('b',
+        // 'abcabc') is. There is no ANSI FROM tail; live refuses POSITION('b' IN s FROM 3).
+        //
+        // The spelling is POSITION's ALONE. Any other name reaching here wrote a membership test with
+        // an unparenthesised right side — live reads `CHARINDEX('b' IN s)` that way and refuses it at
+        // the OPERAND after IN, naming that token: "syntax error line 1 at position 24 unexpected 's'".
+        // Refusing here rather than in the grammar is what lets the sentence say that: a predicate on
+        // the alternative would kill the parse at the function name instead.
+        if (!"POSITION".equalsIgnoreCase(ctx.functionName().getText())) {
+            final Token operand = ctx.expression(1).getStart();
+            final SourcePosition within = new SourcePosition(
+                operand.getLine(), operand.getCharPositionInLine());
+            final SourcePosition at = ExpressionSource.resolve(within);
+            final SourcePosition where = at == null ? within : at;
+            throw new RuntimeException("SQL compilation error:\nsyntax error line "
+                + where.getLine() + " at position " + where.getCharPositionInLine()
+                + " unexpected '" + operand.getText() + "'.");
+        }
+        final List<Expression> args = new ArrayList<>();
+        args.add(visit(ctx.expression(0)));
+        args.add(visit(ctx.expression(1)));
+        final FunctionCallExpression call = new FunctionCallExpression("POSITION", args, false, false);
+        call.setPosition(new SourcePosition(
+            ctx.getStart().getLine(), ctx.getStart().getCharPositionInLine()));
+        return call;
     }
 
     @Override
@@ -609,7 +682,15 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
             : unquoteString(ctx.STRING_LITERAL().getText());
         args.add(new LiteralExpression(part, LiteralType.STRING));
         args.add(visit(ctx.expression()));
-        return new FunctionCallExpression(ctx.functionName().getText().toUpperCase(), args);
+        final FunctionCallExpression positionedCall =
+            // CANONICAL, not blind upper-case: a quoted function name keeps its case, so `"sum"(a)`
+            // resolves to nothing (live: Unknown function "sum".) where `"SUM"(a)` and `sum(a)` both
+            // find SUM. Upper-casing through the quotes made all three the same call.
+            new FunctionCallExpression(
+                SqlIdentifiers.canonicalText(ctx.functionName().getText()), args);
+        positionedCall.setPosition(new SourcePosition(
+            ctx.getStart().getLine(), ctx.getStart().getCharPositionInLine()));
+        return positionedCall;
     }
 
     @Override
@@ -617,7 +698,13 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
         if (ctx.overClause() != null) {
             // A window call nested in an expression stays in the AST as a node keyed by its source text;
             // the window stage precomputes its per-row value and supplies it through the result context.
-            return new WindowFunctionExpression(originalText(ctx));
+            // The NAME and ARGUMENTS ride along unused by evaluation, so the static channel can type the
+            // functions that hand their argument back — reading them off the parse tree here rather than
+            // re-parsing the call text later.
+            final WindowFunctionExpression window = new WindowFunctionExpression(originalText(ctx));
+            window.describeCall(ctx.functionName().getText().toUpperCase(),
+                argList(ctx.functionArgList()));
+            return window;
         }
         if (ctx.functionName().KW_IDENTIFIER() != null) {
             // IDENTIFIER('fn') / IDENTIFIER($var) as the function name — resolved per evaluation, so a
@@ -627,11 +714,32 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
                 visit(ctx.functionName().expression()),
                 argList(ctx.functionArgList()));
         }
-        return new FunctionCallExpression(
-            ctx.functionName().getText().toUpperCase(),
+        final FunctionCallExpression call = new FunctionCallExpression(
+            // CANONICAL, not blind upper-case: a quoted function name keeps its case, so `"sum"(a)`
+            // resolves to nothing — live answers Unknown function "sum". — where `"SUM"(a)` and
+            // `sum(a)` both find SUM. Upper-casing through the quotes made all three one call.
+            SqlIdentifiers.canonicalText(ctx.functionName().getText()),
             argList(ctx.functionArgList()),
             ctx.DISTINCT() != null,
             false);
+        call.setNameParts(functionNameParts(ctx.functionName()));
+        call.setPosition(new SourcePosition(
+            ctx.getStart().getLine(), ctx.getStart().getCharPositionInLine()));
+        return call;
+    }
+
+    /** Canonical per-identifier parts of a function name, or null when it has no identifier parts
+     *  (LIKE/ILIKE keyword calls) — the flattened text spelling stands alone then. */
+    private List<String> functionNameParts(final FrostlakeParser.FunctionNameContext nameCtx) {
+        final List<FrostlakeParser.IdentifierContext> ids = nameCtx.identifier();
+        if (ids == null || ids.isEmpty()) {
+            return null;
+        }
+        final List<String> parts = new ArrayList<>();
+        for (final FrostlakeParser.IdentifierContext id : ids) {
+            parts.add(ParseTreeText.getIdentifier(id));
+        }
+        return parts;
     }
 
     /** A named argument's value expression; a bare subquery value (INPUT => SELECT ...) becomes a
@@ -658,18 +766,32 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
             names.add(na.identifier().getText());
             args.add(namedArgumentValue(na));
         }
-        return new FunctionCallExpression(ctx.functionName().getText().toUpperCase(), args, names);
+        final FunctionCallExpression namedCall =
+            new FunctionCallExpression(
+                SqlIdentifiers.canonicalText(ctx.functionName().getText()), args, names);
+        namedCall.setPosition(new SourcePosition(
+            ctx.getStart().getLine(), ctx.getStart().getCharPositionInLine()));
+        return namedCall;
     }
 
     @Override
     public Expression visitTupleInListExpr(final FrostlakeParser.TupleInListExprContext ctx) {
-        return new TupleInExpression(
+        final List<List<Expression>> rows = new ArrayList<>();
+        for (final FrostlakeParser.TupleRowContext row : ctx.tupleRow()) {
+            rows.add(argList(row.expressionList()));
+        }
+        return TupleInExpression.ofTupleRows(argList(ctx.expressionList()), rows, ctx.NOT() != null);
+    }
+
+    @Override
+    public Expression visitTupleInFlatListExpr(final FrostlakeParser.TupleInFlatListExprContext ctx) {
+        return TupleInExpression.ofFlatList(
             argList(ctx.expressionList(0)), argList(ctx.expressionList(1)), ctx.NOT() != null);
     }
 
     @Override
     public Expression visitTupleInSubqueryExpr(final FrostlakeParser.TupleInSubqueryExprContext ctx) {
-        return new TupleInExpression(
+        return TupleInExpression.ofSubquery(
             argList(ctx.expressionList()),
             new SubqueryExpression(originalText(ctx.selectStatement())),
             ctx.NOT() != null);
@@ -677,9 +799,11 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
 
     @Override
     public Expression visitBindVarExpr(final FrostlakeParser.BindVarExprContext ctx) {
+        // From the CONTEXT's start, not the identifier's: live reports the colon's offset.
         return new BindVariableExpression(ctx.identifier() != null
             ? ctx.identifier().getText()
-            : ctx.INTEGER_LITERAL().getText());
+            : ctx.INTEGER_LITERAL().getText(),
+            new SourcePosition(ctx.getStart().getLine(), ctx.getStart().getCharPositionInLine()));
     }
 
     @Override
@@ -719,7 +843,8 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
             names.add(na.identifier().getText());
             args.add(namedArgumentValue(na));
         }
-        return new FunctionCallExpression(ctx.functionName().getText().toUpperCase(), args, names);
+        return new FunctionCallExpression(
+            SqlIdentifiers.canonicalText(ctx.functionName().getText()), args, names);
     }
 
     @Override
@@ -745,6 +870,25 @@ public class ExpressionAstBuilder extends FrostlakeBaseVisitor<Expression> {
                               final BinaryOperator op,
                               final ParserRuleContext right) {
         return new BinaryOperationExpression(visit(left), op, visit(right));
+    }
+
+    /**
+     * The same, anchored on the OPERATOR token so an argument-type refusal can point where Snowflake
+     * points. ANTLR's line is 1-based and its character position 0-based within that line, which is
+     * exactly the pair live prints (live-verified: a multi-line statement reads
+     * {@code error line 2 at position 5}, counting from the start of line 2).
+     */
+    private Expression binary(final ParserRuleContext left,
+                              final BinaryOperator op,
+                              final ParserRuleContext right,
+                              final Token operatorToken) {
+        final BinaryOperationExpression node =
+            new BinaryOperationExpression(visit(left), op, visit(right));
+        if (operatorToken != null) {
+            node.setPosition(new SourcePosition(operatorToken.getLine(),
+                operatorToken.getCharPositionInLine()));
+        }
+        return node;
     }
 
     private Expression zeroArgFunction(final String name) {

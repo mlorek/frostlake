@@ -19,6 +19,7 @@ package dev.frostlake.ddl;
 import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
 
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
@@ -44,6 +45,11 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * — and {@link ScriptingUdfBodyTest} covers the block form and the restricted language it may use.
  */
 public class RoutineBodyCompilationTest extends BaseDatabaseTest {
+
+    /** These two build the IMPORTS stage on the local filesystem; live refuses that URL
+     *  ("invalid URL prefix found in: 'file:///tmp/...'"), so the stage cannot exist there. */
+    private static final String LOCAL_STAGE_ONLY =
+        "IMPORTS validation needs a local-filesystem stage, which live does not accept";
 
     @Test
     public void procedureBodyThatIsNotABlockIsRejected() {
@@ -129,7 +135,7 @@ public class RoutineBodyCompilationTest extends BaseDatabaseTest {
             @Override
             public void execute() {
                 engine.execute("CREATE FUNCTION f_bad_table() RETURNS TABLE(x INTEGER) "
-                    + "AS 'BEGIN RETURN TABLE(SELECT 1); END'");
+                    + "AS 'BEGIN RETURN 1; END'");
             }
         });
         assertTrue(failure.getMessage().contains("SQL compilation error"), failure.getMessage());
@@ -218,6 +224,7 @@ public class RoutineBodyCompilationTest extends BaseDatabaseTest {
     /** A handler that lives in an IMPORTS jar is not in the body, so the body is not judged. */
     @Test
     public void anImportsHandlerLeavesTheBodyAlone() throws IOException {
+        Assumptions.assumeFalse(isLiveSnowflake(), LOCAL_STAGE_ONLY);
         // The stage and the jar have to exist: live validates BOTH at CREATE time, so a routine naming a
         // stage that was never made is refused before it can demonstrate anything about its body.
         final Path stageDir = Files.createTempDirectory("fl_imports_");
@@ -233,6 +240,7 @@ public class RoutineBodyCompilationTest extends BaseDatabaseTest {
     /** And the validation itself: live refuses the stage leg and the file leg, each with its own words. */
     @Test
     public void importsMustNameAStageAndAFileThatExist() throws IOException {
+        Assumptions.assumeFalse(isLiveSnowflake(), LOCAL_STAGE_ONLY);
         final RuntimeException noStage = assertThrows(RuntimeException.class, new Executable() {
             @Override
             public void execute() {

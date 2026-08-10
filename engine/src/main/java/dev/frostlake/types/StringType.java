@@ -53,8 +53,8 @@ public class StringType extends DataType {
         if (!(other instanceof StringType)) {
             return null;
         }
-        StringType otherString = (StringType) other;
-        int maxLen = Math.max(this.maxLength, otherString.maxLength);
+        final StringType otherString = (StringType) other;
+        final int maxLen = Math.max(this.maxLength, otherString.maxLength);
         return new StringType("VARCHAR", maxLen);
     }
 

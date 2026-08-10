@@ -16,18 +16,16 @@
 
 package dev.frostlake.scripting;
 
-import dev.frostlake.DatabaseEngine;
+import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
 
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
-import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Manual cursor OPEN / FETCH / CLOSE in Snowflake Scripting — the explicit-fetch path the suite previously
@@ -35,23 +33,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
  * past end-of-data (target NULLed), and the cursor error paths (close-unopened, double-open, undefined
  * cursor).
  */
-public class CursorManualFetchTest {
-
-    private DatabaseEngine engine;
-
-    @BeforeEach
-    public void setUp() {
-        engine = new DatabaseEngine();
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
-    }
-
-    @AfterEach
-    public void tearDown() {
-        if (engine != null) {
-            engine.shutdown();
-        }
-    }
+public class CursorManualFetchTest extends BaseDatabaseTest {
 
     private Object returned(final String block) {
         final ResultSet rs = engine.executeQuery(block);
@@ -98,10 +80,10 @@ public class CursorManualFetchTest {
     }
 
     @Test
-    public void closingAnUnopenedCursorIsTolerated() {
-        // Observed behavior: CLOSE on a declared-but-never-opened cursor is a no-op (does not throw) —
-        // in contrast to double-OPEN and FETCH-of-an-undefined-cursor below, which do error.
-        assertDoesNotThrow(new Executable() {
+    public void closingAnUnopenedCursorRaises() {
+        // Live raises here: CLOSE on a declared-but-never-opened cursor is a statement error
+        // ("CURSOR C is not open"), catchable by a WHEN STATEMENT_ERROR handler — not a no-op.
+        final RuntimeException e = assertThrows(RuntimeException.class, new Executable() {
             @Override
             public void execute() {
                 engine.execute("""
@@ -112,6 +94,8 @@ public class CursorManualFetchTest {
                     """);
             }
         });
+        assertTrue(e.getMessage().contains("CURSOR C is not open"),
+            "unexpected message: " + e.getMessage());
     }
 
     @Test

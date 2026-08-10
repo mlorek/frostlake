@@ -16,11 +16,9 @@
 
 package dev.frostlake.query;
 
-import dev.frostlake.DatabaseEngine;
+import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.Row;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -28,20 +26,10 @@ import java.util.List;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-public class QueryOperatorsTest {
+public class QueryOperatorsTest extends BaseDatabaseTest {
 
-    private DatabaseEngine engine;
-
-    @BeforeEach
-    public void setup() {
-        engine = new DatabaseEngine();
-
-        // Setup test database and table
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
-        engine.execute("CREATE SCHEMA test_schema");
-        engine.execute("USE SCHEMA test_schema");
-
+    @Override
+    protected void setupTest() {
         engine.execute("""
             CREATE TABLE employees (
             id INTEGER,
@@ -51,8 +39,6 @@ public class QueryOperatorsTest {
             age INTEGER
             )
             """);
-
-        // Insert test data
         engine.execute("INSERT INTO employees VALUES (1, 'Alice', 'Engineering', 90000, 30)");
         engine.execute("INSERT INTO employees VALUES (2, 'Bob', 'Sales', 70000, 35)");
         engine.execute("INSERT INTO employees VALUES (3, 'Charlie', 'Engineering', 95000, 28)");
@@ -61,16 +47,9 @@ public class QueryOperatorsTest {
         engine.execute("INSERT INTO employees VALUES (6, 'Frank', 'HR', 65000, 40)");
     }
 
-    @AfterEach
-    public void teardown() {
-        if (engine != null) {
-            engine.shutdown();
-        }
-    }
-
     @Test
     public void testWhereClauseEquals() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT * FROM employees WHERE department = 'Engineering'"
         );
 
@@ -79,7 +58,7 @@ public class QueryOperatorsTest {
 
     @Test
     public void testWhereClauseGreaterThan() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT * FROM employees WHERE salary > 80000"
         );
 
@@ -88,7 +67,7 @@ public class QueryOperatorsTest {
 
     @Test
     public void testWhereClauseLessThanOrEqual() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT * FROM employees WHERE age <= 30"
         );
 
@@ -97,7 +76,7 @@ public class QueryOperatorsTest {
 
     @Test
     public void testWhereClauseAnd() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT * FROM employees WHERE department = 'Engineering' AND salary > 85000"
         );
 
@@ -106,7 +85,7 @@ public class QueryOperatorsTest {
 
     @Test
     public void testWhereClauseOr() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT * FROM employees WHERE department = 'HR' OR age >= 35"
         );
 
@@ -115,7 +94,7 @@ public class QueryOperatorsTest {
 
     @Test
     public void testWhereClauseNotEqual() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT * FROM employees WHERE department <> 'Engineering'"
         );
 
@@ -124,47 +103,47 @@ public class QueryOperatorsTest {
 
     @Test
     public void testOrderByAscending() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT * FROM employees ORDER BY salary ASC"
         );
 
         assertEquals(6, result.getRowCount());
 
         // Check first and last rows
-        List<Row> rows = result.getRows();
+        final List<Row> rows = result.getRows();
         assertEquals(65000L, ((Number) rows.get(0).getValue(3)).longValue(), "First should be lowest salary");
         assertEquals(95000L, ((Number) rows.get(5).getValue(3)).longValue(), "Last should be highest salary");
     }
 
     @Test
     public void testOrderByDescending() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT * FROM employees ORDER BY age DESC"
         );
 
         assertEquals(6, result.getRowCount());
 
         // Check first row has highest age
-        List<Row> rows = result.getRows();
+        final List<Row> rows = result.getRows();
         assertEquals(40L, ((Number) rows.get(0).getValue(4)).longValue(), "First should be highest age");
     }
 
     @Test
     public void testOrderByMultipleColumns() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT * FROM employees ORDER BY department ASC, salary DESC"
         );
 
         assertEquals(6, result.getRowCount());
         // Engineering employees should be first, ordered by salary DESC
-        List<Row> rows = result.getRows();
+        final List<Row> rows = result.getRows();
         assertEquals("Engineering", rows.get(0).getValue(2).toString());
         assertEquals(95000L, ((Number) rows.get(0).getValue(3)).longValue());
     }
 
     @Test
     public void testGroupByWithCount() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT department, COUNT(*) FROM employees GROUP BY department"
         );
 
@@ -173,8 +152,8 @@ public class QueryOperatorsTest {
         // Check that we have the right groups
         boolean foundEngineering = false;
         for (final Row row : result.getRows()) {
-            String dept = row.getValue(0).toString();
-            long count = ((Number) row.getValue(1)).longValue();
+            final String dept = row.getValue(0).toString();
+            final long count = ((Number) row.getValue(1)).longValue();
 
             if (dept.equals("Engineering")) {
                 foundEngineering = true;
@@ -186,15 +165,15 @@ public class QueryOperatorsTest {
 
     @Test
     public void testGroupByWithSum() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT department, SUM(salary) FROM employees GROUP BY department"
         );
 
         assertEquals(3, result.getRowCount(), "Should have 3 departments");
 
         for (final Row row : result.getRows()) {
-            String dept = row.getValue(0).toString();
-            double totalSalary = ((Number) row.getValue(1)).doubleValue();
+            final String dept = row.getValue(0).toString();
+            final double totalSalary = ((Number) row.getValue(1)).doubleValue();
 
             if (dept.equals("Engineering")) {
                 assertEquals(270000.0, totalSalary, 1.0, "Engineering total salary should be 270000");
@@ -204,15 +183,15 @@ public class QueryOperatorsTest {
 
     @Test
     public void testGroupByWithAvg() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT department, AVG(salary) FROM employees GROUP BY department"
         );
 
         assertEquals(3, result.getRowCount(), "Should have 3 departments");
 
         for (final Row row : result.getRows()) {
-            String dept = row.getValue(0).toString();
-            double avgSalary = ((Number) row.getValue(1)).doubleValue();
+            final String dept = row.getValue(0).toString();
+            final double avgSalary = ((Number) row.getValue(1)).doubleValue();
 
             if (dept.equals("Sales")) {
                 assertEquals(72500.0, avgSalary, 1.0, "Sales average salary should be 72500");
@@ -222,7 +201,7 @@ public class QueryOperatorsTest {
 
     @Test
     public void testGroupByWithMinMax() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT department, MIN(age), MAX(age) FROM employees GROUP BY department"
         );
 
@@ -231,7 +210,7 @@ public class QueryOperatorsTest {
 
     @Test
     public void testLimitClause() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT * FROM employees LIMIT 3"
         );
 
@@ -240,20 +219,20 @@ public class QueryOperatorsTest {
 
     @Test
     public void testWhereWithOrderBy() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT * FROM employees WHERE salary > 70000 ORDER BY salary DESC"
         );
 
         assertEquals(4, result.getRowCount(), "Should return 4 employees with salary > 70000");
 
         // Check first row has highest salary
-        List<Row> rows = result.getRows();
+        final List<Row> rows = result.getRows();
         assertEquals(95000L, ((Number) rows.get(0).getValue(3)).longValue());
     }
 
     @Test
     public void testWhereWithGroupBy() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT department, COUNT(*) FROM employees WHERE salary > 70000 GROUP BY department"
         );
 
@@ -263,21 +242,21 @@ public class QueryOperatorsTest {
 
     @Test
     public void testGroupByWithOrderBy() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT department, COUNT(*) FROM employees GROUP BY department ORDER BY COUNT(*) DESC"
         );
 
         assertEquals(3, result.getRowCount(), "Should have 3 departments");
 
         // Engineering (3 employees) should be first
-        List<Row> rows = result.getRows();
+        final List<Row> rows = result.getRows();
         assertEquals("Engineering", rows.get(0).getValue(0).toString());
         assertEquals(3L, ((Number) rows.get(0).getValue(1)).longValue());
     }
 
     @Test
     public void testComplexQuery() {
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT department, AVG(salary), COUNT(*)
             FROM employees
             WHERE age < 35

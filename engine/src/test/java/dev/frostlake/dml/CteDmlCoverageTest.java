@@ -16,11 +16,9 @@
 
 package dev.frostlake.dml;
 
-import dev.frostlake.DatabaseEngine;
+import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
 
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -30,24 +28,10 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
  * CREATE TABLE AS SELECT, CREATE VIEW, UPDATE … FROM, DELETE … USING, an empty CTE, and a recursive CTE
  * feeding a CTAS. (CTE + SELECT / INSERT / MERGE and the recursive-CTE basics are covered elsewhere.)
  */
-public class CteDmlCoverageTest {
+public class CteDmlCoverageTest extends BaseDatabaseTest {
 
-    private DatabaseEngine engine;
 
-    @BeforeEach
-    public void setUp() {
-        engine = new DatabaseEngine();
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
-        engine.execute("USE SCHEMA public");
-    }
 
-    @AfterEach
-    public void tearDown() {
-        if (engine != null) {
-            engine.shutdown();
-        }
-    }
 
     private long scalar(final String sql) {
         final ResultSet rs = engine.executeQuery(sql);

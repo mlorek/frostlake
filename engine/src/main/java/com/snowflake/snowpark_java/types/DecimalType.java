@@ -35,13 +35,10 @@ public class DecimalType extends DataType {
         return scale;
     }
 
-    @Override
-    public String sqlTypeName() {
-        return "NUMBER(" + precision + ", " + scale + ")";
-    }
 
+    /** Live: typeName() is the bare class name; only toString() carries the parameters. */
     @Override
-    public String typeName() {
+    public String toString() {
         return "Decimal(" + precision + ", " + scale + ")";
     }
 }

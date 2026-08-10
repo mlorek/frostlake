@@ -25,11 +25,15 @@ import org.slf4j.LoggerFactory;
 /**
  * Example demonstrating EXECUTE IMMEDIATE with dollar-quoted strings
  */
-public class ExecuteImmediateDollarQuotedExample {
+public final class ExecuteImmediateDollarQuotedExample {
+
+    /** Static helpers only — never instantiated. */
+    private ExecuteImmediateDollarQuotedExample() {
+    }
     private static final Logger logger = LoggerFactory.getLogger(ExecuteImmediateDollarQuotedExample.class);
 
     public static void main(final String[] args) {
-        DatabaseEngine engine = new DatabaseEngine();
+        final DatabaseEngine engine = new DatabaseEngine();
 
         try {
             logger.info("=== EXECUTE IMMEDIATE with Dollar-Quoted Strings ===\n");
@@ -56,9 +60,9 @@ public class ExecuteImmediateDollarQuotedExample {
             // 3. SELECT with dollar-quoted string
             logger.info("3. SELECT with Dollar-Quoted String:");
             logger.info("   {}", "-".repeat(60));
-            var result1 = engine.execute("EXECUTE IMMEDIATE $$SELECT * FROM products WHERE price > 100$$");
+            final var result1 = engine.execute("EXECUTE IMMEDIATE $$SELECT * FROM products WHERE price > 100$$");
             if (!result1.getResultSets().isEmpty()) {
-                ResultSet rs = result1.getResultSets().get(0);
+                final ResultSet rs = result1.getResultSets().get(0);
                 logger.info("   Found {} expensive products:", rs.getRowCount());
                 for (final Row row : rs.getRows()) {
                     logger.info("   - {}: ${}", row.getValue(1), row.getValue(2));

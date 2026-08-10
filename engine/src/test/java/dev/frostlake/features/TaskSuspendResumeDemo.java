@@ -16,10 +16,12 @@
 
 package dev.frostlake.features;
 
-import dev.frostlake.BaseDatabaseTest;
+import dev.frostlake.DatabaseEngine;
 import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.metastore.model.Task;
 import dev.frostlake.metastore.model.TaskState;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -27,11 +29,35 @@ import org.slf4j.LoggerFactory;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
- * Demonstration of TASK suspend and resume functionality
+ * TASK suspend/resume driven through catalog internals.
+ *
+ * <p>Deliberately NOT on the live surface: every assertion reads {@code TaskState} from the
+ * catalog and the third test runs the task synchronously via
+ * {@code TaskScheduler.executeTaskNow} — internals JDBC cannot see. The equivalent SQL surface
+ * is covered two-sided by {@code TasksTest} (SHOW TASKS state cells) and, embedded-gated,
+ * {@code TaskExecutionTest}.
  */
-public class TaskSuspendResumeDemo extends BaseDatabaseTest {
+public class TaskSuspendResumeDemo {
 
     private static final Logger logger = LoggerFactory.getLogger(TaskSuspendResumeDemo.class);
+
+    private DatabaseEngine engine;
+
+    @BeforeEach
+    public void setUp() {
+        engine = new DatabaseEngine();
+        engine.execute("CREATE DATABASE test_db");
+        engine.execute("USE DATABASE test_db");
+        engine.execute("CREATE SCHEMA test_schema");
+        engine.execute("USE SCHEMA test_schema");
+    }
+
+    @AfterEach
+    public void tearDown() {
+        if (engine != null) {
+            engine.shutdown();
+        }
+    }
 
     @Test
     public void testTaskLifecycle() {
@@ -43,7 +69,7 @@ public class TaskSuspendResumeDemo extends BaseDatabaseTest {
             AS DELETE FROM logs WHERE age > 90
             """);
 
-        Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
+        final Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
         Task task = schema.getTask("my_scheduled_task");
 
         // Initially, task is SUSPENDED
@@ -99,7 +125,7 @@ public class TaskSuspendResumeDemo extends BaseDatabaseTest {
             AS SELECT 3
             """);
 
-        Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
+        final Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
 
         // Resume task_a and task_c, leave task_b suspended
         logger.info("Resuming task_a and task_c...");
@@ -151,7 +177,7 @@ public class TaskSuspendResumeDemo extends BaseDatabaseTest {
             AS INSERT INTO task_executions VALUES ('2024-01-01', 'execution_task')
             """);
 
-        Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
+        final Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
         Task task = schema.getTask("execution_task");
 
         // Task starts suspended
@@ -165,7 +191,7 @@ public class TaskSuspendResumeDemo extends BaseDatabaseTest {
         logger.info("Task RESUMED - ready to execute");
 
         // Execute the task
-        String qualifiedName = "test_db.test_schema.execution_task";
+        final String qualifiedName = "test_db.test_schema.execution_task";
         engine.getTaskScheduler().executeTaskNow(qualifiedName, task);
         logger.info("Task executed");
 

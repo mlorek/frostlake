@@ -67,7 +67,7 @@ final class DataDirectoryLock {
         final Path lockFile = directory.resolve(LOCK_FILE_NAME);
         final RandomAccessFile handle = new RandomAccessFile(lockFile.toFile(), "rw");
         final FileChannel channel = handle.getChannel();
-        FileLock lock;
+        final FileLock lock;
         try {
             lock = channel.tryLock();
         } catch (final OverlappingFileLockException alreadyOurs) {

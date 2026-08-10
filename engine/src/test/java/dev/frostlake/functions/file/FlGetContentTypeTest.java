@@ -20,7 +20,6 @@ import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assumptions.assumeFalse;
 
 /**
  * {@code FL_GET_CONTENT_TYPE(file)} — the descriptor's {@code CONTENT_TYPE} field.
@@ -60,7 +59,6 @@ public class FlGetContentTypeTest extends StagedFileTestSupport {
      */
     @Test
     public void derivesTheContentTypeFromTheExtension() {
-        assumeFalse(isLiveSnowflake(), stageOnlyReason());
         stage("s.jpg", "jpeg placeholder\n");
         stage("s.md", "# heading\n");
         stage("s.zip", "zip placeholder\n");
@@ -80,7 +78,6 @@ public class FlGetContentTypeTest extends StagedFileTestSupport {
      */
     @Test
     public void extensionWinsOverTheBytes() {
-        assumeFalse(isLiveSnowflake(), stageOnlyReason());
         stageBytes("png_named.txt", PNG_BYTES);
 
         assertEquals("text/plain", contentType("TO_FILE('@st/png_named.txt')"));

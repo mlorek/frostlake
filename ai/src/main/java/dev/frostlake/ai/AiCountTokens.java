@@ -57,6 +57,8 @@ public class AiCountTokens extends BuiltInFunction {
         return tokens.evaluate(Arrays.asList(pricedFunction, args.get(textAt)));
     }
 
-    @Override public int getMinArgCount() { return 2; }
-    @Override public int getMaxArgCount() { return 6; }
+    @Override
+    public int getMinArgCount() { return 2; }
+    @Override
+    public int getMaxArgCount() { return 6; }
 }

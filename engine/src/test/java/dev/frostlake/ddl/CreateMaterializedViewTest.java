@@ -19,26 +19,35 @@ package dev.frostlake.ddl;
 import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.metastore.model.MaterializedView;
 import dev.frostlake.metastore.model.Schema;
+import dev.frostlake.storage.ResultSet;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class CreateMaterializedViewTest extends BaseDatabaseTest {
 
-    private static final String CATALOG_ASSERTIONS =
-        "asserts through engine.getCatalog(), which under SF_LIVE still reads the embedded engine — "
-        + "the CREATE MATERIALIZED VIEW went to Snowflake, so the embedded schema has no such view; "
-        + "the DDL itself is still submitted to the account";
 
     private Schema getCurrentSchema() {
-        String dbName = engine.getCatalog().getCurrentDatabase();
-        String schemaName = engine.getCatalog().getCurrentSchema();
+        final String dbName = engine.getCatalog().getCurrentDatabase();
+        final String schemaName = engine.getCatalog().getCurrentSchema();
         return engine.getCatalog().getDatabase(dbName).getSchema(schemaName);
+    }
+
+    private static final String NO_SUSPENSION_SURFACE =
+        "the suspended flag has no SQL read surface yet (SHOW MATERIALIZED VIEWS carries no such "
+        + "cell) — measure live's spelling before adding one; asserted embedded meanwhile";
+
+    private int mvCount(final String name) {
+        return engine.executeQuery("SHOW MATERIALIZED VIEWS LIKE '" + name + "'").getRowCount();
+    }
+
+    private String mvCell(final String name, final String column) {
+        final ResultSet views = engine.executeQuery("SHOW MATERIALIZED VIEWS LIKE '" + name + "'");
+        return cell(views, soleRowWhere(views, "name", name.toUpperCase()), column);
     }
 
     @Test
@@ -46,11 +55,7 @@ public class CreateMaterializedViewTest extends BaseDatabaseTest {
         engine.execute("CREATE TABLE users (id INTEGER, username VARCHAR)");
         engine.execute("CREATE MATERIALIZED VIEW mv_users AS SELECT * FROM users");
 
-        Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_ASSERTIONS);
-        Schema schema = getCurrentSchema();
-        MaterializedView mv = schema.getMaterializedView("MV_USERS");
-        assertNotNull(mv);
-        assertFalse(mv.isSuspended());
+        assertEquals(1, mvCount("mv_users"));
     }
 
     @Test
@@ -60,10 +65,9 @@ public class CreateMaterializedViewTest extends BaseDatabaseTest {
 
         engine.execute("CREATE MATERIALIZED VIEW mv_expensive AS SELECT * FROM products WHERE price > 150");
 
-        Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_ASSERTIONS);
-        Schema schema = getCurrentSchema();
-        MaterializedView mv = schema.getMaterializedView("MV_EXPENSIVE");
-        assertNotNull(mv);
+        assertEquals(1, mvCount("mv_expensive"));
+        assertTrue(mvCell("mv_expensive", "text").toLowerCase().contains("price > 150"),
+            mvCell("mv_expensive", "text"));
     }
 
     @Test
@@ -71,13 +75,11 @@ public class CreateMaterializedViewTest extends BaseDatabaseTest {
         engine.execute("CREATE TABLE items (id INTEGER, name VARCHAR)");
         engine.execute("CREATE MATERIALIZED VIEW mv_items AS SELECT * FROM items");
 
-        Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_ASSERTIONS);
-        Schema schema = getCurrentSchema();
-        assertNotNull(schema.getMaterializedView("MV_ITEMS"));
+        assertEquals(1, mvCount("mv_items"));
 
         engine.execute("DROP MATERIALIZED VIEW mv_items");
 
-        assertThrows(RuntimeException.class, () -> getCurrentSchema().getMaterializedView("MV_ITEMS"));
+        assertEquals(0, mvCount("mv_items"));
     }
 
     @Test
@@ -90,9 +92,8 @@ public class CreateMaterializedViewTest extends BaseDatabaseTest {
         engine.execute("CREATE TABLE data (id INTEGER, value VARCHAR)");
         engine.execute("CREATE MATERIALIZED VIEW mv_data AS SELECT * FROM data");
 
-        Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_ASSERTIONS);
-        Schema schema = getCurrentSchema();
-        MaterializedView mv = schema.getMaterializedView("MV_DATA");
+        Assumptions.assumeFalse(isLiveSnowflake(), NO_SUSPENSION_SURFACE);
+        final MaterializedView mv = getCurrentSchema().getMaterializedView("MV_DATA");
         assertFalse(mv.isSuspended());
 
         engine.execute("ALTER MATERIALIZED VIEW mv_data SUSPEND");
@@ -104,9 +105,8 @@ public class CreateMaterializedViewTest extends BaseDatabaseTest {
         engine.execute("CREATE TABLE data (id INTEGER, value VARCHAR)");
         engine.execute("CREATE MATERIALIZED VIEW mv_data AS SELECT * FROM data");
 
-        Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_ASSERTIONS);
-        Schema schema = getCurrentSchema();
-        MaterializedView mv = schema.getMaterializedView("MV_DATA");
+        Assumptions.assumeFalse(isLiveSnowflake(), NO_SUSPENSION_SURFACE);
+        final MaterializedView mv = getCurrentSchema().getMaterializedView("MV_DATA");
 
         engine.execute("ALTER MATERIALIZED VIEW mv_data SUSPEND");
         assertTrue(mv.isSuspended());
@@ -120,9 +120,8 @@ public class CreateMaterializedViewTest extends BaseDatabaseTest {
         engine.execute("CREATE TABLE data (id INTEGER, value VARCHAR)");
         engine.execute("CREATE MATERIALIZED VIEW mv_data AS SELECT * FROM data");
 
-        Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_ASSERTIONS);
-        Schema schema = getCurrentSchema();
-        MaterializedView mv = schema.getMaterializedView("MV_DATA");
+        Assumptions.assumeFalse(isLiveSnowflake(), NO_SUSPENSION_SURFACE);
+        final MaterializedView mv = getCurrentSchema().getMaterializedView("MV_DATA");
 
         engine.execute("ALTER MATERIALIZED VIEW mv_data REFRESH");
         assertNotNull(mv.getLastRefreshedTime());
@@ -134,10 +133,7 @@ public class CreateMaterializedViewTest extends BaseDatabaseTest {
         // Live-verified: the COMMENT property goes BEFORE AS (after the query it is a syntax error).
         engine.execute("CREATE MATERIALIZED VIEW mv_sales COMMENT = 'Sales data' AS SELECT * FROM sales");
 
-        Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_ASSERTIONS);
-        Schema schema = getCurrentSchema();
-        MaterializedView mv = schema.getMaterializedView("MV_SALES");
-        assertEquals("Sales data", mv.getComment());
+        assertEquals("Sales data", mvCell("mv_sales", "comment"));
     }
 
     @Test
@@ -145,11 +141,7 @@ public class CreateMaterializedViewTest extends BaseDatabaseTest {
         engine.execute("CREATE TABLE orders (id INTEGER, total INTEGER)");
         engine.execute("CREATE MATERIALIZED VIEW mv_orders AS SELECT * FROM orders");
 
-        Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_ASSERTIONS);
-        Schema schema = getCurrentSchema();
-        MaterializedView mv = schema.getMaterializedView("MV_ORDERS");
-
         engine.execute("ALTER MATERIALIZED VIEW mv_orders SET COMMENT = 'Order summary'");
-        assertEquals("Order summary", mv.getComment());
+        assertEquals("Order summary", mvCell("mv_orders", "comment"));
     }
 }

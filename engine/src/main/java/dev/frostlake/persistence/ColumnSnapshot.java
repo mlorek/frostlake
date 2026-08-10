@@ -32,6 +32,13 @@ public class ColumnSnapshot implements Serializable {
     public Integer precision;
     public Integer scale;
     public Integer maxLength;
+
+    /**
+     * Whether a BINARY column is the FIXED spelling. Both spellings report the type BINARY, so the
+     * name cannot carry it — and SHOW COLUMNS' {@code fixed} cell is the one place it shows.
+     * Null on snapshots written before it was persisted, where the NAME still held the spelling.
+     */
+    public Boolean binaryFixed;
     public boolean nullable;
     public boolean primaryKey;
     public String defaultValue;
@@ -41,6 +48,7 @@ public class ColumnSnapshot implements Serializable {
     public String comment;
     // Qualified name of an attached masking policy, or null. Old snapshots predate this field (null on load).
     public String maskingPolicyName;
+    public String projectionPolicyName;
     // Constraint/identity metadata. Primitives default to false/0 on old snapshots; objects to null.
     public boolean unique;
     public boolean autoIncrement;

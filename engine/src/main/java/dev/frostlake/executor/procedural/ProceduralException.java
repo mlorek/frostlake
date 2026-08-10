@@ -19,6 +19,9 @@ package dev.frostlake.executor.procedural;
 public class ProceduralException extends RuntimeException {
     private final int errorCode;
     private final String exceptionName;
+    // Where the RAISE stood in the script; -1 when unknown.
+    private int sourceLine = -1;
+    private int sourcePosition = -1;
 
     public ProceduralException(final String message) {
         super(message);
@@ -43,5 +46,34 @@ public class ProceduralException extends RuntimeException {
     /** The declared name of the user-defined exception that was RAISEd, or null for an anonymous RAISE. */
     public String getExceptionName() {
         return exceptionName;
+    }
+
+    public int getSourceLine() {
+        return sourceLine;
+    }
+
+    public int getSourcePosition() {
+        return sourcePosition;
+    }
+
+    public void setSourcePosition(final int line, final int position) {
+        this.sourceLine = line;
+        this.sourcePosition = position;
+    }
+
+    /**
+     * How an UNCAUGHT exception reads at the top of a block, live-verified:
+     * {@code Uncaught exception of type 'NAME' on line L at position P : message} — the
+     * {@code : message} tail only when the exception declared one. While the exception is still
+     * catchable, {@code getMessage()} stays the RAW text, which is what SQLERRM reads.
+     */
+    public String uncaughtMessage() {
+        final StringBuilder text = new StringBuilder("Uncaught exception of type '")
+            .append(exceptionName).append("' on line ").append(sourceLine)
+            .append(" at position ").append(sourcePosition);
+        if (getMessage() != null && !getMessage().isEmpty()) {
+            text.append(" : ").append(getMessage());
+        }
+        return text.toString();
     }
 }

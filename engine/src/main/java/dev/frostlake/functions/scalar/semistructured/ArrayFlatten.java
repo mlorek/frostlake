@@ -31,9 +31,9 @@ public class ArrayFlatten extends BuiltInFunction {
 
     @Override
     public Object evaluate(final List<Object> args) {
-        ArrayNode src = ArrayFunctionHelper.parseArray(args.get(0));
+        final ArrayNode src = ArrayFunctionHelper.parseArray(args.get(0));
         if (src == null) return null;
-        ArrayNode result = ArrayFunctionHelper.MAPPER.createArrayNode();
+        final ArrayNode result = ArrayFunctionHelper.MAPPER.createArrayNode();
         for (final JsonNode el : src) {
             if (el.isArray()) {
                 for (final JsonNode inner : el) result.add(inner);
@@ -44,6 +44,8 @@ public class ArrayFlatten extends BuiltInFunction {
         return VariantValue.ofNode(result);
     }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return 1; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return 1; }
 }

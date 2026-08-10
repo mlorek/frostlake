@@ -16,38 +16,26 @@
 
 package dev.frostlake.features;
 
-import dev.frostlake.DatabaseEngine;
+import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 
-public class IdentifierFunctionTest {
+public class IdentifierFunctionTest extends BaseDatabaseTest {
 
-    private DatabaseEngine engine;
-
-    @BeforeEach
-    public void setUp() {
-        engine = new DatabaseEngine();
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
-        engine.execute("USE SCHEMA public");
+    @Override
+    protected void setupTest() {
         engine.execute("CREATE TABLE employees (id INTEGER, name VARCHAR, salary DOUBLE)");
         engine.execute("INSERT INTO employees VALUES (1, 'Alice', 90000)");
         engine.execute("INSERT INTO employees VALUES (2, 'Bob', 80000)");
     }
 
-    @AfterEach
-    public void tearDown() {
-        if (engine != null) engine.shutdown();
-    }
-
     @Test
     public void testIdentifierAsColumnName() {
         // IDENTIFIER(string) in SELECT resolves string to column name
-        ResultSet rs = engine.executeQuery("SELECT IDENTIFIER('name') FROM employees ORDER BY id");
+        final ResultSet rs = engine.executeQuery("SELECT IDENTIFIER('name') FROM employees ORDER BY id");
         assertNotNull(rs);
         assertEquals(2, rs.getRowCount());
         assertEquals("Alice", rs.getRows().get(0).getValue(0).toString());
@@ -57,7 +45,7 @@ public class IdentifierFunctionTest {
     @Test
     public void testIdentifierAsColumnNameWithSessionVar() {
         engine.execute("SET col = 'salary'");
-        ResultSet rs = engine.executeQuery("SELECT IDENTIFIER($col) FROM employees ORDER BY id");
+        final ResultSet rs = engine.executeQuery("SELECT IDENTIFIER($col) FROM employees ORDER BY id");
         assertNotNull(rs);
         assertEquals(2, rs.getRowCount());
         assertEquals(90000.0, ((Number) rs.getRows().get(0).getValue(0)).doubleValue(), 0.01);
@@ -66,7 +54,7 @@ public class IdentifierFunctionTest {
     @Test
     public void testIdentifierAsTableName() {
         engine.execute("SET tbl = 'employees'");
-        ResultSet rs = engine.executeQuery("SELECT id, name FROM IDENTIFIER($tbl) ORDER BY id");
+        final ResultSet rs = engine.executeQuery("SELECT id, name FROM IDENTIFIER($tbl) ORDER BY id");
         assertNotNull(rs);
         assertEquals(2, rs.getRowCount());
         assertEquals(1L, ((Number) rs.getRows().get(0).getValue(0)).longValue());
@@ -75,7 +63,7 @@ public class IdentifierFunctionTest {
 
     @Test
     public void testIdentifierAsTableNameLiteral() {
-        ResultSet rs = engine.executeQuery("SELECT COUNT(*) FROM IDENTIFIER('employees')");
+        final ResultSet rs = engine.executeQuery("SELECT COUNT(*) FROM IDENTIFIER('employees')");
         assertNotNull(rs);
         assertEquals(1, rs.getRowCount());
         assertEquals(2L, ((Number) rs.getRows().get(0).getValue(0)).longValue());
@@ -86,7 +74,7 @@ public class IdentifierFunctionTest {
         // FROM IDENTIFIER('<view>') must resolve a view, not only a base table — e.g. a backfill source
         // that is a view is read this way.
         engine.execute("CREATE VIEW hi_earners AS SELECT id, name FROM employees WHERE salary >= 85000");
-        ResultSet rs = engine.executeQuery("SELECT COUNT(*) FROM IDENTIFIER('hi_earners')");
+        final ResultSet rs = engine.executeQuery("SELECT COUNT(*) FROM IDENTIFIER('hi_earners')");
         assertEquals(1L, ((Number) rs.getRows().get(0).getValue(0)).longValue());
     }
 
@@ -96,7 +84,7 @@ public class IdentifierFunctionTest {
         // (a stream) this way, toggling with the backfill view above via a variable.
         engine.execute("CREATE STREAM emp_stream ON TABLE employees");
         engine.execute("INSERT INTO employees VALUES (3, 'Carol', 70000)");
-        ResultSet rs = engine.executeQuery("SELECT COUNT(*) FROM IDENTIFIER('emp_stream')");
+        final ResultSet rs = engine.executeQuery("SELECT COUNT(*) FROM IDENTIFIER('emp_stream')");
         assertEquals(1L, ((Number) rs.getRows().get(0).getValue(0)).longValue());
     }
 }

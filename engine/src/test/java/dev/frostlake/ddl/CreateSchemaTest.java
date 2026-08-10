@@ -33,7 +33,7 @@ public class CreateSchemaTest extends BaseDatabaseTest {
     public void testCreateSchema() {
         engine.execute("CREATE SCHEMA new_schema");
 
-        ResultSet schemas = engine.showSchemas();
+        final ResultSet schemas = engine.showSchemas();
         assertTrue(schemas.getRowCount() > 0, "Should have at least one schema");
     }
 
@@ -42,7 +42,7 @@ public class CreateSchemaTest extends BaseDatabaseTest {
         engine.execute("CREATE SCHEMA another_schema");
         engine.execute("USE SCHEMA another_schema");
 
-        ResultSet schemas = engine.showSchemas();
+        final ResultSet schemas = engine.showSchemas();
         assertTrue(schemas.getRowCount() >= 2, "Should have at least 2 schemas");
     }
 
@@ -57,7 +57,7 @@ public class CreateSchemaTest extends BaseDatabaseTest {
             "counts through engine.showTables(), an engine accessor that under SF_LIVE still reads the "
             + "embedded catalog — only execute()/executeQuery() are rerouted, so the CREATE TABLE went "
             + "to Snowflake and the embedded schema is empty");
-        ResultSet tables = engine.showTables();
+        final ResultSet tables = engine.showTables();
         assertEquals(1, tables.getRowCount(), "Should have one table in new schema");
     }
 }

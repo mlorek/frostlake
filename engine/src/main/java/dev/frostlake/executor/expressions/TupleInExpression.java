@@ -19,41 +19,58 @@ package dev.frostlake.executor.expressions;
 import java.util.List;
 
 /**
- * Row-constructor {@code IN} test: {@code (a, b) IN (SELECT x, y ...)} or
- * {@code (a, b) IN (1, 2, ...)}.
+ * Row-constructor {@code IN} test: {@code (a, b) IN (SELECT x, y ...)},
+ * {@code (a, b) IN ((1, 2), (3, 4))}, or the type-invalid flat spelling {@code (a, b) IN (1, 2)}.
  *
- * <p>Added during the ANTLR expression-AST migration to support the grammar's
- * {@code TupleInListExpr} / {@code TupleInSubqueryExpr} alternatives — the scalar
- * {@link InExpression} cannot represent a multi-column left-hand side. For the list form the
- * right-hand flat list is grouped into tuples the size of the left side (the grammar does not
- * allow nested {@code (..)} tuples as list elements).
+ * <p>The three right-hand shapes carry different live-verified semantics. The SUBQUERY form is
+ * TWO-VALUED: a NULL on either side never matches and never yields UNKNOWN — a miss is plain FALSE
+ * for {@code IN} and TRUE for {@code NOT IN}. The tuple-ROW list form applies full row-value
+ * three-valued logic (a row with a definite pair mismatch is FALSE, an all-equal row TRUE, anything
+ * else UNKNOWN). The FLAT scalar list is a compile-time type error ("Invalid argument types for
+ * function 'IN'") — it is parsed only so the refusal can name the ROW shape the way Snowflake does.
  */
-public class TupleInExpression implements Expression {
-    private final List<Expression> values;       // left-hand tuple
-    private final List<Expression> listValues;   // right-hand flat list (null when subquery)
-    private final SubqueryExpression subquery;    // right-hand subquery (null when list)
+public final class TupleInExpression implements Expression {
+    private final List<Expression> values;            // left-hand tuple
+    private final List<List<Expression>> tupleRows;   // right-hand (1, 2), (3, 4) rows (null otherwise)
+    private final List<Expression> flatListValues;    // right-hand flat scalar list (null otherwise)
+    private final SubqueryExpression subquery;        // right-hand subquery (null otherwise)
     private final boolean not;
 
-    public TupleInExpression(final List<Expression> values, final List<Expression> listValues, final boolean not) {
+    private TupleInExpression(final List<Expression> values, final List<List<Expression>> tupleRows,
+                              final List<Expression> flatListValues, final SubqueryExpression subquery,
+                              final boolean not) {
         this.values = values;
-        this.listValues = listValues;
-        this.subquery = null;
+        this.tupleRows = tupleRows;
+        this.flatListValues = flatListValues;
+        this.subquery = subquery;
         this.not = not;
     }
 
-    public TupleInExpression(final List<Expression> values, final SubqueryExpression subquery, final boolean not) {
-        this.values = values;
-        this.listValues = null;
-        this.subquery = subquery;
-        this.not = not;
+    public static TupleInExpression ofTupleRows(final List<Expression> values,
+                                                final List<List<Expression>> tupleRows, final boolean not) {
+        return new TupleInExpression(values, tupleRows, null, null, not);
+    }
+
+    public static TupleInExpression ofFlatList(final List<Expression> values,
+                                               final List<Expression> flatListValues, final boolean not) {
+        return new TupleInExpression(values, null, flatListValues, null, not);
+    }
+
+    public static TupleInExpression ofSubquery(final List<Expression> values,
+                                               final SubqueryExpression subquery, final boolean not) {
+        return new TupleInExpression(values, null, null, subquery, not);
     }
 
     public List<Expression> getValues() {
         return values;
     }
 
-    public List<Expression> getListValues() {
-        return listValues;
+    public List<List<Expression>> getTupleRows() {
+        return tupleRows;
+    }
+
+    public List<Expression> getFlatListValues() {
+        return flatListValues;
     }
 
     public SubqueryExpression getSubquery() {
@@ -62,6 +79,14 @@ public class TupleInExpression implements Expression {
 
     public boolean hasSubquery() {
         return subquery != null;
+    }
+
+    public boolean hasTupleRows() {
+        return tupleRows != null;
+    }
+
+    public boolean hasFlatList() {
+        return flatListValues != null;
     }
 
     public boolean isNot() {

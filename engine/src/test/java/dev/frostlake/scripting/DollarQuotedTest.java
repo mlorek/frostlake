@@ -17,7 +17,6 @@
 package dev.frostlake.scripting;
 
 import dev.frostlake.BaseJdbcTest;
-import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 
 import java.sql.ResultSet;
@@ -109,11 +108,8 @@ public class DollarQuotedTest extends BaseJdbcTest {
 
     @Test
     public void testDollarQuotesWithComplexLogic() throws SQLException {
-        Assumptions.assumeFalse(isLiveSnowflake(),
-            "the body's IF / ELSEIF chain takes an UNPARENTHESIZED condition (`IF n > 10 THEN`), a "
-            + "scripting-dialect leniency of Frostlake's; a real account requires `IF (<condition>) THEN` "
-            + "and rejects the procedure at CREATE time");
-        // Test complex procedure with IF/WHILE using dollar quotes
+        // Conditions are parenthesized, as a real account requires — the bare spelling is refused
+        // at CREATE time (see ScriptingConditionParenthesesTest).
         statement.execute("""
                 CREATE PROCEDURE complex_proc(n INTEGER) RETURNS VARCHAR AS $$
                 DECLARE
@@ -121,9 +117,9 @@ public class DollarQuotedTest extends BaseJdbcTest {
                   counter INTEGER;
                 BEGIN
                   SET counter = 0;
-                  IF n > 10 THEN
+                  IF (n > 10) THEN
                     SET result = 'Large number';
-                  ELSEIF n > 5 THEN
+                  ELSEIF (n > 5) THEN
                     SET result = 'Medium number';
                   ELSE
                     SET result = 'Small number';

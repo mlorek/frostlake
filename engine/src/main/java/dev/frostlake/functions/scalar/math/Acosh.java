@@ -26,6 +26,7 @@ import java.util.List;
  * {@code acosh}. The domain is {@code x >= 1}; NULL yields NULL.
  */
 public class Acosh extends NumericArgumentFunction {
+    /** Registers the function as {@code ACOSH} returning DOUBLE. */
     public Acosh() { super("ACOSH", NumericType.DOUBLE); }
 
     @Override
@@ -35,6 +36,8 @@ public class Acosh extends NumericArgumentFunction {
         return Math.log(x + Math.sqrt(x * x - 1));
     }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return 1; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return 1; }
 }

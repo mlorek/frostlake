@@ -23,14 +23,13 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 /**
  * {@code FL_IS_COMPRESSED(file)} — whether the file's {@code CONTENT_TYPE} is one of the archive types.
  *
- * <p>Every expectation was measured against live Snowflake, and this is the
- * family with the sharpest trap. The compressed set holds {@code application/gzip}, but a REAL
- * {@code .gz} file staged on an account gets {@code CONTENT_TYPE} {@code application/x-gzip} — which is
- * NOT in the set. The same goes for {@code .7z}, whose measured content type
- * {@code application/x-7z-compressed} is likewise absent. So {@code FL_IS_COMPRESSED(TO_FILE('@st/a.gz'))}
- * is FALSE on a live account: the two lookup tables (extension &rarr; content type, content type &rarr;
- * category) simply do not line up, and only {@code .zip}, {@code .tar} and {@code .rar} of the common
- * archive extensions land inside this set. Membership was enumerated by probing, not derived from the
+ * <p>Every expectation was measured against live Snowflake. Membership is by exact content-type
+ * value, and the set is quirky: it holds {@code application/gzip} — the spelling a staged
+ * {@code .gz} really gets, so gzip files DO classify compressed — while the {@code x-}-prefixed
+ * twins a hand-built object may carry ({@code application/x-gzip},
+ * {@code application/x-rar-compressed}) sit outside it, as does {@code .7z}'s own measured
+ * {@code application/x-7z-compressed}: the {@code .7z} extension table and this set do not line
+ * up, so a staged {@code .7z} is FALSE. Membership was enumerated by probing, not derived from the
  * names.
  */
 public class FlIsCompressedTest extends FileFunctionTestSupport {
@@ -52,8 +51,8 @@ public class FlIsCompressedTest extends FileFunctionTestSupport {
     }
 
     /**
-     * Live: the trap, asserted. {@code application/gzip} is compressed but the {@code x-} spelling that
-     * a real staged {@code .gz} actually reports is not, and the same asymmetry hits {@code .7z} and
+     * Live: the trap, asserted. {@code application/gzip} is compressed but the {@code x-} spelling —
+     * a value only a hand-built object carries — is not, and the same asymmetry hits {@code .7z} and
      * {@code .rar} — {@code application/vnd.rar} is in the set while {@code application/x-rar-compressed}
      * is not.
      */

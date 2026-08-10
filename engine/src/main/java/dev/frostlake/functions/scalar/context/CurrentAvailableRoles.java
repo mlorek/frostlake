@@ -82,6 +82,8 @@ public class CurrentAvailableRoles extends BuiltInFunction {
         return sb.append("]").toString();
     }
 
-    @Override public int getMinArgCount() { return 0; }
-    @Override public int getMaxArgCount() { return 0; }
+    @Override
+    public int getMinArgCount() { return 0; }
+    @Override
+    public int getMaxArgCount() { return 0; }
 }

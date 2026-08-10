@@ -23,7 +23,10 @@ import java.time.LocalTime;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.time.temporal.TemporalAccessor;
+import java.util.Iterator;
 import java.util.Locale;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Formats a temporal value with a subset of Snowflake's date/time format model (TO_CHAR / TO_VARCHAR
@@ -67,12 +70,32 @@ public final class SnowflakeDateFormat {
         return formatterFor(snowflakeFormat).format(toTemporal(value));
     }
 
+    // Format strings are query constants but formatterFor runs per ROW — and
+    // DateTimeFormatter.ofPattern re-parses the pattern every time. DateTimeFormatter is
+    // immutable and thread-safe, so a bounded shared cache is sound.
+    private static final int FORMATTER_CACHE_CAPACITY = 256;
+    private static final Map<String, DateTimeFormatter> FORMATTER_CACHE = new ConcurrentHashMap<>();
+
     /**
      * A {@link DateTimeFormatter} (US locale) built from a Snowflake format string, usable for both
      * formatting a temporal and parsing a string (TO_DATE / TO_TIMESTAMP with an explicit format).
+     * Cached by the Snowflake format text.
      */
     public static DateTimeFormatter formatterFor(final String snowflakeFormat) {
-        return DateTimeFormatter.ofPattern(toJavaPattern(snowflakeFormat), Locale.US);
+        final DateTimeFormatter existing = FORMATTER_CACHE.get(snowflakeFormat);
+        if (existing != null) {
+            return existing;
+        }
+        final DateTimeFormatter built = DateTimeFormatter.ofPattern(toJavaPattern(snowflakeFormat), Locale.US);
+        if (FORMATTER_CACHE.size() >= FORMATTER_CACHE_CAPACITY) {
+            final Iterator<String> it = FORMATTER_CACHE.keySet().iterator();
+            if (it.hasNext()) {
+                it.next();
+                it.remove();
+            }
+        }
+        FORMATTER_CACHE.put(snowflakeFormat, built);
+        return built;
     }
 
     /**

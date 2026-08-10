@@ -17,13 +17,12 @@
 package dev.frostlake.udf;
 
 import dev.frostlake.BaseJdbcTest;
-import org.junit.jupiter.api.Test;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 import java.sql.ResultSet;
 import java.sql.SQLException;
-
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
@@ -80,15 +79,15 @@ public class OverloadedFunctionTest extends BaseJdbcTest {
         """);
 
         // Test all three overloads
-        ResultSet rs1 = statement.executeQuery("SELECT greet()");
+        final ResultSet rs1 = statement.executeQuery("SELECT greet()");
         rs1.next();
         assertEquals("Hello!", rs1.getString(1));
 
-        ResultSet rs2 = statement.executeQuery("SELECT greet('Alice')");
+        final ResultSet rs2 = statement.executeQuery("SELECT greet('Alice')");
         rs2.next();
         assertEquals("Hello, Alice!", rs2.getString(1));
 
-        ResultSet rs3 = statement.executeQuery("SELECT greet('Bob', 'Smith')");
+        final ResultSet rs3 = statement.executeQuery("SELECT greet('Bob', 'Smith')");
         rs3.next();
         assertEquals("Hello, Bob Smith!", rs3.getString(1));
     }
@@ -128,11 +127,11 @@ public class OverloadedFunctionTest extends BaseJdbcTest {
         """);
 
         // Test both overloads
-        ResultSet rs1 = statement.executeQuery("SELECT process('test')");
+        final ResultSet rs1 = statement.executeQuery("SELECT process('test')");
         rs1.next();
         assertEquals("String: test", rs1.getString(1));
 
-        ResultSet rs2 = statement.executeQuery("SELECT process(42)");
+        final ResultSet rs2 = statement.executeQuery("SELECT process(42)");
         rs2.next();
         assertEquals("Integer: 42", rs2.getString(1));
     }
@@ -174,13 +173,17 @@ public class OverloadedFunctionTest extends BaseJdbcTest {
         statement.execute("DROP FUNCTION calculate(INTEGER)");
 
         // Two-parameter overload should still work
-        ResultSet rs = statement.executeQuery("SELECT calculate(10, 20)");
+        final ResultSet rs = statement.executeQuery("SELECT calculate(10, 20)");
         rs.next();
         assertEquals(30, rs.getInt(1));
 
         // Single-parameter should fail
-        assertThrows(SQLException.class, () -> {
-            statement.executeQuery("SELECT calculate(5)");
+        assertThrows(SQLException.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                statement.executeQuery("SELECT calculate(5)");
+                
+            }
         });
     }
 
@@ -222,12 +225,20 @@ public class OverloadedFunctionTest extends BaseJdbcTest {
         statement.execute("DROP FUNCTION sum_val(INTEGER, INTEGER)");
 
         // Both should fail now
-        assertThrows(SQLException.class, () -> {
-            statement.executeQuery("SELECT sum_val(5)");
+        assertThrows(SQLException.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                statement.executeQuery("SELECT sum_val(5)");
+                
+            }
         });
 
-        assertThrows(SQLException.class, () -> {
-            statement.executeQuery("SELECT sum_val(5, 10)");
+        assertThrows(SQLException.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                statement.executeQuery("SELECT sum_val(5, 10)");
+                
+            }
         });
     }
 
@@ -280,12 +291,12 @@ public class OverloadedFunctionTest extends BaseJdbcTest {
         """);
 
         // Single-parameter should use new logic
-        ResultSet rs1 = statement.executeQuery("SELECT multiply(5)");
+        final ResultSet rs1 = statement.executeQuery("SELECT multiply(5)");
         rs1.next();
         assertEquals(15, rs1.getInt(1));
 
         // Two-parameter should still use old logic
-        ResultSet rs2 = statement.executeQuery("SELECT multiply(5, 7)");
+        final ResultSet rs2 = statement.executeQuery("SELECT multiply(5, 7)");
         rs2.next();
         assertEquals(35, rs2.getInt(1));
     }
@@ -310,20 +321,24 @@ public class OverloadedFunctionTest extends BaseJdbcTest {
         """);
 
         // Try to create with same signature - should fail
-        assertThrows(SQLException.class, () -> {
-            statement.execute("""
-            CREATE FUNCTION test_func(x INTEGER, y STRING)
-            RETURNS STRING
-            LANGUAGE JAVA
-            HANDLER = 'TestClass.method2'
-            AS $$
-            class TestClass {
-              public static String method2(int x, String y) {
-                return "v2";
-              }
+        assertThrows(SQLException.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                statement.execute("""
+                CREATE FUNCTION test_func(x INTEGER, y STRING)
+                RETURNS STRING
+                LANGUAGE JAVA
+                HANDLER = 'TestClass.method2'
+                AS $$
+                class TestClass {
+                  public static String method2(int x, String y) {
+                    return "v2";
+                  }
+                }
+                $$
+                """);
+                
             }
-            $$
-            """);
         });
     }
 
@@ -363,7 +378,7 @@ public class OverloadedFunctionTest extends BaseJdbcTest {
         statement.execute("INSERT INTO data VALUES (42, 'hello')");
         statement.execute("INSERT INTO data VALUES (100, 'world')");
 
-        ResultSet rs = statement.executeQuery("SELECT fmt_value(int_val), fmt_value(str_val) FROM data ORDER BY int_val");
+        final ResultSet rs = statement.executeQuery("SELECT fmt_value(int_val), fmt_value(str_val) FROM data ORDER BY int_val");
 
         rs.next();
         assertEquals("INT:42", rs.getString(1));
@@ -394,12 +409,16 @@ public class OverloadedFunctionTest extends BaseJdbcTest {
         """);
 
         // Try to drop non-existent overload - should fail
-        assertThrows(SQLException.class, () -> {
-            statement.execute("DROP FUNCTION sample_fn(STRING)");
+        assertThrows(SQLException.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                statement.execute("DROP FUNCTION sample_fn(STRING)");
+                
+            }
         });
 
         // Original overload should still exist
-        ResultSet rs = statement.executeQuery("SELECT sample_fn(10)");
+        final ResultSet rs = statement.executeQuery("SELECT sample_fn(10)");
         rs.next();
         assertEquals(10, rs.getInt(1));
     }
@@ -436,11 +455,11 @@ public class OverloadedFunctionTest extends BaseJdbcTest {
         $$
         """);
 
-        ResultSet rs1 = statement.executeQuery("SELECT concat_val('test')");
+        final ResultSet rs1 = statement.executeQuery("SELECT concat_val('test')");
         rs1.next();
         assertEquals("Value: test", rs1.getString(1));
 
-        ResultSet rs2 = statement.executeQuery("SELECT concat_val('hello', 'world')");
+        final ResultSet rs2 = statement.executeQuery("SELECT concat_val('hello', 'world')");
         rs2.next();
         assertEquals("hello-world", rs2.getString(1));
     }
@@ -464,12 +483,20 @@ public class OverloadedFunctionTest extends BaseJdbcTest {
         """);
 
         // Call with wrong number of parameters
-        assertThrows(SQLException.class, () -> {
-            statement.executeQuery("SELECT limited()");
+        assertThrows(SQLException.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                statement.executeQuery("SELECT limited()");
+                
+            }
         });
 
-        assertThrows(SQLException.class, () -> {
-            statement.executeQuery("SELECT limited(1, 2)");
+        assertThrows(SQLException.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                statement.executeQuery("SELECT limited(1, 2)");
+                
+            }
         });
     }
 }

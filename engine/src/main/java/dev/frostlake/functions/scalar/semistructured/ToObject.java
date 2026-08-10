@@ -43,6 +43,8 @@ public class ToObject extends BuiltInFunction {
         throw new RuntimeException("TO_OBJECT: argument must be an OBJECT or a VARIANT containing an OBJECT, got: " + v);
     }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return 1; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return 1; }
 }

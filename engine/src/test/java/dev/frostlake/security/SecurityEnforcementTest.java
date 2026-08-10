@@ -20,8 +20,10 @@ import dev.frostlake.DatabaseEngine;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-
-import static org.junit.jupiter.api.Assertions.*;
+import org.junit.jupiter.api.function.Executable;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Tests for security enforcement - verifying that GRANT/REVOKE actually enforce permissions
@@ -78,8 +80,12 @@ public class SecurityEnforcementTest {
         engine.setCurrentRole("readonly_role");
 
         // Should be able to SELECT
-        assertDoesNotThrow(() -> {
-            engine.executeQuery("SELECT * FROM employees");
+        assertDoesNotThrow(new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                engine.executeQuery("SELECT * FROM employees");
+                
+            }
         }, "User with SELECT permission should be able to query");
     }
 
@@ -93,8 +99,12 @@ public class SecurityEnforcementTest {
         engine.setCurrentRole("no_access_role");
 
         // Should be denied
-        SecurityException exception = assertThrows(SecurityException.class, () -> {
-            engine.executeQuery("SELECT * FROM employees");
+        final SecurityException exception = assertThrows(SecurityException.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                engine.executeQuery("SELECT * FROM employees");
+                
+            }
         }, "User without SELECT permission should be denied");
 
         assertTrue(exception.getMessage().contains("Permission denied"));
@@ -111,8 +121,12 @@ public class SecurityEnforcementTest {
         engine.setCurrentRole("data_writer_role");
 
         // Should be able to INSERT
-        assertDoesNotThrow(() -> {
-            engine.execute("INSERT INTO employees VALUES (3, 'Charlie', 65000)");
+        assertDoesNotThrow(new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                engine.execute("INSERT INTO employees VALUES (3, 'Charlie', 65000)");
+                
+            }
         }, "User with INSERT permission should be able to insert");
     }
 
@@ -126,8 +140,12 @@ public class SecurityEnforcementTest {
         engine.setCurrentRole("no_access_role");
 
         // Should be denied
-        SecurityException exception = assertThrows(SecurityException.class, () -> {
-            engine.execute("INSERT INTO employees VALUES (3, 'Charlie', 65000)");
+        final SecurityException exception = assertThrows(SecurityException.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                engine.execute("INSERT INTO employees VALUES (3, 'Charlie', 65000)");
+                
+            }
         }, "User without INSERT permission should be denied");
 
         assertTrue(exception.getMessage().contains("Permission denied"));
@@ -144,8 +162,12 @@ public class SecurityEnforcementTest {
         engine.setCurrentRole("data_writer_role");
 
         // Should be able to UPDATE
-        assertDoesNotThrow(() -> {
-            engine.execute("UPDATE employees SET salary = 80000 WHERE id = 1");
+        assertDoesNotThrow(new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                engine.execute("UPDATE employees SET salary = 80000 WHERE id = 1");
+                
+            }
         }, "User with UPDATE permission should be able to update");
     }
 
@@ -159,8 +181,12 @@ public class SecurityEnforcementTest {
         engine.setCurrentRole("no_access_role");
 
         // Should be denied
-        SecurityException exception = assertThrows(SecurityException.class, () -> {
-            engine.execute("UPDATE employees SET salary = 80000 WHERE id = 1");
+        final SecurityException exception = assertThrows(SecurityException.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                engine.execute("UPDATE employees SET salary = 80000 WHERE id = 1");
+                
+            }
         }, "User without UPDATE permission should be denied");
 
         assertTrue(exception.getMessage().contains("Permission denied"));
@@ -177,8 +203,12 @@ public class SecurityEnforcementTest {
         engine.setCurrentRole("data_writer_role");
 
         // Should be able to DELETE
-        assertDoesNotThrow(() -> {
-            engine.execute("DELETE FROM employees WHERE id = 1");
+        assertDoesNotThrow(new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                engine.execute("DELETE FROM employees WHERE id = 1");
+                
+            }
         }, "User with DELETE permission should be able to delete");
     }
 
@@ -192,8 +222,12 @@ public class SecurityEnforcementTest {
         engine.setCurrentRole("no_access_role");
 
         // Should be denied
-        SecurityException exception = assertThrows(SecurityException.class, () -> {
-            engine.execute("DELETE FROM employees WHERE id = 1");
+        final SecurityException exception = assertThrows(SecurityException.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                engine.execute("DELETE FROM employees WHERE id = 1");
+                
+            }
         }, "User without DELETE permission should be denied");
 
         assertTrue(exception.getMessage().contains("Permission denied"));
@@ -210,11 +244,15 @@ public class SecurityEnforcementTest {
         engine.setCurrentRole("data_writer_role");
 
         // Should be able to do everything
-        assertDoesNotThrow(() -> {
-            engine.executeQuery("SELECT * FROM employees");
-            engine.execute("INSERT INTO employees VALUES (3, 'Charlie', 65000)");
-            engine.execute("UPDATE employees SET salary = 70000 WHERE id = 3");
-            engine.execute("DELETE FROM employees WHERE id = 3");
+        assertDoesNotThrow(new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                engine.executeQuery("SELECT * FROM employees");
+                engine.execute("INSERT INTO employees VALUES (3, 'Charlie', 65000)");
+                engine.execute("UPDATE employees SET salary = 70000 WHERE id = 3");
+                engine.execute("DELETE FROM employees WHERE id = 3");
+                
+            }
         }, "User with ALL privileges should be able to perform all operations");
     }
 
@@ -230,8 +268,12 @@ public class SecurityEnforcementTest {
         engine.setCurrentRole("readonly_role");
 
         // Should be denied after revoke
-        SecurityException exception = assertThrows(SecurityException.class, () -> {
-            engine.executeQuery("SELECT * FROM employees");
+        final SecurityException exception = assertThrows(SecurityException.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                engine.executeQuery("SELECT * FROM employees");
+                
+            }
         }, "User should lose access after REVOKE");
 
         assertTrue(exception.getMessage().contains("Permission denied"));
@@ -248,11 +290,15 @@ public class SecurityEnforcementTest {
         engine.setCurrentRole("data_writer_role");
 
         // Should be able to do everything
-        assertDoesNotThrow(() -> {
-            engine.executeQuery("SELECT * FROM employees");
-            engine.execute("INSERT INTO employees VALUES (3, 'Charlie', 65000)");
-            engine.execute("UPDATE employees SET salary = 70000 WHERE id = 3");
-            engine.execute("DELETE FROM employees WHERE id = 3");
+        assertDoesNotThrow(new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                engine.executeQuery("SELECT * FROM employees");
+                engine.execute("INSERT INTO employees VALUES (3, 'Charlie', 65000)");
+                engine.execute("UPDATE employees SET salary = 70000 WHERE id = 3");
+                engine.execute("DELETE FROM employees WHERE id = 3");
+                
+            }
         }, "User with OWNERSHIP should have all privileges");
     }
 
@@ -273,14 +319,22 @@ public class SecurityEnforcementTest {
         engine.getSessionContext().addActiveRole("additional_role");
 
         // Should have both SELECT and INSERT permissions
-        assertDoesNotThrow(() -> {
-            engine.executeQuery("SELECT * FROM employees");
-            engine.execute("INSERT INTO employees VALUES (3, 'Charlie', 65000)");
+        assertDoesNotThrow(new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                engine.executeQuery("SELECT * FROM employees");
+                engine.execute("INSERT INTO employees VALUES (3, 'Charlie', 65000)");
+                
+            }
         }, "User with multiple roles should have accumulated permissions");
 
         // But not UPDATE
-        SecurityException exception = assertThrows(SecurityException.class, () -> {
-            engine.execute("UPDATE employees SET salary = 70000 WHERE id = 3");
+        final SecurityException exception = assertThrows(SecurityException.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                engine.execute("UPDATE employees SET salary = 70000 WHERE id = 3");
+                
+            }
         }, "User should not have permissions from ungranted operations");
 
         assertTrue(exception.getMessage().contains("Permission denied"));
@@ -305,8 +359,12 @@ public class SecurityEnforcementTest {
         engine.setCurrentRole("parent_role");
 
         // Should inherit SELECT from child role
-        assertDoesNotThrow(() -> {
-            engine.executeQuery("SELECT * FROM employees");
+        assertDoesNotThrow(new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                engine.executeQuery("SELECT * FROM employees");
+                
+            }
         }, "User should inherit permissions from child roles");
     }
 
@@ -316,11 +374,15 @@ public class SecurityEnforcementTest {
         engine.setCurrentUser("SYSTEM");
 
         // Should be able to do everything without explicit grants
-        assertDoesNotThrow(() -> {
-            engine.executeQuery("SELECT * FROM employees");
-            engine.execute("INSERT INTO employees VALUES (3, 'Charlie', 65000)");
-            engine.execute("UPDATE employees SET salary = 70000 WHERE id = 3");
-            engine.execute("DELETE FROM employees WHERE id = 3");
+        assertDoesNotThrow(new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                engine.executeQuery("SELECT * FROM employees");
+                engine.execute("INSERT INTO employees VALUES (3, 'Charlie', 65000)");
+                engine.execute("UPDATE employees SET salary = 70000 WHERE id = 3");
+                engine.execute("DELETE FROM employees WHERE id = 3");
+                
+            }
         }, "SYSTEM user should bypass all security checks");
     }
 
@@ -335,17 +397,25 @@ public class SecurityEnforcementTest {
         engine.setCurrentRole("no_access_role");
 
         // Should be able to access everything when security is disabled
-        assertDoesNotThrow(() -> {
-            engine.executeQuery("SELECT * FROM employees");
-            engine.execute("INSERT INTO employees VALUES (3, 'Charlie', 65000)");
+        assertDoesNotThrow(new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                engine.executeQuery("SELECT * FROM employees");
+                engine.execute("INSERT INTO employees VALUES (3, 'Charlie', 65000)");
+                
+            }
         }, "All users should have access when security is disabled");
 
         // Re-enable security
         engine.getSessionContext().setSecurityEnabled(true);
 
         // Now should be denied
-        SecurityException exception = assertThrows(SecurityException.class, () -> {
-            engine.execute("UPDATE employees SET salary = 70000 WHERE id = 3");
+        final SecurityException exception = assertThrows(SecurityException.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                engine.execute("UPDATE employees SET salary = 70000 WHERE id = 3");
+                
+            }
         }, "Users should be restricted again after re-enabling security");
 
         assertTrue(exception.getMessage().contains("Permission denied"));
@@ -365,19 +435,31 @@ public class SecurityEnforcementTest {
         engine.setCurrentRole("readonly_role");
 
         // Should be able to SELECT from both tables
-        assertDoesNotThrow(() -> {
-            engine.executeQuery("SELECT * FROM employees");
-            engine.executeQuery("SELECT * FROM departments");
+        assertDoesNotThrow(new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                engine.executeQuery("SELECT * FROM employees");
+                engine.executeQuery("SELECT * FROM departments");
+                
+            }
         });
 
         // Should be able to INSERT into departments
-        assertDoesNotThrow(() -> {
-            engine.execute("INSERT INTO departments VALUES (30, 'Marketing')");
+        assertDoesNotThrow(new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                engine.execute("INSERT INTO departments VALUES (30, 'Marketing')");
+                
+            }
         });
 
         // But not INSERT into employees
-        SecurityException exception = assertThrows(SecurityException.class, () -> {
-            engine.execute("INSERT INTO employees VALUES (3, 'Charlie', 65000)");
+        final SecurityException exception = assertThrows(SecurityException.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                engine.execute("INSERT INTO employees VALUES (3, 'Charlie', 65000)");
+                
+            }
         }, "User should not be able to INSERT into employees without permission");
 
         assertTrue(exception.getMessage().contains("Permission denied"));

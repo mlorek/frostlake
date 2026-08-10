@@ -57,6 +57,8 @@ public class Div0 extends NumericArgumentFunction {
         return SharedFunctionHelpers.divideWithSnowflakeScale(dividend, divisor);
     }
 
-    @Override public int getMinArgCount() { return 2; }
-    @Override public int getMaxArgCount() { return 2; }
+    @Override
+    public int getMinArgCount() { return 2; }
+    @Override
+    public int getMaxArgCount() { return 2; }
 }

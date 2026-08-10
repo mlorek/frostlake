@@ -35,6 +35,17 @@ public class Procedure extends SqlObject {
     private List<String> imports = new ArrayList<>();
     // Declared RETURNS TABLE(col TYPE, ...) columns — name the result of a CALL / TABLE(proc()) source.
     private List<Parameter> returnColumns = new ArrayList<>();
+    private boolean temporary = false;
+
+    /**
+     * A TEMPORARY (TEMP / VOLATILE) procedure lives only as long as the session that created it, the same
+     * lifetime Frostlake gives a temporary table. Live also makes it invisible to other sessions and
+     * lets it shadow a permanent object of the same name; Frostlake has one namespace per catalog, so
+     * it models the lifetime and not the isolation.
+     */
+    public boolean isTemporary() { return temporary; }
+
+    public void setTemporary(final boolean temporary) { this.temporary = temporary; }
 
     public Procedure(final String name, final List<Parameter> parameters,
                     final DataType returnType, final String body) {

@@ -55,7 +55,7 @@ public class TaskHistoryFunction extends TableFunction {
 
     @Override
     public ResultSet execute(final Map<String, Object> namedArgs) {
-        List<ResultSetColumn> columns = Arrays.asList(
+        final List<ResultSetColumn> columns = Arrays.asList(
             new ResultSetColumn("QUERY_ID", StringType.VARCHAR),
             new ResultSetColumn("NAME", StringType.VARCHAR),
             new ResultSetColumn("DATABASE_NAME", StringType.VARCHAR),
@@ -76,16 +76,16 @@ public class TaskHistoryFunction extends TableFunction {
             new ResultSetColumn("SCHEDULED_FROM", StringType.VARCHAR)
         );
 
-        String filterTaskName = namedArgs.containsKey("TASK_NAME")
+        final String filterTaskName = namedArgs.containsKey("TASK_NAME")
             ? namedArgs.get("TASK_NAME").toString().toUpperCase().replaceAll("^'|'$", "") : null;
         int resultLimit = 100;
         if (namedArgs.containsKey("RESULT_LIMIT")) {
-            Object rl = namedArgs.get("RESULT_LIMIT");
+            final Object rl = namedArgs.get("RESULT_LIMIT");
             if (rl instanceof Number) resultLimit = ((Number) rl).intValue();
             else try { resultLimit = Integer.parseInt(rl.toString()); } catch (final NumberFormatException ignored) {}
         }
 
-        List<Row> rows = new ArrayList<>();
+        final List<Row> rows = new ArrayList<>();
 
         // TASK_HISTORY spans the account in Snowflake, not the current schema — callers routinely
         // filter with database_name/schema_name predicates while sitting in another schema, so scan

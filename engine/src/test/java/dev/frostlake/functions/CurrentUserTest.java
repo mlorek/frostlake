@@ -16,55 +16,56 @@
 
 package dev.frostlake.functions;
 
+import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.DatabaseEngine;
 import dev.frostlake.config.EngineConfig;
 import dev.frostlake.metastore.model.User;
 import dev.frostlake.storage.ResultSet;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-public class CurrentUserTest {
+/**
+ * CURRENT_USER() — live-tolerant: the value cells compare against the session's own answer
+ * (whatever account the run rides), while the engine-default pin (the OS login, upper-cased as
+ * the engine stores users) and the catalog cells hold on the embedded engine. The custom-config
+ * cells build their own throwaway engines and are transport-independent.
+ */
+public class CurrentUserTest extends BaseDatabaseTest {
 
     private static final Logger logger = LoggerFactory.getLogger(CurrentUserTest.class);
-    // The default connected user is now sourced from the OS login (upper-cased, as the engine stores users).
+    // The default connected user is sourced from the OS login (upper-cased, as the engine stores users).
     private static final String OS_USER = System.getProperty("user.name", "ADMIN").toUpperCase();
-    private DatabaseEngine engine;
 
-    @BeforeEach
-    public void setUp() {
-        engine = new DatabaseEngine();
-    }
-
-    @AfterEach
-    public void tearDown() {
-        if (engine != null) {
-            engine.shutdown();
-        }
+    private String currentUser() {
+        final ResultSet rs = engine.executeQuery("SELECT CURRENT_USER()");
+        assertEquals(1, rs.getRowCount());
+        return String.valueOf(rs.getRows().get(0).getValue(0));
     }
 
     @Test
-    public void testCurrentUserDefaultValue() {
-        ResultSet rs = engine.executeQuery("SELECT CURRENT_USER()");
-        assertNotNull(rs);
-        assertEquals(1, rs.getRowCount());
-        assertEquals(OS_USER, rs.getRows().get(0).getValue(0));
-        logger.info("CURRENT_USER() returned: {}", rs.getRows().get(0).getValue(0));
+    public void testCurrentUserAnswersTheSessionUser() {
+        final String user = currentUser();
+        assertNotNull(user);
+        assertFalse(user.isEmpty());
+        if (!isLiveSnowflake()) {
+            assertEquals(OS_USER, user);
+        }
+        logger.info("CURRENT_USER() returned: {}", user);
     }
 
     @Test
     public void testCurrentUserWithCustomConfig() {
-        EngineConfig config = new EngineConfig();
+        final EngineConfig config = new EngineConfig();
         config.setProperty(EngineConfig.PROP_DEFAULT_USER, "JOHN");
-        DatabaseEngine customEngine = new DatabaseEngine(config);
+        final DatabaseEngine customEngine = new DatabaseEngine(config);
 
-        ResultSet rs = customEngine.executeQuery("SELECT CURRENT_USER()");
+        final ResultSet rs = customEngine.executeQuery("SELECT CURRENT_USER()");
         assertNotNull(rs);
         assertEquals(1, rs.getRowCount());
         assertEquals("JOHN", rs.getRows().get(0).getValue(0));
@@ -74,26 +75,23 @@ public class CurrentUserTest {
 
     @Test
     public void testCurrentUserCaseInsensitive() {
-        ResultSet rs1 = engine.executeQuery("SELECT current_user()");
-        ResultSet rs2 = engine.executeQuery("SELECT CURRENT_USER()");
-
-        assertEquals(OS_USER, rs1.getRows().get(0).getValue(0));
-        assertEquals(OS_USER, rs2.getRows().get(0).getValue(0));
+        final String upper = currentUser();
+        final ResultSet rs1 = engine.executeQuery("SELECT current_user()");
+        assertEquals(upper, String.valueOf(rs1.getRows().get(0).getValue(0)));
     }
 
     @Test
     public void testCurrentUserInWhereClause() {
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
-        engine.execute("USE SCHEMA public");
+        final String user = currentUser();
         engine.execute("CREATE TABLE user_data (id INTEGER, username VARCHAR)");
-        engine.execute("INSERT INTO user_data VALUES (1, '" + OS_USER + "')");
-        engine.execute("INSERT INTO user_data VALUES (2, 'OTHER')");
+        engine.execute("INSERT INTO user_data VALUES (1, '" + user + "')");
+        engine.execute("INSERT INTO user_data VALUES (2, 'SOMEBODY_ELSE')");
 
-        ResultSet rs = engine.executeQuery("SELECT id FROM user_data WHERE username = CURRENT_USER()");
+        final ResultSet rs = engine.executeQuery(
+            "SELECT id FROM user_data WHERE username = CURRENT_USER()");
         assertNotNull(rs);
         assertEquals(1, rs.getRowCount());
-        assertEquals(1L, rs.getRows().get(0).getValue(0));
+        assertEquals(1L, ((Number) rs.getRows().get(0).getValue(0)).longValue());
         logger.info("CURRENT_USER() in WHERE clause works");
     }
 
@@ -105,7 +103,7 @@ public class CurrentUserTest {
 
     @Test
     public void testDefaultUserHasAdminRoles() {
-        User admin = engine.getCatalog().getUser(OS_USER);
+        final User admin = engine.getCatalog().getUser(OS_USER);
         assertTrue(admin.getGrantedRoles().contains("ORGADMIN"),
             "Default user should have ORGADMIN role");
         assertTrue(admin.getGrantedRoles().contains("ACCOUNTADMIN"),
@@ -115,11 +113,11 @@ public class CurrentUserTest {
 
     @Test
     public void testCurrentUserUpperCasedFromConfig() {
-        EngineConfig config = new EngineConfig();
+        final EngineConfig config = new EngineConfig();
         config.setProperty(EngineConfig.PROP_DEFAULT_USER, "alice");
-        DatabaseEngine customEngine = new DatabaseEngine(config);
+        final DatabaseEngine customEngine = new DatabaseEngine(config);
 
-        ResultSet rs = customEngine.executeQuery("SELECT CURRENT_USER()");
+        final ResultSet rs = customEngine.executeQuery("SELECT CURRENT_USER()");
         assertEquals("ALICE", rs.getRows().get(0).getValue(0));
         logger.info("User name is uppercased: {}", rs.getRows().get(0).getValue(0));
         customEngine.shutdown();

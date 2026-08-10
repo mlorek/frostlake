@@ -20,7 +20,22 @@ import java.io.InputStream;
 import java.io.Reader;
 import java.math.BigDecimal;
 import java.net.URL;
-import java.sql.*;
+import java.sql.Array;
+import java.sql.Blob;
+import java.sql.Clob;
+import java.sql.Date;
+import java.sql.NClob;
+import java.sql.ParameterMetaData;
+import java.sql.PreparedStatement;
+import java.sql.Ref;
+import java.sql.ResultSet;
+import java.sql.ResultSetMetaData;
+import java.sql.RowId;
+import java.sql.SQLException;
+import java.sql.SQLFeatureNotSupportedException;
+import java.sql.SQLXML;
+import java.sql.Time;
+import java.sql.Timestamp;
 import java.util.ArrayList;
 import java.util.Calendar;
 import java.util.HashMap;
@@ -34,6 +49,7 @@ public class DatabasePreparedStatement extends DatabaseStatement implements Prep
     private final String originalSql;
     private final Map<Integer, Object> parameters;
     private final List<Map<Integer, Object>> batchParameters = new ArrayList<>();
+    private final Map<Integer, String> batchBindTypes = new HashMap<>();
 
     public DatabasePreparedStatement(final DatabaseConnection connection, final HttpClient httpClient, final String sql) {
         super(connection, httpClient);
@@ -158,9 +174,24 @@ public class DatabasePreparedStatement extends DatabaseStatement implements Prep
 
     @Override
     public void addBatch() throws SQLException {
+        // Live refuses a row whose bind types differ from the earlier rows' (array binding).
+        JdbcBindTypes.validateBatchRow(batchBindTypes, parameters, batchParameters.size() + 1);
         batchParameters.add(new HashMap<>(parameters));
     }
 
+    @Override
+    public void clearBatch() throws SQLException {
+        super.clearBatch();
+        batchParameters.clear();
+        batchBindTypes.clear();
+    }
+
+    /**
+     * Live executes a prepared batch as one array-bound statement: a failure surfaces as that
+     * statement's own {@link SQLException} — never a {@link BatchUpdateException} — and the batch
+     * applies nothing. Frostlake executes the rows one by one, so rows before the failing one
+     * stay applied; the exception surface matches live, and the remaining rows are not attempted.
+     */
     @Override
     public int[] executeBatch() throws SQLException {
         final int[] results = new int[batchParameters.size()];
@@ -170,10 +201,9 @@ public class DatabasePreparedStatement extends DatabaseStatement implements Prep
                 parameters.clear();
                 parameters.putAll(batchParameters.get(i));
                 try {
-                    executeUpdate();
-                    results[i] = SUCCESS_NO_INFO;
-                } catch (final SQLException e) {
-                    results[i] = EXECUTE_FAILED;
+                    // Live Snowflake reports the real affected-row count per batch entry, not
+                    // SUCCESS_NO_INFO.
+                    results[i] = executeUpdate();
                 } finally {
                     parameters.clear();
                     parameters.putAll(saved);
@@ -181,6 +211,7 @@ public class DatabasePreparedStatement extends DatabaseStatement implements Prep
             }
         } finally {
             batchParameters.clear();
+            batchBindTypes.clear();
         }
         return results;
     }

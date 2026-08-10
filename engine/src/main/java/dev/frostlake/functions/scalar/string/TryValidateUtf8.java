@@ -16,17 +16,30 @@
 
 package dev.frostlake.functions.scalar.string;
 
+import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.functions.TextArgumentFunction;
 import dev.frostlake.types.StringType;
 import dev.frostlake.values.BinaryValue;
+import java.nio.ByteBuffer;
 import java.nio.charset.CharacterCodingException;
 import java.nio.charset.StandardCharsets;
-import java.nio.ByteBuffer;
 import java.util.List;
 
-/** TRY_VALIDATE_UTF8(x) — the input as a string when its bytes are valid UTF-8, else NULL. */
+/**
+ * TRY_VALIDATE_UTF8(x) — the input as a string when its bytes are valid UTF-8, else NULL.
+ *
+ * <p>It reads its argument as TEXT, so a BINARY is an argument-type error rather than the obvious
+ * input: live refuses {@code TRY_VALIDATE_UTF8(bn)} at compile time and answers over a VARCHAR and
+ * even over a NUMBER. The byte path below therefore only ever sees a value the static channel could
+ * not type.
+ */
 public class TryValidateUtf8 extends TextArgumentFunction {
     public TryValidateUtf8() { super("TRY_VALIDATE_UTF8", StringType.VARCHAR); }
+
+    @Override
+    public SemiStructuredRejection binaryRejection(final int position) {
+        return SemiStructuredRejection.ARGUMENT_TYPES;
+    }
 
     @Override
     public Object evaluate(final List<Object> args) {
@@ -42,6 +55,8 @@ public class TryValidateUtf8 extends TextArgumentFunction {
         return args.get(0).toString();
     }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return 1; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return 1; }
 }

@@ -40,7 +40,7 @@ public class StringFunctionsTest extends BaseDatabaseTest {
 
     @Test
     public void testLTrim() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT LTRIM(text) as trimmed FROM test_strings WHERE id = 1"
         );
         assertEquals(1, result.getRowCount());
@@ -49,7 +49,7 @@ public class StringFunctionsTest extends BaseDatabaseTest {
 
     @Test
     public void testLTrimNoSpaces() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT LTRIM(text) as trimmed FROM test_strings WHERE id = 2"
         );
         assertEquals(1, result.getRowCount());
@@ -58,7 +58,7 @@ public class StringFunctionsTest extends BaseDatabaseTest {
 
     @Test
     public void testLTrimNull() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT LTRIM(text) as trimmed FROM test_strings WHERE id = 5"
         );
         assertEquals(1, result.getRowCount());
@@ -69,7 +69,7 @@ public class StringFunctionsTest extends BaseDatabaseTest {
 
     @Test
     public void testRTrim() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT RTRIM(text) as trimmed FROM test_strings WHERE id = 1"
         );
         assertEquals(1, result.getRowCount());
@@ -78,7 +78,7 @@ public class StringFunctionsTest extends BaseDatabaseTest {
 
     @Test
     public void testRTrimNoSpaces() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT RTRIM(text) as trimmed FROM test_strings WHERE id = 2"
         );
         assertEquals(1, result.getRowCount());
@@ -89,7 +89,7 @@ public class StringFunctionsTest extends BaseDatabaseTest {
 
     @Test
     public void testReverse() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT REVERSE(text) as reversed FROM test_strings WHERE id = 2"
         );
         assertEquals(1, result.getRowCount());
@@ -98,7 +98,7 @@ public class StringFunctionsTest extends BaseDatabaseTest {
 
     @Test
     public void testReverseNull() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT REVERSE(text) as reversed FROM test_strings WHERE id = 5"
         );
         assertEquals(1, result.getRowCount());
@@ -109,7 +109,7 @@ public class StringFunctionsTest extends BaseDatabaseTest {
 
     @Test
     public void testInitCap() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT INITCAP(text) as capitalized FROM test_strings WHERE id = 4"
         );
         assertEquals(1, result.getRowCount());
@@ -118,7 +118,7 @@ public class StringFunctionsTest extends BaseDatabaseTest {
 
     @Test
     public void testInitCapAllCaps() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT INITCAP(text) as capitalized FROM test_strings WHERE id = 3"
         );
         assertEquals(1, result.getRowCount());
@@ -127,7 +127,7 @@ public class StringFunctionsTest extends BaseDatabaseTest {
 
     @Test
     public void testInitCapNull() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT INITCAP(text) as capitalized FROM test_strings WHERE id = 5"
         );
         assertEquals(1, result.getRowCount());
@@ -138,7 +138,7 @@ public class StringFunctionsTest extends BaseDatabaseTest {
 
     @Test
     public void testLPad() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT LPAD(text, 10) as padded FROM test_strings WHERE id = 2"
         );
         assertEquals(1, result.getRowCount());
@@ -147,7 +147,7 @@ public class StringFunctionsTest extends BaseDatabaseTest {
 
     @Test
     public void testLPadWithChar() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT LPAD(text, 10, '*') as padded FROM test_strings WHERE id = 2"
         );
         assertEquals(1, result.getRowCount());
@@ -156,7 +156,7 @@ public class StringFunctionsTest extends BaseDatabaseTest {
 
     @Test
     public void testLPadTruncatesLongerInput() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT LPAD(text, 3, '*') as padded FROM test_strings WHERE id = 2"
         );
         assertEquals(1, result.getRowCount());
@@ -166,7 +166,7 @@ public class StringFunctionsTest extends BaseDatabaseTest {
 
     @Test
     public void testLPadWithString() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT LPAD(text, 10, 'ab') as padded FROM test_strings WHERE id = 2"
         );
         assertEquals(1, result.getRowCount());
@@ -177,7 +177,7 @@ public class StringFunctionsTest extends BaseDatabaseTest {
 
     @Test
     public void testRPad() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT RPAD(text, 10) as padded FROM test_strings WHERE id = 2"
         );
         assertEquals(1, result.getRowCount());
@@ -186,7 +186,7 @@ public class StringFunctionsTest extends BaseDatabaseTest {
 
     @Test
     public void testRPadWithChar() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT RPAD(text, 10, '*') as padded FROM test_strings WHERE id = 2"
         );
         assertEquals(1, result.getRowCount());
@@ -195,7 +195,7 @@ public class StringFunctionsTest extends BaseDatabaseTest {
 
     @Test
     public void testRPadTruncatesLongerInput() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT RPAD(text, 3, '*') as padded FROM test_strings WHERE id = 2"
         );
         assertEquals(1, result.getRowCount());
@@ -205,7 +205,7 @@ public class StringFunctionsTest extends BaseDatabaseTest {
 
     @Test
     public void testRPadWithString() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT RPAD(text, 10, 'ab') as padded FROM test_strings WHERE id = 2"
         );
         assertEquals(1, result.getRowCount());
@@ -216,7 +216,7 @@ public class StringFunctionsTest extends BaseDatabaseTest {
 
     @Test
     public void testTrimCombined() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT LTRIM(RTRIM(text)) as trimmed FROM test_strings WHERE id = 1"
         );
         assertEquals(1, result.getRowCount());
@@ -225,7 +225,7 @@ public class StringFunctionsTest extends BaseDatabaseTest {
 
     @Test
     public void testReverseUpper() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT REVERSE(UPPER(text)) as result FROM test_strings WHERE id = 2"
         );
         assertEquals(1, result.getRowCount());

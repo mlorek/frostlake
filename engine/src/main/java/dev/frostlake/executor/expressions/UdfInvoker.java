@@ -24,6 +24,7 @@ import dev.frostlake.executor.udf.JarHandlerLoader;
 import dev.frostlake.executor.udf.JavaFunctionCompiler;
 import dev.frostlake.executor.udf.UdfRuntimes;
 import dev.frostlake.functions.FunctionRegistry;
+import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.model.Function;
 import dev.frostlake.metastore.model.NullHandling;
@@ -34,14 +35,16 @@ import dev.frostlake.metastore.model.TableColumn;
 import dev.frostlake.metastore.model.UdfLanguage;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.Row;
-import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.types.ArrayType;
 import dev.frostlake.types.DataType;
 import dev.frostlake.types.DateTimeType;
 import dev.frostlake.types.ObjectType;
 import dev.frostlake.types.TypeCategory;
+import dev.frostlake.types.VariantType;
 import dev.frostlake.types.VectorType;
 import dev.frostlake.values.VariantValue;
+
+import tools.jackson.databind.node.StringNode;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -172,14 +175,14 @@ final class UdfInvoker {
     }
 
     Function resolveOverloadedFunction(final Schema schema, final String funcName, final List<Object> argValues) {
-        List<Function> overloads = schema.getFunctionOverloads(funcName);
+        final List<Function> overloads = schema.getFunctionOverloads(funcName);
         if (overloads.isEmpty()) {
             return null;
         }
 
         // If only one overload, use it
         if (overloads.size() == 1) {
-            Function func = overloads.get(0);
+            final Function func = overloads.get(0);
             if (acceptsArgumentCount(func, argValues.size())) {
                 return func;
             }
@@ -188,7 +191,7 @@ final class UdfInvoker {
         }
 
         // Multiple overloads - match by argument count and types
-        List<Function> candidatesByCount = new ArrayList<>();
+        final List<Function> candidatesByCount = new ArrayList<>();
         for (final Function func : overloads) {
             if (acceptsArgumentCount(func, argValues.size())) {
                 candidatesByCount.add(func);
@@ -206,10 +209,10 @@ final class UdfInvoker {
         // Multiple candidates with same parameter count - try type matching
         for (final Function func : candidatesByCount) {
             boolean typesMatch = true;
-            List<Parameter> params = func.getParameters();
+            final List<Parameter> params = func.getParameters();
             for (int i = 0; i < params.size(); i++) {
-                Parameter param = params.get(i);
-                Object argValue = argValues.get(i);
+                final Parameter param = params.get(i);
+                final Object argValue = argValues.get(i);
                 if (!isCompatibleArgument(argValue, param.getDataType())) {
                     typesMatch = false;
                     break;
@@ -229,7 +232,7 @@ final class UdfInvoker {
             return true; // NULL is compatible with all types
         }
 
-        String typeName = expectedType.getName().toUpperCase();
+        final String typeName = expectedType.getName().toUpperCase();
 
         // String types
         if (typeName.equals("STRING") || typeName.equals("VARCHAR") || typeName.equals("TEXT")) {
@@ -333,29 +336,58 @@ final class UdfInvoker {
             return evaluateSqlFunction(function, args);
         } else if (language == UdfLanguage.JAVASCRIPT || language == UdfLanguage.PYTHON
                 || language == UdfLanguage.SCALA) {
-            return UdfRuntimes.require(language).executeFunction(function, args, catalog,
-                queryExecutor != null ? queryExecutor.getS3PathResolver() : null);
+            final Object guestResult = UdfRuntimes.require(language).executeFunction(function, args,
+                catalog, queryExecutor != null ? queryExecutor.getS3PathResolver() : null);
+            return wrapSemiStructuredReturn(function, guestResult);
         } else {
             throw new RuntimeException("Unsupported function language: " + language);
         }
     }
 
+
+    /**
+     * A guest-language handler returns OBJECT / ARRAY values as JSON text; a function DECLARED to
+     * return a semi-structured type hands that text back as a real semi-structured value, so a
+     * container embeds it structurally — OBJECT_CONSTRUCT('k', js_array_fn(...)) nests the array
+     * instead of quoting its text — and a scalar string under a VARIANT declaration becomes a
+     * VARIANT STRING, exactly as the SQL-side cast would make it.
+     */
+    private Object wrapSemiStructuredReturn(final Function function, final Object result) {
+        if (!(result instanceof String)) {
+            return result;
+        }
+        final DataType returnType = function.getReturnType();
+        if (!(returnType instanceof ArrayType || returnType instanceof ObjectType
+                || returnType instanceof VariantType)) {
+            return result;
+        }
+        final String text = ((String) result).trim();
+        if (text.startsWith("[") || text.startsWith("{") || text.startsWith("\"")
+                || "null".equals(text)) {
+            return VariantValue.of(text);
+        }
+        if (returnType instanceof VariantType) {
+            return VariantValue.of(StringNode.valueOf((String) result).toString());
+        }
+        return result;
+    }
+
     private Object evaluateSqlFunction(final Function function, final List<Object> args) {
         final QueryExecutor queryExecutor = visitor.getQueryExecutor();
-        String body = function.getBody();
+        final String body = function.getBody();
         if (body == null || body.isEmpty()) return null;
 
         // Bind parameter names to argument values
-        List<Parameter> params = function.getParameters();
+        final List<Parameter> params = function.getParameters();
 
         // If the body is a query statement (SELECT / WITH … SELECT), execute it via queryExecutor; a bare
         // scalar expression body falls through to expression evaluation. Decided by parsing, not a prefix.
-        String trimmedBody = body.trim();
+        final String trimmedBody = body.trim();
         if (queryExecutor != null && queryExecutor.isQueryStatement(trimmedBody)) {
             // Substitute parameter placeholders
             final String sql = substituteParams(trimmedBody, params, args);
             try {
-                List<ResultSet> results = queryExecutor.execute(sql);
+                final List<ResultSet> results = queryExecutor.execute(sql);
                 if (!results.isEmpty() && results.get(0).getRowCount() > 0) {
                     return results.get(0).getRows().get(0).getValue(0);
                 }
@@ -380,6 +412,14 @@ final class UdfInvoker {
             // `RETURNS INT` over `RETURN 'abc'` fails "Numeric value 'abc' is not recognized".
             return queryExecutor.getProceduralExecutor().coerceToType(returned, function.getReturnType());
         }
+        if (queryExecutor != null) {
+            // A body that OPENS a block but does not parse as one is not an expression either, and its
+            // own syntax error says why. Live refuses such a body at CREATE ("Compilation of SQL UDF
+            // failed: …"); the CREATE-time check here fails open on a body the grammar cannot read, so
+            // the refusal lands on the call instead — with the same compilation error, not an opaque
+            // evaluator failure.
+            queryExecutor.reportBlockSyntaxError(trimmedBody);
+        }
 
         // Otherwise evaluate the body as an expression with param substitution. The body arrives ALREADY
         // unquoted — extractBodyDefinition removed the $$…$$ or '…' delimiters when the routine was created —
@@ -396,17 +436,17 @@ final class UdfInvoker {
 
         // Bind all parameters into a single multi-column table row
         if (!params.isEmpty() && queryExecutor != null) {
-            List<TableColumn> cols = new ArrayList<>();
-            List<Object> rowVals = new ArrayList<>();
+            final List<TableColumn> cols = new ArrayList<>();
+            final List<Object> rowVals = new ArrayList<>();
             for (int i = 0; i < params.size() && i < args.size(); i++) {
                 cols.add(new TableColumn(
                     params.get(i).getName(), params.get(i).getDataType(), true, null, false, false, false));
                 rowVals.add(args.get(i));
             }
-            Table paramTable =
+            final Table paramTable =
                 new Table("__UDF__", cols, false);
-            Row paramRow = new Row(rowVals);
-            ExpressionEvaluator eval =
+            final Row paramRow = new Row(rowVals);
+            final ExpressionEvaluator eval =
                 new ExpressionEvaluator(paramTable, functionRegistry,
                     queryExecutor.getCatalog(), queryExecutor);
             try {
@@ -418,11 +458,11 @@ final class UdfInvoker {
 
         // No params — evaluate body directly
         if (queryExecutor != null) {
-            Table emptyTable =
+            final Table emptyTable =
                 new Table("__UDF__", Collections.emptyList(), false);
-            Row emptyRow =
+            final Row emptyRow =
                 new Row(Collections.emptyList());
-            ExpressionEvaluator eval =
+            final ExpressionEvaluator eval =
                 new ExpressionEvaluator(emptyTable, functionRegistry,
                     queryExecutor.getCatalog(), queryExecutor);
             try {
@@ -499,27 +539,27 @@ final class UdfInvoker {
 
     private Object evaluateJavaFunction(final Function function, final List<Object> args) {
         final QueryExecutor queryExecutor = visitor.getQueryExecutor();
-        String handler = function.getHandler();
+        final String handler = function.getHandler();
         if (handler == null || handler.isEmpty()) {
             throw new RuntimeException("Java function must specify a HANDLER");
         }
 
         // Parse handler: "ClassName.methodName"
-        int dotIndex = handler.lastIndexOf('.');
+        final int dotIndex = handler.lastIndexOf('.');
         if (dotIndex < 0) {
             throw new RuntimeException("Invalid handler format. Expected 'ClassName.methodName', got: " + handler);
         }
 
-        String className = handler.substring(0, dotIndex);
-        String methodName = handler.substring(dotIndex + 1);
+        final String className = handler.substring(0, dotIndex);
+        final String methodName = handler.substring(dotIndex + 1);
 
         // The handler class comes from the IMPORTS jar(s) if given, else from compiling the inline body.
-        Class<?> compiledClass;
+        final Class<?> compiledClass;
         if (!function.getImports().isEmpty()) {
             compiledClass = JarHandlerLoader.load(function.getImports(), className, catalog,
                 queryExecutor != null ? queryExecutor.getS3PathResolver() : null);
         } else {
-            String sourceCode = function.getBody();
+            final String sourceCode = function.getBody();
             if (sourceCode == null || sourceCode.trim().isEmpty()) {
                 throw new RuntimeException("Java function must specify an inline body (AS ...) or IMPORTS");
             }
@@ -527,19 +567,19 @@ final class UdfInvoker {
         }
 
         // Convert SQL argument values to Java types
-        Object[] javaArgs = convertSqlArgsToJava(args);
+        final Object[] javaArgs = convertSqlArgsToJava(args);
 
         // Invoke the method
-        Object result = javaCompiler.invokeMethod(compiledClass, methodName, javaArgs);
+        final Object result = javaCompiler.invokeMethod(compiledClass, methodName, javaArgs);
 
         // Convert result back to SQL type
         return convertJavaResultToSql(result);
     }
 
     private Object[] convertSqlArgsToJava(final List<Object> sqlArgs) {
-        Object[] javaArgs = new Object[sqlArgs.size()];
+        final Object[] javaArgs = new Object[sqlArgs.size()];
         for (int i = 0; i < sqlArgs.size(); i++) {
-            Object arg = sqlArgs.get(i);
+            final Object arg = sqlArgs.get(i);
             if (arg == null) {
                 javaArgs[i] = null;
             } else if (arg instanceof Long) {
