@@ -1,0 +1,62 @@
+{
+  "suite": "ddl-alter-constraint",
+  "description": "ALTER TABLE ... RENAME CONSTRAINT and ALTER/MODIFY CONSTRAINT enforcement properties (live-verified): rename moves the name, RELY/NORELY read back through SHOW UNIQUE KEYS' rely cell, ENFORCED/NOT ENFORCED accepted (no read surface), several properties in one statement, VALIDATE/NOVALIDATE refused as syntax errors despite the documentation, distinct not-there sentences for rename vs alter, and NORELY/ENFORCED staying usable as names. Converted 1:1 from ddl/AlterConstraintClausesTest (now retired).",
+  "tags": ["ddl", "converted"],
+  "tests": [
+    {"name": "rename-constraint-moves-the-name", "steps": [
+      {"sql": "CREATE TABLE t (n INT, m INT, CONSTRAINT u1 UNIQUE (n), CONSTRAINT u2 UNIQUE (m))"},
+      {"sql": "ALTER TABLE t RENAME CONSTRAINT u1 TO u1x"},
+      {"sql": "ALTER TABLE t RENAME CONSTRAINT u1x TO u1"},
+      {"sql": "ALTER TABLE t RENAME CONSTRAINT u1x TO other",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nconstraint 'U1X' does not exist"}}}
+    ]},
+    {"name": "renaming-an-unknown-constraint-is-refused", "steps": [
+      {"sql": "CREATE TABLE t (n INT, m INT, CONSTRAINT u1 UNIQUE (n), CONSTRAINT u2 UNIQUE (m))"},
+      {"sql": "ALTER TABLE t RENAME CONSTRAINT nosuch TO other",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nconstraint 'NOSUCH' does not exist"}}}
+    ]},
+    {"name": "rely-is-recorded-and-reads-back", "steps": [
+      {"sql": "CREATE TABLE t (n INT, m INT, CONSTRAINT u1 UNIQUE (n), CONSTRAINT u2 UNIQUE (m))"},
+      {"sql": "ALTER TABLE t ALTER CONSTRAINT u1 RELY"},
+      {"sql": "SHOW UNIQUE KEYS IN TABLE t", "expect": {"rowCount": 2}},
+      {"sql": "SELECT \"rely\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"constraint_name\" = 'U1'", "expect": {"value": "true"}},
+      {"sql": "ALTER TABLE t ALTER CONSTRAINT u1 NORELY"},
+      {"sql": "SHOW UNIQUE KEYS IN TABLE t", "expect": {"rowCount": 2}},
+      {"sql": "SELECT \"rely\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"constraint_name\" = 'U1'", "expect": {"value": "false"}}
+    ]},
+    {"name": "modify-is-the-same-statement", "steps": [
+      {"sql": "CREATE TABLE t (n INT, m INT, CONSTRAINT u1 UNIQUE (n), CONSTRAINT u2 UNIQUE (m))"},
+      {"sql": "ALTER TABLE t MODIFY CONSTRAINT u2 RELY"},
+      {"sql": "SHOW UNIQUE KEYS IN TABLE t", "expect": {"rowCount": 2}},
+      {"sql": "SELECT \"rely\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"constraint_name\" = 'U2'", "expect": {"value": "true"}}
+    ]},
+    {"name": "enforcement-flags-are-accepted", "steps": [
+      {"sql": "CREATE TABLE t (n INT, m INT, CONSTRAINT u1 UNIQUE (n), CONSTRAINT u2 UNIQUE (m))"},
+      {"sql": "ALTER TABLE t ALTER CONSTRAINT u2 ENFORCED"},
+      {"sql": "ALTER TABLE t MODIFY CONSTRAINT u2 NOT ENFORCED"}
+    ]},
+    {"name": "several-properties-in-one-statement", "steps": [
+      {"sql": "CREATE TABLE t (n INT, m INT, CONSTRAINT u1 UNIQUE (n), CONSTRAINT u2 UNIQUE (m))"},
+      {"sql": "ALTER TABLE t ALTER CONSTRAINT u2 NOT ENFORCED NORELY"},
+      {"sql": "SHOW UNIQUE KEYS IN TABLE t", "expect": {"rowCount": 2}},
+      {"sql": "SELECT \"rely\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"constraint_name\" = 'U2'", "expect": {"value": "false"}}
+    ]},
+    {"name": "validate-is-not-a-constraint-property", "steps": [
+      {"sql": "CREATE TABLE t (n INT, m INT, CONSTRAINT u1 UNIQUE (n), CONSTRAINT u2 UNIQUE (m))"},
+      {"sql": "ALTER TABLE t ALTER CONSTRAINT u2 VALIDATE",
+       "expect": {"error": {"messageContains": "syntax error"}}},
+      {"sql": "ALTER TABLE t ALTER CONSTRAINT u2 NOVALIDATE",
+       "expect": {"error": {"messageContains": "syntax error"}}}
+    ]},
+    {"name": "altering-an-unknown-constraint-uses-the-object-sentence", "steps": [
+      {"sql": "CREATE TABLE t (n INT, m INT, CONSTRAINT u1 UNIQUE (n), CONSTRAINT u2 UNIQUE (m))"},
+      {"sql": "ALTER TABLE t ALTER CONSTRAINT nosuch RELY",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nObject 'NOSUCH' does not exist or not authorized."}}}
+    ]},
+    {"name": "norely-and-enforced-remain-usable-as-names", "steps": [
+      {"sql": "CREATE TABLE kw (norely INT, enforced INT)"},
+      {"sql": "INSERT INTO kw VALUES (1, 2)"},
+      {"sql": "SELECT norely FROM kw WHERE enforced = 2", "expect": {"value": "1"}}
+    ]}
+  ]
+}

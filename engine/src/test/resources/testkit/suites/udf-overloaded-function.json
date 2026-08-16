@@ -1,0 +1,71 @@
+{
+  "suite": "udf-overloaded-function",
+  "description": "A Java UDF name may carry several OVERLOADS, resolved by the argument list at the call site: overloads differing in parameter COUNT (zero, one and two STRING arguments all under one name), overloads differing in parameter TYPE (STRING against INTEGER), and overloads with the same type but different counts. DROP FUNCTION takes a SIGNATURE and drops only that overload, leaving its siblings callable; Snowflake requires the signature, so dropping every overload means dropping each one individually. CREATE OR REPLACE likewise replaces only the matching signature and leaves the others on their old handler. A second CREATE for a signature that already exists is refused, dropping a signature that does not exist is refused while the real overload survives, and calling a name with a count no overload declares is refused. Two type-distinct overloads also resolve correctly per column inside one SELECT over a table. Converted 1:1 from udf/OverloadedFunctionTest (now retired), a JDBC test whose statements are all plain SQL; where it asserted only that a statement throws, the message it throws is pinned here.",
+  "tags": ["udf", "converted"],
+  "tests": [
+    {"name": "overloads-differing-in-parameter-count", "steps": [
+      {"sql": "CREATE FUNCTION greet()\nRETURNS STRING\nLANGUAGE JAVA\nHANDLER = 'Greeter0.greet'\nAS $$\nclass Greeter0 {\n  public static String greet() {\n    return \"Hello!\";\n  }\n}\n$$"},
+      {"sql": "CREATE FUNCTION greet(name STRING)\nRETURNS STRING\nLANGUAGE JAVA\nHANDLER = 'Greeter1.greet'\nAS $$\nclass Greeter1 {\n  public static String greet(String name) {\n    return \"Hello, \" + name + \"!\";\n  }\n}\n$$"},
+      {"sql": "CREATE FUNCTION greet(firstname STRING, lastname STRING)\nRETURNS STRING\nLANGUAGE JAVA\nHANDLER = 'Greeter2.greet'\nAS $$\nclass Greeter2 {\n  public static String greet(String firstname, String lastname) {\n    return \"Hello, \" + firstname + \" \" + lastname + \"!\";\n  }\n}\n$$"},
+      {"sql": "SELECT greet()", "expect": {"value": "Hello!"}},
+      {"sql": "SELECT greet('Alice')", "expect": {"value": "Hello, Alice!"}},
+      {"sql": "SELECT greet('Bob', 'Smith')", "expect": {"value": "Hello, Bob Smith!"}}
+    ]},
+    {"name": "overloads-differing-in-parameter-type", "steps": [
+      {"sql": "CREATE FUNCTION process(value STRING)\nRETURNS STRING\nLANGUAGE JAVA\nHANDLER = 'ProcessorString.process'\nAS $$\nclass ProcessorString {\n  public static String process(String value) {\n    return \"String: \" + value;\n  }\n}\n$$"},
+      {"sql": "CREATE FUNCTION process(value INTEGER)\nRETURNS STRING\nLANGUAGE JAVA\nHANDLER = 'ProcessorInt.process'\nAS $$\nclass ProcessorInt {\n  public static String process(int value) {\n    return \"Integer: \" + value;\n  }\n}\n$$"},
+      {"sql": "SELECT process('test')", "expect": {"value": "String: test"}},
+      {"sql": "SELECT process(42)", "expect": {"value": "Integer: 42"}}
+    ]},
+    {"name": "drop-function-drops-only-the-named-signature", "steps": [
+      {"sql": "CREATE FUNCTION calculate(x INTEGER)\nRETURNS INTEGER\nLANGUAGE JAVA\nHANDLER = 'Calculator.single'\nAS $$\nclass Calculator {\n  public static int single(int x) {\n    return x * 2;\n  }\n}\n$$"},
+      {"sql": "CREATE FUNCTION calculate(x INTEGER, y INTEGER)\nRETURNS INTEGER\nLANGUAGE JAVA\nHANDLER = 'Calculator.dual'\nAS $$\nclass Calculator {\n  public static int dual(int x, int y) {\n    return x + y;\n  }\n}\n$$"},
+      {"sql": "DROP FUNCTION calculate(INTEGER)"},
+      {"sql": "SELECT calculate(10, 20)", "expect": {"value": 30}},
+      {"sql": "SELECT calculate(5)", "expect": {"error": {"messageContains": "Unknown function CALCULATE."}}}
+    ]},
+    {"name": "every-overload-must-be-dropped-individually", "steps": [
+      {"sql": "CREATE FUNCTION sum_val(x INTEGER)\nRETURNS INTEGER\nLANGUAGE JAVA\nHANDLER = 'Adder.add1'\nAS $$\nclass Adder {\n  public static int add1(int x) {\n    return x + 1;\n  }\n}\n$$"},
+      {"sql": "CREATE FUNCTION sum_val(x INTEGER, y INTEGER)\nRETURNS INTEGER\nLANGUAGE JAVA\nHANDLER = 'Adder.add2'\nAS $$\nclass Adder {\n  public static int add2(int x, int y) {\n    return x + y;\n  }\n}\n$$"},
+      {"sql": "DROP FUNCTION sum_val(INTEGER)"},
+      {"sql": "DROP FUNCTION sum_val(INTEGER, INTEGER)"},
+      {"sql": "SELECT sum_val(5)", "expect": {"error": {"messageContains": "Unknown function SUM_VAL."}}},
+      {"sql": "SELECT sum_val(5, 10)", "expect": {"error": {"messageContains": "Unknown function SUM_VAL."}}}
+    ]},
+    {"name": "create-or-replace-replaces-only-the-matching-signature", "steps": [
+      {"sql": "CREATE FUNCTION multiply(x INTEGER)\nRETURNS INTEGER\nLANGUAGE JAVA\nHANDLER = 'Multiplier1.mult1'\nAS $$\nclass Multiplier1 {\n  public static int mult1(int x) {\n    return x * 2;\n  }\n}\n$$"},
+      {"sql": "CREATE FUNCTION multiply(x INTEGER, y INTEGER)\nRETURNS INTEGER\nLANGUAGE JAVA\nHANDLER = 'Multiplier2.mult2'\nAS $$\nclass Multiplier2 {\n  public static int mult2(int x, int y) {\n    return x * y;\n  }\n}\n$$"},
+      {"sql": "CREATE OR REPLACE FUNCTION multiply(x INTEGER)\nRETURNS INTEGER\nLANGUAGE JAVA\nHANDLER = 'Multiplier1.mult1New'\nAS $$\nclass Multiplier1 {\n  public static int mult1New(int x) {\n    return x * 3;\n  }\n}\n$$"},
+      {"sql": "SELECT multiply(5)", "expect": {"value": 15}},
+      {"sql": "SELECT multiply(5, 7)", "expect": {"value": 35}}
+    ]},
+    {"name": "a-duplicate-signature-is-refused", "steps": [
+      {"sql": "CREATE FUNCTION test_func(x INTEGER, y STRING)\nRETURNS STRING\nLANGUAGE JAVA\nHANDLER = 'TestClass.method1'\nAS $$\nclass TestClass {\n  public static String method1(int x, String y) {\n    return \"v1\";\n  }\n}\n$$"},
+      {"sql": "CREATE FUNCTION test_func(x INTEGER, y STRING)\nRETURNS STRING\nLANGUAGE JAVA\nHANDLER = 'TestClass.method2'\nAS $$\nclass TestClass {\n  public static String method2(int x, String y) {\n    return \"v2\";\n  }\n}\n$$", "expect": {"error": {"messageContains": "Object 'TEST_FUNC' already exists."}}}
+    ]},
+    {"name": "overloads-resolve-per-column-in-a-table-query", "steps": [
+      {"sql": "CREATE FUNCTION fmt_value(value INTEGER)\nRETURNS STRING\nLANGUAGE JAVA\nHANDLER = 'FormatterInt.formatInt'\nAS $$\nclass FormatterInt {\n  public static String formatInt(int value) {\n    return \"INT:\" + value;\n  }\n}\n$$"},
+      {"sql": "CREATE FUNCTION fmt_value(value STRING)\nRETURNS STRING\nLANGUAGE JAVA\nHANDLER = 'FormatterString.formatString'\nAS $$\nclass FormatterString {\n  public static String formatString(String value) {\n    return \"STR:\" + value;\n  }\n}\n$$"},
+      {"sql": "CREATE TABLE data (int_val INTEGER, str_val STRING)"},
+      {"sql": "INSERT INTO data VALUES (42, 'hello')"},
+      {"sql": "INSERT INTO data VALUES (100, 'world')"},
+      {"sql": "SELECT fmt_value(int_val), fmt_value(str_val) FROM data ORDER BY int_val", "expect": {"rows": [["INT:42", "STR:hello"], ["INT:100", "STR:world"]], "ordered": true}}
+    ]},
+    {"name": "dropping-a-signature-that-does-not-exist-is-refused", "steps": [
+      {"sql": "CREATE FUNCTION sample_fn(x INTEGER)\nRETURNS INTEGER\nLANGUAGE JAVA\nHANDLER = 'Sample.method'\nAS $$\nclass Sample {\n  public static int method(int x) {\n    return x;\n  }\n}\n$$"},
+      {"sql": "DROP FUNCTION sample_fn(STRING)", "expect": {"error": {"messageContains": "Function SAMPLE_FN with specified parameter types does not exist"}}},
+      {"sql": "SELECT sample_fn(10)", "expect": {"value": 10}}
+    ]},
+    {"name": "same-types-but-different-counts", "steps": [
+      {"sql": "CREATE FUNCTION concat_val(a STRING)\nRETURNS STRING\nLANGUAGE JAVA\nHANDLER = 'Combiner1.concat1'\nAS $$\nclass Combiner1 {\n  public static String concat1(String a) {\n    return \"Value: \" + a;\n  }\n}\n$$"},
+      {"sql": "CREATE FUNCTION concat_val(a STRING, b STRING)\nRETURNS STRING\nLANGUAGE JAVA\nHANDLER = 'Combiner2.concat2'\nAS $$\nclass Combiner2 {\n  public static String concat2(String a, String b) {\n    return a + \"-\" + b;\n  }\n}\n$$"},
+      {"sql": "SELECT concat_val('test')", "expect": {"value": "Value: test"}},
+      {"sql": "SELECT concat_val('hello', 'world')", "expect": {"value": "hello-world"}}
+    ]},
+    {"name": "a-call-with-a-count-no-overload-declares-is-refused", "steps": [
+      {"sql": "CREATE FUNCTION limited(x INTEGER)\nRETURNS INTEGER\nLANGUAGE JAVA\nHANDLER = 'Limited.method'\nAS $$\nclass Limited {\n  public static int method(int x) {\n    return x;\n  }\n}\n$$"},
+      {"sql": "SELECT limited()", "expect": {"error": {"messageContains": "Unknown function LIMITED."}}},
+      {"sql": "SELECT limited(1, 2)", "expect": {"error": {"messageContains": "Unknown function LIMITED."}}}
+    ]}
+  ]
+}

@@ -1,0 +1,31 @@
+{
+  "suite": "features-temporal-fidelity-batch",
+  "description": "Temporal typed-value fidelity batch: LISTAGG renders timestamps in Snowflake's output text (space separator and FF3, never java.time's T-form), procedural temporal variables keep their temporal identity through bind substitution - they re-enter SQL as '...'::DATE cast literals, which TYPEOF's strict non-VARIANT rejection proves by naming the TEMPORAL type rather than VARCHAR - and TRUNC over a temporal behaves as DATE_TRUNC with swapped arguments while its numeric overload is unchanged. Converted 1:1 from features/TemporalFidelityBatchTest (now retired).",
+  "tags": ["features", "converted"],
+  "tests": [
+    {"name": "listagg-renders-timestamps-in-snowflake-text", "steps": [
+      {"sql": "CREATE TABLE tfb_ts (ts TIMESTAMP)"},
+      {"sql": "INSERT INTO tfb_ts VALUES ('2024-11-26 04:43:38.604'), ('2024-11-27 05:00:00')"},
+      {"sql": "SELECT LISTAGG(ts, '|') WITHIN GROUP (ORDER BY ts) FROM tfb_ts",
+       "expect": {"value": "2024-11-26 04:43:38.604|2024-11-27 05:00:00.000"}}
+    ]},
+    {"name": "procedural-temporal-variables-keep-their-type", "steps": [
+      {"sql": "BEGIN\n    LET x := CURRENT_DATE();\n    RETURN TYPEOF(:x);\nEND",
+       "expect": {"error": {"messageContains": "Invalid argument types for function"}}},
+      {"sql": "BEGIN\n    LET x := CURRENT_DATE();\n    RETURN TYPEOF(:x);\nEND",
+       "expect": {"error": {"messageContains": "(DATE"}}},
+      {"sql": "BEGIN\n    LET t := '2026-01-03 10:00:00'::TIMESTAMP;\n    RETURN TYPEOF(:t);\nEND",
+       "expect": {"error": {"messageContains": "Invalid argument types for function"}}},
+      {"sql": "BEGIN\n    LET t := '2026-01-03 10:00:00'::TIMESTAMP;\n    RETURN TYPEOF(:t);\nEND",
+       "expect": {"error": {"messageContains": "(TIMESTAMP_NTZ"}}},
+      {"sql": "BEGIN\n    LET x := '2026-01-03'::DATE;\n    RETURN DATEADD('day', 1, :x);\nEND",
+       "expect": {"value": "2026-01-04"}}
+    ]},
+    {"name": "trunc-over-temporals-acts-as-date-trunc", "steps": [
+      {"sql": "SELECT TO_VARCHAR(TRUNC('2026-03-15'::DATE, 'MONTH'))", "expect": {"value": "2026-03-01"}},
+      {"sql": "SELECT STARTSWITH(TO_VARCHAR(TRUNC('2026-03-15 10:20:30'::TIMESTAMP, 'HOUR')), '2026-03-15 10:00')",
+       "expect": {"value": "true"}},
+      {"sql": "SELECT '<' || TRUNC(3.14159, 2) || '>'", "expect": {"value": "<3.14>"}}
+    ]}
+  ]
+}

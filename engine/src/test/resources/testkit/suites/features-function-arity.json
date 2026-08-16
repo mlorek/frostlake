@@ -1,0 +1,52 @@
+{
+  "suite": "features-function-arity",
+  "description": "Function arity refuses with live's two sentences (codes 938/939): 'not enough arguments for function [F(...)], expected N, got M' - comma after the bracket - and 'too many arguments for function [F(...)] expected N, got M' - no comma; booleans render UPPER in the brackets, the refusal fires at compile time (an empty input still refuses) anchored on the call, FROM-less calls refuse the same sentences, an aggregate refuses an EMPTY argument list while multi-argument aggregate calls stay legal (COUNT(a, b) is accepted), and the rank family of window functions takes no arguments. Converted 1:1 from features/FunctionArityTest (now retired).",
+  "tags": ["features", "converted"],
+  "tests": [
+    {"name": "too-many-arguments-refuses-positioned-at-the-call", "steps": [
+      {"sql": "CREATE TABLE fa_t (a INTEGER)"},
+      {"sql": "INSERT INTO fa_t VALUES (1)"},
+      {"sql": "SELECT UPPER('a', 'b') FROM fa_t",
+       "expect": {"error": {"messageContains": "SQL compilation error: error line 1 at position 7\ntoo many arguments for function [UPPER('a', 'b')] expected 1, got 2"}}}
+    ]},
+    {"name": "not-enough-arguments-carries-the-comma-form", "steps": [
+      {"sql": "CREATE TABLE fa_t (a INTEGER)"},
+      {"sql": "INSERT INTO fa_t VALUES (1)"},
+      {"sql": "SELECT SUBSTR('a') FROM fa_t",
+       "expect": {"error": {"messageContains": "SQL compilation error: error line 1 at position 7\nnot enough arguments for function [SUBSTR('a')], expected 2, got 1"}}},
+      {"sql": "SELECT IFF(TRUE) FROM fa_t",
+       "expect": {"error": {"messageContains": "SQL compilation error: error line 1 at position 7\nnot enough arguments for function [IFF(TRUE)], expected 3, got 1"}}}
+    ]},
+    {"name": "the-refusal-fires-at-compile-time-over-an-empty-input", "steps": [
+      {"sql": "CREATE TABLE fa_t (a INTEGER)"},
+      {"sql": "SELECT UPPER('a', 'b') FROM fa_t WHERE 1 = 0",
+       "expect": {"error": {"messageContains": "too many arguments for function"}}}
+    ]},
+    {"name": "from-less-calls-refuse-the-same-sentences", "steps": [
+      {"sql": "SELECT UPPER()",
+       "expect": {"error": {"messageContains": "not enough arguments for function [UPPER()], expected 1, got 0"}}},
+      {"sql": "SELECT COALESCE()",
+       "expect": {"error": {"messageContains": "not enough arguments for function [COALESCE()], expected 2, got 0"}}},
+      {"sql": "SELECT ABS(1, 2)",
+       "expect": {"error": {"messageContains": "too many arguments for function [ABS(1, 2)] expected 1, got 2"}}}
+    ]},
+    {"name": "an-aggregate-refuses-an-empty-argument-list", "steps": [
+      {"sql": "CREATE TABLE fa_t (a INTEGER)"},
+      {"sql": "SELECT SUM() FROM fa_t",
+       "expect": {"error": {"messageContains": "not enough arguments for function [SUM()], expected 1, got 0"}}}
+    ]},
+    {"name": "multi-argument-aggregates-and-star-stay-legal", "steps": [
+      {"sql": "CREATE TABLE fa_t (a INTEGER)"},
+      {"sql": "INSERT INTO fa_t VALUES (1)"},
+      {"sql": "SELECT COUNT(a, a) FROM fa_t", "expect": {"rowCount": 1}},
+      {"sql": "SELECT COUNT(*) FROM fa_t", "expect": {"rowCount": 1}}
+    ]},
+    {"name": "the-rank-family-takes-no-arguments", "steps": [
+      {"sql": "CREATE TABLE fa_t (a INTEGER)"},
+      {"sql": "INSERT INTO fa_t VALUES (1)"},
+      {"sql": "SELECT ROW_NUMBER(1) OVER (ORDER BY a) FROM fa_t",
+       "expect": {"error": {"messageContains": "too many arguments for function [ROW_NUMBER(1)] expected 0, got 1"}}},
+      {"sql": "SELECT ROW_NUMBER() OVER (ORDER BY a) FROM fa_t", "expect": {"rowCount": 1}}
+    ]}
+  ]
+}

@@ -1,0 +1,59 @@
+{
+  "suite": "ddl-create-table",
+  "description": "CREATE TABLE forms, converted from ddl/CreateTableTest.java (6 of 10 methods; the DESCRIBE-cell checks for PRIMARY KEY / NOT NULL / DEFAULT and the GET_DDL-contains check stay in Java). IF NOT EXISTS preservation is asserted behaviorally: the original column resolves, the would-be replacement column does not.",
+  "tags": ["ddl", "converted"],
+  "tests": [
+    {
+      "name": "create-simple-table",
+      "steps": [
+        {"sql": "CREATE TABLE users (id INTEGER, name VARCHAR, age INTEGER)"},
+        {"sql": "SHOW TABLES LIKE 'users'", "expect": {"rowCount": 1}},
+        {"sql": "DESCRIBE TABLE users", "expect": {"rowCount": 3}}
+      ]
+    },
+    {
+      "name": "create-table-with-all-data-types",
+      "steps": [
+        {"sql": "CREATE TABLE test_types (col_int INTEGER, col_bigint BIGINT, col_smallint SMALLINT, col_number NUMBER, col_decimal DECIMAL, col_float FLOAT, col_double DOUBLE, col_varchar VARCHAR, col_string STRING, col_text TEXT, col_char CHAR, col_boolean BOOLEAN, col_date DATE, col_timestamp TIMESTAMP, col_variant VARIANT, col_array ARRAY, col_object OBJECT)"},
+        {"sql": "DESCRIBE TABLE test_types", "expect": {"rowCount": 17}}
+      ]
+    },
+    {
+      "name": "create-table-and-insert-data",
+      "steps": [
+        {"sql": "CREATE TABLE users (id INTEGER, name VARCHAR, age INTEGER)"},
+        {"sql": "INSERT INTO users VALUES (1, 'Alice', 30)"},
+        {"sql": "INSERT INTO users VALUES (2, 'Bob', 25)"},
+        {"sql": "SELECT * FROM users", "expect": {"rowCount": 2, "columns": ["ID", "NAME", "AGE"]}}
+      ]
+    },
+    {
+      "name": "create-table-in-different-schema",
+      "steps": [
+        {"sql": "CREATE SCHEMA other_schema"},
+        {"sql": "USE SCHEMA test_schema"},
+        {"sql": "CREATE TABLE other_schema.users (id INTEGER, name VARCHAR)"},
+        {"sql": "DESCRIBE TABLE other_schema.users", "expect": {"rowCount": 2}},
+        {"sql": "USE SCHEMA other_schema"},
+        {"sql": "SHOW TABLES LIKE 'users'", "expect": {"rowCount": 1}}
+      ]
+    },
+    {
+      "name": "create-table-with-qualified-name",
+      "steps": [
+        {"sql": "CREATE TABLE test_db.test_schema.products (id INTEGER, name VARCHAR)"},
+        {"sql": "SHOW TABLES LIKE 'products'", "expect": {"rowCount": 1}}
+      ]
+    },
+    {
+      "name": "create-table-if-not-exists-preserves-original",
+      "steps": [
+        {"sql": "CREATE TABLE users (id INTEGER, name VARCHAR)"},
+        {"sql": "CREATE TABLE IF NOT EXISTS users (id INTEGER, email VARCHAR)"},
+        {"sql": "DESCRIBE TABLE users", "expect": {"rowCount": 2}},
+        {"sql": "SELECT name FROM users", "expect": {"rowCount": 0}},
+        {"sql": "SELECT email FROM users", "expect": {"error": {}}}
+      ]
+    }
+  ]
+}

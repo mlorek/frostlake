@@ -1,0 +1,110 @@
+{
+  "suite": "ddl",
+  "description": "CREATE / ALTER / DROP lifecycle behaviour, modeled on the repo's ddl tests (e.g. AlterRenameToTest).",
+  "tags": ["ddl"],
+  "tests": [
+    {
+      "name": "create-table-and-describe",
+      "steps": [
+        {"sql": "CREATE TABLE t1 (id INTEGER, name VARCHAR)"},
+        {"sql": "SELECT COUNT(*) FROM t1", "expect": {"value": "0"}}
+      ]
+    },
+    {
+      "name": "create-table-if-not-exists-is-idempotent",
+      "steps": [
+        {"sql": "CREATE TABLE t1 (id INTEGER)"},
+        {"sql": "CREATE TABLE IF NOT EXISTS t1 (id INTEGER)"},
+        {"sql": "CREATE TABLE t1 (id INTEGER)", "expect": {"error": {"messageContains": "already exists"}}}
+      ]
+    },
+    {
+      "name": "create-or-replace-table-resets-rows",
+      "steps": [
+        {"sql": "CREATE TABLE t2 (id INTEGER)"},
+        {"sql": "INSERT INTO t2 VALUES (1), (2)"},
+        {"sql": "CREATE OR REPLACE TABLE t2 (id INTEGER)"},
+        {"sql": "SELECT COUNT(*) FROM t2", "expect": {"value": "0"}}
+      ]
+    },
+    {
+      "name": "drop-table-then-select-fails",
+      "steps": [
+        {"sql": "CREATE TABLE t3 (id INTEGER)"},
+        {"sql": "DROP TABLE t3"},
+        {"sql": "SELECT * FROM t3", "expect": {"error": {"messageContains": "does not exist"}}}
+      ]
+    },
+    {
+      "name": "drop-missing-table-fails-without-if-exists",
+      "steps": [
+        {"sql": "DROP TABLE never_created", "expect": {"error": {"messageContains": "does not exist"}}},
+        {"sql": "DROP TABLE IF EXISTS never_created"}
+      ]
+    },
+    {
+      "name": "alter-table-rename-to-moves-data",
+      "steps": [
+        {"sql": "CREATE TABLE r1 (id INTEGER)"},
+        {"sql": "INSERT INTO r1 VALUES (7)"},
+        {"sql": "ALTER TABLE r1 RENAME TO r2"},
+        {"sql": "SELECT COUNT(*) FROM r2", "expect": {"value": "1"}},
+        {"sql": "SELECT COUNT(*) FROM r1", "expect": {"error": {"messageContains": "does not exist"}}}
+      ]
+    },
+    {
+      "name": "alter-table-rename-column",
+      "steps": [
+        {"sql": "CREATE TABLE rc (a INTEGER)"},
+        {"sql": "INSERT INTO rc VALUES (5)"},
+        {"sql": "ALTER TABLE rc RENAME COLUMN a TO b"},
+        {"sql": "SELECT b FROM rc", "expect": {"value": "5"}}
+      ]
+    },
+    {
+      "name": "alter-table-add-column-defaults-null",
+      "steps": [
+        {"sql": "CREATE TABLE ac (id INTEGER)"},
+        {"sql": "INSERT INTO ac VALUES (1)"},
+        {"sql": "ALTER TABLE ac ADD COLUMN extra VARCHAR"},
+        {"sql": "SELECT extra FROM ac", "expect": {"value": null}}
+      ]
+    },
+    {
+      "name": "create-view-reflects-base-table",
+      "steps": [
+        {"sql": "CREATE TABLE vt (id INTEGER)"},
+        {"sql": "INSERT INTO vt VALUES (1), (2), (3)"},
+        {"sql": "CREATE VIEW v1 AS SELECT id FROM vt WHERE id > 1"},
+        {"sql": "SELECT COUNT(*) FROM v1", "expect": {"value": "2"}},
+        {"sql": "INSERT INTO vt VALUES (4)"},
+        {"sql": "SELECT COUNT(*) FROM v1", "expect": {"value": "3"}}
+      ]
+    },
+    {
+      "name": "truncate-keeps-table-drops-rows",
+      "steps": [
+        {"sql": "CREATE TABLE tr (id INTEGER)"},
+        {"sql": "INSERT INTO tr VALUES (1), (2)"},
+        {"sql": "TRUNCATE TABLE tr"},
+        {"sql": "SELECT COUNT(*) FROM tr", "expect": {"value": "0"}}
+      ]
+    },
+    {
+      "name": "create-schema-and-qualified-table",
+      "steps": [
+        {"sql": "CREATE SCHEMA s2"},
+        {"sql": "CREATE TABLE s2.tt (id INTEGER)"},
+        {"sql": "INSERT INTO s2.tt VALUES (9)"},
+        {"sql": "SELECT id FROM s2.tt", "expect": {"value": "9"}}
+      ]
+    },
+    {
+      "name": "comment-on-table-succeeds",
+      "steps": [
+        {"sql": "CREATE TABLE ct (id INTEGER)"},
+        {"sql": "COMMENT ON TABLE ct IS 'a comment'"}
+      ]
+    }
+  ]
+}

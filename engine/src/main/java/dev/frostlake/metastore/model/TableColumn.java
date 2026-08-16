@@ -18,6 +18,7 @@ package dev.frostlake.metastore.model;
 
 import dev.frostlake.metastore.Taggable;
 import dev.frostlake.types.DataType;
+import dev.frostlake.values.ValueRange;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -59,6 +60,15 @@ public class TableColumn implements Taggable {
     // projection rather than guessed. Catalog columns leave this false — their table is trusted by
     // identity instead — so the flag only ever ADDS a column the type rules may read, never removes one.
     private boolean staticallyTyped;
+
+    // A DERIVED relation's column's interval of values, propagated from the inner projection the way
+    // the account propagates statistics; null when none is known. A catalog column never carries one —
+    // its interval is read from its rows when asked.
+    private ValueRange valueRange;
+
+    // A DERIVED relation's column projecting a bare string literal: the NUMBER the literal spells, which
+    // a conditional folds the column by (see getSpelledNumber); null for every other column.
+    private DataType spelledNumber;
 
     public TableColumn(final String name, final DataType dataType, final boolean nullable,
                  final Object defaultValue, final boolean primaryKey, final boolean unique,
@@ -102,6 +112,30 @@ public class TableColumn implements Taggable {
         this.staticallyTyped = staticallyTyped;
     }
 
+    public ValueRange getValueRange() {
+        return valueRange;
+    }
+
+    public void setValueRange(final ValueRange valueRange) {
+        this.valueRange = valueRange;
+    }
+
+    /**
+     * The NUMBER this column's values spell when a derived relation projects a bare string literal as
+     * it — {@code (SELECT '12.5' AS t, …)} — or projects another such column; null for every other
+     * column. A conditional folds the column by it as it folds the literal itself: live types
+     * {@code COALESCE(t, n)} over that derived table exactly as {@code COALESCE('12.5', n)}.
+     *
+     * @return the literal's measured NUMBER, or null
+     */
+    public DataType getSpelledNumber() {
+        return spelledNumber;
+    }
+
+    public void setSpelledNumber(final DataType spelledNumber) {
+        this.spelledNumber = spelledNumber;
+    }
+
     /** A copy of this column marked hidden from {@code SELECT *} — used for the right-side duplicate
      *  of a USING / NATURAL join column in a merged join view (the shared catalog instance stays
      *  untouched). */
@@ -119,6 +153,8 @@ public class TableColumn implements Taggable {
         copy.tags.putAll(tags);
         copy.hiddenFromStar = true;
         copy.staticallyTyped = staticallyTyped;
+        copy.valueRange = valueRange;
+        copy.spelledNumber = spelledNumber;
         return copy;
     }
 
@@ -138,6 +174,8 @@ public class TableColumn implements Taggable {
         copy.tags.putAll(tags);
         copy.hiddenFromStar = hiddenFromStar;
         copy.staticallyTyped = staticallyTyped;
+        copy.valueRange = valueRange;
+        copy.spelledNumber = spelledNumber;
         return copy;
     }
 

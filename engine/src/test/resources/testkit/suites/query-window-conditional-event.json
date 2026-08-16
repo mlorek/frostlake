@@ -1,0 +1,31 @@
+{
+  "suite": "query-window-conditional-event",
+  "description": "CONDITIONAL_TRUE_EVENT(expr) and CONDITIONAL_CHANGE_EVENT(expr), the two ordered window counters. Both start at 0 per partition. TRUE_EVENT increments on each row up to and including the current one where expr is TRUE - a bare value counts as a boolean, so 0 is falsy, non-zero truthy and NULL not truthy, which is why the bare column and the explicit predicate answer the same sequence. CHANGE_EVENT increments each time expr's value DIFFERS from the previous row's, treating any NULL-involved step as 'not a change', so the trailing NULL carries the previous count rather than raising it. The o_col column {0,0,13,13,14,15,NULL} reproduces the exact sequences the Snowflake docs print: TRUE_EVENT gives 0,0,1,2,3,4,4 and CHANGE_EVENT 0,0,1,1,2,3,3. PARTITION BY resets the count, which the last test shows with a value that DIFFERS across the partition boundary and still restarts at 0. Converted 1:1 from query/WindowConditionalEventTest (now retired); the Java walked the rows keying by seq, so the converted tests pin the whole ordered row set.",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "true-event-on-a-bare-value", "steps": [
+      {"sql": "CREATE TABLE events (seq INTEGER, o_col INTEGER)"},
+      {"sql": "INSERT INTO events VALUES (1,0),(2,0),(3,13),(4,13),(5,14),(6,15),(7,NULL)"},
+      {"sql": "SELECT seq, CONDITIONAL_TRUE_EVENT(o_col) OVER (ORDER BY seq) AS w FROM events ORDER BY seq",
+       "expect": {"rows": [[1,0],[2,0],[3,1],[4,2],[5,3],[6,4],[7,4]], "ordered": true}}
+    ]},
+    {"name": "true-event-on-a-predicate", "steps": [
+      {"sql": "CREATE TABLE events (seq INTEGER, o_col INTEGER)"},
+      {"sql": "INSERT INTO events VALUES (1,0),(2,0),(3,13),(4,13),(5,14),(6,15),(7,NULL)"},
+      {"sql": "SELECT seq, CONDITIONAL_TRUE_EVENT(o_col > 12) OVER (ORDER BY seq) AS w FROM events ORDER BY seq",
+       "expect": {"rows": [[1,0],[2,0],[3,1],[4,2],[5,3],[6,4],[7,4]], "ordered": true}}
+    ]},
+    {"name": "change-event-counts-distinct-runs", "steps": [
+      {"sql": "CREATE TABLE events (seq INTEGER, o_col INTEGER)"},
+      {"sql": "INSERT INTO events VALUES (1,0),(2,0),(3,13),(4,13),(5,14),(6,15),(7,NULL)"},
+      {"sql": "SELECT seq, CONDITIONAL_CHANGE_EVENT(o_col) OVER (ORDER BY seq) AS w FROM events ORDER BY seq",
+       "expect": {"rows": [[1,0],[2,0],[3,1],[4,1],[5,2],[6,3],[7,3]], "ordered": true}}
+    ]},
+    {"name": "partition-by-resets-the-count", "steps": [
+      {"sql": "CREATE TABLE readings (province VARCHAR, seq INTEGER, v INTEGER)"},
+      {"sql": "INSERT INTO readings VALUES ('AB',1,120),('AB',2,120),('AB',3,0),('MB',4,30),('MB',5,30),('MB',6,99)"},
+      {"sql": "SELECT seq, CONDITIONAL_CHANGE_EVENT(v) OVER (PARTITION BY province ORDER BY seq) AS w FROM readings ORDER BY seq",
+       "expect": {"rows": [[1,0],[2,0],[3,1],[4,0],[5,0],[6,1]], "ordered": true}}
+    ]}
+  ]
+}

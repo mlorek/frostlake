@@ -1,0 +1,33 @@
+{
+  "suite": "expr-like-escape",
+  "description": "LIKE ... ESCAPE with a custom escape character: the escape makes the following %, _ or the escape char itself literal (after leading wildcards too), a single '\\_' is consumed by the string-literal decode before LIKE sees it (both candidates match), a literal underscore via backslash needs the doubled 'a\\\\_b' ESCAPE '\\\\' form, plain wildcards are unaffected and NOT LIKE honors the escape. Converted 1:1 from expressions/LikeEscapeTest (now retired).",
+  "tags": ["expressions", "converted"],
+  "tests": [
+    {"name": "custom-escape-makes-wildcard-literal", "steps": [
+      {"sql": "SELECT ('a%b' LIKE 'a!%b' ESCAPE '!') AS r", "expect": {"value": "true"}},
+      {"sql": "SELECT ('axb' LIKE 'a!%b' ESCAPE '!') AS r", "expect": {"value": "false"}}
+    ]},
+    {"name": "custom-escape-after-leading-wildcard", "steps": [
+      {"sql": "SELECT ('100%' LIKE '%!%' ESCAPE '!') AS r", "expect": {"value": "true"}}
+    ]},
+    {"name": "escaped-escape-char-is-literal", "steps": [
+      {"sql": "SELECT ('a!b' LIKE 'a!!b' ESCAPE '!') AS r", "expect": {"value": "true"}}
+    ]},
+    {"name": "single-backslash-is-consumed-by-the-literal-decode", "steps": [
+      {"sql": "SELECT ('a_b' LIKE 'a\\_b') AS r", "expect": {"value": "true"}},
+      {"sql": "SELECT ('axb' LIKE 'a\\_b') AS r", "expect": {"value": "true"}}
+    ]},
+    {"name": "backslash-escape-needs-the-doubled-form", "steps": [
+      {"sql": "SELECT ('a_b' LIKE 'a\\\\_b' ESCAPE '\\\\') AS r", "expect": {"value": "true"}},
+      {"sql": "SELECT ('axb' LIKE 'a\\\\_b' ESCAPE '\\\\') AS r", "expect": {"value": "false"}}
+    ]},
+    {"name": "plain-wildcards-unaffected", "steps": [
+      {"sql": "SELECT ('abc' LIKE 'a%') AS r", "expect": {"value": "true"}},
+      {"sql": "SELECT ('C:x' LIKE 'C:%') AS r", "expect": {"value": "true"}}
+    ]},
+    {"name": "not-like-honors-escape", "steps": [
+      {"sql": "SELECT ('axb' NOT LIKE 'a!%b' ESCAPE '!') AS r", "expect": {"value": "true"}},
+      {"sql": "SELECT ('a%b' NOT LIKE 'a!%b' ESCAPE '!') AS r", "expect": {"value": "false"}}
+    ]}
+  ]
+}

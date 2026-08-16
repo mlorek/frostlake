@@ -1,0 +1,29 @@
+{
+  "suite": "query-collate-fromless",
+  "description": "COLLATE() function pass-through and predicates, CLOSE as a qualified-name segment, and FROM-less literal alias semantics (twin literals keep values, bare alias reuse, unaliased UNION CTAS items). Converted 1:1 from query/CollateAndKeywordFunctionTest and FromlessLiteralAliasTest (both now retired).",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "collate-function-parses-and-passes-through", "steps": [
+      {"sql": "SELECT COLLATE('AbC', 'en-ci')", "expect": {"value": "AbC"}}
+    ]},
+    {"name": "collate-function-in-predicate", "steps": [
+      {"sql": "CREATE TABLE t (d VARCHAR)"},
+      {"sql": "INSERT INTO t VALUES ('N:1'), ('N:2')"},
+      {"sql": "SELECT d FROM t WHERE COLLATE(d, 'en-ci') NOT IN ('N:2') ORDER BY d", "expect": {"rows": [["N:1"]]}}
+    ]},
+    {"name": "close-usable-as-qualified-name-segment", "steps": [
+      {"sql": "CREATE OR REPLACE PROCEDURE p_close_name() RETURNS OBJECT LANGUAGE SQL AS\nDECLARE\n    s OBJECT;\nBEGIN\n    s := (a.b.close(:s, NULL));\n    RETURN :s;\nEND;"}
+    ]},
+    {"name": "case-twin-literals-keep-their-own-values", "steps": [
+      {"sql": "SELECT EXPECTED FROM (\n    SELECT 1 AS TEST_ID, 'IDENTITY' AS INPUT_VAL, 'Person' AS EXPECTED, 'P' AS ACTUAL\n    UNION ALL\n    SELECT 2, 'CONTAINER', 'Container', 'C'\n) WHERE TEST_ID = 2", "expect": {"rows": [["Container"]]}}
+    ]},
+    {"name": "bare-alias-reference-is-still-reused", "steps": [
+      {"sql": "SELECT 41 AS x, x + 1 AS y", "expect": {"rows": [["41", "42"]]}}
+    ]},
+    {"name": "union-ctas-accepts-unaliased-literal-items", "steps": [
+      {"sql": "CREATE TABLE src_t (a INTEGER)"},
+      {"sql": "CREATE TABLE reset_t AS SELECT 1 FROM src_t WHERE FALSE UNION ALL SELECT 1 FROM src_t WHERE FALSE"},
+      {"sql": "SELECT * FROM reset_t", "expect": {"rowCount": 0, "columns": ["1"]}}
+    ]}
+  ]
+}

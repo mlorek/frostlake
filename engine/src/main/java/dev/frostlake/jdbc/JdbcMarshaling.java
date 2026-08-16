@@ -127,7 +127,9 @@ public final class JdbcMarshaling {
         if (t.contains("ARRAY")) {
             return Types.ARRAY;
         }
-        if (t.contains("CHAR") || t.contains("VARCHAR") || t.contains("STRING") || t.contains("TEXT")) {
+        // A UUID reaches JDBC as its text, which live's driver reports as a VARCHAR.
+        if (t.contains("CHAR") || t.contains("VARCHAR") || t.contains("STRING") || t.contains("TEXT")
+                || t.equals("UUID")) {
             return Types.VARCHAR;
         }
         // OBJECT / VARIANT / VECTOR have no precise java.sql.Types — surfaced via getObject().
@@ -176,10 +178,17 @@ public final class JdbcMarshaling {
             return Timestamp.valueOf((LocalDateTime) v);
         }
         if (v instanceof ZonedDateTime) {
-            return Timestamp.from(((ZonedDateTime) v).toInstant());
+            // The LOCAL part, for the reason the OffsetDateTime branch below gives: a TIMESTAMP_TZ's
+            // wall clock IS what getString reports, and Timestamp.from would re-read the instant in
+            // the host's zone and disagree with it.
+            return Timestamp.valueOf(((ZonedDateTime) v).toLocalDateTime());
         }
         if (v instanceof OffsetDateTime) {
-            return Timestamp.from(((OffsetDateTime) v).toInstant());
+            // The LOCAL part, not the instant: a java.sql.Timestamp carries no zone, so
+            // Timestamp.from would re-read the instant in the HOST's zone and disagree with the very
+            // text getString returns for the same cell. A TIMESTAMP_LTZ is already expressed at the
+            // session's offset, so its local part IS the wall clock the session sees.
+            return Timestamp.valueOf(((OffsetDateTime) v).toLocalDateTime());
         }
         if (v instanceof LocalDate) {
             return Timestamp.valueOf(((LocalDate) v).atStartOfDay());
@@ -358,7 +367,14 @@ public final class JdbcMarshaling {
         if (value == null) {
             return "NULL";
         }
-        if (value instanceof Number || value instanceof Boolean) {
+        if (value instanceof Number) {
+            // A negative number is parenthesised: spliced bare after a minus — `3-?` bound to -5 — the text
+            // became `3--5`, a line comment, and the statement silently answered 3. The account binds
+            // server-side, so 3-? with -5 is 8 there; (-5) is legal wherever a bound value can stand.
+            final String text = value.toString();
+            return text.startsWith("-") ? "(" + text + ")" : text;
+        }
+        if (value instanceof Boolean) {
             return value.toString();
         }
         if (value instanceof Timestamp) {

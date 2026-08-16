@@ -41,8 +41,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * same in every case: an aggregate reaching a place the aggregate machinery does not run falls through
  * to the SCALAR resolver, which finds no scalar of that name and reports the only thing it can.
  *
- * <p>Live prints the call canonicalised where this prints it as written, so these assert the sentence
- * around the brackets.
+ * <p>The bracketed call is re-printed canonicalised on both engines ({@code SUM(G.B)} for a bare
+ * {@code b}) — that form is asserted by {@code CanonicalRefusalEchoTest}; these assert the sentence.
  */
 public class MisplacedAggregateTest extends BaseDatabaseTest {
 
@@ -118,6 +118,6 @@ public class MisplacedAggregateTest extends BaseDatabaseTest {
     public void thePlacesItBelongsAreUntouched() {
         assertEquals(60, value("SELECT SUM(b) FROM g"));
         assertEquals(3, value("SELECT COUNT(*) FROM g HAVING SUM(b) > 0"));
-        assertEquals(2, value("SELECT COUNT(*) FROM g GROUP BY a HAVING SUM(b) > 0"));
+        assertEquals(2, value("SELECT COUNT(*) FROM g GROUP BY a HAVING SUM(b) > 0 ORDER BY a"));
     }
 }

@@ -1,0 +1,56 @@
+{
+  "suite": "session",
+  "description": "Session state must persist across statements on every transport (SESSION capability): current database/schema, USE switching, session variables. This is the suite that exercises HTTP sessionId continuity.",
+  "tags": ["session"],
+  "tests": [
+    {
+      "name": "current-database-and-schema",
+      "steps": [
+        {"sql": "SELECT CURRENT_DATABASE()", "expect": {"value": "TEST_DB"}},
+        {"sql": "SELECT CURRENT_SCHEMA()", "expect": {"value": "TEST_SCHEMA"}}
+      ]
+    },
+    {
+      "name": "use-schema-switches-resolution",
+      "steps": [
+        {"sql": "CREATE SCHEMA other_s"},
+        {"sql": "CREATE TABLE other_s.t (id INTEGER)"},
+        {"sql": "INSERT INTO other_s.t VALUES (42)"},
+        {"sql": "USE SCHEMA other_s"},
+        {"sql": "SELECT id FROM t", "expect": {"value": "42"}},
+        {"sql": "SELECT CURRENT_SCHEMA()", "expect": {"value": "OTHER_S"}}
+      ]
+    },
+    {
+      "name": "unqualified-create-lands-in-current-schema",
+      "steps": [
+        {"sql": "CREATE TABLE here_t (id INTEGER)"},
+        {"sql": "SELECT COUNT(*) FROM test_schema.here_t", "expect": {"value": "0"}}
+      ]
+    },
+    {
+      "name": "session-variable-set-and-read",
+      "steps": [
+        {"sql": "SET my_var = 42"},
+        {"sql": "SELECT $my_var", "expect": {"value": "42"}}
+      ]
+    },
+    {
+      "name": "session-variable-in-where",
+      "steps": [
+        {"sql": "CREATE TABLE t (id INTEGER)"},
+        {"sql": "INSERT INTO t VALUES (1), (42)"},
+        {"sql": "SET target = 42"},
+        {"sql": "SELECT COUNT(*) FROM t WHERE id = $target", "expect": {"value": "1"}}
+      ]
+    },
+    {
+      "name": "temp-objects-visible-in-same-session",
+      "steps": [
+        {"sql": "CREATE TEMPORARY TABLE tmp_t (id INTEGER)"},
+        {"sql": "INSERT INTO tmp_t VALUES (1)"},
+        {"sql": "SELECT COUNT(*) FROM tmp_t", "expect": {"value": "1"}}
+      ]
+    }
+  ]
+}

@@ -40,7 +40,7 @@ public class SplitToTableTest extends BaseDatabaseTest {
     @Test
     public void testBasicSplitWithCommaDelimiter() {
         final ResultSet result = engine.executeQuery(
-            "SELECT * FROM TABLE(SPLIT_TO_TABLE('apple,banana,cherry', ','))");
+            "SELECT * FROM TABLE(SPLIT_TO_TABLE('apple,banana,cherry', ',')) ORDER BY INDEX");
         assertEquals(3, result.getRowCount());
 
         assertEquals(3, result.getColumns().size());
@@ -66,7 +66,7 @@ public class SplitToTableTest extends BaseDatabaseTest {
     @Test
     public void testSplitWithPipeDelimiter() {
         final ResultSet result = engine.executeQuery(
-            "SELECT * FROM TABLE(SPLIT_TO_TABLE('red|green|blue', '|'))");
+            "SELECT * FROM TABLE(SPLIT_TO_TABLE('red|green|blue', '|')) ORDER BY INDEX");
         assertEquals(3, result.getRowCount());
         assertEquals("red", result.getRows().get(0).getValue(2));
         assertEquals("green", result.getRows().get(1).getValue(2));
@@ -76,7 +76,7 @@ public class SplitToTableTest extends BaseDatabaseTest {
     @Test
     public void testSplitWithSpaceDelimiter() {
         final ResultSet result = engine.executeQuery(
-            "SELECT * FROM TABLE(SPLIT_TO_TABLE('one two three', ' '))");
+            "SELECT * FROM TABLE(SPLIT_TO_TABLE('one two three', ' ')) ORDER BY INDEX");
         assertEquals(3, result.getRowCount());
         assertEquals("one", result.getRows().get(0).getValue(2));
         assertEquals("two", result.getRows().get(1).getValue(2));
@@ -86,7 +86,7 @@ public class SplitToTableTest extends BaseDatabaseTest {
     @Test
     public void testSplitWithMultiCharacterDelimiter() {
         final ResultSet result = engine.executeQuery(
-            "SELECT * FROM TABLE(SPLIT_TO_TABLE('alpha::beta::gamma', '::'))");
+            "SELECT * FROM TABLE(SPLIT_TO_TABLE('alpha::beta::gamma', '::')) ORDER BY INDEX");
         assertEquals(3, result.getRowCount());
         assertEquals("alpha", result.getRows().get(0).getValue(2));
         assertEquals("beta", result.getRows().get(1).getValue(2));
@@ -95,7 +95,7 @@ public class SplitToTableTest extends BaseDatabaseTest {
 
     @Test
     public void testSplitEmptyString() {
-        final ResultSet result = engine.executeQuery("SELECT * FROM TABLE(SPLIT_TO_TABLE('', ','))");
+        final ResultSet result = engine.executeQuery("SELECT * FROM TABLE(SPLIT_TO_TABLE('', ',')) ORDER BY INDEX");
         assertEquals(1, result.getRowCount());
         assertEquals("", result.getRows().get(0).getValue(2));
     }
@@ -103,7 +103,7 @@ public class SplitToTableTest extends BaseDatabaseTest {
     @Test
     public void testSplitSingleValue() {
         final ResultSet result = engine.executeQuery(
-            "SELECT * FROM TABLE(SPLIT_TO_TABLE('onlyOne', ','))");
+            "SELECT * FROM TABLE(SPLIT_TO_TABLE('onlyOne', ',')) ORDER BY INDEX");
         assertEquals(1, result.getRowCount());
         assertEquals(1L, result.getRows().get(0).getValue(0));
         assertEquals(1L, result.getRows().get(0).getValue(1));
@@ -113,7 +113,7 @@ public class SplitToTableTest extends BaseDatabaseTest {
     @Test
     public void testSplitWithTrailingDelimiter() {
         final ResultSet result = engine.executeQuery(
-            "SELECT * FROM TABLE(SPLIT_TO_TABLE('a,b,c,', ','))");
+            "SELECT * FROM TABLE(SPLIT_TO_TABLE('a,b,c,', ',')) ORDER BY INDEX");
         assertEquals(4, result.getRowCount());
         assertEquals("a", result.getRows().get(0).getValue(2));
         assertEquals("b", result.getRows().get(1).getValue(2));
@@ -124,7 +124,7 @@ public class SplitToTableTest extends BaseDatabaseTest {
     @Test
     public void testSplitWithLeadingDelimiter() {
         final ResultSet result = engine.executeQuery(
-            "SELECT * FROM TABLE(SPLIT_TO_TABLE(',a,b,c', ','))");
+            "SELECT * FROM TABLE(SPLIT_TO_TABLE(',a,b,c', ',')) ORDER BY INDEX");
         assertEquals(4, result.getRowCount());
         assertEquals("", result.getRows().get(0).getValue(2));
         assertEquals("a", result.getRows().get(1).getValue(2));
@@ -135,7 +135,7 @@ public class SplitToTableTest extends BaseDatabaseTest {
     @Test
     public void testSplitWithConsecutiveDelimiters() {
         final ResultSet result = engine.executeQuery(
-            "SELECT * FROM TABLE(SPLIT_TO_TABLE('a,,b,,c', ','))");
+            "SELECT * FROM TABLE(SPLIT_TO_TABLE('a,,b,,c', ',')) ORDER BY INDEX");
         assertEquals(5, result.getRowCount());
         assertEquals("a", result.getRows().get(0).getValue(2));
         assertEquals("", result.getRows().get(1).getValue(2));
@@ -147,7 +147,7 @@ public class SplitToTableTest extends BaseDatabaseTest {
     /** An EMPTY delimiter splits nowhere — the whole string comes back as a single row. */
     @Test
     public void anEmptyDelimiterDoesNotSplit() {
-        final ResultSet result = engine.executeQuery("SELECT * FROM TABLE(SPLIT_TO_TABLE('abc', ''))");
+        final ResultSet result = engine.executeQuery("SELECT * FROM TABLE(SPLIT_TO_TABLE('abc', '')) ORDER BY INDEX");
         assertEquals(1, result.getRowCount());
         assertEquals("abc", result.getRows().get(0).getValue(2));
     }
@@ -156,9 +156,9 @@ public class SplitToTableTest extends BaseDatabaseTest {
     @Test
     public void aNullStringOrDelimiterYieldsNoRows() {
         assertEquals(0, engine.executeQuery(
-            "SELECT * FROM TABLE(SPLIT_TO_TABLE(NULL, ','))").getRowCount());
+            "SELECT * FROM TABLE(SPLIT_TO_TABLE(NULL, ',')) ORDER BY INDEX").getRowCount());
         assertEquals(0, engine.executeQuery(
-            "SELECT * FROM TABLE(SPLIT_TO_TABLE('a,b', NULL))").getRowCount());
+            "SELECT * FROM TABLE(SPLIT_TO_TABLE('a,b', NULL)) ORDER BY INDEX").getRowCount());
     }
 
     @Test
@@ -166,6 +166,7 @@ public class SplitToTableTest extends BaseDatabaseTest {
         final ResultSet result = engine.executeQuery("""
             SELECT VALUE FROM TABLE(SPLIT_TO_TABLE('apple,banana,cherry', ','))
             WHERE INDEX > 1
+            ORDER BY INDEX
             """);
         assertEquals(2, result.getRowCount());
         assertEquals("banana", result.getRows().get(0).getValue(0));
@@ -175,7 +176,7 @@ public class SplitToTableTest extends BaseDatabaseTest {
     @Test
     public void testSplitWithAlias() {
         final ResultSet result = engine.executeQuery(
-            "SELECT VALUE, INDEX FROM TABLE(SPLIT_TO_TABLE('x,y,z', ',')) s");
+            "SELECT VALUE, INDEX FROM TABLE(SPLIT_TO_TABLE('x,y,z', ',')) s ORDER BY INDEX");
         assertEquals(3, result.getRowCount());
         assertEquals("x", result.getRows().get(0).getValue(0));
         assertEquals(1L, result.getRows().get(0).getValue(1));
@@ -206,16 +207,16 @@ public class SplitToTableTest extends BaseDatabaseTest {
      */
     @Test
     public void aNamedArgumentIsRefused() {
-        refused("SELECT * FROM TABLE(SPLIT_TO_TABLE(STRING => 'a,b', DELIMITER => ','))",
+        refused("SELECT * FROM TABLE(SPLIT_TO_TABLE(STRING => 'a,b', DELIMITER => ',')) ORDER BY INDEX",
             "invalid argument for function [SPLIT_TO_TABLE] unexpected argument [STRING] at position 1,");
-        refused("SELECT * FROM TABLE(SPLIT_TO_TABLE(string => 'a,b'))",
+        refused("SELECT * FROM TABLE(SPLIT_TO_TABLE(string => 'a,b')) ORDER BY INDEX",
             "invalid argument for function [SPLIT_TO_TABLE] unexpected argument [STRING] at position 1,");
         refused("SELECT * FROM TABLE(SPLIT_TO_TABLE(\"string\" => 'a,b'))",
             "invalid argument for function [SPLIT_TO_TABLE] unexpected argument [\"STRING\"] at position 1,");
         // A name after a positional argument is reported at ITS position, not at 1.
-        refused("SELECT * FROM TABLE(SPLIT_TO_TABLE('a,b', DELIMITER => ','))",
+        refused("SELECT * FROM TABLE(SPLIT_TO_TABLE('a,b', DELIMITER => ',')) ORDER BY INDEX",
             "invalid argument for function [SPLIT_TO_TABLE] unexpected argument [DELIMITER] at position 2,");
-        refused("SELECT * FROM TABLE(SPLIT_TO_TABLE('test', INVALID_PARAM => 'value'))",
+        refused("SELECT * FROM TABLE(SPLIT_TO_TABLE('test', INVALID_PARAM => 'value')) ORDER BY INDEX",
             "invalid argument for function [SPLIT_TO_TABLE] unexpected argument [INVALID_PARAM] at position 2,");
     }
 
@@ -228,22 +229,22 @@ public class SplitToTableTest extends BaseDatabaseTest {
     public void aCallWithoutExactlyTwoArgumentsIsRefused() {
         assertEquals("SQL compilation error: error line 1 at position 20\n"
             + "not enough arguments for function [SPLIT_TO_TABLE], expected 1, got 0",
-            messageOf("SELECT * FROM TABLE(SPLIT_TO_TABLE())"));
+            messageOf("SELECT * FROM TABLE(SPLIT_TO_TABLE()) ORDER BY INDEX"));
         assertEquals("SQL compilation error: error line 0 at position -1\n"
             + "not enough arguments for function [SPLIT('a,b,c' AS \"1\")], expected 2, got 1",
-            messageOf("SELECT * FROM TABLE(SPLIT_TO_TABLE('a,b,c'))"));
+            messageOf("SELECT * FROM TABLE(SPLIT_TO_TABLE('a,b,c')) ORDER BY INDEX"));
         assertEquals("SQL compilation error: error line 1 at position 20\n"
             + "too many arguments for function [SPLIT_TO_TABLE] expected 2, got 3",
-            messageOf("SELECT * FROM TABLE(SPLIT_TO_TABLE('a', ',', 'x'))"));
+            messageOf("SELECT * FROM TABLE(SPLIT_TO_TABLE('a', ',', 'x')) ORDER BY INDEX"));
     }
 
     /** Both parameters take a VARCHAR, and a number is refused rather than converted. */
     @Test
     public void aNonStringArgumentIsRefused() {
         assertEquals("SQL compilation error:\ninvalid type [NUMBER(3,0)] for parameter '1'",
-            messageOf("SELECT * FROM TABLE(SPLIT_TO_TABLE(123, ','))"));
+            messageOf("SELECT * FROM TABLE(SPLIT_TO_TABLE(123, ',')) ORDER BY INDEX"));
         assertEquals("SQL compilation error:\ninvalid type [NUMBER(1,0)] for parameter '2'",
-            messageOf("SELECT * FROM TABLE(SPLIT_TO_TABLE('1,2', 1))"));
+            messageOf("SELECT * FROM TABLE(SPLIT_TO_TABLE('1,2', 1)) ORDER BY INDEX"));
     }
 
     private void refused(final String sql, final String expectedDetail) {

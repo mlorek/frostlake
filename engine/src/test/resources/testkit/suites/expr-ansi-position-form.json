@@ -1,0 +1,69 @@
+{
+  "suite": "expr-ansi-position-form",
+  "description": "POSITION(needle IN haystack) - the ANSI infix spelling, same call as the two-argument function form: works over literals, columns, expressions, BINARY operands and in lower case; the function spelling (including three-argument) is unchanged; there is no ANSI FROM tail; the IN spelling belongs to POSITION alone - other functions refuse it as a syntax error anchored on the OPERAND after IN (live reads it as a membership test whose right side must be parenthesised); real membership tests inside arguments still parse; and the result declares the position family's FIXED(9,0) width. Converted 1:1 from expressions/AnsiPositionFormTest (now retired).",
+  "tags": ["expressions", "converted"],
+  "tests": [
+    {"name": "the-ansi-form-finds-the-needle", "steps": [
+      {"sql": "CREATE TABLE ps (s VARCHAR(10), b BINARY(4), n NUMBER)"},
+      {"sql": "INSERT INTO ps SELECT 'abcabc', TO_BINARY('4142'), 1"},
+      {"sql": "SELECT POSITION('b' IN s) AS c FROM ps", "expect": {"value": "2"}},
+      {"sql": "SELECT POSITION(s IN s) AS c FROM ps", "expect": {"value": "1"}},
+      {"sql": "SELECT POSITION('b' IN UPPER(s)) AS c FROM ps", "expect": {"value": "0"}}
+    ]},
+    {"name": "it-works-over-binaries-and-in-lower-case", "steps": [
+      {"sql": "CREATE TABLE ps (s VARCHAR(10), b BINARY(4), n NUMBER)"},
+      {"sql": "INSERT INTO ps SELECT 'abcabc', TO_BINARY('4142'), 1"},
+      {"sql": "SELECT POSITION(TO_BINARY('42') IN b) AS c FROM ps", "expect": {"value": "2"}},
+      {"sql": "SELECT position('b' in s) AS c FROM ps", "expect": {"value": "2"}}
+    ]},
+    {"name": "the-function-spelling-still-works", "steps": [
+      {"sql": "CREATE TABLE ps (s VARCHAR(10), b BINARY(4), n NUMBER)"},
+      {"sql": "INSERT INTO ps SELECT 'abcabc', TO_BINARY('4142'), 1"},
+      {"sql": "SELECT POSITION('b', s) AS c FROM ps", "expect": {"value": "2"}},
+      {"sql": "SELECT POSITION('b', s, 3) AS c FROM ps", "expect": {"value": "5"}}
+    ]},
+    {"name": "there-is-no-ansi-from-tail", "steps": [
+      {"sql": "CREATE TABLE ps (s VARCHAR(10), b BINARY(4), n NUMBER)"},
+      {"sql": "INSERT INTO ps SELECT 'abcabc', TO_BINARY('4142'), 1"},
+      {"sql": "SELECT POSITION('b' IN s FROM 3) AS c FROM ps", "expect": {"error": {}}}
+    ]},
+    {"name": "no-other-function-takes-the-in-spelling", "steps": [
+      {"sql": "CREATE TABLE ps (s VARCHAR(10), b BINARY(4), n NUMBER)"},
+      {"sql": "INSERT INTO ps SELECT 'abcabc', TO_BINARY('4142'), 1"},
+      {"sql": "SELECT CHARINDEX('b' IN s) AS c FROM ps", "expect": {"error": {}}},
+      {"sql": "SELECT UPPER('b' IN s) AS c FROM ps", "expect": {"error": {}}},
+      {"sql": "SELECT SUBSTR('b' IN s) AS c FROM ps", "expect": {"error": {}}}
+    ]},
+    {"name": "the-refusal-is-anchored-on-the-operand", "steps": [
+      {"sql": "CREATE TABLE ps (s VARCHAR(10), b BINARY(4), n NUMBER)"},
+      {"sql": "INSERT INTO ps SELECT 'abcabc', TO_BINARY('4142'), 1"},
+      {"sql": "SELECT CHARINDEX('b' IN s) AS c FROM ps",
+       "expect": {"error": {"messageContains": "syntax error line 1 at position 24 unexpected 's'."}}},
+      {"sql": "SELECT UPPER('b' IN s) AS c FROM ps",
+       "expect": {"error": {"messageContains": "syntax error line 1 at position 20 unexpected 's'."}}},
+      {"sql": "SELECT LENGTH('b' IN s) AS c FROM ps",
+       "expect": {"error": {"messageContains": "syntax error line 1 at position 21 unexpected 's'."}}},
+      {"sql": "SELECT s, CHARINDEX('b' IN s) AS c FROM ps",
+       "expect": {"error": {"messageContains": "syntax error line 1 at position 27 unexpected 's'."}}},
+      {"sql": "SELECT CONCAT('a', UPPER('b' IN s)) AS c FROM ps",
+       "expect": {"error": {"messageContains": "syntax error line 1 at position 32 unexpected 's'."}}},
+      {"sql": "SELECT CHARINDEX('b', s IN s) AS c FROM ps",
+       "expect": {"error": {"messageContains": "syntax error line 1 at position 27 unexpected 's'."}}}
+    ]},
+    {"name": "a-real-membership-test-still-parses", "steps": [
+      {"sql": "CREATE TABLE ps (s VARCHAR(10), b BINARY(4), n NUMBER)"},
+      {"sql": "INSERT INTO ps SELECT 'abcabc', TO_BINARY('4142'), 1"},
+      {"sql": "SELECT UPPER(IFF(s IN ('abcabc'), 'y', 'n')) AS c FROM ps", "expect": {"value": "Y"}},
+      {"sql": "SELECT COUNT(*) AS c FROM ps WHERE s IN ('abcabc')", "expect": {"value": "1"}},
+      {"sql": "SELECT IFF(s IN (SELECT s FROM ps), 'y', 'n') AS c FROM ps", "expect": {"value": "y"}}
+    ]},
+    {"name": "it-declares-the-position-width", "steps": [
+      {"sql": "CREATE TABLE ps (s VARCHAR(10), b BINARY(4), n NUMBER)"},
+      {"sql": "INSERT INTO ps SELECT 'abcabc', TO_BINARY('4142'), 1"},
+      {"sql": "CREATE OR REPLACE VIEW ps_v AS SELECT POSITION('b' IN s) AS c FROM ps"},
+      {"sql": "SHOW COLUMNS IN TABLE test_db.test_schema.ps_v"},
+      {"sql": "SELECT \"data_type\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"value": "{\"type\":\"FIXED\",\"precision\":9,\"scale\":0,\"nullable\":true}"}}
+    ]}
+  ]
+}

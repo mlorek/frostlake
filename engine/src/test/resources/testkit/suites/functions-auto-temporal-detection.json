@@ -1,0 +1,76 @@
+{
+  "suite": "functions-auto-temporal-detection",
+  "description": "Snowflake's AUTO date/time input detection accepts far more than ISO-8601: a zone designator (dropped for a wall-clock TIMESTAMP_NTZ), MM/DD/YYYY with single-digit fields, DD-MON-YYYY with a full or abbreviated month name, extra whitespace between the date and the time, and any non-canonical digit count - each field is sized by its DIGIT RUN and then range-checked, so '9999-012-31' is December while '9999-013-31' is an error. The CAST and the DML write path differ, live-verified: the same over-wide literal that casts fine fails an INSERT into a TIMESTAMP_NTZ column, while fields NARROWER than canonical stay legal on both. Converted 1:1 from functions/AutoTemporalDetectionTest (now retired); the Java class read values as LocalDate / LocalDateTime objects and compared their toString (T-separated, trailing zeros stripped), so the converted suite reads TO_VARCHAR instead - the parsed values are identical, rendered in Snowflake's own output form.",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "a-zone-designator-is-accepted-and-dropped-for-ntz", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE ts_in (ts TIMESTAMP_NTZ(9))"},
+      {"sql": "INSERT INTO ts_in VALUES ('2025-07-19T16:35:12.589000000Z')"},
+      {"sql": "SELECT TO_VARCHAR(ts) FROM ts_in", "expect": {"value": "2025-07-19 16:35:12.589"}},
+      {"sql": "CREATE OR REPLACE TABLE ts_in (ts TIMESTAMP_NTZ(9))"},
+      {"sql": "INSERT INTO ts_in VALUES ('2013-04-28T20:57:01.123456789+07:00')"},
+      {"sql": "SELECT TO_VARCHAR(ts, 'YYYY-MM-DD HH24:MI:SS.FF9') FROM ts_in", "expect": {"value": "2013-04-28 20:57:01.123456789"}}
+    ]},
+    {"name": "slash-month-day-year-with-single-digit-fields", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE ts_in (ts TIMESTAMP_NTZ(9))"},
+      {"sql": "INSERT INTO ts_in VALUES ('3/5/2024 12:34:59')"},
+      {"sql": "SELECT TO_VARCHAR(ts) FROM ts_in", "expect": {"value": "2024-03-05 12:34:59.000"}},
+      {"sql": "SELECT TO_VARCHAR('2/18/2008 02:36:48'::TIMESTAMP_NTZ)", "expect": {"value": "2008-02-18 02:36:48.000"}},
+      {"sql": "SELECT TO_VARCHAR(TO_DATE('3/5/2024'))", "expect": {"value": "2024-03-05"}}
+    ]},
+    {"name": "day-month-name-year", "steps": [
+      {"sql": "SELECT TO_VARCHAR(TO_DATE('17-DEC-1980'))", "expect": {"value": "1980-12-17"}},
+      {"sql": "SELECT TO_VARCHAR(TO_DATE('17-december-1980'))", "expect": {"value": "1980-12-17"}}
+    ]},
+    {"name": "extra-whitespace-between-the-date-and-the-time", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE ts_in (ts TIMESTAMP_NTZ(9))"},
+      {"sql": "INSERT INTO ts_in VALUES ('2024-03-29  15:00:11')"},
+      {"sql": "SELECT TO_VARCHAR(ts) FROM ts_in", "expect": {"value": "2024-03-29 15:00:11.000"}},
+      {"sql": "CREATE OR REPLACE TABLE ts_in (ts TIMESTAMP_NTZ(9))"},
+      {"sql": "INSERT INTO ts_in VALUES ('2024-03-29 15:00:11')"},
+      {"sql": "SELECT TO_VARCHAR(ts) FROM ts_in", "expect": {"value": "2024-03-29 15:00:11.000"}}
+    ]},
+    {"name": "a-non-canonical-digit-count-is-range-checked-not-width-checked-on-cast", "steps": [
+      {"sql": "SELECT TO_VARCHAR('9999-12-31 00:00:003'::TIMESTAMP_NTZ)", "expect": {"value": "9999-12-31 00:00:03.000"}},
+      {"sql": "SELECT '2024-01-01 00:00:599'::TIMESTAMP_NTZ", "expect": {"error": {}}}
+    ]},
+    {"name": "the-dml-write-path-is-width-checked-unlike-the-cast", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE ts_in (ts TIMESTAMP_NTZ(9))"},
+      {"sql": "INSERT INTO ts_in VALUES ('9999-12-31 00:00:003')", "expect": {"error": {}}},
+      {"sql": "INSERT INTO ts_in VALUES ('2024-001-01 00:00:03')", "expect": {"error": {}}},
+      {"sql": "INSERT INTO ts_in VALUES ('02024-01-01 00:00:03')", "expect": {"error": {}}},
+      {"sql": "CREATE OR REPLACE TABLE ts_in (ts TIMESTAMP_NTZ(9))"},
+      {"sql": "INSERT INTO ts_in VALUES ('2024-1-01 00:00:3')"},
+      {"sql": "SELECT TO_VARCHAR(ts) FROM ts_in", "expect": {"value": "2024-01-01 00:00:03.000"}},
+      {"sql": "CREATE OR REPLACE TABLE ts_in (ts TIMESTAMP_NTZ(9))"},
+      {"sql": "INSERT INTO ts_in VALUES ('2024-01-01 00:00:03')"},
+      {"sql": "SELECT TO_VARCHAR(ts) FROM ts_in", "expect": {"value": "2024-01-01 00:00:03.000"}}
+    ]},
+    {"name": "unparseable-text-is-still-rejected", "steps": [
+      {"sql": "SELECT 'not a date'::TIMESTAMP_NTZ", "expect": {"error": {}}},
+      {"sql": "SELECT '2024-13-45'::TIMESTAMP_NTZ", "expect": {"error": {}}}
+    ]},
+    {"name": "over-wide-fields-are-read-as-digit-runs-then-range-checked", "steps": [
+      {"sql": "SELECT TO_VARCHAR('9999-012-31'::DATE)", "expect": {"value": "9999-12-31"}},
+      {"sql": "SELECT TO_VARCHAR('9999-12-031'::DATE)", "expect": {"value": "9999-12-31"}},
+      {"sql": "SELECT TO_VARCHAR('2024-0001-01'::DATE)", "expect": {"value": "2024-01-01"}},
+      {"sql": "SELECT TO_VARCHAR('99999-12-31'::DATE)", "expect": {"value": "99999-12-31"}},
+      {"sql": "SELECT TO_VARCHAR('999999-12-31'::DATE)", "expect": {"value": "999999-12-31"}},
+      {"sql": "SELECT TO_VARCHAR('2024-01-01 001:00:00'::TIMESTAMP_NTZ)", "expect": {"value": "2024-01-01 01:00:00.000"}},
+      {"sql": "SELECT TO_VARCHAR('2024-01-01 00:003:00'::TIMESTAMP_NTZ)", "expect": {"value": "2024-01-01 00:03:00.000"}},
+      {"sql": "SELECT TO_VARCHAR('2024-01-01 00:00:0003'::TIMESTAMP_NTZ)", "expect": {"value": "2024-01-01 00:00:03.000"}},
+      {"sql": "SELECT TO_VARCHAR('2024-01-01 00:00:059'::TIMESTAMP_NTZ)", "expect": {"value": "2024-01-01 00:00:59.000"}},
+      {"sql": "SELECT TO_VARCHAR('2024-01-01 00:00:003.5'::TIMESTAMP_NTZ)", "expect": {"value": "2024-01-01 00:00:03.500"}},
+      {"sql": "SELECT TO_VARCHAR(TO_DATE('9999-012-31'))", "expect": {"value": "9999-12-31"}},
+      {"sql": "SELECT '9999-013-31'::DATE", "expect": {"error": {}}},
+      {"sql": "SELECT '9999-12-032'::DATE", "expect": {"error": {}}},
+      {"sql": "SELECT '2024-01-01 025:00:00'::TIMESTAMP_NTZ", "expect": {"error": {}}}
+    ]},
+    {"name": "the-iso-and-epoch-forms-are-unchanged", "steps": [
+      {"sql": "SELECT TO_VARCHAR('2024-02-09T12:24:12'::TIMESTAMP_NTZ)", "expect": {"value": "2024-02-09 12:24:12.000"}},
+      {"sql": "SELECT TO_VARCHAR('2024-02-09 12:24:12.000'::TIMESTAMP_NTZ)", "expect": {"value": "2024-02-09 12:24:12.000"}},
+      {"sql": "SELECT TO_VARCHAR(TO_TIMESTAMP(1700000000))", "expect": {"value": "2023-11-14 22:13:20.000"}},
+      {"sql": "SELECT TO_VARCHAR(TO_DATE('2020-01-15'))", "expect": {"value": "2020-01-15"}}
+    ]}
+  ]
+}

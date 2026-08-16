@@ -1,0 +1,86 @@
+{
+  "suite": "ddl-temporary-spellings",
+  "description": "The temporary spellings, live-measured: a table spelled TEMPORARY / TEMP / LOCAL TEMPORARY / GLOBAL TEMPORARY / VOLATILE reports kind TEMPORARY in SHOW TABLES while TRANSIENT is its own kind and a plain table is TABLE; views take the full [SECURE] [LOCAL|GLOBAL] {TEMPORARY|TEMP|VOLATILE} prefix chain with SECURE strictly BEFORE the temporary keyword, functions take {TEMPORARY|TEMP|VOLATILE} [SECURE] with the temporary keyword strictly FIRST and no LOCAL/GLOBAL, procedures take the three temporary spellings and no LOCAL; temporary views replace and refuse duplicates like permanent ones and SHOW VIEWS' text repeats the CREATE as typed. Converted 1:1 from ddl/TemporaryTableSpellingsTest + ddl/TemporaryViewAndRoutineTest (trimmed: the session-lifetime test drives a second engine to shutdown via Java APIs).",
+  "tags": ["ddl", "converted"],
+  "tests": [
+    {"name": "every-spelling-of-a-temporary-table-is-temporary", "steps": [
+      {"sql": "CREATE TEMPORARY TABLE sp_temporary (a INTEGER)"},
+      {"sql": "CREATE TEMP TABLE sp_temp (a INTEGER)"},
+      {"sql": "CREATE LOCAL TEMPORARY TABLE sp_local (a INTEGER)"},
+      {"sql": "CREATE GLOBAL TEMPORARY TABLE sp_global (a INTEGER)"},
+      {"sql": "CREATE VOLATILE TABLE sp_volatile (a INTEGER)"},
+      {"sql": "SHOW TABLES"},
+      {"sql": "SELECT MAX(IFF(UPPER(\"name\") = 'SP_TEMPORARY', \"kind\", NULL)), MAX(IFF(UPPER(\"name\") = 'SP_TEMP', \"kind\", NULL)), MAX(IFF(UPPER(\"name\") = 'SP_LOCAL', \"kind\", NULL)), MAX(IFF(UPPER(\"name\") = 'SP_GLOBAL', \"kind\", NULL)), MAX(IFF(UPPER(\"name\") = 'SP_VOLATILE', \"kind\", NULL)) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["TEMPORARY", "TEMPORARY", "TEMPORARY", "TEMPORARY", "TEMPORARY"]]}}
+    ]},
+    {"name": "transient-is-not-temporary", "steps": [
+      {"sql": "CREATE TRANSIENT TABLE sp_transient (a INTEGER)"},
+      {"sql": "SHOW TABLES"},
+      {"sql": "SELECT MAX(IFF(UPPER(\"name\") = 'SP_TRANSIENT', \"kind\", NULL)) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "TRANSIENT"}}
+    ]},
+    {"name": "a-plain-table-is-neither", "steps": [
+      {"sql": "CREATE TABLE sp_plain (a INTEGER)"},
+      {"sql": "SHOW TABLES"},
+      {"sql": "SELECT MAX(IFF(UPPER(\"name\") = 'SP_PLAIN', \"kind\", NULL)) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "TABLE"}}
+    ]},
+    {"name": "a-volatile-table-holds-rows", "steps": [
+      {"sql": "CREATE VOLATILE TABLE sp_rows (a INTEGER)"},
+      {"sql": "INSERT INTO sp_rows VALUES (1), (2)"},
+      {"sql": "SELECT COUNT(*) FROM sp_rows", "expect": {"value": "2"}}
+    ]},
+    {"name": "every-temporary-view-spelling-is-accepted", "steps": [
+      {"sql": "CREATE TEMPORARY VIEW tv1 AS SELECT 1 AS n"},
+      {"sql": "CREATE TEMP VIEW tv2 AS SELECT 2 AS n"},
+      {"sql": "CREATE VOLATILE VIEW tv3 AS SELECT 3 AS n"},
+      {"sql": "CREATE LOCAL TEMPORARY VIEW tv4 AS SELECT 4 AS n"},
+      {"sql": "CREATE GLOBAL TEMPORARY VIEW tv5 AS SELECT 5 AS n"},
+      {"sql": "CREATE GLOBAL TEMP VIEW tv6 AS SELECT 6 AS n"},
+      {"sql": "CREATE LOCAL VOLATILE VIEW tv7 AS SELECT 7 AS n"},
+      {"sql": "CREATE SECURE TEMPORARY VIEW tv8 AS SELECT 8 AS n"},
+      {"sql": "CREATE SECURE LOCAL TEMPORARY VIEW tv9 AS SELECT 9 AS n"},
+      {"sql": "SELECT n FROM tv1", "expect": {"value": "1"}},
+      {"sql": "SELECT n FROM tv9", "expect": {"value": "9"}}
+    ]},
+    {"name": "on-a-view-secure-precedes-the-temporary-keyword", "steps": [
+      {"sql": "CREATE TEMPORARY SECURE VIEW bad1 AS SELECT 1 AS n", "expect": {"error": {}}},
+      {"sql": "CREATE TEMP SECURE VIEW bad2 AS SELECT 1 AS n", "expect": {"error": {}}}
+    ]},
+    {"name": "every-temporary-function-spelling-is-accepted", "steps": [
+      {"sql": "CREATE TEMPORARY FUNCTION tf1() RETURNS INTEGER AS '1'"},
+      {"sql": "CREATE TEMP FUNCTION tf2() RETURNS INTEGER AS '2'"},
+      {"sql": "CREATE VOLATILE FUNCTION tf3() RETURNS INTEGER AS '3'"},
+      {"sql": "CREATE TEMPORARY SECURE FUNCTION tf4() RETURNS INTEGER AS '4'"},
+      {"sql": "CREATE TEMP SECURE FUNCTION tf5() RETURNS INTEGER AS '5'"},
+      {"sql": "CREATE VOLATILE SECURE FUNCTION tf6() RETURNS INTEGER AS '6'"},
+      {"sql": "CREATE TEMPORARY FUNCTION tf7(x INTEGER) RETURNS INTEGER AS 'x * 2'"},
+      {"sql": "SELECT tf1()", "expect": {"value": "1"}},
+      {"sql": "SELECT tf7(21)", "expect": {"value": "42"}}
+    ]},
+    {"name": "on-a-function-the-temporary-keyword-precedes-secure", "steps": [
+      {"sql": "CREATE SECURE TEMPORARY FUNCTION bad1() RETURNS INTEGER AS '1'", "expect": {"error": {}}},
+      {"sql": "CREATE LOCAL TEMPORARY FUNCTION bad2() RETURNS INTEGER AS '1'", "expect": {"error": {}}},
+      {"sql": "CREATE GLOBAL TEMPORARY FUNCTION bad3() RETURNS INTEGER AS '1'", "expect": {"error": {}}}
+    ]},
+    {"name": "every-temporary-procedure-spelling-is-accepted", "steps": [
+      {"sql": "CREATE TEMPORARY PROCEDURE tp1() RETURNS INTEGER LANGUAGE SQL AS 'BEGIN RETURN 1; END'"},
+      {"sql": "CREATE TEMP PROCEDURE tp2() RETURNS INTEGER LANGUAGE SQL AS 'BEGIN RETURN 2; END'"},
+      {"sql": "CREATE VOLATILE PROCEDURE tp3() RETURNS INTEGER LANGUAGE SQL AS 'BEGIN RETURN 3; END'"},
+      {"sql": "CREATE LOCAL TEMPORARY PROCEDURE bad() RETURNS INTEGER LANGUAGE SQL AS 'BEGIN RETURN 1; END'", "expect": {"error": {}}},
+      {"sql": "CALL tp1()", "expect": {"value": "1"}}
+    ]},
+    {"name": "temporary-views-replace-and-refuse-duplicates", "steps": [
+      {"sql": "CREATE TEMPORARY VIEW rv AS SELECT 1 AS n"},
+      {"sql": "SELECT n FROM rv", "expect": {"value": "1"}},
+      {"sql": "CREATE OR REPLACE TEMPORARY VIEW rv AS SELECT 2 AS n"},
+      {"sql": "SELECT n FROM rv", "expect": {"value": "2"}},
+      {"sql": "CREATE TEMPORARY VIEW IF NOT EXISTS rv AS SELECT 3 AS n"},
+      {"sql": "SELECT n FROM rv", "expect": {"value": "2"}},
+      {"sql": "CREATE TEMPORARY VIEW rv AS SELECT 4 AS n", "expect": {"error": {}}}
+    ]},
+    {"name": "show-views-repeats-the-statement-as-typed", "steps": [
+      {"sql": "CREATE TEMPORARY VIEW shown AS SELECT 1 AS n"},
+      {"sql": "SHOW VIEWS LIKE 'SHOWN'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT CONTAINS(UPPER(\"text\"), 'TEMPORARY') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "true"}}
+    ]}
+  ]
+}

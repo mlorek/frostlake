@@ -62,7 +62,7 @@ public class UdfQueryPerformanceTest extends BaseDatabaseTest {
             """);
         engine.execute("""
             CREATE FUNCTION js_dbl(x INTEGER) RETURNS INTEGER LANGUAGE JAVASCRIPT
-            AS $$ return x * 2; $$
+            AS $$ return X * 2; $$
             """);
         engine.execute("""
             CREATE FUNCTION py_dbl(x INTEGER) RETURNS INTEGER LANGUAGE PYTHON RUNTIME_VERSION = '3.11' HANDLER = 'dbl'

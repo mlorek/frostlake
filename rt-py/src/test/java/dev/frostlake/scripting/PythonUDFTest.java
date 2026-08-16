@@ -243,10 +243,10 @@ public class PythonUDFTest {
             """);
 
         engine.execute("""
-            CREATE FUNCTION js_triple(x INTEGER)
-            RETURNS INTEGER
+            CREATE FUNCTION js_triple(x FLOAT)
+            RETURNS FLOAT
             LANGUAGE JAVASCRIPT
-            AS 'return x * 3;'
+            AS 'return X * 3;'
             """);
 
         engine.execute("""

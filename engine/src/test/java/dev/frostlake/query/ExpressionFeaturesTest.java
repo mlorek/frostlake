@@ -43,7 +43,7 @@ public class ExpressionFeaturesTest extends BaseDatabaseTest {
 
     @Test
     public void testIsNull() {
-        final ResultSet rs = engine.executeQuery("SELECT name FROM employees WHERE email IS NULL");
+        final ResultSet rs = engine.executeQuery("SELECT name FROM employees WHERE email IS NULL ORDER BY id");
         assertEquals(2, rs.getRowCount());
         assertEquals("Jane Smith", rs.getRows().get(0).getValue(0));
         assertEquals("Alice Brown", rs.getRows().get(1).getValue(0));
@@ -51,7 +51,7 @@ public class ExpressionFeaturesTest extends BaseDatabaseTest {
 
     @Test
     public void testIsNotNull() {
-        final ResultSet rs = engine.executeQuery("SELECT name FROM employees WHERE email IS NOT NULL");
+        final ResultSet rs = engine.executeQuery("SELECT name FROM employees WHERE email IS NOT NULL ORDER BY id");
         assertEquals(2, rs.getRowCount());
         assertEquals("John Doe", rs.getRows().get(0).getValue(0));
         assertEquals("Bob Wilson", rs.getRows().get(1).getValue(0));

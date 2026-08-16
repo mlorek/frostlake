@@ -28,7 +28,10 @@ import java.util.List;
  * combined commutatively (summed), so the result depends only on the multiset of values, not the row order.
  *
  * <p>Like {@code HASH()}, this does NOT reproduce Snowflake's proprietary HASH_AGG values — rely on its
- * stability within this engine only.
+ * stability within this engine only. The RELATIONS are live-verified: the order of rows and of partial
+ * merges is immaterial, duplicates each contribute, a number's scale is invisible, the ARGUMENT order
+ * matters, DISTINCT drops repeats, an empty group is 0 while a group of NULLs is not — and a group of
+ * ONE row does not equal the scalar HASH of that row.
  */
 public class HashAgg extends AggregateFunction {
     public HashAgg() {
@@ -58,6 +61,8 @@ public class HashAgg extends AggregateFunction {
 
     @Override
     public int getMinArgCount() { return 1; }
+
+    /** Live folds as many arguments as are written, exactly as the scalar HASH does. */
     @Override
-    public int getMaxArgCount() { return 1; }
+    public int getMaxArgCount() { return Integer.MAX_VALUE; }
 }

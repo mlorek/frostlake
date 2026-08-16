@@ -38,13 +38,13 @@ public class VectorMaxTest extends BaseVectorFunctionTest {
         engine.execute("INSERT INTO max_cross SELECT [4,5,-6]::VECTOR(FLOAT,3)");
         engine.execute("INSERT INTO max_cross SELECT [7,2,0]::VECTOR(FLOAT,3)");
         // Live: [7.0,9.0,3.0] — again each element comes from a different row.
-        assertVector("[7.0,9.0,3.0]", "SELECT VECTOR_MAX(v) FROM max_cross");
+        assertVector("[7.000000,9.000000,3.000000]", "SELECT VECTOR_MAX(v) FROM max_cross");
     }
 
     @Test
     public void skipsNullRows() {
         // Live: over [1,2,3], [4,5,6] and a NULL row => [4.0,5.0,6.0].
-        assertVector("[4.0,5.0,6.0]", "SELECT VECTOR_MAX(v) FROM max_rows");
+        assertVector("[4.000000,5.000000,6.000000]", "SELECT VECTOR_MAX(v) FROM max_rows");
     }
 
     @Test
@@ -64,7 +64,7 @@ public class VectorMaxTest extends BaseVectorFunctionTest {
 
     @Test
     public void singleRowGroupIsThatRow() {
-        assertVector("[1.0,2.0,3.0]", "SELECT VECTOR_MAX(v) FROM max_rows WHERE id = 1");
+        assertVector("[1.000000,2.000000,3.000000]", "SELECT VECTOR_MAX(v) FROM max_rows WHERE id = 1");
     }
 
     @Test

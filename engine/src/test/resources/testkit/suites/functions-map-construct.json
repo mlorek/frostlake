@@ -1,0 +1,56 @@
+{
+  "suite": "functions-map-construct",
+  "description": "MAP_CONSTRUCT(key, value ...) - the one member of the family that BUILDS a map, every expectation measured live. Members come out KEY-SORTED rather than in argument order, and the result is a MAP the rest of the family can read. An odd argument count is rejected naming the next EVEN count (\"expected 4, got 3\") rather than a maximum, and fewer than two arguments is an arity error. A NULL LITERAL is rejected in either half (\"Function MAP_CONSTRUCT does not support NULL argument type\"), but at RUN TIME - measured over a multi-row table so no all-NULL column could be folded to a literal - a NULL key DROPS the pair while a NULL value is kept as a JSON null. The KEY half refuses BOOLEAN, DATE and VARIANT while the VALUE half takes all three, a duplicate key is an error, and a semi-structured value is kept whole. Converted 1:1 from functions/MapConstructTest (now retired); MAP cells are read directly, which renders identically on the engine and over HTTP, while the ARRAY-valued MAP_KEYS is read through TO_JSON.",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "it-builds-a-map-from-alternating-arguments", "steps": [
+      {"sql": "SELECT MAP_CONSTRUCT('a',1,'b',2)", "expect": {"value": "{\"a\":1,\"b\":2}"}}
+    ]},
+    {"name": "members-come-out-key-sorted-not-in-argument-order", "steps": [
+      {"sql": "SELECT MAP_CONSTRUCT('b',1,'a',2)", "expect": {"value": "{\"a\":2,\"b\":1}"}}
+    ]},
+    {"name": "the-result-is-a-map-the-rest-of-the-family-can-read", "steps": [
+      {"sql": "SELECT MAP_SIZE(MAP_CONSTRUCT('a',1,'b',2))", "expect": {"value": "2"}},
+      {"sql": "SELECT TO_JSON(MAP_KEYS(MAP_CONSTRUCT('a',1,'b',2))::VARIANT)", "expect": {"value": "[\"a\",\"b\"]"}}
+    ]},
+    {"name": "an-odd-argument-count-is-rejected", "steps": [
+      {"sql": "SELECT MAP_CONSTRUCT('a',1,'b')", "expect": {"error": {"messageContains": "expected 4, got 3"}}}
+    ]},
+    {"name": "fewer-than-two-arguments-is-rejected", "steps": [
+      {"sql": "SELECT MAP_CONSTRUCT('a')", "expect": {"error": {"messageContains": "expected 2, got 1"}}}
+    ]},
+    {"name": "a-null-literal-argument-is-rejected-in-either-half", "steps": [
+      {"sql": "SELECT MAP_CONSTRUCT(NULL,1)",
+       "expect": {"error": {"messageContains": "Function MAP_CONSTRUCT does not support NULL argument type"}}},
+      {"sql": "SELECT MAP_CONSTRUCT('a',NULL)",
+       "expect": {"error": {"messageContains": "Function MAP_CONSTRUCT does not support NULL argument type"}}}
+    ]},
+    {"name": "a-null-key-drops-the-pair-while-a-null-value-is-kept", "steps": [
+      {"sql": "CREATE TABLE mcn (id INTEGER, k VARCHAR, v INTEGER)"},
+      {"sql": "INSERT INTO mcn VALUES (1, 'a', NULL), (2, NULL, 1), (3, 'b', 2)"},
+      {"sql": "SELECT MAP_CONSTRUCT(k, v) FROM mcn WHERE id = 1", "expect": {"value": "{\"a\":null}"}},
+      {"sql": "SELECT MAP_SIZE(MAP_CONSTRUCT(k, v)) FROM mcn WHERE id = 1", "expect": {"value": "1"}},
+      {"sql": "SELECT MAP_CONSTRUCT(k, v) FROM mcn WHERE id = 2", "expect": {"value": "{}"}},
+      {"sql": "SELECT MAP_CONSTRUCT(k, v) FROM mcn WHERE id = 3", "expect": {"value": "{\"b\":2}"}}
+    ]},
+    {"name": "a-boolean-date-or-variant-key-is-rejected-though-all-three-are-fine-as-values", "steps": [
+      {"sql": "SELECT MAP_CONSTRUCT(TRUE,'x')",
+       "expect": {"error": {"messageContains": "Function MAP_CONSTRUCT does not support BOOLEAN argument type"}}},
+      {"sql": "SELECT MAP_CONSTRUCT('2020-01-01'::DATE,'x')",
+       "expect": {"error": {"messageContains": "Function MAP_CONSTRUCT does not support DATE argument type"}}},
+      {"sql": "SELECT MAP_CONSTRUCT('a'::VARIANT,1)",
+       "expect": {"error": {"messageContains": "Function MAP_CONSTRUCT does not support VARIANT argument type"}}},
+      {"sql": "SELECT MAP_CONSTRUCT('a',TRUE)", "expect": {"value": "{\"a\":true}"}},
+      {"sql": "SELECT MAP_CONSTRUCT('a','2020-01-01'::DATE)", "expect": {"value": "{\"a\":\"2020-01-01\"}"}},
+      {"sql": "SELECT MAP_CONSTRUCT('a',1::VARIANT)", "expect": {"value": "{\"a\":1}"}}
+    ]},
+    {"name": "a-duplicate-key-is-an-error", "steps": [
+      {"sql": "SELECT MAP_CONSTRUCT('a',1,'a',2)",
+       "expect": {"error": {"messageContains": "Duplicate field key 'a'"}}}
+    ]},
+    {"name": "a-semi-structured-value-is-kept-whole", "steps": [
+      {"sql": "SELECT MAP_CONSTRUCT('a',OBJECT_CONSTRUCT('x',1))", "expect": {"value": "{\"a\":{\"x\":1}}"}},
+      {"sql": "SELECT MAP_CONSTRUCT('a',ARRAY_CONSTRUCT(1,2))", "expect": {"value": "{\"a\":[1,2]}"}}
+    ]}
+  ]
+}

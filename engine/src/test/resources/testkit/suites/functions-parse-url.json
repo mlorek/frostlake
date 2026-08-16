@@ -1,0 +1,25 @@
+{
+  "suite": "functions-parse-url",
+  "description": "PARSE_URL(url [, permissive]) parses a URL into a VARIANT OBJECT with Snowflake's key set, whose keys arrive in ALPHABETICAL order (live-verified). The documented example is pinned member for member, as is a URL carrying query parameters and a fragment. Without a scheme the call is refused; with the permissive flag it answers an error OBJECT instead. Converted 1:1 from functions/ParseUrlTest (now retired).",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "it-parses-the-documented-example", "steps": [
+      {"sql": "SELECT PARSE_URL('http://USER:PASS@EXAMPLE.INT:4345/HELLO.PHP?USER=1')",
+       "expect": {"value": "{\"fragment\":null,\"host\":\"USER:PASS@EXAMPLE.INT\",\"parameters\":{\"USER\":\"1\"},\"path\":\"HELLO.PHP\",\"port\":\"4345\",\"query\":\"USER=1\",\"scheme\":\"http\"}"}}
+    ]},
+    {"name": "it-parses-query-parameters-and-a-fragment", "steps": [
+      {"sql": "SELECT PARSE_URL('https://example.com/a/b?x=1&y=2#frag')",
+       "expect": {"value": "{\"fragment\":\"frag\",\"host\":\"example.com\",\"parameters\":{\"x\":\"1\",\"y\":\"2\"},\"path\":\"a/b\",\"port\":null,\"query\":\"x=1&y=2\",\"scheme\":\"https\"}"}}
+    ]},
+    {"name": "permissive-returns-an-error-object-on-a-missing-scheme", "steps": [
+      {"sql": "SELECT PARSE_URL('example.int/hello.php?user=12', 1)",
+       "expect": {"value": "{\"error\":\"scheme not specified\"}"}}
+    ]},
+    {"name": "a-non-permissive-missing-scheme-throws", "steps": [
+      {"sql": "SELECT PARSE_URL('example.int/hello.php?user=12')", "expect": {"error": {}}}
+    ]},
+    {"name": "a-null-input-yields-null", "steps": [
+      {"sql": "SELECT PARSE_URL(NULL)", "expect": {"rows": [[null]]}}
+    ]}
+  ]
+}

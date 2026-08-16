@@ -1,0 +1,113 @@
+{
+  "suite": "ddl-duplicate-property",
+  "description": "Which repeated properties are refused and in what words (all live-measured): duplicate property 'X'; for table/view/sequence/warehouse/task properties (a sequence reports its INTERNAL name), conflicting values file format parameter 'X' / for copy option 'X', Multiple DEFAULT or AUTOINCREMENT expressions for a column's one slot, primary-key and constraint-signature sentences naming the TABLE, routine options refused as syntax errors - and what stays LEGAL: repeated CLUSTER BY, repeated COMMENT on stages/routines, NOT NULL twice or beside NULL, COLLATE twice, two UNIQUE columns, free option order, and a stage URL after another option. Converted 1:1 from ddl/DuplicatePropertyTest (now retired).",
+  "tags": ["ddl", "converted"],
+  "tests": [
+    {"name": "a-table-property-may-not-be-given-twice", "steps": [
+      {"sql": "CREATE TABLE d1 (n INT) DATA_RETENTION_TIME_IN_DAYS = 1 DATA_RETENTION_TIME_IN_DAYS = 0",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nduplicate property 'DATA_RETENTION_TIME_IN_DAYS';"}}},
+      {"sql": "CREATE TABLE d2 (n INT) CHANGE_TRACKING = TRUE CHANGE_TRACKING = FALSE",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nduplicate property 'CHANGE_TRACKING';"}}}
+    ]},
+    {"name": "a-view-comment-may-not-be-given-twice", "steps": [
+      {"sql": "CREATE VIEW d3 COMMENT = 'a' COMMENT = 'b' AS SELECT 1 n",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nduplicate property 'COMMENT';"}}}
+    ]},
+    {"name": "a-sequence-bound-reports-its-internal-name", "steps": [
+      {"sql": "CREATE SEQUENCE d4 START = 1 START = 2",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nduplicate property 'SEQUENCE_START';"}}},
+      {"sql": "CREATE SEQUENCE d5 INCREMENT = 1 INCREMENT = 2",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nduplicate property 'SEQUENCE_INCREMENT';"}}}
+    ]},
+    {"name": "a-warehouse-property-may-not-be-given-twice", "steps": [
+      {"sql": "CREATE WAREHOUSE d6 WAREHOUSE_SIZE = 'XSMALL' WAREHOUSE_SIZE = 'SMALL'",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nduplicate property 'WAREHOUSE_SIZE';"}}},
+      {"sql": "CREATE WAREHOUSE d7 AUTO_SUSPEND = 60 AUTO_SUSPEND = 120",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nduplicate property 'AUTO_SUSPEND';"}}}
+    ]},
+    {"name": "a-task-option-may-not-be-given-twice", "steps": [
+      {"sql": "CREATE TASK d8 WAREHOUSE = 'COMPUTE_WH' SCHEDULE = '1 MINUTE' SCHEDULE = '2 MINUTE' AS SELECT 1",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nduplicate property 'SCHEDULE';"}}}
+    ]},
+    {"name": "a-file-format-parameter-may-not-be-given-twice", "steps": [
+      {"sql": "CREATE FILE FORMAT d9 TYPE = 'CSV' TYPE = 'JSON'",
+       "expect": {"error": {"messageContains": "SQL compilation error: conflicting values file format parameter 'TYPE'"}}},
+      {"sql": "CREATE FILE FORMAT d10 TYPE = 'CSV' SKIP_HEADER = 1 SKIP_HEADER = 2",
+       "expect": {"error": {"messageContains": "SQL compilation error: conflicting values file format parameter 'SKIP_HEADER'"}}}
+    ]},
+    {"name": "a-copy-option-may-not-be-given-twice", "steps": [
+      {"sql": "CREATE TABLE base_t (n INT)"},
+      {"sql": "CREATE STAGE st"},
+      {"sql": "COPY INTO base_t FROM @st FILE_FORMAT = (TYPE = 'CSV') FILE_FORMAT = (TYPE = 'JSON')",
+       "expect": {"error": {"messageContains": "SQL compilation error: conflicting values for copy option 'FILE_FORMAT'"}}}
+    ]},
+    {"name": "a-file-format-parameter-inside-copy-is-the-format-sentence", "steps": [
+      {"sql": "CREATE TABLE base_t (n INT)"},
+      {"sql": "CREATE STAGE st"},
+      {"sql": "COPY INTO base_t FROM @st FILE_FORMAT = (TYPE = 'CSV' SKIP_HEADER = 1 SKIP_HEADER = 2)",
+       "expect": {"error": {"messageContains": "SQL compilation error: conflicting values file format parameter 'SKIP_HEADER'"}}}
+    ]},
+    {"name": "a-routine-option-may-not-be-repeated", "steps": [
+      {"sql": "CREATE FUNCTION d11() RETURNS INT LANGUAGE SQL LANGUAGE SQL AS $$ 1 $$",
+       "expect": {"error": {"messageContains": "syntax error"}}},
+      {"sql": "CREATE FUNCTION d12() RETURNS INT IMMUTABLE IMMUTABLE AS $$ 1 $$",
+       "expect": {"error": {"messageContains": "syntax error"}}}
+    ]},
+    {"name": "the-volatility-and-null-handling-families-are-exclusive", "steps": [
+      {"sql": "CREATE FUNCTION d13() RETURNS INT VOLATILE IMMUTABLE AS $$ 1 $$",
+       "expect": {"error": {"messageContains": "syntax error"}}},
+      {"sql": "CREATE FUNCTION d14() RETURNS INT CALLED ON NULL INPUT RETURNS NULL ON NULL INPUT AS $$ 1 $$",
+       "expect": {"error": {"messageContains": "syntax error"}}}
+    ]},
+    {"name": "a-column-carries-one-default-or-autoincrement", "steps": [
+      {"sql": "CREATE TABLE d15 (n INT DEFAULT 1 DEFAULT 2)",
+       "expect": {"error": {"messageContains": "SQL compilation error: \nMultiple DEFAULT or AUTOINCREMENT expressions declared for column N."}}},
+      {"sql": "CREATE TABLE d16 (n INT DEFAULT 1 AUTOINCREMENT)",
+       "expect": {"error": {"messageContains": "SQL compilation error: \nMultiple DEFAULT or AUTOINCREMENT expressions declared for column N."}}},
+      {"sql": "CREATE TABLE d17 (n INT AUTOINCREMENT IDENTITY)",
+       "expect": {"error": {"messageContains": "SQL compilation error: \nMultiple DEFAULT or AUTOINCREMENT expressions declared for column N."}}}
+    ]},
+    {"name": "a-table-carries-one-primary-key-however-it-is-spelled", "steps": [
+      {"sql": "CREATE TABLE d18 (n INT PRIMARY KEY PRIMARY KEY)",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nprimary key already exists for table 'D18'"}}},
+      {"sql": "CREATE TABLE d19 (a INT PRIMARY KEY, b INT PRIMARY KEY)",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nprimary key already exists for table 'D19'"}}},
+      {"sql": "CREATE TABLE d20 (n INT PRIMARY KEY, PRIMARY KEY (n))",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nprimary key already exists for table 'D20'"}}},
+      {"sql": "CREATE TABLE d21 (a INT, b INT, PRIMARY KEY (a), PRIMARY KEY (b))",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nprimary key already exists for table 'D21'"}}}
+    ]},
+    {"name": "two-constraints-over-the-same-columns-collide", "steps": [
+      {"sql": "CREATE TABLE d22 (n INT UNIQUE UNIQUE)",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nconstraint with the same signature already exists on table 'D22'"}}}
+    ]},
+    {"name": "a-repeated-cluster-by-is-legal", "steps": [
+      {"sql": "CREATE TABLE k1 (n INT) CLUSTER BY (n) CLUSTER BY (n)"}
+    ]},
+    {"name": "a-repeated-comment-is-legal-on-a-stage-and-on-a-routine", "steps": [
+      {"sql": "CREATE STAGE k2 COMMENT = 'a' COMMENT = 'b'"},
+      {"sql": "CREATE FUNCTION k3() RETURNS INT COMMENT = 'a' COMMENT = 'b' AS $$ 1 $$"}
+    ]},
+    {"name": "repeated-nullability-and-collation-are-legal", "steps": [
+      {"sql": "CREATE TABLE k4 (n INT NOT NULL NOT NULL)"},
+      {"sql": "CREATE TABLE k5 (n INT NOT NULL NULL)"},
+      {"sql": "CREATE TABLE k6 (s VARCHAR COLLATE 'en' COLLATE 'de')"},
+      {"sql": "CREATE TABLE k7 (n INT DEFAULT 1 NOT NULL)"},
+      {"sql": "CREATE TABLE k8 (n INT NOT NULL DEFAULT 1)"}
+    ]},
+    {"name": "two-columns-may-each-be-unique", "steps": [
+      {"sql": "CREATE TABLE k9 (a INT UNIQUE, b INT UNIQUE)"}
+    ]},
+    {"name": "option-order-is-free", "steps": [
+      {"sql": "CREATE TABLE k10 (n INT) COMMENT = 'a' CLUSTER BY (n)"},
+      {"sql": "CREATE TABLE k11 (n INT) CLUSTER BY (n) COMMENT = 'a'"},
+      {"sql": "CREATE SEQUENCE k12 INCREMENT = 2 START = 5"},
+      {"sql": "CREATE WAREHOUSE k13 COMMENT = 'a' WAREHOUSE_SIZE = 'XSMALL'"},
+      {"sql": "CREATE TASK k14 WAREHOUSE = 'COMPUTE_WH' COMMENT = 'a' SCHEDULE = '1 MINUTE' AS SELECT 1"},
+      {"sql": "DROP WAREHOUSE IF EXISTS k13"}
+    ]},
+    {"name": "a-stage-url-may-follow-another-option", "steps": [
+      {"sql": "CREATE STAGE k15 COMMENT = 'a' URL = 's3://bucket/'"}
+    ]}
+  ]
+}

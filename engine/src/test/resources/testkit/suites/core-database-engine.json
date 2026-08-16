@@ -1,0 +1,74 @@
+{
+  "suite": "core-database-engine",
+  "description": "Core engine lifecycle (create/use/insert/select/drop, multiple databases), converted from DatabaseEngineTest.java. Visibility asserts use SHOW ... LIKE so counts stay deterministic on a shared engine; the two transaction-manager-state tests stay in Java (engine-internal API).",
+  "tags": ["core", "converted"],
+  "tests": [
+    {
+      "name": "create-database-is-listed",
+      "steps": [
+        {"sql": "CREATE DATABASE de_db1"},
+        {"sql": "SHOW DATABASES LIKE 'de_db1'", "expect": {"rowCount": 1}}
+      ]
+    },
+    {
+      "name": "create-schema-is-listed",
+      "steps": [
+        {"sql": "CREATE SCHEMA de_s1"},
+        {"sql": "SHOW SCHEMAS LIKE 'de_s1'", "expect": {"rowCount": 1}}
+      ]
+    },
+    {
+      "name": "create-table-is-listed",
+      "steps": [
+        {"sql": "CREATE TABLE users (id INTEGER PRIMARY KEY, username VARCHAR, age INTEGER)"},
+        {"sql": "SHOW TABLES LIKE 'users'", "expect": {"rowCount": 1}}
+      ]
+    },
+    {
+      "name": "insert-and-select",
+      "steps": [
+        {"sql": "CREATE TABLE users (id INTEGER, username VARCHAR, age INTEGER)"},
+        {"sql": "INSERT INTO users VALUES (1, 'alice', 25)"},
+        {"sql": "INSERT INTO users VALUES (2, 'bob', 30)"},
+        {"sql": "INSERT INTO users VALUES (3, 'charlie', 35)"},
+        {"sql": "SELECT * FROM users", "expect": {"rowCount": 3, "columns": ["ID", "USERNAME", "AGE"]}}
+      ]
+    },
+    {
+      "name": "create-view-is-listed",
+      "steps": [
+        {"sql": "CREATE TABLE users (id INTEGER, username VARCHAR)"},
+        {"sql": "CREATE VIEW active_users AS SELECT * FROM users"},
+        {"sql": "SHOW VIEWS LIKE 'active_users'", "expect": {"rowCount": 1}}
+      ]
+    },
+    {
+      "name": "drop-table-removes-listing",
+      "steps": [
+        {"sql": "CREATE TABLE users (id INTEGER, username VARCHAR)"},
+        {"sql": "SHOW TABLES LIKE 'users'", "expect": {"rowCount": 1}},
+        {"sql": "DROP TABLE users"},
+        {"sql": "SHOW TABLES LIKE 'users'", "expect": {"rowCount": 0}}
+      ]
+    },
+    {
+      "name": "multiple-databases-listed",
+      "steps": [
+        {"sql": "CREATE DATABASE de_m1"},
+        {"sql": "CREATE DATABASE de_m2"},
+        {"sql": "SHOW DATABASES LIKE 'de_m%'", "expect": {"rowCount": 2}},
+        {"sql": "USE DATABASE test_db"},
+        {"sql": "USE SCHEMA test_schema"},
+        {"sql": "DROP DATABASE IF EXISTS de_m1"},
+        {"sql": "DROP DATABASE IF EXISTS de_m2"}
+      ]
+    },
+    {
+      "name": "describe-table-lists-columns",
+      "steps": [
+        {"sql": "CREATE TABLE users (id INTEGER, name VARCHAR)"},
+        {"sql": "DESCRIBE TABLE users", "expect": {"rowCount": 2}}
+      ]
+    }
+  ]
+}

@@ -1,0 +1,95 @@
+{
+  "suite": "query-between-in",
+  "description": "BETWEEN / NOT BETWEEN / IN / NOT IN over literals, lists and subqueries, and their AND/OR combinations. Converted 1:1 from query/BetweenInTest.java (now retired); the shared products/categories fixture became per-test setup.",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "between-basic", "steps": [
+      {"sql": "CREATE TABLE products (id INT, name VARCHAR, price INT, category VARCHAR)"},
+      {"sql": "INSERT INTO products VALUES (1, 'Laptop', 1200, 'Electronics'), (2, 'Mouse', 25, 'Electronics'), (3, 'Desk', 300, 'Furniture'), (4, 'Chair', 150, 'Furniture'), (5, 'Monitor', 400, 'Electronics'), (6, 'Keyboard', 75, 'Electronics'), (7, 'Lamp', 50, 'Furniture')"},
+      {"sql": "SELECT name, price FROM products WHERE price BETWEEN 50 AND 300 ORDER BY price",
+       "expect": {"rows": [["Lamp", "50"], ["Keyboard", "75"], ["Chair", "150"], ["Desk", "300"]], "ordered": true}}
+    ]},
+    {"name": "between-inclusive", "steps": [
+      {"sql": "CREATE TABLE products (id INT, name VARCHAR, price INT, category VARCHAR)"},
+      {"sql": "INSERT INTO products VALUES (4, 'Chair', 150, 'Furniture')"},
+      {"sql": "SELECT name FROM products WHERE price BETWEEN 150 AND 150", "expect": {"rows": [["Chair"]]}}
+    ]},
+    {"name": "not-between", "steps": [
+      {"sql": "CREATE TABLE products (id INT, name VARCHAR, price INT, category VARCHAR)"},
+      {"sql": "INSERT INTO products VALUES (1, 'Laptop', 1200, 'Electronics'), (2, 'Mouse', 25, 'Electronics'), (3, 'Desk', 300, 'Furniture'), (4, 'Chair', 150, 'Furniture'), (5, 'Monitor', 400, 'Electronics'), (6, 'Keyboard', 75, 'Electronics'), (7, 'Lamp', 50, 'Furniture')"},
+      {"sql": "SELECT name, price FROM products WHERE price NOT BETWEEN 100 AND 500 ORDER BY price",
+       "expect": {"rows": [["Mouse", "25"], ["Lamp", "50"], ["Keyboard", "75"], ["Laptop", "1200"]], "ordered": true}}
+    ]},
+    {"name": "between-with-literals", "steps": [
+      {"sql": "CREATE TABLE products (id INT, name VARCHAR, price INT, category VARCHAR)"},
+      {"sql": "INSERT INTO products VALUES (1, 'Laptop', 1200, 'Electronics'), (2, 'Mouse', 25, 'Electronics'), (3, 'Desk', 300, 'Furniture'), (4, 'Chair', 150, 'Furniture'), (5, 'Monitor', 400, 'Electronics')"},
+      {"sql": "SELECT id, name FROM products WHERE id BETWEEN 2 AND 4 ORDER BY id",
+       "expect": {"rows": [["2", "Mouse"], ["3", "Desk"], ["4", "Chair"]], "ordered": true}}
+    ]},
+    {"name": "in-with-list", "steps": [
+      {"sql": "CREATE TABLE products (id INT, name VARCHAR, price INT, category VARCHAR)"},
+      {"sql": "INSERT INTO products VALUES (1, 'Laptop', 1200, 'Electronics'), (2, 'Mouse', 25, 'Electronics'), (3, 'Desk', 300, 'Furniture'), (4, 'Chair', 150, 'Furniture'), (5, 'Monitor', 400, 'Electronics'), (6, 'Keyboard', 75, 'Electronics'), (7, 'Lamp', 50, 'Furniture')"},
+      {"sql": "SELECT name, category FROM products WHERE category IN ('Electronics', 'Furniture') ORDER BY name", "expect": {"rowCount": 7}}
+    ]},
+    {"name": "in-with-numbers", "steps": [
+      {"sql": "CREATE TABLE products (id INT, name VARCHAR, price INT, category VARCHAR)"},
+      {"sql": "INSERT INTO products VALUES (2, 'Mouse', 25, 'Electronics'), (4, 'Chair', 150, 'Furniture'), (6, 'Keyboard', 75, 'Electronics')"},
+      {"sql": "SELECT name, price FROM products WHERE price IN (25, 75, 150) ORDER BY price",
+       "expect": {"rows": [["Mouse", "25"], ["Keyboard", "75"], ["Chair", "150"]], "ordered": true}}
+    ]},
+    {"name": "not-in", "steps": [
+      {"sql": "CREATE TABLE products (id INT, name VARCHAR, price INT, category VARCHAR)"},
+      {"sql": "INSERT INTO products VALUES (1, 'Laptop', 1200, 'Electronics'), (3, 'Desk', 300, 'Furniture'), (4, 'Chair', 150, 'Furniture'), (7, 'Lamp', 50, 'Furniture')"},
+      {"sql": "SELECT name, category FROM products WHERE category NOT IN ('Electronics') ORDER BY name",
+       "expect": {"rows": [["Chair", "Furniture"], ["Desk", "Furniture"], ["Lamp", "Furniture"]], "ordered": true}}
+    ]},
+    {"name": "in-with-subquery", "steps": [
+      {"sql": "CREATE TABLE products (id INT, name VARCHAR, price INT, category VARCHAR)"},
+      {"sql": "INSERT INTO products VALUES (1, 'Laptop', 1200, 'Electronics'), (2, 'Mouse', 25, 'Electronics'), (3, 'Desk', 300, 'Furniture'), (4, 'Chair', 150, 'Furniture'), (5, 'Monitor', 400, 'Electronics'), (6, 'Keyboard', 75, 'Electronics'), (7, 'Lamp', 50, 'Furniture')"},
+      {"sql": "CREATE TABLE categories (name VARCHAR)"},
+      {"sql": "INSERT INTO categories VALUES ('Electronics')"},
+      {"sql": "INSERT INTO categories VALUES ('Furniture')"},
+      {"sql": "SELECT name, category FROM products WHERE category IN (SELECT name FROM categories) ORDER BY name", "expect": {"rowCount": 7}}
+    ]},
+    {"name": "not-in-with-subquery", "steps": [
+      {"sql": "CREATE TABLE products (id INT, name VARCHAR, price INT, category VARCHAR)"},
+      {"sql": "INSERT INTO products VALUES (1, 'Laptop', 1200, 'Electronics'), (3, 'Desk', 300, 'Furniture'), (4, 'Chair', 150, 'Furniture'), (7, 'Lamp', 50, 'Furniture')"},
+      {"sql": "CREATE TABLE categories (name VARCHAR)"},
+      {"sql": "INSERT INTO categories VALUES ('Electronics')"},
+      {"sql": "INSERT INTO categories VALUES ('Furniture')"},
+      {"sql": "DELETE FROM categories WHERE name = 'Furniture'"},
+      {"sql": "SELECT name, category FROM products WHERE category NOT IN (SELECT name FROM categories) ORDER BY name",
+       "expect": {"rows": [["Chair", "Furniture"], ["Desk", "Furniture"], ["Lamp", "Furniture"]], "ordered": true}}
+    ]},
+    {"name": "in-with-single-value", "steps": [
+      {"sql": "CREATE TABLE products (id INT, name VARCHAR, price INT, category VARCHAR)"},
+      {"sql": "INSERT INTO products VALUES (1, 'Laptop', 1200, 'Electronics'), (2, 'Mouse', 25, 'Electronics'), (5, 'Monitor', 400, 'Electronics'), (6, 'Keyboard', 75, 'Electronics')"},
+      {"sql": "SELECT name FROM products WHERE category IN ('Electronics') ORDER BY name",
+       "expect": {"rows": [["Keyboard"], ["Laptop"], ["Monitor"], ["Mouse"]], "ordered": true}}
+    ]},
+    {"name": "not-in-empty-subquery-returns-all", "steps": [
+      {"sql": "CREATE TABLE products (id INT, name VARCHAR, price INT, category VARCHAR)"},
+      {"sql": "INSERT INTO products VALUES (1, 'Laptop', 1200, 'Electronics'), (2, 'Mouse', 25, 'Electronics'), (3, 'Desk', 300, 'Furniture'), (4, 'Chair', 150, 'Furniture'), (5, 'Monitor', 400, 'Electronics'), (6, 'Keyboard', 75, 'Electronics'), (7, 'Lamp', 50, 'Furniture')"},
+      {"sql": "CREATE TABLE categories (name VARCHAR)"},
+      {"sql": "SELECT name FROM products WHERE category NOT IN (SELECT name FROM categories) ORDER BY name", "expect": {"rowCount": 7}}
+    ]},
+    {"name": "between-and-in", "steps": [
+      {"sql": "CREATE TABLE products (id INT, name VARCHAR, price INT, category VARCHAR)"},
+      {"sql": "INSERT INTO products VALUES (1, 'Laptop', 1200, 'Electronics'), (2, 'Mouse', 25, 'Electronics'), (3, 'Desk', 300, 'Furniture'), (4, 'Chair', 150, 'Furniture'), (5, 'Monitor', 400, 'Electronics'), (6, 'Keyboard', 75, 'Electronics'), (7, 'Lamp', 50, 'Furniture')"},
+      {"sql": "SELECT name, price FROM products WHERE price BETWEEN 50 AND 400 AND category IN ('Electronics') ORDER BY price",
+       "expect": {"rows": [["Keyboard", "75"], ["Monitor", "400"]], "ordered": true}}
+    ]},
+    {"name": "not-between-and-not-in", "steps": [
+      {"sql": "CREATE TABLE products (id INT, name VARCHAR, price INT, category VARCHAR)"},
+      {"sql": "INSERT INTO products VALUES (1, 'Laptop', 1200, 'Electronics'), (2, 'Mouse', 25, 'Electronics'), (3, 'Desk', 300, 'Furniture'), (4, 'Chair', 150, 'Furniture'), (5, 'Monitor', 400, 'Electronics'), (6, 'Keyboard', 75, 'Electronics'), (7, 'Lamp', 50, 'Furniture')"},
+      {"sql": "SELECT name, price FROM products WHERE price NOT BETWEEN 100 AND 500 AND category NOT IN ('Furniture') ORDER BY price",
+       "expect": {"rows": [["Mouse", "25"], ["Keyboard", "75"], ["Laptop", "1200"]], "ordered": true}}
+    ]},
+    {"name": "between-or-in", "steps": [
+      {"sql": "CREATE TABLE products (id INT, name VARCHAR, price INT, category VARCHAR)"},
+      {"sql": "INSERT INTO products VALUES (1, 'Laptop', 1200, 'Electronics'), (2, 'Mouse', 25, 'Electronics'), (3, 'Desk', 300, 'Furniture'), (4, 'Chair', 150, 'Furniture'), (5, 'Monitor', 400, 'Electronics'), (6, 'Keyboard', 75, 'Electronics'), (7, 'Lamp', 50, 'Furniture')"},
+      {"sql": "SELECT name, price FROM products WHERE price BETWEEN 300 AND 500 OR category IN ('Furniture') ORDER BY price",
+       "expect": {"rows": [["Lamp", "50"], ["Chair", "150"], ["Desk", "300"], ["Monitor", "400"]], "ordered": true}}
+    ]}
+  ]
+}

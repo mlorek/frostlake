@@ -1,0 +1,101 @@
+{
+  "suite": "expr-compile-time-refusals",
+  "description": "A refusal that COMPILES is raised over a table with no rows: unknown functions (bare, in a view, in a CTAS), the full 32-pair temporal +/- operand matrix (only d-d, d+n, d-n, n+d, ts-ts, n+n, n-n are legal - NUMBER + DATE accepted while NUMBER - DATE refused), mixed binary concatenation, and all three timestamp flavours (all nine flavour pairs subtract legally and add illegally, the refusal naming the given flavour with its precision). Value-coercion failures (division by zero, unparseable dates, non-numeric strings in numeric functions) stay runtime and pass over no rows, as do specially-resolved names (windows, aggregates, higher-order lambdas, SYSTEM$) and catalog UDFs. Converted 1:1 from expressions/CompileTimeRefusalTest (now retired).",
+  "tags": ["expressions", "converted"],
+  "tests": [
+    {"name": "an-unknown-function-is-refused-over-an-empty-table", "steps": [
+      {"sql": "CREATE TABLE ct_empty (k NUMBER, s VARCHAR(10), b BINARY, d DATE, ts TIMESTAMP_NTZ, t TIME, n NUMBER)"},
+      {"sql": "SELECT no_such_fn(k) AS x FROM ct_empty", "expect": {"error": {"messageContains": "Unknown function NO_SUCH_FN."}}}
+    ]},
+    {"name": "a-view-or-ctas-over-an-unknown-function-is-refused", "steps": [
+      {"sql": "CREATE TABLE ct_empty (k NUMBER, s VARCHAR(10), b BINARY, d DATE, ts TIMESTAMP_NTZ, t TIME, n NUMBER)"},
+      {"sql": "CREATE VIEW ct_v AS SELECT no_such_fn(k) AS x FROM ct_empty", "expect": {"error": {"messageContains": "Unknown function NO_SUCH_FN."}}},
+      {"sql": "CREATE TABLE ct_c AS SELECT no_such_fn(k) AS x FROM ct_empty", "expect": {"error": {"messageContains": "Unknown function NO_SUCH_FN."}}}
+    ]},
+    {"name": "every-refused-temporal-pair-is-refused-over-an-empty-table", "steps": [
+      {"sql": "CREATE TABLE ct_empty (k NUMBER, s VARCHAR(10), b BINARY, d DATE, ts TIMESTAMP_NTZ, t TIME, n NUMBER)"},
+      {"sql": "SELECT d + d AS x FROM ct_empty", "expect": {"error": {"messageContains": "Invalid argument types for function '+'"}}},
+      {"sql": "SELECT d - d AS x FROM ct_empty", "expect": {"rowCount": 0}},
+      {"sql": "SELECT d + ts AS x FROM ct_empty", "expect": {"error": {"messageContains": "Invalid argument types for function '+'"}}},
+      {"sql": "SELECT d - ts AS x FROM ct_empty", "expect": {"error": {"messageContains": "Invalid argument types for function '-'"}}},
+      {"sql": "SELECT d + t AS x FROM ct_empty", "expect": {"error": {"messageContains": "Invalid argument types for function '+'"}}},
+      {"sql": "SELECT d - t AS x FROM ct_empty", "expect": {"error": {"messageContains": "Invalid argument types for function '-'"}}},
+      {"sql": "SELECT d + n AS x FROM ct_empty", "expect": {"rowCount": 0}},
+      {"sql": "SELECT d - n AS x FROM ct_empty", "expect": {"rowCount": 0}},
+      {"sql": "SELECT ts + d AS x FROM ct_empty", "expect": {"error": {"messageContains": "Invalid argument types for function '+'"}}},
+      {"sql": "SELECT ts - d AS x FROM ct_empty", "expect": {"error": {"messageContains": "Invalid argument types for function '-'"}}},
+      {"sql": "SELECT ts + ts AS x FROM ct_empty", "expect": {"error": {"messageContains": "Invalid argument types for function '+'"}}},
+      {"sql": "SELECT ts - ts AS x FROM ct_empty", "expect": {"rowCount": 0}},
+      {"sql": "SELECT ts + t AS x FROM ct_empty", "expect": {"error": {"messageContains": "Invalid argument types for function '+'"}}},
+      {"sql": "SELECT ts - t AS x FROM ct_empty", "expect": {"error": {"messageContains": "Invalid argument types for function '-'"}}},
+      {"sql": "SELECT ts + n AS x FROM ct_empty", "expect": {"error": {"messageContains": "Invalid argument types for function '+'"}}},
+      {"sql": "SELECT ts - n AS x FROM ct_empty", "expect": {"error": {"messageContains": "Invalid argument types for function '-'"}}},
+      {"sql": "SELECT t + d AS x FROM ct_empty", "expect": {"error": {"messageContains": "Invalid argument types for function '+'"}}},
+      {"sql": "SELECT t - d AS x FROM ct_empty", "expect": {"error": {"messageContains": "Invalid argument types for function '-'"}}},
+      {"sql": "SELECT t + ts AS x FROM ct_empty", "expect": {"error": {"messageContains": "Invalid argument types for function '+'"}}},
+      {"sql": "SELECT t - ts AS x FROM ct_empty", "expect": {"error": {"messageContains": "Invalid argument types for function '-'"}}},
+      {"sql": "SELECT t + t AS x FROM ct_empty", "expect": {"error": {"messageContains": "Invalid argument types for function '+'"}}},
+      {"sql": "SELECT t - t AS x FROM ct_empty", "expect": {"error": {"messageContains": "Invalid argument types for function '-'"}}},
+      {"sql": "SELECT t + n AS x FROM ct_empty", "expect": {"error": {"messageContains": "Invalid argument types for function '+'"}}},
+      {"sql": "SELECT t - n AS x FROM ct_empty", "expect": {"error": {"messageContains": "Invalid argument types for function '-'"}}},
+      {"sql": "SELECT n + d AS x FROM ct_empty", "expect": {"rowCount": 0}},
+      {"sql": "SELECT n - d AS x FROM ct_empty", "expect": {"error": {"messageContains": "Invalid argument types for function '-'"}}},
+      {"sql": "SELECT n + ts AS x FROM ct_empty", "expect": {"error": {"messageContains": "Invalid argument types for function '+'"}}},
+      {"sql": "SELECT n - ts AS x FROM ct_empty", "expect": {"error": {"messageContains": "Invalid argument types for function '-'"}}},
+      {"sql": "SELECT n + t AS x FROM ct_empty", "expect": {"error": {"messageContains": "Invalid argument types for function '+'"}}},
+      {"sql": "SELECT n - t AS x FROM ct_empty", "expect": {"error": {"messageContains": "Invalid argument types for function '-'"}}},
+      {"sql": "SELECT n + n AS x FROM ct_empty", "expect": {"rowCount": 0}},
+      {"sql": "SELECT n - n AS x FROM ct_empty", "expect": {"rowCount": 0}}
+    ]},
+    {"name": "binary-concatenation-is-refused-over-an-empty-table", "steps": [
+      {"sql": "CREATE TABLE ct_empty (k NUMBER, s VARCHAR(10), b BINARY, d DATE, ts TIMESTAMP_NTZ, t TIME, n NUMBER)"},
+      {"sql": "SELECT b || s AS x FROM ct_empty", "expect": {"error": {"messageContains": "Invalid argument types for function '||'"}}}
+    ]},
+    {"name": "coercion-failures-stay-runtime-and-are-accepted-over-an-empty-table", "steps": [
+      {"sql": "CREATE TABLE ct_empty (k NUMBER, s VARCHAR(10), b BINARY, d DATE, ts TIMESTAMP_NTZ, t TIME, n NUMBER)"},
+      {"sql": "SELECT k / 0 AS x FROM ct_empty", "expect": {"rowCount": 0}},
+      {"sql": "SELECT CAST(s AS DATE) AS x FROM ct_empty", "expect": {"rowCount": 0}},
+      {"sql": "SELECT ABS(s) AS x FROM ct_empty", "expect": {"rowCount": 0}}
+    ]},
+    {"name": "specially-resolved-names-are-not-refused", "steps": [
+      {"sql": "CREATE TABLE ct_empty (k NUMBER, s VARCHAR(10), b BINARY, d DATE, ts TIMESTAMP_NTZ, t TIME, n NUMBER)"},
+      {"sql": "SELECT ROW_NUMBER() OVER (ORDER BY k) AS x FROM ct_empty", "expect": {"rowCount": 0}},
+      {"sql": "SELECT COUNT(*) AS x FROM ct_empty", "expect": {"value": "0"}},
+      {"sql": "SELECT FILTER(ARRAY_CONSTRUCT(1,2,3), i -> i > 1) AS x", "expect": {"rowCount": 1}},
+      {"sql": "SELECT TRANSFORM(ARRAY_CONSTRUCT(1,2,3), i -> i + 1) AS x", "expect": {"rowCount": 1}},
+      {"sql": "SELECT REDUCE(ARRAY_CONSTRUCT(1,2,3), 0, (acc, i) -> acc + i) AS x", "expect": {"value": "6"}},
+      {"sql": "SELECT SYSTEM$TYPEOF(1) AS x"}
+    ]},
+    {"name": "a-catalog-udf-resolves-by-name", "steps": [
+      {"sql": "CREATE TABLE ct_empty (k NUMBER, s VARCHAR(10), b BINARY, d DATE, ts TIMESTAMP_NTZ, t TIME, n NUMBER)"},
+      {"sql": "CREATE FUNCTION ct_udf(a NUMBER) RETURNS NUMBER AS 'a + 1'"},
+      {"sql": "SELECT ct_udf(k) AS x FROM ct_empty", "expect": {"rowCount": 0}},
+      {"sql": "SELECT ct_udf_missing(k) AS x FROM ct_empty", "expect": {"error": {"messageContains": "Unknown function CT_UDF_MISSING."}}}
+    ]},
+    {"name": "every-timestamp-flavour-follows-the-same-rule", "steps": [
+      {"sql": "CREATE TABLE ct_flavours (ntz TIMESTAMP_NTZ, ltz TIMESTAMP_LTZ, tz TIMESTAMP_TZ)"},
+      {"sql": "SELECT ntz - ntz AS x FROM ct_flavours", "expect": {"rowCount": 0}},
+      {"sql": "SELECT ntz + ntz AS x FROM ct_flavours", "expect": {"error": {"messageContains": "Invalid argument types for function '+': (TIMESTAMP_NTZ(9), TIMESTAMP_NTZ(9))"}}},
+      {"sql": "SELECT ntz - ltz AS x FROM ct_flavours", "expect": {"rowCount": 0}},
+      {"sql": "SELECT ntz + ltz AS x FROM ct_flavours", "expect": {"error": {"messageContains": "Invalid argument types for function '+': (TIMESTAMP_NTZ(9), TIMESTAMP_LTZ(9))"}}},
+      {"sql": "SELECT ntz - tz AS x FROM ct_flavours", "expect": {"rowCount": 0}},
+      {"sql": "SELECT ntz + tz AS x FROM ct_flavours", "expect": {"error": {"messageContains": "Invalid argument types for function '+': (TIMESTAMP_NTZ(9), TIMESTAMP_TZ(9))"}}},
+      {"sql": "SELECT ltz - ntz AS x FROM ct_flavours", "expect": {"rowCount": 0}},
+      {"sql": "SELECT ltz + ntz AS x FROM ct_flavours", "expect": {"error": {"messageContains": "Invalid argument types for function '+': (TIMESTAMP_LTZ(9), TIMESTAMP_NTZ(9))"}}},
+      {"sql": "SELECT ltz - ltz AS x FROM ct_flavours", "expect": {"rowCount": 0}},
+      {"sql": "SELECT ltz + ltz AS x FROM ct_flavours", "expect": {"error": {"messageContains": "Invalid argument types for function '+': (TIMESTAMP_LTZ(9), TIMESTAMP_LTZ(9))"}}},
+      {"sql": "SELECT ltz - tz AS x FROM ct_flavours", "expect": {"rowCount": 0}},
+      {"sql": "SELECT ltz + tz AS x FROM ct_flavours", "expect": {"error": {"messageContains": "Invalid argument types for function '+': (TIMESTAMP_LTZ(9), TIMESTAMP_TZ(9))"}}},
+      {"sql": "SELECT tz - ntz AS x FROM ct_flavours", "expect": {"rowCount": 0}},
+      {"sql": "SELECT tz + ntz AS x FROM ct_flavours", "expect": {"error": {"messageContains": "Invalid argument types for function '+': (TIMESTAMP_TZ(9), TIMESTAMP_NTZ(9))"}}},
+      {"sql": "SELECT tz - ltz AS x FROM ct_flavours", "expect": {"rowCount": 0}},
+      {"sql": "SELECT tz + ltz AS x FROM ct_flavours", "expect": {"error": {"messageContains": "Invalid argument types for function '+': (TIMESTAMP_TZ(9), TIMESTAMP_LTZ(9))"}}},
+      {"sql": "SELECT tz - tz AS x FROM ct_flavours", "expect": {"rowCount": 0}},
+      {"sql": "SELECT tz + tz AS x FROM ct_flavours", "expect": {"error": {"messageContains": "Invalid argument types for function '+': (TIMESTAMP_TZ(9), TIMESTAMP_TZ(9))"}}},
+      {"sql": "SELECT ltz + 1 AS x FROM ct_flavours", "expect": {"error": {"messageContains": "Invalid argument types for function '+': (TIMESTAMP_LTZ(9), NUMBER(1,0))"}}},
+      {"sql": "SELECT ltz - DATE '2026-01-01' AS x FROM ct_flavours", "expect": {"error": {"messageContains": "Invalid argument types for function '-': (TIMESTAMP_LTZ(9), DATE)"}}},
+      {"sql": "SELECT tz + 1 AS x FROM ct_flavours", "expect": {"error": {"messageContains": "Invalid argument types for function '+': (TIMESTAMP_TZ(9), NUMBER(1,0))"}}},
+      {"sql": "SELECT tz - DATE '2026-01-01' AS x FROM ct_flavours", "expect": {"error": {"messageContains": "Invalid argument types for function '-': (TIMESTAMP_TZ(9), DATE)"}}}
+    ]}
+  ]
+}

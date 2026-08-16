@@ -1,0 +1,48 @@
+{
+  "suite": "query-sample-clause",
+  "description": "SAMPLE / TABLESAMPLE row sampling, asserted through the DETERMINISTIC cases only: 100 percent keeps all rows, 0 percent keeps none, a fixed n ROWS keeps exactly n and is capped at the table size, TABLESAMPLE is an accepted synonym of SAMPLE, and the BERNOULLI / ROW / SYSTEM methods all parse and run. A REPEATABLE seed makes FRACTIONAL sampling reproducible, and SEED is an accepted synonym for REPEATABLE. Converted 1:1 from query/SampleClauseTest (now retired); the Java compared two Java HashSets of ids to show the seed reproduces its rows, which becomes a two-way EXCEPT between the two identically-seeded queries - the same claim, made in SQL.",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "sample-one-hundred-percent-keeps-all-rows", "steps": [
+      {"sql": "CREATE TABLE s (id INTEGER)"},
+      {"sql": "INSERT INTO s VALUES (1),(2),(3),(4),(5),(6),(7),(8),(9),(10)"},
+      {"sql": "SELECT COUNT(*) FROM s SAMPLE (100)", "expect": {"value": 10}}
+    ]},
+    {"name": "sample-zero-percent-keeps-no-rows", "steps": [
+      {"sql": "CREATE TABLE s (id INTEGER)"},
+      {"sql": "INSERT INTO s VALUES (1),(2),(3),(4),(5),(6),(7),(8),(9),(10)"},
+      {"sql": "SELECT COUNT(*) FROM s SAMPLE (0)", "expect": {"value": 0}}
+    ]},
+    {"name": "sample-a-fixed-row-count-keeps-exactly-that-many", "steps": [
+      {"sql": "CREATE TABLE s (id INTEGER)"},
+      {"sql": "INSERT INTO s VALUES (1),(2),(3),(4),(5),(6),(7),(8),(9),(10)"},
+      {"sql": "SELECT COUNT(*) FROM s SAMPLE (3 ROWS)", "expect": {"value": 3}}
+    ]},
+    {"name": "a-fixed-row-count-is-capped-at-the-table-size", "steps": [
+      {"sql": "CREATE TABLE s (id INTEGER)"},
+      {"sql": "INSERT INTO s VALUES (1),(2),(3),(4),(5),(6),(7),(8),(9),(10)"},
+      {"sql": "SELECT COUNT(*) FROM s SAMPLE (100 ROWS)", "expect": {"value": 10}}
+    ]},
+    {"name": "the-tablesample-keyword-is-accepted", "steps": [
+      {"sql": "CREATE TABLE s (id INTEGER)"},
+      {"sql": "INSERT INTO s VALUES (1),(2),(3),(4),(5),(6),(7),(8),(9),(10)"},
+      {"sql": "SELECT COUNT(*) FROM s TABLESAMPLE (4 ROWS)", "expect": {"value": 4}}
+    ]},
+    {"name": "the-sample-methods-parse-and-run", "steps": [
+      {"sql": "CREATE TABLE s (id INTEGER)"},
+      {"sql": "INSERT INTO s VALUES (1),(2),(3),(4),(5),(6),(7),(8),(9),(10)"},
+      {"sql": "SELECT COUNT(*) FROM s SAMPLE BERNOULLI (100)", "expect": {"value": 10}},
+      {"sql": "SELECT COUNT(*) FROM s SAMPLE ROW (100)", "expect": {"value": 10}},
+      {"sql": "SELECT COUNT(*) FROM s SAMPLE SYSTEM (100)", "expect": {"value": 10}}
+    ]},
+    {"name": "a-repeatable-seed-is-deterministic", "steps": [
+      {"sql": "CREATE TABLE s (id INTEGER)"},
+      {"sql": "INSERT INTO s VALUES (1),(2),(3),(4),(5),(6),(7),(8),(9),(10)"},
+      {"sql": "SELECT COUNT(*) FROM ((SELECT id FROM s SAMPLE (50) REPEATABLE (42)) EXCEPT (SELECT id FROM s SAMPLE (50) REPEATABLE (42)))",
+       "expect": {"value": 0}},
+      {"sql": "SELECT COUNT(*) FROM ((SELECT id FROM s SAMPLE (50) REPEATABLE (42)) EXCEPT (SELECT id FROM s SAMPLE (50) REPEATABLE (42))) x",
+       "expect": {"value": 0}},
+      {"sql": "SELECT COUNT(*) <= 10 FROM s SAMPLE (50) SEED (42)", "expect": {"value": true}}
+    ]}
+  ]
+}

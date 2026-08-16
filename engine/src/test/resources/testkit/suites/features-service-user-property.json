@@ -1,0 +1,79 @@
+{
+  "suite": "features-service-user-property",
+  "description": "Which properties each user TYPE may carry, measured against a real account for all three types: FIRST_NAME / MIDDLE_NAME / LAST_NAME are refused on both service types; PASSWORD and MUST_CHANGE_PASSWORD are refused on SERVICE but KEPT by LEGACY_SERVICE (that is the point of the type); EMAIL / DISPLAY_NAME / DEFAULT_WAREHOUSE / COMMENT are carried by every type; and a PERSON carries everything. The refusal is the same sentence at CREATE and at ALTER, naming the type it applies to. Converted 1:1 from features/ServiceUserPropertyTest (now retired). Users are account-level, so each test drops the users it creates.",
+  "tags": ["features", "converted"],
+  "tests": [
+    {"name": "a-service-user-may-not-carry-the-names", "steps": [
+      {"sql": "CREATE USER svc TYPE = SERVICE"},
+      {"sql": "ALTER USER svc SET FIRST_NAME = 'F'",
+       "expect": {"error": {"messageContains": "SQL execution error: Cannot set FIRST_NAME on users with TYPE=SERVICE."}}},
+      {"sql": "ALTER USER svc SET MIDDLE_NAME = 'M'",
+       "expect": {"error": {"messageContains": "SQL execution error: Cannot set MIDDLE_NAME on users with TYPE=SERVICE."}}},
+      {"sql": "ALTER USER svc SET LAST_NAME = 'L'",
+       "expect": {"error": {"messageContains": "SQL execution error: Cannot set LAST_NAME on users with TYPE=SERVICE."}}},
+      {"sql": "DROP USER IF EXISTS svc"}
+    ]},
+    {"name": "a-legacy-service-user-may-not-carry-the-names-either", "steps": [
+      {"sql": "CREATE USER legacy TYPE = LEGACY_SERVICE"},
+      {"sql": "ALTER USER legacy SET FIRST_NAME = 'F'",
+       "expect": {"error": {"messageContains": "SQL execution error: Cannot set FIRST_NAME on users with TYPE=LEGACY_SERVICE."}}},
+      {"sql": "ALTER USER legacy SET MIDDLE_NAME = 'M'",
+       "expect": {"error": {"messageContains": "SQL execution error: Cannot set MIDDLE_NAME on users with TYPE=LEGACY_SERVICE."}}},
+      {"sql": "ALTER USER legacy SET LAST_NAME = 'L'",
+       "expect": {"error": {"messageContains": "SQL execution error: Cannot set LAST_NAME on users with TYPE=LEGACY_SERVICE."}}},
+      {"sql": "DROP USER IF EXISTS legacy"}
+    ]},
+    {"name": "a-service-user-may-not-carry-credentials", "steps": [
+      {"sql": "CREATE USER svc TYPE = SERVICE"},
+      {"sql": "ALTER USER svc SET PASSWORD = 'Abcd1234!xyz'",
+       "expect": {"error": {"messageContains": "SQL execution error: Cannot set PASSWORD on users with TYPE=SERVICE."}}},
+      {"sql": "ALTER USER svc SET MUST_CHANGE_PASSWORD = TRUE",
+       "expect": {"error": {"messageContains": "SQL execution error: Cannot set MUST_CHANGE_PASSWORD on users with TYPE=SERVICE."}}},
+      {"sql": "DROP USER IF EXISTS svc"}
+    ]},
+    {"name": "a-legacy-service-user-may-carry-credentials", "steps": [
+      {"sql": "CREATE USER legacy TYPE = LEGACY_SERVICE"},
+      {"sql": "ALTER USER legacy SET PASSWORD = 'Abcd1234!xyz'"},
+      {"sql": "ALTER USER legacy SET MUST_CHANGE_PASSWORD = TRUE"},
+      {"sql": "DROP USER IF EXISTS legacy"}
+    ]},
+    {"name": "the-shared-properties-are-carried-by-every-type", "steps": [
+      {"sql": "CREATE USER shared_PERSON TYPE = PERSON"},
+      {"sql": "ALTER USER shared_PERSON SET EMAIL = 'e@x.com'"},
+      {"sql": "ALTER USER shared_PERSON SET DISPLAY_NAME = 'D'"},
+      {"sql": "ALTER USER shared_PERSON SET COMMENT = 'c'"},
+      {"sql": "CREATE USER shared_SERVICE TYPE = SERVICE"},
+      {"sql": "ALTER USER shared_SERVICE SET EMAIL = 'e@x.com'"},
+      {"sql": "ALTER USER shared_SERVICE SET DISPLAY_NAME = 'D'"},
+      {"sql": "ALTER USER shared_SERVICE SET COMMENT = 'c'"},
+      {"sql": "CREATE USER shared_LEGACY_SERVICE TYPE = LEGACY_SERVICE"},
+      {"sql": "ALTER USER shared_LEGACY_SERVICE SET EMAIL = 'e@x.com'"},
+      {"sql": "ALTER USER shared_LEGACY_SERVICE SET DISPLAY_NAME = 'D'"},
+      {"sql": "ALTER USER shared_LEGACY_SERVICE SET COMMENT = 'c'"},
+      {"sql": "DROP USER IF EXISTS shared_PERSON"},
+      {"sql": "DROP USER IF EXISTS shared_SERVICE"},
+      {"sql": "DROP USER IF EXISTS shared_LEGACY_SERVICE"}
+    ]},
+    {"name": "a-person-carries-everything", "steps": [
+      {"sql": "CREATE USER person TYPE = PERSON"},
+      {"sql": "ALTER USER person SET FIRST_NAME = 'F' MIDDLE_NAME = 'M' LAST_NAME = 'L'"},
+      {"sql": "ALTER USER person SET PASSWORD = 'Abcd1234!xyz'"},
+      {"sql": "ALTER USER person SET MUST_CHANGE_PASSWORD = TRUE"},
+      {"sql": "DROP USER IF EXISTS person"}
+    ]},
+    {"name": "create-refuses-the-same-combinations", "steps": [
+      {"sql": "CREATE USER c1 TYPE = LEGACY_SERVICE FIRST_NAME = 'F'",
+       "expect": {"error": {"messageContains": "SQL execution error: Cannot set FIRST_NAME on users with TYPE=LEGACY_SERVICE."}}},
+      {"sql": "CREATE USER c2 TYPE = SERVICE FIRST_NAME = 'F'",
+       "expect": {"error": {"messageContains": "SQL execution error: Cannot set FIRST_NAME on users with TYPE=SERVICE."}}},
+      {"sql": "CREATE USER c3 TYPE = SERVICE PASSWORD = 'Abcd1234!xyz'",
+       "expect": {"error": {"messageContains": "SQL execution error: Cannot set PASSWORD on users with TYPE=SERVICE."}}}
+    ]},
+    {"name": "create-accepts-what-the-type-may-carry", "steps": [
+      {"sql": "CREATE USER c4 TYPE = LEGACY_SERVICE PASSWORD = 'Abcd1234!xyz' MUST_CHANGE_PASSWORD = TRUE EMAIL = 'e@x.com'"},
+      {"sql": "CREATE USER c5 TYPE = SERVICE EMAIL = 'e@x.com' COMMENT = 'c'"},
+      {"sql": "DROP USER IF EXISTS c4"},
+      {"sql": "DROP USER IF EXISTS c5"}
+    ]}
+  ]
+}

@@ -64,7 +64,7 @@ public class JavaScriptUDFPracticalTest {
             LANGUAGE JAVASCRIPT
             AS $$
                 var pattern = /^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/;
-                return pattern.test(email) ? 'VALID' : 'INVALID';
+                return pattern.test(EMAIL) ? 'VALID' : 'INVALID';
             $$
             """);
 
@@ -88,12 +88,12 @@ public class JavaScriptUDFPracticalTest {
             RETURNS VARCHAR
             LANGUAGE JAVASCRIPT
             AS $$
-                var digits = phone.replace(/\\D/g, '');
+                var digits = PHONE.replace(/\\D/g, '');
                 if (digits.length === 10) {
                     return '(' + digits.substr(0,3) + ') ' +
                            digits.substr(3,3) + '-' + digits.substr(6);
                 }
-                return phone;
+                return PHONE;
             $$
             """);
 
@@ -116,8 +116,8 @@ public class JavaScriptUDFPracticalTest {
             LANGUAGE JAVASCRIPT
             AS $$
                 try {
-                    var obj = JSON.parse(doc);
-                    return obj[field] ? String(obj[field]) : null;
+                    var obj = JSON.parse(DOC);
+                    return obj[FIELD] ? String(obj[FIELD]) : null;
                 } catch (e) {
                     return null;
                 }
@@ -145,7 +145,7 @@ public class JavaScriptUDFPracticalTest {
             RETURNS VARCHAR
             LANGUAGE JAVASCRIPT
             AS $$
-                return text.toLowerCase()
+                return TEXT.toLowerCase()
                     .replace(/[^a-z0-9]+/g, '-')
                     .replace(/^-+|-+$/g, '');
             $$
@@ -169,7 +169,7 @@ public class JavaScriptUDFPracticalTest {
             RETURNS VARCHAR
             LANGUAGE JAVASCRIPT
             AS $$
-                var len = pw.length;
+                var len = PW.length;
                 if (len >= 12) return 'STRONG';
                 if (len >= 8) return 'MEDIUM';
                 return 'WEAK';
@@ -192,12 +192,12 @@ public class JavaScriptUDFPracticalTest {
         logger.info("Testing date difference calculation JavaScript UDF");
 
         engine.execute("""
-            CREATE FUNCTION days_until_date(target_year INTEGER, target_month INTEGER, target_day INTEGER)
-            RETURNS INTEGER
+            CREATE FUNCTION days_until_date(target_year FLOAT, target_month FLOAT, target_day FLOAT)
+            RETURNS FLOAT
             LANGUAGE JAVASCRIPT
             AS $$
                 var now = new Date();
-                var target = new Date(target_year, target_month - 1, target_day);
+                var target = new Date(TARGET_YEAR, TARGET_MONTH - 1, TARGET_DAY);
                 var diff = target - now;
                 return Math.ceil(diff / (1000 * 60 * 60 * 24));
             $$
@@ -223,7 +223,7 @@ public class JavaScriptUDFPracticalTest {
             RETURNS VARCHAR
             LANGUAGE JAVASCRIPT
             AS $$
-                return '$' + amount.toFixed(2).replace(/\\d(?=(\\d{3})+\\.)/g, '$&,');
+                return '$' + AMOUNT.toFixed(2).replace(/\\d(?=(\\d{3})+\\.)/g, '$&,');
             $$
             """);
 
@@ -244,7 +244,7 @@ public class JavaScriptUDFPracticalTest {
             CREATE FUNCTION get_initials(full_name VARCHAR)
             RETURNS VARCHAR
             LANGUAGE JAVASCRIPT
-            AS 'return full_name.split(" ").map(function(w) { return w.charAt(0).toUpperCase(); }).join("");'
+            AS 'return FULL_NAME.split(" ").map(function(w) { return w.charAt(0).toUpperCase(); }).join("");'
             """);
 
         final Schema schema = engine.getCatalog().getDatabase("TEST_DB").getSchema("PUBLIC");
@@ -266,8 +266,8 @@ public class JavaScriptUDFPracticalTest {
             LANGUAGE JAVASCRIPT
             AS $$
                 var hex = '';
-                for (var i = 0; i < text.length; i++) {
-                    var charCode = text.charCodeAt(i);
+                for (var i = 0; i < TEXT.length; i++) {
+                    var charCode = TEXT.charCodeAt(i);
                     hex += charCode.toString(16).padStart(2, '0');
                 }
                 return hex.toUpperCase();
@@ -288,20 +288,20 @@ public class JavaScriptUDFPracticalTest {
         logger.info("Testing complex business logic JavaScript UDF");
 
         engine.execute("""
-            CREATE FUNCTION calculate_shipping_cost(weight FLOAT, distance INTEGER, is_express INTEGER)
+            CREATE FUNCTION calculate_shipping_cost(weight FLOAT, distance FLOAT, is_express FLOAT)
             RETURNS FLOAT
             LANGUAGE JAVASCRIPT
             AS $$
                 var base_cost = 5.0;
-                var weight_cost = weight * 0.5;
-                var distance_cost = distance * 0.1;
+                var weight_cost = WEIGHT * 0.5;
+                var distance_cost = DISTANCE * 0.1;
                 var total = base_cost + weight_cost + distance_cost;
 
-                if (is_express === 1) {
+                if (IS_EXPRESS === 1) {
                     total = total * 1.5;
                 }
 
-                if (weight > 50) {
+                if (WEIGHT > 50) {
                     total = total * 0.9; // 10% discount for heavy items
                 }
 

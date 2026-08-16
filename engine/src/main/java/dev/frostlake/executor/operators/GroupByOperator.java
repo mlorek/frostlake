@@ -17,8 +17,9 @@
 package dev.frostlake.executor.operators;
 
 import dev.frostlake.executor.ExpressionEvaluator;
-import dev.frostlake.executor.InvalidQualifierException;
 import dev.frostlake.executor.ValueComparisons;
+import dev.frostlake.executor.expressions.CollatedKey;
+import dev.frostlake.executor.expressions.CollationSpec;
 import dev.frostlake.executor.expressions.Expression;
 import dev.frostlake.executor.expressions.SortKeyRole;
 import dev.frostlake.storage.Row;
@@ -56,6 +57,9 @@ public class GroupByOperator implements Operator {
     // is the map SHARED with the aggregate evaluator's lateral context. See captureLateralAliases.
     private List<String> lateralAliasNames;
     private Map<String, Object> lateralAliasSink;
+    // The collation each group key compares under, parallel to groupByExpressions (null entries where a
+    // key has none). See collateKeys.
+    private List<CollationSpec> keyCollations;
 
     /**
      * Create an explicit GROUP BY operator.
@@ -104,6 +108,17 @@ public class GroupByOperator implements Operator {
                                            final AggregateEvaluator aggregateEvaluator) {
         return new GroupByOperator(new ArrayList<>(), selectExpressions, columnEvaluator,
             aggregateEvaluator, true);
+    }
+
+    /**
+     * The collation each group key compares under. Keys that are equal under their collation fall into
+     * ONE group, and the group reports the smallest of its values by raw text — two rules a binary
+     * grouping cannot express.
+     *
+     * @param collations one entry per group-by expression, null where the key carries no collation
+     */
+    public void collateKeys(final List<CollationSpec> collations) {
+        this.keyCollations = collations;
     }
 
     /**
@@ -177,10 +192,27 @@ public class GroupByOperator implements Operator {
         this.lateralAliasSink = sink;
     }
 
+    /**
+     * Aliases published as NULL at the start of every group — a super-group's dimensions that this
+     * grouping set aggregates away. Their items print NULL on the subtotal row, so an item derived
+     * from them ({@code LOWER(c)}, {@code COALESCE(c, 'x')}) must read NULL too, not the
+     * representative row's value: publishing the NULL is what makes {@code COALESCE(c, 'x')} answer
+     * 'x' there. Leaving the name unresolved instead made the derived item FAIL, and the failure was
+     * silently turned into NULL.
+     */
+    private List<String> nullAliasNames = new ArrayList<>();
+
+    public void presetNullAliases(final List<String> aliasNames) {
+        this.nullAliasNames = aliasNames;
+    }
+
     /** Reset the shared lateral-alias map at the start of a group so no values leak in from the previous one. */
     private void beginGroupAliases() {
         if (lateralAliasSink != null) {
             lateralAliasSink.clear();
+            for (final String alias : nullAliasNames) {
+                lateralAliasSink.put(alias.toUpperCase(), null);
+            }
         }
     }
 
@@ -311,7 +343,13 @@ public class GroupByOperator implements Operator {
 
             beginGroupAliases();
             for (int i = 0; i < selectExpressions.size(); i++) {
-                final Object value = evaluateAggregate(i, groupRows);
+                Object value = evaluateAggregate(i, groupRows);
+                // A collated key's group holds values that differ in text, so the one the group REPORTS
+                // is settled by the collation's own rule rather than by whichever row came first.
+                final int keyIndex = collatedKeyIndexOf(i);
+                if (keyIndex >= 0) {
+                    value = reportedKeyValue(groupRows, parsedGroupBy.get(keyIndex));
+                }
                 resultValues.add(value);
                 publishGroupAlias(i, value);
             }
@@ -344,9 +382,6 @@ public class GroupByOperator implements Operator {
         return result;
     }
 
-    // Sentinel for a group-by expression that failed to evaluate, so such rows still group together
-    // (the old String key used the literal "ERROR"); a distinct singleton can't collide with real data.
-    private static final Object GROUP_KEY_ERROR = new Object();
 
     /**
      * Build a composite group key from the group-by expression values. A {@code List<Object>} compares
@@ -362,19 +397,45 @@ public class GroupByOperator implements Operator {
         final List<Object> key = new ArrayList<>(parsedGroupBy.size());
 
         for (int i = 0; i < parsedGroupBy.size(); i++) {
-            try {
-                key.add(ValueComparisons.canonicalGroupKeyValue(columnEvaluator.evaluate(parsedGroupBy.get(i), row)));
-            } catch (final InvalidQualifierException invalidQualifier) {
-                // Definitive — live rejects a GROUP BY key whose qualifier names no FROM key
-                // ("invalid identifier 'R.T'"); a silent error-key would group wrongly instead.
-                throw invalidQualifier;
-            } catch (final Exception e) {
-                logger.warn("Failed to evaluate GROUP BY expression '{}': {}", groupByExpressions.get(i), e.getMessage());
-                key.add(GROUP_KEY_ERROR);
-            }
+            // A key that cannot be evaluated fails the query, as it does on the account — it used to
+            // collect every such row under one error key and answer.
+            key.add(CollatedKey.of(
+                ValueComparisons.canonicalGroupKeyValue(columnEvaluator.evaluate(parsedGroupBy.get(i), row)),
+                keyCollation(i)));
         }
 
         return key;
+    }
+
+    /** The collation the group key at {@code index} compares under, or null when it carries none. */
+    private CollationSpec keyCollation(final int index) {
+        if (keyCollations == null || index >= keyCollations.size()) {
+            return null;
+        }
+        return keyCollations.get(index);
+    }
+
+    /**
+     * The group-by index a select item repeats, when that key carries a collation — otherwise -1. Only
+     * a collated key needs its reported value settled; every other key is one value per group already.
+     */
+    private int collatedKeyIndexOf(final int selectIndex) {
+        final String item = selectExpressions.get(selectIndex);
+        for (int i = 0; i < groupByExpressions.size(); i++) {
+            if (groupByExpressions.get(i).equalsIgnoreCase(item) && keyCollation(i) != null) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    /** The value a collated group reports: the smallest of its key's values by raw text. */
+    private Object reportedKeyValue(final List<Row> groupRows, final Expression key) {
+        Object reported = null;
+        for (final Row row : groupRows) {
+            reported = CollatedKey.leastOf(reported, columnEvaluator.evaluate(key, row));
+        }
+        return reported;
     }
 
     /**
@@ -385,13 +446,13 @@ public class GroupByOperator implements Operator {
             throw new IllegalStateException("No aggregate evaluator provided");
         }
 
-        try {
-            return aggregateEvaluator.evaluate(index, groupRows);
-        } catch (final Exception e) {
-            logger.warn("Failed to evaluate aggregate select item [{}]: {}",
-                index < selectExpressions.size() ? selectExpressions.get(index) : index, e.getMessage());
-            return null;
-        }
+        // Whatever the evaluation throws is the answer: a refusal the user has to see, or a bug that
+        // has to be seen. This used to catch everything and return NULL, and every failure of an
+        // aggregate — a conversion live refuses, a class cast, an unresolved name — became an empty
+        // cell in a query that answered. The one shape that legitimately yields NULL here, a
+        // super-group subtotal's item over a dimension that row aggregates away, is now a NULL that
+        // is PUBLISHED for it (see presetNullAliases) rather than a failure that was swallowed.
+        return aggregateEvaluator.evaluate(index, groupRows);
     }
 
     /**

@@ -1,0 +1,51 @@
+{
+  "suite": "functions-variant-container-typed-members",
+  "description": "Extended scalar types keep their type INSIDE a variant container. Snowflake's VARIANT is a superset of JSON: a DATE, TIME, TIMESTAMP or BINARY placed in an OBJECT or ARRAY still reports its own type, where JSON alone could only carry the rendered text. Live-measured on the account: TYPEOF(OBJECT_CONSTRUCT('d', <date>):d) is DATE, ('t', <time>) is TIME, ('ts', <ts>) is TIMESTAMP_NTZ, ('b', <binary>) is BINARY, and ARRAY_CONSTRUCT(<binary>)[0] is BINARY - Frostlake reported VARCHAR for every one of them. The other half of the contract is that NOTHING about the text changes: the JSON rendering, ::VARCHAR, TO_JSON and OBJECT_KEYS must be exactly what they always were, because the type rides ALONGSIDE the text rather than re-encoding it. A variant PARSED FROM TEXT never had an extended type to keep, and live agrees that PARSE_JSON('{\"b\":\"CAFE\"}'):b is VARCHAR. Converted 1:1 from functions/VariantContainerTypedMembersTest (now retired).",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "object-members-keep-their-extended-type", "steps": [
+      {"sql": "SELECT TYPEOF(OBJECT_CONSTRUCT('d', '2026-01-02'::DATE):d)", "expect": {"value": "DATE"}},
+      {"sql": "SELECT TYPEOF(OBJECT_CONSTRUCT('t', '12:30:00'::TIME):t)", "expect": {"value": "TIME"}},
+      {"sql": "SELECT TYPEOF(OBJECT_CONSTRUCT('ts', '2026-01-02 03:04:05'::TIMESTAMP_NTZ):ts)", "expect": {"value": "TIMESTAMP_NTZ"}},
+      {"sql": "SELECT TYPEOF(OBJECT_CONSTRUCT('b', TO_BINARY('CAFE', 'HEX')):b)", "expect": {"value": "BINARY"}}
+    ]},
+    {"name": "array-elements-keep-their-extended-type", "steps": [
+      {"sql": "SELECT TYPEOF(ARRAY_CONSTRUCT(TO_BINARY('CAFE', 'HEX'))[0])", "expect": {"value": "BINARY"}},
+      {"sql": "SELECT TYPEOF(ARRAY_CONSTRUCT('2026-01-02'::DATE)[0])", "expect": {"value": "DATE"}}
+    ]},
+    {"name": "json-native-members-are-unaffected", "steps": [
+      {"sql": "SELECT TYPEOF(OBJECT_CONSTRUCT('n', 42):n)", "expect": {"value": "INTEGER"}},
+      {"sql": "SELECT TYPEOF(OBJECT_CONSTRUCT('s', 'plain'):s)", "expect": {"value": "VARCHAR"}},
+      {"sql": "SELECT TYPEOF(OBJECT_CONSTRUCT('b', TRUE):b)", "expect": {"value": "BOOLEAN"}}
+    ]},
+    {"name": "the-text-form-is-unchanged", "steps": [
+      {"sql": "SELECT TO_JSON(OBJECT_CONSTRUCT('b', TO_BINARY('CAFE', 'HEX')))", "expect": {"value": "{\"b\":\"CAFE\"}"}},
+      {"sql": "SELECT TO_JSON(OBJECT_CONSTRUCT('d', '2026-01-02'::DATE))", "expect": {"value": "{\"d\":\"2026-01-02\"}"}},
+      {"sql": "SELECT OBJECT_CONSTRUCT('b', TO_BINARY('CAFE', 'HEX')):b::VARCHAR", "expect": {"value": "CAFE"}},
+      {"sql": "SELECT ARRAY_TO_STRING(OBJECT_KEYS(OBJECT_CONSTRUCT('b', TO_BINARY('CAFE', 'HEX'))), ',')", "expect": {"value": "b"}}
+    ]},
+    {"name": "typed-accessors-read-the-members", "steps": [
+      {"sql": "SELECT TO_VARCHAR(AS_BINARY(OBJECT_CONSTRUCT('b', TO_BINARY('CAFE', 'HEX')):b), 'HEX')", "expect": {"value": "CAFE"}},
+      {"sql": "SELECT IS_BINARY(OBJECT_CONSTRUCT('b', TO_BINARY('CAFE', 'HEX')):b)", "expect": {"value": "true"}},
+      {"sql": "SELECT AS_DATE(OBJECT_CONSTRUCT('d', '2026-01-02'::DATE):d)", "expect": {"value": "2026-01-02"}},
+      {"sql": "SELECT IS_DATE(OBJECT_CONSTRUCT('d', '2026-01-02'::DATE):d)", "expect": {"value": "true"}}
+    ]},
+    {"name": "encrypt-raw-members-are-binary", "steps": [
+      {"sql": "WITH e AS (SELECT ENCRYPT_RAW(TO_BINARY('CAFEBABE', 'HEX'), TO_BINARY('000102030405060708090A0B0C0D0E0F', 'HEX'), TO_BINARY('0102030405060708090A0B0C', 'HEX')) AS o) SELECT TYPEOF(o:ciphertext) FROM e", "expect": {"value": "BINARY"}},
+      {"sql": "WITH e AS (SELECT ENCRYPT_RAW(TO_BINARY('CAFEBABE', 'HEX'), TO_BINARY('000102030405060708090A0B0C0D0E0F', 'HEX'), TO_BINARY('0102030405060708090A0B0C', 'HEX')) AS o) SELECT TYPEOF(o:iv) FROM e", "expect": {"value": "BINARY"}},
+      {"sql": "WITH e AS (SELECT ENCRYPT_RAW(TO_BINARY('CAFEBABE', 'HEX'), TO_BINARY('000102030405060708090A0B0C0D0E0F', 'HEX'), TO_BINARY('0102030405060708090A0B0C', 'HEX')) AS o) SELECT TYPEOF(o:tag) FROM e", "expect": {"value": "BINARY"}},
+      {"sql": "WITH e AS (SELECT ENCRYPT_RAW(TO_BINARY('CAFEBABE', 'HEX'), TO_BINARY('000102030405060708090A0B0C0D0E0F', 'HEX'), TO_BINARY('0102030405060708090A0B0C', 'HEX')) AS o) SELECT IFF(o:ciphertext::VARCHAR = TO_VARCHAR(AS_BINARY(o:ciphertext), 'HEX'), 'same', 'differ') FROM e", "expect": {"value": "same"}}
+    ]},
+    {"name": "a-stored-variant-keeps-its-member-types", "steps": [
+      {"sql": "CREATE TABLE vt (v VARIANT)"},
+      {"sql": "INSERT INTO vt SELECT OBJECT_CONSTRUCT('b', TO_BINARY('CAFE', 'HEX'), 'd', '2026-01-02'::DATE)"},
+      {"sql": "SELECT TYPEOF(v:b) FROM vt", "expect": {"value": "BINARY"}},
+      {"sql": "SELECT TYPEOF(v:d) FROM vt", "expect": {"value": "DATE"}},
+      {"sql": "SELECT v:b::VARCHAR FROM vt", "expect": {"value": "CAFE"}}
+    ]},
+    {"name": "parsed-json-text-still-reports-varchar", "steps": [
+      {"sql": "SELECT TYPEOF(PARSE_JSON('{\"b\":\"CAFE\"}'):b)", "expect": {"value": "VARCHAR"}},
+      {"sql": "SELECT TYPEOF(PARSE_JSON('{\"d\":\"2026-01-02\"}'):d)", "expect": {"value": "VARCHAR"}}
+    ]}
+  ]
+}

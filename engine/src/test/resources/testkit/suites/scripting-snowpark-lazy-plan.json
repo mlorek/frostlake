@@ -1,0 +1,42 @@
+{
+  "suite": "scripting-snowpark-lazy-plan",
+  "description": "A Snowpark DataFrame is a PLAN, not a result. Measured against a live account with an identical Java handler: session.sql(\"INSERT ...\") on its own runs NOTHING and the handler returns normally; adding .collect() runs it once; calling collect() TWICE runs it twice, because a plan is not memoised; count() is an action alongside collect(), so count() then collect() also runs it twice; session.table(\"missing\") raises nothing until an action asks for rows; and an owner's-rights CREATE TEMPORARY TABLE returns normally with no action and is refused at the ACTION. Executing inside sql() - which this stub used to do - is the one divergence shape that HIDES: a handler that builds a statement and never collects does real work here and nothing on Snowflake, so the test passes locally and the procedure is a no-op in production. Converted 1:1 from scripting/SnowparkLazyPlanTest (now retired). The Java constructed Session and DataFrame objects DIRECTLY, which has no SQL surface; each claim is expressed here through a LANGUAGE JAVA handler doing the same calls, which is the shape the class's own javadoc describes as the live equivalent and goes through the real procedure path rather than around it. The one claim that changes shape is the last: the Java built a DataFrame over already-materialised rows with new DataFrame(resultSet), so the converted test makes the same point through a plan over a SELECT - repeated actions keep answering the same rows - which is the observable half of it.",
+  "tags": ["scripting", "converted"],
+  "tests": [
+    {"name": "a-plan-without-an-action-runs-nothing", "steps": [
+      {"sql": "CREATE TABLE lazy_sink (n INTEGER)"},
+      {"sql": "CREATE OR REPLACE PROCEDURE p_lazy() RETURNS VARCHAR LANGUAGE JAVA PACKAGES=('com.snowflake:snowpark:latest') HANDLER='H.go' AS $$\nimport com.snowflake.snowpark_java.*;\nclass H { public String go(Session s) {\n  s.sql(\"INSERT INTO lazy_sink VALUES (1)\");\n  return \"built\";\n} }\n$$"},
+      {"sql": "CALL p_lazy()", "expect": {"value": "built"}},
+      {"sql": "SELECT COUNT(*) FROM lazy_sink", "expect": {"value": 0}}
+    ]},
+    {"name": "every-action-runs-the-plan-again", "steps": [
+      {"sql": "CREATE TABLE lazy_twice (n INTEGER)"},
+      {"sql": "CREATE OR REPLACE PROCEDURE p_twice() RETURNS VARCHAR LANGUAGE JAVA PACKAGES=('com.snowflake:snowpark:latest') HANDLER='H.go' AS $$\nimport com.snowflake.snowpark_java.*;\nclass H { public String go(Session s) {\n  DataFrame df = s.sql(\"INSERT INTO lazy_twice VALUES (1)\");\n  df.collect();\n  long afterOne = s.sql(\"SELECT COUNT(*) FROM lazy_twice\").collect()[0].getLong(0);\n  df.collect();\n  long afterTwo = s.sql(\"SELECT COUNT(*) FROM lazy_twice\").collect()[0].getLong(0);\n  return afterOne + \"/\" + afterTwo;\n} }\n$$"},
+      {"sql": "CALL p_twice()", "expect": {"value": "1/2"}},
+      {"sql": "SELECT COUNT(*) FROM lazy_twice", "expect": {"value": 2}}
+    ]},
+    {"name": "count-is-an-action-too", "steps": [
+      {"sql": "CREATE TABLE lazy_count (n INTEGER)"},
+      {"sql": "CREATE OR REPLACE PROCEDURE p_count() RETURNS VARCHAR LANGUAGE JAVA PACKAGES=('com.snowflake:snowpark:latest') HANDLER='H.go' AS $$\nimport com.snowflake.snowpark_java.*;\nclass H { public String go(Session s) {\n  DataFrame df = s.sql(\"INSERT INTO lazy_count VALUES (9)\");\n  df.count();\n  df.collect();\n  return \"done\";\n} }\n$$"},
+      {"sql": "CALL p_count()", "expect": {"value": "done"}},
+      {"sql": "SELECT COUNT(*) FROM lazy_count", "expect": {"value": 2}}
+    ]},
+    {"name": "table-is-lazy-too", "steps": [
+      {"sql": "CREATE OR REPLACE PROCEDURE p_table() RETURNS VARCHAR LANGUAGE JAVA PACKAGES=('com.snowflake:snowpark:latest') HANDLER='H.go' AS $$\nimport com.snowflake.snowpark_java.*;\nclass H { public String go(Session s) {\n  DataFrame df = s.table(\"no_such_table_at_all\");\n  String built = df == null ? \"null\" : \"plan\";\n  try { df.collect(); return built + \"/no-error\"; }\n  catch (RuntimeException e) { return built + \"/action-reported\"; }\n} }\n$$"},
+      {"sql": "CALL p_table()", "expect": {"value": "plan/action-reported"}}
+    ]},
+    {"name": "the-owners-rights-refusal-fires-at-the-action", "steps": [
+      {"sql": "CREATE OR REPLACE PROCEDURE p_owner_build() RETURNS VARCHAR LANGUAGE JAVA PACKAGES=('com.snowflake:snowpark:latest') HANDLER='H.go' EXECUTE AS OWNER AS $$\nimport com.snowflake.snowpark_java.*;\nclass H { public String go(Session s) {\n  s.sql(\"CREATE TEMPORARY TABLE lazy_tmp (a INTEGER)\");\n  return \"built\";\n} }\n$$"},
+      {"sql": "CALL p_owner_build()", "expect": {"value": "built"}},
+      {"sql": "CREATE OR REPLACE PROCEDURE p_owner_act() RETURNS VARCHAR LANGUAGE JAVA PACKAGES=('com.snowflake:snowpark:latest') HANDLER='H.go' EXECUTE AS OWNER AS $$\nimport com.snowflake.snowpark_java.*;\nclass H { public String go(Session s) {\n  s.sql(\"CREATE TEMPORARY TABLE lazy_tmp (a INTEGER)\").collect();\n  return \"should not reach here\";\n} }\n$$"},
+      {"sql": "CALL p_owner_act()", "expect": {"error": {"messageContains": "Unsupported statement type 'temporary TABLE'"}}}
+    ]},
+    {"name": "a-plan-over-existing-rows-keeps-answering-from-them", "steps": [
+      {"sql": "CREATE TABLE lazy_rows (n INTEGER)"},
+      {"sql": "INSERT INTO lazy_rows VALUES (1), (2)"},
+      {"sql": "CREATE OR REPLACE PROCEDURE p_rows() RETURNS VARCHAR LANGUAGE JAVA PACKAGES=('com.snowflake:snowpark:latest') HANDLER='H.go' AS $$\nimport com.snowflake.snowpark_java.*;\nclass H { public String go(Session s) {\n  DataFrame df = s.sql(\"SELECT * FROM lazy_rows ORDER BY n\");\n  long c = df.count();\n  Row[] first = df.collect();\n  Row[] second = df.collect();\n  return c + \"/\" + first.length + \"/\" + second.length + \"/\" + second[0].getInt(0);\n} }\n$$"},
+      {"sql": "CALL p_rows()", "expect": {"value": "2/2/2/1"}},
+      {"sql": "SELECT COUNT(*) FROM lazy_rows", "expect": {"value": 2}}
+    ]}
+  ]
+}

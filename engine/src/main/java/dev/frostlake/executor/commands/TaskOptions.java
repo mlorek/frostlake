@@ -17,6 +17,9 @@
 package dev.frostlake.executor.commands;
 
 import dev.frostlake.metastore.model.Schema;
+import dev.frostlake.task.CronSchedule;
+
+import java.time.ZonedDateTime;
 
 /**
  * The serverless-task option rules, shared by CREATE TASK and ALTER TASK … SET.
@@ -67,22 +70,17 @@ final class TaskOptions {
      * A task SCHEDULE is either {@code '<n> MINUTE[S]'} with a positive count, or
      * {@code 'USING CRON <minute> <hour> <day-of-month> <month> <day-of-week> <time zone>'}.
      * Anything else — a zero interval included — refuses with the account's one sentence for
-     * every malformed shape, live-verified.
+     * every malformed shape, live-verified. A CRON expression is held to the account's full field
+     * grammar (see {@link CronSchedule}), and one that is well formed but names no instant at all —
+     * February 31st — is refused with its own sentence.
      */
     static void requireValidSchedule(final String schedule) {
         final String trimmed = schedule == null ? "" : schedule.trim();
         final String upper = trimmed.toUpperCase();
         if (upper.contains("CRON")) {
-            final String[] cronTokens = trimmed.split("\\s+");
-            final boolean shaped = cronTokens.length >= 8
-                && "USING".equalsIgnoreCase(cronTokens[0]) && "CRON".equalsIgnoreCase(cronTokens[1]);
-            if (!shaped) {
-                throw new RuntimeException(invalidScheduleMessage());
-            }
-            for (int fieldIndex = 2; fieldIndex < 7; fieldIndex++) {
-                if (!cronTokens[fieldIndex].matches("[0-9*,/\\-LW#?A-Za-z]+")) {
-                    throw new RuntimeException(invalidScheduleMessage());
-                }
+            final CronSchedule cron = CronSchedule.parse(trimmed);
+            if (cron.nextFireAfter(ZonedDateTime.now(cron.zone())) == null) {
+                throw new RuntimeException(CronSchedule.NEVER_FIRES_MESSAGE);
             }
             return;
         }
@@ -92,8 +90,7 @@ final class TaskOptions {
     }
 
     private static String invalidScheduleMessage() {
-        return "Invalid schedule was specified. Please refer to the docs on what constitutes a"
-            + " valid schedule.";
+        return CronSchedule.INVALID_SCHEDULE_MESSAGE;
     }
 
     /** The task's fully qualified upper-case name, the form live names it by in the

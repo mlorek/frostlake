@@ -1,0 +1,18 @@
+{
+  "suite": "functions-try-to-time",
+  "description": "TRY_TO_TIME(expr [, format]) is the non-throwing TO_TIME: it parses a valid time and answers NULL instead of erroring on unparseable input. It shares the TRY_CAST source rule - an UNTYPED NULL errors (live-verified: Function TRY_CAST cannot be used with arguments of types NULL and TIME(9)) while NULL::VARCHAR converts to NULL. Converted 1:1 from functions/TryToTimeTest (now retired); the Java compared a LocalTime toString, so the suite reads TO_VARCHAR.",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "it-parses-a-valid-time", "steps": [
+      {"sql": "SELECT IFF(TRY_TO_TIME('12:30:00') IS NULL, 'null', 'set')", "expect": {"value": "set"}},
+      {"sql": "SELECT TO_VARCHAR(TRY_TO_TIME('12:30:00'))", "expect": {"value": "12:30:00"}}
+    ]},
+    {"name": "an-invalid-time-yields-null-not-an-error", "steps": [
+      {"sql": "SELECT TRY_TO_TIME('not-a-time')", "expect": {"rows": [[null]]}}
+    ]},
+    {"name": "an-untyped-null-is-rejected-and-a-cast-null-yields-null", "steps": [
+      {"sql": "SELECT TRY_TO_TIME(NULL)", "expect": {"error": {"messageContains": "TRY_CAST"}}},
+      {"sql": "SELECT TRY_TO_TIME(NULL::VARCHAR)", "expect": {"rows": [[null]]}}
+    ]}
+  ]
+}

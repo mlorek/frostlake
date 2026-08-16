@@ -1,0 +1,36 @@
+{
+  "suite": "functions-uuid-string",
+  "description": "UUID_STRING in both forms. The two-argument UUID_STRING(namespace, name) is an RFC 4122 version-5 (SHA-1) named UUID and is BIT-EXACT: the pair asserted here is the documented Snowflake example. It is deterministic, a numeric name is used as its text, and neither argument is null-propagating - a NULL or malformed NAMESPACE is an error while a NULL NAME hashes as the empty string and still yields a UUID (live-measured; the class asserted NULL for both until it was moved onto the shared test base and actually ran live). The no-argument form is random, matches the RFC layout and differs on every evaluation. UUID_STRING may not appear in a VALUES clause - live-measured, and by NAME rather than by determinism, since the exact two-argument form is refused there too while CURRENT_TIMESTAMP() passes - so INSERT ... SELECT is the supported route. Converted 1:1 from functions/UuidStringTest (now retired); Java-side Pattern.matches became REGEXP_LIKE and the two-query uniqueness comparison became COUNT(DISTINCT ...) over a GENERATOR scan.",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "the-named-form-is-an-exact-rfc-4122-version-5-uuid", "steps": [
+      {"sql": "SELECT UUID_STRING('fe971b24-9572-4005-b22f-351e9c09274d', 'foo')", "expect": {"value": "dc0b6f65-fca6-5b4b-9d37-ccc3fde1f3e2"}},
+      {"sql": "SELECT UUID_STRING('fe971b24-9572-4005-b22f-351e9c09274d', 42) = UUID_STRING('fe971b24-9572-4005-b22f-351e9c09274d', '42')", "expect": {"value": "true"}},
+      {"sql": "SELECT UUID_STRING(NULL, 'foo')", "expect": {"error": {"messageContains": "Badly formed UUID"}}},
+      {"sql": "SELECT UUID_STRING('fe971b24-9572-4005-b22f-351e9c09274d', NULL)", "expect": {"value": "5218e289-d8a6-5159-a111-bdcf3110899a"}}
+    ]},
+    {"name": "the-no-argument-form-matches-the-rfc-layout", "steps": [
+      {"sql": "SELECT UUID_STRING()", "expect": {"rowCount": 1}},
+      {"sql": "SELECT REGEXP_LIKE(UUID_STRING(), '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}')", "expect": {"value": "true"}}
+    ]},
+    {"name": "the-no-argument-form-generates-unique-values", "steps": [
+      {"sql": "SELECT IFF(UUID_STRING() <> UUID_STRING(), 'differ', 'same')", "expect": {"value": "differ"}},
+      {"sql": "SELECT COUNT(DISTINCT UUID_STRING()) FROM TABLE(GENERATOR(ROWCOUNT => 50))", "expect": {"value": "50"}}
+    ]},
+    {"name": "it-serves-as-a-column-default", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE sample_generate_uuid (\n  id UUID DEFAULT UUID_STRING() NOT NULL,\n  sample_column VARCHAR)"},
+      {"sql": "INSERT INTO sample_generate_uuid (sample_column) VALUES ('hello')"},
+      {"sql": "INSERT INTO sample_generate_uuid (sample_column) VALUES ('world')"},
+      {"sql": "SELECT COUNT(*) FROM sample_generate_uuid", "expect": {"value": "2"}},
+      {"sql": "SELECT COUNT_IF(REGEXP_LIKE(id, '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}')) FROM sample_generate_uuid", "expect": {"value": "2"}},
+      {"sql": "SELECT COUNT(DISTINCT id) FROM sample_generate_uuid", "expect": {"value": "2"}}
+    ]},
+    {"name": "it-is-refused-in-a-values-clause-and-supported-in-insert-select", "steps": [
+      {"sql": "CREATE TABLE with_uuid (id UUID, name VARCHAR)"},
+      {"sql": "INSERT INTO with_uuid VALUES (UUID_STRING(), 'Alice')", "expect": {"error": {"messageContains": "in VALUES clause"}}},
+      {"sql": "INSERT INTO with_uuid SELECT UUID_STRING(), 'Alice'"},
+      {"sql": "SELECT COUNT(*) FROM with_uuid", "expect": {"value": "1"}},
+      {"sql": "SELECT COUNT_IF(REGEXP_LIKE(id, '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}')) FROM with_uuid", "expect": {"value": "1"}}
+    ]}
+  ]
+}

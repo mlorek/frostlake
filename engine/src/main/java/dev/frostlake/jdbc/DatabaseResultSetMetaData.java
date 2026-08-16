@@ -78,7 +78,10 @@ public class DatabaseResultSetMetaData implements ResultSetMetaData {
 
     @Override
     public int getColumnDisplaySize(final int column) throws SQLException {
-        return 255;
+        checkColumnIndex(column);
+        // A text or binary column displays at its length, as the account's driver answers.
+        final Integer length = columns.get(column - 1).getLength();
+        return length != null ? length.intValue() : 255;
     }
 
     @Override
@@ -100,7 +103,10 @@ public class DatabaseResultSetMetaData implements ResultSetMetaData {
     @Override
     public int getPrecision(final int column) throws SQLException {
         checkColumnIndex(column);
-        return columns.get(column - 1).getPrecision();
+        // The account's driver answers a text or binary column's length as its precision; the wire
+        // carries that length for exactly those two families.
+        final ColumnData described = columns.get(column - 1);
+        return described.getLength() != null ? described.getLength().intValue() : described.getPrecision();
     }
 
     @Override

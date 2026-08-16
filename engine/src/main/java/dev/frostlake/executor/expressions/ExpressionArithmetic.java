@@ -16,16 +16,25 @@
 
 package dev.frostlake.executor.expressions;
 
+import dev.frostlake.executor.NumericRangeRefusal;
+import dev.frostlake.executor.SessionZone;
 import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
+import dev.frostlake.values.ApproximateValues;
 import dev.frostlake.values.BinaryValue;
+import dev.frostlake.values.NonFiniteDoubles;
 import dev.frostlake.values.VariantJsonNulls;
 import dev.frostlake.values.VariantValue;
 import dev.frostlake.values.XmlVariants;
 import java.math.BigDecimal;
+import java.math.BigInteger;
+import java.math.RoundingMode;
+import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
+import java.time.OffsetDateTime;
+import java.time.ZonedDateTime;
 import java.time.temporal.ChronoUnit;
 import tools.jackson.databind.JsonNode;
 
@@ -34,7 +43,7 @@ import tools.jackson.databind.JsonNode;
  * numeric/date add/subtract/multiply/divide/negate, three-valued truthiness, value equality/ordering and
  * INTERVAL application. Field-free — all inputs arrive as arguments.
  */
-final class ExpressionArithmetic {
+public final class ExpressionArithmetic {
 
     private ExpressionArithmetic() {
     }
@@ -74,6 +83,23 @@ final class ExpressionArithmetic {
     }
 
     /**
+     * The row-time refusal an arithmetic operator raises over a TEXT operand that reads as no number —
+     * live's own sentence, "Numeric value 'x' is not recognized", the LEFT operand named first
+     * ({@code 'x' + 'y'} names 'x'), the text echoed trimmed — or the engine's fallback sentence when
+     * neither operand is such a text. Over an empty table nothing is refused: the rule is per row.
+     */
+    private static RuntimeException unreadableOperand(final Object left, final Object right,
+                                                      final String fallback) {
+        for (final Object operand : new Object[] {left, right}) {
+            if (operand instanceof CharSequence && asNumber(operand) == null) {
+                return new RuntimeException(
+                    NumericRangeRefusal.unreadableText(operand.toString().trim()));
+            }
+        }
+        return new RuntimeException(fallback);
+    }
+
+    /**
      * The two operands as numbers when at least one of them is a numeric STRING that needed coercion (so an
      * arithmetic operator can retry), else null. Restricting it to a text operand keeps every other type
      * combination — temporal, interval, variant — on its existing path.
@@ -107,19 +133,26 @@ final class ExpressionArithmetic {
         if (!(left instanceof VariantValue) && !(right instanceof VariantValue)) {
             return null;
         }
+        // A variant member that reads as no number fails its CAST to REAL — an object, an array, a
+        // string spelling no number — and a JSON boolean reads 1 / 0 (live: true + 1 is 2).
         final Number leftNumber = left instanceof VariantValue
-            ? variantAsNumber((VariantValue) left) : asNumber(left);
+            ? VariantNumbers.numberOf((VariantValue) left, VariantNumbers.REAL) : asNumber(left);
         final Number rightNumber = right instanceof VariantValue
-            ? variantAsNumber((VariantValue) right) : asNumber(right);
+            ? VariantNumbers.numberOf((VariantValue) right, VariantNumbers.REAL) : asNumber(right);
         if (leftNumber == null || rightNumber == null) {
             return null;
         }
         return new Number[] {Double.valueOf(leftNumber.doubleValue()), Double.valueOf(rightNumber.doubleValue())};
     }
 
-    private static Number variantAsNumber(final VariantValue variant) {
+    static Number variantAsNumber(final VariantValue variant) {
         final JsonNode node = variant.node();
         if (node != null && node.isNumber()) {
+            // NaN and the infinities have no BigDecimal, so they stay doubles — which also puts the
+            // arithmetic on its FLOAT path, where IEEE gives the answers live gives.
+            if ((node.isDouble() || node.isFloat()) && !Double.isFinite(node.doubleValue())) {
+                return Double.valueOf(node.doubleValue());
+            }
             return node.decimalValue();
         }
         if (node != null && node.isTextual()) {
@@ -155,6 +188,41 @@ final class ExpressionArithmetic {
         return value == null ? null : Boolean.valueOf(isTrue(value));
     }
 
+    /**
+     * {@link #booleanOrNull} for the LOGICAL OPERATORS — AND, OR and NOT — whose string conversion is
+     * STRICT live: the TO_BOOLEAN text forms convert and anything else refuses at row time, naming the
+     * text with no compilation prefix.
+     *
+     * <pre>
+     *   'true' AND TRUE      true
+     *   'x' AND TRUE         Boolean value 'x' is not recognized
+     *   '5' AND TRUE         Boolean value '5' is not recognized   digits are NOT read as numbers here
+     *   NOT 'x'              Boolean value 'x' is not recognized
+     * </pre>
+     *
+     * <p>Kept SEPARATE from {@link #isTrue} on purpose: the lenient false-for-anything reading is what
+     * predicate FILTERING relies on ({@code WHERE is_direct} over text — the relationship-loader
+     * idiom), and this strictness belongs to the operators alone.
+     */
+    static Boolean strictBooleanOrNull(final Object value) {
+        if (value == null) {
+            return null;
+        }
+        if (value instanceof String) {
+            final String text = ((String) value).trim().toLowerCase();
+            if (text.equals("true") || text.equals("t") || text.equals("yes") || text.equals("y")
+                    || text.equals("on") || text.equals("1")) {
+                return Boolean.TRUE;
+            }
+            if (text.equals("false") || text.equals("f") || text.equals("no") || text.equals("n")
+                    || text.equals("off") || text.equals("0")) {
+                return Boolean.FALSE;
+            }
+            throw new RuntimeException("Boolean value '" + value + "' is not recognized");
+        }
+        return Boolean.valueOf(isTrue(value));
+    }
+
     static Object add(final Object left, final Object right) {
         return add(left, right, null);
     }
@@ -164,16 +232,27 @@ final class ExpressionArithmetic {
             return null;
         }
         if (left instanceof Number && right instanceof Number) {
-            // If both are integer types, perform integer arithmetic
+            // If both are integer types, perform integer arithmetic — WIDENING past a long: live's
+            // only ceiling is the 128-bit window below, so a sum past 2^63 must not silently wrap.
             if (isIntegerType(left) && isIntegerType(right)) {
-                return ((Number) left).longValue() + ((Number) right).longValue();
+                try {
+                    return Math.addExact(((Number) left).longValue(), ((Number) right).longValue());
+                } catch (final ArithmeticException pastLong) {
+                    // fall through to the exact path
+                }
             }
             // A FLOAT operand makes the result FLOAT (Snowflake's type propagation).
             if (isFloatType(left) || isFloatType(right)) {
                 return ((Number) left).doubleValue() + ((Number) right).doubleValue();
             }
-            // Otherwise, use BigDecimal for precision
-            final BigDecimal result = new BigDecimal(left.toString()).add(new BigDecimal(right.toString()));
+            // Otherwise, use BigDecimal for precision — inside the exact carrier: each operand must be
+            // representable at the common scale, and the raw sum must fit the 128-bit window.
+            final BigDecimal l = new BigDecimal(left.toString());
+            final BigDecimal r = new BigDecimal(right.toString());
+            requireRescalable(l, r, true);
+            requireRescalable(r, l, false);
+            final BigDecimal result = l.add(r);
+            requireRawResultFits(result);
             return result;
         }
         // Date/time addition (commutative): temporal + integer (days) or temporal + INTERVAL. Normalize so
@@ -198,7 +277,7 @@ final class ExpressionArithmetic {
         if (addCoerced != null) {
             return add(addCoerced[0], addCoerced[1]);
         }
-        throw new RuntimeException("Cannot add: " + left + " + " + right);
+        throw unreadableOperand(left, right, "Cannot add: " + left + " + " + right);
     }
 
     /**
@@ -242,16 +321,26 @@ final class ExpressionArithmetic {
             return null;
         }
         if (left instanceof Number && right instanceof Number) {
-            // If both are integer types, perform integer arithmetic
+            // If both are integer types, perform integer arithmetic — widening past a long, as addition does.
             if (isIntegerType(left) && isIntegerType(right)) {
-                return ((Number) left).longValue() - ((Number) right).longValue();
+                try {
+                    return Math.subtractExact(((Number) left).longValue(), ((Number) right).longValue());
+                } catch (final ArithmeticException pastLong) {
+                    // fall through to the exact path
+                }
             }
             // A FLOAT operand makes the result FLOAT (Snowflake's type propagation).
             if (isFloatType(left) || isFloatType(right)) {
                 return ((Number) left).doubleValue() - ((Number) right).doubleValue();
             }
-            // Otherwise, use BigDecimal for precision
-            return new BigDecimal(left.toString()).subtract(new BigDecimal(right.toString()));
+            // Otherwise, use BigDecimal for precision — with the same carrier checks as addition.
+            final BigDecimal l = new BigDecimal(left.toString());
+            final BigDecimal r = new BigDecimal(right.toString());
+            requireRescalable(l, r, true);
+            requireRescalable(r, l, false);
+            final BigDecimal result = l.subtract(r);
+            requireRawResultFits(result);
+            return result;
         }
         // Date/time subtraction (NOT commutative — the left operand must be the DATE/TIMESTAMP):
         // temporal - integer (days), temporal - INTERVAL, or temporal - temporal (difference in days).
@@ -283,7 +372,7 @@ final class ExpressionArithmetic {
         if (subtractCoerced != null) {
             return subtract(subtractCoerced[0], subtractCoerced[1]);
         }
-        throw new RuntimeException("Cannot subtract: " + left + " - " + right);
+        throw unreadableOperand(left, right, "Cannot subtract: " + left + " - " + right);
     }
 
     /**
@@ -403,31 +492,47 @@ final class ExpressionArithmetic {
     }
 
     static Object multiply(final Object left, final Object right) {
+        return multiplyAtScale(left, right, null);
+    }
+
+    /**
+     * A product presented at the scale its type DECLARES — {@code min(s1 + s2, max(s1, s2, 12))} on the
+     * account — the exact product rounded half up to it and checked against the 128-bit window at THAT
+     * scale: a NUMBER(38,35) squared is 1.56250000000000000000000000000000000, where the exact
+     * seventy-decimal raw could never fit the carrier. Without a declared scale (a VARIANT or a text
+     * operand, a caller that knows none) the exact product stands and is checked as it is. Two
+     * integers multiply exactly as longs while they fit; a FLOAT operand makes the product a double.
+     */
+    static Object multiplyAtScale(final Object left, final Object right, final Integer declaredScale) {
         if (isJsonNullOperand(left) || isJsonNullOperand(right)) {
             return null;
         }
         if (left instanceof Number && right instanceof Number) {
-            // If both are integer types, perform integer arithmetic
             if (isIntegerType(left) && isIntegerType(right)) {
-                return ((Number) left).longValue() * ((Number) right).longValue();
+                try {
+                    return Math.multiplyExact(((Number) left).longValue(), ((Number) right).longValue());
+                } catch (final ArithmeticException pastLong) {
+                    // Past a long: the decimal path below carries it.
+                }
             }
-            // A FLOAT operand makes the result FLOAT (Snowflake's type propagation).
             if (isFloatType(left) || isFloatType(right)) {
                 return ((Number) left).doubleValue() * ((Number) right).doubleValue();
             }
-            // Otherwise, use BigDecimal for precision
-            return new BigDecimal(left.toString()).multiply(new BigDecimal(right.toString()));
+            final BigDecimal exact = new BigDecimal(left.toString()).multiply(new BigDecimal(right.toString()));
+            final BigDecimal product = declaredScale != null && exact.scale() > declaredScale.intValue()
+                ? exact.setScale(declaredScale.intValue(), RoundingMode.HALF_UP) : exact;
+            requireRawResultFits(product);
+            return product;
         }
-        // Retry with VARIANT / numeric-VARCHAR operands coerced to FLOAT (Snowflake's implicit conversion).
         final Number[] multiplyVariant = coerceVariantOperands(left, right);
         if (multiplyVariant != null) {
-            return multiply(multiplyVariant[0], multiplyVariant[1]);
+            return multiplyAtScale(multiplyVariant[0], multiplyVariant[1], declaredScale);
         }
         final Number[] multiplyCoerced = coerceTextOperands(left, right);
         if (multiplyCoerced != null) {
-            return multiply(multiplyCoerced[0], multiplyCoerced[1]);
+            return multiplyAtScale(multiplyCoerced[0], multiplyCoerced[1], declaredScale);
         }
-        throw new RuntimeException("Cannot multiply: " + left + " * " + right);
+        throw unreadableOperand(left, right, "Cannot multiply: " + left + " * " + right);
     }
 
     static Object divide(final Object left, final Object right) {
@@ -444,8 +549,10 @@ final class ExpressionArithmetic {
             if (isFloatType(left) || isFloatType(right)) {
                 return ((Number) left).doubleValue() / divisor;
             }
-            return SharedFunctionHelpers.divideWithSnowflakeScale(
+            final BigDecimal quotient = SharedFunctionHelpers.divideWithSnowflakeScale(
                 new BigDecimal(left.toString()), new BigDecimal(right.toString()));
+            requireQuotientFits(quotient);
+            return quotient;
         }
         // Retry with VARIANT / numeric-VARCHAR operands coerced to FLOAT (Snowflake's implicit conversion).
         final Number[] divideVariant = coerceVariantOperands(left, right);
@@ -456,7 +563,7 @@ final class ExpressionArithmetic {
         if (divideCoerced != null) {
             return divide(divideCoerced[0], divideCoerced[1]);
         }
-        throw new RuntimeException("Cannot divide: " + left + " / " + right);
+        throw unreadableOperand(left, right, "Cannot divide: " + left + " / " + right);
     }
 
     static Object modulo(final Object left, final Object right) {
@@ -472,17 +579,98 @@ final class ExpressionArithmetic {
             if (isIntegerType(left) && isIntegerType(right)) {
                 return ((Number) left).longValue() % ((Number) right).longValue();
             }
-            // Otherwise use BigDecimal.remainder (also dividend-signed) for precision.
-            return new BigDecimal(left.toString()).remainder(new BigDecimal(right.toString()));
+            // A FLOAT operand makes the result FLOAT, as it does for the other four operators. Without
+            // this the BigDecimal below answered a scale-0 decimal whenever the remainder happened to
+            // be whole — 2 % 7.5 read back as 2 where live gives 2.0 — and only that shape showed it,
+            // because any remainder with a fraction rendered the same either way.
+            if (isFloatType(left) || isFloatType(right)) {
+                return ((Number) left).doubleValue() % ((Number) right).doubleValue();
+            }
+            // Otherwise use BigDecimal.remainder (also dividend-signed) for precision. Only the operand
+            // RESCALE can overflow here — the remainder's raw is bounded by the divisor's, which fit.
+            return checkedRemainder(new BigDecimal(left.toString()), new BigDecimal(right.toString()));
         }
-        throw new RuntimeException("Cannot compute modulo: " + left + " % " + right);
+        // The same VARIANT and numeric-text retries the other four operators make: '5' % 2 is 1 live.
+        final Number[] moduloVariant = coerceVariantOperands(left, right);
+        if (moduloVariant != null) {
+            return modulo(moduloVariant[0], moduloVariant[1]);
+        }
+        final Number[] moduloCoerced = coerceTextOperands(left, right);
+        if (moduloCoerced != null) {
+            return modulo(moduloCoerced[0], moduloCoerced[1]);
+        }
+        throw unreadableOperand(left, right, "Cannot compute modulo: " + left + " % " + right);
     }
+
+    /**
+     * An operand of {@code + - %} must be REPRESENTABLE at the operation's common scale: widening a
+     * raw by {@code 10^(target - own)} can walk it out of the 128-bit carrier before any arithmetic
+     * happens, and live refuses THAT step with the aligned type, the operand's own digits printed
+     * plain, and the operand's nullability (live-verified: {@code a + 0.5} over a NUMBER(38,0) of 38
+     * nines refuses as {@code (38,1)}, echoing the column's value).
+     */
+    private static void requireRescalable(final BigDecimal value, final BigDecimal other, final boolean left) {
+        final int own = Math.max(value.scale(), 0);
+        final int target = Math.max(own, Math.max(other.scale(), 0));
+        if (target == own || value.precision() + (target - own) <= 38) {
+            return;
+        }
+        final BigInteger raw = value.setScale(target).unscaledValue();
+        if (NumericRangeRefusal.outsideSb16Window(raw)) {
+            throw new RawRangeOverflow(left ? RawOverflowKind.RESCALE_LEFT : RawOverflowKind.RESCALE_RIGHT,
+                value, target);
+        }
+    }
+
+    /**
+     * The RAW scaled integer of a sum, difference or product must fit the 128-bit window. The refusal
+     * reports the carrier view itself — {@code (38,0)&#123;not null&#125;} whatever the operands' scales
+     * or nullability — and prints the RAW integer as a double, not the value ({@code e + e} over a
+     * scale-1 column refuses at {@code 2e+38}, the raw, where the value is 2e+37; live-verified).
+     */
+    private static void requireRawResultFits(final BigDecimal result) {
+        if (result.precision() <= 38) {
+            return;
+        }
+        final BigInteger raw = result.unscaledValue();
+        if (NumericRangeRefusal.outsideSb16Window(raw)) {
+            throw new RuntimeException(
+                NumericRangeRefusal.typedDouble("SB16", 38, 0, false, new BigDecimal(raw)));
+        }
+    }
+
+    /**
+     * A quotient's raw at the division's derived scale must fit the 128-bit window. Unlike the raw-result
+     * shape this reports the DERIVED type and prints the quotient's VALUE — always in the double form,
+     * even when its digits alone would fit the carrier (live-verified: {@code a / 0.9} prints
+     * {@code 1.11111e+38}).
+     */
+    private static void requireQuotientFits(final BigDecimal quotient) {
+        if (quotient.precision() <= 38) {
+            return;
+        }
+        if (NumericRangeRefusal.outsideSb16Window(quotient.unscaledValue())) {
+            throw new RawRangeOverflow(RawOverflowKind.QUOTIENT, quotient, Math.max(quotient.scale(), 0));
+        }
+    }
+
 
     private static boolean isIntegerType(final Object value) {
         return value instanceof Long || value instanceof Integer || value instanceof Short || value instanceof Byte;
     }
 
-    static boolean equals(final Object left, final Object right) {
+    /**
+     * SQL value equality, as the {@code =} operator answers it: numbers compare by VALUE whatever
+     * their runtime class, a boolean reads against a number, a temporal against its own text, a DATE
+     * against a TIMESTAMP by instant, and a VARIANT against either. A string that must read as a
+     * number and cannot is an error, not an inequality: {@code 'ab' = 1} raises "Numeric value 'ab'
+     * is not recognized".
+     *
+     * <p>Exposed so the functions that are defined AS a comparison — DECODE today — answer with the
+     * operator instead of a hand-rolled test of their own. It is the only member of this class
+     * visible outside the package; the rest stay package-private.
+     */
+    public static boolean equals(final Object left, final Object right) {
         if (left == null && right == null) {
             return true;
         }
@@ -498,11 +686,24 @@ final class ExpressionArithmetic {
             if (left instanceof BigDecimal && right instanceof BigDecimal) {
                 return ((BigDecimal) left).compareTo((BigDecimal) right) == 0;
             }
+            if (NonFiniteDoubles.isNonFinite((Number) left) || NonFiniteDoubles.isNonFinite((Number) right)) {
+                return Double.compare(((Number) left).doubleValue(), ((Number) right).doubleValue()) == 0;
+            }
+            // A double beside ANY number compares as a double — the exact side is converted, as live
+            // does: 1234567890123456789::FLOAT = 1234567890123456768 and -0.0::FLOAT = 0.0::FLOAT are
+            // both TRUE there. Bridging through the double's shortest decimal made the first FALSE.
+            if (isFloatType(left) || isFloatType(right)) {
+                return ((Number) left).doubleValue() == ((Number) right).doubleValue();
+            }
             return new BigDecimal(left.toString()).compareTo(new BigDecimal(right.toString())) == 0;
         }
         final Integer booleanNumeric = booleanVsNumber(left, right);
         if (booleanNumeric != null) {
             return booleanNumeric == 0;
+        }
+        final Integer temporalPair = temporalVsTemporal(left, right);
+        if (temporalPair != null) {
+            return temporalPair == 0;
         }
         final Integer temporal = temporalVsString(left, right);
         if (temporal != null) {
@@ -515,6 +716,10 @@ final class ExpressionArithmetic {
         final Integer variantNumeric = variantVsNumber(left, right);
         if (variantNumeric != null) {
             return variantNumeric == 0;
+        }
+        final Integer variantPair = variantVsVariant(left, right);
+        if (variantPair != null) {
+            return variantPair == 0;
         }
         final Integer variantText = variantVsText(left, right);
         if (variantText != null) {
@@ -539,11 +744,22 @@ final class ExpressionArithmetic {
             if (left instanceof BigDecimal && right instanceof BigDecimal) {
                 return ((BigDecimal) left).compareTo((BigDecimal) right);
             }
+            if (NonFiniteDoubles.isNonFinite((Number) left) || NonFiniteDoubles.isNonFinite((Number) right)) {
+                return Double.compare(((Number) left).doubleValue(), ((Number) right).doubleValue());
+            }
+            if (isFloatType(left) || isFloatType(right)) {
+                return ApproximateValues.compare(((Number) left).doubleValue(),
+                    ((Number) right).doubleValue());
+            }
             return new BigDecimal(left.toString()).compareTo(new BigDecimal(right.toString()));
         }
         final Integer booleanNumeric = booleanVsNumber(left, right);
         if (booleanNumeric != null) {
             return booleanNumeric;
+        }
+        final Integer temporalPair = temporalVsTemporal(left, right);
+        if (temporalPair != null) {
+            return temporalPair;
         }
         final Integer temporal = temporalVsString(left, right);
         if (temporal != null) {
@@ -556,6 +772,10 @@ final class ExpressionArithmetic {
         final Integer variantNumericCompare = variantVsNumber(left, right);
         if (variantNumericCompare != null) {
             return variantNumericCompare;
+        }
+        final Integer variantPairOrder = variantVsVariant(left, right);
+        if (variantPairOrder != null) {
+            return variantPairOrder.intValue();
         }
         final Integer variantText = variantVsText(left, right);
         if (variantText != null) {
@@ -586,21 +806,32 @@ final class ExpressionArithmetic {
         if (leftNumber == null || rightNumber == null) {
             return null;
         }
+        if (NonFiniteDoubles.isNonFinite(leftNumber) || NonFiniteDoubles.isNonFinite(rightNumber)) {
+            return Double.compare(leftNumber.doubleValue(), rightNumber.doubleValue());
+        }
+        if (isFloatType(leftNumber) || isFloatType(rightNumber)) {
+            return ApproximateValues.compare(leftNumber.doubleValue(), rightNumber.doubleValue());
+        }
         return new BigDecimal(leftNumber.toString()).compareTo(new BigDecimal(rightNumber.toString()));
     }
 
     /** The variant's numeric content, or null when it does not hold a JSON number. */
     private static Number numericVariant(final VariantValue variant) {
         final JsonNode node = variant.node();
-        return node != null && node.isNumber() ? node.decimalValue() : null;
+        if (node == null || !node.isNumber()) {
+            return null;
+        }
+        if ((node.isDouble() || node.isFloat()) && !Double.isFinite(node.doubleValue())) {
+            return Double.valueOf(node.doubleValue());
+        }
+        return node.decimalValue();
     }
 
     /**
      * A semi-structured value compared against a VARCHAR compares the variant's DISPLAY TEXT
      * (live-verified): a variant STRING unwraps to its content ({@code PARSE_JSON('"abc"') = 'abc'}
      * is TRUE and {@code = '"abc"'} is FALSE), while an object/array/number/boolean compares as its
-     * JSON text. Variant-vs-variant comparisons are not handled here — canonical-text equality
-     * (the toString fallback) already matches Snowflake's typed behavior for those. Returns null
+     * JSON text. A variant against another variant is {@link #variantVsVariant} instead. Returns null
      * when the pair is not a variant/text combination.
      */
     private static Integer variantVsText(final Object left, final Object right) {
@@ -609,6 +840,22 @@ final class ExpressionArithmetic {
         }
         if (left instanceof CharSequence && right instanceof VariantValue) {
             return left.toString().compareTo(variantDisplayText((VariantValue) right));
+        }
+        return null;
+    }
+
+    /**
+     * A semi-structured value against ANOTHER one: the comparison is the VARIANT order, which keeps an
+     * OBJECT apart from a variant STRING spelling the same thing — live-verified, {@code
+     * PARSE_JSON('{"a":1}') = TO_VARIANT('{"a":1}')} is FALSE — while reading numbers by value. The
+     * DISPLAY text cannot serve: a variant string presents its content unquoted there, so the two would
+     * collide. Returns null when the pair is not two variants.
+     */
+    private static Integer variantVsVariant(final Object left, final Object right) {
+        if (left instanceof VariantValue && right instanceof VariantValue) {
+            // The account's order: kind first (BOOLEAN < NUMBER < STRING < OBJECT < ARRAY < null), then
+            // within the kind — numbers by value, so 1 = 1.0 and 9 < 10; see VariantOrder.
+            return Integer.valueOf(((VariantValue) left).compareTo((VariantValue) right));
         }
         return null;
     }
@@ -669,30 +916,104 @@ final class ExpressionArithmetic {
      * the toString texts instead made every such predicate false (T separator, dropped fraction zeros).
      * Returns null when the shapes don't match or the string doesn't parse, so callers keep the text path.
      */
-    private static Integer temporalVsString(final Object left, final Object right) {
-        try {
-            if (left instanceof LocalDateTime && right instanceof CharSequence) {
-                return ((LocalDateTime) left).compareTo(SharedFunctionHelpers.toLocalDateTime(right.toString()));
-            }
-            if (right instanceof LocalDateTime && left instanceof CharSequence) {
-                return SharedFunctionHelpers.toLocalDateTime(left.toString()).compareTo((LocalDateTime) right);
-            }
-            if (left instanceof LocalDate && right instanceof CharSequence) {
-                return ((LocalDate) left).compareTo(SharedFunctionHelpers.toLocalDate(right.toString()));
-            }
-            if (right instanceof LocalDate && left instanceof CharSequence) {
-                return SharedFunctionHelpers.toLocalDate(left.toString()).compareTo((LocalDate) right);
-            }
-            if (left instanceof LocalTime && right instanceof CharSequence) {
-                return ((LocalTime) left).compareTo(SharedFunctionHelpers.toLocalTime(right.toString()));
-            }
-            if (right instanceof LocalTime && left instanceof CharSequence) {
-                return SharedFunctionHelpers.toLocalTime(left.toString()).compareTo((LocalTime) right);
-            }
-        } catch (final RuntimeException notATemporalString) {
-            return null;
+    /**
+     * A DATE beside a TIMESTAMP compares by INSTANT, with the date read as its own midnight:
+     * {@code DATE '2020-01-01' = TIMESTAMP '2020-01-01 00:00:00'} is TRUE (live-verified), where the
+     * two renderings compared as text — "2020-01-01" against "2020-01-01T00:00" — never match. The
+     * pair reaches the text fallback otherwise, so this is the only place the promotion happens.
+     *
+     * <p>Returns null unless the pair really is a DATE beside a TIMESTAMP, leaving every other
+     * combination to the helpers that own it.
+     */
+    private static Integer temporalVsTemporal(final Object left, final Object right) {
+        // A TIMESTAMP_LTZ is an INSTANT (it arrives as an OffsetDateTime), so anything compared with one
+        // is read as an instant too — a naive operand in the SESSION's zone, which is how live gets
+        // `ltz = ntz` TRUE for the same wall-clock digits while the same LTZ against its own UTC digits
+        // is FALSE. Comparing the two naively would answer both the other way round.
+        if (left instanceof OffsetDateTime || right instanceof OffsetDateTime
+                || left instanceof ZonedDateTime || right instanceof ZonedDateTime) {
+            final Instant leftInstant = sessionInstant(left);
+            final Instant rightInstant = sessionInstant(right);
+            return leftInstant == null || rightInstant == null ? null
+                : Integer.valueOf(leftInstant.compareTo(rightInstant));
+        }
+        if (left instanceof LocalDate && right instanceof LocalDateTime) {
+            return ((LocalDate) left).atStartOfDay().compareTo((LocalDateTime) right);
+        }
+        if (left instanceof LocalDateTime && right instanceof LocalDate) {
+            return ((LocalDateTime) left).compareTo(((LocalDate) right).atStartOfDay());
         }
         return null;
+    }
+
+    /** A temporal as the instant it names, a naive one read in the session's zone; null if not temporal. */
+    private static Instant sessionInstant(final Object v) {
+        if (v instanceof OffsetDateTime) {
+            return ((OffsetDateTime) v).toInstant();
+        }
+        // A TIMESTAMP_TZ is an instant too — it merely remembers how it was spelled.
+        if (v instanceof ZonedDateTime) {
+            return ((ZonedDateTime) v).toInstant();
+        }
+        final LocalDateTime naive = asTemporal(v);
+        return naive == null ? null : naive.atZone(SessionZone.current()).toInstant();
+    }
+
+    /**
+     * A temporal beside a string reads the string AS that temporal, and a string that cannot be read
+     * is an ERROR rather than an inequality — exactly as a string that cannot read as a number is.
+     * Swallowing the parse failure and answering false made {@code d = 'ab'} quietly false where live
+     * raises {@code Date 'ab' is not recognized}, and hid the same refusal behind IN, CASE, DECODE and
+     * NULLIF. The sentence names the family of the TEMPORAL side, so the same 'ab' is reported as a
+     * Date, a Timestamp or a Time depending on what it was compared against.
+     */
+    private static Integer temporalVsString(final Object left, final Object right) {
+        if (left instanceof LocalDateTime && right instanceof CharSequence) {
+            return ((LocalDateTime) left).compareTo(timestampOperand(right));
+        }
+        if (right instanceof LocalDateTime && left instanceof CharSequence) {
+            return timestampOperand(left).compareTo((LocalDateTime) right);
+        }
+        if (left instanceof LocalDate && right instanceof CharSequence) {
+            return ((LocalDate) left).compareTo(dateOperand(right));
+        }
+        if (right instanceof LocalDate && left instanceof CharSequence) {
+            return dateOperand(left).compareTo((LocalDate) right);
+        }
+        if (left instanceof LocalTime && right instanceof CharSequence) {
+            return ((LocalTime) left).compareTo(timeOperand(right));
+        }
+        if (right instanceof LocalTime && left instanceof CharSequence) {
+            return timeOperand(left).compareTo((LocalTime) right);
+        }
+        return null;
+    }
+
+    /** The string operand of a TIMESTAMP comparison, or live's refusal for text that is not one. */
+    private static LocalDateTime timestampOperand(final Object text) {
+        try {
+            return SharedFunctionHelpers.toLocalDateTime(text.toString());
+        } catch (final RuntimeException notATimestamp) {
+            throw new RuntimeException("Timestamp '" + text + "' is not recognized");
+        }
+    }
+
+    /** The string operand of a DATE comparison, or live's refusal for text that is not one. */
+    private static LocalDate dateOperand(final Object text) {
+        try {
+            return SharedFunctionHelpers.toLocalDate(text.toString());
+        } catch (final RuntimeException notADate) {
+            throw new RuntimeException("Date '" + text + "' is not recognized");
+        }
+    }
+
+    /** The string operand of a TIME comparison, or live's refusal for text that is not one. */
+    private static LocalTime timeOperand(final Object text) {
+        try {
+            return SharedFunctionHelpers.toLocalTime(text.toString());
+        } catch (final RuntimeException notATime) {
+            throw new RuntimeException("Time '" + text + "' is not recognized");
+        }
     }
 
     /**
@@ -721,7 +1042,35 @@ final class ExpressionArithmetic {
         if (value instanceof Long) {
             return -(Long) value;
         }
-        return new BigDecimal(value.toString()).negate();
+        // A double negates AS a double: that keeps the carrier a FLOAT arrived in, and it keeps the sign
+        // of zero — -(0.0::FLOAT) is -0 on the account, which a BigDecimal has no way to hold.
+        if (value instanceof Double) {
+            return Double.valueOf(-((Double) value).doubleValue());
+        }
+        if (value instanceof Float) {
+            return Float.valueOf(-((Float) value).floatValue());
+        }
+        // The one exact value whose negation leaves the carrier is -2^127 itself: arithmetic can
+        // produce it, and negating it is refused in the raw-result form, where -(a + 1) — a 39-digit
+        // value still inside the window — answers (live-verified).
+        final BigDecimal negated = new BigDecimal(value.toString()).negate();
+        requireRawResultFits(negated);
+        return negated;
+    }
+
+    /**
+     * The exact remainder with the operands' rescale check — the step {@code %} and {@code MOD} share:
+     * an operand that cannot be represented at the common scale is refused before any arithmetic,
+     * with the aligned type and its own digits (live-verified for the function as for the operator).
+     *
+     * @param dividend the dividend
+     * @param divisor the divisor
+     * @return the dividend-signed remainder
+     */
+    public static BigDecimal checkedRemainder(final BigDecimal dividend, final BigDecimal divisor) {
+        requireRescalable(dividend, divisor, true);
+        requireRescalable(divisor, dividend, false);
+        return dividend.remainder(divisor);
     }
 
     /** Three-valued single comparison for quantified (ALL/ANY) evaluation: a NULL on either side is

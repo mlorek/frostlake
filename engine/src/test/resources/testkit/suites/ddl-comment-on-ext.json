@@ -1,0 +1,27 @@
+{
+  "suite": "ddl-comment-on-ext",
+  "description": "COMMENT ON for the extended object types: SEQUENCE (comment sits in DESC SEQUENCE's own comment column of its one columnar row), FILE FORMAT (comment surfaces in SHOW FILE FORMATS only - DESCRIBE lists format properties with no COMMENT row, live-verified), and MASKING / ROW ACCESS POLICY (accepted without error). Converted 1:1 from ddl/CommentOnExtTest (now retired).",
+  "tags": ["ddl", "converted"],
+  "tests": [
+    {"name": "comment-on-sequence", "steps": [
+      {"sql": "CREATE SEQUENCE s1"},
+      {"sql": "COMMENT ON SEQUENCE s1 IS 'my seq'"},
+      {"sql": "DESCRIBE SEQUENCE s1", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"comment\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "my seq"}}
+    ]},
+    {"name": "comment-on-file-format", "steps": [
+      {"sql": "CREATE FILE FORMAT ff TYPE = CSV"},
+      {"sql": "COMMENT ON FILE FORMAT ff IS 'fmt note'"},
+      {"sql": "SHOW FILE FORMATS LIKE 'FF'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"comment\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "fmt note"}},
+      {"sql": "DESCRIBE FILE FORMAT ff"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"property\" = 'COMMENT'", "expect": {"value": "0"}}
+    ]},
+    {"name": "comment-on-masking-and-row-access-policy", "steps": [
+      {"sql": "CREATE MASKING POLICY mp AS (v STRING) RETURNS STRING -> '***'"},
+      {"sql": "CREATE ROW ACCESS POLICY rap AS (v STRING) RETURNS BOOLEAN -> TRUE"},
+      {"sql": "COMMENT ON MASKING POLICY mp IS 'mask note'"},
+      {"sql": "COMMENT ON ROW ACCESS POLICY rap IS 'rap note'"}
+    ]}
+  ]
+}

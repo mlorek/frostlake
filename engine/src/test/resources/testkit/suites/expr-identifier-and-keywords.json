@@ -1,0 +1,45 @@
+{
+  "suite": "expr-identifier-and-keywords",
+  "description": "Dynamic-name and keyword handling: IDENTIFIER('name')(args) and IDENTIFIER($var)(args) as dynamically named function calls; non-reserved keywords (session, number, rename, replace, put, filter) staying usable as identifiers and aliases while anchored uses stay intact; GROUP and TABLE rejected as bare identifiers / qualified-name parts (live-verified); GET over PARSE_JSON; and the body-less CREATE TABLE refusals (bare, TAG-only, CLUSTER BY-only are syntax errors while the same tails parse behind a column list). Converted 1:1 from expressions/IdentifierCallAndReservedWordTest (now retired).",
+  "tags": ["expressions", "converted"],
+  "tests": [
+    {"name": "identifier-as-a-function-name", "steps": [
+      {"sql": "CREATE OR REPLACE FUNCTION add_it(a INTEGER, b INTEGER) RETURNS INTEGER AS $$ a + b $$"},
+      {"sql": "CREATE OR REPLACE FUNCTION speed_of_light() RETURNS INTEGER AS $$ 299792458 $$"},
+      {"sql": "SELECT IDENTIFIER('add_it')(1, 2)", "expect": {"value": "3"}},
+      {"sql": "SELECT IDENTIFIER('speed_of_light')()", "expect": {"value": "299792458"}},
+      {"sql": "SET my_function_name = 'speed_of_light'"},
+      {"sql": "SELECT IDENTIFIER($my_function_name)()", "expect": {"value": "299792458"}}
+    ]},
+    {"name": "group-is-rejected-as-bare-identifier", "steps": [
+      {"sql": "CREATE TABLE gwords (id INTEGER, group VARCHAR)", "expect": {"error": {}}}
+    ]},
+    {"name": "keyword-aliases-and-identifiers", "steps": [
+      {"sql": "CREATE TABLE kw (session VARCHAR, number INTEGER, rename VARCHAR, replace VARCHAR)"},
+      {"sql": "INSERT INTO kw VALUES ('s', 7, 'rn', 'rp')"},
+      {"sql": "SELECT session FROM kw", "expect": {"value": "s"}},
+      {"sql": "SELECT number FROM kw", "expect": {"value": "7"}},
+      {"sql": "SELECT rename FROM kw", "expect": {"value": "rn"}},
+      {"sql": "SELECT rename, replace FROM kw", "expect": {"rows": [["rn", "rp"]]}},
+      {"sql": "SELECT 1 put", "expect": {"value": "1"}},
+      {"sql": "SELECT REPLACE('ab', 'a', 'x')", "expect": {"value": "xb"}},
+      {"sql": "CREATE OR REPLACE TABLE kw2 (n NUMBER(10, 2))"}
+    ]},
+    {"name": "get-function-and-bodyless-create-table", "steps": [
+      {"sql": "SELECT GET(PARSE_JSON('{\"a\": 1}'), 'a')", "expect": {"value": "1"}},
+      {"sql": "CREATE TABLE bare_none", "expect": {"error": {}}},
+      {"sql": "CREATE TAG IF NOT EXISTS key1"},
+      {"sql": "CREATE TAG IF NOT EXISTS key2"},
+      {"sql": "CREATE TABLE bare_tagged TAG (key1='value_1', key2='value_2')", "expect": {"error": {}}},
+      {"sql": "CREATE TABLE bare_clustered CLUSTER BY (n1, n2)", "expect": {"error": {}}},
+      {"sql": "CREATE TABLE tagged (id INTEGER) TAG (key1='value_1', key2='value_2')"},
+      {"sql": "CREATE TABLE clustered (n1 INTEGER, n2 INTEGER) CLUSTER BY (n1, n2)"},
+      {"sql": "ALTER TABLE tagged ADD extra INTEGER"},
+      {"sql": "INSERT INTO tagged VALUES (4, 5)"},
+      {"sql": "SELECT id FROM tagged", "expect": {"value": "4"}}
+    ]},
+    {"name": "table-is-rejected-as-a-qualified-name-part", "steps": [
+      {"sql": "CREATE TABLE test_db.test_schema.table (id INTEGER)", "expect": {"error": {}}}
+    ]}
+  ]
+}

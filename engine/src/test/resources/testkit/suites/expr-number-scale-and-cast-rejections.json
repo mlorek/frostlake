@@ -1,0 +1,68 @@
+{
+  "suite": "expr-number-scale-and-cast-rejections",
+  "description": "NUMBER scale/precision honoring (HALF_UP rounding to the declared scale on cast and insert, integer-part overflow rejected, DOUBLE untouched) and the two numeric-cast failure shapes live draws apart: a VARIANT source names its JSON value and the numeric FAMILY it failed to become (FIXED for the exact targets and integer aliases, REAL for FLOAT/DOUBLE, quoted JSON strings in their quoted form) while a plain string keeps Numeric value '...' is not recognized; a VARIANT holding a numeric JSON string still casts (content parsed, padding trimmed) while a VARCHAR whose text is quoted is its own literal content. Converted 1:1 from expressions/NumberScalePrecisionTest + expressions/NumericCastRejectionTest (now retired).",
+  "tags": ["expressions", "converted"],
+  "tests": [
+    {"name": "cast-rounds-half-up-to-scale", "steps": [
+      {"sql": "SELECT 1.987::NUMBER(10,2)", "expect": {"value": "1.99"}},
+      {"sql": "SELECT CAST(1.987 AS NUMBER(10,2))", "expect": {"value": "1.99"}}
+    ]},
+    {"name": "cast-value-that-fits-the-scale-is-preserved", "steps": [
+      {"sql": "SELECT 1.5::NUMBER(10,2)", "expect": {"value": "1.5"}}
+    ]},
+    {"name": "cast-integer-part-overflow-throws", "steps": [
+      {"sql": "SELECT 12345.6::NUMBER(3,0)", "expect": {"error": {}}}
+    ]},
+    {"name": "insert-rounds-to-declared-column-scale", "steps": [
+      {"sql": "CREATE TABLE nums (v NUMBER(5,2))"},
+      {"sql": "INSERT INTO nums VALUES (123.456)"},
+      {"sql": "SELECT v FROM nums", "expect": {"value": "123.46"}}
+    ]},
+    {"name": "double-column-value-is-not-rounded", "steps": [
+      {"sql": "CREATE TABLE dbls (d DOUBLE)"},
+      {"sql": "INSERT INTO dbls VALUES (1.23456789)"},
+      {"sql": "SELECT d FROM dbls", "expect": {"value": "1.23456789"}}
+    ]},
+    {"name": "a-semi-structured-variant-names-its-value-and-the-numeric-family-it-failed-to-become", "steps": [
+      {"sql": "SELECT PARSE_JSON('{}')::NUMBER",
+       "expect": {"error": {"messageContains": "Failed to cast variant value {} to FIXED"}}},
+      {"sql": "SELECT PARSE_JSON('{\"a\":1}')::NUMBER(10,2)",
+       "expect": {"error": {"messageContains": "Failed to cast variant value {\"a\":1} to FIXED"}}},
+      {"sql": "SELECT PARSE_JSON('[1,2]')::NUMBER",
+       "expect": {"error": {"messageContains": "Failed to cast variant value [1,2] to FIXED"}}}
+    ]},
+    {"name": "the-integer-aliases-report-the-same-fixed-family-as-number", "steps": [
+      {"sql": "SELECT PARSE_JSON('{}')::INT",
+       "expect": {"error": {"messageContains": "Failed to cast variant value {} to FIXED"}}},
+      {"sql": "SELECT PARSE_JSON('{}')::BIGINT",
+       "expect": {"error": {"messageContains": "Failed to cast variant value {} to FIXED"}}}
+    ]},
+    {"name": "the-approximate-targets-report-real-rather-than-fixed", "steps": [
+      {"sql": "SELECT PARSE_JSON('{}')::FLOAT",
+       "expect": {"error": {"messageContains": "Failed to cast variant value {} to REAL"}}},
+      {"sql": "SELECT PARSE_JSON('{}')::DOUBLE",
+       "expect": {"error": {"messageContains": "Failed to cast variant value {} to REAL"}}},
+      {"sql": "SELECT PARSE_JSON('[1,2]')::FLOAT",
+       "expect": {"error": {"messageContains": "Failed to cast variant value [1,2] to REAL"}}}
+    ]},
+    {"name": "a-variant-holding-a-json-string-is-reported-in-its-quoted-json-form", "steps": [
+      {"sql": "SELECT PARSE_JSON('\"abc\"')::NUMBER",
+       "expect": {"error": {"messageContains": "Failed to cast variant value \"abc\" to FIXED"}}}
+    ]},
+    {"name": "a-plain-string-keeps-snowflakes-numeric-value-message-instead", "steps": [
+      {"sql": "SELECT '{}'::NUMBER", "expect": {"error": {"messageContains": "Numeric value '{}' is not recognized"}}},
+      {"sql": "SELECT '{}'::INT", "expect": {"error": {"messageContains": "Numeric value '{}' is not recognized"}}},
+      {"sql": "SELECT '{}'::FLOAT", "expect": {"error": {"messageContains": "Numeric value '{}' is not recognized"}}},
+      {"sql": "SELECT 'abc'::NUMBER", "expect": {"error": {"messageContains": "Numeric value 'abc' is not recognized"}}}
+    ]},
+    {"name": "a-variant-holding-a-numeric-json-string-still-casts", "steps": [
+      {"sql": "SELECT PARSE_JSON('42')::NUMBER", "expect": {"value": "42"}},
+      {"sql": "SELECT PARSE_JSON('\"42\"')::NUMBER", "expect": {"value": "42"}},
+      {"sql": "SELECT PARSE_JSON('\" 42 \"')::NUMBER", "expect": {"value": "42"}},
+      {"sql": "SELECT PARSE_JSON('\"42.5\"')::NUMBER(10,1)", "expect": {"value": "42.5"}}
+    ]},
+    {"name": "a-plain-string-whose-text-is-quoted-is-its-own-literal-content", "steps": [
+      {"sql": "SELECT '\"42\"'::NUMBER", "expect": {"error": {"messageContains": "Numeric value '\"42\"' is not recognized"}}}
+    ]}
+  ]
+}

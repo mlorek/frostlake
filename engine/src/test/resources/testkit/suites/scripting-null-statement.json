@@ -1,0 +1,49 @@
+{
+  "suite": "scripting-null-statement",
+  "description": "The NULL statement in Snowflake Scripting - a procedural no-op. It executes without error inside a block, alone, several in a row, and interspersed among other statements without disturbing them. NULL is a SCRIPTING statement, so OUTSIDE a block a real account refuses it as a SYNTAX ERROR, which is the boundary that makes the rest meaningful. Converted 1:1 from scripting/NullStatementTest (now retired); several of its tests were the same claim written twice - assertDoesNotThrow over a block containing only NULL - so the converted tests keep every distinct shape and give the no-op tests something to observe: the surrounding INSERTs still land exactly once each.",
+  "tags": ["scripting", "converted"],
+  "tests": [
+    {"name": "a-simple-null-statement", "steps": [
+      {"sql": "BEGIN NULL; END;"}
+    ]},
+    {"name": "a-null-statement-inside-a-multi-line-block", "steps": [
+      {"sql": "BEGIN\n    NULL;\nEND;"}
+    ]},
+    {"name": "null-statements-among-other-statements", "steps": [
+      {"sql": "CREATE TABLE test (id INTEGER)"},
+      {"sql": "BEGIN NULL; END;"},
+      {"sql": "INSERT INTO test VALUES (1)"},
+      {"sql": "BEGIN NULL; END;"},
+      {"sql": "INSERT INTO test VALUES (2)"},
+      {"sql": "BEGIN NULL; END;"},
+      {"sql": "SELECT id FROM test ORDER BY id", "expect": {"rows": [[1],[2]], "ordered": true}}
+    ]},
+    {"name": "several-null-statements-in-sequence", "steps": [
+      {"sql": "BEGIN NULL; NULL; NULL; END;"}
+    ]},
+    {"name": "a-standalone-null-and-then-more-statements", "steps": [
+      {"sql": "CREATE TABLE test (id INTEGER)"},
+      {"sql": "BEGIN NULL; END;"},
+      {"sql": "INSERT INTO test VALUES (1)"},
+      {"sql": "BEGIN NULL; END;"},
+      {"sql": "INSERT INTO test VALUES (2)"},
+      {"sql": "SELECT COUNT(*) FROM test", "expect": {"value": 2}}
+    ]},
+    {"name": "a-null-statement-in-a-block-written-across-lines", "steps": [
+      {"sql": "BEGIN\n    NULL;\nEND;"}
+    ]},
+    {"name": "a-standalone-null-outside-a-block-is-a-syntax-error", "steps": [
+      {"sql": "NULL;", "expect": {"error": {"messageContains": "syntax error"}}}
+    ]},
+    {"name": "null-statements-interspersed-in-a-longer-sequence", "steps": [
+      {"sql": "CREATE TABLE test (id INTEGER)"},
+      {"sql": "BEGIN NULL; END;"},
+      {"sql": "INSERT INTO test VALUES (1)"},
+      {"sql": "BEGIN NULL; END;"},
+      {"sql": "BEGIN NULL; END;"},
+      {"sql": "INSERT INTO test VALUES (2)"},
+      {"sql": "BEGIN NULL; END;"},
+      {"sql": "SELECT id FROM test ORDER BY id", "expect": {"rows": [[1],[2]], "ordered": true}}
+    ]}
+  ]
+}

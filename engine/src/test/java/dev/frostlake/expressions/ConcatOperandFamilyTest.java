@@ -130,16 +130,19 @@ public class ConcatOperandFamilyTest extends BaseDatabaseTest {
             refusalOf("SELECT bin || n AS c FROM cf_t"));
     }
 
-    /** Two binaries add their lengths, and the sum SATURATES at a BINARY's maximum. */
+    /**
+     * Two binaries add their lengths, and a VIEW declares a sum past the 8MB column default at that
+     * default — the plan's own width is the sum (see BinaryConcatenationWidthTest).
+     */
     @Test
-    public void twoBinariesAddTheirLengthsAndSaturate() {
+    public void twoBinariesAddTheirLengthsAndAViewSettlesTheSum() {
         assertTrue(declaredType("bin || bin").contains("\"length\":8"),
             "BINARY(4) || BINARY(4) should be 8 bytes: " + declaredType("bin || bin"));
         assertTrue(declaredType("CAST(s AS BINARY(8388608)) || bin").contains("\"length\":8388608"),
-            "an overlong binary pair should saturate rather than overflow");
+            "a view declares an overlong binary pair at the column default");
         assertTrue(declaredType("CAST(s AS BINARY(8388608)) || CAST(s AS BINARY(8388608))")
                 .contains("\"length\":8388608"),
-            "two maximum binaries should still saturate");
+            "and two 8MB binaries the same");
     }
 
     /** The string counterpart saturates the same way, at a VARCHAR's own maximum. */

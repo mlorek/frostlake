@@ -1,0 +1,21 @@
+{
+  "suite": "functions-try-to-decimal",
+  "description": "TRY_TO_DECIMAL and TRY_TO_NUMERIC are Snowflake synonyms of TRY_TO_NUMBER, mirroring TO_DECIMAL / TO_NUMERIC for TO_NUMBER. Neither synonym was registered, so a loader using TRY_TO_DECIMAL failed with Unknown function. They parse a numeric string, answer NULL on garbage, and share the TRY_CAST source rule: an UNTYPED NULL errors while NULL::VARCHAR converts to NULL. Converted 1:1 from functions/TryToDecimalTest (now retired); the Java compared two separate query results to show the synonym, which the converted test does inside one statement.",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "try-to-decimal-parses-and-returns-null-on-garbage", "steps": [
+      {"sql": "SELECT TRY_TO_DECIMAL('42')", "expect": {"value": "42"}},
+      {"sql": "SELECT TRY_TO_DECIMAL('not a number')", "expect": {"rows": [[null]]}},
+      {"sql": "SELECT TRY_TO_DECIMAL(NULL)", "expect": {"error": {"messageContains": "TRY_CAST"}}},
+      {"sql": "SELECT TRY_TO_DECIMAL(NULL::VARCHAR)", "expect": {"rows": [[null]]}}
+    ]},
+    {"name": "try-to-numeric-is-the-same-function", "steps": [
+      {"sql": "SELECT TRY_TO_NUMERIC('7')", "expect": {"value": "7"}},
+      {"sql": "SELECT TRY_TO_NUMERIC('x')", "expect": {"rows": [[null]]}}
+    ]},
+    {"name": "it-behaves-exactly-like-try-to-number", "steps": [
+      {"sql": "SELECT TRY_TO_NUMBER('12.5') = TRY_TO_DECIMAL('12.5')", "expect": {"value": "true"}},
+      {"sql": "SELECT TO_VARCHAR(TRY_TO_DECIMAL('12.5'))", "expect": {"value": "13"}}
+    ]}
+  ]
+}

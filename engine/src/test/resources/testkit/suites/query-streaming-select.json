@@ -1,0 +1,37 @@
+{
+  "suite": "query-streaming-select",
+  "description": "A simple single-table SELECT ... LIMIT takes the pull-based STREAMING path - scan, then WHERE, then LIMIT, short-circuiting as soon as the limit is met - and it must produce exactly what the materialising path produces. Pinned across the streamable shapes: WHERE with LIMIT, LIMIT with OFFSET, LIMIT 0, a LIMIT beyond the number of matching rows, and a projection over a limited result (the projection is applied AFTER the streamed WHERE and LIMIT). The non-streamable shape rides along as the control: ORDER BY with LIMIT disables streaming because it needs a full sort, and its top-two descending must still be right. Rows are produced in SCAN (insertion) order, the same as the materialising path, which is what makes the first four expectations meaningful rather than arbitrary. Converted 1:1 from query/StreamingSelectTest (now retired).",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "where-with-limit-takes-the-first-matches", "steps": [
+      {"sql": "CREATE TABLE nums (id INTEGER)"},
+      {"sql": "INSERT INTO nums VALUES (1),(2),(3),(4),(5),(6),(7),(8),(9),(10)"},
+      {"sql": "SELECT id FROM nums WHERE id >= 3 LIMIT 2", "expect": {"rows": [[3],[4]], "ordered": true}}
+    ]},
+    {"name": "limit-with-offset", "steps": [
+      {"sql": "CREATE TABLE nums (id INTEGER)"},
+      {"sql": "INSERT INTO nums VALUES (1),(2),(3),(4),(5),(6),(7),(8),(9),(10)"},
+      {"sql": "SELECT id FROM nums LIMIT 3 OFFSET 2", "expect": {"rows": [[3],[4],[5]], "ordered": true}}
+    ]},
+    {"name": "limit-zero", "steps": [
+      {"sql": "CREATE TABLE nums (id INTEGER)"},
+      {"sql": "INSERT INTO nums VALUES (1),(2),(3),(4),(5),(6),(7),(8),(9),(10)"},
+      {"sql": "SELECT id FROM nums LIMIT 0", "expect": {"rowCount": 0}}
+    ]},
+    {"name": "a-limit-beyond-the-matching-rows", "steps": [
+      {"sql": "CREATE TABLE nums (id INTEGER)"},
+      {"sql": "INSERT INTO nums VALUES (1),(2),(3),(4),(5),(6),(7),(8),(9),(10)"},
+      {"sql": "SELECT id FROM nums WHERE id > 8 LIMIT 100", "expect": {"rows": [[9],[10]], "ordered": true}}
+    ]},
+    {"name": "the-projection-is-applied-to-the-limited-rows", "steps": [
+      {"sql": "CREATE TABLE nums (id INTEGER)"},
+      {"sql": "INSERT INTO nums VALUES (1),(2),(3),(4),(5),(6),(7),(8),(9),(10)"},
+      {"sql": "SELECT id + 100 AS x FROM nums WHERE id <= 5 LIMIT 2", "expect": {"rows": [[101],[102]], "ordered": true, "columns": ["X"]}}
+    ]},
+    {"name": "order-by-with-limit-falls-back-correctly", "steps": [
+      {"sql": "CREATE TABLE nums (id INTEGER)"},
+      {"sql": "INSERT INTO nums VALUES (1),(2),(3),(4),(5),(6),(7),(8),(9),(10)"},
+      {"sql": "SELECT id FROM nums ORDER BY id DESC LIMIT 2", "expect": {"rows": [[10],[9]], "ordered": true}}
+    ]}
+  ]
+}

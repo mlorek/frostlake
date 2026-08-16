@@ -1,0 +1,91 @@
+{
+  "suite": "scripting-snowpark-api-surface",
+  "description": "The Snowpark Java classes an inline handler names: Row, Column, Functions, and the types trio StructType / StructField / DataTypes. The point of each test is that a handler written against the REAL Snowpark API COMPILES AND RUNS UNCHANGED - before these classes existed, collect() handed back frostlake's own storage row, whose only accessor is getValue(int), so rows[0].getString(0) did not compile at all. On a live run the very same handler SOURCE is compiled by Snowflake against the real Snowpark, so every line here is a TWO-SIDED claim: a method the stub offers but Snowpark does not will not compile there, and a value the stub prints differently will not match. That is what makes this the stub's SPECIFICATION rather than a description of it - which is why the assertions are on VALUES and on the vocabulary the real API prints, never on generated SQL text, which Snowpark builds its own way and never exposes. Two printed vocabularies matter: typeName() is the type's CLASS name (LongType, not Long) while toString() matches it except for DECIMAL, the one type carrying parameters, and a StructField prints its type in the SHORT vocabulary instead. A quoted field name keeps its case AND its quotes where an unquoted one is folded; negation is spelled unary_not() and not not(); and getName() answers a name for a plain column and nothing for a composed expression. Converted 1:1 from scripting/SnowparkApiSurfaceTest (now retired); its call() helper created a procedure per test and CALLed it, which is exactly what the steps here do.",
+  "tags": ["scripting", "converted"],
+  "tests": [
+    {"name": "row-exposes-the-typed-accessors", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE sp_t (id INTEGER, name VARCHAR, price NUMBER(10,2), ok BOOLEAN, d DATE, v VARIANT)"},
+      {"sql": "INSERT INTO sp_t SELECT 7, 'alice', 12.50, TRUE, '2026-01-02'::DATE, PARSE_JSON('{\"k\":1}')"},
+      {"sql": "CREATE OR REPLACE PROCEDURE sp_row() RETURNS VARCHAR LANGUAGE JAVA PACKAGES=('com.snowflake:snowpark:latest') HANDLER='H.go' AS $$\nimport com.snowflake.snowpark_java.*;\nclass H { public String go(Session s) {\n  Row[] r = s.sql(\"SELECT id, name, price, ok FROM sp_t\").collect();\n  return r[0].getInt(0) + \"/\" + r[0].getString(1) + \"/\" + r[0].getDecimal(2)\n       + \"/\" + r[0].getBoolean(3) + \"/size=\" + r[0].size();\n} }\n$$"},
+      {"sql": "CALL sp_row()", "expect": {"value": "7/alice/12.50/true/size=4"}}
+    ]},
+    {"name": "row-reads-temporal-variant-and-null", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE sp_t (id INTEGER, name VARCHAR, price NUMBER(10,2), ok BOOLEAN, d DATE, v VARIANT)"},
+      {"sql": "INSERT INTO sp_t SELECT 7, 'alice', 12.50, TRUE, '2026-01-02'::DATE, PARSE_JSON('{\"k\":1}')"},
+      {"sql": "CREATE OR REPLACE PROCEDURE sp_row2() RETURNS VARCHAR LANGUAGE JAVA PACKAGES=('com.snowflake:snowpark:latest') HANDLER='H.go' AS $$\nimport com.snowflake.snowpark_java.*;\nclass H { public String go(Session s) {\n  Row[] r = s.sql(\"SELECT d, v, NULL AS n FROM sp_t\").collect();\n  return r[0].getDate(0) + \"/\" + r[0].getVariant(1) + \"/null=\" + r[0].isNullAt(2);\n} }\n$$"},
+      {"sql": "CALL sp_row2()", "expect": {"value": "2026-01-02/{\"k\":1}/null=true"}}
+    ]},
+    {"name": "a-null-primitive-is-refused-not-zeroed", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE sp_t (id INTEGER, name VARCHAR, price NUMBER(10,2), ok BOOLEAN, d DATE, v VARIANT)"},
+      {"sql": "INSERT INTO sp_t SELECT 7, 'alice', 12.50, TRUE, '2026-01-02'::DATE, PARSE_JSON('{\"k\":1}')"},
+      {"sql": "CREATE OR REPLACE PROCEDURE sp_null() RETURNS VARCHAR LANGUAGE JAVA PACKAGES=('com.snowflake:snowpark:latest') HANDLER='H.go' AS $$\nimport com.snowflake.snowpark_java.*;\nclass H { public String go(Session s) {\n  Row[] r = s.sql(\"SELECT NULL AS n FROM sp_t\").collect();\n  try { r[0].getInt(0); return \"returned \" + r[0].getInt(0); }\n  catch (NullPointerException e) { return \"refused\"; }\n} }\n$$"},
+      {"sql": "CALL sp_null()", "expect": {"value": "refused"}}
+    ]},
+    {"name": "schema-describes-the-result", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE sp_t (id INTEGER, name VARCHAR, price NUMBER(10,2), ok BOOLEAN, d DATE, v VARIANT)"},
+      {"sql": "INSERT INTO sp_t SELECT 7, 'alice', 12.50, TRUE, '2026-01-02'::DATE, PARSE_JSON('{\"k\":1}')"},
+      {"sql": "CREATE OR REPLACE PROCEDURE sp_schema() RETURNS VARCHAR LANGUAGE JAVA PACKAGES=('com.snowflake:snowpark:latest') HANDLER='H.go' AS $$\nimport com.snowflake.snowpark_java.*;\nimport com.snowflake.snowpark_java.types.*;\nclass H { public String go(Session s) {\n  StructType st = s.sql(\"SELECT id, name, price FROM sp_t\").schema();\n  StringBuilder b = new StringBuilder();\n  for (StructField f : st) b.append(f.name()).append(':').append(f.dataType().typeName())\n      .append('=').append(f.dataType().toString()).append(' ');\n  return b.toString().trim() + \" | size=\" + st.size();\n} }\n$$"},
+      {"sql": "CALL sp_schema()", "expect": {"value": "ID:LongType=LongType NAME:StringType=StringType PRICE:DecimalType=Decimal(10, 2) | size=3"}}
+    ]},
+    {"name": "functions-and-column-drive-filter-and-select", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE sp_t (id INTEGER, name VARCHAR, price NUMBER(10,2), ok BOOLEAN, d DATE, v VARIANT)"},
+      {"sql": "INSERT INTO sp_t SELECT 7, 'alice', 12.50, TRUE, '2026-01-02'::DATE, PARSE_JSON('{\"k\":1}')"},
+      {"sql": "CREATE OR REPLACE PROCEDURE sp_fn() RETURNS VARCHAR LANGUAGE JAVA PACKAGES=('com.snowflake:snowpark:latest') HANDLER='H.go' AS $$\nimport com.snowflake.snowpark_java.*;\nimport static com.snowflake.snowpark_java.Functions.*;\nclass H { public String go(Session s) {\n  Column c = col(\"price\").gt(lit(10)).and(col(\"name\").equal_to(lit(\"alice\")));\n  Row[] r = s.sql(\"SELECT * FROM sp_t\").filter(c).select(upper(col(\"name\")).as(\"u\")).collect();\n  return r.length + \":\" + r[0].getString(0);\n} }\n$$"},
+      {"sql": "CALL sp_fn()", "expect": {"value": "1:ALICE"}}
+    ]},
+    {"name": "a-filter-that-matches-nothing-returns-no-rows", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE sp_t (id INTEGER, name VARCHAR, price NUMBER(10,2), ok BOOLEAN, d DATE, v VARIANT)"},
+      {"sql": "INSERT INTO sp_t SELECT 7, 'alice', 12.50, TRUE, '2026-01-02'::DATE, PARSE_JSON('{\"k\":1}')"},
+      {"sql": "CREATE OR REPLACE PROCEDURE sp_fn_empty() RETURNS VARCHAR LANGUAGE JAVA PACKAGES=('com.snowflake:snowpark:latest') HANDLER='H.go' AS $$\nimport com.snowflake.snowpark_java.*;\nimport static com.snowflake.snowpark_java.Functions.*;\nclass H { public String go(Session s) {\n  Column c = col(\"name\").equal_to(lit(\"nobody\"));\n  return String.valueOf(s.sql(\"SELECT * FROM sp_t\").where(c).collect().length);\n} }\n$$"},
+      {"sql": "CALL sp_fn_empty()", "expect": {"value": "0"}}
+    ]},
+    {"name": "a-literal-is-quoted-safely", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE sp_t (id INTEGER, name VARCHAR, price NUMBER(10,2), ok BOOLEAN, d DATE, v VARIANT)"},
+      {"sql": "INSERT INTO sp_t SELECT 7, 'alice', 12.50, TRUE, '2026-01-02'::DATE, PARSE_JSON('{\"k\":1}')"},
+      {"sql": "CREATE OR REPLACE PROCEDURE sp_lit() RETURNS VARCHAR LANGUAGE JAVA PACKAGES=('com.snowflake:snowpark:latest') HANDLER='H.go' AS $$\nimport com.snowflake.snowpark_java.*;\nimport static com.snowflake.snowpark_java.Functions.*;\nclass H { public String go(Session s) {\n  Row[] r = s.sql(\"SELECT 'O''Brien' AS expected FROM sp_t\")\n      .select(lit(\"O'Brien\").equal_to(col(\"expected\")).as(\"same\")).collect();\n  return r[0].getBoolean(0) ? \"1\" : \"0\";\n} }\n$$"},
+      {"sql": "CALL sp_lit()", "expect": {"value": "1"}}
+    ]},
+    {"name": "data-types-keep-their-class-and-their-printed-form", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE sp_t (id INTEGER, name VARCHAR, price NUMBER(10,2), ok BOOLEAN, d DATE, v VARIANT)"},
+      {"sql": "INSERT INTO sp_t SELECT 7, 'alice', 12.50, TRUE, '2026-01-02'::DATE, PARSE_JSON('{\"k\":1}')"},
+      {"sql": "CREATE OR REPLACE PROCEDURE sp_types() RETURNS VARCHAR LANGUAGE JAVA PACKAGES=('com.snowflake:snowpark:latest') HANDLER='H.go' AS $$\nimport com.snowflake.snowpark_java.*;\nimport com.snowflake.snowpark_java.types.*;\nimport static com.snowflake.snowpark_java.Functions.*;\nclass H { public String go(Session s) {\n  StringType st = DataTypes.StringType;\n  DataType dec = DataTypes.createDecimalType(10, 2);\n  StructField f = new StructField(\"id\", DataTypes.LongType, false);\n  Row[] r = s.sql(\"SELECT id FROM sp_t\").select(col(\"id\").cast(st).as(\"c\")).collect();\n  return st.typeName() + \"/\" + dec.typeName() + \"/\" + dec + \"/\" + f + \"/\" + r[0].getString(0);\n} }\n$$"},
+      {"sql": "CALL sp_types()", "expect": {"value": "StringType/DecimalType/Decimal(10, 2)/StructField(ID, Long, Nullable = false)/7"}}
+    ]},
+    {"name": "a-quoted-field-name-is-kept-verbatim", "steps": [
+      {"sql": "CREATE OR REPLACE PROCEDURE sp_field() RETURNS VARCHAR LANGUAGE JAVA PACKAGES=('com.snowflake:snowpark:latest') HANDLER='H.go' AS $$\nimport com.snowflake.snowpark_java.*;\nimport com.snowflake.snowpark_java.types.*;\nclass H { public String go(Session s) {\n  return new StructField(\"mixed\", DataTypes.StringType).name() + \"/\"\n      + new StructField(\"\\\"mixedName\\\"\", DataTypes.StringType).name();\n} }\n$$"},
+      {"sql": "CALL sp_field()", "expect": {"value": "MIXED/\"mixedName\""}}
+    ]},
+    {"name": "container-types-print-their-element-type", "steps": [
+      {"sql": "CREATE OR REPLACE PROCEDURE sp_arr() RETURNS VARCHAR LANGUAGE JAVA PACKAGES=('com.snowflake:snowpark:latest') HANDLER='H.go' AS $$\nimport com.snowflake.snowpark_java.*;\nimport com.snowflake.snowpark_java.types.*;\nclass H { public String go(Session s) {\n  ArrayType a = DataTypes.createArrayType(DataTypes.StringType);\n  return a.typeName() + \"/\" + a;\n} }\n$$"},
+      {"sql": "CALL sp_arr()", "expect": {"value": "ArrayType/ArrayType[StringType]"}}
+    ]},
+    {"name": "negation-is-spelled-unary-not", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE sp_t (id INTEGER, name VARCHAR, price NUMBER(10,2), ok BOOLEAN, d DATE, v VARIANT)"},
+      {"sql": "INSERT INTO sp_t SELECT 7, 'alice', 12.50, TRUE, '2026-01-02'::DATE, PARSE_JSON('{\"k\":1}')"},
+      {"sql": "CREATE OR REPLACE PROCEDURE sp_not() RETURNS VARCHAR LANGUAGE JAVA PACKAGES=('com.snowflake:snowpark:latest') HANDLER='H.go' AS $$\nimport com.snowflake.snowpark_java.*;\nimport static com.snowflake.snowpark_java.Functions.*;\nclass H { public String go(Session s) {\n  Row[] r = s.sql(\"SELECT ok FROM sp_t\").select(col(\"ok\").unary_not().as(\"n\")).collect();\n  return String.valueOf(r[0].getBoolean(0));\n} }\n$$"},
+      {"sql": "CALL sp_not()", "expect": {"value": "false"}}
+    ]},
+    {"name": "the-wider-column-surface-works", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE sp_t (id INTEGER, name VARCHAR, price NUMBER(10,2), ok BOOLEAN, d DATE, v VARIANT)"},
+      {"sql": "INSERT INTO sp_t SELECT 7, 'alice', 12.50, TRUE, '2026-01-02'::DATE, PARSE_JSON('{\"k\":1}')"},
+      {"sql": "CREATE OR REPLACE PROCEDURE sp_col2() RETURNS VARCHAR LANGUAGE JAVA PACKAGES=('com.snowflake:snowpark:latest') HANDLER='H.go' AS $$\nimport com.snowflake.snowpark_java.*;\nimport static com.snowflake.snowpark_java.Functions.*;\nclass H { public String go(Session s) {\n  DataFrame d = s.sql(\"SELECT * FROM sp_t\");\n  Row[] r = d.filter(col(\"id\").between(lit(1), lit(10)))\n             .select(col(\"id\"), col(\"id\").unary_minus().as(\"neg\"),\n                     col(\"name\").isNull().as(\"n\"), upper(col(\"name\")).as(\"u\"),\n                     col(\"id\").equal_null(lit(7)).as(\"e\")).collect();\n  return r.length + \":\" + (-r[0].getInt(1)) + \":\" + r[0].getBoolean(2)\n       + \":\" + r[0].getString(3) + \":\" + r[0].getBoolean(4);\n} }\n$$"},
+      {"sql": "CALL sp_col2()", "expect": {"value": "1:7:false:ALICE:true"}}
+    ]},
+    {"name": "a-column-knows-its-name-only-when-it-has-one", "steps": [
+      {"sql": "CREATE OR REPLACE PROCEDURE sp_colname() RETURNS VARCHAR LANGUAGE JAVA PACKAGES=('com.snowflake:snowpark:latest') HANDLER='H.go' AS $$\nimport com.snowflake.snowpark_java.*;\nimport static com.snowflake.snowpark_java.Functions.*;\nclass H { public String go(Session s) {\n  return col(\"name\").getName().orElse(\"absent\") + \"/\"\n       + upper(col(\"name\")).getName().orElse(\"absent\");\n} }\n$$"},
+      {"sql": "CALL sp_colname()", "expect": {"value": "\"NAME\"/absent"}}
+    ]},
+    {"name": "the-wider-dataframe-surface-works", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE sp_n (n INTEGER)"},
+      {"sql": "INSERT INTO sp_n VALUES (3), (1), (2), (2)"},
+      {"sql": "CREATE OR REPLACE PROCEDURE sp_df2() RETURNS VARCHAR LANGUAGE JAVA PACKAGES=('com.snowflake:snowpark:latest') HANDLER='H.go' AS $$\nimport com.snowflake.snowpark_java.*;\nimport static com.snowflake.snowpark_java.Functions.*;\nclass H { public String go(Session s) {\n  DataFrame d = s.sql(\"SELECT n FROM sp_n\");\n  int firstAsc = d.sort(col(\"n\").asc()).first().get().getInt(0);\n  int distinct = d.distinct().collect().length;\n  int limited  = d.limit(3).collect().length;\n  int inter    = d.intersect(s.sql(\"SELECT 1 AS n\")).collect().length;\n  long total   = d.union(s.sql(\"SELECT 9 AS n\")).count();\n  int firstTwo = d.first(2).length;\n  return firstAsc + \"|\" + distinct + \"|\" + limited + \"|\" + inter + \"|\" + total\n       + \"|\" + firstTwo;\n} }\n$$"},
+      {"sql": "CALL sp_df2()", "expect": {"value": "1|3|3|1|4|2"}}
+    ]},
+    {"name": "with-column-drop-and-agg-reshape-the-frame", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE sp_t (id INTEGER, name VARCHAR, price NUMBER(10,2), ok BOOLEAN, d DATE, v VARIANT)"},
+      {"sql": "INSERT INTO sp_t SELECT 7, 'alice', 12.50, TRUE, '2026-01-02'::DATE, PARSE_JSON('{\"k\":1}')"},
+      {"sql": "CREATE OR REPLACE PROCEDURE sp_df3() RETURNS VARCHAR LANGUAGE JAVA PACKAGES=('com.snowflake:snowpark:latest') HANDLER='H.go' AS $$\nimport com.snowflake.snowpark_java.*;\nimport static com.snowflake.snowpark_java.Functions.*;\nclass H { public String go(Session s) {\n  DataFrame d = s.sql(\"SELECT id, name FROM sp_t\");\n  Row[] wide = d.withColumn(\"twice\", col(\"id\").multiply(lit(2))).collect();\n  int thin = d.drop(\"name\").collect()[0].size();\n  Row[] agg  = d.agg(count(col(\"id\")).as(\"c\")).collect();\n  return thin + \":\" + wide[0].getInt(2) + \":\" + agg[0].getInt(0);\n} }\n$$"},
+      {"sql": "CALL sp_df3()", "expect": {"value": "1:14:1"}}
+    ]}
+  ]
+}

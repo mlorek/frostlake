@@ -1,0 +1,121 @@
+{
+  "suite": "features-alter-column",
+  "description": "ALTER COLUMN ... SET DATA TYPE semantics: only the widening retypes are permitted (VARCHAR length growth, NUMBER precision moving either way at UNCHANGED scale, synonymous restatements like TIMESTAMP_NTZ->TIMESTAMP and INTEGER->BIGINT) - every cross-family change (to VARCHAR, INTEGER, DATE, BOOLEAN), VARCHAR shrink (with its own live sentence naming both parameterized types) and NUMBER scale change is refused 'cannot change column'; missing columns/tables error, IF EXISTS forgives the table, retypes preserve comments, primary keys and data, and compose with other ALTER operations. Converted 1:1 from features/AlterColumnTest (now retired).",
+  "tags": ["features", "converted"],
+  "tests": [
+    {"name": "cross-family-change-to-varchar-is-rejected", "steps": [
+      {"sql": "CREATE TABLE users (id INTEGER, age INTEGER, name VARCHAR)"},
+      {"sql": "INSERT INTO users VALUES (1, 25, 'Alice')"},
+      {"sql": "ALTER TABLE users ALTER COLUMN age SET DATA TYPE VARCHAR", "expect": {"error": {"messageContains": "cannot change column"}}}
+    ]},
+    {"name": "cross-family-change-to-integer-is-rejected", "steps": [
+      {"sql": "CREATE TABLE products (id INTEGER, price VARCHAR, name VARCHAR)"},
+      {"sql": "ALTER TABLE products ALTER COLUMN price SET DATA TYPE INTEGER", "expect": {"error": {"messageContains": "cannot change column"}}}
+    ]},
+    {"name": "alter-column-with-type-parameters", "steps": [
+      {"sql": "CREATE TABLE documents (id INTEGER, content VARCHAR(100))"},
+      {"sql": "ALTER TABLE documents ALTER COLUMN content SET DATA TYPE VARCHAR(1000)"},
+      {"sql": "DESCRIBE TABLE documents"},
+      {"sql": "SELECT COUNT_IF(\"name\" = 'CONTENT' AND STARTSWITH(\"type\", 'VARCHAR')) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "1"}}
+    ]},
+    {"name": "alter-column-to-decimal", "steps": [
+      {"sql": "CREATE TABLE finances (id INTEGER, amount DECIMAL(10, 2))"},
+      {"sql": "ALTER TABLE finances ALTER COLUMN amount SET DATA TYPE DECIMAL(12, 2)"},
+      {"sql": "DESCRIBE TABLE finances"},
+      {"sql": "SELECT COUNT_IF(\"name\" = 'AMOUNT' AND STARTSWITH(\"type\", 'NUMBER')) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "1"}}
+    ]},
+    {"name": "alter-column-to-timestamp", "steps": [
+      {"sql": "CREATE TABLE events (id INTEGER, event_time TIMESTAMP_NTZ)"},
+      {"sql": "ALTER TABLE events ALTER COLUMN event_time SET DATA TYPE TIMESTAMP"},
+      {"sql": "DESCRIBE TABLE events"},
+      {"sql": "SELECT COUNT_IF(\"name\" = 'EVENT_TIME' AND STARTSWITH(\"type\", 'TIMESTAMP')) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "1"}}
+    ]},
+    {"name": "change-timestamp-to-date-is-rejected", "steps": [
+      {"sql": "CREATE TABLE orders (id INTEGER, order_date TIMESTAMP)"},
+      {"sql": "ALTER TABLE orders ALTER COLUMN order_date SET DATA TYPE DATE", "expect": {"error": {"messageContains": "cannot change column"}}}
+    ]},
+    {"name": "varchar-shrink-is-rejected", "steps": [
+      {"sql": "CREATE TABLE notes (id INTEGER, body VARCHAR(1000))"},
+      {"sql": "ALTER TABLE notes ALTER COLUMN body SET DATA TYPE VARCHAR(100)",
+       "expect": {"error": {"messageContains": "cannot change column BODY from type VARCHAR(1000) to VARCHAR(100)"}}},
+      {"sql": "ALTER TABLE notes ALTER COLUMN body SET DATA TYPE VARCHAR(100)",
+       "expect": {"error": {"messageContains": "because reducing the byte-length of a varchar is not supported."}}}
+    ]},
+    {"name": "number-scale-change-is-rejected", "steps": [
+      {"sql": "CREATE TABLE prices (id INTEGER, amount NUMBER(10, 2))"},
+      {"sql": "ALTER TABLE prices ALTER COLUMN amount SET DATA TYPE NUMBER(10, 4)", "expect": {"error": {"messageContains": "cannot change column"}}}
+    ]},
+    {"name": "number-precision-decrease-is-allowed", "steps": [
+      {"sql": "CREATE TABLE ledgers (id INTEGER, amount NUMBER(20, 2))"},
+      {"sql": "INSERT INTO ledgers VALUES (1, 1.25)"},
+      {"sql": "ALTER TABLE ledgers ALTER COLUMN amount SET DATA TYPE NUMBER(10, 2)"},
+      {"sql": "DESCRIBE TABLE ledgers"},
+      {"sql": "SELECT COUNT_IF(\"name\" = 'AMOUNT' AND STARTSWITH(\"type\", 'NUMBER')) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "1"}}
+    ]},
+    {"name": "alter-column-non-existent-column", "steps": [
+      {"sql": "CREATE TABLE test_table (id INTEGER)"},
+      {"sql": "ALTER TABLE test_table ALTER COLUMN non_existent SET DATA TYPE VARCHAR", "expect": {"error": {}}}
+    ]},
+    {"name": "alter-column-non-existent-table", "steps": [
+      {"sql": "ALTER TABLE non_existent ALTER COLUMN col SET DATA TYPE VARCHAR", "expect": {"error": {}}}
+    ]},
+    {"name": "alter-column-with-if-exists", "steps": [
+      {"sql": "ALTER TABLE IF EXISTS non_existent ALTER COLUMN col SET DATA TYPE VARCHAR"}
+    ]},
+    {"name": "alter-column-preserves-comment", "steps": [
+      {"sql": "CREATE TABLE test_table (id INTEGER, value VARCHAR(10) COMMENT 'Important value')"},
+      {"sql": "DESCRIBE TABLE test_table"},
+      {"sql": "SELECT MAX(IFF(\"name\" = 'VALUE', \"comment\", NULL)) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "Important value"}},
+      {"sql": "ALTER TABLE test_table ALTER COLUMN value SET DATA TYPE VARCHAR(200)"},
+      {"sql": "DESCRIBE TABLE test_table"},
+      {"sql": "SELECT MAX(IFF(\"name\" = 'VALUE', \"comment\", NULL)) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "Important value"}}
+    ]},
+    {"name": "alter-column-preserves-primary-key", "steps": [
+      {"sql": "CREATE TABLE test_table (id INTEGER PRIMARY KEY, name VARCHAR)"},
+      {"sql": "DESCRIBE TABLE test_table"},
+      {"sql": "SELECT MAX(IFF(\"name\" = 'ID', \"primary key\", NULL)) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "Y"}},
+      {"sql": "ALTER TABLE test_table ALTER COLUMN id SET DATA TYPE BIGINT"},
+      {"sql": "DESCRIBE TABLE test_table"},
+      {"sql": "SELECT MAX(IFF(\"name\" = 'ID', \"primary key\", NULL)) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "Y"}}
+    ]},
+    {"name": "alter-multiple-columns", "steps": [
+      {"sql": "CREATE TABLE test_table (col1 VARCHAR(5), col2 INTEGER, col3 INTEGER)"},
+      {"sql": "ALTER TABLE test_table ALTER COLUMN col1 SET DATA TYPE VARCHAR"},
+      {"sql": "ALTER TABLE test_table ALTER COLUMN col2 SET DATA TYPE DECIMAL"},
+      {"sql": "ALTER TABLE test_table ALTER COLUMN col3 SET DATA TYPE BIGINT"},
+      {"sql": "DESCRIBE TABLE test_table"},
+      {"sql": "SELECT COUNT_IF(\"name\" = 'COL1' AND STARTSWITH(\"type\", 'VARCHAR')), COUNT_IF(\"name\" = 'COL2' AND STARTSWITH(\"type\", 'NUMBER')), COUNT_IF(\"name\" = 'COL3' AND (STARTSWITH(\"type\", 'NUMBER') OR STARTSWITH(\"type\", 'BIGINT'))) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["1", "1", "1"]]}}
+    ]},
+    {"name": "alter-column-with-qualified-name", "steps": [
+      {"sql": "CREATE SCHEMA alter_col_schema"},
+      {"sql": "CREATE TABLE alter_col_schema.products (id INTEGER, price INTEGER)"},
+      {"sql": "ALTER TABLE alter_col_schema.products ALTER COLUMN price SET DATA TYPE DECIMAL"},
+      {"sql": "DESCRIBE TABLE alter_col_schema.products"},
+      {"sql": "SELECT COUNT_IF(\"name\" = 'PRICE' AND STARTSWITH(\"type\", 'NUMBER')) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "1"}}
+    ]},
+    {"name": "alter-column-with-data", "steps": [
+      {"sql": "CREATE TABLE customers (id INTEGER, age INTEGER, name VARCHAR)"},
+      {"sql": "INSERT INTO customers VALUES (1, 25, 'Alice')"},
+      {"sql": "INSERT INTO customers VALUES (2, 30, 'Bob')"},
+      {"sql": "ALTER TABLE customers ALTER COLUMN age SET DATA TYPE BIGINT"},
+      {"sql": "SELECT * FROM customers", "expect": {"rowCount": 2}},
+      {"sql": "DESCRIBE TABLE customers"},
+      {"sql": "SELECT COUNT_IF(\"name\" = 'AGE' AND (STARTSWITH(\"type\", 'NUMBER') OR STARTSWITH(\"type\", 'BIGINT'))) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "1"}}
+    ]},
+    {"name": "alter-column-combined-with-other-alter-operations", "steps": [
+      {"sql": "CREATE TABLE test_table (id INTEGER, col1 VARCHAR(5), col2 VARCHAR)"},
+      {"sql": "ALTER TABLE test_table ADD COLUMN col3 INTEGER"},
+      {"sql": "ALTER TABLE test_table ALTER COLUMN col1 SET DATA TYPE VARCHAR"},
+      {"sql": "ALTER TABLE test_table RENAME COLUMN col2 TO col2_renamed"},
+      {"sql": "ALTER TABLE test_table ALTER COLUMN col3 SET DATA TYPE DECIMAL"},
+      {"sql": "DESCRIBE TABLE test_table", "expect": {"rowCount": 4}},
+      {"sql": "SELECT COUNT_IF(\"name\" = 'COL1' AND STARTSWITH(\"type\", 'VARCHAR')), COUNT_IF(\"name\" = 'COL3' AND STARTSWITH(\"type\", 'NUMBER')) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["1", "1"]]}}
+    ]},
+    {"name": "change-to-boolean-is-rejected", "steps": [
+      {"sql": "CREATE TABLE flags (id INTEGER, is_active INTEGER)"},
+      {"sql": "ALTER TABLE flags ALTER COLUMN is_active SET DATA TYPE BOOLEAN", "expect": {"error": {"messageContains": "cannot change column"}}}
+    ]}
+  ]
+}

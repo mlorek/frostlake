@@ -30,7 +30,7 @@ import java.util.List;
  * UTF-8: the input's UTF-8 bytes. A binary input passes through unchanged. NULL → NULL.
  */
 public class ToBinary extends BuiltInFunction {
-    public ToBinary() { super("TO_BINARY", BinaryType.VARBINARY); }
+    public ToBinary() { super("TO_BINARY", BinaryType.UNSIZED); }
 
     @Override
     public Object evaluate(final List<Object> args) {

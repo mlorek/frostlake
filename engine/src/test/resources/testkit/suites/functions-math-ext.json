@@ -1,0 +1,102 @@
+{
+  "suite": "functions-math-ext",
+  "description": "The extended math surface: PI, CBRT, SQUARE, FACTORIAL (with its negative-argument refusal), the trigonometric family SIN / COS / TAN / COT and its inverses ASIN / ACOS / ATAN / ATAN2, the hyperbolics SINH / COSH / TANH, DEGREES and RADIANS, the bitwise scalars BITAND / BITOR / BITXOR / BITNOT / BITSHIFTLEFT / BITSHIFTRIGHT, WIDTH_BUCKET in range and on both sides of it, HAVERSINE, and the random family RANDOM / UNIFORM / NORMAL. Converted 1:1 from functions/MathFunctionsExtTest (now retired); the Java class compared against java.lang.Math constants with a 1e-8 tolerance, which the testkit's 10-significant-figure normalisation supplies, and its instanceof Long check on RANDOM becomes TYPEOF(TO_VARIANT(...)) reading INTEGER.",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "pi", "steps": [{"sql": "SELECT PI()", "expect": {"value": "3.141592654"}}]},
+    {"name": "cbrt", "steps": [
+      {"sql": "SELECT CBRT(8), CBRT(-8)", "expect": {"rows": [["2", "-2"]]}}
+    ]},
+    {"name": "square", "steps": [
+      {"sql": "SELECT SQUARE(3), SQUARE(0)", "expect": {"rows": [["9", "0"]]}}
+    ]},
+    {"name": "factorial", "steps": [
+      {"sql": "SELECT FACTORIAL(0), FACTORIAL(1), FACTORIAL(5), FACTORIAL(10)",
+       "expect": {"rows": [["1", "1", "120", "3628800"]]}}
+    ]},
+    {"name": "a-negative-factorial-is-refused", "steps": [
+      {"sql": "SELECT FACTORIAL(-1)", "expect": {"error": {}}}
+    ]},
+    {"name": "sin", "steps": [
+      {"sql": "SELECT SIN(0), SIN(PI()/2)", "expect": {"rows": [["0", "1"]]}}
+    ]},
+    {"name": "cos", "steps": [
+      {"sql": "SELECT COS(0), COS(PI())", "expect": {"rows": [["1", "-1"]]}}
+    ]},
+    {"name": "tan", "steps": [{"sql": "SELECT TAN(0)", "expect": {"value": "0"}}]},
+    {"name": "cot", "steps": [
+      {"sql": "SELECT ABS(COT(1) - 1.0 / TAN(1.0)) < 0.00000001", "expect": {"value": "true"}},
+      {"sql": "SELECT COT(1)", "expect": {"value": "0.6420926159"}}
+    ]},
+    {"name": "asin", "steps": [
+      {"sql": "SELECT ASIN(1), ASIN(0)", "expect": {"rows": [["1.570796327", "0"]]}}
+    ]},
+    {"name": "acos", "steps": [
+      {"sql": "SELECT ACOS(1), ACOS(-1)", "expect": {"rows": [["0", "3.141592654"]]}}
+    ]},
+    {"name": "atan", "steps": [
+      {"sql": "SELECT ATAN(0), ATAN(1)", "expect": {"rows": [["0", "0.7853981634"]]}}
+    ]},
+    {"name": "atan2", "steps": [
+      {"sql": "SELECT ATAN2(1, 1), ATAN2(1, 0)", "expect": {"rows": [["0.7853981634", "1.570796327"]]}}
+    ]},
+    {"name": "sinh", "steps": [
+      {"sql": "SELECT SINH(0), SINH(1)", "expect": {"rows": [["0", "1.175201194"]]}}
+    ]},
+    {"name": "cosh", "steps": [
+      {"sql": "SELECT COSH(0), COSH(1)", "expect": {"rows": [["1", "1.543080635"]]}}
+    ]},
+    {"name": "tanh", "steps": [
+      {"sql": "SELECT TANH(0), TANH(1)", "expect": {"rows": [["0", "0.761594156"]]}}
+    ]},
+    {"name": "degrees", "steps": [
+      {"sql": "SELECT DEGREES(PI()), DEGREES(0)", "expect": {"rows": [["180", "0"]]}}
+    ]},
+    {"name": "radians", "steps": [
+      {"sql": "SELECT RADIANS(180), RADIANS(0)", "expect": {"rows": [["3.141592654", "0"]]}}
+    ]},
+    {"name": "bitand", "steps": [
+      {"sql": "SELECT BITAND(14, 13), BITAND(5, 2)", "expect": {"rows": [["12", "0"]]}}
+    ]},
+    {"name": "bitor", "steps": [
+      {"sql": "SELECT BITOR(14, 13), BITOR(5, 2)", "expect": {"rows": [["15", "7"]]}}
+    ]},
+    {"name": "bitxor", "steps": [
+      {"sql": "SELECT BITXOR(14, 13), BITXOR(5, 2)", "expect": {"rows": [["3", "7"]]}}
+    ]},
+    {"name": "bitnot", "steps": [
+      {"sql": "SELECT BITNOT(5), BITNOT(0)", "expect": {"rows": [["-6", "-1"]]}}
+    ]},
+    {"name": "bit-shift-left", "steps": [
+      {"sql": "SELECT BITSHIFTLEFT(1, 3), BITSHIFTLEFT(5, 3)", "expect": {"rows": [["8", "40"]]}}
+    ]},
+    {"name": "bit-shift-right", "steps": [
+      {"sql": "SELECT BITSHIFTRIGHT(8, 3), BITSHIFTRIGHT(20, 3)", "expect": {"rows": [["1", "2"]]}}
+    ]},
+    {"name": "width-bucket-in-range", "steps": [
+      {"sql": "SELECT WIDTH_BUCKET(5.35, 0.024, 10.06, 5)", "expect": {"value": "3"}}
+    ]},
+    {"name": "width-bucket-below-the-minimum", "steps": [
+      {"sql": "SELECT WIDTH_BUCKET(-1, 0, 10, 5)", "expect": {"value": "0"}}
+    ]},
+    {"name": "width-bucket-above-the-maximum", "steps": [
+      {"sql": "SELECT WIDTH_BUCKET(11, 0, 10, 5)", "expect": {"value": "6"}}
+    ]},
+    {"name": "haversine", "steps": [
+      {"sql": "SELECT HAVERSINE(40.7, -74.0, 51.5, -0.1) > 5000 AND HAVERSINE(40.7, -74.0, 51.5, -0.1) < 6000",
+       "expect": {"value": "true"}}
+    ]},
+    {"name": "haversine-of-the-same-point-is-zero", "steps": [
+      {"sql": "SELECT ABS(HAVERSINE(10, 20, 10, 20)) < 0.000001", "expect": {"value": "true"}}
+    ]},
+    {"name": "random-returns-a-signed-integer", "steps": [
+      {"sql": "SELECT TYPEOF(TO_VARIANT(RANDOM()))", "expect": {"value": "INTEGER"}}
+    ]},
+    {"name": "uniform-integer-bounds-are-inclusive", "steps": [
+      {"sql": "SELECT UNIFORM(5, 10, RANDOM()) BETWEEN 5 AND 10", "expect": {"value": "true"}}
+    ]},
+    {"name": "normal-returns-a-value", "steps": [
+      {"sql": "SELECT IFF(NORMAL(0, 1, RANDOM()) IS NULL, 'null', 'set')", "expect": {"value": "set"}}
+    ]}
+  ]
+}

@@ -22,8 +22,13 @@ import dev.frostlake.types.DateTimeType;
 
 import java.util.List;
 
+/**
+ * GETDATE() - the statement's instant in the session's zone, as TIMESTAMP_LTZ. It answers what
+ * CURRENT_TIMESTAMP answers and is typed as CURRENT_TIMESTAMP is, not as SYSDATE, whose UTC instant
+ * is a TIMESTAMP_NTZ (live-verified).
+ */
 public class Getdate extends BuiltInFunction {
-    public Getdate() { super("GETDATE", DateTimeType.TIMESTAMP_NTZ); }
+    public Getdate() { super("GETDATE", DateTimeType.TIMESTAMP_LTZ); }
 
     @Override
     public Object evaluate(final List<Object> args) { return StatementClock.now(); }

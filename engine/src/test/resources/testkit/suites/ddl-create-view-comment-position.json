@@ -1,0 +1,99 @@
+{
+  "suite": "ddl-create-view-comment-position",
+  "description": "CREATE [MATERIALIZED] VIEW COMMENT placement — before AS is legal, after the query is a syntax error (live-verified). Converted 1:1 from ddl/CreateViewCommentPositionTest.java (now retired).",
+  "tags": ["ddl", "converted"],
+  "tests": [
+    {
+      "name": "view-comment-after-select-is-rejected",
+      "steps": [
+        {"sql": "CREATE TABLE products (id INTEGER, name VARCHAR)"},
+        {"sql": "INSERT INTO products VALUES (1, 'Apple')"},
+        {"sql": "CREATE VIEW product_view AS SELECT id, name FROM products COMMENT = 'Products view'", "expect": {"error": {}}},
+        {"sql": "CREATE VIEW product_view COMMENT = 'Products view' AS SELECT id, name FROM products"},
+        {"sql": "SHOW VIEWS LIKE 'product_view'", "expect": {"rowCount": 1}}
+      ]
+    },
+    {
+      "name": "view-comment-before-as",
+      "steps": [
+        {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR)"},
+        {"sql": "INSERT INTO employees VALUES (1, 'John')"},
+        {"sql": "CREATE VIEW emp_view COMMENT = 'Employee view' AS SELECT id, name FROM employees"},
+        {"sql": "SELECT id, name FROM emp_view", "expect": {"rows": [["1", "John"]]}}
+      ]
+    },
+    {
+      "name": "view-comment-before-as-with-columns",
+      "steps": [
+        {"sql": "CREATE TABLE orders (order_id INTEGER, amount INTEGER)"},
+        {"sql": "INSERT INTO orders VALUES (100, 500)"},
+        {"sql": "CREATE VIEW order_view (id, total) COMMENT = 'Order summary' AS SELECT order_id, amount FROM orders"},
+        {"sql": "SELECT id, total FROM order_view", "expect": {"rows": [["100", "500"]]}}
+      ]
+    },
+    {
+      "name": "view-comment-in-both-positions-is-rejected",
+      "steps": [
+        {"sql": "CREATE TABLE items (id INTEGER, description VARCHAR)"},
+        {"sql": "INSERT INTO items VALUES (1, 'Widget')"},
+        {"sql": "CREATE VIEW item_view COMMENT = 'Comment before AS' AS SELECT id, description FROM items COMMENT = 'Comment after SELECT'", "expect": {"error": {}}}
+      ]
+    },
+    {
+      "name": "view-no-comment",
+      "steps": [
+        {"sql": "CREATE TABLE customers (id INTEGER, name VARCHAR)"},
+        {"sql": "INSERT INTO customers VALUES (1, 'Alice')"},
+        {"sql": "CREATE VIEW cust_view AS SELECT id, name FROM customers"},
+        {"sql": "SELECT id, name FROM cust_view", "expect": {"rows": [["1", "Alice"]]}}
+      ]
+    },
+    {
+      "name": "or-replace-view-comment-before-as",
+      "steps": [
+        {"sql": "CREATE TABLE data (x INTEGER, y INTEGER)"},
+        {"sql": "INSERT INTO data VALUES (1, 2)"},
+        {"sql": "CREATE VIEW data_view COMMENT = 'First version' AS SELECT x, y FROM data"},
+        {"sql": "SELECT x, y FROM data_view", "expect": {"rows": [["1", "2"]]}},
+        {"sql": "CREATE OR REPLACE VIEW data_view COMMENT = 'Second version' AS SELECT x, y FROM data"},
+        {"sql": "SELECT x, y FROM data_view", "expect": {"rows": [["1", "2"]]}}
+      ]
+    },
+    {
+      "name": "materialized-view-comment-before-as-creation",
+      "steps": [
+        {"sql": "CREATE TABLE inventory (item VARCHAR, qty INTEGER)"},
+        {"sql": "INSERT INTO inventory VALUES ('Widget', 100)"},
+        {"sql": "CREATE MATERIALIZED VIEW inv_mv COMMENT = 'Inventory snapshot' AS SELECT item, qty FROM inventory"}
+      ]
+    },
+    {
+      "name": "materialized-view-comment-after-select-is-rejected",
+      "steps": [
+        {"sql": "CREATE TABLE sales (product VARCHAR, amount INTEGER)"},
+        {"sql": "INSERT INTO sales VALUES ('Gadget', 500)"},
+        {"sql": "CREATE MATERIALIZED VIEW sales_mv AS SELECT product, amount FROM sales COMMENT = 'Sales snapshot'", "expect": {"error": {}}},
+        {"sql": "CREATE MATERIALIZED VIEW sales_mv COMMENT = 'Sales snapshot' AS SELECT product, amount FROM sales"}
+      ]
+    },
+    {
+      "name": "materialized-view-comment-before-as-with-columns-creation",
+      "steps": [
+        {"sql": "CREATE TABLE metrics (metric_name VARCHAR, metric_value INTEGER)"},
+        {"sql": "INSERT INTO metrics VALUES ('cpu_usage', 75)"},
+        {"sql": "CREATE MATERIALIZED VIEW metrics_mv (name, value) COMMENT = 'Metrics view' AS SELECT metric_name, metric_value FROM metrics"}
+      ]
+    },
+    {
+      "name": "complex-view-comment-before-as",
+      "steps": [
+        {"sql": "CREATE TABLE users (user_id INTEGER, user_name VARCHAR)"},
+        {"sql": "CREATE TABLE orders_table (order_id INTEGER, user_ref INTEGER, amount INTEGER)"},
+        {"sql": "INSERT INTO users VALUES (1, 'Alice')"},
+        {"sql": "INSERT INTO orders_table VALUES (100, 1, 500)"},
+        {"sql": "CREATE VIEW user_orders (id, name, order_num, total) COMMENT = 'User orders summary' AS SELECT u.user_id, u.user_name, o.order_id, o.amount FROM users u JOIN orders_table o ON u.user_id = o.user_ref"},
+        {"sql": "SELECT id, name, order_num, total FROM user_orders", "expect": {"rows": [["1", "Alice", "100", "500"]]}}
+      ]
+    }
+  ]
+}

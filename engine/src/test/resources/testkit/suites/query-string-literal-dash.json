@@ -1,0 +1,27 @@
+{
+  "suite": "query-string-literal-dash",
+  "description": "A -- sequence INSIDE a single-quoted string literal is part of the string, not the start of a line comment. A prior quote-blind regex pre-strip truncated any literal containing --, so the ANTLR lexer now handles comments while respecting string literals. Pinned with the dashes leading, trailing and in the middle, as a SPLIT_PART delimiter, built by concatenation, stored in and read back from a table, and - the control - a genuine -- comment OUTSIDE a string that is still ignored. Converted 1:1 from query/StringLiteralDashTest (now retired).",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "dashes-inside-a-string-literal-with-no-from", "steps": [
+      {"sql": "SELECT 'a--b'", "expect": {"value": "a--b"}},
+      {"sql": "SELECT '--lead'", "expect": {"value": "--lead"}},
+      {"sql": "SELECT 'trail--'", "expect": {"value": "trail--"}}
+    ]},
+    {"name": "split-part-on-a-double-dash-delimiter", "steps": [
+      {"sql": "SELECT SPLIT_PART('aaa--bbb-BBB--ccc', '--', 2)", "expect": {"value": "bbb-BBB"}}
+    ]},
+    {"name": "concatenated-dashes", "steps": [
+      {"sql": "SELECT 'x' || '--' || 'y'", "expect": {"value": "x--y"}}
+    ]},
+    {"name": "dashes-in-a-string-read-from-a-table", "steps": [
+      {"sql": "CREATE TABLE t (s VARCHAR)"},
+      {"sql": "INSERT INTO t VALUES ('a--b')"},
+      {"sql": "SELECT s FROM t", "expect": {"value": "a--b"}},
+      {"sql": "SELECT SPLIT_PART(s, '--', 2) FROM (SELECT 'aaa--bbb' AS s) x", "expect": {"value": "bbb"}}
+    ]},
+    {"name": "a-trailing-line-comment-is-still-stripped", "steps": [
+      {"sql": "SELECT 1 + 2 -- this is a comment", "expect": {"value": 3}}
+    ]}
+  ]
+}

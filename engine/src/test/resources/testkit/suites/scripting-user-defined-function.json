@@ -1,0 +1,46 @@
+{
+  "suite": "scripting-user-defined-function",
+  "description": "CREATE FUNCTION for SQL UDFs, asserted through SQL: the function is INVOKED and its result checked, and existence is read back through SHOW USER FUNCTIONS LIKE, never through engine internals - so every assertion here holds against a live account too. Covers a simple scalar UDF, one with NO parameters (whose body casts, because Snowflake checks a SQL UDF's DECLARED return type against the body's ACTUAL one at CREATE and RETURNS FLOAT over a bare decimal literal fails), a SCHEMA-QUALIFIED name invoked by its full path from another schema, a single-parameter UDF, and a TABLE function whose output columns carry the RETURNS TABLE names rather than generated ones. DROP FUNCTION removes it from the listing. This is the invocation-side companion of scripting-create-function, which covers the SHOW FUNCTIONS listing. Converted 1:1 from scripting/CreateFunctionTest (now retired).",
+  "tags": ["scripting", "converted"],
+  "tests": [
+    {"name": "a-simple-scalar-function", "steps": [
+      {"sql": "CREATE FUNCTION add_numbers(x INTEGER, y INTEGER) RETURNS INTEGER AS 'x + y'"},
+      {"sql": "SHOW USER FUNCTIONS LIKE 'add_numbers'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT add_numbers(2, 3)", "expect": {"value": 5}}
+    ]},
+    {"name": "a-function-with-no-parameters", "steps": [
+      {"sql": "CREATE FUNCTION get_pi() RETURNS FLOAT AS '3.14159::FLOAT'"},
+      {"sql": "SHOW USER FUNCTIONS LIKE 'get_pi'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT get_pi()", "expect": {"value": 3.14159}}
+    ]},
+    {"name": "a-function-with-a-qualified-name", "steps": [
+      {"sql": "CREATE SCHEMA my_schema"},
+      {"sql": "USE SCHEMA test_schema"},
+      {"sql": "CREATE FUNCTION my_schema.multiply(a INTEGER, b INTEGER) RETURNS INTEGER AS 'a * b'"},
+      {"sql": "SELECT my_schema.multiply(6, 7)", "expect": {"value": 42}}
+    ]},
+    {"name": "a-table-function", "steps": [
+      {"sql": "CREATE FUNCTION get_values() RETURNS TABLE(id INTEGER, name VARCHAR) AS 'SELECT 1, ''test'''"},
+      {"sql": "SELECT * FROM TABLE(get_values())", "expect": {"rows": [[1,"test"]], "columns": ["ID","NAME"]}}
+    ]},
+    {"name": "a-function-with-a-single-parameter", "steps": [
+      {"sql": "CREATE FUNCTION double_val(x INTEGER) RETURNS INTEGER AS 'x * 2'"},
+      {"sql": "SHOW USER FUNCTIONS LIKE 'double_val'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT double_val(21)", "expect": {"value": 42}}
+    ]},
+    {"name": "drop-function-removes-it-from-the-listing", "steps": [
+      {"sql": "CREATE FUNCTION test_func(x INTEGER) RETURNS INTEGER AS 'x * 2'"},
+      {"sql": "SHOW USER FUNCTIONS LIKE 'test_func'", "expect": {"rowCount": 1}},
+      {"sql": "DROP FUNCTION test_func(INTEGER)"},
+      {"sql": "SHOW USER FUNCTIONS LIKE 'test_func'", "expect": {"rowCount": 0}}
+    ]},
+    {"name": "two-functions-are-each-listed", "steps": [
+      {"sql": "CREATE FUNCTION func1(x INTEGER) RETURNS INTEGER AS 'x'"},
+      {"sql": "CREATE FUNCTION func2(x INTEGER, y INTEGER) RETURNS INTEGER AS 'x + y'"},
+      {"sql": "SHOW USER FUNCTIONS LIKE 'func1'", "expect": {"rowCount": 1}},
+      {"sql": "SHOW USER FUNCTIONS LIKE 'func2'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT func1(4)", "expect": {"value": 4}},
+      {"sql": "SELECT func2(4, 5)", "expect": {"value": 9}}
+    ]}
+  ]
+}

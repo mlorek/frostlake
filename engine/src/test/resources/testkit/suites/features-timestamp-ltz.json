@@ -1,0 +1,111 @@
+{
+  "suite": "features-timestamp-ltz",
+  "description": "The TIMESTAMP_LTZ / TIMESTAMP_NTZ / TIMESTAMP_TZ types with precision. The DESCRIBE TABLE type cell names the subtype, and the declared fractional-second precision is read from INFORMATION_SCHEMA.COLUMNS.DATETIME_PRECISION (default 9, and 0 through 9 accepted). Also covers a TIMESTAMP_LTZ DEFAULT CURRENT_TIMESTAMP column filling itself on insert, the refusal of that default on a narrowed precision (CURRENT_TIMESTAMP carries the maximum fractional-second precision, so TIMESTAMP_LTZ(3) cannot take it while TIMESTAMP_LTZ(9) can), a NULL insert round-trip, and plain TIMESTAMP still working. Converted 1:1 from features/TimestampLtzTest (now retired). The Java class read precision off the metastore model behind an embedded-only assume because the DESCRIBE type cell does not spell type parameters; the converted suite reads it through INFORMATION_SCHEMA instead, so the precision claims now run on every backend.",
+  "tags": ["features", "converted"],
+  "tests": [
+    {"name": "timestamp-ltz-has-default-precision-9", "steps": [
+      {"sql": "CREATE TABLE test_ts_ltz (id INTEGER, ts TIMESTAMP_LTZ)"},
+      {"sql": "DESCRIBE TABLE test_ts_ltz"},
+      {"sql": "SELECT STARTSWITH(\"type\", 'TIMESTAMP_LTZ') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'TS'",
+       "expect": {"value": "true"}},
+      {"sql": "SELECT DATA_TYPE, DATETIME_PRECISION FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'TEST_TS_LTZ' AND COLUMN_NAME = 'TS'",
+       "expect": {"rows": [["TIMESTAMP_LTZ", "9"]]}}
+    ]},
+    {"name": "timestamp-ltz-takes-precision-3", "steps": [
+      {"sql": "CREATE TABLE test_ts_ltz3 (id INTEGER, ts TIMESTAMP_LTZ(3))"},
+      {"sql": "DESCRIBE TABLE test_ts_ltz3"},
+      {"sql": "SELECT STARTSWITH(\"type\", 'TIMESTAMP_LTZ') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'TS'",
+       "expect": {"value": "true"}},
+      {"sql": "SELECT DATA_TYPE, DATETIME_PRECISION FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'TEST_TS_LTZ3' AND COLUMN_NAME = 'TS'",
+       "expect": {"rows": [["TIMESTAMP_LTZ", "3"]]}}
+    ]},
+    {"name": "timestamp-ltz-takes-precision-6", "steps": [
+      {"sql": "CREATE TABLE test_ts_ltz6 (id INTEGER, ts TIMESTAMP_LTZ(6))"},
+      {"sql": "DESCRIBE TABLE test_ts_ltz6"},
+      {"sql": "SELECT STARTSWITH(\"type\", 'TIMESTAMP_LTZ') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'TS'",
+       "expect": {"value": "true"}},
+      {"sql": "SELECT DATA_TYPE, DATETIME_PRECISION FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'TEST_TS_LTZ6' AND COLUMN_NAME = 'TS'",
+       "expect": {"rows": [["TIMESTAMP_LTZ", "6"]]}}
+    ]},
+    {"name": "a-timestamp-ltz-column-defaults-to-current-timestamp", "steps": [
+      {"sql": "CREATE TABLE test_ts_ltz_default (id INTEGER, ts TIMESTAMP_LTZ DEFAULT CURRENT_TIMESTAMP)"},
+      {"sql": "DESCRIBE TABLE test_ts_ltz_default"},
+      {"sql": "SELECT CONTAINS(UPPER(\"default\"), 'CURRENT_TIMESTAMP') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'TS'",
+       "expect": {"value": "true"}},
+      {"sql": "INSERT INTO test_ts_ltz_default (id) VALUES (1)"},
+      {"sql": "SELECT COUNT(*) FROM test_ts_ltz_default WHERE id = 1 AND ts IS NOT NULL",
+       "expect": {"value": "1"}}
+    ]},
+    {"name": "a-narrowed-precision-refuses-the-current-timestamp-default", "steps": [
+      {"sql": "CREATE TABLE test_ts_narrow (id INTEGER, ts TIMESTAMP_LTZ(3) DEFAULT CURRENT_TIMESTAMP)",
+       "expect": {"error": {"messageContains": "Default value data type does not match data type for column TS"}}},
+      {"sql": "CREATE TABLE test_ts_full (id INTEGER, ts TIMESTAMP_LTZ(9) DEFAULT CURRENT_TIMESTAMP)"},
+      {"sql": "DESCRIBE TABLE test_ts_full"},
+      {"sql": "SELECT IFF(\"default\" IS NULL, 'null', 'set') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'TS'",
+       "expect": {"value": "set"}}
+    ]},
+    {"name": "timestamp-ntz-has-default-precision-9", "steps": [
+      {"sql": "CREATE TABLE test_ts_ntz (id INTEGER, ts TIMESTAMP_NTZ)"},
+      {"sql": "DESCRIBE TABLE test_ts_ntz"},
+      {"sql": "SELECT STARTSWITH(\"type\", 'TIMESTAMP_NTZ') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'TS'",
+       "expect": {"value": "true"}},
+      {"sql": "SELECT DATA_TYPE, DATETIME_PRECISION FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'TEST_TS_NTZ' AND COLUMN_NAME = 'TS'",
+       "expect": {"rows": [["TIMESTAMP_NTZ", "9"]]}}
+    ]},
+    {"name": "timestamp-ntz-takes-precision-5", "steps": [
+      {"sql": "CREATE TABLE test_ts_ntz_p (id INTEGER, ts TIMESTAMP_NTZ(5))"},
+      {"sql": "DESCRIBE TABLE test_ts_ntz_p"},
+      {"sql": "SELECT STARTSWITH(\"type\", 'TIMESTAMP_NTZ') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'TS'",
+       "expect": {"value": "true"}},
+      {"sql": "SELECT DATA_TYPE, DATETIME_PRECISION FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'TEST_TS_NTZ_P' AND COLUMN_NAME = 'TS'",
+       "expect": {"rows": [["TIMESTAMP_NTZ", "5"]]}}
+    ]},
+    {"name": "timestamp-tz-has-default-precision-9", "steps": [
+      {"sql": "CREATE TABLE test_ts_tz (id INTEGER, ts TIMESTAMP_TZ)"},
+      {"sql": "DESCRIBE TABLE test_ts_tz"},
+      {"sql": "SELECT STARTSWITH(\"type\", 'TIMESTAMP_TZ') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'TS'",
+       "expect": {"value": "true"}},
+      {"sql": "SELECT DATA_TYPE, DATETIME_PRECISION FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'TEST_TS_TZ' AND COLUMN_NAME = 'TS'",
+       "expect": {"rows": [["TIMESTAMP_TZ", "9"]]}}
+    ]},
+    {"name": "timestamp-tz-takes-precision-7", "steps": [
+      {"sql": "CREATE TABLE test_ts_tz_p (id INTEGER, ts TIMESTAMP_TZ(7))"},
+      {"sql": "DESCRIBE TABLE test_ts_tz_p"},
+      {"sql": "SELECT STARTSWITH(\"type\", 'TIMESTAMP_TZ') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'TS'",
+       "expect": {"value": "true"}},
+      {"sql": "SELECT DATA_TYPE, DATETIME_PRECISION FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'TEST_TS_TZ_P' AND COLUMN_NAME = 'TS'",
+       "expect": {"rows": [["TIMESTAMP_TZ", "7"]]}}
+    ]},
+    {"name": "the-three-subtypes-coexist-in-one-table", "steps": [
+      {"sql": "CREATE TABLE test_multi_ts (\n    id INTEGER,\n    ts_ntz TIMESTAMP_NTZ(3),\n    ts_ltz TIMESTAMP_LTZ(6),\n    ts_tz TIMESTAMP_TZ(9)\n)"},
+      {"sql": "DESCRIBE TABLE test_multi_ts"},
+      {"sql": "SELECT MAX(IFF(\"name\" = 'TS_NTZ', STARTSWITH(\"type\", 'TIMESTAMP_NTZ'), NULL)), MAX(IFF(\"name\" = 'TS_LTZ', STARTSWITH(\"type\", 'TIMESTAMP_LTZ'), NULL)), MAX(IFF(\"name\" = 'TS_TZ', STARTSWITH(\"type\", 'TIMESTAMP_TZ'), NULL)) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["true", "true", "true"]]}},
+      {"sql": "SELECT COLUMN_NAME, DATA_TYPE, DATETIME_PRECISION FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'TEST_MULTI_TS' AND COLUMN_NAME <> 'ID' ORDER BY ORDINAL_POSITION",
+       "expect": {"rows": [["TS_NTZ", "TIMESTAMP_NTZ", "3"], ["TS_LTZ", "TIMESTAMP_LTZ", "6"], ["TS_TZ", "TIMESTAMP_TZ", "9"]], "ordered": true}}
+    ]},
+    {"name": "a-timestamp-ltz-column-round-trips-a-null", "steps": [
+      {"sql": "CREATE TABLE test_ts_insert (id INTEGER, ts TIMESTAMP_LTZ(3))"},
+      {"sql": "INSERT INTO test_ts_insert (id, ts) VALUES (1, NULL)"},
+      {"sql": "SELECT * FROM test_ts_insert WHERE id = 1", "expect": {"rowCount": 1}}
+    ]},
+    {"name": "the-precision-range-runs-from-0-to-9", "steps": [
+      {"sql": "CREATE TABLE test_ts_p0 (id INTEGER, ts TIMESTAMP_LTZ(0))"},
+      {"sql": "CREATE TABLE test_ts_p9 (id INTEGER, ts TIMESTAMP_LTZ(9))"},
+      {"sql": "DESCRIBE TABLE test_ts_p0"},
+      {"sql": "SELECT STARTSWITH(\"type\", 'TIMESTAMP_LTZ') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'TS'",
+       "expect": {"value": "true"}},
+      {"sql": "DESCRIBE TABLE test_ts_p9"},
+      {"sql": "SELECT STARTSWITH(\"type\", 'TIMESTAMP_LTZ') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'TS'",
+       "expect": {"value": "true"}},
+      {"sql": "SELECT TABLE_NAME, DATETIME_PRECISION FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME IN ('TEST_TS_P0', 'TEST_TS_P9') AND COLUMN_NAME = 'TS' ORDER BY TABLE_NAME",
+       "expect": {"rows": [["TEST_TS_P0", "0"], ["TEST_TS_P9", "9"]], "ordered": true}}
+    ]},
+    {"name": "plain-timestamp-still-works", "steps": [
+      {"sql": "CREATE TABLE test_plain_ts (id INTEGER, ts TIMESTAMP)"},
+      {"sql": "DESCRIBE TABLE test_plain_ts"},
+      {"sql": "SELECT STARTSWITH(\"type\", 'TIMESTAMP') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'TS'",
+       "expect": {"value": "true"}}
+    ]}
+  ]
+}

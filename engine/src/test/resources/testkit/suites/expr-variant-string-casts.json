@@ -1,0 +1,42 @@
+{
+  "suite": "expr-variant-string-casts",
+  "description": "A VARIANT string whose CONTENT looks like JSON structure ('[\"ROLE\"]') stays a STRING: ::ARRAY (TO_ARRAY) wraps it into a one-element array and never parses it while a real array field passes through, ARRAY_TO_STRING over the wrap recovers the raw text (the loader idiom), ::VARCHAR unquotes, PARSE_JSON of the unquoted text yields the real array, TRY_PARSE_JSON of a variant string field parses its embedded JSON (the metadata shape), and PARSE_JSON of a literal quoted string stays a JSON string. Converted 1:1 from expressions/VariantStringCastTest (now retired).",
+  "tags": ["expressions", "converted"],
+  "tests": [
+    {"name": "array-cast-wraps-a-string-value-and-passes-a-real-array-through", "steps": [
+      {"sql": "CREATE TABLE v (src VARIANT)"},
+      {"sql": "INSERT INTO v SELECT PARSE_JSON('{\"str_arr\":\"[\\\\\"ROLE\\\\\"]\",\"empty_str\":\"[]\",\"real_arr\":[\"A\",\"B\"],\"plain\":\"x\"}')"},
+      {"sql": "SELECT src:str_arr::ARRAY FROM v", "expect": {"value": "[\"[\\\"ROLE\\\"]\"]"}},
+      {"sql": "SELECT src:empty_str::ARRAY FROM v", "expect": {"value": "[\"[]\"]"}},
+      {"sql": "SELECT src:real_arr::ARRAY FROM v", "expect": {"value": "[\"A\",\"B\"]"}}
+    ]},
+    {"name": "array-to-string-over-the-wrap-recovers-the-raw-text", "steps": [
+      {"sql": "CREATE TABLE v (src VARIANT)"},
+      {"sql": "INSERT INTO v SELECT PARSE_JSON('{\"str_arr\":\"[\\\\\"ROLE\\\\\"]\",\"empty_str\":\"[]\",\"real_arr\":[\"A\",\"B\"],\"plain\":\"x\"}')"},
+      {"sql": "SELECT ARRAY_TO_STRING(src:str_arr::ARRAY, ',') FROM v", "expect": {"value": "[\"ROLE\"]"}},
+      {"sql": "SELECT ARRAY_TO_STRING(src:empty_str::ARRAY, ',') FROM v", "expect": {"value": "[]"}},
+      {"sql": "SELECT ARRAY_TO_STRING(src:real_arr::ARRAY, ',') FROM v", "expect": {"value": "A,B"}}
+    ]},
+    {"name": "varchar-cast-unquotes-the-string-form", "steps": [
+      {"sql": "CREATE TABLE v (src VARIANT)"},
+      {"sql": "INSERT INTO v SELECT PARSE_JSON('{\"str_arr\":\"[\\\\\"ROLE\\\\\"]\",\"empty_str\":\"[]\",\"real_arr\":[\"A\",\"B\"],\"plain\":\"x\"}')"},
+      {"sql": "SELECT src:str_arr::VARCHAR FROM v", "expect": {"value": "[\"ROLE\"]"}},
+      {"sql": "SELECT src:empty_str::VARCHAR FROM v", "expect": {"value": "[]"}},
+      {"sql": "SELECT src:plain::VARCHAR FROM v", "expect": {"value": "x"}}
+    ]},
+    {"name": "parse-json-of-the-unquoted-text-yields-the-real-array", "steps": [
+      {"sql": "CREATE TABLE v (src VARIANT)"},
+      {"sql": "INSERT INTO v SELECT PARSE_JSON('{\"str_arr\":\"[\\\\\"ROLE\\\\\"]\",\"empty_str\":\"[]\",\"real_arr\":[\"A\",\"B\"],\"plain\":\"x\"}')"},
+      {"sql": "SELECT PARSE_JSON(src:str_arr::VARCHAR)::ARRAY FROM v", "expect": {"value": "[\"ROLE\"]"}}
+    ]},
+    {"name": "try-parse-json-of-a-variant-string-field-parses-its-embedded-json", "steps": [
+      {"sql": "CREATE TABLE meta_v (src VARIANT)"},
+      {"sql": "INSERT INTO meta_v SELECT PARSE_JSON('{\"value\":{\"metadata\":\"{\\\\\"RuleName\\\\\":\\\\\"Public Instance Rule\\\\\",\\\\\"Category\\\\\":\\\\\"Network\\\\\"}\"}}')"},
+      {"sql": "SELECT TRY_PARSE_JSON(src:value.metadata):RuleName::VARCHAR FROM meta_v", "expect": {"value": "Public Instance Rule"}},
+      {"sql": "SELECT PARSE_JSON(src:value.metadata):Category::VARCHAR FROM meta_v", "expect": {"value": "Network"}}
+    ]},
+    {"name": "parse-json-of-a-literal-quoted-string-stays-a-json-string", "steps": [
+      {"sql": "SELECT PARSE_JSON('\"abc\"')::VARCHAR", "expect": {"value": "abc"}}
+    ]}
+  ]
+}

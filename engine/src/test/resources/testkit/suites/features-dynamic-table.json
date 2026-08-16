@@ -1,0 +1,221 @@
+{
+  "suite": "features-dynamic-table",
+  "description": "DYNAMIC TABLE DDL through the SQL surface - SHOW DYNAMIC TABLES cells (target_lag, refresh_mode, scheduling_state ACTIVE/SUSPENDED, warehouse, comment, the definition column named text) and DESCRIBE DYNAMIC TABLE answering the COLUMN list: lag canonicalization ('1 minutes' reads back singular, '90 seconds' decomposes to '1 minute, 30 seconds'), AUTO resolving to INCREMENTAL, DOWNSTREAM, sub-minute lags refused quoting the input (creating nothing), COMMENT only before AS, OR REPLACE and IF NOT EXISTS, DROP (IF EXISTS), SUSPEND/RESUME/REFRESH, SET TARGET_LAG/WAREHOUSE/COMMENT/DOWNSTREAM/DATA_RETENTION (REFRESH_MODE refused as fixed at creation), SHOW listings and state, and dynamic tables appearing in SHOW OBJECTS as kind TABLE with is_dynamic Y. Converted from features/DynamicTableTest; its three engine-catalog readbacks (INITIALIZE, data retention days, last-refresh time - no SQL read surface) stay in the trimmed Java class, with their SQL statements smoke-covered here.",
+  "tags": ["features", "converted"],
+  "tests": [
+    {"name": "create-basic-dynamic-table", "steps": [
+      {"sql": "CREATE WAREHOUSE IF NOT EXISTS wh1 WITH WAREHOUSE_SIZE = 'XSMALL' AUTO_SUSPEND = 60 INITIALLY_SUSPENDED = TRUE"},
+      {"sql": "CREATE TABLE source (id INTEGER, val DOUBLE)"},
+      {"sql": "INSERT INTO source VALUES (1, 10.0), (2, 20.0), (3, 30.0)"},
+      {"sql": "CREATE DYNAMIC TABLE sales_agg TARGET_LAG = '1 minutes' WAREHOUSE = wh1 AS SELECT id, val FROM source"},
+      {"sql": "SHOW DYNAMIC TABLES LIKE 'sales_agg'"},
+      {"sql": "SELECT \"target_lag\", \"warehouse\", \"refresh_mode\", \"scheduling_state\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["1 minute", "WH1", "INCREMENTAL", "ACTIVE"]]}},
+      {"sql": "DROP WAREHOUSE IF EXISTS wh1"}
+    ]},
+    {"name": "create-dynamic-table-with-all-options", "steps": [
+      {"sql": "CREATE WAREHOUSE IF NOT EXISTS wh1 WITH WAREHOUSE_SIZE = 'XSMALL' AUTO_SUSPEND = 60 INITIALLY_SUSPENDED = TRUE"},
+      {"sql": "CREATE TABLE source (id INTEGER, val DOUBLE)"},
+      {"sql": "INSERT INTO source VALUES (1, 10.0), (2, 20.0), (3, 30.0)"},
+      {"sql": "CREATE DYNAMIC TABLE full_opts TARGET_LAG = '5 minutes' WAREHOUSE = wh1 REFRESH_MODE = FULL INITIALIZE = ON_SCHEDULE DATA_RETENTION_TIME_IN_DAYS = 7 COMMENT = 'full options test' AS SELECT * FROM source"},
+      {"sql": "SHOW DYNAMIC TABLES LIKE 'full_opts'"},
+      {"sql": "SELECT \"target_lag\", \"refresh_mode\", \"comment\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["5 minutes", "FULL", "full options test"]]}},
+      {"sql": "DROP WAREHOUSE IF EXISTS wh1"}
+    ]},
+    {"name": "create-dynamic-table-downstream", "steps": [
+      {"sql": "CREATE WAREHOUSE IF NOT EXISTS wh1 WITH WAREHOUSE_SIZE = 'XSMALL' AUTO_SUSPEND = 60 INITIALLY_SUSPENDED = TRUE"},
+      {"sql": "CREATE TABLE source (id INTEGER, val DOUBLE)"},
+      {"sql": "INSERT INTO source VALUES (1, 10.0), (2, 20.0), (3, 30.0)"},
+      {"sql": "CREATE DYNAMIC TABLE downstream_dt TARGET_LAG = DOWNSTREAM WAREHOUSE = wh1 AS SELECT id FROM source"},
+      {"sql": "SHOW DYNAMIC TABLES LIKE 'downstream_dt'"},
+      {"sql": "SELECT \"target_lag\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "DOWNSTREAM"}},
+      {"sql": "DROP WAREHOUSE IF EXISTS wh1"}
+    ]},
+    {"name": "create-dynamic-table-incremental-mode", "steps": [
+      {"sql": "CREATE WAREHOUSE IF NOT EXISTS wh1 WITH WAREHOUSE_SIZE = 'XSMALL' AUTO_SUSPEND = 60 INITIALLY_SUSPENDED = TRUE"},
+      {"sql": "CREATE TABLE source (id INTEGER, val DOUBLE)"},
+      {"sql": "INSERT INTO source VALUES (1, 10.0), (2, 20.0), (3, 30.0)"},
+      {"sql": "CREATE DYNAMIC TABLE incr_dt TARGET_LAG = '2 minutes' WAREHOUSE = wh1 REFRESH_MODE = INCREMENTAL AS SELECT * FROM source"},
+      {"sql": "SHOW DYNAMIC TABLES LIKE 'incr_dt'"},
+      {"sql": "SELECT \"refresh_mode\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "INCREMENTAL"}},
+      {"sql": "DROP WAREHOUSE IF EXISTS wh1"}
+    ]},
+    {"name": "sub-minute-target-lag-is-refused", "steps": [
+      {"sql": "CREATE WAREHOUSE IF NOT EXISTS wh1 WITH WAREHOUSE_SIZE = 'XSMALL' AUTO_SUSPEND = 60 INITIALLY_SUSPENDED = TRUE"},
+      {"sql": "CREATE TABLE source (id INTEGER, val DOUBLE)"},
+      {"sql": "CREATE DYNAMIC TABLE too_fast TARGET_LAG = '30 seconds' WAREHOUSE = wh1 AS SELECT id FROM source",
+       "expect": {"error": {"messageContains": "Invalid TARGET_LAG value '30 seconds'. Dynamic Tables do not support lag values under 60 second(s)."}}},
+      {"sql": "SHOW DYNAMIC TABLES LIKE 'too_fast'", "expect": {"rowCount": 0}},
+      {"sql": "DROP WAREHOUSE IF EXISTS wh1"}
+    ]},
+    {"name": "target-lag-is-canonicalized", "steps": [
+      {"sql": "CREATE WAREHOUSE IF NOT EXISTS wh1 WITH WAREHOUSE_SIZE = 'XSMALL' AUTO_SUSPEND = 60 INITIALLY_SUSPENDED = TRUE"},
+      {"sql": "CREATE TABLE source (id INTEGER, val DOUBLE)"},
+      {"sql": "CREATE DYNAMIC TABLE lag_canon TARGET_LAG = '90 seconds' WAREHOUSE = wh1 AS SELECT id FROM source"},
+      {"sql": "SHOW DYNAMIC TABLES LIKE 'lag_canon'"},
+      {"sql": "SELECT \"target_lag\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "1 minute, 30 seconds"}},
+      {"sql": "DROP WAREHOUSE IF EXISTS wh1"}
+    ]},
+    {"name": "trailing-comment-after-query-is-refused", "steps": [
+      {"sql": "CREATE WAREHOUSE IF NOT EXISTS wh1 WITH WAREHOUSE_SIZE = 'XSMALL' AUTO_SUSPEND = 60 INITIALLY_SUSPENDED = TRUE"},
+      {"sql": "CREATE TABLE source (id INTEGER, val DOUBLE)"},
+      {"sql": "CREATE DYNAMIC TABLE trail_dt TARGET_LAG = '1 minute' WAREHOUSE = wh1 AS SELECT id FROM source COMMENT = 'late'",
+       "expect": {"error": {"messageContains": "syntax error"}}},
+      {"sql": "DROP WAREHOUSE IF EXISTS wh1"}
+    ]},
+    {"name": "create-or-replace-dynamic-table", "steps": [
+      {"sql": "CREATE WAREHOUSE IF NOT EXISTS wh1 WITH WAREHOUSE_SIZE = 'XSMALL' AUTO_SUSPEND = 60 INITIALLY_SUSPENDED = TRUE"},
+      {"sql": "CREATE TABLE source (id INTEGER, val DOUBLE)"},
+      {"sql": "CREATE DYNAMIC TABLE replace_dt TARGET_LAG = '1 minutes' WAREHOUSE = wh1 AS SELECT id FROM source"},
+      {"sql": "CREATE OR REPLACE DYNAMIC TABLE replace_dt TARGET_LAG = '5 minutes' WAREHOUSE = wh1 AS SELECT val FROM source"},
+      {"sql": "SHOW DYNAMIC TABLES LIKE 'replace_dt'"},
+      {"sql": "SELECT \"target_lag\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "5 minutes"}},
+      {"sql": "DROP WAREHOUSE IF EXISTS wh1"}
+    ]},
+    {"name": "create-dynamic-table-if-not-exists", "steps": [
+      {"sql": "CREATE WAREHOUSE IF NOT EXISTS wh1 WITH WAREHOUSE_SIZE = 'XSMALL' AUTO_SUSPEND = 60 INITIALLY_SUSPENDED = TRUE"},
+      {"sql": "CREATE TABLE source (id INTEGER, val DOUBLE)"},
+      {"sql": "CREATE DYNAMIC TABLE ine_dt TARGET_LAG = '1 minutes' WAREHOUSE = wh1 AS SELECT id FROM source"},
+      {"sql": "CREATE DYNAMIC TABLE IF NOT EXISTS ine_dt TARGET_LAG = '2 minutes' WAREHOUSE = wh1 AS SELECT id FROM source"},
+      {"sql": "SHOW DYNAMIC TABLES LIKE 'ine_dt'"},
+      {"sql": "SELECT \"target_lag\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "1 minute"}},
+      {"sql": "DROP WAREHOUSE IF EXISTS wh1"}
+    ]},
+    {"name": "drop-dynamic-table", "steps": [
+      {"sql": "CREATE WAREHOUSE IF NOT EXISTS wh1 WITH WAREHOUSE_SIZE = 'XSMALL' AUTO_SUSPEND = 60 INITIALLY_SUSPENDED = TRUE"},
+      {"sql": "CREATE TABLE source (id INTEGER, val DOUBLE)"},
+      {"sql": "CREATE DYNAMIC TABLE drop_me TARGET_LAG = '1 minutes' WAREHOUSE = wh1 AS SELECT id FROM source"},
+      {"sql": "DROP DYNAMIC TABLE drop_me"},
+      {"sql": "SHOW DYNAMIC TABLES LIKE 'drop_me'", "expect": {"rowCount": 0}},
+      {"sql": "DROP WAREHOUSE IF EXISTS wh1"}
+    ]},
+    {"name": "drop-dynamic-table-if-exists", "steps": [
+      {"sql": "DROP DYNAMIC TABLE IF EXISTS nonexistent_dt"}
+    ]},
+    {"name": "alter-suspend", "steps": [
+      {"sql": "CREATE WAREHOUSE IF NOT EXISTS wh1 WITH WAREHOUSE_SIZE = 'XSMALL' AUTO_SUSPEND = 60 INITIALLY_SUSPENDED = TRUE"},
+      {"sql": "CREATE TABLE source (id INTEGER, val DOUBLE)"},
+      {"sql": "CREATE DYNAMIC TABLE sus_dt TARGET_LAG = '1 minutes' WAREHOUSE = wh1 AS SELECT id FROM source"},
+      {"sql": "ALTER DYNAMIC TABLE sus_dt SUSPEND"},
+      {"sql": "SHOW DYNAMIC TABLES LIKE 'sus_dt'"},
+      {"sql": "SELECT \"scheduling_state\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "SUSPENDED"}},
+      {"sql": "DROP WAREHOUSE IF EXISTS wh1"}
+    ]},
+    {"name": "alter-resume", "steps": [
+      {"sql": "CREATE WAREHOUSE IF NOT EXISTS wh1 WITH WAREHOUSE_SIZE = 'XSMALL' AUTO_SUSPEND = 60 INITIALLY_SUSPENDED = TRUE"},
+      {"sql": "CREATE TABLE source (id INTEGER, val DOUBLE)"},
+      {"sql": "CREATE DYNAMIC TABLE res_dt TARGET_LAG = '1 minutes' WAREHOUSE = wh1 AS SELECT id FROM source"},
+      {"sql": "ALTER DYNAMIC TABLE res_dt SUSPEND"},
+      {"sql": "ALTER DYNAMIC TABLE res_dt RESUME"},
+      {"sql": "SHOW DYNAMIC TABLES LIKE 'res_dt'"},
+      {"sql": "SELECT \"scheduling_state\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "ACTIVE"}},
+      {"sql": "DROP WAREHOUSE IF EXISTS wh1"}
+    ]},
+    {"name": "alter-refresh-is-accepted", "steps": [
+      {"sql": "CREATE WAREHOUSE IF NOT EXISTS wh1 WITH WAREHOUSE_SIZE = 'XSMALL' AUTO_SUSPEND = 60 INITIALLY_SUSPENDED = TRUE"},
+      {"sql": "CREATE TABLE source (id INTEGER, val DOUBLE)"},
+      {"sql": "INSERT INTO source VALUES (1, 10.0), (2, 20.0), (3, 30.0)"},
+      {"sql": "CREATE DYNAMIC TABLE ref_dt TARGET_LAG = '1 minutes' WAREHOUSE = wh1 AS SELECT id FROM source"},
+      {"sql": "ALTER DYNAMIC TABLE ref_dt REFRESH"},
+      {"sql": "DROP WAREHOUSE IF EXISTS wh1"}
+    ]},
+    {"name": "alter-set-target-lag", "steps": [
+      {"sql": "CREATE WAREHOUSE IF NOT EXISTS wh1 WITH WAREHOUSE_SIZE = 'XSMALL' AUTO_SUSPEND = 60 INITIALLY_SUSPENDED = TRUE"},
+      {"sql": "CREATE TABLE source (id INTEGER, val DOUBLE)"},
+      {"sql": "CREATE DYNAMIC TABLE lag_dt TARGET_LAG = '1 minutes' WAREHOUSE = wh1 AS SELECT id FROM source"},
+      {"sql": "ALTER DYNAMIC TABLE lag_dt SET TARGET_LAG = '10 minutes'"},
+      {"sql": "SHOW DYNAMIC TABLES LIKE 'lag_dt'"},
+      {"sql": "SELECT \"target_lag\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "10 minutes"}},
+      {"sql": "DROP WAREHOUSE IF EXISTS wh1"}
+    ]},
+    {"name": "alter-set-warehouse", "steps": [
+      {"sql": "CREATE WAREHOUSE IF NOT EXISTS wh1 WITH WAREHOUSE_SIZE = 'XSMALL' AUTO_SUSPEND = 60 INITIALLY_SUSPENDED = TRUE"},
+      {"sql": "CREATE WAREHOUSE IF NOT EXISTS wh2 WITH WAREHOUSE_SIZE = 'XSMALL' AUTO_SUSPEND = 60 INITIALLY_SUSPENDED = TRUE"},
+      {"sql": "CREATE TABLE source (id INTEGER, val DOUBLE)"},
+      {"sql": "CREATE DYNAMIC TABLE wh_dt TARGET_LAG = '1 minutes' WAREHOUSE = wh1 AS SELECT id FROM source"},
+      {"sql": "ALTER DYNAMIC TABLE wh_dt SET WAREHOUSE = wh2"},
+      {"sql": "SHOW DYNAMIC TABLES LIKE 'wh_dt'"},
+      {"sql": "SELECT \"warehouse\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "WH2"}},
+      {"sql": "DROP WAREHOUSE IF EXISTS wh2"},
+      {"sql": "DROP WAREHOUSE IF EXISTS wh1"}
+    ]},
+    {"name": "alter-set-comment", "steps": [
+      {"sql": "CREATE WAREHOUSE IF NOT EXISTS wh1 WITH WAREHOUSE_SIZE = 'XSMALL' AUTO_SUSPEND = 60 INITIALLY_SUSPENDED = TRUE"},
+      {"sql": "CREATE TABLE source (id INTEGER, val DOUBLE)"},
+      {"sql": "CREATE DYNAMIC TABLE cmt_dt TARGET_LAG = '1 minutes' WAREHOUSE = wh1 AS SELECT id FROM source"},
+      {"sql": "ALTER DYNAMIC TABLE cmt_dt SET COMMENT = 'updated comment'"},
+      {"sql": "SHOW DYNAMIC TABLES LIKE 'cmt_dt'"},
+      {"sql": "SELECT \"comment\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "updated comment"}},
+      {"sql": "DROP WAREHOUSE IF EXISTS wh1"}
+    ]},
+    {"name": "alter-set-downstream", "steps": [
+      {"sql": "CREATE WAREHOUSE IF NOT EXISTS wh1 WITH WAREHOUSE_SIZE = 'XSMALL' AUTO_SUSPEND = 60 INITIALLY_SUSPENDED = TRUE"},
+      {"sql": "CREATE TABLE source (id INTEGER, val DOUBLE)"},
+      {"sql": "CREATE DYNAMIC TABLE ds_dt TARGET_LAG = '1 minutes' WAREHOUSE = wh1 AS SELECT id FROM source"},
+      {"sql": "ALTER DYNAMIC TABLE ds_dt SET TARGET_LAG = DOWNSTREAM"},
+      {"sql": "SHOW DYNAMIC TABLES LIKE 'ds_dt'"},
+      {"sql": "SELECT \"target_lag\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "DOWNSTREAM"}},
+      {"sql": "DROP WAREHOUSE IF EXISTS wh1"}
+    ]},
+    {"name": "alter-set-refresh-mode-is-refused", "steps": [
+      {"sql": "CREATE WAREHOUSE IF NOT EXISTS wh1 WITH WAREHOUSE_SIZE = 'XSMALL' AUTO_SUSPEND = 60 INITIALLY_SUSPENDED = TRUE"},
+      {"sql": "CREATE TABLE source (id INTEGER, val DOUBLE)"},
+      {"sql": "CREATE DYNAMIC TABLE rm_dt TARGET_LAG = '1 minutes' WAREHOUSE = wh1 AS SELECT id FROM source"},
+      {"sql": "ALTER DYNAMIC TABLE rm_dt SET REFRESH_MODE = INCREMENTAL",
+       "expect": {"error": {"messageContains": "invalid property 'REFRESH_MODE' for 'DYNAMIC_TABLE'"}}},
+      {"sql": "DROP WAREHOUSE IF EXISTS wh1"}
+    ]},
+    {"name": "alter-set-data-retention-is-accepted", "steps": [
+      {"sql": "CREATE WAREHOUSE IF NOT EXISTS wh1 WITH WAREHOUSE_SIZE = 'XSMALL' AUTO_SUSPEND = 60 INITIALLY_SUSPENDED = TRUE"},
+      {"sql": "CREATE TABLE source (id INTEGER, val DOUBLE)"},
+      {"sql": "CREATE DYNAMIC TABLE dr_dt TARGET_LAG = '1 minutes' WAREHOUSE = wh1 AS SELECT id FROM source"},
+      {"sql": "ALTER DYNAMIC TABLE dr_dt SET DATA_RETENTION_TIME_IN_DAYS = 5"},
+      {"sql": "DROP WAREHOUSE IF EXISTS wh1"}
+    ]},
+    {"name": "show-dynamic-tables", "steps": [
+      {"sql": "CREATE WAREHOUSE IF NOT EXISTS wh1 WITH WAREHOUSE_SIZE = 'XSMALL' AUTO_SUSPEND = 60 INITIALLY_SUSPENDED = TRUE"},
+      {"sql": "CREATE TABLE source (id INTEGER, val DOUBLE)"},
+      {"sql": "CREATE DYNAMIC TABLE show_dt1 TARGET_LAG = '1 minutes' WAREHOUSE = wh1 AS SELECT id FROM source"},
+      {"sql": "CREATE DYNAMIC TABLE show_dt2 TARGET_LAG = '2 minutes' WAREHOUSE = wh1 AS SELECT val FROM source"},
+      {"sql": "SHOW DYNAMIC TABLES", "expect": {"rowCount": 2}},
+      {"sql": "SELECT \"name\", \"target_lag\", \"scheduling_state\", \"warehouse\", \"text\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'SHOW_DT1'",
+       "expect": {"rowCount": 1}},
+      {"sql": "DROP WAREHOUSE IF EXISTS wh1"}
+    ]},
+    {"name": "show-dynamic-tables-empty", "steps": [
+      {"sql": "SHOW DYNAMIC TABLES", "expect": {"rowCount": 0}}
+    ]},
+    {"name": "show-dynamic-tables-reflects-state", "steps": [
+      {"sql": "CREATE WAREHOUSE IF NOT EXISTS wh1 WITH WAREHOUSE_SIZE = 'XSMALL' AUTO_SUSPEND = 60 INITIALLY_SUSPENDED = TRUE"},
+      {"sql": "CREATE TABLE source (id INTEGER, val DOUBLE)"},
+      {"sql": "CREATE DYNAMIC TABLE state_dt TARGET_LAG = '1 minutes' WAREHOUSE = wh1 AS SELECT id FROM source"},
+      {"sql": "ALTER DYNAMIC TABLE state_dt SUSPEND"},
+      {"sql": "SHOW DYNAMIC TABLES"},
+      {"sql": "SELECT UPPER(\"scheduling_state\") FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'STATE_DT'",
+       "expect": {"value": "SUSPENDED"}},
+      {"sql": "DROP WAREHOUSE IF EXISTS wh1"}
+    ]},
+    {"name": "describe-dynamic-table", "steps": [
+      {"sql": "CREATE WAREHOUSE IF NOT EXISTS wh1 WITH WAREHOUSE_SIZE = 'XSMALL' AUTO_SUSPEND = 60 INITIALLY_SUSPENDED = TRUE"},
+      {"sql": "CREATE TABLE source (id INTEGER, val DOUBLE)"},
+      {"sql": "CREATE DYNAMIC TABLE desc_dt TARGET_LAG = '3 minutes' WAREHOUSE = wh1 AS SELECT id, val FROM source"},
+      {"sql": "DESCRIBE DYNAMIC TABLE desc_dt", "expect": {"rowCount": 2}},
+      {"sql": "SELECT MAX(IFF(\"name\" = 'ID', \"kind\", NULL)), MAX(IFF(\"name\" = 'VAL', \"kind\", NULL)) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["COLUMN", "COLUMN"]]}},
+      {"sql": "DROP WAREHOUSE IF EXISTS wh1"}
+    ]},
+    {"name": "dynamic-table-appears-in-show-objects", "steps": [
+      {"sql": "CREATE WAREHOUSE IF NOT EXISTS wh1 WITH WAREHOUSE_SIZE = 'XSMALL' AUTO_SUSPEND = 60 INITIALLY_SUSPENDED = TRUE"},
+      {"sql": "CREATE TABLE source (id INTEGER, val DOUBLE)"},
+      {"sql": "CREATE DYNAMIC TABLE obj_dt TARGET_LAG = '1 minutes' WAREHOUSE = wh1 AS SELECT id FROM source"},
+      {"sql": "SHOW OBJECTS"},
+      {"sql": "SELECT COUNT_IF(\"name\" = 'OBJ_DT' AND \"kind\" = 'TABLE' AND \"is_dynamic\" = 'Y') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"value": "1"}},
+      {"sql": "DROP WAREHOUSE IF EXISTS wh1"}
+    ]},
+    {"name": "show-dynamic-tables-statement-works", "steps": [
+      {"sql": "SHOW DYNAMIC TABLES"}
+    ]}
+  ]
+}

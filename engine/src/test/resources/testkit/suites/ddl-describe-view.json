@@ -1,0 +1,64 @@
+{
+  "suite": "ddl-describe-view",
+  "description": "DESCRIBE VIEW answers a view's COLUMN SHAPE - the same thirteen columns DESCRIBE TABLE answers: canonical types, kind COLUMN, no default/key flags on derived columns, the view's own declared column comments (a base column's never leaks in), materialized views the same; the three relation kinds are interchangeable (DESCRIBE TABLE on a view answers the view, DESCRIBE VIEW on a table answers the table) and the named kind is spoken only in the missing-object refusal. Converted 1:1 from ddl/DescribeViewTest (now retired).",
+  "tags": ["ddl", "views", "converted"],
+  "tests": [
+    {"name": "the-shape-is-the-same-thirteen-as-for-a-table", "steps": [
+      {"sql": "CREATE TABLE dv_base (k NUMBER(5,1), v VARCHAR(9) DEFAULT 'z', c VARCHAR(4) COMMENT 'base comment')"},
+      {"sql": "CREATE VIEW dv_v AS SELECT k, v, c FROM dv_base"},
+      {"sql": "DESCRIBE VIEW dv_v",
+       "expect": {"columns": ["name", "type", "kind", "null?", "default", "primary key", "unique key", "check", "expression", "comment", "policy name", "privacy domain", "write default"]}},
+      {"sql": "DESCRIBE TABLE dv_base",
+       "expect": {"columns": ["name", "type", "kind", "null?", "default", "primary key", "unique key", "check", "expression", "comment", "policy name", "privacy domain", "write default"]}}
+    ]},
+    {"name": "a-view-describes-its-columns", "steps": [
+      {"sql": "CREATE TABLE dv_base (k NUMBER(5,1), v VARCHAR(9) DEFAULT 'z', c VARCHAR(4) COMMENT 'base comment')"},
+      {"sql": "CREATE VIEW dv_v AS SELECT k, v, c FROM dv_base"},
+      {"sql": "DESCRIBE VIEW dv_v", "expect": {"rowCount": 3}},
+      {"sql": "SELECT \"name\", \"type\", \"kind\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" IN ('K', 'V') ORDER BY \"name\"",
+       "expect": {"rows": [["K", "NUMBER(5,1)", "COLUMN"], ["V", "VARCHAR(9)", "COLUMN"]], "ordered": true}}
+    ]},
+    {"name": "a-derived-column-has-no-default-and-no-keys", "steps": [
+      {"sql": "CREATE TABLE dv_base (k NUMBER(5,1), v VARCHAR(9) DEFAULT 'z', c VARCHAR(4) COMMENT 'base comment')"},
+      {"sql": "CREATE VIEW dv_v AS SELECT k, v, c FROM dv_base"},
+      {"sql": "DESCRIBE VIEW dv_v"},
+      {"sql": "SELECT \"default\", \"primary key\", \"unique key\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'V'",
+       "expect": {"rows": [["NULL", "N", "N"]]}}
+    ]},
+    {"name": "the-comment-is-the-views-own-and-not-the-base-columns", "steps": [
+      {"sql": "CREATE TABLE dv_base (k NUMBER(5,1), v VARCHAR(9) DEFAULT 'z', c VARCHAR(4) COMMENT 'base comment')"},
+      {"sql": "CREATE VIEW dv_cmt (a COMMENT 'col cmt', b) AS SELECT k, c FROM dv_base"},
+      {"sql": "DESCRIBE VIEW dv_cmt"},
+      {"sql": "SELECT \"name\", \"comment\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) ORDER BY \"name\"",
+       "expect": {"rows": [["A", "col cmt"], ["B", "NULL"]], "ordered": true}}
+    ]},
+    {"name": "a-materialized-view-carries-its-column-comments", "steps": [
+      {"sql": "CREATE TABLE dv_base (k NUMBER(5,1), v VARCHAR(9) DEFAULT 'z', c VARCHAR(4) COMMENT 'base comment')"},
+      {"sql": "CREATE MATERIALIZED VIEW dv_mv (a COMMENT 'col cmt', b) AS SELECT k, c FROM dv_base"},
+      {"sql": "DESCRIBE MATERIALIZED VIEW dv_mv"},
+      {"sql": "SELECT \"name\", \"comment\", \"type\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) ORDER BY \"name\"",
+       "expect": {"rows": [["A", "col cmt", "NUMBER(5,1)"], ["B", "NULL", "VARCHAR(4)"]], "ordered": true}}
+    ]},
+    {"name": "describe-table-describes-a-view", "steps": [
+      {"sql": "CREATE TABLE dv_base (k NUMBER(5,1), v VARCHAR(9) DEFAULT 'z', c VARCHAR(4) COMMENT 'base comment')"},
+      {"sql": "CREATE VIEW dv_v AS SELECT k, v, c FROM dv_base"},
+      {"sql": "DESCRIBE TABLE dv_v", "expect": {"rowCount": 3}},
+      {"sql": "SELECT \"default\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'V'",
+       "expect": {"value": "NULL"}}
+    ]},
+    {"name": "describe-view-describes-a-table", "steps": [
+      {"sql": "CREATE TABLE dv_base (k NUMBER(5,1), v VARCHAR(9) DEFAULT 'z', c VARCHAR(4) COMMENT 'base comment')"},
+      {"sql": "DESCRIBE VIEW dv_base", "expect": {"rowCount": 3}},
+      {"sql": "SELECT \"name\", \"default\", \"comment\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" IN ('V', 'C') ORDER BY \"name\"",
+       "expect": {"rows": [["C", "NULL", "base comment"], ["V", "'z'", "NULL"]], "ordered": true}}
+    ]},
+    {"name": "a-missing-object-is-refused-as-the-kind-the-statement-named", "steps": [
+      {"sql": "DESCRIBE VIEW nosuch_x",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nView 'NOSUCH_X' does not exist or not authorized."}}},
+      {"sql": "DESCRIBE TABLE nosuch_x",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nTable 'NOSUCH_X' does not exist or not authorized."}}},
+      {"sql": "DESCRIBE MATERIALIZED VIEW nosuch_x",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nMaterialized view 'NOSUCH_X' does not exist or not authorized."}}}
+    ]}
+  ]
+}

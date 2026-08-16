@@ -1,0 +1,50 @@
+{
+  "suite": "query-aggregate-argument-resolution",
+  "description": "Aggregates whose argument is a table-qualified column (SUM(s.qty)), an arithmetic expression (SUM(qty * 2)), or a predicate (COUNT_IF(v > 2)) must RESOLVE that argument rather than silently collapsing to NULL (SUM/AVG/MIN/MAX/COUNT) or counting column 0 (COUNT_IF and the other generic accumulators). Previously the aggregate-argument path forced every argument through a bare column-index lookup, which threw 'Column not found' - swallowed to NULL - or fell back to column 0. The bare-column fast path is checked too, so the common case has no regression, and the ROLLUP super-aggregate over a qualified column is the reported root cause: its grand-total row must SUM the qualified column rather than be NULL. Converted 1:1 from query/AggregateArgumentResolutionTest (now retired); the Java read the ROLLUP grand total by scanning rows for a NULL group key, which the converted test states directly as a WHERE region IS NULL read.",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "an-aggregate-over-an-alias-qualified-column", "steps": [
+      {"sql": "CREATE TABLE sales (id NUMBER, quantity NUMBER, price NUMBER)"},
+      {"sql": "INSERT INTO sales VALUES (1, 10, 100), (2, 20, 200), (3, 30, 300)"},
+      {"sql": "SELECT SUM(s.quantity) FROM sales s", "expect": {"value": "60"}},
+      {"sql": "SELECT COUNT(s.quantity) FROM sales s", "expect": {"value": "3"}},
+      {"sql": "SELECT AVG(s.price) FROM sales s", "expect": {"value": "200"}},
+      {"sql": "SELECT MIN(s.price) FROM sales s", "expect": {"value": "100"}},
+      {"sql": "SELECT MAX(s.price) FROM sales s", "expect": {"value": "300"}}
+    ]},
+    {"name": "an-aggregate-over-an-arithmetic-expression", "steps": [
+      {"sql": "CREATE TABLE sales (id NUMBER, quantity NUMBER, price NUMBER)"},
+      {"sql": "INSERT INTO sales VALUES (1, 10, 100), (2, 20, 200), (3, 30, 300)"},
+      {"sql": "SELECT SUM(quantity * 2) FROM sales", "expect": {"value": "120"}},
+      {"sql": "SELECT SUM(quantity + price) FROM sales", "expect": {"value": "660"}},
+      {"sql": "SELECT AVG(quantity + price) FROM sales", "expect": {"value": "220"}},
+      {"sql": "SELECT MAX(quantity + price) FROM sales", "expect": {"value": "330"}}
+    ]},
+    {"name": "bare-column-aggregates-still-work", "steps": [
+      {"sql": "CREATE TABLE sales (id NUMBER, quantity NUMBER, price NUMBER)"},
+      {"sql": "INSERT INTO sales VALUES (1, 10, 100), (2, 20, 200), (3, 30, 300)"},
+      {"sql": "SELECT SUM(quantity) FROM sales", "expect": {"value": "60"}},
+      {"sql": "SELECT COUNT(*) FROM sales", "expect": {"value": "3"}},
+      {"sql": "SELECT AVG(price) FROM sales", "expect": {"value": "200"}}
+    ]},
+    {"name": "count-if-applies-its-predicate", "steps": [
+      {"sql": "CREATE TABLE vals (v NUMBER)"},
+      {"sql": "INSERT INTO vals VALUES (1), (2), (3), (4), (5)"},
+      {"sql": "SELECT COUNT_IF(v > 2) FROM vals", "expect": {"value": "3"}},
+      {"sql": "SELECT COUNT_IF(FALSE) FROM vals", "expect": {"value": "0"}},
+      {"sql": "SELECT COUNT_IF(v >= 1) FROM vals", "expect": {"value": "5"}},
+      {"sql": "SELECT COUNT_IF(v <> 3) FROM vals", "expect": {"value": "4"}}
+    ]},
+    {"name": "a-grouped-aggregate-over-a-qualified-column", "steps": [
+      {"sql": "CREATE TABLE items (category VARCHAR, qty NUMBER)"},
+      {"sql": "INSERT INTO items VALUES ('a', 10), ('a', 20), ('b', 30)"},
+      {"sql": "SELECT s.category, SUM(s.qty) FROM items s GROUP BY s.category ORDER BY s.category", "expect": {"rows": [["a", 30], ["b", 30]], "ordered": true}}
+    ]},
+    {"name": "a-rollup-super-aggregate-over-a-qualified-column", "steps": [
+      {"sql": "CREATE TABLE reg (region VARCHAR, amount NUMBER)"},
+      {"sql": "INSERT INTO reg VALUES ('E', 10), ('E', 20), ('W', 30)"},
+      {"sql": "SELECT SUM(t) FROM (SELECT r.region AS region, SUM(r.amount) AS t FROM reg r GROUP BY ROLLUP(r.region)) WHERE region IS NULL", "expect": {"value": "60"}},
+      {"sql": "SELECT COUNT(*) FROM (SELECT r.region, SUM(r.amount) FROM reg r GROUP BY ROLLUP(r.region))", "expect": {"value": "3"}}
+    ]}
+  ]
+}

@@ -1,0 +1,54 @@
+{
+  "suite": "functions-current-account",
+  "description": "CURRENT_ACCOUNT() - live-tolerant: every value cell compares against the session's own answer, since a real run rides whatever account it connects to, and the fixtures are built server-side with INSERT ... SELECT CURRENT_ACCOUNT() rather than by interpolating the name. Covers the answer being non-empty, use in a WHERE clause, under an alias, in a join, repeated in one projection, called in any letter case, and inside a grouped aggregate. The engine's configured default (ABC12345) is pinned in its own embedded-only test. Converted from functions/CurrentAccountTest, which is trimmed to the three tests that build a throwaway DatabaseEngine with a custom account id - a bootstrap property with no SQL surface.",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "current-account-answers-a-non-empty-account", "steps": [
+      {"sql": "SELECT CURRENT_ACCOUNT()", "expect": {"rowCount": 1}},
+      {"sql": "SELECT CURRENT_ACCOUNT() IS NOT NULL AND LENGTH(CURRENT_ACCOUNT()) > 0",
+       "expect": {"value": "true"}}
+    ]},
+    {"name": "the-embedded-engine-default-account",
+     "skip": {"backends": ["snowflake"], "reason": "the engine's configured default account id is an embedded-engine fact; a live run rides whatever account it connects to"},
+     "steps": [
+      {"sql": "SELECT CURRENT_ACCOUNT()", "expect": {"value": "ABC12345"}}
+    ]},
+    {"name": "current-account-in-a-where-clause", "steps": [
+      {"sql": "CREATE TABLE accounts (id INTEGER, account_id VARCHAR)"},
+      {"sql": "INSERT INTO accounts SELECT 1, CURRENT_ACCOUNT()"},
+      {"sql": "INSERT INTO accounts VALUES (2, 'SOME_OTHER_ACCT')"},
+      {"sql": "SELECT id FROM accounts WHERE account_id = CURRENT_ACCOUNT()",
+       "expect": {"rowCount": 1, "value": "1"}}
+    ]},
+    {"name": "current-account-under-an-alias", "steps": [
+      {"sql": "SELECT account_identifier = CURRENT_ACCOUNT() FROM (SELECT CURRENT_ACCOUNT() AS account_identifier)",
+       "expect": {"rowCount": 1, "value": "true"}}
+    ]},
+    {"name": "current-account-in-a-join", "steps": [
+      {"sql": "CREATE TABLE user_accounts (user_id INTEGER, account_id VARCHAR)"},
+      {"sql": "INSERT INTO user_accounts SELECT 1, CURRENT_ACCOUNT()"},
+      {"sql": "INSERT INTO user_accounts VALUES (2, 'SOME_OTHER_ACCT')"},
+      {"sql": "CREATE TABLE users (id INTEGER, name VARCHAR)"},
+      {"sql": "INSERT INTO users VALUES (1, 'Alice')"},
+      {"sql": "INSERT INTO users VALUES (2, 'Bob')"},
+      {"sql": "SELECT u.name\nFROM users u\nJOIN user_accounts ua ON u.id = ua.user_id\nWHERE ua.account_id = CURRENT_ACCOUNT()",
+       "expect": {"rowCount": 1, "value": "Alice"}}
+    ]},
+    {"name": "current-account-repeated-in-one-projection", "steps": [
+      {"sql": "SELECT a = CURRENT_ACCOUNT(), b = CURRENT_ACCOUNT(), c = CURRENT_ACCOUNT() FROM (SELECT CURRENT_ACCOUNT() AS a, CURRENT_ACCOUNT() AS b, CURRENT_ACCOUNT() AS c)",
+       "expect": {"rowCount": 1, "rows": [["true", "true", "true"]]}}
+    ]},
+    {"name": "current-account-is-case-insensitive", "steps": [
+      {"sql": "SELECT current_account() = CURRENT_ACCOUNT(), Current_Account() = CURRENT_ACCOUNT()",
+       "expect": {"rows": [["true", "true"]]}}
+    ]},
+    {"name": "current-account-inside-a-grouped-aggregate", "steps": [
+      {"sql": "CREATE TABLE transactions (id INTEGER, account_id VARCHAR, amount DECIMAL(10,2))"},
+      {"sql": "INSERT INTO transactions SELECT 1, CURRENT_ACCOUNT(), 100.50"},
+      {"sql": "INSERT INTO transactions SELECT 2, CURRENT_ACCOUNT(), 200.75"},
+      {"sql": "INSERT INTO transactions VALUES (3, 'SOME_OTHER_ACCT', 150.00)"},
+      {"sql": "SELECT '<' || SUM(amount) || '>' AS total\nFROM transactions\nWHERE account_id = CURRENT_ACCOUNT()\nGROUP BY account_id",
+       "expect": {"rowCount": 1, "value": "<301.25>"}}
+    ]}
+  ]
+}

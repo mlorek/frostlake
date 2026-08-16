@@ -22,7 +22,7 @@ package dev.frostlake.executor.expressions;
  * the raw type (e.g. {@code NUMBER(10,2)}) is applied separately, so this is only the dispatch category.
  */
 enum CastTargetCategory {
-    INTEGER, FLOAT, DECIMAL, STRING, BOOLEAN, BINARY, ARRAY, OBJECT;
+    INTEGER, FLOAT, DECIMAL, STRING, BOOLEAN, BINARY, ARRAY, OBJECT, UUID;
 
     /** Classify a cast target's base type name (uppercased, without any precision/scale); null if unhandled. */
     static CastTargetCategory fromTypeName(final String baseType) {
@@ -42,6 +42,7 @@ enum CastTargetCategory {
             // VECTOR(FLOAT|INT, n) casts take the array value as-is; the dimension is declarative here.
             case "VECTOR": return ARRAY;
             case "OBJECT": return OBJECT;
+            case "UUID": return UUID;
             default: return null;
         }
     }

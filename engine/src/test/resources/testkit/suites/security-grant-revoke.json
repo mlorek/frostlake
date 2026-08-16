@@ -1,0 +1,132 @@
+{
+  "suite": "security-grant-revoke",
+  "description": "GRANT and REVOKE of ROLES and of PRIVILEGES, read back through SHOW GRANTS. A role granted to another role appears as a USAGE grant on the ROLE domain; revoking removes it; a multi-level hierarchy chains. Privileges grant singly and in lists, on tables, views, schemas and databases, and REVOKE takes a list too, leaving the untouched ones behind. GRANT OWNERSHIP records an OWNERSHIP row. GRANT ALL stores the EXPANSION and never an ALL row - live-verified, the individual DML privileges appear and no row is named ALL - so one expanded privilege can be revoked on its own while the rest remain, and REVOKE ALL then clears everything but OWNERSHIP. A qualified object name and the schema-context short name reach the same object. Converted from security/GrantRevokeTest, which is KEPT (trimmed) for the six user-grant tests that read the catalog directly - SHOW GRANTS TO USER reports only role grants, so a privilege granted to a USER has no SQL read-back; see the task note. The Java scanned SHOW GRANTS rows POSITIONALLY (column 1 the privilege, 2 the granted_on, 3 the name); these steps read the same rows BY NAME through RESULT_SCAN.",
+  "tags": ["security", "converted"],
+  "tests": [
+    {"name": "grant-a-role-to-a-role", "steps": [
+      {"sql": "CREATE ROLE IF NOT EXISTS parent_role"},
+      {"sql": "CREATE ROLE IF NOT EXISTS child_role"},
+      {"sql": "GRANT ROLE child_role TO ROLE parent_role"},
+      {"sql": "SHOW GRANTS TO ROLE parent_role"},
+      {"sql": "SELECT \"privilege\", \"granted_on\", \"name\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'CHILD_ROLE'",
+       "expect": {"rows": [["USAGE","ROLE","CHILD_ROLE"]]}}
+    ]},
+    {"name": "revoke-a-role-from-a-role", "steps": [
+      {"sql": "CREATE ROLE IF NOT EXISTS parent_role"},
+      {"sql": "CREATE ROLE IF NOT EXISTS child_role"},
+      {"sql": "GRANT ROLE child_role TO ROLE parent_role"},
+      {"sql": "REVOKE ROLE child_role FROM ROLE parent_role"},
+      {"sql": "SHOW GRANTS TO ROLE parent_role"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'CHILD_ROLE'", "expect": {"value": 0}}
+    ]},
+    {"name": "a-multi-level-role-hierarchy", "steps": [
+      {"sql": "CREATE ROLE IF NOT EXISTS role_a"},
+      {"sql": "CREATE ROLE IF NOT EXISTS role_b"},
+      {"sql": "CREATE ROLE IF NOT EXISTS role_c"},
+      {"sql": "GRANT ROLE role_b TO ROLE role_a"},
+      {"sql": "GRANT ROLE role_c TO ROLE role_b"},
+      {"sql": "SHOW GRANTS TO ROLE role_a"},
+      {"sql": "SELECT \"name\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"granted_on\" = 'ROLE'", "expect": {"rows": [["ROLE_B"]]}},
+      {"sql": "SHOW GRANTS TO ROLE role_b"},
+      {"sql": "SELECT \"name\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"granted_on\" = 'ROLE'", "expect": {"rows": [["ROLE_C"]]}}
+    ]},
+    {"name": "grant-the-truncate-privilege", "steps": [
+      {"sql": "CREATE ROLE IF NOT EXISTS test_role"},
+      {"sql": "CREATE OR REPLACE TABLE test_table (id INTEGER, name VARCHAR)"},
+      {"sql": "GRANT TRUNCATE ON TABLE test_table TO ROLE test_role"},
+      {"sql": "SHOW GRANTS ON TABLE test_table"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"privilege\" = 'TRUNCATE'", "expect": {"value": 1}}
+    ]},
+    {"name": "grant-several-privileges-at-once", "steps": [
+      {"sql": "CREATE ROLE IF NOT EXISTS data_role"},
+      {"sql": "CREATE OR REPLACE TABLE employees (id INTEGER, name VARCHAR)"},
+      {"sql": "GRANT SELECT, INSERT, UPDATE ON TABLE employees TO ROLE data_role"},
+      {"sql": "SHOW GRANTS ON TABLE employees"},
+      {"sql": "SELECT LISTAGG(\"privilege\", ',') WITHIN GROUP (ORDER BY \"privilege\") FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"privilege\" IN ('SELECT','INSERT','UPDATE')",
+       "expect": {"value": "INSERT,SELECT,UPDATE"}}
+    ]},
+    {"name": "grant-on-several-object-types", "steps": [
+      {"sql": "CREATE ROLE IF NOT EXISTS admin_role"},
+      {"sql": "CREATE DATABASE IF NOT EXISTS grant_test_db"},
+      {"sql": "USE DATABASE grant_test_db"},
+      {"sql": "CREATE SCHEMA IF NOT EXISTS grant_test_schema"},
+      {"sql": "USE SCHEMA grant_test_schema"},
+      {"sql": "CREATE OR REPLACE TABLE grant_test_table (id INTEGER)"},
+      {"sql": "CREATE OR REPLACE VIEW grant_test_view AS SELECT * FROM grant_test_table"},
+      {"sql": "GRANT USAGE ON DATABASE grant_test_db TO ROLE admin_role"},
+      {"sql": "GRANT USAGE ON SCHEMA grant_test_schema TO ROLE admin_role"},
+      {"sql": "GRANT SELECT ON TABLE grant_test_table TO ROLE admin_role"},
+      {"sql": "GRANT SELECT ON VIEW grant_test_view TO ROLE admin_role"},
+      {"sql": "SHOW GRANTS ON DATABASE grant_test_db"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"privilege\" = 'USAGE'", "expect": {"value": 1}},
+      {"sql": "SHOW GRANTS ON TABLE grant_test_table"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"privilege\" = 'SELECT'", "expect": {"value": 1}}
+    ]},
+    {"name": "grant-ownership", "steps": [
+      {"sql": "CREATE ROLE IF NOT EXISTS owner_role"},
+      {"sql": "CREATE OR REPLACE TABLE ownership_test (id INTEGER)"},
+      {"sql": "GRANT OWNERSHIP ON TABLE ownership_test TO ROLE owner_role"},
+      {"sql": "SHOW GRANTS ON TABLE ownership_test"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"privilege\" = 'OWNERSHIP'", "expect": {"value": 1}}
+    ]},
+    {"name": "revoke-specific-privileges", "steps": [
+      {"sql": "CREATE ROLE IF NOT EXISTS revoke_test_role"},
+      {"sql": "CREATE OR REPLACE TABLE revoke_table (id INTEGER)"},
+      {"sql": "GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE revoke_table TO ROLE revoke_test_role"},
+      {"sql": "REVOKE INSERT, UPDATE ON TABLE revoke_table FROM ROLE revoke_test_role"},
+      {"sql": "SHOW GRANTS ON TABLE revoke_table"},
+      {"sql": "SELECT LISTAGG(\"privilege\", ',') WITHIN GROUP (ORDER BY \"privilege\") FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"privilege\" IN ('SELECT','INSERT','UPDATE','DELETE')",
+       "expect": {"value": "DELETE,SELECT"}}
+    ]},
+    {"name": "grant-all-privileges-stores-the-expansion", "steps": [
+      {"sql": "CREATE ROLE IF NOT EXISTS all_priv_role"},
+      {"sql": "CREATE OR REPLACE TABLE all_priv_table (id INTEGER)"},
+      {"sql": "GRANT ALL PRIVILEGES ON TABLE all_priv_table TO ROLE all_priv_role"},
+      {"sql": "SHOW GRANTS ON TABLE all_priv_table"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"privilege\" = 'ALL'", "expect": {"value": 0}},
+      {"sql": "SHOW GRANTS ON TABLE all_priv_table"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"privilege\" IN ('SELECT','INSERT','UPDATE','DELETE','TRUNCATE','REFERENCES')", "expect": {"value": 6}}
+    ]},
+    {"name": "an-expanded-privilege-revokes-individually", "steps": [
+      {"sql": "CREATE ROLE IF NOT EXISTS part_revoke_role"},
+      {"sql": "CREATE OR REPLACE TABLE part_revoke_table (id INTEGER)"},
+      {"sql": "GRANT ALL ON TABLE part_revoke_table TO ROLE part_revoke_role"},
+      {"sql": "REVOKE UPDATE ON TABLE part_revoke_table FROM ROLE part_revoke_role"},
+      {"sql": "SHOW GRANTS ON TABLE part_revoke_table"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"privilege\" = 'UPDATE'", "expect": {"value": 0}},
+      {"sql": "SHOW GRANTS ON TABLE part_revoke_table"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"privilege\" IN ('SELECT','DELETE')", "expect": {"value": 2}},
+      {"sql": "REVOKE ALL ON TABLE part_revoke_table FROM ROLE part_revoke_role"},
+      {"sql": "SHOW GRANTS ON TABLE part_revoke_table"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"privilege\" <> 'OWNERSHIP'", "expect": {"value": 0}}
+    ]},
+    {"name": "revoke-all-privileges", "steps": [
+      {"sql": "CREATE ROLE IF NOT EXISTS revoke_all_role"},
+      {"sql": "CREATE OR REPLACE TABLE revoke_all_table (id INTEGER)"},
+      {"sql": "GRANT ALL PRIVILEGES ON TABLE revoke_all_table TO ROLE revoke_all_role"},
+      {"sql": "REVOKE ALL PRIVILEGES ON TABLE revoke_all_table FROM ROLE revoke_all_role"},
+      {"sql": "SHOW GRANTS ON TABLE revoke_all_table"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"grantee_name\" = 'REVOKE_ALL_ROLE'", "expect": {"value": 0}}
+    ]},
+    {"name": "a-short-name-under-a-schema-context", "steps": [
+      {"sql": "CREATE ROLE IF NOT EXISTS qualified_role"},
+      {"sql": "CREATE DATABASE IF NOT EXISTS qname_db"},
+      {"sql": "USE DATABASE qname_db"},
+      {"sql": "CREATE SCHEMA IF NOT EXISTS qname_schema"},
+      {"sql": "USE SCHEMA qname_schema"},
+      {"sql": "CREATE OR REPLACE TABLE qname_table (id INTEGER)"},
+      {"sql": "GRANT SELECT ON TABLE qname_table TO ROLE qualified_role"},
+      {"sql": "SHOW GRANTS ON TABLE qname_table"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"privilege\" = 'SELECT'", "expect": {"value": 1}}
+    ]},
+    {"name": "a-role-hierarchy", "steps": [
+      {"sql": "CREATE ROLE IF NOT EXISTS top_role"},
+      {"sql": "CREATE ROLE IF NOT EXISTS middle_role"},
+      {"sql": "CREATE ROLE IF NOT EXISTS bottom_role"},
+      {"sql": "GRANT ROLE bottom_role TO ROLE middle_role"},
+      {"sql": "GRANT ROLE middle_role TO ROLE top_role"},
+      {"sql": "SHOW GRANTS TO ROLE top_role"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'MIDDLE_ROLE'", "expect": {"value": 1}}
+    ]}
+  ]
+}

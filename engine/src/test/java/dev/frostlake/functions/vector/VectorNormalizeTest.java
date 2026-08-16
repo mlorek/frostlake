@@ -28,13 +28,13 @@ public class VectorNormalizeTest extends BaseVectorFunctionTest {
         // THE precision test for vector RESULTS. Live: VECTOR_NORMALIZE([1,2,3]::VECTOR(FLOAT,3)) is
         // [0.26726124,0.5345225,0.80178374] — the float64 quotients NARROWED to float32 elements. The
         // float64 rendering would be [0.2672612419124244,…], wrong from the 8th digit on.
-        assertVector("[0.26726124,0.5345225,0.80178374]", "SELECT VECTOR_NORMALIZE(" + V123 + ")");
+        assertVector("[0.267261,0.534522,0.801784]", "SELECT VECTOR_NORMALIZE(" + V123 + ")");
         // Live: VECTOR_NORMALIZE([1,1,1]) is [0.57735026,…] — float32 of 1/sqrt(3), whose float64
         // value is 0.5773502691896258.
-        assertVector("[0.57735026,0.57735026,0.57735026]", "SELECT VECTOR_NORMALIZE([1,1,1]::VECTOR(FLOAT,3))");
+        assertVector("[0.577350,0.577350,0.577350]", "SELECT VECTOR_NORMALIZE([1,1,1]::VECTOR(FLOAT,3))");
         // Live: negative components keep their sign — [-1,-2,-2] normalizes to
         // [-0.33333334,-0.6666667,-0.6666667].
-        assertVector("[-0.33333334,-0.6666667,-0.6666667]", "SELECT VECTOR_NORMALIZE([-1,-2,-2]::VECTOR(FLOAT,3))");
+        assertVector("[-0.333333,-0.666667,-0.666667]", "SELECT VECTOR_NORMALIZE([-1,-2,-2]::VECTOR(FLOAT,3))");
     }
 
     @Test
@@ -43,7 +43,7 @@ public class VectorNormalizeTest extends BaseVectorFunctionTest {
         // [0.33333334,0.6666667,0.6666667]. Float32 arithmetic could not produce that at all — the
         // squares underflow to zero there — so the magnitude is accumulated in float64. The same
         // property at a literal-expressible magnitude:
-        assertVector("[0.33333334,0.6666667,0.6666667]", "SELECT VECTOR_NORMALIZE([0.00000000000000000001,0.00000000000000000002,"
+        assertVector("[0.333333,0.666667,0.666667]", "SELECT VECTOR_NORMALIZE([0.00000000000000000001,0.00000000000000000002,"
                 + "0.00000000000000000002]::VECTOR(FLOAT,3))");
     }
 
@@ -51,14 +51,14 @@ public class VectorNormalizeTest extends BaseVectorFunctionTest {
     public void intVectorNormalizesToAFloatVector() {
         // Live: SYSTEM$TYPEOF(VECTOR_NORMALIZE([1,2,3]::VECTOR(INT,3))) is VECTOR(FLOAT, 3), and the
         // value is the same unit vector as for the FLOAT input.
-        assertVector("[0.26726124,0.5345225,0.80178374]", "SELECT VECTOR_NORMALIZE(" + I123 + ")");
+        assertVector("[0.267261,0.534522,0.801784]", "SELECT VECTOR_NORMALIZE(" + I123 + ")");
     }
 
     @Test
     public void zeroVectorNormalizesToZeroNotNaN() {
         // Live: VECTOR_NORMALIZE([0,0,0]::VECTOR(FLOAT,3)) is [0.0,0.0,0.0] — NOT NaN, unlike
         // VECTOR_COSINE_SIMILARITY against a zero vector.
-        assertVector("[0.0,0.0,0.0]", "SELECT VECTOR_NORMALIZE([0,0,0]::VECTOR(FLOAT,3))");
+        assertVector("[0.000000,0.000000,0.000000]", "SELECT VECTOR_NORMALIZE([0,0,0]::VECTOR(FLOAT,3))");
     }
 
     @Test

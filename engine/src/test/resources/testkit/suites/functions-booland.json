@@ -1,0 +1,20 @@
+{
+  "suite": "functions-booland",
+  "description": "BOOLAND(x, y) over three-valued logic: both true is TRUE, either false is FALSE, FALSE dominates even against NULL, and TRUE with NULL is NULL. The BOOL* family is defined over NUMBER / VARCHAR / VARIANT truthiness and NOT over BOOLEAN, so Snowflake rejects BOOLAND(TRUE, FALSE) outright (live-verified). Converted 1:1 from functions/BoolAndTest (now retired).",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "both-true-is-true", "steps": [
+      {"sql": "SELECT BOOLAND(1, 1)", "expect": {"value": "true"}}
+    ]},
+    {"name": "either-false-is-false-and-a-boolean-argument-is-rejected", "steps": [
+      {"sql": "SELECT BOOLAND(1, 0)", "expect": {"value": "false"}},
+      {"sql": "SELECT BOOLAND(true, false)", "expect": {"error": {}}}
+    ]},
+    {"name": "false-with-null-is-false", "steps": [
+      {"sql": "SELECT BOOLAND(0, NULL)", "expect": {"value": "false"}}
+    ]},
+    {"name": "true-with-null-is-null", "steps": [
+      {"sql": "SELECT BOOLAND(1, NULL)", "expect": {"rows": [[null]]}}
+    ]}
+  ]
+}

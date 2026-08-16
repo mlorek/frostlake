@@ -1,0 +1,59 @@
+{
+  "suite": "ddl-show-builtin-functions",
+  "description": "SHOW BUILTIN FUNCTIONS - the built-in catalog without any UDF (live-verified): hundreds of rows all is_builtin=Y including UPPER/SUM/ROW_NUMBER; the same 21 live columns as SHOW FUNCTIONS; UDFs excluded (and LIKE on a UDF name matching nothing) while SHOW FUNCTIONS is exactly the builtins plus the user functions in scope (set algebra via CTAS over RESULT_SCAN + EXCEPT); LIKE filters; BUILTIN and USER modifiers mutually exclusive as syntax errors (engine-typed, skip snowflake as the Java did); and builtin staying an identifier. Converted 1:1 from ddl/ShowBuiltinFunctionsTest (now retired).",
+  "tags": ["ddl", "converted"],
+  "tests": [
+    {"name": "lists-the-built-in-catalog", "steps": [
+      {"sql": "SHOW BUILTIN FUNCTIONS"},
+      {"sql": "SELECT COUNT(*) > 400, COUNT_IF(\"is_builtin\" != 'Y') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["true", "0"]]}},
+      {"sql": "SHOW BUILTIN FUNCTIONS"},
+      {"sql": "SELECT COUNT(DISTINCT UPPER(\"name\")) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE UPPER(\"name\") IN ('UPPER', 'SUM', 'ROW_NUMBER')",
+       "expect": {"value": "3"}}
+    ]},
+    {"name": "column-shape-matches-live-snowflake", "steps": [
+      {"sql": "SHOW BUILTIN FUNCTIONS",
+       "expect": {"columns": ["created_on", "name", "schema_name", "is_builtin", "is_aggregate", "is_ansi", "min_num_arguments", "max_num_arguments", "arguments", "description", "catalog_name", "is_table_function", "valid_for_clustering", "is_secure", "secrets", "external_access_integrations", "is_external_function", "language", "is_memoizable", "is_data_metric", "is_ai_function"]}}
+    ]},
+    {"name": "show-functions-has-the-same-column-shape", "steps": [
+      {"sql": "SHOW FUNCTIONS",
+       "expect": {"columns": ["created_on", "name", "schema_name", "is_builtin", "is_aggregate", "is_ansi", "min_num_arguments", "max_num_arguments", "arguments", "description", "catalog_name", "is_table_function", "valid_for_clustering", "is_secure", "secrets", "external_access_integrations", "is_external_function", "language", "is_memoizable", "is_data_metric", "is_ai_function"]}}
+    ]},
+    {"name": "excludes-user-defined-functions", "steps": [
+      {"sql": "CREATE FUNCTION only_a_udf(x INTEGER) RETURNS INTEGER AS 'x + 1'"},
+      {"sql": "SHOW BUILTIN FUNCTIONS"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE UPPER(\"name\") = 'ONLY_A_UDF'",
+       "expect": {"value": "0"}},
+      {"sql": "SHOW BUILTIN FUNCTIONS LIKE 'ONLY_A_UDF'", "expect": {"rowCount": 0}},
+      {"sql": "SHOW FUNCTIONS"},
+      {"sql": "SELECT COUNT(*) > 0 FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE UPPER(\"name\") = 'ONLY_A_UDF'",
+       "expect": {"value": "true"}}
+    ]},
+    {"name": "show-functions-is-show-builtin-functions-plus-user-functions", "steps": [
+      {"sql": "CREATE FUNCTION extra_udf(x INTEGER) RETURNS INTEGER AS 'x + 1'"},
+      {"sql": "SHOW BUILTIN FUNCTIONS"},
+      {"sql": "CREATE TABLE builtin_names AS SELECT DISTINCT UPPER(\"name\") AS n FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))"},
+      {"sql": "SHOW FUNCTIONS"},
+      {"sql": "CREATE TABLE all_names AS SELECT DISTINCT UPPER(\"name\") AS n FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))"},
+      {"sql": "SELECT COUNT(*) FROM (SELECT n FROM builtin_names EXCEPT SELECT n FROM all_names)",
+       "expect": {"value": "0"}},
+      {"sql": "SELECT n FROM all_names EXCEPT SELECT n FROM builtin_names",
+       "expect": {"rows": [["EXTRA_UDF"]]}}
+    ]},
+    {"name": "like-filters-the-built-in-catalog", "steps": [
+      {"sql": "SHOW BUILTIN FUNCTIONS LIKE 'ROW_NUMBER'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT UPPER(\"name\") FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "ROW_NUMBER"}}
+    ]},
+    {"name": "user-and-builtin-modifiers-are-mutually-exclusive",
+     "skip": {"backends": ["snowflake"], "reason": "the live driver reports Snowflake's own syntax error, not Frostlake's exception type (Java test had the same assumption)"},
+     "steps": [
+      {"sql": "SHOW BUILTIN USER FUNCTIONS", "expect": {"error": {}}},
+      {"sql": "SHOW USER BUILTIN FUNCTIONS", "expect": {"error": {}}}
+    ]},
+    {"name": "builtin-is-still-usable-as-an-identifier", "steps": [
+      {"sql": "CREATE TABLE builtin (builtin INTEGER)"},
+      {"sql": "INSERT INTO builtin VALUES (7)"},
+      {"sql": "SELECT builtin FROM builtin", "expect": {"rowCount": 1}}
+    ]}
+  ]
+}

@@ -1,0 +1,22 @@
+{
+  "suite": "query-cte-in-subquery",
+  "description": "A WITH-clause CTE is visible inside the SUBQUERIES of the main query, not just its top-level FROM - so a CTE can be referenced from a WHERE NOT EXISTS, from an IN list, and from a scalar subquery. Previously each of these raised 'Table does not exist', because the CTE context was only wired for the outer FROM. The NOT EXISTS case is the task-history shape: failing names that were never later followed by a SUCCEEDED row. Converted 1:1 from query/CteInSubqueryTest (now retired).",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "a-cte-is-visible-inside-a-not-exists-correlated-subquery", "steps": [
+      {"sql": "CREATE TABLE ev (name VARCHAR, state VARCHAR, seq INT)"},
+      {"sql": "INSERT INTO ev VALUES ('a','FAILED',1), ('a','FAILED',2), ('b','FAILED',1), ('b','SUCCEEDED',3), ('c','FAILED',5)"},
+      {"sql": "WITH e AS (SELECT * FROM ev) SELECT DISTINCT bad.name FROM e bad WHERE bad.state = 'FAILED' AND NOT EXISTS (SELECT 1 FROM e good WHERE good.name = bad.name AND good.state = 'SUCCEEDED' AND good.seq > bad.seq) ORDER BY bad.name", "expect": {"rows": [["a"], ["c"]], "ordered": true}}
+    ]},
+    {"name": "a-cte-is-visible-inside-an-in-subquery", "steps": [
+      {"sql": "CREATE TABLE ev (name VARCHAR, state VARCHAR, seq INT)"},
+      {"sql": "INSERT INTO ev VALUES ('a','FAILED',1), ('a','FAILED',2), ('b','FAILED',1), ('b','SUCCEEDED',3), ('c','FAILED',5)"},
+      {"sql": "WITH e AS (SELECT * FROM ev) SELECT COUNT(*) FROM e WHERE name IN (SELECT name FROM e WHERE state = 'SUCCEEDED')", "expect": {"rows": [[2]]}}
+    ]},
+    {"name": "a-cte-is-visible-inside-a-scalar-subquery", "steps": [
+      {"sql": "CREATE TABLE ev (name VARCHAR, state VARCHAR, seq INT)"},
+      {"sql": "INSERT INTO ev VALUES ('a','FAILED',1), ('a','FAILED',2), ('b','FAILED',1), ('b','SUCCEEDED',3), ('c','FAILED',5)"},
+      {"sql": "WITH e AS (SELECT * FROM ev) SELECT (SELECT COUNT(*) FROM e WHERE state = 'FAILED') AS failed_count", "expect": {"rows": [[4]], "columns": ["FAILED_COUNT"]}}
+    ]}
+  ]
+}

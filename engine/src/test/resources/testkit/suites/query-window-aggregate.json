@@ -1,0 +1,34 @@
+{
+  "suite": "query-window-aggregate",
+  "description": "Window AGGREGATES - SUM, AVG, MIN and MAX with OVER. These previously returned NULL because the OVER dispatch switch had cases only for the ranking and value functions, so the aggregates fell through to the 'unsupported' default. Computed over the whole PARTITION (Snowflake's default frame when there is no ORDER BY): with PARTITION BY dept the Eng rows carry the Eng totals and the Sales rows the Sales ones, and without a PARTITION BY every row carries the whole result's total, which is what separates a working partition from a coincidence. The last test is a separate defect: SELECT *, <window> dropped the star's columns entirely - rows held only the window value while the metadata still described every column - so a named-column outer SELECT over such a CTE crashed on a positional read. Converted 1:1 from query/WindowAggregateTest (now retired); the Java scanned the result for a given id with a cursor loop, so the converted tests pin the whole ordered row set instead.",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "sum-over-a-partition-is-per-partition", "steps": [
+      {"sql": "CREATE TABLE emp (id INTEGER, dept VARCHAR, salary INTEGER)"},
+      {"sql": "INSERT INTO emp VALUES (1,'Eng',100),(2,'Eng',90),(3,'Sales',80),(4,'Sales',70),(5,'Sales',60)"},
+      {"sql": "SELECT id, SUM(salary) OVER (PARTITION BY dept) AS s FROM emp ORDER BY id",
+       "expect": {"rows": [[1,190],[2,190],[3,210],[4,210],[5,210]], "ordered": true}}
+    ]},
+    {"name": "avg-min-and-max-over-a-partition", "steps": [
+      {"sql": "CREATE TABLE emp (id INTEGER, dept VARCHAR, salary INTEGER)"},
+      {"sql": "INSERT INTO emp VALUES (1,'Eng',100),(2,'Eng',90),(3,'Sales',80),(4,'Sales',70),(5,'Sales',60)"},
+      {"sql": "SELECT id, AVG(salary) OVER (PARTITION BY dept) AS a, MIN(salary) OVER (PARTITION BY dept) AS mn, MAX(salary) OVER (PARTITION BY dept) AS mx FROM emp ORDER BY id",
+       "expect": {"rows": [[1,95,90,100],[2,95,90,100],[3,70,60,80],[4,70,60,80],[5,70,60,80]], "ordered": true}}
+    ]},
+    {"name": "sum-without-a-partition-is-the-whole-result", "steps": [
+      {"sql": "CREATE TABLE emp (id INTEGER, dept VARCHAR, salary INTEGER)"},
+      {"sql": "INSERT INTO emp VALUES (1,'Eng',100),(2,'Eng',90),(3,'Sales',80),(4,'Sales',70),(5,'Sales',60)"},
+      {"sql": "SELECT id, SUM(salary) OVER () AS s FROM emp ORDER BY id",
+       "expect": {"rows": [[1,400],[2,400],[3,400],[4,400],[5,400]], "ordered": true}}
+    ]},
+    {"name": "a-star-beside-a-window-keeps-the-star-columns", "steps": [
+      {"sql": "CREATE TABLE sw (ts TIMESTAMP_NTZ, name VARCHAR)"},
+      {"sql": "INSERT INTO sw VALUES ('2024-01-01 12:00:00', 'diff-a'), ('2024-01-02 12:00:00', 'all-b')"},
+      {"sql": "SELECT ts::VARCHAR, name, grp FROM (SELECT *, ROW_NUMBER() OVER (ORDER BY ts) AS grp FROM sw) ORDER BY grp",
+       "expect": {"rows": [["2024-01-01 12:00:00.000","diff-a",1],["2024-01-02 12:00:00.000","all-b",2]], "ordered": true}},
+      {"sql": "SELECT *, ROW_NUMBER() OVER (ORDER BY ts) AS grp FROM sw ORDER BY ts", "expect": {"columns": ["TS","NAME","GRP"]}},
+      {"sql": "WITH g AS (SELECT *, ROW_NUMBER() OVER (ORDER BY ts) AS grp FROM sw) SELECT name, grp FROM g ORDER BY grp",
+       "expect": {"rows": [["diff-a",1],["all-b",2]], "ordered": true}}
+    ]}
+  ]
+}

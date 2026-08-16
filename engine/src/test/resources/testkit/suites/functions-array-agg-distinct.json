@@ -1,0 +1,43 @@
+{
+  "suite": "functions-array-agg-distinct",
+  "description": "ARRAY_AGG(DISTINCT expr) drops repeated values, with or without WITHIN GROUP, while a plain ARRAY_AGG keeps them; numeric duplicates compare by value so 1 and 1.0 are one element. SQL NULLs are skipped entirely - the loader idiom ARRAY_AGG(IFF(cond, obj, NULL)) must yield [] when no row qualifies, not [null] - and that holds under WITHIN GROUP ordering too. Converted 1:1 from functions/ArrayAggDistinctTest (now retired); its @BeforeEach fixture is inlined per test and the array cells are read through TO_JSON so the assertion is on the array's JSON text rather than on a transport's own rendering of an ARRAY cell.",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "distinct-within-group-drops-duplicates-and-sorts", "steps": [
+      {"sql": "CREATE TABLE labels (grp INTEGER, tag VARCHAR)"},
+      {"sql": "INSERT INTO labels VALUES (1, 'T2'), (1, 'T1'), (1, 'T2'), (1, 'T1'), (2, 'T9')"},
+      {"sql": "SELECT TO_JSON(ARRAY_AGG(DISTINCT tag) WITHIN GROUP (ORDER BY tag)) FROM labels WHERE grp = 1 GROUP BY grp",
+       "expect": {"value": "[\"T1\",\"T2\"]"}}
+    ]},
+    {"name": "distinct-without-within-group-also-drops-duplicates", "steps": [
+      {"sql": "CREATE TABLE labels (grp INTEGER, tag VARCHAR)"},
+      {"sql": "INSERT INTO labels VALUES (1, 'T2'), (1, 'T1'), (1, 'T2'), (1, 'T1'), (2, 'T9')"},
+      {"sql": "SELECT ARRAY_SIZE(ARRAY_AGG(DISTINCT tag)) FROM labels WHERE grp = 1 GROUP BY grp",
+       "expect": {"value": "2"}}
+    ]},
+    {"name": "a-plain-array-agg-still-keeps-duplicates", "steps": [
+      {"sql": "CREATE TABLE labels (grp INTEGER, tag VARCHAR)"},
+      {"sql": "INSERT INTO labels VALUES (1, 'T2'), (1, 'T1'), (1, 'T2'), (1, 'T1'), (2, 'T9')"},
+      {"sql": "SELECT ARRAY_SIZE(ARRAY_AGG(tag)) FROM labels WHERE grp = 1 GROUP BY grp",
+       "expect": {"value": "4"}}
+    ]},
+    {"name": "numeric-duplicates-compare-by-value", "steps": [
+      {"sql": "CREATE TABLE nums (v NUMBER(10,1))"},
+      {"sql": "INSERT INTO nums VALUES (1), (1.0), (2)"},
+      {"sql": "SELECT ARRAY_SIZE(ARRAY_AGG(DISTINCT v)) FROM nums", "expect": {"value": "2"}}
+    ]},
+    {"name": "null-inputs-are-skipped", "steps": [
+      {"sql": "CREATE TABLE nulled (grp INTEGER, v VARCHAR)"},
+      {"sql": "INSERT INTO nulled VALUES (1, NULL), (1, NULL), (2, 'a'), (2, NULL)"},
+      {"sql": "SELECT TO_JSON(ARRAY_AGG(v)) FROM nulled WHERE grp = 1 GROUP BY grp", "expect": {"value": "[]"}},
+      {"sql": "SELECT TO_JSON(ARRAY_AGG(v)) FROM nulled WHERE grp = 2 GROUP BY grp",
+       "expect": {"value": "[\"a\"]"}}
+    ]},
+    {"name": "nulls-are-skipped-with-within-group-ordering", "steps": [
+      {"sql": "CREATE TABLE nulled2 (v VARCHAR, k INTEGER)"},
+      {"sql": "INSERT INTO nulled2 VALUES ('b', 2), (NULL, 3), ('a', 1)"},
+      {"sql": "SELECT TO_JSON(ARRAY_AGG(v) WITHIN GROUP (ORDER BY k)) FROM nulled2",
+       "expect": {"value": "[\"a\",\"b\"]"}}
+    ]}
+  ]
+}

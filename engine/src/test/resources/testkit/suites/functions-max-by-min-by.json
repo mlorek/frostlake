@@ -1,0 +1,37 @@
+{
+  "suite": "functions-max-by-min-by",
+  "description": "MAX_BY(value, sort_key) / MIN_BY(value, sort_key) return the value from the row with the maximum or minimum key, ignoring NULL keys, with the FIRST-encountered row winning a tie (live-verified). All-NULL keys yield NULL. The bounded three-argument form returns an ARRAY of up to N values - ascending by key for MIN_BY, descending for MAX_BY - and accepts DISTINCT to dedup the values, which is the software-aggregation idiom. Converted 1:1 from functions/MaxByMinByTest (now retired); its @BeforeEach fixture is inlined per test and the ARRAY results are read through TO_JSON so the assertion lands on a VARCHAR no transport reformats.",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "it-picks-the-value-of-the-extreme-key-per-group", "steps": [
+      {"sql": "CREATE TABLE s (g INTEGER, name VARCHAR, score INTEGER)"},
+      {"sql": "INSERT INTO s VALUES (1,'a',10),(1,'b',30),(1,'c',20)"},
+      {"sql": "INSERT INTO s VALUES (2,'x',5),(2,'y',NULL)"},
+      {"sql": "SELECT g, MAX_BY(name, score), MIN_BY(name, score) FROM s GROUP BY g ORDER BY g",
+       "expect": {"rowCount": 2, "rows": [["1", "b", "a"], ["2", "x", "x"]], "ordered": true}}
+    ]},
+    {"name": "a-tie-is-resolved-by-the-first-row", "steps": [
+      {"sql": "CREATE TABLE tie (name VARCHAR, score INTEGER)"},
+      {"sql": "INSERT INTO tie VALUES ('first',10),('second',10)"},
+      {"sql": "SELECT MAX_BY(name, score) FROM tie", "expect": {"value": "first"}}
+    ]},
+    {"name": "all-null-keys-yield-null", "steps": [
+      {"sql": "CREATE TABLE nk (name VARCHAR, score INTEGER)"},
+      {"sql": "INSERT INTO nk VALUES ('a', NULL),('b', NULL)"},
+      {"sql": "SELECT MAX_BY(name, score) FROM nk", "expect": {"rows": [[null]]}},
+      {"sql": "SELECT MIN_BY(name, score) FROM nk", "expect": {"rows": [[null]]}}
+    ]},
+    {"name": "the-bounded-three-argument-form-returns-an-ordered-array", "steps": [
+      {"sql": "CREATE TABLE cp (g INTEGER, ref VARCHAR)"},
+      {"sql": "INSERT INTO cp VALUES (1,'ref:2.0:b'),(1,'ref:1.0:a'),(1,'ref:3.0:c')"},
+      {"sql": "SELECT TO_JSON(MIN_BY(ref, ref, 2)), TO_JSON(MAX_BY(ref, ref, 100)) FROM cp GROUP BY g",
+       "expect": {"rows": [["[\"ref:1.0:a\",\"ref:2.0:b\"]", "[\"ref:3.0:c\",\"ref:2.0:b\",\"ref:1.0:a\"]"]]}}
+    ]},
+    {"name": "the-bounded-form-with-distinct-dedups-values", "steps": [
+      {"sql": "CREATE TABLE cpd (g INTEGER, ref VARCHAR)"},
+      {"sql": "INSERT INTO cpd VALUES (1,'ref:1.0:a'),(1,'ref:1.0:a'),(1,'ref:2.0:b')"},
+      {"sql": "SELECT TO_JSON(MIN_BY(DISTINCT ref, ref, 100)) FROM cpd GROUP BY g",
+       "expect": {"value": "[\"ref:1.0:a\",\"ref:2.0:b\"]"}}
+    ]}
+  ]
+}

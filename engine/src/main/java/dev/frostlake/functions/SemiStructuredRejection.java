@@ -73,6 +73,26 @@ public enum SemiStructuredRejection {
     INVALID_TYPE_PARAMETER,
 
     /**
+     * The two-argument statistics — CORR, the covariances, the regressions bar REGR_R2 — convert each
+     * argument to a DOUBLE inside a null guard on the OTHER argument, and it is that conversion live
+     * refuses, quoting the guarded plan back and naming TO_DOUBLE as the parameter: {@code CORR(bo, n)}
+     * over a BOOLEAN and a NUMBER is "invalid type [TO_DOUBLE(IFF(AT.N IS NULL,
+     * SYSTEM$NULL_TO_BOOLEAN(NULL), AT.BO))] for parameter 'TO_DOUBLE'" — unpositioned, the null
+     * substitute spelled after the refused argument's family. Every family but the numbers, the
+     * strings and VARIANT is refused this way, at either position.
+     */
+    DOUBLE_CONVERSION_PARAMETER,
+
+    /**
+     * The product of a call's TWO arguments, refused in the multiplication's name with the X — the
+     * second argument — listed first: {@code REGR_SXY(bo, n)} over a BOOLEAN and a NUMBER(10,2) is
+     * "Invalid argument types for function '*': (NUMBER(10,2), BOOLEAN)", and with the arguments
+     * swapped "(BOOLEAN, NUMBER(10,2))" — live reaches its sum of x·y first (live-verified). The
+     * squares family lists one argument twice instead ({@link #MULTIPLY_OPERANDS}).
+     */
+    CROSS_PRODUCT_OPERANDS,
+
+    /**
      * "Function ARRAY_CONSTRUCT does not support OBJECT(x VARCHAR(16777216)) argument type" — SQLSTATE
      * 22000, vendor code 2016. The same sentence the ordering aggregates use, reached here by the
      * semi-structured CONSTRUCTORS: live, {@code ARRAY_CONSTRUCT},
@@ -88,5 +108,47 @@ public enum SemiStructuredRejection {
      * list: live, {@code OBJECT_CONSTRUCT(so, 1)} says "for keys" where
      * {@code OBJECT_CONSTRUCT('a', so)} does not.
      */
-    UNSUPPORTED_KEY_ARGUMENT_TYPE
+    UNSUPPORTED_KEY_ARGUMENT_TYPE,
+
+    /**
+     * The boolean aggregates' conversion refusal — {@code invalid type [TO_BOOLEAN(x)] for parameter
+     * 'TO_BOOLEAN'}, the argument quoted from the plan, no position — for a FLOAT, a temporal, a BINARY
+     * or a structured value the account's TO_BOOLEAN cannot take (live-verified).
+     */
+    BOOLEAN_CONVERSION_PARAMETER,
+
+    /**
+     * REPEAT(s, n) judged as the {@code LPAD('', n * LENGTH(s), s)} the account plans it as. The product
+     * is typed first, LENGTH declaring NUMBER(18,0), so a count the multiplication refuses is refused in
+     * the product's words — "Invalid argument types for function '*': (BINARY(8388608), NUMBER(18,0))" —
+     * and a BINARY string by LPAD, the empty pad listed as VARCHAR(1) and the product at its own width:
+     * "Invalid argument types for function 'LPAD': (VARCHAR(1), NUMBER(19,0), BINARY(8388608))" for a
+     * count of 2. SQLSTATE 42P13, at the call (live-verified).
+     */
+    REPEAT_REWRITE_OPERANDS,
+
+    /**
+     * SPACE(n) judged as the {@code LPAD('', n, ' ')} the account plans it as: "Invalid argument types
+     * for function 'LPAD': (VARCHAR(1), BINARY(8388608), VARCHAR(1))" for a BINARY count, at the call
+     * (live-verified).
+     */
+    SPACE_REWRITE_OPERANDS,
+
+    /**
+     * INSERT(s, p, l, i) judged as the {@code SUBSTR(s, 1, p - 1) || i || SUBSTR(s, p + l)} the account
+     * plans it as: a BINARY position is the subtraction's refusal, "'-': (BINARY(8388608),
+     * NUMBER(1,0))", a BINARY length the addition's, "'+': (NUMBER(1,0), BINARY(8388608))", and a
+     * BINARY beside any other family the concatenation's, the base listed twice around the insertion:
+     * "'||': (BINARY(8388608), VARCHAR(1), BINARY(8388608))". Two binaries, or a NULL insertion,
+     * concatenate — so this is the one shape that can find its call legal (live-verified).
+     */
+    INSERT_REWRITE_OPERANDS,
+
+    /**
+     * "incompatible types: [TIME(9)] and [TIMESTAMP_LTZ(9)]" — SQLSTATE 42846, no position. The TIME
+     * synonym takes a text, a VARIANT or a timestamp, a DATE reading as its midnight; a TIME-typed
+     * argument is carried toward the TIMESTAMP_LTZ form and refused there, its own precision spelled —
+     * over a TIME(3) column the sentence lists [TIME(3)] (live-verified).
+     */
+    TIME_TO_TIMESTAMP_LTZ
 }

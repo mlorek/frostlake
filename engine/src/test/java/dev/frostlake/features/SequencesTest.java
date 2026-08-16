@@ -24,7 +24,9 @@ import org.junit.jupiter.api.function.Executable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -36,8 +38,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
   *
  * <p>NOTE (live-verified): Snowflake sequences are NOT gap-free — NEXTVAL calls in separate
  * statements allocate per-statement ranges (START 10 INCREMENT 10 returned 10, then 1010), so the
- * exact values asserted here are Frostlake's deterministic gap-free behavior; on a real account
- * only ordering/uniqueness/increment-within-a-statement hold.
+ * exact values asserted here are Frostlake's deterministic gap-free behavior; on a real account only
+ * uniqueness and the increment WITHIN one statement hold. Ordering does not: it takes an explicit
+ * ORDER sequence, and NOORDER is the account default.
  */
 public class SequencesTest extends BaseDatabaseTest {
 
@@ -739,10 +742,17 @@ public class SequencesTest extends BaseDatabaseTest {
      *   the first NEXTVAL of a fresh sequence is its START      START=1000 answered 1000
      *   within ONE statement the step is exactly INCREMENT      INCREMENT=5  answered 1, 6, 11, 16
      *   ... including a negative one                            INCREMENT=-5 answered 100, 95, 90
-     *   across statements the values strictly increase          answered 1, 101, 201, 202, 203, 301
+     *   an ORDER sequence increases across statements too       ORDER    answered 1, 2, 3, 4, 5, 6
+     *   ... and without it only UNIQUENESS survives             NOORDER  answered 1, 101, 201, 2, 102, 301
      * </pre>
      *
-     * <p>The jumps in that last row are why the rest of this class asserts exact values only off-live.
+     * <p>★ ORDERING IS A PROPERTY, NOT A PROMISE. Live hands values back out of RESERVED RANGES, and a
+     * later statement can be served from a lower range than an earlier one — the 2 after the 201 above.
+     * Only {@code ORDER} rules that out, and the account default is the opposite: the
+     * NOORDER_SEQUENCE_AS_DEFAULT parameter is true, so a sequence created with neither word scatters
+     * exactly like the NOORDER row. What survives without ORDER is uniqueness, asserted below.
+     *
+     * <p>The jumps in those last rows are why the rest of this class asserts exact values only off-live.
      */
     @Test
     public void allocationPropertiesHoldOnBothBackends() {
@@ -757,21 +767,43 @@ public class SequencesTest extends BaseDatabaseTest {
         engine.execute("CREATE SEQUENCE seq_back START WITH 100 INCREMENT BY -5");
         assertStepWithinOneStatement("seq_back", -5L);
 
-        engine.execute("CREATE SEQUENCE seq_mono START WITH 1 INCREMENT BY 1");
+        // ORDER is what makes the increase across statements a guarantee rather than a coincidence.
+        engine.execute("CREATE SEQUENCE seq_mono START WITH 1 INCREMENT BY 1 ORDER");
         long previous = Long.MIN_VALUE;
-        for (int i = 0; i < 4; i++) {
-            final long value = ((Number) engine.executeQuery("SELECT seq_mono.NEXTVAL AS v")
-                .getRows().get(0).getValue(0)).longValue();
+        for (int i = 0; i < 6; i++) {
+            final long value = nextval("seq_mono");
             assertTrue(value > previous,
-                "NEXTVAL must strictly increase across statements, saw " + value + " after " + previous);
+                "an ORDER sequence must strictly increase across statements, saw "
+                    + value + " after " + previous);
             previous = value;
+        }
+
+        // Without it, only uniqueness survives — live answered 1, 101, 201, 2, 102, 301 here.
+        engine.execute("CREATE SEQUENCE seq_scatter START WITH 1 INCREMENT BY 1");
+        final Set<Long> drawn = new HashSet<>();
+        for (int i = 0; i < 6; i++) {
+            final long value = nextval("seq_scatter");
+            assertTrue(drawn.add(Long.valueOf(value)),
+                "a sequence must never hand out the same value twice, saw " + value + " again");
         }
     }
 
-    /** Four values drawn by one statement must sit exactly {@code increment} apart. */
+    /** One NEXTVAL of {@code sequence}, drawn by a statement of its own. */
+    private long nextval(final String sequence) {
+        return ((Number) engine.executeQuery("SELECT " + sequence + ".NEXTVAL AS v")
+            .getRows().get(0).getValue(0)).longValue();
+    }
+
+    /**
+     * Four values drawn by one statement must sit exactly {@code increment} apart. The ORDER BY runs
+     * with the sign of the increment so that the sorted rows are the draw order: what INCREMENT BY
+     * promises is that the four values form that arithmetic progression, never the sequence the rows
+     * happen to be handed back in.
+     */
     private void assertStepWithinOneStatement(final String sequence, final long increment) {
         final ResultSet rs = engine.executeQuery(
-            "SELECT " + sequence + ".NEXTVAL AS v FROM TABLE(GENERATOR(ROWCOUNT => 4))");
+            "SELECT " + sequence + ".NEXTVAL AS v FROM TABLE(GENERATOR(ROWCOUNT => 4))"
+                + " ORDER BY v" + (increment < 0 ? " DESC" : ""));
         assertEquals(4, rs.getRowCount());
         final List<Row> rows = rs.getRows();
         for (int i = 1; i < rows.size(); i++) {

@@ -1,0 +1,34 @@
+{
+  "suite": "query-number-string-comparison-coercion",
+  "description": "Snowflake implicitly coerces a VARCHAR compared against a NUMBER to a number - 999001 = '999001' is TRUE, '01' = 1 is TRUE and '100' > 20 is TRUE - while two strings never coerce, so '01' = '1' stays FALSE. The idiom is load-bearing: staging pipelines re-declare a NUMBER key as VARCHAR in a temp table and join it back to the numeric original, which needs BOTH halves of the engine - the comparison itself and the hash-join key bucketing, since a numeric-looking string must land in the same bucket as its number or the equi-join silently returns nothing. The coercion is not best-effort: a string that cannot be read as a number FAILS the statement rather than simply not matching, and that holds for = and <> alike, for the empty string, and for a row reached only mid-scan - the WHERE that matched one row before the bad row was inserted fails outright afterwards. Converted 1:1 from query/NumberStringComparisonCoercionTest (now retired).",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "a-number-key-joins-to-its-varchar-copy", "steps": [
+      {"sql": "CREATE TABLE items (name VARCHAR, def_key NUMBER(38,0))"},
+      {"sql": "CREATE TABLE defs (def_key VARCHAR, cls VARCHAR)"},
+      {"sql": "INSERT INTO items VALUES ('i-1', 999001), ('i-2', 999001), ('i-3', 7)"},
+      {"sql": "INSERT INTO defs VALUES (999001, 'WIDE'), ('7', 'NARROW')"},
+      {"sql": "SELECT i.name, d.cls FROM items i INNER JOIN defs d ON d.def_key = i.def_key ORDER BY i.name",
+       "expect": {"rows": [["i-1","WIDE"],["i-2","WIDE"],["i-3","NARROW"]], "ordered": true}}
+    ]},
+    {"name": "where-coerces-a-varchar-against-a-number-literal", "steps": [
+      {"sql": "CREATE TABLE t (k VARCHAR)"},
+      {"sql": "INSERT INTO t VALUES ('999001'), ('7')"},
+      {"sql": "SELECT k FROM t WHERE k = 999001", "expect": {"rows": [["999001"]]}},
+      {"sql": "INSERT INTO t VALUES ('other')"},
+      {"sql": "SELECT k FROM t WHERE k = 999001",
+       "expect": {"error": {"messageContains": "Numeric value 'other' is not recognized"}}}
+    ]},
+    {"name": "literal-comparisons-match-snowflake", "steps": [
+      {"sql": "SELECT 999001 = '999001'", "expect": {"value": true}},
+      {"sql": "SELECT '01' = 1", "expect": {"value": true}},
+      {"sql": "SELECT '01' = '1'", "expect": {"value": false}},
+      {"sql": "SELECT '100' > 20", "expect": {"value": true}},
+      {"sql": "SELECT '1.5' = 1.5", "expect": {"value": true}},
+      {"sql": "SELECT 'abc' = 1", "expect": {"error": {"messageContains": "Numeric value 'abc' is not recognized"}}},
+      {"sql": "SELECT 'abc' <> 1", "expect": {"error": {"messageContains": "Numeric value 'abc' is not recognized"}}},
+      {"sql": "SELECT 'other' > 0", "expect": {"error": {"messageContains": "Numeric value 'other' is not recognized"}}},
+      {"sql": "SELECT '' = 1", "expect": {"error": {"messageContains": "is not recognized"}}}
+    ]}
+  ]
+}

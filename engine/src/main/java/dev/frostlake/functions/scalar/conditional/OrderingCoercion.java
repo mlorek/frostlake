@@ -28,6 +28,7 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
+import java.time.ZonedDateTime;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -131,7 +132,8 @@ public final class OrderingCoercion {
         if (value instanceof LocalDateTime) {
             return 2;
         }
-        if (value instanceof OffsetDateTime) {
+        if (value instanceof OffsetDateTime || value instanceof ZonedDateTime) {
+            // A TIMESTAMP_TZ ranks with the LTZ: both are instants, and only their PRESENTATION differs.
             return 3;
         }
         return -1;
@@ -146,13 +148,17 @@ public final class OrderingCoercion {
      * @return the widened value
      */
     private static Object widenTemporal(final Object value, final Object target) {
-        if (target instanceof OffsetDateTime) {
-            final ZoneOffset offset = ((OffsetDateTime) target).getOffset();
+        if (target instanceof OffsetDateTime || target instanceof ZonedDateTime) {
+            final ZoneOffset offset = target instanceof ZonedDateTime
+                ? ((ZonedDateTime) target).getOffset() : ((OffsetDateTime) target).getOffset();
             if (value instanceof LocalDate) {
                 return ((LocalDate) value).atStartOfDay().atOffset(offset);
             }
             if (value instanceof LocalDateTime) {
                 return ((LocalDateTime) value).atOffset(offset);
+            }
+            if (value instanceof ZonedDateTime) {
+                return ((ZonedDateTime) value).toOffsetDateTime();
             }
             return value;
         }

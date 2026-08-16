@@ -18,7 +18,6 @@ package dev.frostlake.query;
 
 import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
-import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -273,14 +272,14 @@ public class SelectDistinctTest extends BaseDatabaseTest {
 
     @Test
     public void testSelectDistinctWithPositionalParameters() {
-        Assumptions.assumeFalse(isLiveSnowflake(),
-            "asserts the ROW ORDER of a DISTINCT result that carries no ORDER BY; a real account is free "
-            + "to hand the distinct rows back in any order");
         logger.info("Testing SELECT DISTINCT with positional parameters");
 
+        // The ORDER BY is what makes the row sequence assertable: DISTINCT decides WHICH rows come
+        // back, never in which order, so the ordinal key is the only thing pinning 1,2,3 here.
         final ResultSet result = engine.executeQuery("""
             SELECT DISTINCT $1, $2
             FROM VALUES(1, 'A'), (2, 'B'), (1, 'A'), (2, 'B'), (3, 'C')
+            ORDER BY 1
             """);
 
         assertEquals(3, result.getRowCount());

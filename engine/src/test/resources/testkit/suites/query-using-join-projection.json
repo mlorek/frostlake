@@ -1,0 +1,113 @@
+{
+  "suite": "query-using-join-projection",
+  "description": "SELECT * over a USING or NATURAL join projects the join key ONCE, and FIRST - all live-verified on a real account. t1(a,k,b) JOIN t2(c,k,d) USING (k) projects K A B C D, so the merged key moves to the FRONT rather than staying in the left table's position; USING (y, x) surfaces the keys in USING-LIST order while a NATURAL join uses LEFT-TABLE order; a chained JOIN t3 USING (j) puts J before the earlier K; the keys stay in front through a later ON join; and the same key joined twice still projects once. On an OUTER join the merged column is the first NON-NULL of the two sides' copies, and a BARE reference to the key name resolves to that merged value in every context - SELECT, WHERE, GROUP BY, ORDER BY - while a QUALIFIED reference still reads its OWN side, nulls included. Qualified stars keep each side's full layout with nothing merged, EXCLUDE applies to the merged column, the merged shape survives beside a WINDOW function (whose projection reshapes rows itself) and it flows into CTAS as four declared columns rather than five. Frostlake used to return the combined row UN-projected - four declared columns but five values per row - so every consumer reading by index silently shifted one slot, which is why the Java asserted the row WIDTH against the column list on every row. Converted 1:1 from query/UsingJoinProjectionTest (now retired); expect.columns and the row sets together carry that width check.",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "a-star-over-a-using-join-projects-the-key-once", "steps": [
+      {"sql": "CREATE TABLE emp (dept_id INT, name VARCHAR, salary INT)"},
+      {"sql": "CREATE TABLE dept (dept_id INT, dept_name VARCHAR)"},
+      {"sql": "INSERT INTO emp VALUES (10, 'ann', 100), (99, 'zed', 999)"},
+      {"sql": "INSERT INTO dept VALUES (10, 'eng'), (77, 'hr')"},
+      {"sql": "SELECT * FROM emp JOIN dept USING (dept_id)",
+       "expect": {"rows": [[10,"ann",100,"eng"]], "columns": ["DEPT_ID","NAME","SALARY","DEPT_NAME"]}}
+    ]},
+    {"name": "the-merged-key-leads-the-star-even-from-mid-position", "steps": [
+      {"sql": "CREATE TABLE t1 (a INT, k INT, b INT)"},
+      {"sql": "CREATE TABLE t2 (c INT, k INT, d INT)"},
+      {"sql": "INSERT INTO t1 VALUES (1, 5, 2)"},
+      {"sql": "INSERT INTO t2 VALUES (3, 5, 4)"},
+      {"sql": "SELECT * FROM t1 JOIN t2 USING (k)", "expect": {"rows": [[5,1,2,3,4]], "columns": ["K","A","B","C","D"]}},
+      {"sql": "SELECT * FROM t1 NATURAL JOIN t2", "expect": {"columns": ["K","A","B","C","D"]}}
+    ]},
+    {"name": "multi-key-order-follows-the-using-list-and-natural-the-left-table", "steps": [
+      {"sql": "CREATE TABLE m1 (x INT, y INT, p INT)"},
+      {"sql": "CREATE TABLE m2 (y INT, x INT, r INT)"},
+      {"sql": "INSERT INTO m1 VALUES (1, 2, 7)"},
+      {"sql": "INSERT INTO m2 VALUES (2, 1, 8)"},
+      {"sql": "SELECT * FROM m1 JOIN m2 USING (y, x)", "expect": {"rows": [[2,1,7,8]], "columns": ["Y","X","P","R"]}},
+      {"sql": "SELECT * FROM m1 NATURAL JOIN m2", "expect": {"columns": ["X","Y","P","R"]}}
+    ]},
+    {"name": "chained-joins-accumulate-their-keys-in-front", "steps": [
+      {"sql": "CREATE TABLE u1 (j INT, k INT, a INT)"},
+      {"sql": "CREATE TABLE u2 (k INT, b INT)"},
+      {"sql": "CREATE TABLE u3 (j INT, c INT)"},
+      {"sql": "CREATE TABLE u4 (x INT, d INT)"},
+      {"sql": "INSERT INTO u1 VALUES (100, 5, 1)"},
+      {"sql": "INSERT INTO u2 VALUES (5, 2)"},
+      {"sql": "INSERT INTO u3 VALUES (100, 3)"},
+      {"sql": "INSERT INTO u4 VALUES (5, 9)"},
+      {"sql": "SELECT * FROM u1 JOIN u2 USING (k) JOIN u3 USING (j)",
+       "expect": {"rows": [[100,5,1,2,3]], "columns": ["J","K","A","B","C"]}},
+      {"sql": "SELECT * FROM u1 JOIN u2 USING (k) JOIN u4 ON u4.x = k", "expect": {"columns": ["K","J","A","B","X","D"]}},
+      {"sql": "SELECT * FROM u1 JOIN u4 ON u4.x = u1.k JOIN u2 USING (k)", "expect": {"columns": ["K","J","A","X","D","B"]}}
+    ]},
+    {"name": "a-three-way-chain-on-the-same-key-projects-it-once", "steps": [
+      {"sql": "CREATE TABLE t1 (a INT, k INT, b INT)"},
+      {"sql": "CREATE TABLE t2 (c INT, k INT, d INT)"},
+      {"sql": "CREATE TABLE t3 (k INT, e INT)"},
+      {"sql": "INSERT INTO t1 VALUES (1, 5, 2)"},
+      {"sql": "INSERT INTO t2 VALUES (3, 5, 4)"},
+      {"sql": "INSERT INTO t3 VALUES (5, 6)"},
+      {"sql": "SELECT * FROM t1 JOIN t2 USING (k) JOIN t3 USING (k)",
+       "expect": {"rows": [[5,1,2,3,4,6]], "columns": ["K","A","B","C","D","E"]}}
+    ]},
+    {"name": "a-full-outer-join-coalesces-the-merged-key", "steps": [
+      {"sql": "CREATE TABLE emp (dept_id INT, name VARCHAR, salary INT)"},
+      {"sql": "CREATE TABLE dept (dept_id INT, dept_name VARCHAR)"},
+      {"sql": "INSERT INTO emp VALUES (10, 'ann', 100), (99, 'zed', 999)"},
+      {"sql": "INSERT INTO dept VALUES (10, 'eng'), (77, 'hr')"},
+      {"sql": "SELECT * FROM emp FULL OUTER JOIN dept USING (dept_id) ORDER BY dept_id",
+       "expect": {"rows": [[10,"ann",100,"eng"],[77,null,null,"hr"],[99,"zed",999,null]], "ordered": true}}
+    ]},
+    {"name": "a-bare-key-reference-resolves-to-the-merged-value-everywhere", "steps": [
+      {"sql": "CREATE TABLE emp (dept_id INT, name VARCHAR, salary INT)"},
+      {"sql": "CREATE TABLE dept (dept_id INT, dept_name VARCHAR)"},
+      {"sql": "INSERT INTO emp VALUES (10, 'ann', 100), (99, 'zed', 999)"},
+      {"sql": "INSERT INTO dept VALUES (10, 'eng'), (77, 'hr')"},
+      {"sql": "SELECT dept_id FROM emp FULL OUTER JOIN dept USING (dept_id) WHERE dept_id = 77", "expect": {"rows": [[77]]}},
+      {"sql": "SELECT dept_id, COUNT(*) AS n FROM emp FULL OUTER JOIN dept USING (dept_id) GROUP BY dept_id ORDER BY dept_id",
+       "expect": {"rows": [[10,1],[77,1],[99,1]], "ordered": true}}
+    ]},
+    {"name": "a-qualified-key-reference-still-reads-its-own-side", "steps": [
+      {"sql": "CREATE TABLE emp (dept_id INT, name VARCHAR, salary INT)"},
+      {"sql": "CREATE TABLE dept (dept_id INT, dept_name VARCHAR)"},
+      {"sql": "INSERT INTO emp VALUES (10, 'ann', 100), (99, 'zed', 999)"},
+      {"sql": "INSERT INTO dept VALUES (10, 'eng'), (77, 'hr')"},
+      {"sql": "SELECT emp.dept_id, dept.dept_id FROM emp FULL OUTER JOIN dept USING (dept_id) ORDER BY 1",
+       "expect": {"rows": [[10,10],[99,null],[null,77]], "ordered": true}}
+    ]},
+    {"name": "qualified-stars-keep-their-own-sides-columns", "steps": [
+      {"sql": "CREATE TABLE emp (dept_id INT, name VARCHAR, salary INT)"},
+      {"sql": "CREATE TABLE dept (dept_id INT, dept_name VARCHAR)"},
+      {"sql": "INSERT INTO emp VALUES (10, 'ann', 100), (99, 'zed', 999)"},
+      {"sql": "INSERT INTO dept VALUES (10, 'eng'), (77, 'hr')"},
+      {"sql": "SELECT emp.* FROM emp JOIN dept USING (dept_id)", "expect": {"columns": ["DEPT_ID","NAME","SALARY"]}},
+      {"sql": "SELECT dept.* FROM emp JOIN dept USING (dept_id)", "expect": {"columns": ["DEPT_ID","DEPT_NAME"]}}
+    ]},
+    {"name": "star-modifiers-apply-to-the-merged-column", "steps": [
+      {"sql": "CREATE TABLE emp (dept_id INT, name VARCHAR, salary INT)"},
+      {"sql": "CREATE TABLE dept (dept_id INT, dept_name VARCHAR)"},
+      {"sql": "INSERT INTO emp VALUES (10, 'ann', 100), (99, 'zed', 999)"},
+      {"sql": "INSERT INTO dept VALUES (10, 'eng'), (77, 'hr')"},
+      {"sql": "SELECT * EXCLUDE (dept_id) FROM emp JOIN dept USING (dept_id)", "expect": {"columns": ["NAME","SALARY","DEPT_NAME"]}}
+    ]},
+    {"name": "a-star-beside-a-window-function-keeps-the-merged-shape", "steps": [
+      {"sql": "CREATE TABLE emp (dept_id INT, name VARCHAR, salary INT)"},
+      {"sql": "CREATE TABLE dept (dept_id INT, dept_name VARCHAR)"},
+      {"sql": "INSERT INTO emp VALUES (10, 'ann', 100), (99, 'zed', 999)"},
+      {"sql": "INSERT INTO dept VALUES (10, 'eng'), (77, 'hr')"},
+      {"sql": "SELECT *, ROW_NUMBER() OVER (ORDER BY name) AS rn FROM emp JOIN dept USING (dept_id)",
+       "expect": {"rows": [[10,"ann",100,"eng",1]], "columns": ["DEPT_ID","NAME","SALARY","DEPT_NAME","RN"]}}
+    ]},
+    {"name": "a-ctas-through-the-join-declares-the-merged-shape", "steps": [
+      {"sql": "CREATE TABLE emp (dept_id INT, name VARCHAR, salary INT)"},
+      {"sql": "CREATE TABLE dept (dept_id INT, dept_name VARCHAR)"},
+      {"sql": "INSERT INTO emp VALUES (10, 'ann', 100), (99, 'zed', 999)"},
+      {"sql": "INSERT INTO dept VALUES (10, 'eng'), (77, 'hr')"},
+      {"sql": "CREATE TABLE ct AS SELECT * FROM emp JOIN dept USING (dept_id)"},
+      {"sql": "SELECT column_name FROM test_db.information_schema.columns WHERE table_name = 'CT' ORDER BY ordinal_position",
+       "expect": {"rows": [["DEPT_ID"],["NAME"],["SALARY"],["DEPT_NAME"]], "ordered": true}},
+      {"sql": "SELECT * FROM ct", "expect": {"rows": [[10,"ann",100,"eng"]]}}
+    ]}
+  ]
+}

@@ -1,0 +1,52 @@
+{
+  "suite": "query-clause-reference-scope",
+  "description": "A reference that resolves to nothing is refused in EVERY clause, at the reference's OWN offset, and refused at COMPILE time - an empty table gets the same answer as a full one. Frostlake asked the question per clause and per shape, so three of the four clauses let a qualified reference through: WHERE refused it but with no position, ORDER BY refused it only once rows existed, and GROUP BY and HAVING ACCEPTED it outright - the group key evaluated to NULL so one group came back, and the HAVING predicate filtered every group out. The last two are the worse kind of divergence: not a missing message but a wrong ANSWER. The clause walk skipped multi-part qualifiers, and HAVING was never walked at all. A qualifier that names the relation and carries the column still reads it in every clause, and ORDER BY's own two exemptions stand - a SELECT alias and an ordinal name no column at all. Converted 1:1 from query/ClauseReferenceScopeTest (now retired); the Java flattened the refusal's newline to a space before matching, so the converted tests carry the message's real embedded newline between the position and the sentence.",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "a-bare-name-is-refused-in-every-clause", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE cr (a INT, b INT)"},
+      {"sql": "INSERT INTO cr VALUES (1, 2), (3, 4)"},
+      {"sql": "SELECT a FROM cr WHERE nosuchcol = 1", "expect": {"error": {"messageContains": "error line 1 at position 23\ninvalid identifier 'NOSUCHCOL'"}}},
+      {"sql": "SELECT a FROM cr ORDER BY nosuchcol", "expect": {"error": {"messageContains": "error line 1 at position 26\ninvalid identifier 'NOSUCHCOL'"}}},
+      {"sql": "SELECT COUNT(*) FROM cr GROUP BY nosuchcol", "expect": {"error": {"messageContains": "error line 1 at position 33\ninvalid identifier 'NOSUCHCOL'"}}},
+      {"sql": "SELECT COUNT(*) FROM cr HAVING MAX(nosuchcol) > 0", "expect": {"error": {"messageContains": "error line 1 at position 35\ninvalid identifier 'NOSUCHCOL'"}}}
+    ]},
+    {"name": "a-qualified-reference-is-refused-in-every-clause", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE cr (a INT, b INT)"},
+      {"sql": "INSERT INTO cr VALUES (1, 2), (3, 4)"},
+      {"sql": "SELECT a FROM cr WHERE test_schema.cr.nosuchcol = 1", "expect": {"error": {"messageContains": "error line 1 at position 23\ninvalid identifier 'TEST_SCHEMA.CR.NOSUCHCOL'"}}},
+      {"sql": "SELECT a FROM cr ORDER BY test_schema.cr.nosuchcol", "expect": {"error": {"messageContains": "error line 1 at position 26\ninvalid identifier 'TEST_SCHEMA.CR.NOSUCHCOL'"}}},
+      {"sql": "SELECT COUNT(*) FROM cr GROUP BY test_schema.cr.nosuchcol", "expect": {"error": {"messageContains": "error line 1 at position 33\ninvalid identifier 'TEST_SCHEMA.CR.NOSUCHCOL'"}}},
+      {"sql": "SELECT COUNT(*) FROM cr HAVING MAX(test_schema.cr.nosuchcol) > 0", "expect": {"error": {"messageContains": "error line 1 at position 35\ninvalid identifier 'TEST_SCHEMA.CR.NOSUCHCOL'"}}}
+    ]},
+    {"name": "a-two-part-qualifier-is-refused-the-same-way", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE cr (a INT, b INT)"},
+      {"sql": "INSERT INTO cr VALUES (1, 2), (3, 4)"},
+      {"sql": "SELECT a FROM cr ORDER BY cr.nosuchcol", "expect": {"error": {"messageContains": "error line 1 at position 26\ninvalid identifier 'CR.NOSUCHCOL'"}}},
+      {"sql": "SELECT COUNT(*) FROM cr GROUP BY cr.nosuchcol", "expect": {"error": {"messageContains": "error line 1 at position 33\ninvalid identifier 'CR.NOSUCHCOL'"}}}
+    ]},
+    {"name": "an-empty-table-is-refused-identically", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE cre (a INT, b INT)"},
+      {"sql": "SELECT COUNT(*) FROM cre", "expect": {"value": "0"}},
+      {"sql": "SELECT a FROM cre WHERE nosuchcol = 1", "expect": {"error": {"messageContains": "error line 1 at position 24\ninvalid identifier 'NOSUCHCOL'"}}},
+      {"sql": "SELECT a FROM cre ORDER BY test_schema.cre.nosuchcol", "expect": {"error": {"messageContains": "error line 1 at position 27\ninvalid identifier 'TEST_SCHEMA.CRE.NOSUCHCOL'"}}},
+      {"sql": "SELECT COUNT(*) FROM cre GROUP BY nosuchcol", "expect": {"error": {"messageContains": "error line 1 at position 34\ninvalid identifier 'NOSUCHCOL'"}}},
+      {"sql": "SELECT COUNT(*) FROM cre HAVING MAX(nosuchcol) > 0", "expect": {"error": {"messageContains": "error line 1 at position 36\ninvalid identifier 'NOSUCHCOL'"}}}
+    ]},
+    {"name": "a-resolving-reference-still-reads-the-column", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE cr (a INT, b INT)"},
+      {"sql": "INSERT INTO cr VALUES (1, 2), (3, 4)"},
+      {"sql": "SELECT a FROM cr WHERE test_schema.cr.b = 2", "expect": {"rows": [[1]]}},
+      {"sql": "SELECT a FROM cr ORDER BY test_schema.cr.b", "expect": {"rows": [[1],[3]], "ordered": true}},
+      {"sql": "SELECT COUNT(*) FROM cr GROUP BY test_schema.cr.b ORDER BY 1", "expect": {"rows": [[1],[1]], "ordered": true}},
+      {"sql": "SELECT COUNT(*) FROM cr HAVING MAX(test_schema.cr.b) > 0", "expect": {"rows": [[2]]}}
+    ]},
+    {"name": "an-alias-and-an-ordinal-stay-legal", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE cr (a INT, b INT)"},
+      {"sql": "INSERT INTO cr VALUES (1, 2), (3, 4)"},
+      {"sql": "SELECT a AS x FROM cr ORDER BY x", "expect": {"rows": [[1],[3]], "ordered": true}},
+      {"sql": "SELECT a FROM cr ORDER BY 1", "expect": {"rows": [[1],[3]], "ordered": true}},
+      {"sql": "SELECT COUNT(*) AS n FROM cr HAVING n > 1", "expect": {"rows": [[2]]}}
+    ]}
+  ]
+}

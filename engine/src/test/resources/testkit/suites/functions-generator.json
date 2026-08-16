@@ -1,0 +1,26 @@
+{
+  "suite": "functions-generator",
+  "description": "GENERATOR(ROWCOUNT => n | TIMELIMIT => s) in Snowflake's live-verified shape: the produced rows carry ZERO columns, so SELECT * over a generator fails with \"SELECT with no columns\" and consumers must project literals or expressions, or aggregate over the row count. ROWCOUNT controls the count exactly, including 0 and 1, and a projection is evaluated once per generated row. Converted 1:1 from functions/GeneratorTest (now retired); the TIMELIMIT => 0 test keeps the class's live exemption as skip snowflake.",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "rowcount-controls-the-number-of-rows", "steps": [
+      {"sql": "SELECT COUNT(*) FROM TABLE(GENERATOR(ROWCOUNT => 10))", "expect": {"value": "10"}},
+      {"sql": "SELECT COUNT(*) FROM TABLE(GENERATOR(ROWCOUNT => 0))", "expect": {"value": "0"}},
+      {"sql": "SELECT COUNT(*) FROM TABLE(GENERATOR(ROWCOUNT => 1))", "expect": {"value": "1"}},
+      {"sql": "SELECT COUNT(*) FROM TABLE(GENERATOR(ROWCOUNT => 1000))", "expect": {"value": "1000"}}
+    ]},
+    {"name": "projections-evaluate-per-generated-row", "steps": [
+      {"sql": "SELECT 7 AS n FROM TABLE(GENERATOR(ROWCOUNT => 5))",
+       "expect": {"rowCount": 5, "rows": [["7"], ["7"], ["7"], ["7"], ["7"]]}}
+    ]},
+    {"name": "star-over-a-generator-fails-like-snowflake", "steps": [
+      {"sql": "SELECT * FROM TABLE(GENERATOR(ROWCOUNT => 10))",
+       "expect": {"error": {"messageContains": "SELECT with no columns"}}}
+    ]},
+    {"name": "timelimit-zero-produces-no-rows",
+     "skip": {"backends": ["snowflake"], "reason": "TIMELIMIT 0 is nondeterministic on live Snowflake"},
+     "steps": [
+      {"sql": "SELECT COUNT(*) FROM TABLE(GENERATOR(TIMELIMIT => 0))", "expect": {"value": "0"}}
+    ]}
+  ]
+}

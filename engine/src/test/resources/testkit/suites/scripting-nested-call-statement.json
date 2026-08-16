@@ -1,0 +1,57 @@
+{
+  "suite": "scripting-nested-call-statement",
+  "description": "CALL of a stored procedure NESTED inside procedural control flow - an IF branch, a WHILE body, a FOR body. Such a CALL was previously a silent NO-OP; it now executes the procedure with its arguments evaluated in the ENCLOSING procedural scope, through the same multi-language CALL dispatch used at top level, and a bare CALL statement DISCARDS the callee's return value so the caller's own RETURN wins. The FOR case passes the loop counter, and a variable carrying a quote is passed through intact. The binding rule is the other half: a scripting name reaches the CALL, and the callee's own DML, only through the :name form, because Snowflake dispatches CALL as SQL - so a BARE name there is an identifier and fails 'invalid identifier', live-verified, at the call site and inside the callee's body alike. Converted 1:1 from scripting/NestedCallStatementTest (now retired).",
+  "tags": ["scripting", "converted"],
+  "tests": [
+    {"name": "a-call-inside-a-taken-if-branch-executes", "steps": [
+      {"sql": "CREATE TABLE call_log (v VARCHAR)"},
+      {"sql": "CREATE OR REPLACE PROCEDURE log_it(v VARCHAR) RETURNS VARCHAR LANGUAGE SQL AS $$ BEGIN INSERT INTO call_log VALUES (:v); RETURN 'logged'; END $$"},
+      {"sql": "BEGIN IF (1 = 1) THEN CALL log_it('taken'); END IF; RETURN 'done'; END", "expect": {"value": "done"}},
+      {"sql": "SELECT v FROM call_log", "expect": {"rows": [["taken"]]}}
+    ]},
+    {"name": "a-call-inside-a-false-branch-is-skipped", "steps": [
+      {"sql": "CREATE TABLE call_log (v VARCHAR)"},
+      {"sql": "CREATE OR REPLACE PROCEDURE log_it(v VARCHAR) RETURNS VARCHAR LANGUAGE SQL AS $$ BEGIN INSERT INTO call_log VALUES (:v); RETURN 'logged'; END $$"},
+      {"sql": "BEGIN IF (1 = 2) THEN CALL log_it('never'); END IF; RETURN 'done'; END", "expect": {"value": "done"}},
+      {"sql": "SELECT COUNT(*) FROM call_log", "expect": {"value": 0}}
+    ]},
+    {"name": "a-call-inside-a-for-loop-runs-per-iteration-with-the-counter", "steps": [
+      {"sql": "CREATE TABLE call_log (v VARCHAR)"},
+      {"sql": "CREATE OR REPLACE PROCEDURE log_it(v VARCHAR) RETURNS VARCHAR LANGUAGE SQL AS $$ BEGIN INSERT INTO call_log VALUES (:v); RETURN 'logged'; END $$"},
+      {"sql": "BEGIN FOR i IN 1 TO 3 DO CALL log_it(:i); END FOR; RETURN 'done'; END", "expect": {"value": "done"}},
+      {"sql": "SELECT v FROM call_log ORDER BY v", "expect": {"rows": [["1"],["2"],["3"]], "ordered": true}}
+    ]},
+    {"name": "a-call-inside-a-while-loop", "steps": [
+      {"sql": "CREATE TABLE call_log (v VARCHAR)"},
+      {"sql": "CREATE OR REPLACE PROCEDURE log_it(v VARCHAR) RETURNS VARCHAR LANGUAGE SQL AS $$ BEGIN INSERT INTO call_log VALUES (:v); RETURN 'logged'; END $$"},
+      {"sql": "DECLARE i INTEGER DEFAULT 0; BEGIN WHILE (i < 2) DO i := i + 1; CALL log_it('w'); END WHILE; RETURN i; END", "expect": {"value": 2}},
+      {"sql": "SELECT COUNT(*) FROM call_log", "expect": {"value": 2}}
+    ]},
+    {"name": "a-variable-argument-carrying-a-quote-arrives-intact", "steps": [
+      {"sql": "CREATE TABLE call_log (v VARCHAR)"},
+      {"sql": "CREATE OR REPLACE PROCEDURE log_it(v VARCHAR) RETURNS VARCHAR LANGUAGE SQL AS $$ BEGIN INSERT INTO call_log VALUES (:v); RETURN 'logged'; END $$"},
+      {"sql": "DECLARE msg VARCHAR DEFAULT 'it''s fine'; BEGIN IF (1 = 1) THEN CALL log_it(:msg); END IF; RETURN 'done'; END", "expect": {"value": "done"}},
+      {"sql": "SELECT v FROM call_log", "expect": {"rows": [["it's fine"]]}}
+    ]},
+    {"name": "the-callees-return-does-not-clobber-the-callers", "steps": [
+      {"sql": "CREATE TABLE call_log (v VARCHAR)"},
+      {"sql": "CREATE OR REPLACE PROCEDURE log_it(v VARCHAR) RETURNS VARCHAR LANGUAGE SQL AS $$ BEGIN INSERT INTO call_log VALUES (:v); RETURN 'logged'; END $$"},
+      {"sql": "BEGIN IF (1 = 1) THEN CALL log_it('x'); END IF; RETURN 'caller'; END", "expect": {"rows": [["caller"]]}},
+      {"sql": "SELECT COUNT(*) FROM call_log", "expect": {"value": 1}}
+    ]},
+    {"name": "a-bare-scripting-name-as-a-call-argument-is-rejected", "steps": [
+      {"sql": "CREATE TABLE call_log (v VARCHAR)"},
+      {"sql": "CREATE OR REPLACE PROCEDURE log_it(v VARCHAR) RETURNS VARCHAR LANGUAGE SQL AS $$ BEGIN INSERT INTO call_log VALUES (:v); RETURN 'logged'; END $$"},
+      {"sql": "BEGIN LET v VARCHAR := 'x'; IF (1 = 1) THEN CALL log_it(v); END IF; RETURN 'done'; END",
+       "expect": {"error": {"messageContains": "invalid identifier 'V'"}}},
+      {"sql": "SELECT COUNT(*) FROM call_log", "expect": {"value": 0}},
+      {"sql": "CALL log_it(some_name)", "expect": {"error": {"messageContains": "invalid identifier 'SOME_NAME'"}}}
+    ]},
+    {"name": "a-bare-parameter-in-a-procedure-body-is-rejected", "steps": [
+      {"sql": "CREATE TABLE call_log (v VARCHAR)"},
+      {"sql": "CREATE OR REPLACE PROCEDURE log_bare(v VARCHAR) RETURNS VARCHAR LANGUAGE SQL AS $$ BEGIN INSERT INTO call_log VALUES (v); RETURN 'logged'; END $$"},
+      {"sql": "CALL log_bare('x')", "expect": {"error": {}}},
+      {"sql": "SELECT COUNT(*) FROM call_log", "expect": {"value": 0}}
+    ]}
+  ]
+}

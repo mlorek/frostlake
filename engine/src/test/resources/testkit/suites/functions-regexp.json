@@ -1,0 +1,200 @@
+{
+  "suite": "functions-regexp",
+  "description": "The REGEXP_* functions with their full Snowflake argument sets - position, occurrence, regex_parameters (the i/m/s/e flags) and group_num - plus Snowflake replacement back-references. Each used to accept only the leading two or three arguments, REGEXP_REPLACE used Java-style dollar back-references, and an invalid pattern was silently swallowed. REGEXP_REPLACE replaces ALL occurrences by default, an occurrence argument narrows it to the nth, and a position argument starts the search later; a group_num implies the 'e' extract behaviour; REGEXP_INSTR's option 1 answers the character just AFTER the match; and REGEXP_LIKE requires a full match. Note that the SQL string-literal decode runs first and turns a single backslash-2 into the control character 0x02, so a back-reference must be written doubled - which is why this suite was generated with raw strings, so the spelling survives both the JSON encoder and the testkit's own parser. Converted 1:1 from functions/RegexpFunctionsTest (now retired).",
+  "tags": [
+    "functions",
+    "converted"
+  ],
+  "tests": [
+    {
+      "name": "replace-replaces-all-occurrences-by-default",
+      "steps": [
+        {
+          "sql": "SELECT REGEXP_REPLACE('hello', 'el+', 'XXX')",
+          "expect": {
+            "value": "hXXXo"
+          }
+        },
+        {
+          "sql": "SELECT REGEXP_REPLACE('acacac', 'a', 'X')",
+          "expect": {
+            "value": "XcXcXc"
+          }
+        }
+      ]
+    },
+    {
+      "name": "replace-uses-snowflake-back-references",
+      "steps": [
+        {
+          "sql": "SELECT REGEXP_REPLACE('ab', '(a)(b)', '[\\\\2][\\\\1]')",
+          "expect": {
+            "value": "[b][a]"
+          }
+        }
+      ]
+    },
+    {
+      "name": "an-occurrence-replaces-only-the-nth",
+      "steps": [
+        {
+          "sql": "SELECT REGEXP_REPLACE('aaa', 'a', 'X', 1, 2)",
+          "expect": {
+            "value": "aXa"
+          }
+        }
+      ]
+    },
+    {
+      "name": "a-position-starts-matching-later",
+      "steps": [
+        {
+          "sql": "SELECT REGEXP_REPLACE('aaaa', 'a', 'X', 3, 1)",
+          "expect": {
+            "value": "aaXa"
+          }
+        }
+      ]
+    },
+    {
+      "name": "an-invalid-pattern-throws",
+      "steps": [
+        {
+          "sql": "SELECT REGEXP_REPLACE('x', '[', 'y')",
+          "expect": {
+            "error": {}
+          }
+        }
+      ]
+    },
+    {
+      "name": "substr-honours-occurrence-and-position",
+      "steps": [
+        {
+          "sql": "SELECT REGEXP_SUBSTR('abc123def', '[0-9]+')",
+          "expect": {
+            "value": "123"
+          }
+        },
+        {
+          "sql": "SELECT REGEXP_SUBSTR('a=20;b=30', '[0-9]+', 1, 2)",
+          "expect": {
+            "value": "30"
+          }
+        },
+        {
+          "sql": "SELECT REGEXP_SUBSTR('a=20;b=30', '[0-9]+', 5)",
+          "expect": {
+            "value": "30"
+          }
+        },
+        {
+          "sql": "SELECT REGEXP_SUBSTR('abc', '[0-9]+')",
+          "expect": {
+            "rows": [
+              [
+                null
+              ]
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "substr-extracts-a-capture-group",
+      "steps": [
+        {
+          "sql": "SELECT REGEXP_SUBSTR('a=20;b=30', '([a-z])=([0-9]+)', 1, 1, 'e', 2)",
+          "expect": {
+            "value": "20"
+          }
+        },
+        {
+          "sql": "SELECT REGEXP_SUBSTR('a=20;b=30', '([a-z])=([0-9]+)', 1, 1, 'e', 1)",
+          "expect": {
+            "value": "a"
+          }
+        }
+      ]
+    },
+    {
+      "name": "count-honours-position-and-parameters",
+      "steps": [
+        {
+          "sql": "SELECT REGEXP_COUNT('aababcabc', 'a')",
+          "expect": {
+            "value": "4"
+          }
+        },
+        {
+          "sql": "SELECT REGEXP_COUNT('AbaB', 'b', 1, 'i')",
+          "expect": {
+            "value": "2"
+          }
+        },
+        {
+          "sql": "SELECT REGEXP_COUNT('aXaXa', 'a', 3)",
+          "expect": {
+            "value": "2"
+          }
+        }
+      ]
+    },
+    {
+      "name": "instr-honours-position-occurrence-and-option",
+      "steps": [
+        {
+          "sql": "SELECT REGEXP_INSTR('hello world', 'lo')",
+          "expect": {
+            "value": "4"
+          }
+        },
+        {
+          "sql": "SELECT REGEXP_INSTR('hello', '[0-9]+')",
+          "expect": {
+            "value": "0"
+          }
+        },
+        {
+          "sql": "SELECT REGEXP_INSTR('hello world', 'lo', 1, 1, 1)",
+          "expect": {
+            "value": "6"
+          }
+        }
+      ]
+    },
+    {
+      "name": "like-requires-a-full-match-and-honours-flags",
+      "steps": [
+        {
+          "sql": "SELECT REGEXP_LIKE('hello123', '[a-z]+[0-9]+')",
+          "expect": {
+            "value": "true"
+          }
+        },
+        {
+          "sql": "SELECT REGEXP_LIKE('hello', '[0-9]+')",
+          "expect": {
+            "value": "false"
+          }
+        },
+        {
+          "sql": "SELECT REGEXP_LIKE('HELLO', 'hello', 'i')",
+          "expect": {
+            "value": "true"
+          }
+        },
+        {
+          "sql": "SELECT REGEXP_LIKE(NULL, 'x')",
+          "expect": {
+            "rows": [
+              [
+                null
+              ]
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -23,7 +23,9 @@ import dev.frostlake.metastore.model.TableColumn;
 import dev.frostlake.storage.Row;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * The MERGE evaluation shape for one (source table, target table, aliases) combination: the merged
@@ -134,6 +136,18 @@ public final class MergeRowShape {
         final Table mergedTable = new Table("__MERGE__", mergedCols, false);
         final ExpressionEvaluator evaluator =
             new ExpressionEvaluator(mergedTable, functionRegistry, catalog, executor);
+        // The VALUES read through the merged shape; the TYPES come from the two real relations under
+        // their aliases, so a conditional in a SET or VALUES item folds and casts as a projection
+        // would — live's "Failed to cast variant value 1 to DATE" instead of the write's own words.
+        final Map<String, Table> aliasToTable = new HashMap<>();
+        final List<Table> relations = new ArrayList<>();
+        aliasToTable.put(tAlias, targetTable);
+        relations.add(targetTable);
+        if (sourceTable != null && sourceAlias != null) {
+            aliasToTable.put(sourceAlias.toUpperCase(), sourceTable);
+            relations.add(sourceTable);
+        }
+        evaluator.setDeclaredTypeBase(targetTable, aliasToTable, relations);
         return new MergeRowShape(mergedTable, evaluator, slotFromSource, slotIndex);
     }
 

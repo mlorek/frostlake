@@ -1,0 +1,21 @@
+{
+  "suite": "functions-initcap-delimiter",
+  "description": "INITCAP uses Snowflake's default delimiter set - whitespace plus a fixed punctuation set, so '+' and '_' start new words - and an explicit delimiters argument overrides it, with an empty string meaning the whole input is one word. Previously the engine split only on whitespace and ignored the second argument. Converted 1:1 from functions/InitCapDelimiterTest (now retired).",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "whitespace-delimiters-by-default", "steps": [
+      {"sql": "SELECT INITCAP('the sky is blue')", "expect": {"value": "The Sky Is Blue"}}
+    ]},
+    {"name": "punctuation-is-a-default-delimiter", "steps": [
+      {"sql": "SELECT INITCAP('sky+blue')", "expect": {"value": "Sky+Blue"}},
+      {"sql": "SELECT INITCAP('HelL0_hi+therE')", "expect": {"value": "Hell0_Hi+There"}}
+    ]},
+    {"name": "an-empty-delimiter-treats-the-whole-input-as-one-word", "steps": [
+      {"sql": "SELECT INITCAP('this is the new Frame+work', '')",
+       "expect": {"value": "This is the new frame+work"}}
+    ]},
+    {"name": "an-explicit-delimiter-overrides-the-default", "steps": [
+      {"sql": "SELECT INITCAP('sky+blue sea', ' ')", "expect": {"value": "Sky+blue Sea"}}
+    ]}
+  ]
+}

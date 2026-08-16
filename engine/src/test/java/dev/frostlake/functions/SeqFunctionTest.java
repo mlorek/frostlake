@@ -43,13 +43,26 @@ public class SeqFunctionTest extends BaseDatabaseTest {
         engine.execute("INSERT INTO nums VALUES (1),(2),(3),(4),(5),(6),(7),(8)");
     }
 
-    /** The first column of every row, as text, so a whole sequence can be compared in one assertion. */
+    /**
+     * The first column of every row, as text, SORTED, so a whole result can be compared in one assertion.
+     *
+     * <p>It is sorted because SEQ numbers rows in SCAN order, and a SELECT with no ORDER BY does not fix
+     * that order — an ORDER BY would not help either, since the numbering is assigned independently of
+     * it. What IS determined is the SET of ordinals the eight rows carry, so that is what these cells
+     * assert. Frostlake happens to scan in insertion order, but nothing guarantees it.
+     */
     private String column(final String sql) {
         final ResultSet rs = engine.executeQuery(sql);
         final List<String> values = new ArrayList<>();
         for (int i = 0; i < rs.getRows().size(); i++) {
             values.add(String.valueOf(rs.getRows().get(i).getValue(0)));
         }
+        java.util.Collections.sort(values, new java.util.Comparator<String>() {
+            @Override
+            public int compare(final String a, final String b) {
+                return Long.compare(Long.parseLong(a), Long.parseLong(b));
+            }
+        });
         return String.join(",", values);
     }
 

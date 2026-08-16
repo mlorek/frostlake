@@ -1,0 +1,68 @@
+{
+  "suite": "security-view-row-access-policy",
+  "description": "ALTER VIEW ... ADD / DROP ROW ACCESS POLICY: a row access policy attached to a VIEW filters the view's OUTPUT rows exactly as one attached to a table filters scans, with the SYSADMIN and ACCOUNTADMIN bypass included, and the attachment survives a database CLONE. The policy name may be SCHEMA-QUALIFIED, and it resolves from the view's attachment rather than from the session's current schema. Dropping the policy restores full visibility. Converted 1:1 from security/ViewRowAccessPolicyTest (now retired). Four of its five tests carried an Assumptions.assumeFalse(isLiveSnowflake()) because the Java switched roles through engine.getSecurityManager().getSessionContext() and read the attachment through engine.getCatalog(), which under SF_LIVE still address the EMBEDDED engine while the SQL runs on Snowflake. The converted tests use plain USE ROLE and TABLE(INFORMATION_SCHEMA.POLICY_REFERENCES(REF_ENTITY_NAME => ..., REF_ENTITY_DOMAIN => 'VIEW')), both of which address whichever backend is running - so the skips are GONE and all five claims now hold on every transport.",
+  "tags": ["security", "converted"],
+  "tests": [
+    {"name": "alter-view-add-row-access-policy-attaches", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE orders (id INTEGER, region VARCHAR)"},
+      {"sql": "INSERT INTO orders VALUES (1, 'EU'), (2, 'US'), (3, 'EU')"},
+      {"sql": "CREATE OR REPLACE VIEW orders_view AS SELECT id, region FROM orders"},
+      {"sql": "CREATE OR REPLACE ROW ACCESS POLICY eu_only AS (r VARCHAR) RETURNS BOOLEAN -> r = 'EU'"},
+      {"sql": "ALTER VIEW orders_view ADD ROW ACCESS POLICY eu_only ON (region)"},
+      {"sql": "SELECT POLICY_NAME, POLICY_KIND FROM TABLE(INFORMATION_SCHEMA.POLICY_REFERENCES(REF_ENTITY_NAME => 'orders_view', REF_ENTITY_DOMAIN => 'VIEW'))",
+       "expect": {"rows": [["EU_ONLY","ROW_ACCESS_POLICY"]]}}
+    ]},
+    {"name": "the-policy-filters-view-rows-and-an-admin-bypasses-it", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE orders (id INTEGER, region VARCHAR)"},
+      {"sql": "INSERT INTO orders VALUES (1, 'EU'), (2, 'US'), (3, 'EU')"},
+      {"sql": "CREATE OR REPLACE VIEW orders_view AS SELECT id, region FROM orders"},
+      {"sql": "CREATE OR REPLACE ROW ACCESS POLICY eu_only AS (r VARCHAR) RETURNS BOOLEAN -> CURRENT_ROLE() = 'SYSADMIN' OR r = 'EU'"},
+      {"sql": "ALTER VIEW orders_view ADD ROW ACCESS POLICY eu_only ON (region)"},
+      {"sql": "USE ROLE SYSADMIN"},
+      {"sql": "SELECT id FROM orders_view ORDER BY id", "expect": {"rows": [[1],[2],[3]], "ordered": true}},
+      {"sql": "USE ROLE PUBLIC"},
+      {"sql": "SELECT id FROM orders_view ORDER BY id", "expect": {"rows": [[1],[3]], "ordered": true}}
+    ]},
+    {"name": "dropping-the-policy-restores-full-visibility", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE orders (id INTEGER, region VARCHAR)"},
+      {"sql": "INSERT INTO orders VALUES (1, 'EU'), (2, 'US'), (3, 'EU')"},
+      {"sql": "CREATE OR REPLACE VIEW orders_view AS SELECT id, region FROM orders"},
+      {"sql": "CREATE OR REPLACE ROW ACCESS POLICY none_visible AS (r VARCHAR) RETURNS BOOLEAN -> FALSE"},
+      {"sql": "ALTER VIEW orders_view ADD ROW ACCESS POLICY none_visible ON (region)"},
+      {"sql": "USE ROLE PUBLIC"},
+      {"sql": "SELECT COUNT(*) FROM orders_view", "expect": {"value": 0}},
+      {"sql": "USE ROLE SYSADMIN"},
+      {"sql": "ALTER VIEW orders_view DROP ROW ACCESS POLICY none_visible"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(INFORMATION_SCHEMA.POLICY_REFERENCES(REF_ENTITY_NAME => 'orders_view', REF_ENTITY_DOMAIN => 'VIEW'))",
+       "expect": {"value": 0}},
+      {"sql": "USE ROLE PUBLIC"},
+      {"sql": "SELECT COUNT(*) FROM orders_view", "expect": {"value": 3}}
+    ]},
+    {"name": "a-schema-qualified-policy-name-resolves-from-the-attachment", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE orders (id INTEGER, region VARCHAR)"},
+      {"sql": "INSERT INTO orders VALUES (1, 'EU'), (2, 'US'), (3, 'EU')"},
+      {"sql": "CREATE OR REPLACE VIEW orders_view AS SELECT id, region FROM orders"},
+      {"sql": "CREATE SCHEMA IF NOT EXISTS util_schema"},
+      {"sql": "USE SCHEMA test_schema"},
+      {"sql": "CREATE OR REPLACE ROW ACCESS POLICY util_schema.region_rap AS (r VARCHAR) RETURNS BOOLEAN -> CURRENT_ROLE() = 'SYSADMIN' OR r = 'US'"},
+      {"sql": "ALTER VIEW orders_view ADD ROW ACCESS POLICY util_schema.region_rap ON (region)"},
+      {"sql": "USE ROLE PUBLIC"},
+      {"sql": "SELECT id FROM orders_view", "expect": {"rows": [[2]]}},
+      {"sql": "USE ROLE SYSADMIN"}
+    ]},
+    {"name": "a-database-clone-preserves-the-view-policy-attachment", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE orders (id INTEGER, region VARCHAR)"},
+      {"sql": "INSERT INTO orders VALUES (1, 'EU'), (2, 'US'), (3, 'EU')"},
+      {"sql": "CREATE OR REPLACE VIEW orders_view AS SELECT id, region FROM orders"},
+      {"sql": "CREATE OR REPLACE ROW ACCESS POLICY eu_only AS (r VARCHAR) RETURNS BOOLEAN -> CURRENT_ROLE() = 'SYSADMIN' OR r = 'EU'"},
+      {"sql": "ALTER VIEW orders_view ADD ROW ACCESS POLICY eu_only ON (region)"},
+      {"sql": "CREATE OR REPLACE DATABASE rap_clone CLONE test_db"},
+      {"sql": "USE DATABASE rap_clone"},
+      {"sql": "USE SCHEMA test_schema"},
+      {"sql": "USE ROLE PUBLIC"},
+      {"sql": "SELECT id FROM orders_view ORDER BY id", "expect": {"rows": [[1],[3]], "ordered": true}},
+      {"sql": "USE ROLE SYSADMIN"},
+      {"sql": "SELECT COUNT(*) FROM orders_view", "expect": {"value": 3}}
+    ]}
+  ]
+}

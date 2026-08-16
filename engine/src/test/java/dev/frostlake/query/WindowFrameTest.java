@@ -123,22 +123,29 @@ public class WindowFrameTest extends BaseDatabaseTest {
     @Test
     public void rangeDefaultGroupsPeersOnTiedOrderKey() {
         engine.execute("CREATE TABLE p (id INTEGER, k INTEGER, val INTEGER)");
-        engine.execute("INSERT INTO p VALUES (1, 1, 10), (2, 1, 20), (3, 2, 30)");
+        // THE PEERS CARRY THE SAME VALUE, which is what makes a positional frame's answer determined at
+        // all: a running sum accumulates in window order, so unequal peers would leave the FIRST one's
+        // total (10 or 20) resting on an order nothing in the query fixes.
+        engine.execute("INSERT INTO p VALUES (1, 1, 10), (2, 1, 10), (3, 2, 30)");
 
-        // Default RANGE frame: the two k=1 rows are peers, so both see the sum through the last peer (30);
-        // the k=2 row sees everything (60).
+        // Default RANGE frame: the two k=1 rows are peers, so both see the sum through the last peer (20);
+        // the k=2 row sees everything (50).
         final ResultSet rangeRs = engine.executeQuery(
             "SELECT id, SUM(val) OVER (ORDER BY k) AS s FROM p ORDER BY id");
-        assertEquals(30.0, dbl(rangeRs, 0, 1), 0.001);
-        assertEquals(30.0, dbl(rangeRs, 1, 1), 0.001);
-        assertEquals(60.0, dbl(rangeRs, 2, 1), 0.001);
+        assertEquals(20.0, dbl(rangeRs, 0, 1), 0.001);
+        assertEquals(20.0, dbl(rangeRs, 1, 1), 0.001);
+        assertEquals(50.0, dbl(rangeRs, 2, 1), 0.001);
 
-        // ROWS is positional (ties are NOT grouped): 10, 30, 60.
+        // ROWS is positional (ties are NOT grouped): one peer sees 10 and the other 20, which is the whole
+        // point — RANGE gave both the same 20. WHICH id takes the 10 is not determined, so the pair is
+        // asserted as a pair rather than as a row sequence.
         final ResultSet rowsRs = engine.executeQuery(
             "SELECT id, SUM(val) OVER (ORDER BY k ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS s FROM p ORDER BY id");
-        assertEquals(10.0, dbl(rowsRs, 0, 1), 0.001);
-        assertEquals(30.0, dbl(rowsRs, 1, 1), 0.001);
-        assertEquals(60.0, dbl(rowsRs, 2, 1), 0.001);
+        final double onePeer = dbl(rowsRs, 0, 1);
+        final double otherPeer = dbl(rowsRs, 1, 1);
+        assertEquals(10.0, Math.min(onePeer, otherPeer), 0.001);
+        assertEquals(20.0, Math.max(onePeer, otherPeer), 0.001);
+        assertEquals(50.0, dbl(rowsRs, 2, 1), 0.001, "and the row past the peers is unambiguous");
     }
 
     /** Gapped values so a value-based RANGE differs from a positional ROWS frame. */

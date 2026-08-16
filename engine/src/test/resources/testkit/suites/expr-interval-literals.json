@@ -1,0 +1,50 @@
+{
+  "suite": "expr-interval-literals",
+  "description": "Snowflake interval literal forms, live-verified: the quoted-string form (plural units and comma-separated parts INSIDE the string, a bare quoted number meaning seconds), the INTERVAL '<n>' <singular-unit> form; an unquoted amount is a syntax error and a PLURAL word after the string is a column ALIAS, not a unit (INTERVAL '10' DAYS adds ten seconds with the column named DAYS); a standalone interval - unit-less or multi-part - is refused as interval literal is not supported in this form while the unit-suffixed spelling projects as a first-class value; and the same forms drive subtraction and column DEFAULTs. Converted 1:1 from expressions/IntervalExpressionTest (now retired).",
+  "tags": ["expressions", "converted"],
+  "tests": [
+    {"name": "quoted-string-form-applies-in-arithmetic", "steps": [
+      {"sql": "SELECT ('2024-01-01'::DATE + INTERVAL '10 days')::DATE", "expect": {"value": "2024-01-11"}},
+      {"sql": "SELECT ('2024-01-01'::DATE + INTERVAL '2 years')::DATE", "expect": {"value": "2026-01-01"}},
+      {"sql": "SELECT TO_CHAR('2024-01-01 00:00:00'::TIMESTAMP + INTERVAL '90 minutes', 'YYYY-MM-DD HH24:MI:SS')", "expect": {"value": "2024-01-01 01:30:00"}}
+    ]},
+    {"name": "multi-part-quoted-interval-applies-each-part-in-order", "steps": [
+      {"sql": "SELECT TO_CHAR('2024-01-01'::DATE + INTERVAL '1 day, 2 hours', 'YYYY-MM-DD HH24:MI:SS')", "expect": {"value": "2024-01-02 02:00:00"}}
+    ]},
+    {"name": "bare-quoted-number-means-seconds", "steps": [
+      {"sql": "SELECT TO_CHAR('2024-01-01'::DATE + INTERVAL '10', 'YYYY-MM-DD HH24:MI:SS')", "expect": {"value": "2024-01-01 00:00:10"}}
+    ]},
+    {"name": "singular-unit-suffix-is-accepted", "steps": [
+      {"sql": "SELECT ('2024-01-01'::DATE + INTERVAL '10' DAY)::DATE", "expect": {"value": "2024-01-11"}},
+      {"sql": "SELECT ('2024-01-01'::DATE + INTERVAL '1' YEAR)::DATE", "expect": {"value": "2025-01-01"}},
+      {"sql": "SELECT TO_CHAR('2024-01-01'::DATE + INTERVAL '5' HOUR, 'YYYY-MM-DD HH24:MI:SS')", "expect": {"value": "2024-01-01 05:00:00"}}
+    ]},
+    {"name": "plural-word-after-the-string-is-an-alias-not-a-unit", "steps": [
+      {"sql": "SELECT TO_CHAR('2024-01-01'::DATE + INTERVAL '10', 'YYYY-MM-DD HH24:MI:SS') DAYS",
+       "expect": {"columns": ["DAYS"], "rows": [["2024-01-01 00:00:10"]]}}
+    ]},
+    {"name": "unquoted-amount-is-a-syntax-error-like-snowflake", "steps": [
+      {"sql": "SELECT CURRENT_DATE + INTERVAL 10 DAY", "expect": {"error": {}}}
+    ]},
+    {"name": "standalone-interval-is-rejected", "steps": [
+      {"sql": "SELECT INTERVAL '1 day'", "expect": {"error": {"messageContains": "interval literal is not supported in this form"}}},
+      {"sql": "SELECT INTERVAL '1 day' AS d", "expect": {"error": {}}},
+      {"sql": "SELECT INTERVAL '2 hours'", "expect": {"error": {}}},
+      {"sql": "SELECT INTERVAL '1 day, 2 hours'", "expect": {"error": {}}}
+    ]},
+    {"name": "unit-suffixed-interval-projects-as-a-value",
+     "skip": {"backends": ["snowflake"], "reason": "the Snowflake JDBC driver cannot marshal an interval result column - it fails with Feature unsupported: data type: 50006 before the value reaches the harness"},
+     "steps": [
+      {"sql": "SELECT INTERVAL '1' DAY", "expect": {"rowCount": 1}},
+      {"sql": "SELECT INTERVAL '2' HOUR", "expect": {"rowCount": 1}},
+      {"sql": "SELECT INTERVAL '1' YEAR", "expect": {"rowCount": 1}},
+      {"sql": "SELECT INTERVAL '1' DAY AS d", "expect": {"rowCount": 1}}
+    ]},
+    {"name": "subtraction-and-defaults-use-the-same-forms", "steps": [
+      {"sql": "SELECT ('2024-01-01'::DATE - INTERVAL '1 day')::DATE", "expect": {"value": "2023-12-31"}},
+      {"sql": "CREATE TABLE interval_default_t (id INTEGER, d DATE DEFAULT '2024-01-01'::DATE + INTERVAL '30 days')"},
+      {"sql": "INSERT INTO interval_default_t (id) VALUES (1)"},
+      {"sql": "SELECT d::DATE FROM interval_default_t", "expect": {"value": "2024-01-31"}}
+    ]}
+  ]
+}

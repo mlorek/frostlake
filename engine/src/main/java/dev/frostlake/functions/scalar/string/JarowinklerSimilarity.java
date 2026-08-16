@@ -17,7 +17,7 @@
 package dev.frostlake.functions.scalar.string;
 
 import dev.frostlake.functions.TextArgumentFunction;
-import dev.frostlake.types.NumericType;
+import dev.frostlake.types.IntegerResultWidths;
 
 import java.util.List;
 
@@ -35,7 +35,7 @@ public class JarowinklerSimilarity extends TextArgumentFunction {
     private static final int MAX_PREFIX = 4;
     private static final double PREFIX_SCALE = 0.1;
 
-    public JarowinklerSimilarity() { super("JAROWINKLER_SIMILARITY", NumericType.INTEGER); }
+    public JarowinklerSimilarity() { super("JAROWINKLER_SIMILARITY", IntegerResultWidths.YEAR_PART); }
 
     @Override
     public Object evaluate(final List<Object> args) {

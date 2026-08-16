@@ -1,0 +1,21 @@
+{
+  "suite": "functions-extract-from-syntax",
+  "description": "The ANSI EXTRACT(<part> FROM <expr>) syntax is accepted - desugared to the two-argument EXTRACT('<part>', <expr>) form - in addition to the comma form, over both DATE and TIMESTAMP values and inside a larger expression. Previously only the comma form parsed. Converted 1:1 from functions/ExtractFromSyntaxTest (now retired).",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "the-from-syntax-on-a-date", "steps": [
+      {"sql": "SELECT EXTRACT(month FROM '2023-05-08'::DATE), EXTRACT(year FROM '2023-05-08'::DATE), EXTRACT(day FROM '2023-05-08'::DATE)",
+       "expect": {"rows": [["5", "2023", "8"]]}}
+    ]},
+    {"name": "the-from-syntax-on-a-timestamp", "steps": [
+      {"sql": "SELECT EXTRACT(hour FROM '2023-05-08 14:30:00'::TIMESTAMP), EXTRACT(minute FROM '2023-05-08 14:30:00'::TIMESTAMP)",
+       "expect": {"rows": [["14", "30"]]}}
+    ]},
+    {"name": "the-comma-form-still-works", "steps": [
+      {"sql": "SELECT EXTRACT('month', '2023-05-08'::DATE)", "expect": {"value": "5"}}
+    ]},
+    {"name": "the-from-syntax-inside-an-expression", "steps": [
+      {"sql": "SELECT EXTRACT(year FROM '2023-05-08'::DATE) + 5", "expect": {"value": "2028"}}
+    ]}
+  ]
+}

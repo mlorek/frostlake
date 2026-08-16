@@ -1,0 +1,27 @@
+{
+  "suite": "types-approximate-numeric-metadata",
+  "description": "The APPROXIMATE numerics carry no precision and no scale. The engine keeps a nominal (38,9) inside its FLOAT type, and the question is which surfaces that pair is allowed to reach: none of them. Live answers the same six-alias table on every surface - SHOW COLUMNS prints the family alone, {\"type\":\"REAL\",\"nullable\":true}, with no numbers beside it; DESCRIBE spells the bare word FLOAT; INFORMATION_SCHEMA leaves data_type FLOAT with numeric_precision and numeric_scale both NULL, which is how it says no pair; and GET_DDL writes every alias back as an unparameterised FLOAT. A NUMBER(10,2) sitting in the same table does carry its pair on all four, so the absence is the family's own rule rather than a missing feature. FLOAT, DOUBLE, REAL, FLOAT4, FLOAT8 and DOUBLE PRECISION are ONE type with six spellings, so all six answer identically. Converted from types/ApproximateNumericMetadataTest, which keeps only its JDBC-driver test (see the task note); the class's helper lookups become SHOW COLUMNS and DESCRIBE TABLE read back through RESULT_SCAN, and the GET_DDL containment checks become CONTAINS over the same text.",
+  "tags": ["types", "converted"],
+  "tests": [
+    {"name": "show-columns-prints-the-family-with-no-numbers", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE ft (f FLOAT, d DOUBLE, r REAL, f4 FLOAT4, f8 FLOAT8, dp DOUBLE PRECISION, n NUMBER(10,2))"},
+      {"sql": "SHOW COLUMNS IN TABLE ft"},
+      {"sql": "SELECT \"column_name\" || ' => ' || \"data_type\" AS r FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) ORDER BY r", "expect": {"rows": [["D => {\"type\":\"REAL\",\"nullable\":true}"], ["DP => {\"type\":\"REAL\",\"nullable\":true}"], ["F => {\"type\":\"REAL\",\"nullable\":true}"], ["F4 => {\"type\":\"REAL\",\"nullable\":true}"], ["F8 => {\"type\":\"REAL\",\"nullable\":true}"], ["N => {\"type\":\"FIXED\",\"precision\":10,\"scale\":2,\"nullable\":true}"], ["R => {\"type\":\"REAL\",\"nullable\":true}"]], "ordered": true}}
+    ]},
+    {"name": "describe-spells-the-bare-word", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE ft (f FLOAT, d DOUBLE, r REAL, f4 FLOAT4, f8 FLOAT8, dp DOUBLE PRECISION, n NUMBER(10,2))"},
+      {"sql": "DESCRIBE TABLE ft"},
+      {"sql": "SELECT \"name\" || ' => ' || \"type\" AS r FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) ORDER BY r", "expect": {"rows": [["D => FLOAT"], ["DP => FLOAT"], ["F => FLOAT"], ["F4 => FLOAT"], ["F8 => FLOAT"], ["N => NUMBER(10,2)"], ["R => FLOAT"]], "ordered": true}}
+    ]},
+    {"name": "information-schema-leaves-both-cells-null", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE ft (f FLOAT, d DOUBLE, r REAL, f4 FLOAT4, f8 FLOAT8, dp DOUBLE PRECISION, n NUMBER(10,2))"},
+      {"sql": "SELECT column_name || ' => ' || data_type || '/' || COALESCE(TO_VARCHAR(numeric_precision), 'NULL') || '/' || COALESCE(TO_VARCHAR(numeric_scale), 'NULL') AS r FROM information_schema.columns WHERE table_name = 'FT' ORDER BY ordinal_position", "expect": {"rows": [["F => FLOAT/NULL/NULL"], ["D => FLOAT/NULL/NULL"], ["R => FLOAT/NULL/NULL"], ["F4 => FLOAT/NULL/NULL"], ["F8 => FLOAT/NULL/NULL"], ["DP => FLOAT/NULL/NULL"], ["N => NUMBER/10/2"]], "ordered": true}}
+    ]},
+    {"name": "get-ddl-writes-every-alias-as-float", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE ft (f FLOAT, d DOUBLE, r REAL, f4 FLOAT4, f8 FLOAT8, dp DOUBLE PRECISION, n NUMBER(10,2))"},
+      {"sql": "SELECT TO_VARCHAR(CONTAINS(g, 'F FLOAT,') AND CONTAINS(g, 'D FLOAT,') AND CONTAINS(g, 'R FLOAT,') AND CONTAINS(g, 'F4 FLOAT,') AND CONTAINS(g, 'F8 FLOAT,') AND CONTAINS(g, 'DP FLOAT,')) AS r FROM (SELECT GET_DDL('TABLE', 'ft') AS g)", "expect": {"value": "true"}},
+      {"sql": "SELECT TO_VARCHAR(CONTAINS(g, 'N NUMBER(10,2)')) AS r FROM (SELECT GET_DDL('TABLE', 'ft') AS g)", "expect": {"value": "true"}},
+      {"sql": "SELECT TO_VARCHAR(CONTAINS(g, 'FLOAT(')) AS r FROM (SELECT GET_DDL('TABLE', 'ft') AS g)", "expect": {"value": "false"}}
+    ]}
+  ]
+}

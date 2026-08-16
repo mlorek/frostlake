@@ -1,0 +1,159 @@
+{
+  "suite": "expr-derived-column-static-types",
+  "description": "A column projected through a derived table, CTE, view, LATERAL, join or set operation keeps its SOURCE type, so a compile-time rejection cannot be bypassed by wrapping the query one level down: FILE GROUP BY keys and MAX over OBJECT/ARRAY refuse with the identical live message through every wrapper (star projections, aliases, ANSI derived-column lists, CTE column lists, two and three nesting levels, recursive-CTE anchors, expression projections, VECTOR dimensions); agreeing set-operation branches keep the shared type while disagreeing ones unify to the non-string side; and the bound holds - VARIANT stays VARIANT (accepted by ordering aggregates), table-function columns stay undetermined and accepted, ordinary types still group/sort/aggregate, a FILE still counts, and a derived column's known type is the RIGHT type (a derived DATE takes temporal functions, a derived BOOLEAN conditions, a derived NUMBER does not). Converted 1:1 from expressions/DerivedColumnStaticTypeTest (now retired).",
+  "tags": ["expressions", "converted"],
+  "tests": [
+    {"name": "the-same-rejection-fires-directly-and-through-a-derived-table", "steps": [
+      {"sql": "CREATE TABLE dt (id INTEGER, f FILE, o OBJECT, a ARRAY, v VARIANT, s VARCHAR, n NUMBER(10,2), vec VECTOR(FLOAT,3))"},
+      {"sql": "INSERT INTO dt SELECT 1, OBJECT_CONSTRUCT('STAGE', '@D.S.ST', 'RELATIVE_PATH', 'hello.txt', 'SIZE', 12, 'LAST_MODIFIED', 'Mon, 03 Aug 2026 11:24:13 GMT', 'CONTENT_TYPE', 'text/plain', 'ETAG', 'e1'), OBJECT_CONSTRUCT('k', 1), ARRAY_CONSTRUCT(1, 2), TO_VARIANT(1), 'x', 1.5, [1,2,3]::VECTOR(FLOAT,3)"},
+      {"sql": "SELECT COUNT(*) FROM dt GROUP BY f", "expect": {"error": {"messageContains": "Expressions of type FILE cannot be used as GROUP BY keys"}}},
+      {"sql": "SELECT COUNT(*) FROM (SELECT id, f FROM dt) GROUP BY f", "expect": {"error": {"messageContains": "Expressions of type FILE cannot be used as GROUP BY keys"}}},
+      {"sql": "SELECT MAX(o) FROM dt", "expect": {"error": {"messageContains": "SQL compilation error:\nFunction MAX does not support OBJECT argument type"}}},
+      {"sql": "SELECT MAX(o) FROM (SELECT id, o FROM dt)", "expect": {"error": {"messageContains": "SQL compilation error:\nFunction MAX does not support OBJECT argument type"}}}
+    ]},
+    {"name": "a-plain-derived-table-carries-its-column-types", "steps": [
+      {"sql": "CREATE TABLE dt (id INTEGER, f FILE, o OBJECT, a ARRAY, v VARIANT, s VARCHAR, n NUMBER(10,2), vec VECTOR(FLOAT,3))"},
+      {"sql": "SELECT COUNT(*) FROM (SELECT id, f FROM dt) GROUP BY f", "expect": {"error": {"messageContains": "Expressions of type FILE cannot be used as GROUP BY keys"}}},
+      {"sql": "SELECT MAX(o) FROM (SELECT id, o FROM dt)", "expect": {"error": {"messageContains": "Function MAX does not support OBJECT argument type"}}},
+      {"sql": "SELECT MAX(a) FROM (SELECT id, a FROM dt)", "expect": {"error": {"messageContains": "Function MAX does not support ARRAY argument type"}}}
+    ]},
+    {"name": "a-star-projection-carries-its-column-types", "steps": [
+      {"sql": "CREATE TABLE dt (id INTEGER, f FILE, o OBJECT, a ARRAY, v VARIANT, s VARCHAR, n NUMBER(10,2), vec VECTOR(FLOAT,3))"},
+      {"sql": "SELECT COUNT(*) FROM (SELECT * FROM dt) GROUP BY f", "expect": {"error": {"messageContains": "Expressions of type FILE cannot be used as GROUP BY keys"}}},
+      {"sql": "SELECT MAX(o) FROM (SELECT * FROM dt)", "expect": {"error": {"messageContains": "Function MAX does not support OBJECT argument type"}}}
+    ]},
+    {"name": "an-aliased-derived-table-carries-its-column-types", "steps": [
+      {"sql": "CREATE TABLE dt (id INTEGER, f FILE, o OBJECT, a ARRAY, v VARIANT, s VARCHAR, n NUMBER(10,2), vec VECTOR(FLOAT,3))"},
+      {"sql": "SELECT COUNT(*) FROM (SELECT id, f FROM dt) d GROUP BY d.f", "expect": {"error": {"messageContains": "Expressions of type FILE cannot be used as GROUP BY keys"}}},
+      {"sql": "SELECT COUNT(*) FROM (SELECT id, f FROM dt) d (c1, c2) GROUP BY d.c2", "expect": {"error": {"messageContains": "Expressions of type FILE cannot be used as GROUP BY keys"}}},
+      {"sql": "SELECT MAX(d.c2) FROM (SELECT id, o FROM dt) d (c1, c2)", "expect": {"error": {"messageContains": "Function MAX does not support OBJECT argument type"}}}
+    ]},
+    {"name": "a-cte-carries-its-column-types", "steps": [
+      {"sql": "CREATE TABLE dt (id INTEGER, f FILE, o OBJECT, a ARRAY, v VARIANT, s VARCHAR, n NUMBER(10,2), vec VECTOR(FLOAT,3))"},
+      {"sql": "WITH c AS (SELECT id, f FROM dt) SELECT COUNT(*) FROM c GROUP BY f", "expect": {"error": {"messageContains": "Expressions of type FILE cannot be used as GROUP BY keys"}}},
+      {"sql": "WITH c AS (SELECT id, o FROM dt) SELECT MAX(o) FROM c", "expect": {"error": {"messageContains": "Function MAX does not support OBJECT argument type"}}},
+      {"sql": "WITH c AS (SELECT id, a FROM dt) SELECT MAX(a) FROM c", "expect": {"error": {"messageContains": "Function MAX does not support ARRAY argument type"}}}
+    ]},
+    {"name": "a-cte-column-list-keeps-the-renamed-columns-type", "steps": [
+      {"sql": "CREATE TABLE dt (id INTEGER, f FILE, o OBJECT, a ARRAY, v VARIANT, s VARCHAR, n NUMBER(10,2), vec VECTOR(FLOAT,3))"},
+      {"sql": "WITH c (k, ff) AS (SELECT id, f FROM dt) SELECT COUNT(*) FROM c GROUP BY ff", "expect": {"error": {"messageContains": "Expressions of type FILE cannot be used as GROUP BY keys"}}}
+    ]},
+    {"name": "nested-derived-tables-carry-the-type-all-the-way-out", "steps": [
+      {"sql": "CREATE TABLE dt (id INTEGER, f FILE, o OBJECT, a ARRAY, v VARIANT, s VARCHAR, n NUMBER(10,2), vec VECTOR(FLOAT,3))"},
+      {"sql": "SELECT COUNT(*) FROM (SELECT * FROM (SELECT id, f FROM dt)) GROUP BY f", "expect": {"error": {"messageContains": "Expressions of type FILE cannot be used as GROUP BY keys"}}},
+      {"sql": "SELECT COUNT(*) FROM (SELECT * FROM (SELECT * FROM (SELECT id, f FROM dt))) GROUP BY f", "expect": {"error": {"messageContains": "Expressions of type FILE cannot be used as GROUP BY keys"}}},
+      {"sql": "SELECT MAX(o) FROM (SELECT * FROM (SELECT id, o FROM dt))", "expect": {"error": {"messageContains": "Function MAX does not support OBJECT argument type"}}}
+    ]},
+    {"name": "a-cte-over-a-cte-carries-the-type", "steps": [
+      {"sql": "CREATE TABLE dt (id INTEGER, f FILE, o OBJECT, a ARRAY, v VARIANT, s VARCHAR, n NUMBER(10,2), vec VECTOR(FLOAT,3))"},
+      {"sql": "WITH c1 AS (SELECT id, o FROM dt), c2 AS (SELECT * FROM c1) SELECT MAX(o) FROM c2", "expect": {"error": {"messageContains": "Function MAX does not support OBJECT argument type"}}},
+      {"sql": "WITH c1 AS (SELECT id, f FROM dt), c2 AS (SELECT * FROM c1) SELECT COUNT(*) FROM c2 GROUP BY f", "expect": {"error": {"messageContains": "Expressions of type FILE cannot be used as GROUP BY keys"}}}
+    ]},
+    {"name": "an-alias-inside-carries-the-aliased-expressions-type", "steps": [
+      {"sql": "CREATE TABLE dt (id INTEGER, f FILE, o OBJECT, a ARRAY, v VARIANT, s VARCHAR, n NUMBER(10,2), vec VECTOR(FLOAT,3))"},
+      {"sql": "SELECT COUNT(*) FROM (SELECT f AS g FROM dt) GROUP BY g", "expect": {"error": {"messageContains": "Expressions of type FILE cannot be used as GROUP BY keys"}}},
+      {"sql": "SELECT MAX(p) FROM (SELECT o AS p FROM dt)", "expect": {"error": {"messageContains": "Function MAX does not support OBJECT argument type"}}},
+      {"sql": "WITH c AS (SELECT o AS p FROM dt) SELECT MAX(p) FROM c", "expect": {"error": {"messageContains": "Function MAX does not support OBJECT argument type"}}},
+      {"sql": "SELECT COUNT(*) FROM (SELECT * FROM (SELECT f AS g FROM dt)) GROUP BY g", "expect": {"error": {"messageContains": "Expressions of type FILE cannot be used as GROUP BY keys"}}}
+    ]},
+    {"name": "an-expression-projection-carries-the-expressions-type", "steps": [
+      {"sql": "CREATE TABLE dt (id INTEGER, f FILE, o OBJECT, a ARRAY, v VARIANT, s VARCHAR, n NUMBER(10,2), vec VECTOR(FLOAT,3))"},
+      {"sql": "SELECT MAX(x) FROM (SELECT OBJECT_CONSTRUCT('k', 1) AS x FROM dt)", "expect": {"error": {"messageContains": "Function MAX does not support OBJECT argument type"}}},
+      {"sql": "SELECT MAX(x) FROM (SELECT ARRAY_CONSTRUCT(1, 2) AS x FROM dt)", "expect": {"error": {"messageContains": "Function MAX does not support ARRAY argument type"}}},
+      {"sql": "SELECT MAX(x) FROM (SELECT CASE WHEN TRUE THEN o ELSE o END AS x FROM dt)", "expect": {"error": {"messageContains": "Function MAX does not support OBJECT argument type"}}},
+      {"sql": "SELECT MAX(x) FROM (SELECT ARRAY_AGG(n) AS x FROM dt)", "expect": {"error": {"messageContains": "Function MAX does not support ARRAY argument type"}}}
+    ]},
+    {"name": "a-conditional-over-file-branches-is-still-a-file", "steps": [
+      {"sql": "CREATE TABLE dt (id INTEGER, f FILE, o OBJECT, a ARRAY, v VARIANT, s VARCHAR, n NUMBER(10,2), vec VECTOR(FLOAT,3))"},
+      {"sql": "SELECT COUNT(*) FROM (SELECT IFF(TRUE, f, f) AS x FROM dt) GROUP BY x", "expect": {"error": {"messageContains": "Expressions of type FILE cannot be used as GROUP BY keys"}}}
+    ]},
+    {"name": "a-vector-expression-carries-its-dimension-out", "steps": [
+      {"sql": "CREATE TABLE dt (id INTEGER, f FILE, o OBJECT, a ARRAY, v VARIANT, s VARCHAR, n NUMBER(10,2), vec VECTOR(FLOAT,3))"},
+      {"sql": "INSERT INTO dt SELECT 1, OBJECT_CONSTRUCT('STAGE', '@D.S.ST', 'RELATIVE_PATH', 'hello.txt', 'SIZE', 12, 'LAST_MODIFIED', 'Mon, 03 Aug 2026 11:24:13 GMT', 'CONTENT_TYPE', 'text/plain', 'ETAG', 'e1'), OBJECT_CONSTRUCT('k', 1), ARRAY_CONSTRUCT(1, 2), TO_VARIANT(1), 'x', 1.5, [1,2,3]::VECTOR(FLOAT,3)"},
+      {"sql": "INSERT INTO dt SELECT 2, OBJECT_CONSTRUCT('STAGE', '@D.S.ST', 'RELATIVE_PATH', 'two.txt', 'SIZE', 12, 'LAST_MODIFIED', 'Mon, 03 Aug 2026 11:24:13 GMT', 'CONTENT_TYPE', 'text/plain', 'ETAG', 'e2'), OBJECT_CONSTRUCT('k', 2), ARRAY_CONSTRUCT(3, 4), TO_VARIANT(2), 'y', 2.5, [4,5,6]::VECTOR(FLOAT,3)"},
+      {"sql": "SELECT VECTOR_L2_DISTANCE(x, [1,2,3]::VECTOR(FLOAT,3)) FROM (SELECT VECTOR_TRUNC(vec, 2) AS x FROM dt)",
+       "expect": {"error": {"messageContains": "Invalid argument types for function 'VECTOR_L2_DISTANCE': (VECTOR(FLOAT, 2), VECTOR(FLOAT, 3))"}}},
+      {"sql": "SELECT VECTOR_L2_DISTANCE(x, [1,2]::VECTOR(FLOAT,2)) FROM (SELECT VECTOR_TRUNC(vec, 2) AS x FROM dt)", "expect": {"rowCount": 2}}
+    ]},
+    {"name": "agreeing-set-operation-branches-keep-their-type", "steps": [
+      {"sql": "CREATE TABLE dt (id INTEGER, f FILE, o OBJECT, a ARRAY, v VARIANT, s VARCHAR, n NUMBER(10,2), vec VECTOR(FLOAT,3))"},
+      {"sql": "SELECT COUNT(*) FROM (SELECT f AS c FROM dt UNION ALL SELECT f FROM dt) GROUP BY c", "expect": {"error": {"messageContains": "Expressions of type FILE cannot be used as GROUP BY keys"}}},
+      {"sql": "SELECT MAX(c) FROM (SELECT o AS c FROM dt UNION ALL SELECT o FROM dt)", "expect": {"error": {"messageContains": "Function MAX does not support OBJECT argument type"}}},
+      {"sql": "SELECT MAX(c) FROM (SELECT a AS c FROM dt UNION ALL SELECT a FROM dt)", "expect": {"error": {"messageContains": "Function MAX does not support ARRAY argument type"}}},
+      {"sql": "WITH u AS (SELECT o AS c FROM dt UNION ALL SELECT o FROM dt) SELECT MAX(c) FROM u", "expect": {"error": {"messageContains": "Function MAX does not support OBJECT argument type"}}}
+    ]},
+    {"name": "disagreeing-set-operation-branches-coerce-the-string-side", "steps": [
+      {"sql": "CREATE TABLE dt (id INTEGER, f FILE, o OBJECT, a ARRAY, v VARIANT, s VARCHAR, n NUMBER(10,2), vec VECTOR(FLOAT,3))"},
+      {"sql": "INSERT INTO dt SELECT 1, OBJECT_CONSTRUCT('STAGE', '@D.S.ST', 'RELATIVE_PATH', 'hello.txt', 'SIZE', 12, 'LAST_MODIFIED', 'Mon, 03 Aug 2026 11:24:13 GMT', 'CONTENT_TYPE', 'text/plain', 'ETAG', 'e1'), OBJECT_CONSTRUCT('k', 1), ARRAY_CONSTRUCT(1, 2), TO_VARIANT(1), 'x', 1.5, [1,2,3]::VECTOR(FLOAT,3)"},
+      {"sql": "SELECT COUNT(*) FROM (SELECT s AS c FROM dt UNION ALL SELECT n FROM dt) GROUP BY c",
+       "expect": {"error": {"messageContains": "Numeric value 'x' is not recognized"}}}
+    ]},
+    {"name": "a-recursive-cte-takes-its-anchor-branches-type", "steps": [
+      {"sql": "CREATE TABLE dt (id INTEGER, f FILE, o OBJECT, a ARRAY, v VARIANT, s VARCHAR, n NUMBER(10,2), vec VECTOR(FLOAT,3))"},
+      {"sql": "INSERT INTO dt SELECT 1, OBJECT_CONSTRUCT('STAGE', '@D.S.ST', 'RELATIVE_PATH', 'hello.txt', 'SIZE', 12, 'LAST_MODIFIED', 'Mon, 03 Aug 2026 11:24:13 GMT', 'CONTENT_TYPE', 'text/plain', 'ETAG', 'e1'), OBJECT_CONSTRUCT('k', 1), ARRAY_CONSTRUCT(1, 2), TO_VARIANT(1), 'x', 1.5, [1,2,3]::VECTOR(FLOAT,3)"},
+      {"sql": "WITH RECURSIVE r (i, x) AS (SELECT 1, o FROM dt WHERE id = 1 UNION ALL SELECT i + 1, x FROM r WHERE i < 3) SELECT MAX(x) FROM r", "expect": {"error": {"messageContains": "Function MAX does not support OBJECT argument type"}}},
+      {"sql": "WITH RECURSIVE r (i, x) AS (SELECT 1, f FROM dt WHERE id = 1 UNION ALL SELECT i + 1, x FROM r WHERE i < 3) SELECT COUNT(*) FROM r GROUP BY x", "expect": {"error": {"messageContains": "Expressions of type FILE cannot be used as GROUP BY keys"}}}
+    ]},
+    {"name": "a-lateral-derived-table-carries-its-column-types", "steps": [
+      {"sql": "CREATE TABLE dt (id INTEGER, f FILE, o OBJECT, a ARRAY, v VARIANT, s VARCHAR, n NUMBER(10,2), vec VECTOR(FLOAT,3))"},
+      {"sql": "SELECT COUNT(*) FROM dt, LATERAL (SELECT t2.f AS g FROM dt t2 WHERE t2.id = dt.id) l GROUP BY l.g", "expect": {"error": {"messageContains": "Expressions of type FILE cannot be used as GROUP BY keys"}}},
+      {"sql": "SELECT MAX(l.p) FROM dt, LATERAL (SELECT t2.o AS p FROM dt t2 WHERE t2.id = dt.id) l", "expect": {"error": {"messageContains": "Function MAX does not support OBJECT argument type"}}}
+    ]},
+    {"name": "a-joined-derived-table-carries-its-column-types", "steps": [
+      {"sql": "CREATE TABLE dt (id INTEGER, f FILE, o OBJECT, a ARRAY, v VARIANT, s VARCHAR, n NUMBER(10,2), vec VECTOR(FLOAT,3))"},
+      {"sql": "SELECT MAX(j.o) FROM dt LEFT JOIN (SELECT id, o FROM dt) j ON j.id = dt.id", "expect": {"error": {"messageContains": "Function MAX does not support OBJECT argument type"}}},
+      {"sql": "SELECT COUNT(*) FROM dt LEFT JOIN (SELECT id, f FROM dt) j ON j.id = dt.id GROUP BY j.f", "expect": {"error": {"messageContains": "Expressions of type FILE cannot be used as GROUP BY keys"}}}
+    ]},
+    {"name": "table-function-columns-stay-undetermined-and-accepted", "steps": [
+      {"sql": "CREATE TABLE dt (id INTEGER, f FILE, o OBJECT, a ARRAY, v VARIANT, s VARCHAR, n NUMBER(10,2), vec VECTOR(FLOAT,3))"},
+      {"sql": "INSERT INTO dt SELECT 1, OBJECT_CONSTRUCT('STAGE', '@D.S.ST', 'RELATIVE_PATH', 'hello.txt', 'SIZE', 12, 'LAST_MODIFIED', 'Mon, 03 Aug 2026 11:24:13 GMT', 'CONTENT_TYPE', 'text/plain', 'ETAG', 'e1'), OBJECT_CONSTRUCT('k', 1), ARRAY_CONSTRUCT(1, 2), TO_VARIANT(1), 'x', 1.5, [1,2,3]::VECTOR(FLOAT,3)"},
+      {"sql": "SELECT MAX(value) FROM (SELECT value FROM TABLE(FLATTEN(input => PARSE_JSON('[1,2]'))))", "expect": {"rowCount": 1}},
+      {"sql": "SELECT COUNT(*) FROM (SELECT value AS vv FROM TABLE(SPLIT_TO_TABLE('a,b', ','))) GROUP BY vv", "expect": {"rowCount": 2}},
+      {"sql": "SELECT MAX(fv) FROM (SELECT fl.value AS fv FROM dt, LATERAL FLATTEN(input => dt.a) fl)", "expect": {"rowCount": 1}}
+    ]},
+    {"name": "a-view-carries-its-column-types", "steps": [
+      {"sql": "CREATE TABLE dt (id INTEGER, f FILE, o OBJECT, a ARRAY, v VARIANT, s VARCHAR, n NUMBER(10,2), vec VECTOR(FLOAT,3))"},
+      {"sql": "CREATE VIEW vdt AS SELECT id, f, o, a, v, s, n FROM dt"},
+      {"sql": "SELECT COUNT(*) FROM vdt GROUP BY f", "expect": {"error": {"messageContains": "Expressions of type FILE cannot be used as GROUP BY keys"}}},
+      {"sql": "SELECT MAX(o) FROM vdt", "expect": {"error": {"messageContains": "Function MAX does not support OBJECT argument type"}}},
+      {"sql": "SELECT COUNT(*) FROM (SELECT id, f FROM vdt) GROUP BY f", "expect": {"error": {"messageContains": "Expressions of type FILE cannot be used as GROUP BY keys"}}}
+    ]},
+    {"name": "a-variant-derived-column-is-still-accepted-by-the-ordering-aggregates", "steps": [
+      {"sql": "CREATE TABLE dt (id INTEGER, f FILE, o OBJECT, a ARRAY, v VARIANT, s VARCHAR, n NUMBER(10,2), vec VECTOR(FLOAT,3))"},
+      {"sql": "INSERT INTO dt SELECT 1, OBJECT_CONSTRUCT('STAGE', '@D.S.ST', 'RELATIVE_PATH', 'hello.txt', 'SIZE', 12, 'LAST_MODIFIED', 'Mon, 03 Aug 2026 11:24:13 GMT', 'CONTENT_TYPE', 'text/plain', 'ETAG', 'e1'), OBJECT_CONSTRUCT('k', 1), ARRAY_CONSTRUCT(1, 2), TO_VARIANT(1), 'x', 1.5, [1,2,3]::VECTOR(FLOAT,3)"},
+      {"sql": "INSERT INTO dt SELECT 2, OBJECT_CONSTRUCT('STAGE', '@D.S.ST', 'RELATIVE_PATH', 'two.txt', 'SIZE', 12, 'LAST_MODIFIED', 'Mon, 03 Aug 2026 11:24:13 GMT', 'CONTENT_TYPE', 'text/plain', 'ETAG', 'e2'), OBJECT_CONSTRUCT('k', 2), ARRAY_CONSTRUCT(3, 4), TO_VARIANT(2), 'y', 2.5, [4,5,6]::VECTOR(FLOAT,3)"},
+      {"sql": "SELECT MAX(v) FROM (SELECT id, v FROM dt)", "expect": {"rowCount": 1}},
+      {"sql": "SELECT MAX(x) FROM (SELECT PARSE_JSON('{\"k\":1}') AS x FROM dt)", "expect": {"rowCount": 1}},
+      {"sql": "SELECT MAX(x) FROM (SELECT TO_VARIANT(o) AS x FROM dt)", "expect": {"rowCount": 1}},
+      {"sql": "SELECT MAX(x) FROM (SELECT o:k AS x FROM dt)", "expect": {"rowCount": 1}},
+      {"sql": "WITH c AS (SELECT id, v FROM dt) SELECT MAX(v) FROM c", "expect": {"rowCount": 1}}
+    ]},
+    {"name": "ordinary-derived-columns-still-group-sort-and-aggregate", "steps": [
+      {"sql": "CREATE TABLE dt (id INTEGER, f FILE, o OBJECT, a ARRAY, v VARIANT, s VARCHAR, n NUMBER(10,2), vec VECTOR(FLOAT,3))"},
+      {"sql": "INSERT INTO dt SELECT 1, OBJECT_CONSTRUCT('STAGE', '@D.S.ST', 'RELATIVE_PATH', 'hello.txt', 'SIZE', 12, 'LAST_MODIFIED', 'Mon, 03 Aug 2026 11:24:13 GMT', 'CONTENT_TYPE', 'text/plain', 'ETAG', 'e1'), OBJECT_CONSTRUCT('k', 1), ARRAY_CONSTRUCT(1, 2), TO_VARIANT(1), 'x', 1.5, [1,2,3]::VECTOR(FLOAT,3)"},
+      {"sql": "INSERT INTO dt SELECT 2, OBJECT_CONSTRUCT('STAGE', '@D.S.ST', 'RELATIVE_PATH', 'two.txt', 'SIZE', 12, 'LAST_MODIFIED', 'Mon, 03 Aug 2026 11:24:13 GMT', 'CONTENT_TYPE', 'text/plain', 'ETAG', 'e2'), OBJECT_CONSTRUCT('k', 2), ARRAY_CONSTRUCT(3, 4), TO_VARIANT(2), 'y', 2.5, [4,5,6]::VECTOR(FLOAT,3)"},
+      {"sql": "SELECT COUNT(*) FROM (SELECT id, s FROM dt) GROUP BY s", "expect": {"rowCount": 2}},
+      {"sql": "SELECT COUNT(*) FROM (SELECT id, n FROM dt) GROUP BY n", "expect": {"rowCount": 2}},
+      {"sql": "SELECT id, s FROM (SELECT id, s FROM dt) ORDER BY id", "expect": {"rowCount": 2}},
+      {"sql": "SELECT SUM(n) FROM (SELECT id, n FROM dt)", "expect": {"rowCount": 1}},
+      {"sql": "SELECT UPPER(s) FROM (SELECT s FROM dt) ORDER BY 1", "expect": {"rowCount": 2}},
+      {"sql": "SELECT GET(o, 'k') FROM (SELECT o FROM dt) ORDER BY 1", "expect": {"rowCount": 2}}
+    ]},
+    {"name": "a-file-derived-column-is-still-usable-where-files-are-allowed", "steps": [
+      {"sql": "CREATE TABLE dt (id INTEGER, f FILE, o OBJECT, a ARRAY, v VARIANT, s VARCHAR, n NUMBER(10,2), vec VECTOR(FLOAT,3))"},
+      {"sql": "INSERT INTO dt SELECT 1, OBJECT_CONSTRUCT('STAGE', '@D.S.ST', 'RELATIVE_PATH', 'hello.txt', 'SIZE', 12, 'LAST_MODIFIED', 'Mon, 03 Aug 2026 11:24:13 GMT', 'CONTENT_TYPE', 'text/plain', 'ETAG', 'e1'), OBJECT_CONSTRUCT('k', 1), ARRAY_CONSTRUCT(1, 2), TO_VARIANT(1), 'x', 1.5, [1,2,3]::VECTOR(FLOAT,3)"},
+      {"sql": "SELECT COUNT(*) FROM (SELECT id, f FROM dt)", "expect": {"rowCount": 1}},
+      {"sql": "SELECT COUNT(f) FROM (SELECT id, f FROM dt)", "expect": {"rowCount": 1}}
+    ]},
+    {"name": "a-derived-columns-known-type-is-the-right-type", "steps": [
+      {"sql": "CREATE TABLE dt (id INTEGER, f FILE, o OBJECT, a ARRAY, v VARIANT, s VARCHAR, n NUMBER(10,2), vec VECTOR(FLOAT,3))"},
+      {"sql": "INSERT INTO dt SELECT 1, OBJECT_CONSTRUCT('STAGE', '@D.S.ST', 'RELATIVE_PATH', 'hello.txt', 'SIZE', 12, 'LAST_MODIFIED', 'Mon, 03 Aug 2026 11:24:13 GMT', 'CONTENT_TYPE', 'text/plain', 'ETAG', 'e1'), OBJECT_CONSTRUCT('k', 1), ARRAY_CONSTRUCT(1, 2), TO_VARIANT(1), 'x', 1.5, [1,2,3]::VECTOR(FLOAT,3)"},
+      {"sql": "INSERT INTO dt SELECT 2, OBJECT_CONSTRUCT('STAGE', '@D.S.ST', 'RELATIVE_PATH', 'two.txt', 'SIZE', 12, 'LAST_MODIFIED', 'Mon, 03 Aug 2026 11:24:13 GMT', 'CONTENT_TYPE', 'text/plain', 'ETAG', 'e2'), OBJECT_CONSTRUCT('k', 2), ARRAY_CONSTRUCT(3, 4), TO_VARIANT(2), 'y', 2.5, [4,5,6]::VECTOR(FLOAT,3)"},
+      {"sql": "SELECT DAYOFMONTH(d) FROM (SELECT '2024-04-08'::DATE AS d FROM dt)", "expect": {"rowCount": 2}},
+      {"sql": "SELECT DAYOFMONTH(d) FROM (SELECT '2024-04-08'::VARCHAR AS d FROM dt)", "expect": {"error": {"messageContains": "Function EXTRACT does not support VARCHAR"}}},
+      {"sql": "SELECT IFF(b, 1, 2) FROM (SELECT s = 'x' AS b FROM dt)", "expect": {"rowCount": 2}},
+      {"sql": "SELECT IFF(c, 1, 2) FROM (SELECT n AS c FROM dt)", "expect": {"error": {"messageContains": "Invalid argument types for function 'IFF'"}}},
+      {"sql": "SELECT TYPEOF(x) FROM (SELECT TO_VARIANT(n) AS x FROM dt)", "expect": {"rowCount": 2}}
+    ]}
+  ]
+}

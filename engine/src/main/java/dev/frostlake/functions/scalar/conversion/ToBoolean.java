@@ -17,7 +17,10 @@
 package dev.frostlake.functions.scalar.conversion;
 
 import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.types.BooleanType;
+import dev.frostlake.values.VariantBooleans;
+import dev.frostlake.values.VariantValue;
 
 import java.util.List;
 
@@ -28,6 +31,10 @@ public class ToBoolean extends BuiltInFunction {
     public Object evaluate(final List<Object> args) {
         if (args.get(0) == null) return null;
         final Object arg = args.get(0);
+        if (arg instanceof VariantValue) {
+            // A variant converts only when it holds a boolean or a boolean's spelling — see VariantBooleans.
+            return VariantBooleans.convert((VariantValue) arg);
+        }
         // Numeric input: 0 is false, any non-zero value is true (Snowflake).
         if (arg instanceof Number) {
             return ((Number) arg).doubleValue() != 0.0;
@@ -40,8 +47,15 @@ public class ToBoolean extends BuiltInFunction {
             case "FALSE": case "F": case "NO": case "N": case "OFF": case "0":
                 return false;
             default:
-                throw new RuntimeException("Cannot convert to BOOLEAN: " + arg);
+                throw new RuntimeException("Boolean value '" + arg + "' is not recognized");
         }
+    }
+
+    /** A VECTOR is refused as the conversion's own invalid type, as TO_CHAR refuses it. */
+    @Override
+    public SemiStructuredRejection vectorRejection(final int position) {
+        return position == 0 ? SemiStructuredRejection.INVALID_TYPE_PARAMETER
+            : SemiStructuredRejection.NONE;
     }
 
     @Override

@@ -1,0 +1,44 @@
+{
+  "suite": "transaction-explicit",
+  "description": "Snowflake autocommit semantics: an explicit BEGIN suspends autocommit until COMMIT or ROLLBACK, even though autocommit is ON by default - you do NOT have to SET AUTOCOMMIT=FALSE first. BEGIN used to be auto-committed at statement end, so explicit multi-statement transactions silently did not group. Pinned: a write is visible to its own transaction before commit and discarded by ROLLBACK; COMMIT persists everything the transaction did; a ROLLBACK is atomic over MULTIPLE statements, not just the last one; without a BEGIN each statement still autocommits on its own; and the whole BEGIN-INSERT-COMMIT sequence submitted as ONE multi-statement script persists too. Converted 1:1 from transaction/ExplicitTransactionTest (now retired); it ran on the default engine, with autocommit and deferred apply both on, which is what the testkit backend gives it.",
+  "tags": ["transaction", "converted"],
+  "tests": [
+    {"name": "an-explicit-begin-then-rollback-discards-across-statements", "steps": [
+      {"sql": "CREATE TABLE t (id INTEGER, v VARCHAR)"},
+      {"sql": "BEGIN"},
+      {"sql": "INSERT INTO t VALUES (1, 'a')"},
+      {"sql": "SELECT COUNT(*) FROM t", "expect": {"value": 1}},
+      {"sql": "ROLLBACK"},
+      {"sql": "SELECT COUNT(*) FROM t", "expect": {"value": 0}}
+    ]},
+    {"name": "an-explicit-begin-then-commit-persists", "steps": [
+      {"sql": "CREATE TABLE t (id INTEGER, v VARCHAR)"},
+      {"sql": "BEGIN"},
+      {"sql": "INSERT INTO t VALUES (1, 'a')"},
+      {"sql": "INSERT INTO t VALUES (2, 'b')"},
+      {"sql": "COMMIT"},
+      {"sql": "SELECT COUNT(*) FROM t", "expect": {"value": 2}}
+    ]},
+    {"name": "an-explicit-rollback-is-atomic-over-multiple-statements", "steps": [
+      {"sql": "CREATE TABLE t (id INTEGER, v VARCHAR)"},
+      {"sql": "BEGIN"},
+      {"sql": "INSERT INTO t VALUES (1, 'a')"},
+      {"sql": "INSERT INTO t VALUES (2, 'b')"},
+      {"sql": "ROLLBACK"},
+      {"sql": "SELECT COUNT(*) FROM t", "expect": {"value": 0}}
+    ]},
+    {"name": "without-a-begin-autocommit-still-commits-each-statement", "steps": [
+      {"sql": "CREATE TABLE t (id INTEGER, v VARCHAR)"},
+      {"sql": "INSERT INTO t VALUES (1, 'a')"},
+      {"sql": "SELECT COUNT(*) FROM t", "expect": {"value": 1}},
+      {"sql": "INSERT INTO t VALUES (2, 'b')"},
+      {"sql": "SELECT COUNT(*) FROM t", "expect": {"value": 2}}
+    ]},
+    {"name": "a-single-script-begin-insert-commit-persists",
+     "steps": [
+      {"sql": "CREATE TABLE t (id INTEGER, v VARCHAR)"},
+      {"sql": "BEGIN;\nINSERT INTO t VALUES (1, 'a');\nCOMMIT;\n"},
+      {"sql": "SELECT COUNT(*) FROM t", "expect": {"value": 1}}
+    ]}
+  ]
+}

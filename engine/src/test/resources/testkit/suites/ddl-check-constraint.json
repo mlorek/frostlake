@@ -1,0 +1,119 @@
+{
+  "suite": "ddl-check-constraint",
+  "description": "CHECK constraints are ENFORCED (unlike PK/UNIQUE/FK): INSERT, UPDATE and MERGE refuse rows the check makes FALSE while NULL passes (three-valued logic); DESCRIBE's check cell belongs to the ONE column the expression names (two-column checks appear nowhere, the later check wins a shared cell); GET_DDL renders every check as a table-level line; adding one later demands ENABLE NOVALIDATE and leaves existing rows alone; unnamed checks report under their generated SYS_CONSTRAINT name; CHECK is reserved as a name while NOVALIDATE is not. All live-verified. Converted 1:1 from ddl/CheckConstraintTest (now retired).",
+  "tags": ["ddl", "constraints", "converted"],
+  "tests": [
+    {"name": "describe-shows-the-expression-on-the-column-it-names", "steps": [
+      {"sql": "CREATE TABLE ck_t (n NUMBER, m NUMBER, CONSTRAINT ck_pos CHECK (n > 0))"},
+      {"sql": "DESCRIBE TABLE ck_t"},
+      {"sql": "SELECT \"name\", \"check\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["N", "n > 0"], ["M", "NULL"]], "ordered": true}}
+    ]},
+    {"name": "a-column-level-check-reaches-the-same-cell", "steps": [
+      {"sql": "CREATE TABLE ck_col (n NUMBER CHECK (n > 0), m NUMBER)"},
+      {"sql": "DESCRIBE TABLE ck_col"},
+      {"sql": "SELECT \"name\", \"check\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["N", "n > 0"], ["M", "NULL"]], "ordered": true}}
+    ]},
+    {"name": "a-check-spanning-columns-appears-in-no-cell", "steps": [
+      {"sql": "CREATE TABLE ck_two (a NUMBER, b NUMBER, CONSTRAINT c_ab CHECK (a < b))"},
+      {"sql": "DESCRIBE TABLE ck_two"},
+      {"sql": "SELECT \"name\", \"check\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["A", "NULL"], ["B", "NULL"]], "ordered": true}}
+    ]},
+    {"name": "the-later-check-wins-the-cell", "steps": [
+      {"sql": "CREATE TABLE ck_dup (a NUMBER CHECK (a > 0), CONSTRAINT c2 CHECK (a < 10))"},
+      {"sql": "DESCRIBE TABLE ck_dup"},
+      {"sql": "SELECT \"check\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'A'", "expect": {"value": "a < 10"}}
+    ]},
+    {"name": "get-ddl-renders-every-check-as-a-table-level-line", "steps": [
+      {"sql": "CREATE TABLE ck_ddl (a NUMBER CHECK (a > 0), CONSTRAINT c2 CHECK (a < 10))"},
+      {"sql": "WITH d AS (SELECT GET_DDL('TABLE', 'ck_ddl') AS g)\nSELECT CONTAINS(g, 'check (a > 0)') AND CONTAINS(g, 'constraint C2 check (a < 10)') FROM d",
+       "expect": {"value": "true"}}
+    ]},
+    {"name": "a-row-the-check-refuses-is-not-written", "steps": [
+      {"sql": "CREATE TABLE ck_t (n NUMBER, m NUMBER, CONSTRAINT ck_pos CHECK (n > 0))"},
+      {"sql": "INSERT INTO ck_t VALUES (5, 1)"},
+      {"sql": "INSERT INTO ck_t VALUES (-5, 1)",
+       "expect": {"error": {"messageContains": "failed because CHECK constraint CK_POS, which requires that n > 0, was violated"}}},
+      {"sql": "SELECT COUNT(*) FROM ck_t", "expect": {"value": "1"}}
+    ]},
+    {"name": "a-null-lets-the-row-through", "steps": [
+      {"sql": "CREATE TABLE ck_t (n NUMBER, m NUMBER, CONSTRAINT ck_pos CHECK (n > 0))"},
+      {"sql": "INSERT INTO ck_t VALUES (NULL, 1)"},
+      {"sql": "SELECT COUNT(*) FROM ck_t", "expect": {"value": "1"}}
+    ]},
+    {"name": "update-is-checked-too", "steps": [
+      {"sql": "CREATE TABLE ck_t (n NUMBER, m NUMBER, CONSTRAINT ck_pos CHECK (n > 0))"},
+      {"sql": "INSERT INTO ck_t VALUES (5, 1)"},
+      {"sql": "UPDATE ck_t SET n = -1 WHERE n = 5", "expect": {"error": {}}},
+      {"sql": "SELECT COUNT(*) FROM ck_t", "expect": {"value": "1"}},
+      {"sql": "SELECT n FROM ck_t", "expect": {"value": "5"}}
+    ]},
+    {"name": "one-bad-row-refuses-the-whole-insert", "steps": [
+      {"sql": "CREATE TABLE ck_t (n NUMBER, m NUMBER, CONSTRAINT ck_pos CHECK (n > 0))"},
+      {"sql": "INSERT INTO ck_t VALUES (1, 1), (-2, 2)", "expect": {"error": {}}},
+      {"sql": "SELECT COUNT(*) FROM ck_t", "expect": {"value": "0"}}
+    ]},
+    {"name": "merge-is-checked-too", "steps": [
+      {"sql": "CREATE TABLE ck_t (n NUMBER, m NUMBER, CONSTRAINT ck_pos CHECK (n > 0))"},
+      {"sql": "CREATE TABLE ck_src (n NUMBER, m NUMBER)"},
+      {"sql": "INSERT INTO ck_src VALUES (-4, 1)"},
+      {"sql": "MERGE INTO ck_t t USING ck_src s ON t.n = s.n WHEN NOT MATCHED THEN INSERT (n, m) VALUES (s.n, s.m)",
+       "expect": {"error": {}}},
+      {"sql": "SELECT COUNT(*) FROM ck_t", "expect": {"value": "0"}}
+    ]},
+    {"name": "an-unnamed-check-is-reported-under-its-generated-name", "steps": [
+      {"sql": "CREATE TABLE ck_anon (n NUMBER CHECK (n > 0))"},
+      {"sql": "INSERT INTO ck_anon VALUES (-1)",
+       "expect": {"error": {"messageContains": "CHECK constraint \"SYS_CONSTRAINT_"}}}
+    ]},
+    {"name": "adding-one-later-needs-enable-novalidate", "steps": [
+      {"sql": "CREATE TABLE ck_t (n NUMBER, m NUMBER, CONSTRAINT ck_pos CHECK (n > 0))"},
+      {"sql": "ALTER TABLE ck_t ADD CONSTRAINT ck_m CHECK (m > 0) ENABLE NOVALIDATE"},
+      {"sql": "DESCRIBE TABLE ck_t"},
+      {"sql": "SELECT \"check\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'M'", "expect": {"value": "m > 0"}},
+      {"sql": "INSERT INTO ck_t VALUES (1, -1)", "expect": {"error": {}}}
+    ]},
+    {"name": "adding-one-without-that-suffix-is-refused", "steps": [
+      {"sql": "CREATE TABLE ck_t (n NUMBER, m NUMBER, CONSTRAINT ck_pos CHECK (n > 0))"},
+      {"sql": "ALTER TABLE ck_t ADD CONSTRAINT ck_m CHECK (m > 0)",
+       "expect": {"error": {"messageContains": "ALTER TABLE ADD CHECK is not supported with ENABLE VALIDATE (you may specify ENABLE NOVALIDATE instead)."}}}
+    ]},
+    {"name": "not-enforced-is-refused-on-alter-and-accepted-on-create", "steps": [
+      {"sql": "CREATE TABLE ck_t (n NUMBER, m NUMBER, CONSTRAINT ck_pos CHECK (n > 0))"},
+      {"sql": "ALTER TABLE ck_t ADD CONSTRAINT ck_m CHECK (m > 0) NOT ENFORCED",
+       "expect": {"error": {"messageContains": "ALTER TABLE ADD CHECK is not supported with ENABLE VALIDATE (you may specify ENABLE NOVALIDATE instead)."}}},
+      {"sql": "CREATE TABLE ck_ne (n NUMBER, CONSTRAINT c CHECK (n > 0) NOT ENFORCED)"},
+      {"sql": "CREATE TABLE ck_en (n NUMBER, CONSTRAINT c CHECK (n > 0) ENABLE NOVALIDATE)"}
+    ]},
+    {"name": "existing-rows-are-not-validated", "steps": [
+      {"sql": "CREATE TABLE ck_old (n NUMBER)"},
+      {"sql": "INSERT INTO ck_old VALUES (-1)"},
+      {"sql": "ALTER TABLE ck_old ADD CONSTRAINT c_pos CHECK (n > 0) ENABLE NOVALIDATE"},
+      {"sql": "SELECT COUNT(*) FROM ck_old", "expect": {"value": "1"}},
+      {"sql": "INSERT INTO ck_old VALUES (-2)", "expect": {"error": {}}}
+    ]},
+    {"name": "drop-constraint-removes-the-check", "steps": [
+      {"sql": "CREATE TABLE ck_t (n NUMBER, m NUMBER, CONSTRAINT ck_pos CHECK (n > 0))"},
+      {"sql": "ALTER TABLE ck_t DROP CONSTRAINT ck_pos"},
+      {"sql": "DESCRIBE TABLE ck_t"},
+      {"sql": "SELECT \"check\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'N'", "expect": {"value": "NULL"}},
+      {"sql": "INSERT INTO ck_t VALUES (-5, 1)"},
+      {"sql": "SELECT COUNT(*) FROM ck_t", "expect": {"value": "1"}}
+    ]},
+    {"name": "dropping-a-constraint-nobody-has-is-refused", "steps": [
+      {"sql": "CREATE TABLE ck_t (n NUMBER, m NUMBER, CONSTRAINT ck_pos CHECK (n > 0))"},
+      {"sql": "ALTER TABLE ck_t DROP CONSTRAINT no_such",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nconstraint 'NO_SUCH' does not exist"}}}
+    ]},
+    {"name": "check-is-not-available-as-a-name", "steps": [
+      {"sql": "CREATE TABLE kw_t (check NUMBER)", "expect": {"error": {}}}
+    ]},
+    {"name": "novalidate-remains-usable-as-a-name", "steps": [
+      {"sql": "CREATE TABLE kw_t2 (novalidate NUMBER, validate NUMBER)"},
+      {"sql": "INSERT INTO kw_t2 VALUES (1, 2)"},
+      {"sql": "SELECT novalidate FROM kw_t2", "expect": {"value": "1"}}
+    ]}
+  ]
+}

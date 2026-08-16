@@ -1,0 +1,130 @@
+{
+  "suite": "ddl-join-policy",
+  "description": "JOIN POLICY: zero-arg/JOIN_CONSTRAINT-return signature rules, a body built on JOIN_CONSTRAINT deciding the policy, SHOW/DESCRIBE shape, one-policy-per-table with FORCE, the three distinct live sentences (generic violation for no join or an OUTER join, unsatisfied constraint for comma joins and constant ON, potential cross-join for self-joins), no exemption for inner selects, GET_DDL rendering the attachment, attached policies undroppable, and WITH JOIN POLICY at CREATE. All live-measured. Converted 1:1 from ddl/JoinPolicyTest (now retired).",
+  "tags": ["ddl", "policy", "converted"],
+  "tests": [
+    {"name": "a-policy-with-arguments-is-refused", "steps": [
+      {"sql": "CREATE JOIN POLICY jp_bad AS (v VARCHAR) RETURNS JOIN_CONSTRAINT -> JOIN_CONSTRAINT(JOIN_REQUIRED => TRUE)",
+       "expect": {"error": {"messageContains": "Join policy must have exactly zero arguments, got 1 arguments."}}}
+    ]},
+    {"name": "another-return-type-is-refused", "steps": [
+      {"sql": "CREATE JOIN POLICY jp_b AS () RETURNS BOOLEAN -> TRUE",
+       "expect": {"error": {"messageContains": "Join policy return type 'BOOLEAN' is not JOIN_CONSTRAINT."}}}
+    ]},
+    {"name": "a-policy-body-decides-from-the-constraint-function", "steps": [
+      {"sql": "CREATE JOIN POLICY jp_req AS () RETURNS JOIN_CONSTRAINT -> JOIN_CONSTRAINT(JOIN_REQUIRED => TRUE)"},
+      {"sql": "CREATE JOIN POLICY jp_free AS () RETURNS JOIN_CONSTRAINT -> JOIN_CONSTRAINT(JOIN_REQUIRED => FALSE)"},
+      {"sql": "CREATE TABLE jn_t (id NUMBER, v VARCHAR)"},
+      {"sql": "INSERT INTO jn_t VALUES (1,'a'),(2,'b')"},
+      {"sql": "ALTER TABLE jn_t SET JOIN POLICY jp_free"},
+      {"sql": "SELECT * FROM jn_t", "expect": {"rowCount": 2}},
+      {"sql": "ALTER TABLE jn_t SET JOIN POLICY jp_req FORCE"},
+      {"sql": "SELECT * FROM jn_t",
+       "expect": {"error": {"messageContains": "SQL compilation error: Join Policy violation, please contact the policy admin for details"}}}
+    ]},
+    {"name": "show-and-describe-report-the-policy", "steps": [
+      {"sql": "CREATE JOIN POLICY jp_req AS () RETURNS JOIN_CONSTRAINT -> JOIN_CONSTRAINT(JOIN_REQUIRED => TRUE)"},
+      {"sql": "SHOW JOIN POLICIES LIKE 'jp_req'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"kind\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'JP_REQ'",
+       "expect": {"value": "JOIN_POLICY"}},
+      {"sql": "DESCRIBE JOIN POLICY jp_req",
+       "expect": {"rows": [["JP_REQ", "()", "JOIN_CONSTRAINT", "JOIN_CONSTRAINT(JOIN_REQUIRED => TRUE)"]]}}
+    ]},
+    {"name": "attaching-a-second-policy-needs-force", "steps": [
+      {"sql": "CREATE JOIN POLICY jp_req AS () RETURNS JOIN_CONSTRAINT -> JOIN_CONSTRAINT(JOIN_REQUIRED => TRUE)"},
+      {"sql": "CREATE JOIN POLICY jp_free AS () RETURNS JOIN_CONSTRAINT -> JOIN_CONSTRAINT(JOIN_REQUIRED => FALSE)"},
+      {"sql": "CREATE TABLE jn_t (id NUMBER, v VARCHAR)"},
+      {"sql": "ALTER TABLE jn_t SET JOIN POLICY jp_req"},
+      {"sql": "ALTER TABLE jn_t SET JOIN POLICY jp_free",
+       "expect": {"error": {"messageContains": "Object JN_T already has a JOIN_POLICY. Only one JOIN_POLICY is allowed at a time."}}},
+      {"sql": "ALTER TABLE jn_t SET JOIN POLICY jp_free FORCE"}
+    ]},
+    {"name": "attaching-a-policy-that-does-not-exist-is-refused", "steps": [
+      {"sql": "CREATE TABLE jn_t (id NUMBER, v VARCHAR)"},
+      {"sql": "ALTER TABLE jn_t SET JOIN POLICY no_such_jp",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nJoin policy 'TEST_DB.TEST_SCHEMA.NO_SUCH_JP' does not exist or not authorized."}}}
+    ]},
+    {"name": "unsetting-when-nothing-is-attached-is-refused", "steps": [
+      {"sql": "CREATE TABLE jn_t (id NUMBER, v VARCHAR)"},
+      {"sql": "ALTER TABLE jn_t UNSET JOIN POLICY",
+       "expect": {"error": {"messageContains": "Any policy of kind JOIN_POLICY is not attached to TABLE JN_T."}}}
+    ]},
+    {"name": "an-inner-join-on-columns-is-what-it-wants", "steps": [
+      {"sql": "CREATE JOIN POLICY jp_req AS () RETURNS JOIN_CONSTRAINT -> JOIN_CONSTRAINT(JOIN_REQUIRED => TRUE)"},
+      {"sql": "CREATE TABLE jn_t (id NUMBER, v VARCHAR)"},
+      {"sql": "CREATE TABLE jn_u (id NUMBER, w VARCHAR)"},
+      {"sql": "INSERT INTO jn_t VALUES (1,'a'),(2,'b')"},
+      {"sql": "INSERT INTO jn_u VALUES (1,'x'),(2,'y')"},
+      {"sql": "ALTER TABLE jn_t SET JOIN POLICY jp_req"},
+      {"sql": "SELECT t.v, u.w FROM jn_t t JOIN jn_u u ON t.id = u.id", "expect": {"rowCount": 2}}
+    ]},
+    {"name": "reading-the-table-alone-is-refused", "steps": [
+      {"sql": "CREATE JOIN POLICY jp_req AS () RETURNS JOIN_CONSTRAINT -> JOIN_CONSTRAINT(JOIN_REQUIRED => TRUE)"},
+      {"sql": "CREATE TABLE jn_t (id NUMBER, v VARCHAR)"},
+      {"sql": "ALTER TABLE jn_t SET JOIN POLICY jp_req"},
+      {"sql": "SELECT * FROM jn_t",
+       "expect": {"error": {"messageContains": "SQL compilation error: Join Policy violation, please contact the policy admin for details"}}},
+      {"sql": "SELECT COUNT(*) FROM jn_t",
+       "expect": {"error": {"messageContains": "SQL compilation error: Join Policy violation, please contact the policy admin for details"}}}
+    ]},
+    {"name": "an-outer-join-is-refused", "steps": [
+      {"sql": "CREATE JOIN POLICY jp_req AS () RETURNS JOIN_CONSTRAINT -> JOIN_CONSTRAINT(JOIN_REQUIRED => TRUE)"},
+      {"sql": "CREATE TABLE jn_t (id NUMBER, v VARCHAR)"},
+      {"sql": "CREATE TABLE jn_u (id NUMBER, w VARCHAR)"},
+      {"sql": "ALTER TABLE jn_t SET JOIN POLICY jp_req"},
+      {"sql": "SELECT t.v FROM jn_t t LEFT JOIN jn_u u ON t.id = u.id",
+       "expect": {"error": {"messageContains": "SQL compilation error: Join Policy violation, please contact the policy admin for details"}}}
+    ]},
+    {"name": "a-join-that-cannot-satisfy-it-names-the-constraint", "steps": [
+      {"sql": "CREATE JOIN POLICY jp_req AS () RETURNS JOIN_CONSTRAINT -> JOIN_CONSTRAINT(JOIN_REQUIRED => TRUE)"},
+      {"sql": "CREATE TABLE jn_t (id NUMBER, v VARCHAR)"},
+      {"sql": "CREATE TABLE jn_u (id NUMBER, w VARCHAR)"},
+      {"sql": "ALTER TABLE jn_t SET JOIN POLICY jp_req"},
+      {"sql": "SELECT t.v FROM jn_t t, jn_u u",
+       "expect": {"error": {"messageContains": "SQL compilation error: Join Policy violation, invalid join condition with reason: Unsatisfied constraint(s)."}}},
+      {"sql": "SELECT t.v FROM jn_t t JOIN jn_u u ON 1 = 1",
+       "expect": {"error": {"messageContains": "SQL compilation error: Join Policy violation, invalid join condition with reason: Unsatisfied constraint(s)."}}}
+    ]},
+    {"name": "joining-the-table-to-itself-is-a-cross-join", "steps": [
+      {"sql": "CREATE JOIN POLICY jp_req AS () RETURNS JOIN_CONSTRAINT -> JOIN_CONSTRAINT(JOIN_REQUIRED => TRUE)"},
+      {"sql": "CREATE TABLE jn_t (id NUMBER, v VARCHAR)"},
+      {"sql": "ALTER TABLE jn_t SET JOIN POLICY jp_req"},
+      {"sql": "SELECT a.v FROM jn_t a JOIN jn_t b ON a.id = b.id",
+       "expect": {"error": {"messageContains": "SQL compilation error: Join Policy violation, invalid join condition with reason: Potential cross-join."}}}
+    ]},
+    {"name": "an-inner-select-is-judged-too", "steps": [
+      {"sql": "CREATE JOIN POLICY jp_req AS () RETURNS JOIN_CONSTRAINT -> JOIN_CONSTRAINT(JOIN_REQUIRED => TRUE)"},
+      {"sql": "CREATE TABLE jn_t (id NUMBER, v VARCHAR)"},
+      {"sql": "ALTER TABLE jn_t SET JOIN POLICY jp_req"},
+      {"sql": "SELECT COUNT(*) FROM (SELECT * FROM jn_t)",
+       "expect": {"error": {"messageContains": "SQL compilation error: Join Policy violation, please contact the policy admin for details"}}}
+    ]},
+    {"name": "a-policy-that-requires-nothing-lets-everything-through", "steps": [
+      {"sql": "CREATE JOIN POLICY jp_free AS () RETURNS JOIN_CONSTRAINT -> JOIN_CONSTRAINT(JOIN_REQUIRED => FALSE)"},
+      {"sql": "CREATE TABLE jn_t (id NUMBER, v VARCHAR)"},
+      {"sql": "INSERT INTO jn_t VALUES (1,'a'),(2,'b')"},
+      {"sql": "ALTER TABLE jn_t SET JOIN POLICY jp_free"},
+      {"sql": "SELECT * FROM jn_t", "expect": {"rowCount": 2}}
+    ]},
+    {"name": "get-ddl-renders-the-attachment", "steps": [
+      {"sql": "CREATE JOIN POLICY jp_req AS () RETURNS JOIN_CONSTRAINT -> JOIN_CONSTRAINT(JOIN_REQUIRED => TRUE)"},
+      {"sql": "CREATE TABLE jn_t (id NUMBER, v VARCHAR)"},
+      {"sql": "ALTER TABLE jn_t SET JOIN POLICY jp_req"},
+      {"sql": "SELECT CONTAINS(GET_DDL('TABLE', 'jn_t'), 'WITH JOIN POLICY TEST_DB.TEST_SCHEMA.JP_REQ')",
+       "expect": {"value": "true"}}
+    ]},
+    {"name": "an-attached-policy-cannot-be-dropped", "steps": [
+      {"sql": "CREATE JOIN POLICY jp_req AS () RETURNS JOIN_CONSTRAINT -> JOIN_CONSTRAINT(JOIN_REQUIRED => TRUE)"},
+      {"sql": "CREATE TABLE jn_t (id NUMBER, v VARCHAR)"},
+      {"sql": "ALTER TABLE jn_t SET JOIN POLICY jp_req"},
+      {"sql": "DROP JOIN POLICY jp_req",
+       "expect": {"error": {"messageContains": "SQL compilation error: Policy JP_REQ cannot be dropped/replaced as it is associated with one or more entities."}}}
+    ]},
+    {"name": "a-table-may-carry-one-from-the-start", "steps": [
+      {"sql": "CREATE JOIN POLICY jp_free AS () RETURNS JOIN_CONSTRAINT -> JOIN_CONSTRAINT(JOIN_REQUIRED => FALSE)"},
+      {"sql": "CREATE TABLE jn_t3 (id NUMBER) WITH JOIN POLICY jp_free"},
+      {"sql": "INSERT INTO jn_t3 VALUES (1)"},
+      {"sql": "SELECT * FROM jn_t3", "expect": {"rowCount": 1}}
+    ]}
+  ]
+}

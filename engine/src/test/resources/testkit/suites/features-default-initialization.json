@@ -1,0 +1,66 @@
+{
+  "suite": "features-default-initialization",
+  "description": "Engine bootstrap objects: the SNOWFLAKE database, PUBLIC / INFORMATION_SCHEMA defaults on new databases, protection of INFORMATION_SCHEMA and its views, and that user objects sharing system-view names stay droppable. Converted 1:1 from features/DefaultInitializationTest.java (now retired); the at-least-5-views assert was pinned to the engine's exact 62.",
+  "tags": ["features", "converted"],
+  "tests": [
+    {
+      "name": "default-snowflake-database-exists",
+      "steps": [
+        {"sql": "SHOW DATABASES LIKE 'SNOWFLAKE'", "expect": {"rowCount": 1}}
+      ]
+    },
+    {
+      "name": "new-database-gets-default-schemas",
+      "steps": [
+        {"sql": "SHOW SCHEMAS LIKE 'PUBLIC' IN DATABASE test_db", "expect": {"rowCount": 1}},
+        {"sql": "SHOW SCHEMAS LIKE 'INFORMATION_SCHEMA' IN DATABASE test_db", "expect": {"rowCount": 1}}
+      ]
+    },
+    {
+      "name": "show-schemas-includes-both-default-schemas",
+      "steps": [
+        {"sql": "SHOW SCHEMAS LIKE 'PUBLIC'", "expect": {"rowCount": 1}},
+        {"sql": "SHOW SCHEMAS LIKE 'INFORMATION_SCHEMA'", "expect": {"rowCount": 1}}
+      ]
+    },
+    {
+      "name": "can-drop-public-schema",
+      "steps": [
+        {"sql": "DROP SCHEMA test_db.PUBLIC"},
+        {"sql": "SHOW SCHEMAS LIKE 'PUBLIC'", "expect": {"rowCount": 0}}
+      ]
+    },
+    {
+      "name": "cannot-drop-information-schema",
+      "steps": [
+        {"sql": "DROP SCHEMA test_db.INFORMATION_SCHEMA", "expect": {"error": {"messageContains": "INFORMATION_SCHEMA"}}}
+      ]
+    },
+    {
+      "name": "information-schema-has-system-views",
+      "steps": [
+        {"sql": "SHOW VIEWS IN SCHEMA test_db.INFORMATION_SCHEMA", "expect": {"rowCount": 62}}
+      ]
+    },
+    {
+      "name": "cannot-drop-information-schema-views",
+      "steps": [
+        {"sql": "DROP VIEW test_db.information_schema.tables", "expect": {"error": {"messageContains": "Insufficient privileges to operate on view 'TABLES'"}}},
+        {"sql": "DROP TABLE test_db.information_schema.tables", "expect": {"error": {"messageContains": "Insufficient privileges to operate on view 'TABLES'"}}},
+        {"sql": "DROP VIEW IF EXISTS test_db.information_schema.tables", "expect": {"error": {"messageContains": "Insufficient privileges"}}},
+        {"sql": "SHOW VIEWS LIKE 'TABLES' IN SCHEMA test_db.INFORMATION_SCHEMA", "expect": {"rowCount": 1}}
+      ]
+    },
+    {
+      "name": "user-objects-named-like-system-views-stay-droppable",
+      "steps": [
+        {"sql": "CREATE VIEW tables AS SELECT 1 AS c"},
+        {"sql": "DROP VIEW tables"},
+        {"sql": "SHOW VIEWS LIKE 'tables'", "expect": {"rowCount": 0}},
+        {"sql": "CREATE TABLE columns (id INTEGER)"},
+        {"sql": "DROP TABLE columns"},
+        {"sql": "SHOW TABLES LIKE 'columns'", "expect": {"rowCount": 0}}
+      ]
+    }
+  ]
+}

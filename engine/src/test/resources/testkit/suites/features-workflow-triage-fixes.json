@@ -1,0 +1,1007 @@
+{
+  "suite": "features-workflow-triage-fixes",
+  "description": "Snowflake-fidelity gaps found by triaging a large external test suite against the engine: FLATTEN over a SQL NULL is a non-expandable input rather than an error (and OUTER => TRUE emits the one null row), the backslash string escapes are decoded - the simple, hex and unicode forms - with a regex back-reference needing the doubled spelling because the single-backslash form decodes to a control character. HAVING without GROUP BY forms a single implicit group so a constant still projects over an empty one, and the VARIANT path operator is not mistaken for a Scripting bind variable inside an IF body. Also covers FROM TABLE('<name>') as a table literal, CALL restoring the caller's context, numeric-VARCHAR coercion in arithmetic, ::ARRAY / ::OBJECT following TO_ARRAY semantics, a set operation's ORDER BY resolving against result-column names, INSERT OVERWRITE reading its source before replacing the table, unquoted date parts surviving a procedural assignment RHS, ANSI derived-column alias lists on base tables and PIVOT/UNPIVOT, COUNT(DISTINCT a, b) over combinations, SELECT-list aliases visible in WHERE (with a real column still winning), PARSE_JSON's tolerated deviations, and SELECT ... INTO targets surviving bind substitution. Converted 1:1 from features/WorkflowTriageFixesTest (now retired). Two Java assertions read a Double's toString - \"-3.0\" for -'3' and \"6.0\" for '10' - '4' - which the testkit's numeric normalisation renders as -3 and 6; the numeric values are identical and TO_VARIANT does not preserve the FLOAT-ness, so the suite pins the values rather than the Java rendering.",
+  "tags": [
+    "features",
+    "converted"
+  ],
+  "tests": [
+    {
+      "name": "flatten-skips-rows-whose-input-is-null",
+      "steps": [
+        {
+          "sql": "CREATE TABLE fl (id INTEGER, entries ARRAY)"
+        },
+        {
+          "sql": "INSERT INTO fl SELECT 1, PARSE_JSON('[1,2]')"
+        },
+        {
+          "sql": "INSERT INTO fl SELECT 2, NULL"
+        },
+        {
+          "sql": "SELECT s.id FROM fl s, TABLE(FLATTEN(s.entries)) f",
+          "expect": {
+            "rowCount": 2
+          }
+        }
+      ]
+    },
+    {
+      "name": "flatten-outer-emits-one-null-row-for-a-null-input",
+      "steps": [
+        {
+          "sql": "CREATE TABLE fl (id INTEGER, entries ARRAY)"
+        },
+        {
+          "sql": "INSERT INTO fl SELECT 1, PARSE_JSON('[1,2]')"
+        },
+        {
+          "sql": "INSERT INTO fl SELECT 2, NULL"
+        },
+        {
+          "sql": "SELECT s.id FROM fl s, TABLE(FLATTEN(s.entries, outer => TRUE)) f",
+          "expect": {
+            "rowCount": 3
+          }
+        },
+        {
+          "sql": "SELECT * FROM TABLE(FLATTEN(input => NULL, outer => TRUE))",
+          "expect": {
+            "rowCount": 1
+          }
+        },
+        {
+          "sql": "SELECT * FROM TABLE(FLATTEN(input => NULL))",
+          "expect": {
+            "rowCount": 0
+          }
+        }
+      ]
+    },
+    {
+      "name": "the-double-quote-escape-is-decoded",
+      "steps": [
+        {
+          "sql": "SELECT '{\\\"a\\\":1}'",
+          "expect": {
+            "value": "{\"a\":1}"
+          }
+        },
+        {
+          "sql": "SELECT PARSE_JSON('{\\\"k\\\":1}'):k::VARCHAR",
+          "expect": {
+            "value": "1"
+          }
+        }
+      ]
+    },
+    {
+      "name": "other-simple-and-hex-escapes-are-decoded",
+      "steps": [
+        {
+          "sql": "SELECT LENGTH('\\b\\f')",
+          "expect": {
+            "value": "2"
+          }
+        },
+        {
+          "sql": "SELECT '\\x41\\u0042'",
+          "expect": {
+            "value": "AB"
+          }
+        }
+      ]
+    },
+    {
+      "name": "back-references-need-doubled-backslashes",
+      "steps": [
+        {
+          "sql": "SELECT REGEXP_REPLACE('ab', '(a)(b)', '[\\\\2][\\\\1]')",
+          "expect": {
+            "value": "[b][a]"
+          }
+        },
+        {
+          "sql": "SELECT REGEXP_REPLACE('ab', '(a)(b)', '[\\2][\\1]')",
+          "expect": {
+            "value": "[\u0002][\u0001]"
+          }
+        },
+        {
+          "sql": "SELECT LENGTH('\\\\')",
+          "expect": {
+            "value": "1"
+          }
+        }
+      ]
+    },
+    {
+      "name": "having-without-group-by-is-an-aggregate-query",
+      "steps": [
+        {
+          "sql": "CREATE TABLE t2 (k INTEGER)"
+        },
+        {
+          "sql": "INSERT INTO t2 VALUES (1), (2)"
+        },
+        {
+          "sql": "SELECT 'X' FROM t2 HAVING COUNT(*) != 1",
+          "expect": {
+            "rowCount": 1
+          }
+        },
+        {
+          "sql": "SELECT 'X' FROM t2 HAVING COUNT(*) = 1",
+          "expect": {
+            "rowCount": 0
+          }
+        },
+        {
+          "sql": "SELECT 'X' FROM t2 HAVING COUNT(*) = 2",
+          "expect": {
+            "value": "X"
+          }
+        }
+      ]
+    },
+    {
+      "name": "a-constant-projects-over-an-empty-implicit-group",
+      "steps": [
+        {
+          "sql": "CREATE TABLE t2 (k INTEGER)"
+        },
+        {
+          "sql": "INSERT INTO t2 VALUES (1), (2)"
+        },
+        {
+          "sql": "SELECT 'MISSING' FROM t2 WHERE k = 99 HAVING COUNT(*) != 1",
+          "expect": {
+            "value": "MISSING"
+          }
+        },
+        {
+          "sql": "SELECT 'X', COUNT(*) FROM t2 WHERE k = 99",
+          "expect": {
+            "rows": [
+              [
+                "X",
+                "0"
+              ]
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "a-variant-path-survives-inside-an-if-body",
+      "steps": [
+        {
+          "sql": "CREATE TABLE vt (src VARIANT)"
+        },
+        {
+          "sql": "INSERT INTO vt SELECT PARSE_JSON('{\"a\":{\"b\":7}}')"
+        },
+        {
+          "sql": "CREATE OR REPLACE PROCEDURE p() RETURNS VARCHAR LANGUAGE SQL AS $$\nBEGIN\n  IF (1 = 1) THEN\n    RETURN (SELECT s.src:a:b::VARCHAR FROM vt s);\n  END IF;\n  RETURN 'no';\nEND\n$$"
+        },
+        {
+          "sql": "CALL p()",
+          "expect": {
+            "value": "7"
+          }
+        }
+      ]
+    },
+    {
+      "name": "a-real-bind-variable-still-substitutes-alongside-a-path",
+      "steps": [
+        {
+          "sql": "CREATE TABLE vt (src VARIANT)"
+        },
+        {
+          "sql": "INSERT INTO vt SELECT PARSE_JSON('{\"a\":{\"b\":7}}')"
+        },
+        {
+          "sql": "CREATE OR REPLACE PROCEDURE p2() RETURNS VARCHAR LANGUAGE SQL AS $$\nDECLARE\n  v VARCHAR DEFAULT 'z';\nBEGIN\n  IF (1 = 1) THEN\n    RETURN (SELECT s.src:a:b::VARCHAR FROM vt s WHERE :v = 'z');\n  END IF;\n  RETURN 'no';\nEND\n$$"
+        },
+        {
+          "sql": "CALL p2()",
+          "expect": {
+            "value": "7"
+          }
+        }
+      ]
+    },
+    {
+      "name": "from-table-literal-resolves-a-table-view-or-stream",
+      "steps": [
+        {
+          "sql": "CREATE TABLE t1 (c VARCHAR)"
+        },
+        {
+          "sql": "INSERT INTO t1 VALUES ('c1'), ('c2')"
+        },
+        {
+          "sql": "CREATE VIEW v1 AS SELECT c FROM t1"
+        },
+        {
+          "sql": "CREATE STREAM st1 ON TABLE t1 APPEND_ONLY=TRUE SHOW_INITIAL_ROWS=TRUE"
+        },
+        {
+          "sql": "SELECT * FROM TABLE('T1')",
+          "expect": {
+            "rowCount": 2
+          }
+        },
+        {
+          "sql": "SELECT * FROM TABLE('t1')",
+          "expect": {
+            "rowCount": 2
+          }
+        },
+        {
+          "sql": "SELECT * FROM TABLE('V1')",
+          "expect": {
+            "rowCount": 2
+          }
+        },
+        {
+          "sql": "SELECT * FROM TABLE('ST1')",
+          "expect": {
+            "rowCount": 2
+          }
+        },
+        {
+          "sql": "SELECT z.c FROM TABLE('T1') z WHERE z.c = 'c2'",
+          "expect": {
+            "value": "c2"
+          }
+        }
+      ]
+    },
+    {
+      "name": "from-table-literal-accepts-a-bind-variable",
+      "steps": [
+        {
+          "sql": "CREATE TABLE t1 (c VARCHAR)"
+        },
+        {
+          "sql": "INSERT INTO t1 VALUES ('c1'), ('c2')"
+        },
+        {
+          "sql": "CREATE TABLE t2 (c VARCHAR)"
+        },
+        {
+          "sql": "CREATE OR REPLACE PROCEDURE p() RETURNS VARCHAR LANGUAGE SQL AS $$\nDECLARE\n  src VARCHAR DEFAULT 'T1';\nBEGIN\n  INSERT INTO t2 SELECT c FROM TABLE(:src);\n  RETURN (SELECT COUNT(*)::VARCHAR FROM t2);\nEND\n$$"
+        },
+        {
+          "sql": "CALL p()",
+          "expect": {
+            "value": "2"
+          }
+        }
+      ]
+    },
+    {
+      "name": "table-function-calls-and-unknown-names-are-unaffected",
+      "steps": [
+        {
+          "sql": "SELECT COUNT(*) FROM TABLE(GENERATOR(ROWCOUNT => 3))",
+          "expect": {
+            "value": "3"
+          }
+        },
+        {
+          "sql": "SELECT * FROM TABLE('NO_SUCH_RELATION')",
+          "expect": {
+            "error": {}
+          }
+        }
+      ]
+    },
+    {
+      "name": "use-database-resets-the-current-schema",
+      "steps": [
+        {
+          "sql": "CREATE DATABASE other_db"
+        },
+        {
+          "sql": "CREATE SCHEMA other_db.only_here"
+        },
+        {
+          "sql": "CREATE DATABASE back_db"
+        },
+        {
+          "sql": "USE DATABASE other_db"
+        },
+        {
+          "sql": "USE SCHEMA only_here"
+        },
+        {
+          "sql": "USE DATABASE back_db"
+        },
+        {
+          "sql": "SELECT CURRENT_SCHEMA()",
+          "expect": {
+            "value": "PUBLIC"
+          }
+        },
+        {
+          "sql": "USE DATABASE test_db"
+        },
+        {
+          "sql": "USE SCHEMA test_schema"
+        },
+        {
+          "sql": "DROP DATABASE IF EXISTS other_db"
+        },
+        {
+          "sql": "DROP DATABASE IF EXISTS back_db"
+        }
+      ]
+    },
+    {
+      "name": "call-restores-context-without-failing-the-call",
+      "steps": [
+        {
+          "sql": "DROP DATABASE IF EXISTS tools_db"
+        },
+        {
+          "sql": "DROP DATABASE IF EXISTS site_db"
+        },
+        {
+          "sql": "CREATE DATABASE tools_db"
+        },
+        {
+          "sql": "CREATE SCHEMA tools_db.stats"
+        },
+        {
+          "sql": "CREATE OR REPLACE PROCEDURE tools_db.stats.echo(o OBJECT) RETURNS OBJECT LANGUAGE SQL AS $$\nBEGIN\n  RETURN :o;\nEND\n$$"
+        },
+        {
+          "sql": "CREATE DATABASE site_db"
+        },
+        {
+          "sql": "CREATE SCHEMA site_db.tdm"
+        },
+        {
+          "sql": "USE DATABASE site_db"
+        },
+        {
+          "sql": "USE SCHEMA tdm"
+        },
+        {
+          "sql": "USE DATABASE tools_db"
+        },
+        {
+          "sql": "CALL stats.echo(OBJECT_CONSTRUCT('a', 1))",
+          "expect": {
+            "value": "{\"a\":1}"
+          }
+        },
+        {
+          "sql": "USE DATABASE test_db"
+        },
+        {
+          "sql": "USE SCHEMA test_schema"
+        },
+        {
+          "sql": "DROP DATABASE tools_db"
+        },
+        {
+          "sql": "DROP DATABASE site_db"
+        }
+      ]
+    },
+    {
+      "name": "a-numeric-varchar-is-coerced-in-arithmetic",
+      "steps": [
+        {
+          "sql": "SELECT -'3'",
+          "expect": {
+            "value": "-3"
+          }
+        },
+        {
+          "sql": "SELECT '3' + 1",
+          "expect": {
+            "value": "4"
+          }
+        },
+        {
+          "sql": "SELECT '3' * 2",
+          "expect": {
+            "value": "6"
+          }
+        },
+        {
+          "sql": "SELECT '2.5' + 1",
+          "expect": {
+            "value": "3.5"
+          }
+        },
+        {
+          "sql": "SELECT '10' - '4'",
+          "expect": {
+            "value": "6"
+          }
+        },
+        {
+          "sql": "SELECT TO_VARCHAR(DATEADD(month, -x.value, DATE '2024-06-15')) FROM TABLE(SPLIT_TO_TABLE('2', ',')) x",
+          "expect": {
+            "value": "2024-04-15"
+          }
+        }
+      ]
+    },
+    {
+      "name": "a-non-numeric-string-and-null-keep-their-behaviour",
+      "steps": [
+        {
+          "sql": "SELECT (-CAST(NULL AS VARCHAR)) IS NULL",
+          "expect": {
+            "value": "true"
+          }
+        },
+        {
+          "sql": "SELECT -'abc'",
+          "expect": {
+            "error": {}
+          }
+        },
+        {
+          "sql": "SELECT 'a' || 'b'",
+          "expect": {
+            "value": "ab"
+          }
+        },
+        {
+          "sql": "SELECT TO_VARCHAR(DATE '2024-01-01' + 5)",
+          "expect": {
+            "value": "2024-01-06"
+          }
+        }
+      ]
+    },
+    {
+      "name": "a-cast-to-array-wraps-a-scalar",
+      "steps": [
+        {
+          "sql": "SELECT 'X9'::ARRAY",
+          "expect": {
+            "value": "[\"X9\"]"
+          }
+        },
+        {
+          "sql": "SELECT TYPEOF('X9'::ARRAY)",
+          "expect": {
+            "value": "ARRAY"
+          }
+        },
+        {
+          "sql": "SELECT ARRAY_CONTAINS('X9'::VARIANT, 'X9'::ARRAY)",
+          "expect": {
+            "value": "true"
+          }
+        },
+        {
+          "sql": "SELECT ARRAY_CONSTRUCT('a','b')::ARRAY",
+          "expect": {
+            "value": "[\"a\",\"b\"]"
+          }
+        },
+        {
+          "sql": "SELECT TO_ARRAY('X9')",
+          "expect": {
+            "value": "[\"X9\"]"
+          }
+        }
+      ]
+    },
+    {
+      "name": "a-cast-to-array-is-usable-in-an-array-column",
+      "steps": [
+        {
+          "sql": "CREATE TABLE h (item_id VARCHAR, class_tags ARRAY)"
+        },
+        {
+          "sql": "INSERT INTO h SELECT 'a1', 'X9'::ARRAY"
+        },
+        {
+          "sql": "SELECT item_id FROM h WHERE ARRAY_CONTAINS('X9'::VARIANT, class_tags)",
+          "expect": {
+            "value": "a1"
+          }
+        }
+      ]
+    },
+    {
+      "name": "a-cast-to-object-passes-objects-and-rejects-scalars",
+      "steps": [
+        {
+          "sql": "SELECT OBJECT_CONSTRUCT('k',1)::OBJECT",
+          "expect": {
+            "value": "{\"k\":1}"
+          }
+        },
+        {
+          "sql": "SELECT 'x'::OBJECT",
+          "expect": {
+            "error": {}
+          }
+        }
+      ]
+    },
+    {
+      "name": "a-set-operations-order-by-resolves-an-unqualified-result-column",
+      "steps": [
+        {
+          "sql": "CREATE TABLE ca (region_id VARCHAR, item_key VARCHAR)"
+        },
+        {
+          "sql": "CREATE TABLE cb (region_id VARCHAR, item_key VARCHAR)"
+        },
+        {
+          "sql": "INSERT INTO ca VALUES ('c3','k1'), ('c1','k2')"
+        },
+        {
+          "sql": "INSERT INTO cb VALUES ('c2','k3')"
+        },
+        {
+          "sql": "SELECT a.region_id, a.item_key FROM ca a UNION ALL SELECT b.region_id, b.item_key FROM cb b ORDER BY region_id, item_key",
+          "expect": {
+            "rowCount": 3,
+            "rows": [
+              [
+                "c1",
+                "k2"
+              ],
+              [
+                "c2",
+                "k3"
+              ],
+              [
+                "c3",
+                "k1"
+              ]
+            ],
+            "ordered": true
+          }
+        },
+        {
+          "sql": "SELECT a.region_id FROM ca a EXCEPT SELECT b.region_id FROM cb b ORDER BY region_id",
+          "expect": {
+            "rowCount": 2
+          }
+        }
+      ]
+    },
+    {
+      "name": "ordering-by-an-absent-name-still-fails",
+      "steps": [
+        {
+          "sql": "CREATE TABLE ca (region_id VARCHAR)"
+        },
+        {
+          "sql": "SELECT a.region_id FROM ca a UNION ALL SELECT b.region_id FROM ca b ORDER BY nope",
+          "expect": {
+            "error": {}
+          }
+        }
+      ]
+    },
+    {
+      "name": "a-self-referencing-insert-overwrite-sees-the-old-rows",
+      "steps": [
+        {
+          "sql": "CREATE TABLE so (id VARCHAR, n INTEGER)"
+        },
+        {
+          "sql": "INSERT INTO so VALUES ('A', 1), ('B', 2)"
+        },
+        {
+          "sql": "INSERT OVERWRITE INTO so (id, n) SELECT id, n + 10 FROM so"
+        },
+        {
+          "sql": "SELECT id, n FROM so ORDER BY id",
+          "expect": {
+            "rowCount": 2,
+            "rows": [
+              [
+                "A",
+                "11"
+              ],
+              [
+                "B",
+                "12"
+              ]
+            ],
+            "ordered": true
+          }
+        }
+      ]
+    },
+    {
+      "name": "insert-overwrite-still-replaces-contents",
+      "steps": [
+        {
+          "sql": "CREATE TABLE so (id VARCHAR)"
+        },
+        {
+          "sql": "INSERT INTO so VALUES ('A'), ('B')"
+        },
+        {
+          "sql": "INSERT OVERWRITE INTO so (id) VALUES ('C')"
+        },
+        {
+          "sql": "SELECT id FROM so",
+          "expect": {
+            "rowCount": 1,
+            "value": "C"
+          }
+        }
+      ]
+    },
+    {
+      "name": "an-array-literal-equals-array-construct-and-parse-json",
+      "steps": [
+        {
+          "sql": "SELECT ['x','y']::ARRAY = ARRAY_CONSTRUCT('x','y')",
+          "expect": {
+            "value": "true"
+          }
+        },
+        {
+          "sql": "CREATE TABLE l (a ARRAY)"
+        },
+        {
+          "sql": "INSERT INTO l SELECT ['x','y']::ARRAY"
+        },
+        {
+          "sql": "CREATE TABLE j (a ARRAY)"
+        },
+        {
+          "sql": "INSERT INTO j SELECT PARSE_JSON('{\"t\":[\"x\",\"y\"]}'):t::ARRAY"
+        },
+        {
+          "sql": "SELECT a FROM l EXCEPT SELECT a FROM j",
+          "expect": {
+            "rowCount": 0
+          }
+        }
+      ]
+    },
+    {
+      "name": "a-keyword-argument-survives-a-procedural-assignment",
+      "steps": [
+        {
+          "sql": "CREATE OR REPLACE PROCEDURE p3() RETURNS VARCHAR LANGUAGE SQL AS $$\nBEGIN\n  LET x TIMESTAMP := DATEADD(MINUTE, 30, TO_TIMESTAMP_NTZ('2024-01-01 00:00:00'));\n  RETURN :x::VARCHAR;\nEND\n$$"
+        },
+        {
+          "sql": "CALL p3()",
+          "expect": {
+            "value": "2024-01-01 00:30:00.000"
+          }
+        },
+        {
+          "sql": "CREATE OR REPLACE PROCEDURE p4() RETURNS VARCHAR LANGUAGE SQL AS $$\nBEGIN\n  LET n VARCHAR := DATEDIFF(DAY, DATE '2024-01-01', DATE '2024-03-01')::VARCHAR;\n  RETURN :n;\nEND\n$$"
+        },
+        {
+          "sql": "CALL p4()",
+          "expect": {
+            "value": "60"
+          }
+        }
+      ]
+    },
+    {
+      "name": "a-real-variable-is-still-substituted-in-an-assignment-rhs",
+      "steps": [
+        {
+          "sql": "CREATE OR REPLACE PROCEDURE p5() RETURNS VARCHAR LANGUAGE SQL AS $$\nDECLARE\n  v VARCHAR DEFAULT 'minute';\nBEGIN\n  LET x VARCHAR := UPPER(:v);\n  RETURN :x;\nEND\n$$"
+        },
+        {
+          "sql": "CALL p5()",
+          "expect": {
+            "value": "MINUTE"
+          }
+        }
+      ]
+    },
+    {
+      "name": "a-base-table-alias-column-list-renames-columns",
+      "steps": [
+        {
+          "sql": "CREATE TABLE qs (empid INTEGER, amount INTEGER, quarter VARCHAR)"
+        },
+        {
+          "sql": "INSERT INTO qs VALUES (1, 10, 'Q1')"
+        },
+        {
+          "sql": "SELECT a FROM qs AS d (a, b, c)",
+          "expect": {
+            "value": "1"
+          }
+        },
+        {
+          "sql": "SELECT b FROM qs AS d (a, b, c) WHERE a = 1",
+          "expect": {
+            "value": "10"
+          }
+        }
+      ]
+    },
+    {
+      "name": "a-pivot-alias-column-list-parses-and-renames",
+      "steps": [
+        {
+          "sql": "CREATE TABLE qs (empid INTEGER, amount INTEGER, quarter VARCHAR)"
+        },
+        {
+          "sql": "INSERT INTO qs VALUES (1, 10, 'Q1'), (1, 20, 'Q2')"
+        },
+        {
+          "sql": "SELECT * FROM qs PIVOT(SUM(amount) FOR quarter IN ('Q1','Q2')) AS p (eid, q1, q2)",
+          "expect": {
+            "columns": [
+              "EID",
+              "Q1",
+              "Q2"
+            ]
+          }
+        },
+        {
+          "sql": "SELECT eid FROM (SELECT * FROM qs PIVOT(SUM(amount) FOR quarter IN ('Q1','Q2')) AS p (eid, q1, q2)) WHERE q2 > q1",
+          "expect": {
+            "value": "1"
+          }
+        }
+      ]
+    },
+    {
+      "name": "an-unpivot-alias-column-list-parses",
+      "steps": [
+        {
+          "sql": "SELECT * FROM (SELECT 1 AS empid, 10 AS q1) UNPIVOT(amount FOR quarter IN (q1)) AS u (a, b)",
+          "expect": {
+            "rowCount": 1
+          }
+        }
+      ]
+    },
+    {
+      "name": "a-pivot-without-an-alias-list-is-unchanged",
+      "steps": [
+        {
+          "sql": "CREATE TABLE qs (empid INTEGER, amount INTEGER, quarter VARCHAR)"
+        },
+        {
+          "sql": "INSERT INTO qs VALUES (1, 10, 'Q1'), (1, 20, 'Q2')"
+        },
+        {
+          "sql": "SELECT * FROM qs PIVOT(SUM(amount) FOR quarter IN ('Q1','Q2')) AS p",
+          "expect": {
+            "columns": [
+              "EMPID",
+              "'Q1'",
+              "'Q2'"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "count-distinct-over-several-arguments",
+      "steps": [
+        {
+          "sql": "CREATE TABLE pairs (a INTEGER, b INTEGER)"
+        },
+        {
+          "sql": "INSERT INTO pairs VALUES (1,1), (1,1), (1,2), (2,1), (1,NULL)"
+        },
+        {
+          "sql": "SELECT COUNT(DISTINCT a, b) FROM pairs",
+          "expect": {
+            "value": "3"
+          }
+        },
+        {
+          "sql": "SELECT COUNT(DISTINCT a) FROM pairs",
+          "expect": {
+            "value": "2"
+          }
+        }
+      ]
+    },
+    {
+      "name": "count-distinct-with-a-conditional-second-argument",
+      "steps": [
+        {
+          "sql": "CREATE TABLE st (proc_name VARCHAR, priority VARCHAR)"
+        },
+        {
+          "sql": "INSERT INTO st VALUES ('p_crit','CRITICAL'), ('p_high','HIGH'), ('p_low','LOW')"
+        },
+        {
+          "sql": "SELECT COUNT(DISTINCT proc_name, CASE WHEN priority = 'CRITICAL' THEN 1 END), COUNT(DISTINCT proc_name) FROM st",
+          "expect": {
+            "rows": [
+              [
+                "1",
+                "3"
+              ]
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "a-select-list-alias-is-visible-in-where",
+      "steps": [
+        {
+          "sql": "CREATE TABLE f (metadata_file_name VARCHAR)"
+        },
+        {
+          "sql": "INSERT INTO f VALUES ('raw/kb/diff-202401011200.json.gz')"
+        },
+        {
+          "sql": "SELECT 'diff' AS file_type FROM f WHERE file_type = 'diff'",
+          "expect": {
+            "value": "diff"
+          }
+        },
+        {
+          "sql": "SELECT SPLIT(metadata_file_name,'-')[0]::VARCHAR AS ft FROM f WHERE LOWER(ft) LIKE '%diff%'",
+          "expect": {
+            "value": "raw/kb/diff"
+          }
+        },
+        {
+          "sql": "SELECT 'diff' AS file_type FROM f WHERE file_type = 'all'",
+          "expect": {
+            "rowCount": 0
+          }
+        }
+      ]
+    },
+    {
+      "name": "a-real-column-beats-a-same-named-alias-in-where",
+      "steps": [
+        {
+          "sql": "CREATE TABLE g (k VARCHAR, v VARCHAR)"
+        },
+        {
+          "sql": "INSERT INTO g VALUES ('real', 'x')"
+        },
+        {
+          "sql": "SELECT 'alias' AS k, v FROM g WHERE k = 'real'",
+          "expect": {
+            "rowCount": 1
+          }
+        },
+        {
+          "sql": "SELECT 'alias' AS k, v FROM g WHERE k = 'alias'",
+          "expect": {
+            "rowCount": 0
+          }
+        }
+      ]
+    },
+    {
+      "name": "a-lateral-alias-works-without-a-from-clause",
+      "steps": [
+        {
+          "sql": "SELECT 1 AS x, x + 1 AS y",
+          "expect": {
+            "rows": [
+              [
+                "1",
+                "2"
+              ]
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "parse-json-accepts-a-trailing-comma",
+      "steps": [
+        {
+          "sql": "SELECT PARSE_JSON('{\"a\": 1, }')",
+          "expect": {
+            "value": "{\"a\":1}"
+          }
+        },
+        {
+          "sql": "SELECT PARSE_JSON('{\"ip\": {\"IPv4\": [\"1.2.3.4\" ], }}')",
+          "expect": {
+            "value": "{\"ip\":{\"IPv4\":[\"1.2.3.4\"]}}"
+          }
+        },
+        {
+          "sql": "SELECT PARSE_JSON('{\"a\": {\"b\": 7}, }'):a:b::VARCHAR",
+          "expect": {
+            "value": "7"
+          }
+        }
+      ]
+    },
+    {
+      "name": "parse-json-accepts-a-raw-control-character-in-a-string",
+      "steps": [
+        {
+          "sql": "SELECT LENGTH(PARSE_JSON('{\"k\": \"ab' || CHR(7) || 'cd\"}'):k::VARCHAR)",
+          "expect": {
+            "value": "5"
+          }
+        },
+        {
+          "sql": "SELECT LEFT(PARSE_JSON('{\"k\": \"ab' || CHR(7) || 'cd\"}'):k::VARCHAR, 2)",
+          "expect": {
+            "value": "ab"
+          }
+        }
+      ]
+    },
+    {
+      "name": "parse-json-still-rejects-genuinely-invalid-text",
+      "steps": [
+        {
+          "sql": "SELECT PARSE_JSON('{not json')",
+          "expect": {
+            "error": {}
+          }
+        },
+        {
+          "sql": "SELECT TRY_PARSE_JSON('{not json') IS NULL",
+          "expect": {
+            "value": "true"
+          }
+        },
+        {
+          "sql": "SELECT PARSE_JSON('{\"a\":[1,2],\"b\":null}')",
+          "expect": {
+            "value": "{\"a\":[1,2],\"b\":null}"
+          }
+        }
+      ]
+    },
+    {
+      "name": "select-into-targets-survive-inside-an-if-body",
+      "steps": [
+        {
+          "sql": "CREATE TABLE ab (a INTEGER, b INTEGER)"
+        },
+        {
+          "sql": "INSERT INTO ab VALUES (7, 9)"
+        },
+        {
+          "sql": "CREATE OR REPLACE PROCEDURE pinto() RETURNS VARCHAR LANGUAGE SQL AS $$\nDECLARE\n  v1 INTEGER DEFAULT 1;\n  v2 INTEGER DEFAULT 2;\nBEGIN\n  IF (1 = 1) THEN\n    SELECT a, b INTO :v1, :v2 FROM ab;\n  END IF;\n  RETURN :v1::VARCHAR || '/' || :v2::VARCHAR;\nEND\n$$"
+        },
+        {
+          "sql": "CALL pinto()",
+          "expect": {
+            "value": "7/9"
+          }
+        }
+      ]
+    },
+    {
+      "name": "insert-into-and-ordinary-binds-are-unaffected",
+      "steps": [
+        {
+          "sql": "CREATE TABLE ab (a INTEGER, b INTEGER)"
+        },
+        {
+          "sql": "CREATE OR REPLACE PROCEDURE pins() RETURNS VARCHAR LANGUAGE SQL AS $$\nDECLARE\n  n INTEGER DEFAULT 5;\nBEGIN\n  IF (1 = 1) THEN\n    INSERT INTO ab (a, b) VALUES (:n, :n + 1);\n  END IF;\n  RETURN (SELECT a::VARCHAR || '/' || b::VARCHAR FROM ab);\nEND\n$$"
+        },
+        {
+          "sql": "CALL pins()",
+          "expect": {
+            "value": "5/6"
+          }
+        }
+      ]
+    }
+  ]
+}

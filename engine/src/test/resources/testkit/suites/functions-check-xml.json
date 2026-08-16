@@ -1,0 +1,18 @@
+{
+  "suite": "functions-check-xml",
+  "description": "CHECK_XML answers NULL for NULL, empty and valid XML input - including when the optional disable_auto_convert argument is supplied - and returns the parse-error message for malformed XML. The message is bare: unlike PARSE_XML it carries no \"Error parsing XML:\" prefix. Converted 1:1 from functions/CheckXmlTest (now retired).",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "valid-documents-and-nullish-inputs-return-null", "steps": [
+      {"sql": "SELECT CHECK_XML('<a>1</a>')", "expect": {"rows": [[null]]}},
+      {"sql": "SELECT CHECK_XML(NULL)", "expect": {"rows": [[null]]}},
+      {"sql": "SELECT CHECK_XML('')", "expect": {"rows": [[null]]}},
+      {"sql": "SELECT CHECK_XML('<a attr=\"1\"><b/></a>', TRUE)", "expect": {"rows": [[null]]}}
+    ]},
+    {"name": "malformed-xml-returns-the-bare-message", "steps": [
+      {"sql": "SELECT IFF(CHECK_XML('bad') IS NULL, 'null', 'set')", "expect": {"value": "set"}},
+      {"sql": "SELECT STARTSWITH(CHECK_XML('bad'), 'Error parsing XML')", "expect": {"value": "false"}},
+      {"sql": "SELECT IFF(CHECK_XML('<a><b></a>') IS NULL, 'null', 'set')", "expect": {"value": "set"}}
+    ]}
+  ]
+}

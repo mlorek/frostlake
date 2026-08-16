@@ -1,0 +1,184 @@
+{
+  "suite": "ddl-aggregation-policy",
+  "description": "AGGREGATION POLICY on tables: zero-arg/AGGREGATION_CONSTRAINT-return signature rules, body-only AGGREGATION_CONSTRAINT(), SHOW/DESCRIBE shape, one-policy-per-table (FORCE to replace), aggregation-required refusals, small groups folded into a NULL-keyed remainder (GROUP BY and DISTINCT, ENTITY KEY counting distinct entities), the leak-prone aggregates refused while STDDEV passes (measured), inner selects unjudged, GET_DDL rendering the attachment, attached policies undroppable, WITH AGGREGATION POLICY at CREATE, and the keywords staying ordinary names. Converted 1:1 from ddl/AggregationPolicyTest (now retired).",
+  "tags": ["ddl", "policy", "converted"],
+  "tests": [
+    {"name": "a-policy-with-arguments-is-refused", "steps": [
+      {"sql": "CREATE AGGREGATION POLICY ap_bad AS (v VARCHAR) RETURNS AGGREGATION_CONSTRAINT -> NO_AGGREGATION_CONSTRAINT()",
+       "expect": {"error": {"messageContains": "Aggregation policy must have exactly zero arguments, got 1 arguments."}}}
+    ]},
+    {"name": "another-return-type-is-refused", "steps": [
+      {"sql": "CREATE AGGREGATION POLICY ap_b AS () RETURNS BOOLEAN -> TRUE",
+       "expect": {"error": {"messageContains": "Aggregation policy return type 'BOOLEAN' is not AGGREGATION_CONSTRAINT."}}}
+    ]},
+    {"name": "only-the-no-constraint-function-is-callable-on-its-own", "steps": [
+      {"sql": "SELECT AGGREGATION_CONSTRAINT(MIN_GROUP_SIZE => 3)",
+       "expect": {"error": {"messageContains": "The AGGREGATION_CONSTRAINT function can only be called from a body of an aggregation constraint policy."}}}
+    ]},
+    {"name": "show-and-describe-report-the-policy", "steps": [
+      {"sql": "CREATE AGGREGATION POLICY ap_3 AS () RETURNS AGGREGATION_CONSTRAINT -> AGGREGATION_CONSTRAINT(MIN_GROUP_SIZE => 3)"},
+      {"sql": "SHOW AGGREGATION POLICIES LIKE 'ap_3'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"kind\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'AP_3'",
+       "expect": {"value": "AGGREGATION_POLICY"}},
+      {"sql": "DESCRIBE AGGREGATION POLICY ap_3",
+       "expect": {"rows": [["AP_3", "()", "AGGREGATION_CONSTRAINT", "AGGREGATION_CONSTRAINT(MIN_GROUP_SIZE => 3)"]]}}
+    ]},
+    {"name": "attaching-a-second-policy-needs-force", "steps": [
+      {"sql": "CREATE AGGREGATION POLICY ap_3 AS () RETURNS AGGREGATION_CONSTRAINT -> AGGREGATION_CONSTRAINT(MIN_GROUP_SIZE => 3)"},
+      {"sql": "CREATE AGGREGATION POLICY ap_none AS () RETURNS AGGREGATION_CONSTRAINT -> NO_AGGREGATION_CONSTRAINT()"},
+      {"sql": "CREATE TABLE ag_t (dept VARCHAR, sal NUMBER, eid NUMBER)"},
+      {"sql": "ALTER TABLE ag_t SET AGGREGATION POLICY ap_3"},
+      {"sql": "ALTER TABLE ag_t SET AGGREGATION POLICY ap_3"},
+      {"sql": "ALTER TABLE ag_t SET AGGREGATION POLICY ap_none",
+       "expect": {"error": {"messageContains": "Object AG_T already has a AGGREGATION_POLICY. Only one AGGREGATION_POLICY is allowed at a time."}}},
+      {"sql": "ALTER TABLE ag_t SET AGGREGATION POLICY ap_none FORCE"}
+    ]},
+    {"name": "attaching-a-policy-that-does-not-exist-is-refused", "steps": [
+      {"sql": "CREATE TABLE ag_t (dept VARCHAR, sal NUMBER, eid NUMBER)"},
+      {"sql": "ALTER TABLE ag_t SET AGGREGATION POLICY no_such_ap",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nAggregation policy 'TEST_DB.TEST_SCHEMA.NO_SUCH_AP' does not exist or not authorized."}}}
+    ]},
+    {"name": "unsetting-when-nothing-is-attached-is-refused", "steps": [
+      {"sql": "CREATE TABLE ag_t (dept VARCHAR, sal NUMBER, eid NUMBER)"},
+      {"sql": "ALTER TABLE ag_t UNSET AGGREGATION POLICY",
+       "expect": {"error": {"messageContains": "Any policy of kind AGGREGATION_POLICY is not attached to TABLE AG_T."}}}
+    ]},
+    {"name": "reading-rows-is-refused", "steps": [
+      {"sql": "CREATE AGGREGATION POLICY ap_3 AS () RETURNS AGGREGATION_CONSTRAINT -> AGGREGATION_CONSTRAINT(MIN_GROUP_SIZE => 3)"},
+      {"sql": "CREATE TABLE ag_t (dept VARCHAR, sal NUMBER, eid NUMBER)"},
+      {"sql": "INSERT INTO ag_t VALUES ('a',10,1),('a',20,2),('a',30,3),('a',40,4),('b',50,5),('b',60,6),('c',70,7),('c',80,8)"},
+      {"sql": "ALTER TABLE ag_t SET AGGREGATION POLICY ap_3"},
+      {"sql": "SELECT * FROM ag_t",
+       "expect": {"error": {"messageContains": "SQL compilation error: Aggregation policy violation: aggregation required."}}},
+      {"sql": "SELECT dept FROM ag_t",
+       "expect": {"error": {"messageContains": "SQL compilation error: Aggregation policy violation: aggregation required."}}}
+    ]},
+    {"name": "an-aggregate-over-the-whole-table-is-allowed", "steps": [
+      {"sql": "CREATE AGGREGATION POLICY ap_3 AS () RETURNS AGGREGATION_CONSTRAINT -> AGGREGATION_CONSTRAINT(MIN_GROUP_SIZE => 3)"},
+      {"sql": "CREATE TABLE ag_t (dept VARCHAR, sal NUMBER, eid NUMBER)"},
+      {"sql": "INSERT INTO ag_t VALUES ('a',10,1),('a',20,2),('a',30,3),('a',40,4),('b',50,5),('b',60,6),('c',70,7),('c',80,8)"},
+      {"sql": "ALTER TABLE ag_t SET AGGREGATION POLICY ap_3"},
+      {"sql": "SELECT COUNT(*) FROM ag_t", "expect": {"value": "8"}},
+      {"sql": "SELECT SUM(sal) FROM ag_t", "expect": {"value": "360"}}
+    ]},
+    {"name": "small-groups-are-folded-into-a-remainder", "steps": [
+      {"sql": "CREATE AGGREGATION POLICY ap_3 AS () RETURNS AGGREGATION_CONSTRAINT -> AGGREGATION_CONSTRAINT(MIN_GROUP_SIZE => 3)"},
+      {"sql": "CREATE TABLE ag_t (dept VARCHAR, sal NUMBER, eid NUMBER)"},
+      {"sql": "INSERT INTO ag_t VALUES ('a',10,1),('a',20,2),('a',30,3),('a',40,4),('b',50,5),('b',60,6),('c',70,7),('c',80,8)"},
+      {"sql": "ALTER TABLE ag_t SET AGGREGATION POLICY ap_3"},
+      {"sql": "SELECT dept, COUNT(*) FROM ag_t GROUP BY dept ORDER BY dept",
+       "expect": {"rows": [["a", "4"], ["NULL", "4"]], "ordered": true}},
+      {"sql": "SELECT dept, SUM(sal) FROM ag_t GROUP BY dept ORDER BY dept",
+       "expect": {"rows": [["a", "100"], ["NULL", "260"]], "ordered": true}}
+    ]},
+    {"name": "distinct-folds-the-same-way", "steps": [
+      {"sql": "CREATE AGGREGATION POLICY ap_3 AS () RETURNS AGGREGATION_CONSTRAINT -> AGGREGATION_CONSTRAINT(MIN_GROUP_SIZE => 3)"},
+      {"sql": "CREATE TABLE ag_t (dept VARCHAR, sal NUMBER, eid NUMBER)"},
+      {"sql": "INSERT INTO ag_t VALUES ('a',10,1),('a',20,2),('a',30,3),('a',40,4),('b',50,5),('b',60,6),('c',70,7),('c',80,8)"},
+      {"sql": "ALTER TABLE ag_t SET AGGREGATION POLICY ap_3"},
+      {"sql": "SELECT DISTINCT dept FROM ag_t ORDER BY dept",
+       "expect": {"rows": [["a"], ["NULL"]], "ordered": true}}
+    ]},
+    {"name": "a-multi-column-distinct-nulls-every-key", "steps": [
+      {"sql": "CREATE AGGREGATION POLICY ap_3 AS () RETURNS AGGREGATION_CONSTRAINT -> AGGREGATION_CONSTRAINT(MIN_GROUP_SIZE => 3)"},
+      {"sql": "CREATE TABLE ag_t (dept VARCHAR, sal NUMBER, eid NUMBER)"},
+      {"sql": "INSERT INTO ag_t VALUES ('a',10,1),('a',20,2),('a',30,3),('a',40,4),('b',50,5),('b',60,6),('c',70,7),('c',80,8)"},
+      {"sql": "ALTER TABLE ag_t SET AGGREGATION POLICY ap_3"},
+      {"sql": "SELECT DISTINCT dept, sal FROM ag_t ORDER BY dept, sal",
+       "expect": {"rows": [["NULL", "NULL"]]}}
+    ]},
+    {"name": "distinct-emits-the-remainder-row-regardless", "steps": [
+      {"sql": "CREATE AGGREGATION POLICY ap_3 AS () RETURNS AGGREGATION_CONSTRAINT -> AGGREGATION_CONSTRAINT(MIN_GROUP_SIZE => 3)"},
+      {"sql": "CREATE TABLE ag_s (dept VARCHAR)"},
+      {"sql": "INSERT INTO ag_s VALUES ('a'),('a'),('a'),('a'),('b')"},
+      {"sql": "ALTER TABLE ag_s SET AGGREGATION POLICY ap_3"},
+      {"sql": "SELECT DISTINCT dept FROM ag_s ORDER BY dept",
+       "expect": {"rows": [["a"], ["NULL"]], "ordered": true}}
+    ]},
+    {"name": "distinct-counts-entities-when-a-key-names-them", "steps": [
+      {"sql": "CREATE AGGREGATION POLICY ap_3 AS () RETURNS AGGREGATION_CONSTRAINT -> AGGREGATION_CONSTRAINT(MIN_GROUP_SIZE => 3)"},
+      {"sql": "CREATE TABLE ag_t (dept VARCHAR, sal NUMBER, eid NUMBER)"},
+      {"sql": "INSERT INTO ag_t VALUES ('a',10,1),('a',20,2),('a',30,3),('a',40,4),('b',50,5),('b',60,6),('c',70,7),('c',80,8)"},
+      {"sql": "ALTER TABLE ag_t SET AGGREGATION POLICY ap_3 ENTITY KEY (dept)"},
+      {"sql": "SELECT DISTINCT dept FROM ag_t ORDER BY dept", "expect": {"rows": [["NULL"]]}}
+    ]},
+    {"name": "a-grouped-query-without-an-aggregate-folds-too", "steps": [
+      {"sql": "CREATE AGGREGATION POLICY ap_3 AS () RETURNS AGGREGATION_CONSTRAINT -> AGGREGATION_CONSTRAINT(MIN_GROUP_SIZE => 3)"},
+      {"sql": "CREATE TABLE ag_t (dept VARCHAR, sal NUMBER, eid NUMBER)"},
+      {"sql": "INSERT INTO ag_t VALUES ('a',10,1),('a',20,2),('a',30,3),('a',40,4),('b',50,5),('b',60,6),('c',70,7),('c',80,8)"},
+      {"sql": "ALTER TABLE ag_t SET AGGREGATION POLICY ap_3"},
+      {"sql": "SELECT dept FROM ag_t GROUP BY dept ORDER BY dept",
+       "expect": {"rows": [["a"], ["NULL"]], "ordered": true}}
+    ]},
+    {"name": "an-entity-key-changes-what-counts", "steps": [
+      {"sql": "CREATE AGGREGATION POLICY ap_3 AS () RETURNS AGGREGATION_CONSTRAINT -> AGGREGATION_CONSTRAINT(MIN_GROUP_SIZE => 3)"},
+      {"sql": "CREATE TABLE ag_t (dept VARCHAR, sal NUMBER, eid NUMBER)"},
+      {"sql": "INSERT INTO ag_t VALUES ('a',10,1),('a',20,2),('a',30,3),('a',40,4),('b',50,5),('b',60,6),('c',70,7),('c',80,8)"},
+      {"sql": "ALTER TABLE ag_t SET AGGREGATION POLICY ap_3 ENTITY KEY (dept)"},
+      {"sql": "SELECT dept, COUNT(*) FROM ag_t GROUP BY dept ORDER BY dept",
+       "expect": {"rows": [["NULL", "8"]]}}
+    ]},
+    {"name": "the-aggregates-that-would-leak-a-row-are-refused", "steps": [
+      {"sql": "CREATE AGGREGATION POLICY ap_3 AS () RETURNS AGGREGATION_CONSTRAINT -> AGGREGATION_CONSTRAINT(MIN_GROUP_SIZE => 3)"},
+      {"sql": "CREATE TABLE ag_t (dept VARCHAR, sal NUMBER, eid NUMBER)"},
+      {"sql": "INSERT INTO ag_t VALUES ('a',10,1),('a',20,2),('a',30,3),('a',40,4),('b',50,5),('b',60,6),('c',70,7),('c',80,8)"},
+      {"sql": "ALTER TABLE ag_t SET AGGREGATION POLICY ap_3"},
+      {"sql": "SELECT MIN(sal) FROM ag_t",
+       "expect": {"error": {"messageContains": "SQL compilation error: MIN(SAL) violated Aggregation Policy."}}},
+      {"sql": "SELECT MAX(sal) FROM ag_t",
+       "expect": {"error": {"messageContains": "SQL compilation error: MAX(SAL) violated Aggregation Policy."}}},
+      {"sql": "SELECT MEDIAN(sal) FROM ag_t",
+       "expect": {"error": {"messageContains": "SQL compilation error: MEDIAN(SAL) violated Aggregation Policy."}}},
+      {"sql": "SELECT VARIANCE(sal) FROM ag_t",
+       "expect": {"error": {"messageContains": "SQL compilation error: VARIANCE(SAL) violated Aggregation Policy."}}},
+      {"sql": "SELECT ARRAY_AGG(sal) FROM ag_t",
+       "expect": {"error": {"messageContains": "SQL compilation error: ARRAY_AGG(SAL) violated Aggregation Policy."}}}
+    ]},
+    {"name": "stddev-is-allowed", "steps": [
+      {"sql": "CREATE AGGREGATION POLICY ap_3 AS () RETURNS AGGREGATION_CONSTRAINT -> AGGREGATION_CONSTRAINT(MIN_GROUP_SIZE => 3)"},
+      {"sql": "CREATE TABLE ag_t (dept VARCHAR, sal NUMBER, eid NUMBER)"},
+      {"sql": "INSERT INTO ag_t VALUES ('a',10,1),('a',20,2),('a',30,3),('a',40,4),('b',50,5),('b',60,6),('c',70,7),('c',80,8)"},
+      {"sql": "ALTER TABLE ag_t SET AGGREGATION POLICY ap_3"},
+      {"sql": "SELECT STDDEV(sal) FROM ag_t", "expect": {"rowCount": 1}}
+    ]},
+    {"name": "an-inner-select-may-read-rows", "steps": [
+      {"sql": "CREATE AGGREGATION POLICY ap_3 AS () RETURNS AGGREGATION_CONSTRAINT -> AGGREGATION_CONSTRAINT(MIN_GROUP_SIZE => 3)"},
+      {"sql": "CREATE TABLE ag_t (dept VARCHAR, sal NUMBER, eid NUMBER)"},
+      {"sql": "INSERT INTO ag_t VALUES ('a',10,1),('a',20,2),('a',30,3),('a',40,4),('b',50,5),('b',60,6),('c',70,7),('c',80,8)"},
+      {"sql": "ALTER TABLE ag_t SET AGGREGATION POLICY ap_3"},
+      {"sql": "SELECT COUNT(*) FROM (SELECT * FROM ag_t)", "expect": {"value": "8"}}
+    ]},
+    {"name": "a-policy-that-constrains-nothing-lets-everything-through", "steps": [
+      {"sql": "CREATE AGGREGATION POLICY ap_none AS () RETURNS AGGREGATION_CONSTRAINT -> NO_AGGREGATION_CONSTRAINT()"},
+      {"sql": "CREATE TABLE ag_t (dept VARCHAR, sal NUMBER, eid NUMBER)"},
+      {"sql": "INSERT INTO ag_t VALUES ('a',10,1),('a',20,2),('a',30,3),('a',40,4),('b',50,5),('b',60,6),('c',70,7),('c',80,8)"},
+      {"sql": "ALTER TABLE ag_t SET AGGREGATION POLICY ap_none"},
+      {"sql": "SELECT dept FROM ag_t", "expect": {"rowCount": 8}}
+    ]},
+    {"name": "get-ddl-renders-the-attachment", "steps": [
+      {"sql": "CREATE AGGREGATION POLICY ap_3 AS () RETURNS AGGREGATION_CONSTRAINT -> AGGREGATION_CONSTRAINT(MIN_GROUP_SIZE => 3)"},
+      {"sql": "CREATE TABLE ag_t (dept VARCHAR, sal NUMBER, eid NUMBER)"},
+      {"sql": "ALTER TABLE ag_t SET AGGREGATION POLICY ap_3 ENTITY KEY (eid)"},
+      {"sql": "SELECT CONTAINS(GET_DDL('TABLE', 'ag_t'), 'WITH AGGREGATION POLICY TEST_DB.TEST_SCHEMA.AP_3 ENTITY KEY (EID)')",
+       "expect": {"value": "true"}}
+    ]},
+    {"name": "an-attached-policy-cannot-be-dropped", "steps": [
+      {"sql": "CREATE AGGREGATION POLICY ap_3 AS () RETURNS AGGREGATION_CONSTRAINT -> AGGREGATION_CONSTRAINT(MIN_GROUP_SIZE => 3)"},
+      {"sql": "CREATE TABLE ag_t (dept VARCHAR, sal NUMBER, eid NUMBER)"},
+      {"sql": "ALTER TABLE ag_t SET AGGREGATION POLICY ap_3"},
+      {"sql": "DROP AGGREGATION POLICY ap_3",
+       "expect": {"error": {"messageContains": "SQL compilation error: Policy AP_3 cannot be dropped/replaced as it is associated with one or more entities."}}}
+    ]},
+    {"name": "a-table-may-carry-one-from-the-start", "steps": [
+      {"sql": "CREATE AGGREGATION POLICY ap_3 AS () RETURNS AGGREGATION_CONSTRAINT -> AGGREGATION_CONSTRAINT(MIN_GROUP_SIZE => 3)"},
+      {"sql": "CREATE TABLE ag_t2 (n NUMBER) WITH AGGREGATION POLICY ap_3"},
+      {"sql": "INSERT INTO ag_t2 VALUES (1), (2), (3)"},
+      {"sql": "SELECT COUNT(*) FROM ag_t2", "expect": {"value": "3"}}
+    ]},
+    {"name": "the-new-keywords-remain-usable-as-names", "steps": [
+      {"sql": "CREATE TABLE aggregation (aggregation NUMBER, entity NUMBER)"},
+      {"sql": "INSERT INTO aggregation VALUES (1, 2)"},
+      {"sql": "SELECT aggregation FROM aggregation", "expect": {"value": "1"}}
+    ]}
+  ]
+}

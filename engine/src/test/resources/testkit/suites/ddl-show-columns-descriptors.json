@@ -1,0 +1,133 @@
+{
+  "suite": "ddl-show-columns-descriptors",
+  "description": "SHOW COLUMNS' data_type JSON descriptors in Snowflake's internal vocabulary (VARCHAR is TEXT, exact numerics FIXED, approximate REAL; strings 4 bytes per char with fixed:false CHAR included, BINARY fixed:true; time/timestamp precision reported as scale with precision pinned 0; structured OBJECT/ARRAY/MAP/VECTOR nesting per-field descriptors with a never-nullable MAP key) - plus SHOW COLUMNS IN VIEW describing the frozen column list under the view's full search path (types carried through star/renames/aliases, the view's own comments as empty-string-never-NULL, the full-path requirement). All live-measured. Converted 1:1 from ddl/ShowColumnsDataTypeTest and ShowColumnsInViewTest (both now retired).",
+  "tags": ["ddl", "converted"],
+  "tests": [
+    {"name": "every-type-describes-itself-in-snowflakes-vocabulary", "steps": [
+      {"sql": "CREATE TABLE sc_t (c0 NUMBER(10,2), c1 INT, c2 FLOAT, c3 DOUBLE, c4 VARCHAR(9), c5 VARCHAR, c6 CHAR(4), c7 BOOLEAN, c8 DATE, c9 TIME(3), c10 TIME, c11 TIMESTAMP, c12 TIMESTAMP_LTZ, c13 TIMESTAMP_TZ(6), c14 BINARY(20), c15 BINARY, c16 VARIANT, c17 OBJECT, c18 ARRAY, c19 GEOGRAPHY, c20 GEOMETRY)"},
+      {"sql": "SHOW COLUMNS IN TABLE sc_t", "expect": {"rowCount": 21}},
+      {"sql": "SELECT \"column_name\", \"data_type\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [
+         ["C0", "{\"type\":\"FIXED\",\"precision\":10,\"scale\":2,\"nullable\":true}"],
+         ["C1", "{\"type\":\"FIXED\",\"precision\":38,\"scale\":0,\"nullable\":true}"],
+         ["C2", "{\"type\":\"REAL\",\"nullable\":true}"],
+         ["C3", "{\"type\":\"REAL\",\"nullable\":true}"],
+         ["C4", "{\"type\":\"TEXT\",\"length\":9,\"byteLength\":36,\"nullable\":true,\"fixed\":false}"],
+         ["C5", "{\"type\":\"TEXT\",\"length\":16777216,\"byteLength\":67108864,\"nullable\":true,\"fixed\":false}"],
+         ["C6", "{\"type\":\"TEXT\",\"length\":4,\"byteLength\":16,\"nullable\":true,\"fixed\":false}"],
+         ["C7", "{\"type\":\"BOOLEAN\",\"nullable\":true}"],
+         ["C8", "{\"type\":\"DATE\",\"nullable\":true}"],
+         ["C9", "{\"type\":\"TIME\",\"precision\":0,\"scale\":3,\"nullable\":true}"],
+         ["C10", "{\"type\":\"TIME\",\"precision\":0,\"scale\":9,\"nullable\":true}"],
+         ["C11", "{\"type\":\"TIMESTAMP_NTZ\",\"precision\":0,\"scale\":9,\"nullable\":true}"],
+         ["C12", "{\"type\":\"TIMESTAMP_LTZ\",\"precision\":0,\"scale\":9,\"nullable\":true}"],
+         ["C13", "{\"type\":\"TIMESTAMP_TZ\",\"precision\":0,\"scale\":6,\"nullable\":true}"],
+         ["C14", "{\"type\":\"BINARY\",\"length\":20,\"byteLength\":20,\"nullable\":true,\"fixed\":true}"],
+         ["C15", "{\"type\":\"BINARY\",\"length\":8388608,\"byteLength\":8388608,\"nullable\":true,\"fixed\":true}"],
+         ["C16", "{\"type\":\"VARIANT\",\"nullable\":true}"],
+         ["C17", "{\"type\":\"OBJECT\",\"nullable\":true}"],
+         ["C18", "{\"type\":\"ARRAY\",\"nullable\":true}"],
+         ["C19", "{\"type\":\"GEOGRAPHY\",\"outputType\":\"OBJECT\",\"nullable\":true}"],
+         ["C20", "{\"type\":\"GEOMETRY\",\"outputType\":\"OBJECT\",\"nullable\":true}"]
+       ], "ordered": true}}
+    ]},
+    {"name": "a-not-null-column-is-not-nullable-inside-the-descriptor-too", "steps": [
+      {"sql": "CREATE TABLE sc_nn (id NUMBER(5,1) NOT NULL, txt VARCHAR(4))"},
+      {"sql": "SHOW COLUMNS IN TABLE sc_nn"},
+      {"sql": "SELECT \"column_name\", \"data_type\", \"null?\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) ORDER BY \"column_name\" DESC",
+       "expect": {"rows": [
+         ["TXT", "{\"type\":\"TEXT\",\"length\":4,\"byteLength\":16,\"nullable\":true,\"fixed\":false}", "true"],
+         ["ID", "{\"type\":\"FIXED\",\"precision\":5,\"scale\":1,\"nullable\":false}", "NOT_NULL"]
+       ], "ordered": true}}
+    ]},
+    {"name": "a-structured-object-nests-its-fields", "steps": [
+      {"sql": "CREATE TABLE sc_so (o OBJECT(a VARCHAR, b NUMBER))"},
+      {"sql": "SHOW COLUMNS IN TABLE sc_so"},
+      {"sql": "SELECT \"data_type\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"column_name\" = 'O'",
+       "expect": {"value": "{\"type\":\"OBJECT\",\"nullable\":true,\"fields\":[{\"fieldName\":\"a\",\"fieldType\":{\"type\":\"TEXT\",\"length\":16777216,\"byteLength\":67108864,\"nullable\":true,\"fixed\":false}},{\"fieldName\":\"b\",\"fieldType\":{\"type\":\"FIXED\",\"precision\":38,\"scale\":0,\"nullable\":true}}]}"}}
+    ]},
+    {"name": "a-structured-array-nests-its-element-type", "steps": [
+      {"sql": "CREATE TABLE sc_sa (a ARRAY(NUMBER))"},
+      {"sql": "SHOW COLUMNS IN TABLE sc_sa"},
+      {"sql": "SELECT \"data_type\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"column_name\" = 'A'",
+       "expect": {"value": "{\"type\":\"ARRAY\",\"nullable\":true,\"elementType\":{\"type\":\"FIXED\",\"precision\":38,\"scale\":0,\"nullable\":true}}"}}
+    ]},
+    {"name": "a-map-nests-a-key-that-is-never-nullable", "steps": [
+      {"sql": "CREATE TABLE sc_sm (m MAP(VARCHAR, NUMBER))"},
+      {"sql": "SHOW COLUMNS IN TABLE sc_sm"},
+      {"sql": "SELECT \"data_type\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"column_name\" = 'M'",
+       "expect": {"value": "{\"type\":\"MAP\",\"nullable\":true,\"keyType\":{\"type\":\"TEXT\",\"length\":16777216,\"byteLength\":67108864,\"nullable\":false,\"fixed\":false},\"valueType\":{\"type\":\"FIXED\",\"precision\":38,\"scale\":0,\"nullable\":true}}"}}
+    ]},
+    {"name": "a-float-vector-describes-a-real-element", "steps": [
+      {"sql": "CREATE TABLE sc_vf (v VECTOR(FLOAT, 3))"},
+      {"sql": "SHOW COLUMNS IN TABLE sc_vf"},
+      {"sql": "SELECT \"data_type\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"column_name\" = 'V'",
+       "expect": {"value": "{\"type\":\"VECTOR\",\"nullable\":true,\"vectorElementType\":{\"type\":\"REAL\",\"nullable\":false},\"dimension\":3}"}}
+    ]},
+    {"name": "an-int-vector-describes-a-fixed-element", "steps": [
+      {"sql": "CREATE TABLE sc_vi (v VECTOR(INT, 2))"},
+      {"sql": "SHOW COLUMNS IN TABLE sc_vi"},
+      {"sql": "SELECT \"data_type\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"column_name\" = 'V'",
+       "expect": {"value": "{\"type\":\"VECTOR\",\"nullable\":true,\"vectorElementType\":{\"type\":\"FIXED\",\"precision\":38,\"scale\":0,\"nullable\":false},\"dimension\":2}"}}
+    ]},
+    {"name": "a-view-without-a-column-list-describes-its-columns", "steps": [
+      {"sql": "CREATE TABLE vc_base (id NUMBER(5,1), txt VARCHAR(9), d DATE)"},
+      {"sql": "CREATE VIEW vc_plain AS SELECT id, txt, d FROM vc_base"},
+      {"sql": "SHOW COLUMNS IN VIEW test_db.test_schema.vc_plain", "expect": {"rowCount": 3}},
+      {"sql": "SELECT \"column_name\", \"data_type\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [
+         ["ID", "{\"type\":\"FIXED\",\"precision\":5,\"scale\":1,\"nullable\":true}"],
+         ["TXT", "{\"type\":\"TEXT\",\"length\":9,\"byteLength\":36,\"nullable\":true,\"fixed\":false}"],
+         ["D", "{\"type\":\"DATE\",\"nullable\":true}"]
+       ], "ordered": true}}
+    ]},
+    {"name": "select-star-carries-every-column-of-the-base", "steps": [
+      {"sql": "CREATE TABLE vc_base (id NUMBER(5,1), txt VARCHAR(9), d DATE)"},
+      {"sql": "CREATE VIEW vc_star AS SELECT * FROM vc_base"},
+      {"sql": "SHOW COLUMNS IN VIEW test_db.test_schema.vc_star", "expect": {"rowCount": 3}},
+      {"sql": "SELECT \"data_type\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"column_name\" = 'TXT'",
+       "expect": {"value": "{\"type\":\"TEXT\",\"length\":9,\"byteLength\":36,\"nullable\":true,\"fixed\":false}"}}
+    ]},
+    {"name": "a-declared-column-list-renames-but-keeps-the-types", "steps": [
+      {"sql": "CREATE TABLE vc_base (id NUMBER(5,1), txt VARCHAR(9), d DATE)"},
+      {"sql": "CREATE VIEW vc_named (a, b) AS SELECT id, txt FROM vc_base"},
+      {"sql": "SHOW COLUMNS IN VIEW test_db.test_schema.vc_named", "expect": {"rowCount": 2}},
+      {"sql": "SELECT \"column_name\", \"data_type\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [
+         ["A", "{\"type\":\"FIXED\",\"precision\":5,\"scale\":1,\"nullable\":true}"],
+         ["B", "{\"type\":\"TEXT\",\"length\":9,\"byteLength\":36,\"nullable\":true,\"fixed\":false}"]
+       ], "ordered": true}}
+    ]},
+    {"name": "an-aliased-item-is-reported-under-its-alias", "steps": [
+      {"sql": "CREATE TABLE vc_base (id NUMBER(5,1), txt VARCHAR(9), d DATE)"},
+      {"sql": "CREATE VIEW vc_alias AS SELECT txt AS renamed FROM vc_base"},
+      {"sql": "SHOW COLUMNS IN VIEW test_db.test_schema.vc_alias"},
+      {"sql": "SELECT \"data_type\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"column_name\" = 'RENAMED'",
+       "expect": {"value": "{\"type\":\"TEXT\",\"length\":9,\"byteLength\":36,\"nullable\":true,\"fixed\":false}"}}
+    ]},
+    {"name": "the-row-names-the-view-and-its-container", "steps": [
+      {"sql": "CREATE TABLE vc_base (id NUMBER(5,1), txt VARCHAR(9), d DATE)"},
+      {"sql": "CREATE VIEW vc_where AS SELECT txt FROM vc_base"},
+      {"sql": "SHOW COLUMNS IN VIEW test_db.test_schema.vc_where"},
+      {"sql": "SELECT \"table_name\", \"schema_name\", \"database_name\", \"kind\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["VC_WHERE", "TEST_SCHEMA", "TEST_DB", "COLUMN"]]}}
+    ]},
+    {"name": "the-comment-cell-is-the-views-own", "steps": [
+      {"sql": "CREATE TABLE vc_cmt (k NUMBER COMMENT 'base cmt', w VARCHAR(4))"},
+      {"sql": "CREATE VIEW vc_vc (a COMMENT 'col cmt', b) AS SELECT k, w FROM vc_cmt"},
+      {"sql": "SHOW COLUMNS IN VIEW test_db.test_schema.vc_vc"},
+      {"sql": "SELECT \"column_name\", '<' || \"comment\" || '>' FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["A", "<col cmt>"], ["B", "<>"]], "ordered": true}},
+      {"sql": "CREATE VIEW vc_vp AS SELECT k, w FROM vc_cmt"},
+      {"sql": "SHOW COLUMNS IN VIEW test_db.test_schema.vc_vp"},
+      {"sql": "SELECT \"column_name\", '<' || \"comment\" || '>' FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["K", "<>"], ["W", "<>"]], "ordered": true}}
+    ]},
+    {"name": "an-unqualified-view-name-is-refused", "steps": [
+      {"sql": "CREATE TABLE vc_base (id NUMBER(5,1), txt VARCHAR(9), d DATE)"},
+      {"sql": "CREATE VIEW vc_short AS SELECT txt FROM vc_base"},
+      {"sql": "SHOW COLUMNS IN VIEW vc_short",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nMust specify the full search path starting from database for VC_SHORT"}}}
+    ]}
+  ]
+}

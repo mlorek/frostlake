@@ -1,0 +1,85 @@
+{
+  "suite": "query-cte-alignment",
+  "description": "CTE alignment with Snowflake across three areas: COLUMN ALIASES in the definition, RECURSIVE CTEs, and CTEs inside UPDATE / DELETE / MERGE / INSERT. A definition's column list renames the projected columns, over a literal projection, over a table's own columns and over an aggregation alike. The RECURSIVE keyword is OPTIONAL: a CTE that references its own name as a table source recurses with or without it - requiring the keyword made a keywordless closure fail with 'Table does not exist', the shape production transitive-relationship loaders use. Self-reference detection is by the PARSE TREE, a FROM-item named like the CTE, so a CTE named like a column, a function, or a substring of other text stays non-recursive. Converted 1:1 from query/CTEAlignmentTest (now retired); the Java asserted a row COUNT for most recursive cases and read one or two indexes for the rest, and the converted tests assert the whole ordered row set - the factorial series is now pinned at every step rather than only at 6! = 720, and the transitive closure names its six pairs rather than counting them.",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "cte-column-aliases", "steps": [
+      {"sql": "WITH cte(a, b) AS (SELECT 1, 'hello') SELECT a, b FROM cte", "expect": {"rows": [[1, "hello"]], "columns": ["A", "B"]}}
+    ]},
+    {"name": "cte-column-aliases-rename-from-a-table", "steps": [
+      {"sql": "CREATE TABLE nums (x INTEGER, y INTEGER)"},
+      {"sql": "INSERT INTO nums VALUES (10, 20)"},
+      {"sql": "WITH cte(val_a, val_b) AS (SELECT x, y FROM nums) SELECT val_a, val_b FROM cte", "expect": {"rows": [[10, 20]], "columns": ["VAL_A", "VAL_B"]}}
+    ]},
+    {"name": "cte-column-aliases-with-aggregation", "steps": [
+      {"sql": "CREATE TABLE sales (dept VARCHAR, amount DOUBLE)"},
+      {"sql": "INSERT INTO sales VALUES ('A', 100), ('A', 200), ('B', 300)"},
+      {"sql": "WITH dept_totals(department, total) AS (SELECT dept, SUM(amount) FROM sales GROUP BY dept) SELECT department, total FROM dept_totals ORDER BY department", "expect": {"rows": [["A", 300], ["B", 300]], "ordered": true, "columns": ["DEPARTMENT", "TOTAL"]}}
+    ]},
+    {"name": "the-recursive-keyword-is-optional", "steps": [
+      {"sql": "WITH counter AS (SELECT 1 AS n UNION ALL SELECT n + 1 FROM counter WHERE n < 5) SELECT n FROM counter ORDER BY n", "expect": {"rows": [[1],[2],[3],[4],[5]], "ordered": true}}
+    ]},
+    {"name": "a-keywordless-closure-with-a-cycle-guard-and-a-second-cte", "steps": [
+      {"sql": "CREATE TABLE edges (src VARCHAR, tgt VARCHAR)"},
+      {"sql": "INSERT INTO edges VALUES ('a1','a2'),('a2','a3'),('a3','a4')"},
+      {"sql": "WITH walk AS (SELECT src AS parent, tgt AS child, ARRAY_CONSTRUCT(src, tgt) AS vec FROM edges UNION ALL SELECT w.parent, e.tgt, ARRAY_APPEND(w.vec, e.tgt::VARIANT) FROM walk w JOIN edges e ON w.child = e.src WHERE NOT ARRAY_CONTAINS(e.tgt::VARIANT, w.vec)), dedup AS (SELECT DISTINCT parent, child FROM walk) SELECT parent, child FROM dedup ORDER BY parent, child", "expect": {"rows": [["a1","a2"],["a1","a3"],["a1","a4"],["a2","a3"],["a2","a4"],["a3","a4"]], "ordered": true}}
+    ]},
+    {"name": "a-cte-whose-name-merely-appears-in-text-is-not-recursive", "steps": [
+      {"sql": "CREATE TABLE vals (r INTEGER, rr INTEGER)"},
+      {"sql": "INSERT INTO vals VALUES (1, 10), (2, 20)"},
+      {"sql": "WITH r AS (SELECT r, rr, UPPER('rush') AS s FROM vals) SELECT COUNT(*) FROM r", "expect": {"value": "2"}}
+    ]},
+    {"name": "a-recursive-cte-simple-counter", "steps": [
+      {"sql": "WITH RECURSIVE counter(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM counter WHERE n < 5) SELECT n FROM counter ORDER BY n", "expect": {"rows": [[1],[2],[3],[4],[5]], "ordered": true}}
+    ]},
+    {"name": "a-recursive-cte-over-a-hierarchy", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, manager_id INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', NULL)"},
+      {"sql": "INSERT INTO employees VALUES (2, 'Bob', 1)"},
+      {"sql": "INSERT INTO employees VALUES (3, 'Charlie', 1)"},
+      {"sql": "INSERT INTO employees VALUES (4, 'Dave', 2)"},
+      {"sql": "WITH RECURSIVE org(id, name, manager_id) AS (SELECT id, name, manager_id FROM employees WHERE id = 1 UNION ALL SELECT e.id, e.name, e.manager_id FROM employees e JOIN org ON e.manager_id = org.id) SELECT name FROM org ORDER BY id", "expect": {"rows": [["Alice"],["Bob"],["Charlie"],["Dave"]], "ordered": true}}
+    ]},
+    {"name": "a-recursive-cte-computing-factorials", "steps": [
+      {"sql": "WITH RECURSIVE fact(n, f) AS (SELECT 1, 1 UNION ALL SELECT n + 1, f * (n + 1) FROM fact WHERE n < 6) SELECT n, f FROM fact ORDER BY n", "expect": {"rows": [[1,1],[2,2],[3,6],[4,24],[5,120],[6,720]], "ordered": true}}
+    ]},
+    {"name": "a-recursive-cte-with-column-aliases", "steps": [
+      {"sql": "WITH RECURSIVE nums(val) AS (SELECT 1 UNION ALL SELECT val + 1 FROM nums WHERE val < 3) SELECT val FROM nums ORDER BY val", "expect": {"rows": [[1],[2],[3]], "ordered": true}}
+    ]},
+    {"name": "a-cte-in-update", "steps": [
+      {"sql": "CREATE TABLE products (id INTEGER, price DOUBLE, category VARCHAR)"},
+      {"sql": "INSERT INTO products VALUES (1, 100.0, 'A'), (2, 200.0, 'B'), (3, 150.0, 'A')"},
+      {"sql": "UPDATE products SET price = price * 0.9 WHERE id IN (WITH discounted AS (SELECT id FROM products WHERE category = 'A') SELECT id FROM discounted)"},
+      {"sql": "SELECT id, price FROM products ORDER BY id", "expect": {"rows": [[1, 90], [2, 200], [3, 135]], "ordered": true}}
+    ]},
+    {"name": "a-cte-in-update-over-a-boolean-filter", "steps": [
+      {"sql": "CREATE TABLE items (id INTEGER, active BOOLEAN, score INTEGER)"},
+      {"sql": "INSERT INTO items VALUES (1, true, 10), (2, false, 20), (3, true, 30)"},
+      {"sql": "UPDATE items SET score = score + 5 WHERE id IN (WITH active_items AS (SELECT id FROM items WHERE active = true) SELECT id FROM active_items)"},
+      {"sql": "SELECT id, score FROM items ORDER BY id", "expect": {"rows": [[1, 15], [2, 20], [3, 35]], "ordered": true}}
+    ]},
+    {"name": "a-cte-in-delete", "steps": [
+      {"sql": "CREATE TABLE logs (id INTEGER, level VARCHAR, message VARCHAR)"},
+      {"sql": "INSERT INTO logs VALUES (1, 'INFO', 'msg1'), (2, 'ERROR', 'msg2'), (3, 'INFO', 'msg3')"},
+      {"sql": "DELETE FROM logs WHERE id IN (WITH to_delete AS (SELECT id FROM logs WHERE level = 'INFO') SELECT id FROM to_delete)"},
+      {"sql": "SELECT id, level FROM logs ORDER BY id", "expect": {"rows": [[2, "ERROR"]], "ordered": true}}
+    ]},
+    {"name": "a-cte-in-delete-with-a-not-in-filter", "steps": [
+      {"sql": "CREATE TABLE orders (id INTEGER, customer_id INTEGER, total DOUBLE)"},
+      {"sql": "INSERT INTO orders VALUES (1, 1, 50.0), (2, 1, 30.0), (3, 2, 200.0), (4, 2, 5.0)"},
+      {"sql": "DELETE FROM orders WHERE id NOT IN (WITH high_value AS (SELECT id FROM orders WHERE total >= 100.0) SELECT id FROM high_value)"},
+      {"sql": "SELECT id, total FROM orders ORDER BY id", "expect": {"rows": [[3, 200]], "ordered": true}}
+    ]},
+    {"name": "a-cte-in-merge", "steps": [
+      {"sql": "CREATE TABLE target (id INTEGER, val VARCHAR)"},
+      {"sql": "INSERT INTO target VALUES (1, 'old1'), (2, 'old2')"},
+      {"sql": "MERGE INTO target t USING (WITH new_data AS (SELECT 2 AS id, 'updated2' AS val UNION ALL SELECT 3 AS id, 'new3' AS val) SELECT id, val FROM new_data) s ON t.id = s.id WHEN MATCHED THEN UPDATE SET val = s.val WHEN NOT MATCHED THEN INSERT (id, val) VALUES (s.id, s.val)"},
+      {"sql": "SELECT id, val FROM target ORDER BY id", "expect": {"rows": [[1, "old1"], [2, "updated2"], [3, "new3"]], "ordered": true}}
+    ]},
+    {"name": "a-recursive-cte-feeding-an-insert", "steps": [
+      {"sql": "CREATE TABLE series (n INTEGER)"},
+      {"sql": "INSERT INTO series WITH RECURSIVE s(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM s WHERE n < 5) SELECT n FROM s"},
+      {"sql": "SELECT n FROM series ORDER BY n", "expect": {"rows": [[1],[2],[3],[4],[5]], "ordered": true}}
+    ]}
+  ]
+}

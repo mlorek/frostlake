@@ -1,0 +1,60 @@
+{
+  "suite": "udf-return-type-parameters",
+  "description": "A Java routine's RETURNS clause may carry TYPE PARAMETERS - VARCHAR(100), DECIMAL(10,2), NUMBER(5), TIMESTAMP(9), TIMESTAMP_NTZ(6), and for procedures VARCHAR(50) and DECIMAL(15,4) - and the routine still creates and answers. The parameters are part of the signature's shape but not of its identity: two overloads may declare different return widths, and CREATE OR REPLACE may widen the return type of an existing routine, after which the new handler's longer value comes back whole. Declaring no parameters at all keeps working, which is the backward-compatible case. Converted 1:1 from udf/ReturnTypeParametersTest (now retired), a JDBC test whose statements are all plain SQL. Five tests carried Assumptions.assumeFalse(isLiveSnowflake()) and become skip snowflake with those reasons kept: Snowflake validates a Java handler's signature against the declared SQL type far more strictly - NUMBER and DECIMAL will not accept a double handler and TIMESTAMP will not accept a String one - and a Java stored procedure there must take a Session as its first handler argument.",
+  "tags": ["udf", "converted"],
+  "tests": [
+    {"name": "a-function-returning-varchar-with-a-length", "steps": [
+      {"sql": "CREATE FUNCTION get_text()\nRETURNS VARCHAR(100)\nLANGUAGE JAVA\nHANDLER = 'TextGetter.getText'\nAS $$\nclass TextGetter {\n  public static String getText() {\n    return \"Hello World\";\n  }\n}\n$$"},
+      {"sql": "SELECT get_text()", "expect": {"value": "Hello World"}}
+    ]},
+    {"name": "a-function-returning-decimal-with-precision-and-scale",
+     "skip": {"backends": ["snowflake"], "reason": "Snowflake validates a Java UDF handler's signature against the declared SQL type far more strictly than frostlake: NUMBER/DECIMAL will not accept a double handler, so this handler is rejected outright on a real account"},
+     "steps": [
+      {"sql": "CREATE FUNCTION get_price()\nRETURNS DECIMAL(10,2)\nLANGUAGE JAVA\nHANDLER = 'PriceGetter.getPrice'\nAS $$\nclass PriceGetter {\n  public static double getPrice() {\n    return 99.99;\n  }\n}\n$$"},
+      {"sql": "SELECT get_price()", "expect": {"value": 99.99}}
+    ]},
+    {"name": "a-function-returning-number-with-a-precision", "steps": [
+      {"sql": "CREATE FUNCTION get_count()\nRETURNS NUMBER(5)\nLANGUAGE JAVA\nHANDLER = 'Counter.getCount'\nAS $$\nclass Counter {\n  public static int getCount() {\n    return 12345;\n  }\n}\n$$"},
+      {"sql": "SELECT get_count()", "expect": {"value": 12345}}
+    ]},
+    {"name": "a-function-returning-timestamp-with-a-precision",
+     "skip": {"backends": ["snowflake"], "reason": "Snowflake validates a Java UDF handler's signature against the declared SQL type far more strictly than frostlake: TIMESTAMP will not accept a String handler, so this handler is rejected outright on a real account"},
+     "steps": [
+      {"sql": "CREATE FUNCTION get_timestamp()\nRETURNS TIMESTAMP(9)\nLANGUAGE JAVA\nHANDLER = 'TimestampGetter.getTimestamp'\nAS $$\nclass TimestampGetter {\n  public static String getTimestamp() {\n    return \"2024-01-01 12:00:00.123456789\";\n  }\n}\n$$"},
+      {"sql": "SELECT TO_VARCHAR(get_timestamp())", "expect": {"value": "2024-01-01 12:00:00.123456789"}}
+    ]},
+    {"name": "a-function-returning-timestamp-ntz-with-a-precision",
+     "skip": {"backends": ["snowflake"], "reason": "Snowflake validates a Java UDF handler's signature against the declared SQL type far more strictly than frostlake: TIMESTAMP will not accept a String handler, so this handler is rejected outright on a real account"},
+     "steps": [
+      {"sql": "CREATE FUNCTION get_timestamp_ntz()\nRETURNS TIMESTAMP_NTZ(6)\nLANGUAGE JAVA\nHANDLER = 'TimestampNtzGetter.getTimestamp'\nAS $$\nclass TimestampNtzGetter {\n  public static String getTimestamp() {\n    return \"2024-01-01 12:00:00.123456\";\n  }\n}\n$$"},
+      {"sql": "SELECT TO_VARCHAR(get_timestamp_ntz())", "expect": {"value": "2024-01-01 12:00:00.123456"}}
+    ]},
+    {"name": "a-procedure-returning-varchar-with-a-length",
+     "skip": {"backends": ["snowflake"], "reason": "a Java stored procedure on Snowflake must take a com.snowflake.snowpark_java.Session as its first handler argument; frostlake does not require it, so this handler will not compile on an account"},
+     "steps": [
+      {"sql": "CREATE PROCEDURE get_message()\nRETURNS VARCHAR(50)\nLANGUAGE JAVA\nPACKAGES = ('com.snowflake:snowpark:latest')\nHANDLER = 'MessageGetter.getMessage'\nAS $$\nimport com.snowflake.snowpark_java.Session;\nclass MessageGetter {\n  public static String getMessage(Session session) {\n    return \"Hello from procedure\";\n  }\n}\n$$"},
+      {"sql": "DROP PROCEDURE get_message()"}
+    ]},
+    {"name": "a-procedure-returning-decimal-with-precision-and-scale",
+     "skip": {"backends": ["snowflake"], "reason": "a Java stored procedure on Snowflake must take a com.snowflake.snowpark_java.Session as its first handler argument; frostlake does not require it, so this handler will not compile on an account"},
+     "steps": [
+      {"sql": "CREATE PROCEDURE calculate_total()\nRETURNS DECIMAL(15,4)\nLANGUAGE JAVA\nPACKAGES = ('com.snowflake:snowpark:latest')\nHANDLER = 'Calculator.calculateTotal'\nAS $$\nimport com.snowflake.snowpark_java.Session;\nclass Calculator {\n  public static double calculateTotal(Session session) {\n    return 1234.5678;\n  }\n}\n$$"},
+      {"sql": "DROP PROCEDURE calculate_total()"}
+    ]},
+    {"name": "overloads-may-declare-different-return-widths", "steps": [
+      {"sql": "CREATE FUNCTION format_number(val INTEGER)\nRETURNS VARCHAR(10)\nLANGUAGE JAVA\nHANDLER = 'Formatter1.format'\nAS $$\nclass Formatter1 {\n  public static String format(int val) {\n    return String.valueOf(val);\n  }\n}\n$$"},
+      {"sql": "CREATE FUNCTION format_number(val INTEGER, decimals INTEGER)\nRETURNS VARCHAR(20)\nLANGUAGE JAVA\nHANDLER = 'Formatter2.format'\nAS $$\nclass Formatter2 {\n  public static String format(int val, int decimals) {\n    return val + \".\" + \"0\".repeat(decimals);\n  }\n}\n$$"},
+      {"sql": "SELECT format_number(123)", "expect": {"value": "123"}},
+      {"sql": "SELECT format_number(123, 2)", "expect": {"value": "123.00"}}
+    ]},
+    {"name": "create-or-replace-may-widen-the-return-type", "steps": [
+      {"sql": "CREATE FUNCTION get_version()\nRETURNS VARCHAR(10)\nLANGUAGE JAVA\nHANDLER = 'Version1.get'\nAS $$\nclass Version1 {\n  public static String get() {\n    return \"v1.0\";\n  }\n}\n$$"},
+      {"sql": "CREATE OR REPLACE FUNCTION get_version()\nRETURNS VARCHAR(50)\nLANGUAGE JAVA\nHANDLER = 'Version2.get'\nAS $$\nclass Version2 {\n  public static String get() {\n    return \"v2.0 with longer version string\";\n  }\n}\n$$"},
+      {"sql": "SELECT get_version()", "expect": {"value": "v2.0 with longer version string"}}
+    ]},
+    {"name": "no-type-parameters-at-all-still-works", "steps": [
+      {"sql": "CREATE FUNCTION simple_func()\nRETURNS STRING\nLANGUAGE JAVA\nHANDLER = 'SimpleFunc.run'\nAS $$\nclass SimpleFunc {\n  public static String run() {\n    return \"simple\";\n  }\n}\n$$"},
+      {"sql": "SELECT simple_func()", "expect": {"value": "simple"}}
+    ]}
+  ]
+}

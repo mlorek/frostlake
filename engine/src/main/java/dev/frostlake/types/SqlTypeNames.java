@@ -25,7 +25,7 @@ import java.util.Locale;
  * TEXT and VARCHAR read {@code VARCHAR(16777216)}; DOUBLE reads {@code FLOAT}; a bare TIME reads
  * {@code TIME(9)} and a bare TIMESTAMP {@code TIMESTAMP_NTZ(9)}. CHAR, NCHAR and NVARCHAR are all
  * VARCHAR of their length, a bare BINARY is {@code BINARY(8388608)}, and OBJECT, ARRAY, VARIANT,
- * GEOGRAPHY, GEOMETRY and VECTOR read back as declared. Live-verified across the family.
+ * GEOGRAPHY, GEOMETRY, VECTOR and UUID read back as declared. Live-verified across the family.
  */
 public final class SqlTypeNames {
 
@@ -56,6 +56,40 @@ public final class SqlTypeNames {
                 && ((StringType) type).getMaxLength() > DESCRIBED_STRING_MAXIMUM) {
             return canonical(new StringType(type.getName(), (int) DESCRIBED_STRING_MAXIMUM));
         }
+        if (type instanceof LengthlessStringType) {
+            // A column built over it declares the full width the plan never spelled.
+            return canonical(new StringType(type.getName(), ((StringType) type).getMaxLength()));
+        }
+        return canonical(type);
+    }
+
+    /**
+     * A type as a refusal sentence spells it: the canonical name, except that a bare BINARY is always
+     * BINARY(67108864), whatever width the engine holds one at (live-verified in the CALL argument and
+     * declared-RETURNS sentences).
+     */
+    public static String refusalSpelling(final DataType type) {
+        if (type instanceof BinaryType
+                && ((BinaryType) type).getMaxLength() == BinaryType.BINARY.getMaxLength()) {
+            return "BINARY(67108864)";
+        }
+        return canonical(type);
+    }
+
+    /**
+     * A ROUTINE's type as the account spells it - in a signature, in a RETURNS clause and in a DESCRIBE
+     * row alike. It is the type AS DECLARED: a string of the column default width is spelled BARE, a
+     * sized one keeps its width, and everything else reads as {@link #canonical} spells it, so a bare
+     * INT reads {@code NUMBER(38,0)} (live-verified).
+     *
+     * @param type the declared type
+     * @return the spelling a routine surface prints
+     */
+    public static String routineType(final DataType type) {
+        if (type instanceof StringType && !(type instanceof LengthlessStringType)
+                && ((StringType) type).getMaxLength() == DESCRIBED_STRING_MAXIMUM) {
+            return "VARCHAR";
+        }
         return canonical(type);
     }
 
@@ -71,6 +105,12 @@ public final class SqlTypeNames {
             }
             // FLOAT is the whole approximate family: DOUBLE, REAL and FLOAT4/8 all report FLOAT.
             return "FLOAT";
+        }
+        if (type instanceof UuidType) {
+            return "UUID";
+        }
+        if (type instanceof LengthlessStringType) {
+            return "VARCHAR";
         }
         if (type instanceof StringType) {
             final StringType string = (StringType) type;

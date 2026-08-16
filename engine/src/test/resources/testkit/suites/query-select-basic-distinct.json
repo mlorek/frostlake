@@ -1,0 +1,183 @@
+{
+  "suite": "query-select-basic-distinct",
+  "description": "Basic SELECT forms incl. the trailing-comma tolerance matrix, and SELECT DISTINCT across columns/VALUES/expressions/NULLs/joins. Converted 1:1 from query/SelectBasicTest and SelectDistinctTest (both now retired). The DISTINCT positional-parameter row-order test skips snowflake per its own live note (asserts row order of an ORDER BY-less DISTINCT).",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "select-all", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, department VARCHAR, salary INTEGER, age INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 'Engineering', 90000, 30), (2, 'Bob', 'Sales', 70000, 35), (3, 'Charlie', 'Engineering', 95000, 28), (4, 'Diana', 'Sales', 75000, 32), (5, 'Eve', 'Engineering', 85000, 29), (6, 'Frank', 'HR', 65000, 40)"},
+      {"sql": "SELECT * FROM employees", "expect": {"rowCount": 6, "columns": ["ID", "NAME", "DEPARTMENT", "SALARY", "AGE"]}}
+    ]},
+    {"name": "select-specific-columns", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, department VARCHAR, salary INTEGER, age INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 'Engineering', 90000, 30), (2, 'Bob', 'Sales', 70000, 35), (3, 'Charlie', 'Engineering', 95000, 28), (4, 'Diana', 'Sales', 75000, 32), (5, 'Eve', 'Engineering', 85000, 29), (6, 'Frank', 'HR', 65000, 40)"},
+      {"sql": "SELECT name, department FROM employees", "expect": {"rowCount": 6, "columns": ["NAME", "DEPARTMENT"]}}
+    ]},
+    {"name": "select-with-limit", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, department VARCHAR, salary INTEGER, age INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 'Engineering', 90000, 30), (2, 'Bob', 'Sales', 70000, 35), (3, 'Charlie', 'Engineering', 95000, 28), (4, 'Diana', 'Sales', 75000, 32), (5, 'Eve', 'Engineering', 85000, 29), (6, 'Frank', 'HR', 65000, 40)"},
+      {"sql": "SELECT * FROM employees LIMIT 3", "expect": {"rowCount": 3}}
+    ]},
+    {"name": "select-count", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, department VARCHAR, salary INTEGER, age INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 'Engineering', 90000, 30), (2, 'Bob', 'Sales', 70000, 35), (3, 'Charlie', 'Engineering', 95000, 28), (4, 'Diana', 'Sales', 75000, 32), (5, 'Eve', 'Engineering', 85000, 29), (6, 'Frank', 'HR', 65000, 40)"},
+      {"sql": "SELECT COUNT(*) FROM employees", "expect": {"value": "6", "rowCount": 1}}
+    ]},
+    {"name": "select-from-empty-table", "steps": [
+      {"sql": "CREATE TABLE empty_table (id INTEGER, name VARCHAR)"},
+      {"sql": "SELECT * FROM empty_table", "expect": {"rowCount": 0}}
+    ]},
+    {"name": "select-with-trailing-comma", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, department VARCHAR, salary INTEGER, age INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 'Engineering', 90000, 30), (2, 'Bob', 'Sales', 70000, 35), (3, 'Charlie', 'Engineering', 95000, 28), (4, 'Diana', 'Sales', 75000, 32), (5, 'Eve', 'Engineering', 85000, 29), (6, 'Frank', 'HR', 65000, 40)"},
+      {"sql": "SELECT id, name, department, FROM employees", "expect": {"rowCount": 6, "columns": ["ID", "NAME", "DEPARTMENT"]}}
+    ]},
+    {"name": "select-with-trailing-comma-and-where", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, department VARCHAR, salary INTEGER, age INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 'Engineering', 90000, 30), (2, 'Bob', 'Sales', 70000, 35), (3, 'Charlie', 'Engineering', 95000, 28), (4, 'Diana', 'Sales', 75000, 32), (5, 'Eve', 'Engineering', 85000, 29), (6, 'Frank', 'HR', 65000, 40)"},
+      {"sql": "SELECT name, department, FROM employees WHERE age > 30", "expect": {"rowCount": 3, "columns": ["NAME", "DEPARTMENT"]}}
+    ]},
+    {"name": "select-with-trailing-comma-multiple-columns", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, department VARCHAR, salary INTEGER, age INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 'Engineering', 90000, 30), (2, 'Bob', 'Sales', 70000, 35), (3, 'Charlie', 'Engineering', 95000, 28), (4, 'Diana', 'Sales', 75000, 32), (5, 'Eve', 'Engineering', 85000, 29), (6, 'Frank', 'HR', 65000, 40)"},
+      {"sql": "SELECT\nid,\nname,\ndepartment,\nsalary,\nFROM employees", "expect": {"rowCount": 6, "columns": ["ID", "NAME", "DEPARTMENT", "SALARY"]}}
+    ]},
+    {"name": "select-with-trailing-comma-and-order-by", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, department VARCHAR, salary INTEGER, age INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 'Engineering', 90000, 30), (2, 'Bob', 'Sales', 70000, 35), (3, 'Charlie', 'Engineering', 95000, 28), (4, 'Diana', 'Sales', 75000, 32), (5, 'Eve', 'Engineering', 85000, 29), (6, 'Frank', 'HR', 65000, 40)"},
+      {"sql": "SELECT\nname,\nsalary,\nFROM employees\nORDER BY salary DESC", "expect": {"rowCount": 6, "columns": ["NAME", "SALARY"]}}
+    ]},
+    {"name": "select-with-trailing-comma-and-group-by", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, department VARCHAR, salary INTEGER, age INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 'Engineering', 90000, 30), (2, 'Bob', 'Sales', 70000, 35), (3, 'Charlie', 'Engineering', 95000, 28), (4, 'Diana', 'Sales', 75000, 32), (5, 'Eve', 'Engineering', 85000, 29), (6, 'Frank', 'HR', 65000, 40)"},
+      {"sql": "SELECT\ndepartment,\nCOUNT(*),\nFROM employees\nGROUP BY department", "expect": {"rowCount": 3}}
+    ]},
+    {"name": "select-with-trailing-comma-and-join", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, department VARCHAR, salary INTEGER, age INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 'Engineering', 90000, 30), (2, 'Bob', 'Sales', 70000, 35), (3, 'Charlie', 'Engineering', 95000, 28), (4, 'Diana', 'Sales', 75000, 32), (5, 'Eve', 'Engineering', 85000, 29), (6, 'Frank', 'HR', 65000, 40)"},
+      {"sql": "CREATE TABLE departments (name VARCHAR, budget INTEGER)"},
+      {"sql": "INSERT INTO departments VALUES ('Engineering', 1000000), ('Sales', 500000), ('HR', 300000)"},
+      {"sql": "SELECT\ne.name,\ne.department,\nd.budget,\nFROM employees e\nJOIN departments d ON e.department = d.name", "expect": {"rowCount": 6, "columns": ["NAME", "DEPARTMENT", "BUDGET"]}}
+    ]},
+    {"name": "select-with-trailing-comma-in-subquery", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, department VARCHAR, salary INTEGER, age INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 'Engineering', 90000, 30), (2, 'Bob', 'Sales', 70000, 35), (3, 'Charlie', 'Engineering', 95000, 28), (4, 'Diana', 'Sales', 75000, 32), (5, 'Eve', 'Engineering', 85000, 29), (6, 'Frank', 'HR', 65000, 40)"},
+      {"sql": "SELECT * FROM (\nSELECT\nid,\nname,\ndepartment,\nFROM employees\n)", "expect": {"rowCount": 6, "columns": ["ID", "NAME", "DEPARTMENT"]}}
+    ]},
+    {"name": "select-single-column-with-trailing-comma", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, department VARCHAR, salary INTEGER, age INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 'Engineering', 90000, 30), (2, 'Bob', 'Sales', 70000, 35), (3, 'Charlie', 'Engineering', 95000, 28), (4, 'Diana', 'Sales', 75000, 32), (5, 'Eve', 'Engineering', 85000, 29), (6, 'Frank', 'HR', 65000, 40)"},
+      {"sql": "SELECT name, FROM employees", "expect": {"rowCount": 6, "columns": ["NAME"]}}
+    ]},
+    {"name": "select-star-not-affected-by-trailing-comma", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, department VARCHAR, salary INTEGER, age INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 'Engineering', 90000, 30), (2, 'Bob', 'Sales', 70000, 35), (3, 'Charlie', 'Engineering', 95000, 28), (4, 'Diana', 'Sales', 75000, 32), (5, 'Eve', 'Engineering', 85000, 29), (6, 'Frank', 'HR', 65000, 40)"},
+      {"sql": "SELECT * FROM employees", "expect": {"rowCount": 6, "columns": ["ID", "NAME", "DEPARTMENT", "SALARY", "AGE"]}}
+    ]},
+    {"name": "select-with-trailing-comma-and-alias", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, department VARCHAR, salary INTEGER, age INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 'Engineering', 90000, 30), (2, 'Bob', 'Sales', 70000, 35), (3, 'Charlie', 'Engineering', 95000, 28), (4, 'Diana', 'Sales', 75000, 32), (5, 'Eve', 'Engineering', 85000, 29), (6, 'Frank', 'HR', 65000, 40)"},
+      {"sql": "SELECT\nid AS emp_id,\nname AS emp_name,\ndepartment AS dept,\nFROM employees", "expect": {"rowCount": 6, "columns": ["EMP_ID", "EMP_NAME", "DEPT"]}}
+    ]},
+    {"name": "select-with-trailing-comma-and-expressions", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, department VARCHAR, salary INTEGER, age INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 'Engineering', 90000, 30), (2, 'Bob', 'Sales', 70000, 35), (3, 'Charlie', 'Engineering', 95000, 28), (4, 'Diana', 'Sales', 75000, 32), (5, 'Eve', 'Engineering', 85000, 29), (6, 'Frank', 'HR', 65000, 40)"},
+      {"sql": "SELECT\nname,\nsalary * 12 AS annual_salary,\nage + 1 AS next_year_age,\nFROM employees", "expect": {"rowCount": 6, "columns": ["NAME", "ANNUAL_SALARY", "NEXT_YEAR_AGE"]}}
+    ]},
+    {"name": "distinct-single-column", "steps": [
+      {"sql": "CREATE TABLE test_data (id INTEGER, category VARCHAR, value INTEGER)"},
+      {"sql": "INSERT INTO test_data VALUES (1, 'A', 10), (2, 'B', 20), (3, 'A', 10), (4, 'B', 20), (5, 'C', 30)"},
+      {"sql": "SELECT DISTINCT category FROM test_data", "expect": {"rowCount": 3}}
+    ]},
+    {"name": "distinct-multiple-columns", "steps": [
+      {"sql": "CREATE TABLE test_data (id INTEGER, category VARCHAR, value INTEGER)"},
+      {"sql": "INSERT INTO test_data VALUES (1, 'A', 10), (2, 'B', 20), (3, 'A', 10), (4, 'B', 20), (5, 'C', 30)"},
+      {"sql": "SELECT DISTINCT category, value FROM test_data", "expect": {"rowCount": 3}}
+    ]},
+    {"name": "distinct-from-values", "steps": [
+      {"sql": "SELECT DISTINCT $1, $2\nFROM VALUES(1, 2), (1, 2), (3, 4)\nORDER BY 1", "expect": {"rows": [["1", "2"], ["3", "4"]], "ordered": true}}
+    ]},
+    {"name": "distinct-from-values-with-alias", "steps": [
+      {"sql": "SELECT DISTINCT a, b\nFROM VALUES(1, 2), (1, 2) AS t(a, b)", "expect": {"rows": [["1", "2"]]}}
+    ]},
+    {"name": "distinct-with-where", "steps": [
+      {"sql": "CREATE TABLE test_data (id INTEGER, category VARCHAR, value INTEGER)"},
+      {"sql": "INSERT INTO test_data VALUES (1, 'A', 10), (2, 'B', 20), (3, 'A', 10), (4, 'B', 20), (5, 'C', 30)"},
+      {"sql": "SELECT DISTINCT category\nFROM test_data\nWHERE value >= 20", "expect": {"rowCount": 2}}
+    ]},
+    {"name": "distinct-with-order-by", "steps": [
+      {"sql": "CREATE TABLE test_data (id INTEGER, category VARCHAR, value INTEGER)"},
+      {"sql": "INSERT INTO test_data VALUES (1, 'A', 10), (2, 'B', 20), (3, 'A', 10), (4, 'B', 20), (5, 'C', 30)"},
+      {"sql": "SELECT DISTINCT category\nFROM test_data\nORDER BY category DESC", "expect": {"rows": [["C"], ["B"], ["A"]], "ordered": true}}
+    ]},
+    {"name": "distinct-with-limit", "steps": [
+      {"sql": "CREATE TABLE test_data (id INTEGER, category VARCHAR, value INTEGER)"},
+      {"sql": "INSERT INTO test_data VALUES (1, 'A', 10), (2, 'B', 20), (3, 'A', 10), (4, 'B', 20), (5, 'C', 30)"},
+      {"sql": "SELECT DISTINCT category\nFROM test_data\nLIMIT 2", "expect": {"rowCount": 2}}
+    ]},
+    {"name": "distinct-all-same", "steps": [
+      {"sql": "CREATE TABLE same_values (col VARCHAR)"},
+      {"sql": "INSERT INTO same_values VALUES ('A'), ('A'), ('A')"},
+      {"sql": "SELECT DISTINCT col FROM same_values", "expect": {"rows": [["A"]]}}
+    ]},
+    {"name": "distinct-all-unique", "steps": [
+      {"sql": "CREATE TABLE unique_values (col VARCHAR)"},
+      {"sql": "INSERT INTO unique_values VALUES ('A'), ('B'), ('C')"},
+      {"sql": "SELECT DISTINCT col FROM unique_values", "expect": {"rowCount": 3}}
+    ]},
+    {"name": "distinct-with-nulls", "steps": [
+      {"sql": "CREATE TABLE with_nulls (col VARCHAR)"},
+      {"sql": "INSERT INTO with_nulls VALUES ('A'), (NULL), ('A'), (NULL), ('B')"},
+      {"sql": "SELECT DISTINCT col FROM with_nulls", "expect": {"rowCount": 3}}
+    ]},
+    {"name": "distinct-vs-select-all", "steps": [
+      {"sql": "CREATE TABLE test_data (id INTEGER, category VARCHAR, value INTEGER)"},
+      {"sql": "INSERT INTO test_data VALUES (1, 'A', 10), (2, 'B', 20), (3, 'A', 10), (4, 'B', 20), (5, 'C', 30)"},
+      {"sql": "SELECT category FROM test_data", "expect": {"rowCount": 5}},
+      {"sql": "SELECT DISTINCT category FROM test_data", "expect": {"rowCount": 3}}
+    ]},
+    {"name": "distinct-with-expressions", "steps": [
+      {"sql": "CREATE TABLE test_data (id INTEGER, category VARCHAR, value INTEGER)"},
+      {"sql": "INSERT INTO test_data VALUES (1, 'A', 10), (2, 'B', 20), (3, 'A', 10), (4, 'B', 20), (5, 'C', 30)"},
+      {"sql": "SELECT DISTINCT value * 2 AS doubled\nFROM test_data", "expect": {"rowCount": 3}}
+    ]},
+    {"name": "distinct-with-functions", "steps": [
+      {"sql": "CREATE TABLE test_data (id INTEGER, category VARCHAR, value INTEGER)"},
+      {"sql": "INSERT INTO test_data VALUES (1, 'A', 10), (2, 'B', 20), (3, 'A', 10), (4, 'B', 20), (5, 'C', 30)"},
+      {"sql": "SELECT DISTINCT UPPER(category) AS upper_cat\nFROM test_data", "expect": {"rowCount": 3}}
+    ]},
+    {"name": "distinct-empty-table", "steps": [
+      {"sql": "CREATE TABLE empty (col VARCHAR)"},
+      {"sql": "SELECT DISTINCT col FROM empty", "expect": {"rowCount": 0}}
+    ]},
+    {"name": "distinct-with-join-source", "steps": [
+      {"sql": "CREATE TABLE categories (name VARCHAR)"},
+      {"sql": "INSERT INTO categories VALUES ('A'), ('B'), ('C')"},
+      {"sql": "SELECT DISTINCT c.name\nFROM categories c", "expect": {"rowCount": 3}}
+    ]},
+    {"name": "distinct-star", "steps": [
+      {"sql": "CREATE TABLE test_data (id INTEGER, category VARCHAR, value INTEGER)"},
+      {"sql": "INSERT INTO test_data VALUES (1, 'A', 10), (2, 'B', 20), (3, 'A', 10), (4, 'B', 20), (5, 'C', 30)"},
+      {"sql": "SELECT DISTINCT * FROM test_data", "expect": {"rowCount": 5, "columns": ["ID", "CATEGORY", "VALUE"]}}
+    ]},
+    {"name": "distinct-three-columns", "steps": [
+      {"sql": "CREATE TABLE test_data (id INTEGER, category VARCHAR, value INTEGER)"},
+      {"sql": "INSERT INTO test_data VALUES (1, 'A', 10), (2, 'B', 20), (3, 'A', 10), (4, 'B', 20), (5, 'C', 30)"},
+      {"sql": "SELECT DISTINCT id, category, value FROM test_data", "expect": {"rowCount": 5}}
+    ]},
+    {"name": "distinct-with-positional-parameters",
+     "skip": {"backends": ["snowflake"], "reason": "asserts the ROW ORDER of a DISTINCT result that carries no ORDER BY; a real account is free to reorder"},
+     "steps": [
+      {"sql": "SELECT DISTINCT $1, $2\nFROM VALUES(1, 'A'), (2, 'B'), (1, 'A'), (2, 'B'), (3, 'C')",
+       "expect": {"rows": [["1", "A"], ["2", "B"], ["3", "C"]], "ordered": true}}
+    ]},
+    {"name": "distinct-with-positional-parameters-and-expressions", "steps": [
+      {"sql": "SELECT DISTINCT ABS($1), UPPER($2)\nFROM VALUES(-1, 'a'), (-1, 'a'), (2, 'b'), (2, 'b')", "expect": {"rowCount": 2}}
+    ]},
+    {"name": "distinct-with-trailing-comma", "steps": [
+      {"sql": "CREATE TABLE test_data (id INTEGER, category VARCHAR, value INTEGER)"},
+      {"sql": "INSERT INTO test_data VALUES (1, 'A', 10), (2, 'B', 20), (3, 'A', 10), (4, 'B', 20), (5, 'C', 30)"},
+      {"sql": "SELECT DISTINCT\ncategory,\nvalue,\nFROM test_data", "expect": {"rowCount": 3, "columns": ["CATEGORY", "VALUE"]}}
+    ]}
+  ]
+}

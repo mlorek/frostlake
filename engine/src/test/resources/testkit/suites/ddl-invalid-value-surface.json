@@ -1,0 +1,58 @@
+{
+  "suite": "ddl-invalid-value-surface",
+  "description": "The invalid-VALUE refusal families across object kinds (live-measured): the bracketed parameter family covers retention at every level and session parameters (whose echo STRIPS string quotes, unlike format options which keep them); the single-quoted property family owns the warehouse cluster floor and sequence increment zero (negatives run); malformed task schedules - zero interval included - get one fixed sentence; extension time past 90 days its own. Converted 1:1 from ddl/InvalidValueSurfaceTest (now retired). Session parameters and warehouses are restored/dropped at test end.",
+  "tags": ["ddl", "converted"],
+  "tests": [
+    {"name": "negative-retention-refuses-at-every-level", "steps": [
+      {"sql": "ALTER DATABASE test_db SET DATA_RETENTION_TIME_IN_DAYS = -1",
+       "expect": {"error": {"messageContains": "SQL compilation error:\ninvalid value [-1] for parameter 'DATA_RETENTION_TIME_IN_DAYS'"}}},
+      {"sql": "ALTER SCHEMA test_schema SET DATA_RETENTION_TIME_IN_DAYS = -3",
+       "expect": {"error": {"messageContains": "SQL compilation error:\ninvalid value [-3] for parameter 'DATA_RETENTION_TIME_IN_DAYS'"}}},
+      {"sql": "CREATE TABLE ret_t (a INTEGER)"},
+      {"sql": "ALTER TABLE ret_t SET DATA_RETENTION_TIME_IN_DAYS = -1",
+       "expect": {"error": {"messageContains": "SQL compilation error:\ninvalid value [-1] for parameter 'DATA_RETENTION_TIME_IN_DAYS'"}}},
+      {"sql": "CREATE TABLE ret_t2 (a INTEGER) DATA_RETENTION_TIME_IN_DAYS = -2",
+       "expect": {"error": {"messageContains": "SQL compilation error:\ninvalid value [-2] for parameter 'DATA_RETENTION_TIME_IN_DAYS'"}}}
+    ]},
+    {"name": "session-parameter-values-echo-without-their-quotes", "steps": [
+      {"sql": "ALTER SESSION SET TIMEZONE = 'Mars/Olympus'",
+       "expect": {"error": {"messageContains": "SQL compilation error:\ninvalid value [Mars/Olympus] for parameter 'TIMEZONE'"}}},
+      {"sql": "ALTER SESSION SET TIMESTAMP_TYPE_MAPPING = 'BOGUS'",
+       "expect": {"error": {"messageContains": "SQL compilation error:\ninvalid value [BOGUS] for parameter 'TIMESTAMP_TYPE_MAPPING'"}}},
+      {"sql": "ALTER SESSION SET TIMEZONE = 'America/Los_Angeles'"},
+      {"sql": "ALTER SESSION SET TIMESTAMP_TYPE_MAPPING = 'TIMESTAMP_LTZ'"},
+      {"sql": "ALTER SESSION SET TIMEZONE = 'UTC'"},
+      {"sql": "ALTER SESSION SET TIMESTAMP_TYPE_MAPPING = 'TIMESTAMP_NTZ'"}
+    ]},
+    {"name": "warehouse-cluster-floor-speaks-the-property-shape", "steps": [
+      {"sql": "CREATE WAREHOUSE val_wh0 WITH WAREHOUSE_SIZE = 'XSMALL' MIN_CLUSTER_COUNT = 0",
+       "expect": {"error": {"messageContains": "SQL compilation error:\ninvalid value '0' for property 'MIN_CLUSTER_COUNT'"}}},
+      {"sql": "CREATE WAREHOUSE val_wh1 WITH WAREHOUSE_SIZE = 'XSMALL' AUTO_SUSPEND = -5"},
+      {"sql": "DROP WAREHOUSE IF EXISTS val_wh1"}
+    ]},
+    {"name": "sequence-increment-zero-refuses-while-negatives-run", "steps": [
+      {"sql": "CREATE SEQUENCE sq0 INCREMENT = 0",
+       "expect": {"error": {"messageContains": "SQL compilation error:\ninvalid value '0' for property 'SEQUENCE_INCREMENT'"}}},
+      {"sql": "CREATE SEQUENCE sq_neg START = 1 INCREMENT = -2"}
+    ]},
+    {"name": "malformed-task-schedules-get-the-one-sentence", "steps": [
+      {"sql": "CREATE TASK tk_bad SCHEDULE = 'NONSENSE' AS SELECT 1",
+       "expect": {"error": {"messageContains": "Invalid schedule was specified. Please refer to the docs on what constitutes a valid schedule."}}},
+      {"sql": "CREATE TASK tk_zero SCHEDULE = '0 MINUTE' AS SELECT 1",
+       "expect": {"error": {"messageContains": "Invalid schedule was specified. Please refer to the docs on what constitutes a valid schedule."}}},
+      {"sql": "CREATE TASK tk_ok SCHEDULE = '5 MINUTE' AS SELECT 1"},
+      {"sql": "CREATE TASK tk_cron SCHEDULE = 'USING CRON 0 9 * * * UTC' AS SELECT 1"}
+    ]},
+    {"name": "extension-time-past-the-cap-refuses", "steps": [
+      {"sql": "CREATE TABLE ext_t (a INTEGER) MAX_DATA_EXTENSION_TIME_IN_DAYS = 100",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nExceeds maximum allowable extension time (90)."}}},
+      {"sql": "CREATE TABLE ext_ok (a INTEGER) MAX_DATA_EXTENSION_TIME_IN_DAYS = 90"}
+    ]},
+    {"name": "format-option-controls-keep-their-quoted-echo", "steps": [
+      {"sql": "CREATE FILE FORMAT ffv TYPE = CSV SKIP_HEADER = -1",
+       "expect": {"error": {"messageContains": "SQL compilation error:\ninvalid value [-1] for parameter 'SKIP_HEADER'"}}},
+      {"sql": "CREATE STAGE stv FILE_FORMAT = (TYPE = 'BOGUS')",
+       "expect": {"error": {"messageContains": "SQL compilation error:\ninvalid value ['BOGUS'] for parameter 'TYPE'"}}}
+    ]}
+  ]
+}

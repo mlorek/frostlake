@@ -1,0 +1,19 @@
+{
+  "suite": "functions-sum-variant",
+  "description": "SUM and AVG over a VARIANT column return DOUBLE even for whole-number JSON values - live-verified, SUM of PARSE_JSON('1') and PARSE_JSON('2') is 3.0 with SYSTEM$TYPEOF reporting FLOAT. INSERT ... VALUES rejects semi-structured expressions, so the fixture is populated with INSERT ... SELECT. Converted 1:1 from functions/SumVariantTest (now retired); the Java asserted the runtime object was a Double, and SYSTEM$TYPEOF is the SQL instrument for the same claim - the one the class's own docstring names as the live one - so the suite reads that, matching on the FLOAT prefix because each backend appends its own size suffix. The other instruments do NOT show it: TYPEOF(TO_VARIANT(SUM(v))) answers INTEGER because TO_VARIANT normalises a whole double, a CTAS column materialises as NUMBER, and the value renders as 3 rather than 3.0.",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "sum-over-a-variant-column-is-double", "steps": [
+      {"sql": "CREATE TABLE vt (v VARIANT)"},
+      {"sql": "INSERT INTO vt SELECT PARSE_JSON('1') UNION ALL SELECT PARSE_JSON('2')"},
+      {"sql": "SELECT STARTSWITH(SYSTEM$TYPEOF(SUM(v)), 'FLOAT') FROM vt", "expect": {"value": "true"}},
+      {"sql": "SELECT SUM(v) = 3.0 FROM vt", "expect": {"value": "true"}}
+    ]},
+    {"name": "avg-over-a-variant-column-is-double", "steps": [
+      {"sql": "CREATE TABLE vt (v VARIANT)"},
+      {"sql": "INSERT INTO vt SELECT PARSE_JSON('1') UNION ALL SELECT PARSE_JSON('2')"},
+      {"sql": "SELECT STARTSWITH(SYSTEM$TYPEOF(AVG(v)), 'FLOAT') FROM vt", "expect": {"value": "true"}},
+      {"sql": "SELECT AVG(v) = 1.5 FROM vt", "expect": {"value": "true"}}
+    ]}
+  ]
+}

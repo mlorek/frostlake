@@ -1,0 +1,19 @@
+{
+  "suite": "functions-atanh",
+  "description": "ATANH(x) - inverse hyperbolic tangent, 0.5 * ln((1 + x) / (1 - x)): zero at 0, the known value at 0.5, oddness at -0.5, and NULL in / NULL out. Converted 1:1 from functions/AtanhTest (now retired); the Java class compared with a 1e-9 tolerance, which the testkit's 10-significant-figure normalisation supplies.",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "atanh-of-zero-is-zero", "steps": [
+      {"sql": "SELECT ATANH(0)", "expect": {"value": "0"}}
+    ]},
+    {"name": "atanh-of-a-half", "steps": [
+      {"sql": "SELECT ATANH(0.5)", "expect": {"value": "0.5493061443"}}
+    ]},
+    {"name": "atanh-is-odd", "steps": [
+      {"sql": "SELECT ATANH(-0.5)", "expect": {"value": "-0.5493061443"}}
+    ]},
+    {"name": "null-is-null", "steps": [
+      {"sql": "SELECT ATANH(NULL)", "expect": {"rows": [[null]]}}
+    ]}
+  ]
+}

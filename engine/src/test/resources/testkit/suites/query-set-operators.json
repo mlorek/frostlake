@@ -1,0 +1,118 @@
+{
+  "suite": "query-set-operators",
+  "description": "UNION, INTERSECT and EXCEPT over two overlapping tables where the left one carries a DUPLICATE row, so the DISTINCT semantics are visible: UNION answers six unique rows where UNION ALL answers nine, INTERSECT answers the two rows present in both, and EXCEPT answers the two rows the left has and the right does not - reversed, the two the right has and the left does not. ALL applies only to UNION, so INTERSECT ALL and EXCEPT ALL are both refused with 'Unsupported feature', which the suite pins twice each because the class did (once plainly and once in the multiple-duplicates shape that a bag semantics would have distinguished). INTERSECT binds TIGHTER than UNION and EXCEPT, so a three-table chain is set1 UNION (set2 INTERSECT set3), and the same precedence holds over literal branches. WHERE applies per-branch before the combination, and ORDER BY with LIMIT applies to the combined result. Converted 1:1 from query/SetOperatorsTest (now retired); the Java asserted row counts and sampled cells by index, so the converted tests pin whole row sets.",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "union", "steps": [
+      {"sql": "CREATE TABLE set1 (id INT, value VARCHAR)"},
+      {"sql": "INSERT INTO set1 VALUES (1, 'A'), (2, 'B'), (3, 'C'), (3, 'C'), (4, 'D')"},
+      {"sql": "CREATE TABLE set2 (id INT, value VARCHAR)"},
+      {"sql": "INSERT INTO set2 VALUES (3, 'C'), (4, 'D'), (5, 'E'), (6, 'F')"},
+      {"sql": "SELECT id, value FROM set1 UNION SELECT id, value FROM set2 ORDER BY id",
+       "expect": {"rows": [[1,"A"],[2,"B"],[3,"C"],[4,"D"],[5,"E"],[6,"F"]], "ordered": true}}
+    ]},
+    {"name": "union-all", "steps": [
+      {"sql": "CREATE TABLE set1 (id INT, value VARCHAR)"},
+      {"sql": "INSERT INTO set1 VALUES (1, 'A'), (2, 'B'), (3, 'C'), (3, 'C'), (4, 'D')"},
+      {"sql": "CREATE TABLE set2 (id INT, value VARCHAR)"},
+      {"sql": "INSERT INTO set2 VALUES (3, 'C'), (4, 'D'), (5, 'E'), (6, 'F')"},
+      {"sql": "SELECT id, value FROM set1 UNION ALL SELECT id, value FROM set2", "expect": {"rowCount": 9}},
+      {"sql": "SELECT id, value FROM set1 UNION ALL SELECT id, value FROM set2 ORDER BY id, value",
+       "expect": {"rows": [[1,"A"],[2,"B"],[3,"C"],[3,"C"],[3,"C"],[4,"D"],[4,"D"],[5,"E"],[6,"F"]], "ordered": true}}
+    ]},
+    {"name": "intersect", "steps": [
+      {"sql": "CREATE TABLE set1 (id INT, value VARCHAR)"},
+      {"sql": "INSERT INTO set1 VALUES (1, 'A'), (2, 'B'), (3, 'C'), (3, 'C'), (4, 'D')"},
+      {"sql": "CREATE TABLE set2 (id INT, value VARCHAR)"},
+      {"sql": "INSERT INTO set2 VALUES (3, 'C'), (4, 'D'), (5, 'E'), (6, 'F')"},
+      {"sql": "SELECT id, value FROM set1 INTERSECT SELECT id, value FROM set2 ORDER BY id",
+       "expect": {"rows": [[3,"C"],[4,"D"]], "ordered": true}}
+    ]},
+    {"name": "intersect-all-is-refused", "steps": [
+      {"sql": "CREATE TABLE set1 (id INT, value VARCHAR)"},
+      {"sql": "INSERT INTO set1 VALUES (1, 'A'), (2, 'B'), (3, 'C'), (3, 'C'), (4, 'D')"},
+      {"sql": "CREATE TABLE set2 (id INT, value VARCHAR)"},
+      {"sql": "INSERT INTO set2 VALUES (3, 'C'), (4, 'D'), (5, 'E'), (6, 'F')"},
+      {"sql": "SELECT id, value FROM set1 INTERSECT ALL SELECT id, value FROM set2",
+       "expect": {"error": {"messageContains": "Unsupported feature"}}}
+    ]},
+    {"name": "intersect-with-no-common-rows", "steps": [
+      {"sql": "CREATE TABLE set1 (id INT, value VARCHAR)"},
+      {"sql": "INSERT INTO set1 VALUES (1, 'A'), (2, 'B'), (3, 'C'), (3, 'C'), (4, 'D')"},
+      {"sql": "CREATE TABLE set2 (id INT, value VARCHAR)"},
+      {"sql": "INSERT INTO set2 VALUES (3, 'C'), (4, 'D'), (5, 'E'), (6, 'F')"},
+      {"sql": "SELECT id, value FROM set1 WHERE id < 3 INTERSECT SELECT id, value FROM set2 WHERE id > 4",
+       "expect": {"rowCount": 0}}
+    ]},
+    {"name": "except", "steps": [
+      {"sql": "CREATE TABLE set1 (id INT, value VARCHAR)"},
+      {"sql": "INSERT INTO set1 VALUES (1, 'A'), (2, 'B'), (3, 'C'), (3, 'C'), (4, 'D')"},
+      {"sql": "CREATE TABLE set2 (id INT, value VARCHAR)"},
+      {"sql": "INSERT INTO set2 VALUES (3, 'C'), (4, 'D'), (5, 'E'), (6, 'F')"},
+      {"sql": "SELECT id, value FROM set1 EXCEPT SELECT id, value FROM set2 ORDER BY id",
+       "expect": {"rows": [[1,"A"],[2,"B"]], "ordered": true}}
+    ]},
+    {"name": "except-all-is-refused", "steps": [
+      {"sql": "CREATE TABLE set1 (id INT, value VARCHAR)"},
+      {"sql": "INSERT INTO set1 VALUES (1, 'A'), (2, 'B'), (3, 'C'), (3, 'C'), (4, 'D')"},
+      {"sql": "CREATE TABLE set2 (id INT, value VARCHAR)"},
+      {"sql": "INSERT INTO set2 VALUES (3, 'C'), (4, 'D'), (5, 'E'), (6, 'F')"},
+      {"sql": "SELECT id, value FROM set1 EXCEPT ALL SELECT id, value FROM set2",
+       "expect": {"error": {"messageContains": "Unsupported feature"}}}
+    ]},
+    {"name": "except-reversed", "steps": [
+      {"sql": "CREATE TABLE set1 (id INT, value VARCHAR)"},
+      {"sql": "INSERT INTO set1 VALUES (1, 'A'), (2, 'B'), (3, 'C'), (3, 'C'), (4, 'D')"},
+      {"sql": "CREATE TABLE set2 (id INT, value VARCHAR)"},
+      {"sql": "INSERT INTO set2 VALUES (3, 'C'), (4, 'D'), (5, 'E'), (6, 'F')"},
+      {"sql": "SELECT id, value FROM set2 EXCEPT SELECT id, value FROM set1 ORDER BY id",
+       "expect": {"rows": [[5,"E"],[6,"F"]], "ordered": true}}
+    ]},
+    {"name": "multiple-set-operators-follow-intersects-precedence", "steps": [
+      {"sql": "CREATE TABLE set1 (id INT, value VARCHAR)"},
+      {"sql": "INSERT INTO set1 VALUES (1, 'A'), (2, 'B'), (3, 'C'), (3, 'C'), (4, 'D')"},
+      {"sql": "CREATE TABLE set2 (id INT, value VARCHAR)"},
+      {"sql": "INSERT INTO set2 VALUES (3, 'C'), (4, 'D'), (5, 'E'), (6, 'F')"},
+      {"sql": "CREATE TABLE set3 (id INT, value VARCHAR)"},
+      {"sql": "INSERT INTO set3 VALUES (3, 'C'), (7, 'G')"},
+      {"sql": "SELECT id, value FROM set1 UNION SELECT id, value FROM set2 INTERSECT SELECT id, value FROM set3 ORDER BY id",
+       "expect": {"rows": [[1,"A"],[2,"B"],[3,"C"],[4,"D"]], "ordered": true}}
+    ]},
+    {"name": "set-operators-with-a-where-clause", "steps": [
+      {"sql": "CREATE TABLE set1 (id INT, value VARCHAR)"},
+      {"sql": "INSERT INTO set1 VALUES (1, 'A'), (2, 'B'), (3, 'C'), (3, 'C'), (4, 'D')"},
+      {"sql": "CREATE TABLE set2 (id INT, value VARCHAR)"},
+      {"sql": "INSERT INTO set2 VALUES (3, 'C'), (4, 'D'), (5, 'E'), (6, 'F')"},
+      {"sql": "SELECT id, value FROM set1 WHERE id <= 3 EXCEPT SELECT id, value FROM set2 WHERE id >= 3 ORDER BY id",
+       "expect": {"rows": [[1,"A"],[2,"B"]], "ordered": true}}
+    ]},
+    {"name": "intersect-precedence-over-literal-branches", "steps": [
+      {"sql": "SELECT 1 AS num, 'A' AS letter UNION SELECT 2, 'B' INTERSECT SELECT 1, 'A' UNION SELECT 3, 'C'",
+       "expect": {"rows": [[1,"A"],[3,"C"]]}}
+    ]},
+    {"name": "except-with-order-by-and-limit", "steps": [
+      {"sql": "CREATE TABLE set1 (id INT, value VARCHAR)"},
+      {"sql": "INSERT INTO set1 VALUES (1, 'A'), (2, 'B'), (3, 'C'), (3, 'C'), (4, 'D')"},
+      {"sql": "CREATE TABLE set2 (id INT, value VARCHAR)"},
+      {"sql": "INSERT INTO set2 VALUES (3, 'C'), (4, 'D'), (5, 'E'), (6, 'F')"},
+      {"sql": "SELECT id, value FROM set1 EXCEPT SELECT id, value FROM set2 ORDER BY id DESC LIMIT 1",
+       "expect": {"rows": [[2,"B"]]}}
+    ]},
+    {"name": "intersect-all-is-refused-with-multiple-duplicates-too", "steps": [
+      {"sql": "CREATE TABLE set1 (id INT, value VARCHAR)"},
+      {"sql": "INSERT INTO set1 VALUES (1, 'A'), (2, 'B'), (3, 'C'), (3, 'C'), (4, 'D')"},
+      {"sql": "CREATE TABLE set2 (id INT, value VARCHAR)"},
+      {"sql": "INSERT INTO set2 VALUES (3, 'C'), (4, 'D'), (5, 'E'), (6, 'F')"},
+      {"sql": "SELECT id, value FROM set1 INTERSECT ALL SELECT id, value FROM set2",
+       "expect": {"error": {"messageContains": "Unsupported feature"}}}
+    ]},
+    {"name": "except-all-is-refused-with-multiple-duplicates-too", "steps": [
+      {"sql": "CREATE TABLE set1 (id INT, value VARCHAR)"},
+      {"sql": "INSERT INTO set1 VALUES (1, 'A'), (2, 'B'), (3, 'C'), (3, 'C'), (4, 'D')"},
+      {"sql": "CREATE TABLE set2 (id INT, value VARCHAR)"},
+      {"sql": "INSERT INTO set2 VALUES (3, 'C'), (4, 'D'), (5, 'E'), (6, 'F')"},
+      {"sql": "SELECT id, value FROM set1 EXCEPT ALL SELECT id, value FROM set2",
+       "expect": {"error": {"messageContains": "Unsupported feature"}}}
+    ]}
+  ]
+}

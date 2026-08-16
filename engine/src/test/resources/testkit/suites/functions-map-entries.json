@@ -1,0 +1,36 @@
+{
+  "suite": "functions-map-entries",
+  "description": "MAP_ENTRIES(map) - the entries as an array of {\"key\": ..., \"value\": ...} objects, with LOWER-CASE key and value members, in KEY order rather than insertion order. An empty map has no entries, a NULL map answers NULL, an entry is navigable like any other object, a MAP column reads normally, and a plain OBJECT is refused. Every expectation was measured live. Converted 1:1 from functions/MapEntriesTest (now retired); the ARRAY result is read through TO_JSON(...::VARIANT) so the assertion lands on a VARCHAR no transport reformats.",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "entries-carry-lower-case-key-and-value-members", "steps": [
+      {"sql": "SELECT TO_JSON(MAP_ENTRIES(OBJECT_CONSTRUCT('a',1,'b',2)::MAP(VARCHAR,INT))::VARIANT)",
+       "expect": {"value": "[{\"key\":\"a\",\"value\":1},{\"key\":\"b\",\"value\":2}]"}}
+    ]},
+    {"name": "entries-are-in-key-order-not-insertion-order", "steps": [
+      {"sql": "SELECT TO_JSON(MAP_ENTRIES(OBJECT_CONSTRUCT('b',1,'a',2)::MAP(VARCHAR,INT))::VARIANT)",
+       "expect": {"value": "[{\"key\":\"a\",\"value\":2},{\"key\":\"b\",\"value\":1}]"}}
+    ]},
+    {"name": "an-empty-map-has-no-entries", "steps": [
+      {"sql": "SELECT TO_JSON(MAP_ENTRIES(OBJECT_CONSTRUCT()::MAP(VARCHAR,INT))::VARIANT)",
+       "expect": {"value": "[]"}}
+    ]},
+    {"name": "a-null-map-answers-null", "steps": [
+      {"sql": "SELECT MAP_ENTRIES(NULL::MAP(VARCHAR,INT))", "expect": {"rows": [[null]]}}
+    ]},
+    {"name": "an-entry-is-navigable-like-any-object", "steps": [
+      {"sql": "SELECT MAP_ENTRIES(OBJECT_CONSTRUCT('a',1)::MAP(VARCHAR,INT))[0]:key", "expect": {"value": "a"}},
+      {"sql": "SELECT MAP_ENTRIES(OBJECT_CONSTRUCT('a',1)::MAP(VARCHAR,INT))[0]:value", "expect": {"value": "1"}}
+    ]},
+    {"name": "it-reads-a-map-column", "steps": [
+      {"sql": "CREATE TABLE me (m MAP(VARCHAR,INT))"},
+      {"sql": "INSERT INTO me SELECT OBJECT_CONSTRUCT('k1',1,'k2',2)::MAP(VARCHAR,INT)"},
+      {"sql": "SELECT TO_JSON(MAP_ENTRIES(m)::VARIANT) FROM me",
+       "expect": {"value": "[{\"key\":\"k1\",\"value\":1},{\"key\":\"k2\",\"value\":2}]"}}
+    ]},
+    {"name": "a-plain-object-is-refused", "steps": [
+      {"sql": "SELECT MAP_ENTRIES(OBJECT_CONSTRUCT('a',1))",
+       "expect": {"error": {"messageContains": "Invalid argument types for function 'MAP_ENTRIES'"}}}
+    ]}
+  ]
+}

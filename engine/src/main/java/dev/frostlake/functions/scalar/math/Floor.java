@@ -19,22 +19,23 @@ package dev.frostlake.functions.scalar.math;
 import dev.frostlake.functions.NumericArgumentFunction;
 import dev.frostlake.types.NumericType;
 
-import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.util.List;
 
+/**
+ * FLOOR(n [, scale]) — the input rounded DOWN, to whole numbers by default and to {@code scale}
+ * decimal places when one is given. The twin of {@link Ceil} in every other respect.
+ */
 public class Floor extends NumericArgumentFunction {
     public Floor() { super("FLOOR", NumericType.INTEGER); }
 
     @Override
     public Object evaluate(final List<Object> args) {
-        if (args.get(0) == null) return null;
-        final BigDecimal num = new BigDecimal(args.get(0).toString());
-        return num.setScale(0, RoundingMode.FLOOR).longValue();
+        return RoundedValue.of(args, RoundingMode.FLOOR);
     }
 
     @Override
     public int getMinArgCount() { return 1; }
     @Override
-    public int getMaxArgCount() { return 1; }
+    public int getMaxArgCount() { return 2; }
 }

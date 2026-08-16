@@ -1,0 +1,66 @@
+{
+  "suite": "expr-object-key-types",
+  "description": "The two object-key rules that genuinely diverge, both live-measured: OBJECT_AGG takes a VARIANT key and uses its VALUE text (columns, literals, expressions and CONDITIONAL keys alike - never the quoted JSON rendering - with uncast keys untouched), while OBJECT_CONSTRUCT refuses every non-text key naming its declared type (VARIANT, NUMBER(38,0), BOOLEAN, DATE - in any pair position, with OBJECT_CONSTRUCT_KEEP_NULL reporting under its own name, and a view over the body refused too); text keys and VARIANT VALUES stay fine. Converted 1:1 from expressions/ObjectAggVariantKeyTest + expressions/ObjectConstructKeyTypeTest (now retired).",
+  "tags": ["expressions", "converted"],
+  "tests": [
+    {"name": "a-variant-key-contributes-its-text", "steps": [
+      {"sql": "CREATE TABLE kv (k VARCHAR(20), v VARCHAR(20))"},
+      {"sql": "INSERT INTO kv SELECT 'WIDGET_ONE', 's-1'"},
+      {"sql": "SELECT OBJECT_AGG(k::VARIANT, v::VARIANT) AS c FROM kv", "expect": {"value": "{\"WIDGET_ONE\":\"s-1\"}"}},
+      {"sql": "SELECT OBJECT_AGG('lit'::VARIANT, v::VARIANT) AS c FROM kv", "expect": {"value": "{\"lit\":\"s-1\"}"}},
+      {"sql": "SELECT OBJECT_AGG((LOWER(k) || '_x')::VARIANT, v::VARIANT) AS c FROM kv", "expect": {"value": "{\"widget_one_x\":\"s-1\"}"}}
+    ]},
+    {"name": "a-conditional-variant-key-does-too", "steps": [
+      {"sql": "CREATE TABLE kv (k VARCHAR(20), v VARCHAR(20))"},
+      {"sql": "INSERT INTO kv SELECT 'WIDGET_ONE', 's-1'"},
+      {"sql": "SELECT OBJECT_AGG(CASE WHEN k = 'X' THEN 'other' ELSE LOWER(k) || '_agent_id' END::VARIANT, v::VARIANT) AS c FROM kv",
+       "expect": {"value": "{\"widget_one_agent_id\":\"s-1\"}"}},
+      {"sql": "SELECT OBJECT_AGG(IFF(k = 'X', 'other', LOWER(k) || '_agent_id')::VARIANT, v::VARIANT) AS c FROM kv",
+       "expect": {"value": "{\"widget_one_agent_id\":\"s-1\"}"}}
+    ]},
+    {"name": "a-plain-key-is-untouched", "steps": [
+      {"sql": "CREATE TABLE kv (k VARCHAR(20), v VARCHAR(20))"},
+      {"sql": "INSERT INTO kv SELECT 'WIDGET_ONE', 's-1'"},
+      {"sql": "SELECT OBJECT_AGG(k, v::VARIANT) AS c FROM kv", "expect": {"value": "{\"WIDGET_ONE\":\"s-1\"}"}},
+      {"sql": "SELECT OBJECT_AGG(CASE WHEN k = 'X' THEN 'other' ELSE LOWER(k) || '_agent_id' END, v::VARIANT) AS c FROM kv",
+       "expect": {"value": "{\"widget_one_agent_id\":\"s-1\"}"}}
+    ]},
+    {"name": "a-non-text-key-is-refused-by-its-type", "steps": [
+      {"sql": "CREATE TABLE kv (k VARCHAR(20), v VARCHAR(20), n NUMBER, d DATE, b BOOLEAN, va VARIANT)"},
+      {"sql": "INSERT INTO kv SELECT 'WIDGET', 's-1', 7, '2026-01-01', TRUE, TO_VARIANT('x')"},
+      {"sql": "SELECT OBJECT_CONSTRUCT(va, v) AS c FROM kv",
+       "expect": {"error": {"messageContains": "Function OBJECT_CONSTRUCT does not support VARIANT argument type for keys"}}},
+      {"sql": "SELECT OBJECT_CONSTRUCT(k::VARIANT, v) AS c FROM kv",
+       "expect": {"error": {"messageContains": "Function OBJECT_CONSTRUCT does not support VARIANT argument type for keys"}}},
+      {"sql": "SELECT OBJECT_CONSTRUCT(n, v) AS c FROM kv",
+       "expect": {"error": {"messageContains": "Function OBJECT_CONSTRUCT does not support NUMBER(38,0) argument type for keys"}}},
+      {"sql": "SELECT OBJECT_CONSTRUCT(b, v) AS c FROM kv",
+       "expect": {"error": {"messageContains": "Function OBJECT_CONSTRUCT does not support BOOLEAN argument type for keys"}}},
+      {"sql": "SELECT OBJECT_CONSTRUCT(d, v) AS c FROM kv",
+       "expect": {"error": {"messageContains": "Function OBJECT_CONSTRUCT does not support DATE argument type for keys"}}}
+    ]},
+    {"name": "any-pair-and-both-spellings", "steps": [
+      {"sql": "CREATE TABLE kv (k VARCHAR(20), v VARCHAR(20), n NUMBER, d DATE, b BOOLEAN, va VARIANT)"},
+      {"sql": "INSERT INTO kv SELECT 'WIDGET', 's-1', 7, '2026-01-01', TRUE, TO_VARIANT('x')"},
+      {"sql": "SELECT OBJECT_CONSTRUCT('a', 1, k::VARIANT, 2) AS c FROM kv",
+       "expect": {"error": {"messageContains": "Function OBJECT_CONSTRUCT does not support VARIANT argument type for keys"}}},
+      {"sql": "SELECT OBJECT_CONSTRUCT_KEEP_NULL(k::VARIANT, v) AS c FROM kv",
+       "expect": {"error": {"messageContains": "Function OBJECT_CONSTRUCT_KEEP_NULL does not support VARIANT argument type for keys"}}}
+    ]},
+    {"name": "text-keys-and-variant-values-are-fine", "steps": [
+      {"sql": "CREATE TABLE kv (k VARCHAR(20), v VARCHAR(20), n NUMBER, d DATE, b BOOLEAN, va VARIANT)"},
+      {"sql": "INSERT INTO kv SELECT 'WIDGET', 's-1', 7, '2026-01-01', TRUE, TO_VARIANT('x')"},
+      {"sql": "SELECT OBJECT_CONSTRUCT(k, v) AS c FROM kv", "expect": {"rowCount": 1}},
+      {"sql": "SELECT OBJECT_CONSTRUCT('a', v) AS c FROM kv", "expect": {"rowCount": 1}},
+      {"sql": "SELECT OBJECT_CONSTRUCT('a', va) AS c FROM kv", "expect": {"rowCount": 1}},
+      {"sql": "SELECT OBJECT_CONSTRUCT('a', v::VARIANT) AS c FROM kv", "expect": {"rowCount": 1}},
+      {"sql": "SELECT OBJECT_CONSTRUCT(*) AS c FROM kv", "expect": {"rowCount": 1}}
+    ]},
+    {"name": "a-view-over-it-is-refused", "steps": [
+      {"sql": "CREATE TABLE kv (k VARCHAR(20), v VARCHAR(20), n NUMBER, d DATE, b BOOLEAN, va VARIANT)"},
+      {"sql": "INSERT INTO kv SELECT 'WIDGET', 's-1', 7, '2026-01-01', TRUE, TO_VARIANT('x')"},
+      {"sql": "CREATE OR REPLACE VIEW kv_v AS SELECT OBJECT_CONSTRUCT(k::VARIANT, v) AS c FROM kv",
+       "expect": {"error": {"messageContains": "Function OBJECT_CONSTRUCT does not support VARIANT argument type for keys"}}}
+    ]}
+  ]
+}

@@ -206,7 +206,7 @@ public class BeginEndReturnTest extends BaseDatabaseTest {
               res RESULTSET;
               stmt VARCHAR;
             BEGIN
-              stmt := 'select * from test_values';
+              stmt := 'select * from test_values order by id';
               res := (EXECUTE IMMEDIATE stmt);
               RETURN TABLE(res);
             END;

@@ -1,0 +1,76 @@
+{
+  "suite": "scripting-begin-end",
+  "description": "Anonymous BEGIN...END blocks: DECLARE DEFAULT/:=, typed declaration reading an earlier untyped one, RETURN of integers/strings/expressions/variables/NULL, cursor-built ARRAY and OBJECT returns, RETURN TABLE(resultset) via EXECUTE IMMEDIATE, transactions with ROLLBACK inside a block, per-statement clock reads, and plain SQL column references inside a procedure body escaping the block name check. Converted 1:1 from scripting/BeginEndDeclareTest, BeginEndReturnTest, BlockStatementClockTest and PlainSqlInBlockScopeTest (all now retired).",
+  "tags": ["scripting", "converted"],
+  "tests": [
+    {"name": "declare-default-visible-in-block", "steps": [
+      {"sql": "CREATE TABLE results (value INTEGER)"},
+      {"sql": "DECLARE x INTEGER DEFAULT 10;\nBEGIN\n    INSERT INTO results VALUES (:x);\nEND;"},
+      {"sql": "SELECT * FROM results", "expect": {"rows": [["10"]]}}
+    ]},
+    {"name": "declare-colon-equals-visible-in-block", "steps": [
+      {"sql": "CREATE TABLE results (value INTEGER)"},
+      {"sql": "DECLARE x INTEGER := 15;\nBEGIN\n    INSERT INTO results VALUES (:x);\nEND;"},
+      {"sql": "SELECT * FROM results", "expect": {"rows": [["15"]]}}
+    ]},
+    {"name": "typed-declaration-sees-earlier-untyped-one", "steps": [
+      {"sql": "DECLARE\n    prefix := 'violations: ';\n    message STRING := prefix || 'none';\nBEGIN\n    RETURN :message;\nEND;", "expect": {"value": "violations: none"}}
+    ]},
+    {"name": "return-integer", "steps": [
+      {"sql": "BEGIN RETURN 1; END;", "expect": {"value": "1"}}
+    ]},
+    {"name": "return-string", "steps": [
+      {"sql": "BEGIN RETURN 'hello'; END;", "expect": {"value": "hello"}}
+    ]},
+    {"name": "return-expression", "steps": [
+      {"sql": "BEGIN RETURN 10 + 5; END;", "expect": {"value": "15"}}
+    ]},
+    {"name": "return-variable", "steps": [
+      {"sql": "DECLARE x INTEGER DEFAULT 42;\nBEGIN\n    RETURN x;\nEND;", "expect": {"value": "42"}}
+    ]},
+    {"name": "bare-return-yields-null-row", "steps": [
+      {"sql": "BEGIN RETURN; END;", "expect": {"rowCount": 1, "value": "NULL"}}
+    ]},
+    {"name": "block-without-return-executes", "steps": [
+      {"sql": "DECLARE x INTEGER DEFAULT 1; BEGIN x := 2; END;"}
+    ]},
+    {"name": "return-array-built-from-cursor", "steps": [
+      {"sql": "DECLARE c1 CURSOR FOR SELECT 1 as c UNION SELECT 2 as c;\nBEGIN\n    LET a ARRAY := [];\n    FOR rec IN c1 DO\n        a := array_append(a, rec.c);\n    END FOR;\n    RETURN a;\nEND;",
+       "expect": {"rowCount": 1, "value": "[1,2]"}}
+    ]},
+    {"name": "return-object-built-from-cursor", "steps": [
+      {"sql": "DECLARE c1 CURSOR FOR SELECT 1 as c;\nBEGIN\n    LET o OBJECT := {};\n    FOR rec IN c1 DO\n        o := object_insert(o, 'k', rec.c);\n    END FOR;\n    RETURN o;\nEND;",
+       "expect": {"rowCount": 1, "value": "{\"k\":1}"}}
+    ]},
+    {"name": "plain-select-sanity-two-rows", "steps": [
+      {"sql": "CREATE TABLE simple_test (id INTEGER)"},
+      {"sql": "INSERT INTO simple_test VALUES (1), (2)"},
+      {"sql": "SELECT * FROM simple_test", "expect": {"rowCount": 2}}
+    ]},
+    {"name": "return-table-from-resultset-via-execute-immediate", "steps": [
+      {"sql": "CREATE TABLE test_values (id INTEGER)"},
+      {"sql": "INSERT INTO test_values VALUES (1), (2)"},
+      {"sql": "DECLARE\n    res RESULTSET;\n    stmt VARCHAR;\nBEGIN\n    stmt := 'select * from test_values';\n    res := (EXECUTE IMMEDIATE stmt);\n    RETURN TABLE(res);\nEND;",
+       "expect": {"rows": [["1"], ["2"]], "ordered": true}}
+    ]},
+    {"name": "delete-inside-block-rolled-back", "steps": [
+      {"sql": "CREATE TABLE customers (id INTEGER, name VARCHAR)"},
+      {"sql": "INSERT INTO customers VALUES (1, 'Alice'), (2, 'Bob')"},
+      {"sql": "BEGIN\n    BEGIN TRANSACTION;\n    DELETE FROM customers WHERE id = 1;\n    ROLLBACK;\nEND;"},
+      {"sql": "SELECT COUNT(*) FROM customers", "expect": {"value": "2"}}
+    ]},
+    {"name": "each-block-statement-reads-its-own-clock", "steps": [
+      {"sql": "DECLARE\n    t1 VARCHAR;\n    t2 VARCHAR;\n    burn NUMBER;\nBEGIN\n    t1 := CURRENT_TIMESTAMP()::VARCHAR;\n    burn := (SELECT COUNT(*) FROM TABLE(GENERATOR(ROWCOUNT => 2000000)));\n    t2 := CURRENT_TIMESTAMP()::VARCHAR;\n    RETURN IFF(:t1 = :t2, 'frozen', 'advanced');\nEND;",
+       "expect": {"value": "advanced"}}
+    ]},
+    {"name": "within-one-statement-the-clock-is-stable", "steps": [
+      {"sql": "SELECT CURRENT_TIMESTAMP() = CURRENT_TIMESTAMP()", "expect": {"value": "true"}}
+    ]},
+    {"name": "insert-select-union-inside-procedure-body", "steps": [
+      {"sql": "CREATE TABLE qa (row_id INT, src VARIANT)"},
+      {"sql": "CREATE PROCEDURE p() RETURNS STRING LANGUAGE SQL EXECUTE AS CALLER AS $$\nBEGIN\n    INSERT INTO qa (ROW_ID, SRC)\n    SELECT ROW_ID, {} AS SRC FROM qa WHERE FALSE UNION ALL\n    SELECT 1, {} AS SRC;\n    RETURN 'ok';\nEND\n$$"},
+      {"sql": "CALL p()", "expect": {"value": "ok"}},
+      {"sql": "SELECT * FROM qa", "expect": {"rowCount": 1}}
+    ]}
+  ]
+}

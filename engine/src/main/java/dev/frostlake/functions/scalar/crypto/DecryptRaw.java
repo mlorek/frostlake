@@ -38,7 +38,7 @@ import javax.crypto.spec.SecretKeySpec;
  */
 public class DecryptRaw extends BuiltInFunction {
 
-    public DecryptRaw() { super("DECRYPT_RAW", BinaryType.VARBINARY); }
+    public DecryptRaw() { super("DECRYPT_RAW", BinaryType.UNSIZED); }
 
     @Override
     public Object evaluate(final List<Object> args) {

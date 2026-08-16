@@ -1,0 +1,78 @@
+{
+  "suite": "features-default-current-timestamp",
+  "description": "The DEFAULT constraint with CURRENT_TIMESTAMP / CURRENT_DATE (with and without parentheses), through the SQL surface - the DESCRIBE TABLE default cell plus the populated values themselves, read back with server-side predicates (IS NOT NULL, = CURRENT_DATE) so the clock and time zone are the executing engine's own: auto-population on INSERT (single, multiple, reordered column list, multi-row VALUES), an explicit NULL overriding the default, literal defaults alongside, multiple defaulted columns, and both syntax forms mixed in one table. Converted 1:1 from features/DefaultCurrentTimestampTest (now retired).",
+  "tags": ["features", "converted"],
+  "tests": [
+    {"name": "default-current-timestamp", "steps": [
+      {"sql": "CREATE TABLE test_timestamps (id INTEGER, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, name VARCHAR)"},
+      {"sql": "DESCRIBE TABLE test_timestamps"},
+      {"sql": "SELECT CONTAINS(UPPER(MAX(IFF(\"name\" = 'CREATED_AT', \"default\", NULL))), 'CURRENT_TIMESTAMP') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "true"}}
+    ]},
+    {"name": "default-current-timestamp-insertion", "steps": [
+      {"sql": "CREATE TABLE test_timestamps (id INTEGER, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, name VARCHAR)"},
+      {"sql": "INSERT INTO test_timestamps (id, name) VALUES (1, 'Alice')"},
+      {"sql": "SELECT COUNT(*) FROM test_timestamps WHERE id = 1 AND created_at IS NOT NULL", "expect": {"value": "1"}}
+    ]},
+    {"name": "default-current-timestamp-multiple-inserts", "steps": [
+      {"sql": "CREATE TABLE test_timestamps (id INTEGER, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, name VARCHAR)"},
+      {"sql": "INSERT INTO test_timestamps (id, name) VALUES (2, 'Bob')"},
+      {"sql": "INSERT INTO test_timestamps (id, name) VALUES (3, 'Charlie')"},
+      {"sql": "SELECT COUNT(*) FROM test_timestamps WHERE id IN (2, 3) AND created_at IS NOT NULL", "expect": {"value": "2"}}
+    ]},
+    {"name": "default-current-timestamp-with-explicit-null", "steps": [
+      {"sql": "CREATE TABLE test_timestamps (id INTEGER, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, name VARCHAR)"},
+      {"sql": "INSERT INTO test_timestamps (id, created_at, name) VALUES (4, NULL, 'Explicit')"},
+      {"sql": "SELECT COUNT(*) FROM test_timestamps WHERE id = 4 AND created_at IS NULL", "expect": {"value": "1"}}
+    ]},
+    {"name": "default-current-date", "steps": [
+      {"sql": "CREATE TABLE test_dates (id INTEGER, date_col DATE DEFAULT CURRENT_DATE, name VARCHAR)"},
+      {"sql": "DESCRIBE TABLE test_dates"},
+      {"sql": "SELECT CONTAINS(UPPER(MAX(IFF(\"name\" = 'DATE_COL', \"default\", NULL))), 'CURRENT_DATE') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "true"}},
+      {"sql": "INSERT INTO test_dates (id, name) VALUES (1, 'Test')"},
+      {"sql": "SELECT COUNT(*) FROM test_dates WHERE id = 1 AND date_col = CURRENT_DATE", "expect": {"value": "1"}}
+    ]},
+    {"name": "default-literal-value", "steps": [
+      {"sql": "CREATE TABLE test_literals (id INTEGER, status VARCHAR DEFAULT 'ACTIVE', count INTEGER DEFAULT 0)"},
+      {"sql": "INSERT INTO test_literals (id) VALUES (1)"},
+      {"sql": "SELECT status, \"COUNT\" FROM test_literals WHERE id = 1",
+       "expect": {"rowCount": 1, "rows": [["ACTIVE", "0"]]}}
+    ]},
+    {"name": "multiple-columns-with-defaults", "steps": [
+      {"sql": "CREATE TABLE test_multi_defaults (id INTEGER, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, status VARCHAR DEFAULT 'NEW')"},
+      {"sql": "INSERT INTO test_multi_defaults (id) VALUES (1)"},
+      {"sql": "SELECT COUNT(*) FROM test_multi_defaults WHERE id = 1 AND created_at IS NOT NULL AND updated_at IS NOT NULL AND status = 'NEW'", "expect": {"value": "1"}}
+    ]},
+    {"name": "default-with-column-list", "steps": [
+      {"sql": "CREATE TABLE test_timestamps (id INTEGER, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, name VARCHAR)"},
+      {"sql": "INSERT INTO test_timestamps (name, id) VALUES ('ColumnTest', 10)"},
+      {"sql": "SELECT COUNT(*) FROM test_timestamps WHERE id = 10 AND created_at IS NOT NULL", "expect": {"value": "1"}}
+    ]},
+    {"name": "default-with-multiple-values", "steps": [
+      {"sql": "CREATE TABLE test_timestamps (id INTEGER, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, name VARCHAR)"},
+      {"sql": "INSERT INTO test_timestamps (id, name) VALUES (20, 'Multi1'), (21, 'Multi2'), (22, 'Multi3')"},
+      {"sql": "SELECT COUNT(*) FROM test_timestamps WHERE id >= 20 AND created_at IS NOT NULL", "expect": {"value": "3"}}
+    ]},
+    {"name": "default-current-timestamp-with-parentheses", "steps": [
+      {"sql": "CREATE TABLE test_timestamps_paren (id INTEGER, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP(), name VARCHAR)"},
+      {"sql": "DESCRIBE TABLE test_timestamps_paren"},
+      {"sql": "SELECT CONTAINS(UPPER(MAX(IFF(\"name\" = 'CREATED_AT', \"default\", NULL))), 'CURRENT_TIMESTAMP') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "true"}},
+      {"sql": "INSERT INTO test_timestamps_paren (id, name) VALUES (1, 'ParenTest')"},
+      {"sql": "SELECT COUNT(*) FROM test_timestamps_paren WHERE id = 1 AND created_at IS NOT NULL", "expect": {"value": "1"}}
+    ]},
+    {"name": "default-current-date-with-parentheses", "steps": [
+      {"sql": "CREATE TABLE test_dates_paren (id INTEGER, date_col DATE DEFAULT CURRENT_DATE(), name VARCHAR)"},
+      {"sql": "DESCRIBE TABLE test_dates_paren"},
+      {"sql": "SELECT CONTAINS(UPPER(MAX(IFF(\"name\" = 'DATE_COL', \"default\", NULL))), 'CURRENT_DATE') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "true"}},
+      {"sql": "INSERT INTO test_dates_paren (id, name) VALUES (1, 'Test')"},
+      {"sql": "SELECT COUNT(*) FROM test_dates_paren WHERE id = 1 AND date_col = CURRENT_DATE", "expect": {"value": "1"}}
+    ]},
+    {"name": "mixed-parentheses-syntax", "steps": [
+      {"sql": "CREATE TABLE test_mixed_syntax (id INTEGER, ts_no_paren TIMESTAMP DEFAULT CURRENT_TIMESTAMP, ts_with_paren TIMESTAMP DEFAULT CURRENT_TIMESTAMP(), date_no_paren DATE DEFAULT CURRENT_DATE, date_with_paren DATE DEFAULT CURRENT_DATE())"},
+      {"sql": "DESCRIBE TABLE test_mixed_syntax"},
+      {"sql": "SELECT CONTAINS(UPPER(MAX(IFF(\"name\" = 'TS_NO_PAREN', \"default\", NULL))), 'CURRENT_TIMESTAMP'), CONTAINS(UPPER(MAX(IFF(\"name\" = 'TS_WITH_PAREN', \"default\", NULL))), 'CURRENT_TIMESTAMP'), CONTAINS(UPPER(MAX(IFF(\"name\" = 'DATE_NO_PAREN', \"default\", NULL))), 'CURRENT_DATE'), CONTAINS(UPPER(MAX(IFF(\"name\" = 'DATE_WITH_PAREN', \"default\", NULL))), 'CURRENT_DATE') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["true", "true", "true", "true"]]}},
+      {"sql": "INSERT INTO test_mixed_syntax (id) VALUES (1)"},
+      {"sql": "SELECT COUNT(*) FROM test_mixed_syntax WHERE id = 1 AND ts_no_paren IS NOT NULL AND ts_with_paren IS NOT NULL AND date_no_paren IS NOT NULL AND date_with_paren IS NOT NULL", "expect": {"value": "1"}}
+    ]}
+  ]
+}

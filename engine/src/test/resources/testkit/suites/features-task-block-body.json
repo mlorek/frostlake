@@ -1,0 +1,38 @@
+{
+  "suite": "features-task-block-body",
+  "description": "A task's body may be a whole Snowflake Scripting block, not only a single statement - live-verified for a plain BEGIN...END, one with its own DECLARE section, and one nesting another block; the stored body reads back through the SHOW TASKS definition cell. The block is written UNQUOTED, exactly like the unquoted procedure body: a $$-quoted body is a syntax error at the dollar-quoted token. Once it is a body the block obeys the ordinary scripting rules, so a statement inside it that lacks its terminating semicolon is refused. Converted 1:1 from features/TaskBlockBodyTest (now retired).",
+  "tags": ["features", "converted"],
+  "tests": [
+    {"name": "a-task-body-may-be-a-scripting-block", "steps": [
+      {"sql": "CREATE TABLE task_target (n INT)"},
+      {"sql": "CREATE TASK block_task\nWAREHOUSE = 'COMPUTE_WH'\nSCHEDULE = '60 MINUTES'\nAS\nBEGIN\n    INSERT INTO task_target VALUES (1);\nEND;"},
+      {"sql": "SHOW TASKS LIKE 'block_task'"},
+      {"sql": "SELECT CONTAINS(\"definition\", 'BEGIN') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'BLOCK_TASK'",
+       "expect": {"value": "true"}}
+    ]},
+    {"name": "a-task-body-may-carry-its-own-declare-section", "steps": [
+      {"sql": "CREATE TABLE task_target (n INT)"},
+      {"sql": "CREATE TASK declare_task\nWAREHOUSE = 'COMPUTE_WH'\nSCHEDULE = '60 MINUTES'\nAS\nDECLARE\n    n INT;\nBEGIN\n    n := 1;\n    INSERT INTO task_target VALUES (:n);\nEND;"},
+      {"sql": "SHOW TASKS LIKE 'declare_task'"},
+      {"sql": "SELECT CONTAINS(\"definition\", 'DECLARE') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'DECLARE_TASK'",
+       "expect": {"value": "true"}}
+    ]},
+    {"name": "a-task-body-may-nest-blocks", "steps": [
+      {"sql": "CREATE TABLE task_target (n INT)"},
+      {"sql": "CREATE TASK nested_task\nWAREHOUSE = 'COMPUTE_WH'\nSCHEDULE = '60 MINUTES'\nAS\nBEGIN\n    BEGIN\n        INSERT INTO task_target VALUES (2);\n    END;\nEND;"},
+      {"sql": "SHOW TASKS LIKE 'nested_task'"},
+      {"sql": "SELECT CONTAINS(\"definition\", 'BEGIN') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'NESTED_TASK'",
+       "expect": {"value": "true"}}
+    ]},
+    {"name": "a-task-body-may-not-be-dollar-quoted", "steps": [
+      {"sql": "CREATE TABLE task_target (n INT)"},
+      {"sql": "CREATE TASK quoted_task\nWAREHOUSE = 'COMPUTE_WH'\nSCHEDULE = '60 MINUTES'\nAS $$\nBEGIN\n    INSERT INTO task_target VALUES (3);\nEND;\n$$",
+       "expect": {"error": {"messageContains": "syntax error"}}}
+    ]},
+    {"name": "a-task-block-obeys-the-statement-terminator-rule", "steps": [
+      {"sql": "CREATE TABLE task_target (n INT)"},
+      {"sql": "CREATE TASK unterminated_task\nWAREHOUSE = 'COMPUTE_WH'\nSCHEDULE = '60 MINUTES'\nAS\nBEGIN\n    INSERT INTO task_target VALUES (4)\nEND;",
+       "expect": {"error": {"messageContains": "syntax error"}}}
+    ]}
+  ]
+}

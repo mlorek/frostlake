@@ -1,0 +1,65 @@
+{
+  "suite": "functions-aggregate-gap-coverage",
+  "description": "Aggregate paths that coverage showed untested: the linear-regression family over the exact line y = 2x + 1 (every REGR_ statistic a clean constant, with NULL-bearing pairs skipped and a single usable pair leaving the slope undefined), MAX_BY / MIN_BY in both the scalar and top-N array forms with NULL sort keys never winning, the single-row and all-NULL edges of the statistical aggregates (sample statistics need n >= 2), and the GENERATOR / SPLIT_TO_TABLE table functions with their full output column sets including the LATERAL per-row form. Converted 1:1 from functions/AggregateGapCoverageTest (now retired); its @BeforeEach pts fixture is inlined per test and the 1e-9 tolerances are supplied by the testkit's numeric normalisation.",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "the-regression-family-over-an-exact-line", "steps": [
+      {"sql": "CREATE TABLE pts (x INTEGER, y INTEGER)"},
+      {"sql": "INSERT INTO pts VALUES (1, 3), (2, 5), (3, 7), (NULL, 9), (4, NULL)"},
+      {"sql": "SELECT REGR_SLOPE(y, x), REGR_INTERCEPT(y, x), REGR_R2(y, x), REGR_COUNT(y, x), REGR_AVGX(y, x), REGR_AVGY(y, x) FROM pts",
+       "expect": {"rows": [["2", "1", "1", "3", "2", "5"]]}}
+    ]},
+    {"name": "the-regression-sums-of-squares", "steps": [
+      {"sql": "CREATE TABLE pts (x INTEGER, y INTEGER)"},
+      {"sql": "INSERT INTO pts VALUES (1, 3), (2, 5), (3, 7), (NULL, 9), (4, NULL)"},
+      {"sql": "SELECT REGR_SXX(y, x), REGR_SYY(y, x), REGR_SXY(y, x) FROM pts",
+       "expect": {"rows": [["2", "8", "4"]]}},
+      {"sql": "SELECT REGR_SLOPE(y, x) FROM pts WHERE x = 1", "expect": {"rows": [[null]]}}
+    ]},
+    {"name": "max-by-and-min-by-scalar-and-top-n", "steps": [
+      {"sql": "CREATE TABLE emp (name VARCHAR, pay INTEGER)"},
+      {"sql": "INSERT INTO emp VALUES ('a', 10), ('b', 30), ('c', 20)"},
+      {"sql": "SELECT MAX_BY(name, pay) FROM emp", "expect": {"value": "b"}},
+      {"sql": "SELECT MIN_BY(name, pay) FROM emp", "expect": {"value": "a"}},
+      {"sql": "SELECT TO_JSON(MAX_BY(name, pay, 2)) FROM emp", "expect": {"value": "[\"b\",\"c\"]"}},
+      {"sql": "SELECT TO_JSON(MIN_BY(name, pay, 2)) FROM emp", "expect": {"value": "[\"a\",\"c\"]"}},
+      {"sql": "INSERT INTO emp VALUES ('z', NULL)"},
+      {"sql": "SELECT MAX_BY(name, pay) FROM emp", "expect": {"value": "b"}}
+    ]},
+    {"name": "statistical-edges-single-row-and-all-null", "steps": [
+      {"sql": "CREATE TABLE s1 (v INTEGER)"},
+      {"sql": "INSERT INTO s1 VALUES (42)"},
+      {"sql": "SELECT STDDEV_SAMP(v) FROM s1", "expect": {"rows": [[null]]}},
+      {"sql": "SELECT VAR_SAMP(v) FROM s1", "expect": {"rows": [[null]]}},
+      {"sql": "SELECT STDDEV_POP(v), VAR_POP(v) FROM s1", "expect": {"rows": [["0", "0"]]}},
+      {"sql": "CREATE TABLE s0 (v INTEGER)"},
+      {"sql": "INSERT INTO s0 VALUES (NULL), (NULL)"},
+      {"sql": "SELECT AVG(v) FROM s0", "expect": {"rows": [[null]]}},
+      {"sql": "SELECT STDDEV_POP(v) FROM s0", "expect": {"rows": [[null]]}},
+      {"sql": "SELECT COUNT(v) FROM s0", "expect": {"value": "0"}}
+    ]},
+    {"name": "generator-rowcount-produces-exact-rows", "steps": [
+      {"sql": "SELECT SEQ4() AS s FROM TABLE(GENERATOR(ROWCOUNT => 4)) ORDER BY s",
+       "expect": {"rowCount": 4, "rows": [["0"], ["1"], ["2"], ["3"]], "ordered": true}}
+    ]},
+    {"name": "split-to-table-emits-all-output-columns", "steps": [
+      {"sql": "SELECT t.seq, t.index, t.value FROM TABLE(SPLIT_TO_TABLE('a,b,c', ',')) t ORDER BY t.index",
+       "expect": {"rowCount": 3}},
+      {"sql": "SELECT t.index, t.value FROM TABLE(SPLIT_TO_TABLE('a,b,c', ',')) t ORDER BY t.index",
+       "expect": {"rows": [["1", "a"], ["2", "b"], ["3", "c"]], "ordered": true}}
+    ]},
+    {"name": "split-to-table-lateral-per-row", "steps": [
+      {"sql": "CREATE TABLE csvs (id INTEGER, s VARCHAR)"},
+      {"sql": "INSERT INTO csvs VALUES (1, 'x,y'), (2, 'z')"},
+      {"sql": "SELECT c.id, t.value FROM csvs c, LATERAL SPLIT_TO_TABLE(c.s, ',') t ORDER BY c.id, t.index",
+       "expect": {"rowCount": 3, "rows": [["1", "x"], ["1", "y"], ["2", "z"]], "ordered": true}}
+    ]},
+    {"name": "aggregates-accept-distinct", "steps": [
+      {"sql": "CREATE TABLE d (v INTEGER)"},
+      {"sql": "INSERT INTO d VALUES (1), (1), (2)"},
+      {"sql": "SELECT SUM(DISTINCT v), COUNT(DISTINCT v), AVG(DISTINCT v) FROM d",
+       "expect": {"rows": [["3", "2", "1.5"]]}},
+      {"sql": "SELECT MEDIAN(v) FROM d", "expect": {"value": "1"}}
+    ]}
+  ]
+}

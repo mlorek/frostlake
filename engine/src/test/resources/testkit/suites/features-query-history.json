@@ -1,0 +1,422 @@
+{
+ "suite": "features-query-history",
+ "description": "Query history tracking through INFORMATION_SCHEMA.QUERY_HISTORY(): statements are recorded with their text, type, execution status, timings and rows_produced; the listing carries Snowflake's 62 columns; it filters by type and status, orders by start_time, honors LIMIT, records DDL and transaction statements, keeps the error_message of a FAILED statement, and grows as more statements run. Converted 1:1 from features/QueryHistoryTest (now retired). Every test skips the snowflake backend, as the Java class did: it cleared the embedded tracker and then asserted the statements it just ran are the history, while a real account's QUERY_HISTORY is account-wide, populated asynchronously, uncleanable, and uses finer-grained query_type values (CREATE_TABLE, not CREATE). The clear() has no SQL equivalent, so the counting assertions are expressed as the lower bounds the Java class asserted - true whatever else the run has recorded. The persistence check counts a marker statement rather than the whole listing: the embedded tracker keeps at most 100 entries (FIFO), so an unfiltered count saturates once a suite has run that many statements.",
+ "tags": [
+  "features",
+  "converted"
+ ],
+ "skip": {
+  "backends": [
+   "snowflake"
+  ],
+  "reason": "session-scoped embedded history: the account's QUERY_HISTORY is account-wide, asynchronous, uncleanable and uses finer-grained query types"
+ },
+ "tests": [
+  {
+   "name": "query-history-tracking",
+   "skip": {
+    "backends": [
+     "snowflake"
+    ],
+    "reason": "session-scoped embedded history"
+   },
+   "steps": [
+    {
+     "sql": "CREATE TABLE test_table (id INTEGER, name VARCHAR)"
+    },
+    {
+     "sql": "INSERT INTO test_table VALUES (1, 'Alice'), (2, 'Bob')"
+    },
+    {
+     "sql": "SELECT * FROM test_table"
+    },
+    {
+     "sql": "SELECT COUNT(*) >= 3 FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY())",
+     "expect": {
+      "value": "true"
+     }
+    }
+   ]
+  },
+  {
+   "name": "query-history-columns",
+   "skip": {
+    "backends": [
+     "snowflake"
+    ],
+    "reason": "session-scoped embedded history"
+   },
+   "steps": [
+    {
+     "sql": "SELECT 1"
+    },
+    {
+     "sql": "SELECT COUNT(*) > 0 FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY())",
+     "expect": {
+      "value": "true"
+     }
+    },
+    {
+     "sql": "CREATE TABLE qh_cols AS SELECT * FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY()) LIMIT 1"
+    },
+    {
+     "sql": "DESCRIBE TABLE qh_cols"
+    },
+    {
+     "sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+     "expect": {
+      "value": "62"
+     }
+    }
+   ]
+  },
+  {
+   "name": "query-history-query-types",
+   "skip": {
+    "backends": [
+     "snowflake"
+    ],
+    "reason": "session-scoped embedded history"
+   },
+   "steps": [
+    {
+     "sql": "CREATE TABLE type_test (id INTEGER)"
+    },
+    {
+     "sql": "INSERT INTO type_test VALUES (1)"
+    },
+    {
+     "sql": "UPDATE type_test SET id = 2"
+    },
+    {
+     "sql": "DELETE FROM type_test"
+    },
+    {
+     "sql": "SELECT * FROM type_test"
+    },
+    {
+     "sql": "DROP TABLE type_test"
+    },
+    {
+     "sql": "SELECT COUNT(*) > 0 FROM (SELECT query_type, COUNT(*) AS c FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY()) GROUP BY query_type ORDER BY query_type)",
+     "expect": {
+      "value": "true"
+     }
+    }
+   ]
+  },
+  {
+   "name": "query-history-status",
+   "skip": {
+    "backends": [
+     "snowflake"
+    ],
+    "reason": "session-scoped embedded history"
+   },
+   "steps": [
+    {
+     "sql": "SELECT 1"
+    },
+    {
+     "sql": "SELECT * FROM qh_status_missing_table",
+     "expect": {
+      "error": {}
+     }
+    },
+    {
+     "sql": "SELECT COUNT(*) > 0 FROM (SELECT execution_status, COUNT(*) AS c FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY()) GROUP BY execution_status)",
+     "expect": {
+      "value": "true"
+     }
+    }
+   ]
+  },
+  {
+   "name": "query-history-filter",
+   "skip": {
+    "backends": [
+     "snowflake"
+    ],
+    "reason": "session-scoped embedded history"
+   },
+   "steps": [
+    {
+     "sql": "CREATE TABLE filter_test (id INTEGER)"
+    },
+    {
+     "sql": "SELECT * FROM filter_test"
+    },
+    {
+     "sql": "DROP TABLE filter_test"
+    },
+    {
+     "sql": "SELECT COUNT(*) >= 1 FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY()) WHERE query_type = 'SELECT'",
+     "expect": {
+      "value": "true"
+     }
+    },
+    {
+     "sql": "SELECT COUNT(*) >= 1 FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY()) WHERE execution_status = 'SUCCESS'",
+     "expect": {
+      "value": "true"
+     }
+    }
+   ]
+  },
+  {
+   "name": "query-history-order-by-time",
+   "skip": {
+    "backends": [
+     "snowflake"
+    ],
+    "reason": "session-scoped embedded history"
+   },
+   "steps": [
+    {
+     "sql": "SELECT 1"
+    },
+    {
+     "sql": "SELECT 2"
+    },
+    {
+     "sql": "SELECT 3"
+    },
+    {
+     "sql": "SELECT COUNT(*) >= 3 FROM (SELECT query_text, start_time FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY()) ORDER BY start_time DESC)",
+     "expect": {
+      "value": "true"
+     }
+    }
+   ]
+  },
+  {
+   "name": "query-history-execution-time",
+   "skip": {
+    "backends": [
+     "snowflake"
+    ],
+    "reason": "session-scoped embedded history"
+   },
+   "steps": [
+    {
+     "sql": "CREATE TABLE perf_test (id INTEGER)"
+    },
+    {
+     "sql": "INSERT INTO perf_test VALUES (1), (2), (3), (4), (5)"
+    },
+    {
+     "sql": "SELECT COUNT(*) >= 2, COUNT_IF(TOTAL_ELAPSED_TIME IS NULL) FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY()) WHERE query_type IN ('CREATE', 'INSERT')",
+     "expect": {
+      "rows": [
+       [
+        "true",
+        "0"
+       ]
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "name": "query-history-rows-produced",
+   "skip": {
+    "backends": [
+     "snowflake"
+    ],
+    "reason": "session-scoped embedded history"
+   },
+   "steps": [
+    {
+     "sql": "CREATE TABLE rows_test (id INTEGER)"
+    },
+    {
+     "sql": "INSERT INTO rows_test VALUES (1), (2), (3)"
+    },
+    {
+     "sql": "SELECT * FROM rows_test"
+    },
+    {
+     "sql": "SELECT query_text, rows_produced FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY()) WHERE query_type = 'SELECT' ORDER BY start_time DESC LIMIT 1",
+     "expect": {
+      "rowCount": 1
+     }
+    }
+   ]
+  },
+  {
+   "name": "query-history-with-ddl",
+   "skip": {
+    "backends": [
+     "snowflake"
+    ],
+    "reason": "session-scoped embedded history"
+   },
+   "steps": [
+    {
+     "sql": "CREATE DATABASE test_hist_db"
+    },
+    {
+     "sql": "USE DATABASE test_hist_db"
+    },
+    {
+     "sql": "CREATE SCHEMA test_hist_schema"
+    },
+    {
+     "sql": "USE SCHEMA test_hist_schema"
+    },
+    {
+     "sql": "CREATE TABLE ddl_test (id INTEGER)"
+    },
+    {
+     "sql": "SELECT COUNT(*) > 0 FROM (SELECT query_type, COUNT(*) AS c FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY()) WHERE query_type = 'CREATE' GROUP BY query_type)",
+     "expect": {
+      "value": "true"
+     }
+    },
+    {
+     "sql": "USE DATABASE test_db"
+    },
+    {
+     "sql": "USE SCHEMA test_schema"
+    },
+    {
+     "sql": "DROP DATABASE IF EXISTS test_hist_db"
+    }
+   ]
+  },
+  {
+   "name": "query-history-with-transactions",
+   "skip": {
+    "backends": [
+     "snowflake"
+    ],
+    "reason": "session-scoped embedded history"
+   },
+   "steps": [
+    {
+     "sql": "CREATE TABLE txn_test (id INTEGER)"
+    },
+    {
+     "sql": "BEGIN"
+    },
+    {
+     "sql": "INSERT INTO txn_test VALUES (1)"
+    },
+    {
+     "sql": "COMMIT"
+    },
+    {
+     "sql": "SELECT COUNT(*) >= 2 FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY()) WHERE query_type IN ('BEGIN', 'COMMIT', 'CREATE', 'INSERT')",
+     "expect": {
+      "value": "true"
+     }
+    }
+   ]
+  },
+  {
+   "name": "query-history-limit",
+   "skip": {
+    "backends": [
+     "snowflake"
+    ],
+    "reason": "session-scoped embedded history"
+   },
+   "steps": [
+    {
+     "sql": "SELECT 1"
+    },
+    {
+     "sql": "SELECT 2"
+    },
+    {
+     "sql": "SELECT 3"
+    },
+    {
+     "sql": "SELECT 4"
+    },
+    {
+     "sql": "SELECT 5"
+    },
+    {
+     "sql": "SELECT 6"
+    },
+    {
+     "sql": "SELECT 7"
+    },
+    {
+     "sql": "SELECT 8"
+    },
+    {
+     "sql": "SELECT 9"
+    },
+    {
+     "sql": "SELECT 10"
+    },
+    {
+     "sql": "SELECT COUNT(*) >= 10 FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY())",
+     "expect": {
+      "value": "true"
+     }
+    },
+    {
+     "sql": "SELECT * FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY()) LIMIT 5",
+     "expect": {
+      "rowCount": 5
+     }
+    }
+   ]
+  },
+  {
+   "name": "query-history-error-messages",
+   "skip": {
+    "backends": [
+     "snowflake"
+    ],
+    "reason": "session-scoped embedded history"
+   },
+   "steps": [
+    {
+     "sql": "SELECT * FROM qh_err_missing_table",
+     "expect": {
+      "error": {}
+     }
+    },
+    {
+     "sql": "SELECT COUNT(*) >= 1 FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY()) WHERE execution_status = 'FAILED' AND error_message IS NOT NULL",
+     "expect": {
+      "value": "true"
+     }
+    }
+   ]
+  },
+  {
+   "name": "query-history-persistence",
+   "skip": {
+    "backends": [
+     "snowflake"
+    ],
+    "reason": "session-scoped embedded history"
+   },
+   "steps": [
+    {
+     "sql": "SELECT 1"
+    },
+    {
+     "sql": "SELECT 2"
+    },
+    {
+     "sql": "SET c1 = (SELECT COUNT(*) FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY()) WHERE query_text = 'SELECT 3 AS qh_persist_marker')"
+    },
+    {
+     "sql": "SELECT 3 AS qh_persist_marker"
+    },
+    {
+     "sql": "SELECT (SELECT COUNT(*) FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY()) WHERE query_text = 'SELECT 3 AS qh_persist_marker') > $c1",
+     "expect": {
+      "value": "true"
+     }
+    }
+   ]
+  }
+ ]
+}

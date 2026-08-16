@@ -1,0 +1,31 @@
+{
+  "suite": "procedural-nested-execute-immediate-state",
+  "description": "An EXECUTE IMMEDIATE of a procedural script clears the session's transient procedural state - cursors, user-defined exceptions, declared variable types - so a dynamic script may re-declare names left over from a PREVIOUS top-level statement. That clear must NOT happen when the EXECUTE IMMEDIATE is itself running inside a BEGIN...END block: it then wiped the ENCLOSING block's live state, so a procedure that declared an exception, ran a dynamic procedural body, and then raised that exception failed with 'Undefined exception: <name>' - the exception it had declared itself. The same clear also dropped declared variable TYPES, which drive assignment coercion, and open CURSORS. The last test is the regression guard in the other direction: outside any block the clear must still happen. Converted 1:1 from procedural/NestedExecuteImmediateStateTest (now retired).",
+  "tags": ["procedural", "converted"],
+  "tests": [
+    {"name": "a-declared-exception-survives-a-nested-procedural-execute-immediate", "steps": [
+      {"sql": "CREATE OR REPLACE PROCEDURE p() RETURNS VARCHAR LANGUAGE SQL AS $$\nDECLARE\n  my_exc EXCEPTION (-20002, 'TEST FAILED');\nBEGIN\n  EXECUTE IMMEDIATE 'DECLARE d INTEGER; BEGIN d := 1; END;';\n  RAISE my_exc;\nEXCEPTION\n  WHEN my_exc THEN RETURN 'caught';\n  WHEN other THEN RETURN 'OTHER: ' || SQLERRM;\nEND\n$$"},
+      {"sql": "CALL p()", "expect": {"value": "caught"}}
+    ]},
+    {"name": "a-declared-exception-survives-a-dynamic-script-that-declares-its-own", "steps": [
+      {"sql": "CREATE OR REPLACE PROCEDURE p() RETURNS VARCHAR LANGUAGE SQL AS $$\nDECLARE\n  my_exc EXCEPTION (-20002, 'TEST FAILED');\nBEGIN\n  EXECUTE IMMEDIATE 'DECLARE x INTEGER; BEGIN x := 1; END;';\n  RAISE my_exc;\nEXCEPTION\n  WHEN my_exc THEN RETURN 'caught';\n  WHEN other THEN RETURN 'OTHER: ' || SQLERRM;\nEND\n$$"},
+      {"sql": "CALL p()", "expect": {"value": "caught"}}
+    ]},
+    {"name": "a-declared-variable-type-survives-a-nested-procedural-execute-immediate", "steps": [
+      {"sql": "CREATE OR REPLACE PROCEDURE p() RETURNS VARCHAR LANGUAGE SQL AS $$\nDECLARE\n  n NUMBER(10,2);\nBEGIN\n  EXECUTE IMMEDIATE 'DECLARE d INTEGER; BEGIN d := 1; END;';\n  n := 3.14159;\n  RETURN :n::VARCHAR;\nEND\n$$"},
+      {"sql": "CALL p()", "expect": {"value": "3.14"}}
+    ]},
+    {"name": "a-declared-cursor-survives-a-nested-procedural-execute-immediate", "steps": [
+      {"sql": "CREATE TABLE nums (id INTEGER)"},
+      {"sql": "INSERT INTO nums VALUES (7)"},
+      {"sql": "CREATE OR REPLACE PROCEDURE p() RETURNS VARCHAR LANGUAGE SQL AS $$\nDECLARE\n  c CURSOR FOR SELECT id FROM nums;\n  v INTEGER;\nBEGIN\n  OPEN c;\n  EXECUTE IMMEDIATE 'DECLARE d INTEGER; BEGIN d := 1; END;';\n  FETCH c INTO v;\n  CLOSE c;\n  RETURN :v::VARCHAR;\nEND\n$$"},
+      {"sql": "CALL p()", "expect": {"value": "7"}}
+    ]},
+    {"name": "a-top-level-execute-immediate-still-clears-between-statements", "steps": [
+      {"sql": "EXECUTE IMMEDIATE 'DECLARE x INTEGER; BEGIN x := 1; END;'"},
+      {"sql": "EXECUTE IMMEDIATE 'DECLARE x INTEGER; BEGIN x := 2; END;'"},
+      {"sql": "CREATE OR REPLACE PROCEDURE after_top_level() RETURNS VARCHAR LANGUAGE SQL AS $$\nDECLARE\n  my_exc EXCEPTION (-20002, 'TEST FAILED');\nBEGIN\n  RAISE my_exc;\nEXCEPTION\n  WHEN my_exc THEN RETURN 'caught';\nEND\n$$"},
+      {"sql": "CALL after_top_level()", "expect": {"value": "caught"}}
+    ]}
+  ]
+}

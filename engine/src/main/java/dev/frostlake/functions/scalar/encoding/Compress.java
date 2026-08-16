@@ -33,7 +33,7 @@ import java.util.List;
  * 938). Either argument being NULL yields NULL, without validating the other.
  */
 public class Compress extends BuiltInFunction {
-    public Compress() { super("COMPRESS", BinaryType.VARBINARY); }
+    public Compress() { super("COMPRESS", BinaryType.UNSIZED); }
 
     @Override
     public Object evaluate(final List<Object> args) {

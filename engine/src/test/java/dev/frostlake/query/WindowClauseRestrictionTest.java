@@ -40,8 +40,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  *   HAVING                  [CALL] is not a valid group by expression
  * </pre>
  *
- * <p>Live re-prints the call canonicalised ({@code ROW_NUMBER() OVER (ORDER BY G.A ASC NULLS LAST)})
- * where Frostlake prints it as written, so these cases assert the sentence around the brackets.
+ * <p>The bracketed call is re-printed canonicalised on both engines
+ * ({@code ROW_NUMBER() OVER (ORDER BY G.A ASC NULLS LAST)}) — that form is asserted by
+ * {@code CanonicalRefusalEchoTest}; these cases assert the sentence.
  */
 public class WindowClauseRestrictionTest extends BaseDatabaseTest {
 

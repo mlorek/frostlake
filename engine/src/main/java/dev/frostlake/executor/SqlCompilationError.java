@@ -16,6 +16,8 @@
 
 package dev.frostlake.executor;
 
+import dev.frostlake.executor.expressions.CollationSpec;
+
 /**
  * How Snowflake lays out a compilation-error message.
  *
@@ -52,18 +54,84 @@ public final class SqlCompilationError {
     }
 
     /**
+     * A compilation error whose detail follows the prefix ON THE SAME LINE, after a space, with no
+     * newline anywhere — the layout the date-part slot family keeps: live spells "SQL compilation
+     * error: Date/time component [TO_CHAR(1) ]for function TRUNC needs to be an identifier or a
+     * string literal." as one line, where the argument-type and conversion sentences break after
+     * the prefix.
+     *
+     * @param detail the sentence
+     * @return the message as the driver hands it to a client
+     */
+    public static String inline(final String detail) {
+        return PREFIX + " " + detail;
+    }
+
+    /**
+     * The ONE sentence family that lays itself out differently: the detail follows the prefix on its
+     * OWN line, after a space, and a newline closes the message instead of separating it.
+     *
+     * <pre>
+     * ALTER TABLE t ALTER COLUMN f SET DATA TYPE NUMBER(10,2)
+     *     SQL compilation error: cannot change column F from type FLOAT to NUMBER(10,2)\n
+     * </pre>
+     *
+     * <p>This is a property of the SENTENCE, not of the statement and not of un-positioned errors in
+     * general — which is worth stating plainly, because it looks like both. Twenty-one other
+     * un-positioned refusals were measured in one run and every one of them uses {@link #of}'s layout,
+     * including three raised by ALTER TABLE itself ({@code column 'I' already exists},
+     * {@code column 'X' does not exist}, {@code Object 'T.C' already exists.}). Only
+     * "cannot change column …" reads this way, in all eight retype directions.
+     *
+     * @param detail the sentence, which supplies its own full stop where it has one
+     * @return the message as the driver hands it to a client
+     */
+    public static String trailing(final String detail) {
+        return PREFIX + " " + detail + "\n";
+    }
+
+    /**
      * Whether a message is one of these — a COMPILE-time refusal rather than a failure that only
      * showed up while rows were being produced. The distinction matters wherever Frostlake reaches an
      * answer by executing something Snowflake merely plans.
      *
+     * <p>One compile-time refusal is worded WITHOUT the prefix: an invalid collation specification
+     * ({@code Invalid value 'xx-yy' for COLLATION. Reason: Unknown option: yy}), which live raises
+     * while the statement compiles all the same — over an empty table, and in a CREATE TABLE. It
+     * counts here, so every site that lets a compile-time refusal through lets it through too.
+     *
      * @param message the exception message, which may be null
-     * @return true when the message carries this prefix
+     * @return true when the message carries this prefix, or is the collation refusal
      */
     public static boolean isCompilationError(final String message) {
-        return message != null && message.startsWith(PREFIX);
+        return message != null && (message.startsWith(PREFIX) || CollationSpec.isRefusal(message));
     }
 
     /** A compilation error that reports a source position, which stays on the FIRST line. */
+    /**
+     * The positioned form spelled with a CAPITAL E — {@code SQL compilation error: Error line 1 at
+     * position 7}. Live uses it for the literal READER's refusals and the lower-case {@link #at} for
+     * the identifier and syntax families; the difference is measured, not a typo, and it is one of the
+     * few places the word is capitalised at all.
+     */
+    public static String atCapitalised(final int line, final int position, final String detail) {
+        final int[] shown = LeadingCommentOffset.rebase(line, position);
+        return PREFIX + " Error line " + shown[0] + " at position " + shown[1] + "\n" + detail;
+    }
+
+    /**
+     * The POSITIONED layout with an EMPTY position — the separating space survives where the "error
+     * line N at position M" would go, so the message opens "SQL compilation error: " with a trailing
+     * space before its newline.
+     *
+     * <p>That trailing space is live's, not a stray character: measured in one run beside the
+     * window-inside-an-aggregate refusal, which uses {@link #of} and has no trailing space. The two
+     * shapes sit side by side in the same family, so the difference is real.
+     */
+    public static String withoutPosition(final String detail) {
+        return PREFIX + " \n" + detail;
+    }
+
     public static String at(final int line, final int position, final String detail) {
         // Past any LEADING comment: a statement that opens with one reports from its first real token,
         // so the place computed against the raw text is shifted back here — see LeadingCommentOffset.
@@ -128,6 +196,22 @@ public final class SqlCompilationError {
     }
 
     /**
+     * The THIRD phrasing an enumerated warehouse property uses for a value outside its vocabulary.
+     * The three are not interchangeable, and each belongs to one property (live-verified):
+     *
+     * <pre>
+     *   WAREHOUSE_SIZE   invalid type of property 'HUGE' for 'WAREHOUSE_SIZE'
+     *   SCALING_POLICY   invalid value 'NOSUCH' for property 'SCALING_POLICY'      {@link #invalidValueForProperty}
+     *   WAREHOUSE_TYPE   invalid property 'NOSUCH' for 'WAREHOUSE_TYPE'            this one
+     * </pre>
+     *
+     * <p>Same mistake, three sentences — so the wording is per property and cannot be shared.
+     */
+    public static String invalidPropertyFor(final String value, final String property) {
+        return of("invalid property '" + value + "' for '" + property + "'");
+    }
+
+    /**
      * The message for a name that resolves to nothing. Snowflake never says WHY — a name you may not see
      * and a name that is not there are reported identically, so the wording is always "does not exist or
      * not authorized". Measured across the whole family: {@code DROP VIEW nosuch} answers
@@ -146,17 +230,28 @@ public final class SqlCompilationError {
      * {@code IN SCHEMA missing}, {@code IN DATABASE missing}): TABLES, VIEWS, STAGES, FILE FORMATS and
      * DYNAMIC TABLES answer exactly this, while PIPES, STREAMS, TASKS, SEQUENCES, TAGS, the two policy
      * kinds, CORTEX SEARCH SERVICES, PROCEDURES, FUNCTIONS and COLUMNS name the missing schema or
-     * database instead. Which one a kind uses is a property of the kind, not of the scope form.
+     * database instead. Which one a kind uses is a property of the kind, not of the scope form. Every
+     * USE that resolves nothing — a database, a schema, a role, a quoted name in the wrong case — answers
+     * it too.
      */
     public static String objectDoesNotExist() {
         return of("Object does not exist, or operation cannot be performed.");
+    }
+
+    /**
+     * The sentence live gives for a kind-less {@code USE} of a name with more than two parts, verbatim —
+     * the account's own template, with its line and position placeholders left unfilled.
+     */
+    public static String useNameForm() {
+        return "SQL compilation error: error line USE <identifier> is of the form USE <db.schema> or USE <db>"
+            + " at position {1}\ninvalid identifier '{2}'";
     }
 
     public static String doesNotExist(final String kind, final String name) {
         // The name is spelled the way every refusal spells one: quoted only where it has to be, part
         // by part. Live reads Object '"kw"' for a lower-case relation and TEST_DB.TEST_SCHEMA."kw"
         // when the whole path is named, where an ordinary upper-case name stays bare.
-        return of(kind + " '" + SqlIdentifiers.spellCanonicalPath(name)
+        return of(kind + " '" + SqlIdentifiers.spellAlreadyCanonicalPath(name)
             + "' does not exist or not authorized.");
     }
 
@@ -195,4 +290,24 @@ public final class SqlCompilationError {
     public static String columnDoesNotExist(final String name) {
         return of("column '" + name + "' does not exist");
     }
+
+    /**
+     * A DROP that names the wrong kind. The five relation kinds share one name space, so the object IS
+     * found - just not as the statement spells it - and the sentence names both kinds on one line, as
+     * {@code Object found is of type 'VIEW', not specified type 'TABLE'.} IF EXISTS does not forgive it
+     * (live-verified).
+     *
+     * @param found     the kind holding the name
+     * @param specified the kind the statement named
+     * @return the message as the driver hands it to a client
+     */
+    public static String objectOfOtherType(final String found, final String specified) {
+        return inline("Object found is of type '" + found + "', not specified type '" + specified + "'.");
+    }
+
+    /** Whether a message is the wrong-kind refusal above, which IF EXISTS must not swallow. */
+    public static boolean isWrongObjectType(final String message) {
+        return message != null && message.contains("not specified type '");
+    }
+
 }

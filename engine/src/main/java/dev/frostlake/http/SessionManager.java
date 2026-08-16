@@ -106,15 +106,20 @@ public class SessionManager {
             return createSession();
         }
 
-        SessionContext context = sessions.get(sessionId);
-        if (context == null) {
-            context = new SessionContext(sessionId, defaultDatabase, defaultSchema);
-            sessions.put(sessionId, context);
-            logger.info("Created session with provided ID: {}", sessionId);
-        } else {
+        final SessionContext context = sessions.get(sessionId);
+        if (context != null) {
             context.touch();
+            return context;
         }
-        return context;
+        // putIfAbsent: two first requests racing on one id must end up in ONE session.
+        final SessionContext created = new SessionContext(sessionId, defaultDatabase, defaultSchema);
+        final SessionContext raced = sessions.putIfAbsent(sessionId, created);
+        if (raced != null) {
+            raced.touch();
+            return raced;
+        }
+        logger.info("Created session with provided ID: {}", sessionId);
+        return created;
     }
 
     /**

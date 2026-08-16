@@ -1,0 +1,100 @@
+{
+  "suite": "dml",
+  "description": "INSERT / UPDATE / DELETE / MERGE semantics with row-count and post-state verification.",
+  "tags": ["dml"],
+  "tests": [
+    {
+      "name": "insert-values-single",
+      "steps": [
+        {"sql": "CREATE TABLE t (id INTEGER, v VARCHAR)"},
+        {"sql": "INSERT INTO t VALUES (1, 'a')", "expect": {"updateCount": 1}},
+        {"sql": "SELECT v FROM t WHERE id = 1", "expect": {"value": "a"}}
+      ]
+    },
+    {
+      "name": "insert-values-multi-row",
+      "steps": [
+        {"sql": "CREATE TABLE t (id INTEGER)"},
+        {"sql": "INSERT INTO t VALUES (1), (2), (3)", "expect": {"updateCount": 3}},
+        {"sql": "SELECT COUNT(*) FROM t", "expect": {"value": "3"}}
+      ]
+    },
+    {
+      "name": "insert-select",
+      "steps": [
+        {"sql": "CREATE TABLE src (id INTEGER)"},
+        {"sql": "INSERT INTO src VALUES (1), (2)"},
+        {"sql": "CREATE TABLE dst (id INTEGER)"},
+        {"sql": "INSERT INTO dst SELECT id FROM src", "expect": {"updateCount": 2}},
+        {"sql": "SELECT COUNT(*) FROM dst", "expect": {"value": "2"}}
+      ]
+    },
+    {
+      "name": "insert-columns-subset-defaults-null",
+      "steps": [
+        {"sql": "CREATE TABLE t (id INTEGER, v VARCHAR)"},
+        {"sql": "INSERT INTO t (id) VALUES (1)"},
+        {"sql": "SELECT v FROM t WHERE id = 1", "expect": {"value": null}}
+      ]
+    },
+    {
+      "name": "update-where",
+      "steps": [
+        {"sql": "CREATE TABLE t (id INTEGER, v VARCHAR)"},
+        {"sql": "INSERT INTO t VALUES (1, 'a'), (2, 'b')"},
+        {"sql": "UPDATE t SET v = 'x' WHERE id = 2", "expect": {"updateCount": 1}},
+        {"sql": "SELECT v FROM t WHERE id = 2", "expect": {"value": "x"}},
+        {"sql": "SELECT v FROM t WHERE id = 1", "expect": {"value": "a"}}
+      ]
+    },
+    {
+      "name": "update-all-rows",
+      "steps": [
+        {"sql": "CREATE TABLE t (id INTEGER)"},
+        {"sql": "INSERT INTO t VALUES (1), (2), (3)"},
+        {"sql": "UPDATE t SET id = id + 10", "expect": {"updateCount": 3}},
+        {"sql": "SELECT MIN(id) FROM t", "expect": {"value": "11"}}
+      ]
+    },
+    {
+      "name": "delete-where",
+      "steps": [
+        {"sql": "CREATE TABLE t (id INTEGER)"},
+        {"sql": "INSERT INTO t VALUES (1), (2), (3)"},
+        {"sql": "DELETE FROM t WHERE id > 1", "expect": {"updateCount": 2}},
+        {"sql": "SELECT COUNT(*) FROM t", "expect": {"value": "1"}}
+      ]
+    },
+    {
+      "name": "delete-all",
+      "steps": [
+        {"sql": "CREATE TABLE t (id INTEGER)"},
+        {"sql": "INSERT INTO t VALUES (1), (2)"},
+        {"sql": "DELETE FROM t", "expect": {"updateCount": 2}},
+        {"sql": "SELECT COUNT(*) FROM t", "expect": {"value": "0"}}
+      ]
+    },
+    {
+      "name": "merge-update-and-insert",
+      "steps": [
+        {"sql": "CREATE TABLE tgt (id INTEGER, v VARCHAR)"},
+        {"sql": "INSERT INTO tgt VALUES (1, 'old')"},
+        {"sql": "CREATE TABLE src (id INTEGER, v VARCHAR)"},
+        {"sql": "INSERT INTO src VALUES (1, 'new'), (2, 'add')"},
+        {"sql": "MERGE INTO tgt USING src ON tgt.id = src.id WHEN MATCHED THEN UPDATE SET tgt.v = src.v WHEN NOT MATCHED THEN INSERT (id, v) VALUES (src.id, src.v)"},
+        {"sql": "SELECT v FROM tgt WHERE id = 1", "expect": {"value": "new"}},
+        {"sql": "SELECT v FROM tgt WHERE id = 2", "expect": {"value": "add"}},
+        {"sql": "SELECT COUNT(*) FROM tgt", "expect": {"value": "2"}}
+      ]
+    },
+    {
+      "name": "insert-null-explicit",
+      "steps": [
+        {"sql": "CREATE TABLE t (id INTEGER, v VARCHAR)"},
+        {"sql": "INSERT INTO t VALUES (1, NULL)"},
+        {"sql": "SELECT v FROM t WHERE id = 1", "expect": {"value": null}},
+        {"sql": "SELECT COUNT(*) FROM t WHERE v IS NULL", "expect": {"value": "1"}}
+      ]
+    }
+  ]
+}

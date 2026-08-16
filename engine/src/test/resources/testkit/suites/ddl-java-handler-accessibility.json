@@ -1,0 +1,31 @@
+{
+  "suite": "ddl-java-handler-accessibility",
+  "description": "What a Java handler must be declared as (live-measured): the handler CLASS may be package-private - the shape Snowflake's own examples use - with wildcard, explicit or no import; a UDF handler class likewise; but the handler METHOD must be public, refused at CREATE in live's wording (Failed to find a public method named ... - 'function' even for procedures, and the arity COUNTS the procedure's leading Session). Converted 1:1 from ddl/JavaHandlerAccessibilityTest (now retired).",
+  "tags": ["ddl", "functions", "converted"],
+  "tests": [
+    {"name": "a-package-private-handler-class-is-accepted", "steps": [
+      {"sql": "CREATE OR REPLACE PROCEDURE testsp() RETURNS VARCHAR LANGUAGE JAVA\nRUNTIME_VERSION = 11 PACKAGES = ('com.snowflake:snowpark:latest')\nHANDLER = 'TestJavaSP.test' AS\n$$\nimport com.snowflake.snowpark_java.*;\n\nclass TestJavaSP {\n  public String test(Session session) throws Exception {\n        return \"OK\";\n  }\n}\n$$"},
+      {"sql": "CALL testsp()", "expect": {"value": "OK"}}
+    ]},
+    {"name": "the-import-form-does-not-matter", "steps": [
+      {"sql": "CREATE OR REPLACE PROCEDURE p_explicit() RETURNS VARCHAR LANGUAGE JAVA PACKAGES = ('com.snowflake:snowpark:latest') HANDLER = 'H.go' AS $$\nimport com.snowflake.snowpark_java.Session;\nclass H { public String go(Session s) { return \"OK\"; } }\n$$"},
+      {"sql": "CALL p_explicit()", "expect": {"value": "OK"}},
+      {"sql": "CREATE OR REPLACE PROCEDURE p_qualified() RETURNS VARCHAR LANGUAGE JAVA PACKAGES = ('com.snowflake:snowpark:latest') HANDLER = 'H2.go' AS $$\nclass H2 { public String go(com.snowflake.snowpark_java.Session s) { return \"OK\"; } }\n$$"},
+      {"sql": "CALL p_qualified()", "expect": {"value": "OK"}}
+    ]},
+    {"name": "a-package-private-function-handler-class-is-accepted", "steps": [
+      {"sql": "CREATE OR REPLACE FUNCTION f_double(x INTEGER) RETURNS INTEGER LANGUAGE JAVA RUNTIME_VERSION = 11 HANDLER = 'C.go' AS $$\nclass C { public static int go(int x) { return x * 2; } }\n$$"},
+      {"sql": "SELECT f_double(21) AS v", "expect": {"value": "42"}}
+    ]},
+    {"name": "a-package-private-handler-method-is-refused", "steps": [
+      {"sql": "CREATE OR REPLACE FUNCTION f_hidden(x INTEGER) RETURNS INTEGER LANGUAGE JAVA RUNTIME_VERSION = 11 HANDLER = 'C3.go' AS $$\nclass C3 { static int go(int x) { return x + 1; } }\n$$",
+       "expect": {"error": {"messageContains": "Failed to find a public method named \"go\" with 1 arguments"}}},
+      {"sql": "CREATE OR REPLACE PROCEDURE p_hidden() RETURNS VARCHAR LANGUAGE JAVA PACKAGES = ('com.snowflake:snowpark:latest') HANDLER = 'P.go' AS $$\nimport com.snowflake.snowpark_java.*;\nclass P { String go(Session s) { return \"OK\"; } }\n$$",
+       "expect": {"error": {"messageContains": "Failed to find a public method named \"go\" with 1 arguments"}}}
+    ]},
+    {"name": "the-reported-arity-counts-the-session", "steps": [
+      {"sql": "CREATE OR REPLACE PROCEDURE p_two(a INTEGER, b INTEGER) RETURNS VARCHAR LANGUAGE JAVA PACKAGES = ('com.snowflake:snowpark:latest') HANDLER = 'Q.nosuch' AS $$\nimport com.snowflake.snowpark_java.*;\nclass Q { public String go(Session s, int a, int b) { return \"OK\"; } }\n$$",
+       "expect": {"error": {"messageContains": "Failed to find a public method named \"nosuch\" with 3 arguments"}}}
+    ]}
+  ]
+}

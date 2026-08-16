@@ -1,0 +1,99 @@
+{
+  "suite": "functions-math",
+  "description": "SIGN / TRUNC / EXP / LN / LOG behaviour incl. error cases. Converted 1:1 from functions/MathFunctionsTest.java (now retired); delta-tolerance float asserts were pinned to the engine's exact outputs.",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "sign-positive", "steps": [
+      {"sql": "CREATE TABLE test_numbers (id INTEGER, value NUMBER(10,5))"},
+      {"sql": "INSERT INTO test_numbers VALUES (1, 10.5)"},
+      {"sql": "SELECT SIGN(value) as sign_val FROM test_numbers WHERE id = 1", "expect": {"value": "1"}}
+    ]},
+    {"name": "sign-negative", "steps": [
+      {"sql": "CREATE TABLE test_numbers (id INTEGER, value NUMBER(10,5))"},
+      {"sql": "INSERT INTO test_numbers VALUES (2, -5.7)"},
+      {"sql": "SELECT SIGN(value) as sign_val FROM test_numbers WHERE id = 2", "expect": {"value": "-1"}}
+    ]},
+    {"name": "sign-zero", "steps": [
+      {"sql": "CREATE TABLE test_numbers (id INTEGER, value NUMBER(10,5))"},
+      {"sql": "INSERT INTO test_numbers VALUES (3, 0)"},
+      {"sql": "SELECT SIGN(value) as sign_val FROM test_numbers WHERE id = 3", "expect": {"value": "0"}}
+    ]},
+    {"name": "trunc-no-scale", "steps": [
+      {"sql": "CREATE TABLE test_numbers (id INTEGER, value NUMBER(10,5))"},
+      {"sql": "INSERT INTO test_numbers VALUES (1, 10.5)"},
+      {"sql": "SELECT TRUNC(value) as truncated FROM test_numbers WHERE id = 1", "expect": {"value": "10"}}
+    ]},
+    {"name": "trunc-negative-no-scale", "steps": [
+      {"sql": "CREATE TABLE test_numbers (id INTEGER, value NUMBER(10,5))"},
+      {"sql": "INSERT INTO test_numbers VALUES (2, -5.7)"},
+      {"sql": "SELECT TRUNC(value) as truncated FROM test_numbers WHERE id = 2", "expect": {"value": "-5"}}
+    ]},
+    {"name": "trunc-with-scale", "steps": [
+      {"sql": "SELECT TRUNC(10.56789, 2) as truncated", "expect": {"value": "10.56"}}
+    ]},
+    {"name": "trunc-zero-scale", "steps": [
+      {"sql": "CREATE TABLE test_numbers (id INTEGER, value NUMBER(10,5))"},
+      {"sql": "INSERT INTO test_numbers VALUES (1, 10.5)"},
+      {"sql": "SELECT TRUNC(value, 0) as truncated FROM test_numbers WHERE id = 1", "expect": {"value": "10"}}
+    ]},
+    {"name": "exp-zero", "steps": [
+      {"sql": "SELECT EXP(0) as exp_val", "expect": {"value": "1"}}
+    ]},
+    {"name": "exp-one", "steps": [
+      {"sql": "SELECT EXP(1) as exp_val", "expect": {"value": "2.718281828459045"}}
+    ]},
+    {"name": "exp-two", "steps": [
+      {"sql": "SELECT EXP(2) as exp_val", "expect": {"value": "7.38905609893065"}}
+    ]},
+    {"name": "ln-one", "steps": [
+      {"sql": "SELECT LN(1) as ln_val", "expect": {"value": "0"}}
+    ]},
+    {"name": "ln-e", "steps": [
+      {"sql": "CREATE TABLE test_numbers (id INTEGER, value NUMBER(10,5))"},
+      {"sql": "INSERT INTO test_numbers VALUES (5, 2.71828)"},
+      {"sql": "SELECT LN(value) as ln_val FROM test_numbers WHERE id = 5", "expect": {"value": "0.999999327347282"}}
+    ]},
+    {"name": "ln-positive", "steps": [
+      {"sql": "CREATE TABLE test_numbers (id INTEGER, value NUMBER(10,5))"},
+      {"sql": "INSERT INTO test_numbers VALUES (1, 10.5)"},
+      {"sql": "SELECT LN(value) as ln_val FROM test_numbers WHERE id = 1", "expect": {"value": "2.3513752571634776"}}
+    ]},
+    {"name": "ln-negative-throws-error", "steps": [
+      {"sql": "CREATE TABLE test_numbers (id INTEGER, value NUMBER(10,5))"},
+      {"sql": "INSERT INTO test_numbers VALUES (2, -5.7)"},
+      {"sql": "SELECT LN(value) as ln_val FROM test_numbers WHERE id = 2", "expect": {"error": {}}}
+    ]},
+    {"name": "ln-zero-throws-error", "steps": [
+      {"sql": "CREATE TABLE test_numbers (id INTEGER, value NUMBER(10,5))"},
+      {"sql": "INSERT INTO test_numbers VALUES (3, 0)"},
+      {"sql": "SELECT LN(value) as ln_val FROM test_numbers WHERE id = 3", "expect": {"error": {}}}
+    ]},
+    {"name": "log-base10", "steps": [
+      {"sql": "CREATE TABLE test_numbers (id INTEGER, value NUMBER(10,5))"},
+      {"sql": "INSERT INTO test_numbers VALUES (4, 100)"},
+      {"sql": "SELECT LOG(10, value) as log_val FROM test_numbers WHERE id = 4", "expect": {"value": "2"}}
+    ]},
+    {"name": "log-base10-ten", "steps": [
+      {"sql": "SELECT LOG(10, 10) as log_val", "expect": {"value": "1"}}
+    ]},
+    {"name": "log-custom-base", "steps": [
+      {"sql": "SELECT LOG(2, 8) as log_val", "expect": {"value": "3"}}
+    ]},
+    {"name": "log-custom-base10", "steps": [
+      {"sql": "SELECT LOG(10, 1000) as log_val", "expect": {"value": "2.9999999999999996"}}
+    ]},
+    {"name": "exp-ln-inverse", "steps": [
+      {"sql": "CREATE TABLE test_numbers (id INTEGER, value NUMBER(10,5))"},
+      {"sql": "INSERT INTO test_numbers VALUES (1, 10.5)"},
+      {"sql": "SELECT EXP(LN(value)) as result FROM test_numbers WHERE id = 1", "expect": {"value": "10.5"}}
+    ]},
+    {"name": "sign-abs-combination", "steps": [
+      {"sql": "CREATE TABLE test_numbers (id INTEGER, value NUMBER(10,5))"},
+      {"sql": "INSERT INTO test_numbers VALUES (2, -5.7)"},
+      {"sql": "SELECT SIGN(value) * ABS(value) as result FROM test_numbers WHERE id = 2", "expect": {"value": "-5.7"}}
+    ]},
+    {"name": "trunc-vs-round", "steps": [
+      {"sql": "SELECT TRUNC(10.9) as trunc_val, ROUND(10.9) as round_val", "expect": {"rows": [["10", "11"]]}}
+    ]}
+  ]
+}

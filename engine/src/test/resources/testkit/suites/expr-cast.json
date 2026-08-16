@@ -1,0 +1,109 @@
+{
+  "suite": "expr-cast",
+  "description": "CAST and the :: operator across the scalar families: to VARCHAR/INTEGER/FLOAT/DOUBLE/BOOLEAN/NUMBER, NULL propagation, casts in WHERE, concatenation and CASE, chained casts, multiple casts per select - and the HALF_AWAY_FROM_ZERO rounding an integer cast applies (2.5 -> 3, -2.5 -> -3, never truncation), with bare NUMBER meaning NUMBER(38,0) so '123.45' rounds to 123; an unparseable string is a runtime cast error. Converted 1:1 from expressions/CastExpressionsTest (now retired).",
+  "tags": ["expressions", "converted"],
+  "tests": [
+    {"name": "cast-integer-to-varchar", "steps": [
+      {"sql": "CREATE TABLE cast_test (id INTEGER, name VARCHAR, salary NUMBER, active BOOLEAN)"},
+      {"sql": "INSERT INTO cast_test VALUES (1, 'Alice', 50000, true)"},
+      {"sql": "SELECT CAST(id AS VARCHAR) as id_str FROM cast_test WHERE id = 1", "expect": {"value": "1"}}
+    ]},
+    {"name": "cast-string-to-integer", "steps": [
+      {"sql": "CREATE TABLE cast_test (id INTEGER, name VARCHAR, salary NUMBER, active BOOLEAN)"},
+      {"sql": "INSERT INTO cast_test VALUES (3, '123', 75000.50, true)"},
+      {"sql": "SELECT CAST(name AS INTEGER) as name_int FROM cast_test WHERE id = 3", "expect": {"value": "123"}}
+    ]},
+    {"name": "cast-number-to-integer", "steps": [
+      {"sql": "CREATE TABLE cast_test (id INTEGER, name VARCHAR, salary NUMBER, active BOOLEAN)"},
+      {"sql": "INSERT INTO cast_test VALUES (3, '123', 75000.50, true)"},
+      {"sql": "SELECT CAST(salary AS INTEGER) as salary_int FROM cast_test WHERE id = 3", "expect": {"value": "75001"}}
+    ]},
+    {"name": "cast-integer-to-float", "steps": [
+      {"sql": "CREATE TABLE cast_test (id INTEGER, name VARCHAR, salary NUMBER, active BOOLEAN)"},
+      {"sql": "INSERT INTO cast_test VALUES (1, 'Alice', 50000, true)"},
+      {"sql": "SELECT CAST(id AS FLOAT) as id_float FROM cast_test WHERE id = 1", "expect": {"value": "1"}}
+    ]},
+    {"name": "cast-integer-to-double", "steps": [
+      {"sql": "CREATE TABLE cast_test (id INTEGER, name VARCHAR, salary NUMBER, active BOOLEAN)"},
+      {"sql": "INSERT INTO cast_test VALUES (2, 'Bob', 60000, false)"},
+      {"sql": "SELECT CAST(id AS DOUBLE) as id_double FROM cast_test WHERE id = 2", "expect": {"value": "2"}}
+    ]},
+    {"name": "cast-string-to-boolean", "steps": [
+      {"sql": "SELECT CAST('true' AS BOOLEAN) as bool_val", "expect": {"value": "true"}}
+    ]},
+    {"name": "cast-integer-to-boolean", "steps": [
+      {"sql": "SELECT CAST(1 AS BOOLEAN) as bool_val", "expect": {"value": "true"}}
+    ]},
+    {"name": "cast-boolean-to-varchar", "steps": [
+      {"sql": "CREATE TABLE cast_test (id INTEGER, name VARCHAR, salary NUMBER, active BOOLEAN)"},
+      {"sql": "INSERT INTO cast_test VALUES (1, 'Alice', 50000, true)"},
+      {"sql": "SELECT CAST(active AS VARCHAR) as active_str FROM cast_test WHERE id = 1", "expect": {"value": "true"}}
+    ]},
+    {"name": "cast-operator-syntax", "steps": [
+      {"sql": "CREATE TABLE cast_test (id INTEGER, name VARCHAR, salary NUMBER, active BOOLEAN)"},
+      {"sql": "INSERT INTO cast_test VALUES (1, 'Alice', 50000, true)"},
+      {"sql": "SELECT id::VARCHAR as id_str FROM cast_test WHERE id = 1", "expect": {"value": "1"}}
+    ]},
+    {"name": "cast-operator-with-expression", "steps": [
+      {"sql": "CREATE TABLE cast_test (id INTEGER, name VARCHAR, salary NUMBER, active BOOLEAN)"},
+      {"sql": "INSERT INTO cast_test VALUES (1, 'Alice', 50000, true)"},
+      {"sql": "SELECT '<' || (id + 10)::VARCHAR || '>' as result FROM cast_test WHERE id = 1", "expect": {"value": "<11>"}}
+    ]},
+    {"name": "cast-with-null-value", "steps": [
+      {"sql": "CREATE TABLE cast_test (id INTEGER, name VARCHAR, salary NUMBER, active BOOLEAN)"},
+      {"sql": "INSERT INTO cast_test VALUES (4, NULL, NULL, NULL)"},
+      {"sql": "SELECT CAST(name AS INTEGER) as name_int FROM cast_test WHERE id = 4", "expect": {"rows": [["NULL"]]}}
+    ]},
+    {"name": "cast-null-salary-to-varchar", "steps": [
+      {"sql": "CREATE TABLE cast_test (id INTEGER, name VARCHAR, salary NUMBER, active BOOLEAN)"},
+      {"sql": "INSERT INTO cast_test VALUES (4, NULL, NULL, NULL)"},
+      {"sql": "SELECT CAST(salary AS VARCHAR) as salary_str FROM cast_test WHERE id = 4", "expect": {"rows": [["NULL"]]}}
+    ]},
+    {"name": "cast-in-where-clause", "steps": [
+      {"sql": "CREATE TABLE cast_test (id INTEGER, name VARCHAR, salary NUMBER, active BOOLEAN)"},
+      {"sql": "INSERT INTO cast_test VALUES (1, 'Alice', 50000, true)"},
+      {"sql": "INSERT INTO cast_test VALUES (2, 'Bob', 60000, false)"},
+      {"sql": "SELECT name FROM cast_test WHERE CAST(id AS VARCHAR) = '1'", "expect": {"rows": [["Alice"]]}}
+    ]},
+    {"name": "cast-in-concatenation", "steps": [
+      {"sql": "CREATE TABLE cast_test (id INTEGER, name VARCHAR, salary NUMBER, active BOOLEAN)"},
+      {"sql": "INSERT INTO cast_test VALUES (1, 'Alice', 50000, true)"},
+      {"sql": "SELECT 'ID: ' || CAST(id AS VARCHAR) as result FROM cast_test WHERE id = 1", "expect": {"value": "ID: 1"}}
+    ]},
+    {"name": "cast-float-to-integer", "steps": [
+      {"sql": "SELECT CAST(75000.75 AS INTEGER) as int_val", "expect": {"value": "75001"}}
+    ]},
+    {"name": "integer-cast-rounds-half-away-from-zero", "steps": [
+      {"sql": "SELECT CAST(3.9 AS INTEGER)", "expect": {"value": "4"}},
+      {"sql": "SELECT CAST(2.5 AS INT)", "expect": {"value": "3"}},
+      {"sql": "SELECT CAST(2.4 AS INT)", "expect": {"value": "2"}},
+      {"sql": "SELECT CAST(-2.5 AS INT)", "expect": {"value": "-3"}},
+      {"sql": "SELECT CAST(-3.9 AS BIGINT)", "expect": {"value": "-4"}},
+      {"sql": "SELECT 3.9::INT", "expect": {"value": "4"}}
+    ]},
+    {"name": "cast-to-number", "steps": [
+      {"sql": "SELECT CAST('123.45' AS NUMBER) as num_val", "expect": {"value": "123"}}
+    ]},
+    {"name": "cast-chaining", "steps": [
+      {"sql": "CREATE TABLE cast_test (id INTEGER, name VARCHAR, salary NUMBER, active BOOLEAN)"},
+      {"sql": "INSERT INTO cast_test VALUES (1, 'Alice', 50000, true)"},
+      {"sql": "SELECT CAST(CAST(id AS VARCHAR) AS INTEGER) as result FROM cast_test WHERE id = 1", "expect": {"value": "1"}}
+    ]},
+    {"name": "invalid-cast-string-to-integer", "steps": [
+      {"sql": "CREATE TABLE cast_test (id INTEGER, name VARCHAR, salary NUMBER, active BOOLEAN)"},
+      {"sql": "INSERT INTO cast_test VALUES (1, 'Alice', 50000, true)"},
+      {"sql": "SELECT CAST(name AS INTEGER) FROM cast_test WHERE id = 1", "expect": {"error": {}}}
+    ]},
+    {"name": "cast-with-case-expression", "steps": [
+      {"sql": "CREATE TABLE cast_test (id INTEGER, name VARCHAR, salary NUMBER, active BOOLEAN)"},
+      {"sql": "INSERT INTO cast_test VALUES (1, 'Alice', 50000, true)"},
+      {"sql": "SELECT CASE WHEN id = 1 THEN CAST(id AS VARCHAR) ELSE 'other' END as result FROM cast_test WHERE id = 1", "expect": {"value": "1"}}
+    ]},
+    {"name": "multiple-casts-in-select", "steps": [
+      {"sql": "CREATE TABLE cast_test (id INTEGER, name VARCHAR, salary NUMBER, active BOOLEAN)"},
+      {"sql": "INSERT INTO cast_test VALUES (1, 'Alice', 50000, true)"},
+      {"sql": "SELECT CAST(id AS VARCHAR) as id_str, CAST(salary AS INTEGER) as salary_int FROM cast_test WHERE id = 1",
+       "expect": {"rows": [["1", "50000"]]}}
+    ]}
+  ]
+}

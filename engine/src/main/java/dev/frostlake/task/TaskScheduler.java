@@ -29,8 +29,10 @@ import dev.frostlake.storage.ResultSet;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.time.Duration;
 import java.time.LocalDateTime;
-import java.util.ArrayList;
+import java.time.ZoneId;
+import java.time.ZonedDateTime;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -54,6 +56,13 @@ public class TaskScheduler {
     private final Map<String, ScheduledFuture<?>> scheduledTasks;
     private final TaskExecutor taskExecutor;
     private volatile boolean running;
+
+    // The live generation of each armed CRON task. A CRON timer is one-shot and re-arms after its
+    // run, but only while its generation is still the task's current one — a SUSPEND or a second
+    // RESUME in between retires it, so no stale timer outlives the state change.
+    private final Map<String, Long> cronGenerations = new ConcurrentHashMap<>();
+    private final Object armLock = new Object();
+    private long lastGeneration;
 
     // Tasks currently executing, for the ALLOW_OVERLAPPING_EXECUTION=FALSE guard.
     private final Set<String> runningTasks = ConcurrentHashMap.newKeySet();
@@ -155,6 +164,7 @@ public class TaskScheduler {
             future.cancel(false);
         }
         scheduledTasks.clear();
+        cronGenerations.clear();
 
         scheduler.shutdown();
         try {
@@ -186,6 +196,12 @@ public class TaskScheduler {
             return;
         }
 
+        // A CRON schedule names calendar instants, not an interval: see armCron.
+        if (task.getScheduleType() == ScheduleType.CRON) {
+            armCron(qualifiedTaskName, task);
+            return;
+        }
+
         // Parse schedule
         final long delayMinutes = parseSchedule(task.getSchedule(), task.getScheduleType());
 
@@ -210,10 +226,70 @@ public class TaskScheduler {
     }
 
     public void unscheduleTask(final String qualifiedTaskName) {
-        final ScheduledFuture<?> future = scheduledTasks.remove(qualifiedTaskName);
+        final ScheduledFuture<?> future;
+        synchronized (armLock) {
+            cronGenerations.remove(qualifiedTaskName);
+            future = scheduledTasks.remove(qualifiedTaskName);
+        }
         if (future != null) {
             future.cancel(false);
             logger.info("Unscheduled task: {}", qualifiedTaskName);
+        }
+    }
+
+    /**
+     * Arm a CRON task's NEXT calendar fire as a one-shot timer that re-arms itself once its run is
+     * over. The schedule names wall-clock instants in its own zone — {@code 30 9 * * 1-5
+     * America/Los_Angeles} is 09:30 on weekdays there — which no fixed rate counted from RESUME can
+     * express. Computing the next fire only after a run finishes also gives NO_OVERLAP for free: a
+     * fire that falls due while the previous run is still going is skipped, not queued.
+     */
+    private void armCron(final String qualifiedTaskName, final Task task) {
+        final CronSchedule cron;
+        try {
+            cron = CronSchedule.parse(task.getSchedule());
+        } catch (final RuntimeException unusable) {
+            logger.warn("Task {} has an unusable CRON schedule '{}' — not armed", qualifiedTaskName,
+                task.getSchedule());
+            return;
+        }
+        final ZonedDateTime now = ZonedDateTime.now(cron.zone());
+        final ZonedDateTime next = cron.nextFireAfter(now);
+        if (next == null) {
+            logger.warn("Task {} CRON schedule '{}' names no future instant — not armed", qualifiedTaskName,
+                task.getSchedule());
+            return;
+        }
+        synchronized (armLock) {
+            if (!running || task.getState() != TaskState.STARTED) {
+                return;
+            }
+            final long generation = ++lastGeneration;
+            cronGenerations.put(qualifiedTaskName, generation);
+            final ScheduledFuture<?> future = scheduler.schedule(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        executeTask(qualifiedTaskName, task);
+                    } finally {
+                        rearmCron(qualifiedTaskName, task, generation);
+                    }
+                }
+            }, Math.max(0L, Duration.between(now, next).toMillis()), TimeUnit.MILLISECONDS);
+            scheduledTasks.put(qualifiedTaskName, future);
+            task.setNextRunTime(next.withZoneSameInstant(ZoneId.systemDefault()).toLocalDateTime());
+        }
+        logger.info("Scheduled task: {} for {} ({})", qualifiedTaskName, next, task.getSchedule());
+    }
+
+    /** Re-arm a CRON task after its run, unless a SUSPEND or a later RESUME retired this timer. */
+    private void rearmCron(final String qualifiedTaskName, final Task task, final long generation) {
+        synchronized (armLock) {
+            final Long current = cronGenerations.get(qualifiedTaskName);
+            if (current == null || current.longValue() != generation) {
+                return;
+            }
+            armCron(qualifiedTaskName, task);
         }
     }
 
@@ -231,10 +307,16 @@ public class TaskScheduler {
     }
 
     private void executeTask(final String qualifiedTaskName, final Task task) {
-        executeTask(qualifiedTaskName, task, new HashSet<>());
+        executeTask(qualifiedTaskName, task, new HashSet<>(), TaskTrigger.SCHEDULE);
     }
 
-    private void executeTask(final String qualifiedTaskName, final Task task, final Set<String> visited) {
+    /** The same, for a run an EXECUTE TASK statement started rather than the schedule. */
+    private void executeTaskManually(final String qualifiedTaskName, final Task task) {
+        executeTask(qualifiedTaskName, task, new HashSet<>(), TaskTrigger.EXECUTE_TASK);
+    }
+
+    private void executeTask(final String qualifiedTaskName, final Task task, final Set<String> visited,
+                             final TaskTrigger trigger) {
         // Each task runs at most once per DAG run; the set also guards against dependency cycles.
         if (!visited.add(task.getName().toUpperCase())) {
             return;
@@ -249,7 +331,7 @@ public class TaskScheduler {
             return;
         }
         try {
-            runTaskOnce(qualifiedTaskName, task, visited);
+            runTaskOnce(qualifiedTaskName, task, visited, trigger);
         } finally {
             if (overlapGuard) {
                 runningTasks.remove(runKey);
@@ -257,7 +339,8 @@ public class TaskScheduler {
         }
     }
 
-    private void runTaskOnce(final String qualifiedTaskName, final Task task, final Set<String> visited) {
+    private void runTaskOnce(final String qualifiedTaskName, final Task task, final Set<String> visited,
+                             final TaskTrigger trigger) {
         // Run the whole task (WHEN condition, body, DAG cascade) with its HOME database/schema bound to
         // this thread only. The scheduler fires on its own thread against the shared engine: resolving
         // and save/restoring context through the global fields raced the interactive thread — a slow
@@ -271,13 +354,14 @@ public class TaskScheduler {
         final String[] priorScope = catalog.currentSessionScope();
         catalog.beginSessionScope(taskDatabase, taskSchema);
         try {
-            runTaskOnceInScope(qualifiedTaskName, task, visited);
+            runTaskOnceInScope(qualifiedTaskName, task, visited, trigger);
         } finally {
             catalog.restoreSessionScope(priorScope);
         }
     }
 
-    private void runTaskOnceInScope(final String qualifiedTaskName, final Task task, final Set<String> visited) {
+    private void runTaskOnceInScope(final String qualifiedTaskName, final Task task, final Set<String> visited,
+                                    final TaskTrigger trigger) {
         final LocalDateTime scheduledTime = LocalDateTime.now();
         logger.info("Executing task: {}", qualifiedTaskName);
         // (Predecessor gating is implemented by the cascade itself: a child runs only via
@@ -319,11 +403,12 @@ public class TaskScheduler {
                 try {
                     final int rowsAffected = taskExecutor.execute(task.getSqlStatement());
 
-                    task.recordExecution(new TaskExecution(
-                        scheduledTime, startTime, LocalDateTime.now(), TaskExecutionState.SUCCEEDED, null, rowsAffected));
+                    task.recordExecution(new TaskExecution(scheduledTime, startTime, LocalDateTime.now(),
+                        TaskExecutionState.SUCCEEDED, null, rowsAffected, trigger));
 
-                    // Calculate next run time (only for scheduled tasks)
-                    if (task.getSchedule() != null) {
+                    // Calculate next run time (only for interval-scheduled tasks — a CRON task
+                    // stamps its next fire when it re-arms)
+                    if (task.getSchedule() != null && task.getScheduleType() != ScheduleType.CRON) {
                         final long delayMinutes = parseSchedule(task.getSchedule(), task.getScheduleType());
                         task.setNextRunTime(LocalDateTime.now().plusMinutes(delayMinutes));
                     }
@@ -333,12 +418,12 @@ public class TaskScheduler {
                     // Run dependent (AFTER this-task) tasks: a DAG child executes once its predecessor
                     // completes successfully, provided the child is in the resumed (STARTED) state. A
                     // skipped (WHEN false) or failed parent does not cascade.
-                    runDependentTasks(task, visited);
+                    runDependentTasks(task, visited, trigger);
                     return;
 
                 } catch (final Exception e) {
-                    task.recordExecution(new TaskExecution(
-                        scheduledTime, startTime, LocalDateTime.now(), TaskExecutionState.FAILED, e.getMessage(), 0));
+                    task.recordExecution(new TaskExecution(scheduledTime, startTime, LocalDateTime.now(),
+                        TaskExecutionState.FAILED, e.getMessage(), 0, trigger));
                     logger.error("Task {} failed (attempt {}/{}): {}",
                         qualifiedTaskName, attempt, maxAttempts, e.getMessage());
 
@@ -368,63 +453,9 @@ public class TaskScheduler {
                     return 60;
                 }
             }
-        } else if (scheduleType == ScheduleType.CRON) {
-            return parseCronInterval(schedule);
         }
 
         return 60; // Default to 60 minutes
-    }
-
-    /**
-     * Approximate a cron expression ("USING CRON m h dom mon dow [tz]") as a fixed re-run interval
-     * in minutes: minute steps ({@code *}{@code /N}) → N; every minute → 1; hourly (fixed minute,
-     * any hour) → 60; weekly (day-of-week set) → 10080; monthly (day-of-month set) → 43200; else
-     * daily → 1440. This is an interval scheduler, not a calendar scheduler — the cadence matches
-     * the cron's period even though exact wall-clock alignment is not honored. (Previously every
-     * cron parsed to a constant 5 minutes.)
-     */
-    private long parseCronInterval(final String schedule) {
-        final List<String> fields = new ArrayList<>();
-        for (final String token : schedule.trim().split("\\s+")) {
-            if (token.equalsIgnoreCase("USING") || token.equalsIgnoreCase("CRON")) {
-                continue;
-            }
-            fields.add(token);
-        }
-        // Drop trailing timezone token(s) beyond the 5 cron fields.
-        while (fields.size() > 5) {
-            fields.remove(fields.size() - 1);
-        }
-        if (fields.size() < 5) {
-            logger.warn("Unrecognized CRON schedule '{}' — defaulting to 60 minutes", schedule);
-            return 60;
-        }
-        final String minute = fields.get(0);
-        final String hour = fields.get(1);
-        final String dayOfMonth = fields.get(2);
-        final String dayOfWeek = fields.get(4);
-
-        if (minute.startsWith("*/")) {
-            try {
-                return Math.max(1, Long.parseLong(minute.substring(2)));
-            } catch (final NumberFormatException e) {
-                logger.warn("Unrecognized CRON minute step '{}' — defaulting to 60 minutes", minute);
-                return 60;
-            }
-        }
-        if (minute.equals("*")) {
-            return 1;
-        }
-        if (hour.equals("*")) {
-            return 60;             // fixed minute, every hour
-        }
-        if (!dayOfWeek.equals("*")) {
-            return 7L * 24 * 60;   // weekly
-        }
-        if (!dayOfMonth.equals("*")) {
-            return 30L * 24 * 60;  // ~monthly
-        }
-        return 24L * 60;           // daily
     }
 
     /**
@@ -434,7 +465,7 @@ public class TaskScheduler {
      * in a diamond DAG each task still runs exactly once (via the visited set), though not
      * necessarily after ALL of its predecessors — acceptable for this simplified scheduler.
      */
-    private void runDependentTasks(final Task parent, final Set<String> visited) {
+    private void runDependentTasks(final Task parent, final Set<String> visited, final TaskTrigger trigger) {
         final String currentDb = catalog.getCurrentDatabase();
         final Database db = currentDb != null ? catalog.getDatabase(currentDb) : null;
         if (db == null) {
@@ -449,7 +480,7 @@ public class TaskScheduler {
                     final int dot = predecessor.lastIndexOf('.');
                     final String bareName = dot >= 0 ? predecessor.substring(dot + 1) : predecessor;
                     if (bareName.equalsIgnoreCase(parent.getName())) {
-                        executeTask(schema.getName() + "." + candidate.getName(), candidate, visited);
+                        executeTask(schema.getName() + "." + candidate.getName(), candidate, visited, trigger);
                         break;
                     }
                 }
@@ -468,26 +499,31 @@ public class TaskScheduler {
      * Execute a task manually by name (for EXECUTE TASK command)
      */
     public void executeTaskManually(final String qualifiedTaskName) {
-        // Parse qualified name to extract schema and task name
+        // Parse qualified name to extract database, schema and task name
         final String[] parts = QualifiedName.parse(qualifiedTaskName).parts();
+        final String databaseName;
         final String schemaName;
         final String taskName;
 
         if (parts.length == 1) {
             // Just task name, use current schema
+            databaseName = catalog.getCurrentDatabase();
             schemaName = catalog.getCurrentSchema();
             taskName = parts[0];
         } else if (parts.length == 2) {
-            // schema.task
+            // schema.task, in the current database
+            databaseName = catalog.getCurrentDatabase();
             schemaName = parts[0];
             taskName = parts[1];
         } else {
-            // database.schema.task
+            // database.schema.task — the database part is honoured, so a task in another database
+            // runs from wherever the session is (live-verified)
+            databaseName = parts[0];
             schemaName = parts[1];
             taskName = parts[2];
         }
 
-        final Database db = catalog.getDatabase(catalog.getCurrentDatabase());
+        final Database db = databaseName == null ? null : catalog.getDatabase(databaseName);
         if (db == null) {
             throw new RuntimeException("No current database selected");
         }
@@ -502,8 +538,18 @@ public class TaskScheduler {
             throw new RuntimeException("Task not found: " + qualifiedTaskName);
         }
 
-        // Execute the task
-        executeTask(qualifiedTaskName, task);
+        // ★ ONLY A ROOT RUNS ON DEMAND. A task with an AFTER list is refused whether it is resumed or
+        // suspended — its graph runs from the root, which cascades to the resumed children. The
+        // sentence carries no compilation prefix and names the task fully qualified (live-verified).
+        final String key = schedulerKey(db.getName(), schema.getName(), task.getName());
+        if (!task.getPredecessors().isEmpty()) {
+            throw new RuntimeException("Execute task cannot be called on non-root task " + key
+                + ". Call EXECUTE TASK on the root task of its graph instead.");
+        }
+
+        // Run under the canonical key: the run binds the task's HOME database whatever the session's
+        // current one is, and shares the overlap guard with the scheduled runs of the same task.
+        executeTaskManually(key, task);
     }
 
     public boolean isRunning() {

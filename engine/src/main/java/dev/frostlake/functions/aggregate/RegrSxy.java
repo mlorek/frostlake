@@ -17,6 +17,7 @@
 package dev.frostlake.functions.aggregate;
 
 import dev.frostlake.functions.AggregateFunction;
+import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.types.NumericType;
 
 import java.util.List;
@@ -35,4 +36,30 @@ public class RegrSxy extends AggregateFunction {
     public int getMinArgCount() { return 2; }
     @Override
     public int getMaxArgCount() { return 2; }
+
+    /**
+     * Either argument outside the numbers, the strings and VARIANT is refused at compile time in the
+     * multiplication's name, the X's type listed before the Y's — "Invalid argument types for function
+     * '*': (NUMBER(10,2), BOOLEAN)" for {@code REGR_SXY(bo, n)} — because live reaches its sum of x·y
+     * first (live-verified). See {@link SemiStructuredRejection#CROSS_PRODUCT_OPERANDS}.
+     */
+    @Override
+    public SemiStructuredRejection semiStructuredRejection(final int position) {
+        return SemiStructuredRejection.CROSS_PRODUCT_OPERANDS;
+    }
+
+    @Override
+    public SemiStructuredRejection binaryRejection(final int position) {
+        return SemiStructuredRejection.CROSS_PRODUCT_OPERANDS;
+    }
+
+    @Override
+    public SemiStructuredRejection booleanRejection(final int position) {
+        return SemiStructuredRejection.CROSS_PRODUCT_OPERANDS;
+    }
+
+    @Override
+    public SemiStructuredRejection temporalRejection(final int position) {
+        return SemiStructuredRejection.CROSS_PRODUCT_OPERANDS;
+    }
 }

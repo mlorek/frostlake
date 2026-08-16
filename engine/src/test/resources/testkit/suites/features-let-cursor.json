@@ -1,0 +1,123 @@
+{
+  "suite": "features-let-cursor",
+  "description": "LET ... CURSOR FOR declarations inside EXECUTE IMMEDIATE $$ blocks across query shapes (WHERE, FOR loop, joins, ORDER BY, GROUP BY, LIMIT, information_schema, mixed LET variables, subqueries). Converted 1:1 from features/LetCursorTest.java (now retired).",
+  "tags": ["features", "converted"],
+  "tests": [
+    {
+      "name": "let-cursor-basic",
+      "steps": [
+        {"sql": "CREATE TABLE users (id INTEGER, name VARCHAR)"},
+        {"sql": "INSERT INTO users VALUES (1, 'Alice')"},
+        {"sql": "INSERT INTO users VALUES (2, 'Bob')"},
+        {"sql": "EXECUTE IMMEDIATE $$\nBEGIN\n    LET cur CURSOR FOR SELECT id, name FROM users;\n    RETURN 'success';\nEND;\n$$;"}
+      ]
+    },
+    {
+      "name": "let-cursor-with-where-clause",
+      "steps": [
+        {"sql": "CREATE TABLE products (id INTEGER, name VARCHAR, price INTEGER)"},
+        {"sql": "INSERT INTO products VALUES (1, 'Widget', 100)"},
+        {"sql": "INSERT INTO products VALUES (2, 'Gadget', 200)"},
+        {"sql": "EXECUTE IMMEDIATE $$\nBEGIN\n    LET cur CURSOR FOR SELECT id, name FROM products WHERE price > 50;\n    RETURN 'success';\nEND;\n$$;"}
+      ]
+    },
+    {
+      "name": "let-cursor-with-for-loop",
+      "steps": [
+        {"sql": "CREATE TABLE items (id INTEGER, name VARCHAR)"},
+        {"sql": "INSERT INTO items VALUES (1, 'Item1')"},
+        {"sql": "INSERT INTO items VALUES (2, 'Item2')"},
+        {"sql": "EXECUTE IMMEDIATE $$\nDECLARE result ARRAY DEFAULT [];\nBEGIN\n    LET cur CURSOR FOR SELECT id, name FROM items;\n    FOR rec IN cur DO\n        result := ARRAY_APPEND(result, rec.name);\n    END FOR;\n    RETURN result;\nEND;\n$$;"}
+      ]
+    },
+    {
+      "name": "let-cursor-multiple-cursors",
+      "steps": [
+        {"sql": "CREATE TABLE users (id INTEGER, name VARCHAR)"},
+        {"sql": "CREATE TABLE products (id INTEGER, name VARCHAR)"},
+        {"sql": "INSERT INTO users VALUES (1, 'Alice')"},
+        {"sql": "INSERT INTO products VALUES (1, 'Widget')"},
+        {"sql": "EXECUTE IMMEDIATE $$\nBEGIN\n    LET cur1 CURSOR FOR SELECT id, name FROM users;\n    LET cur2 CURSOR FOR SELECT id, name FROM products;\n    RETURN 'success';\nEND;\n$$;"}
+      ]
+    },
+    {
+      "name": "let-cursor-with-join",
+      "steps": [
+        {"sql": "CREATE TABLE orders (id INTEGER, user_id INTEGER)"},
+        {"sql": "CREATE TABLE users (id INTEGER, name VARCHAR)"},
+        {"sql": "INSERT INTO users VALUES (1, 'Alice')"},
+        {"sql": "INSERT INTO orders VALUES (100, 1)"},
+        {"sql": "EXECUTE IMMEDIATE $$\nBEGIN\n    LET cur CURSOR FOR\n        SELECT o.id, u.name\n        FROM orders o\n        JOIN users u ON o.user_id = u.id;\n    RETURN 'success';\nEND;\n$$;"}
+      ]
+    },
+    {
+      "name": "let-cursor-with-order-by",
+      "steps": [
+        {"sql": "CREATE TABLE scores (id INTEGER, score INTEGER)"},
+        {"sql": "INSERT INTO scores VALUES (1, 100)"},
+        {"sql": "INSERT INTO scores VALUES (2, 200)"},
+        {"sql": "EXECUTE IMMEDIATE $$\nBEGIN\n    LET cur CURSOR FOR SELECT id, score FROM scores ORDER BY score DESC;\n    RETURN 'success';\nEND;\n$$;"}
+      ]
+    },
+    {
+      "name": "let-cursor-with-group-by",
+      "steps": [
+        {"sql": "CREATE TABLE sales (product VARCHAR, amount INTEGER)"},
+        {"sql": "INSERT INTO sales VALUES ('Widget', 100)"},
+        {"sql": "INSERT INTO sales VALUES ('Widget', 200)"},
+        {"sql": "EXECUTE IMMEDIATE $$\nBEGIN\n    LET cur CURSOR FOR\n        SELECT product, SUM(amount) as total\n        FROM sales\n        GROUP BY product;\n    RETURN 'success';\nEND;\n$$;"}
+      ]
+    },
+    {
+      "name": "let-cursor-with-limit",
+      "steps": [
+        {"sql": "CREATE TABLE data (id INTEGER)"},
+        {"sql": "INSERT INTO data VALUES (1)"},
+        {"sql": "INSERT INTO data VALUES (2)"},
+        {"sql": "INSERT INTO data VALUES (3)"},
+        {"sql": "EXECUTE IMMEDIATE $$\nBEGIN\n    LET cur CURSOR FOR SELECT id FROM data LIMIT 2;\n    RETURN 'success';\nEND;\n$$;"}
+      ]
+    },
+    {
+      "name": "let-cursor-in-information-schema",
+      "steps": [
+        {"sql": "CREATE TABLE test_table (id INTEGER, name VARCHAR)"},
+        {"sql": "EXECUTE IMMEDIATE $$\nBEGIN\n    LET cur CURSOR FOR\n        SELECT table_name\n        FROM information_schema.tables\n        WHERE table_schema = 'PUBLIC';\n    RETURN 'success';\nEND;\n$$;"}
+      ]
+    },
+    {
+      "name": "let-cursor-with-table-constraints",
+      "steps": [
+        {"sql": "CREATE SCHEMA BASE"},
+        {"sql": "CREATE TABLE base.test_table (id INTEGER PRIMARY KEY)"},
+        {"sql": "EXECUTE IMMEDIATE $$\nBEGIN\n    LET cur CURSOR FOR\n        SELECT constraint_name, table_schema, table_name\n        FROM information_schema.table_constraints\n        WHERE table_schema = 'BASE';\n    RETURN 'success';\nEND;\n$$;"}
+      ]
+    },
+    {
+      "name": "let-cursor-mixed-with-let-variable",
+      "steps": [
+        {"sql": "CREATE TABLE items (id INTEGER)"},
+        {"sql": "INSERT INTO items VALUES (1)"},
+        {"sql": "EXECUTE IMMEDIATE $$\nDECLARE result VARCHAR DEFAULT 'start';\nBEGIN\n    LET count INTEGER := 0;\n    LET cur CURSOR FOR SELECT id FROM items;\n    LET total INTEGER := 10;\n    RETURN result;\nEND;\n$$;"}
+      ]
+    },
+    {
+      "name": "let-cursor-with-subquery",
+      "steps": [
+        {"sql": "CREATE TABLE numbers (value INTEGER)"},
+        {"sql": "INSERT INTO numbers VALUES (1)"},
+        {"sql": "INSERT INTO numbers VALUES (2)"},
+        {"sql": "EXECUTE IMMEDIATE $$\nBEGIN\n    LET cur CURSOR FOR\n        SELECT value FROM (\n            SELECT value * 2 as value FROM numbers\n        );\n    RETURN 'success';\nEND;\n$$;"}
+      ]
+    },
+    {
+      "name": "let-cursor-with-complex-query",
+      "steps": [
+        {"sql": "CREATE TABLE orders (id INTEGER, amount INTEGER, status VARCHAR)"},
+        {"sql": "INSERT INTO orders VALUES (1, 100, 'active')"},
+        {"sql": "INSERT INTO orders VALUES (2, 200, 'active')"},
+        {"sql": "EXECUTE IMMEDIATE $$\nBEGIN\n    LET cur CURSOR FOR\n        SELECT id, amount\n        FROM orders\n        WHERE status = 'active'\n            AND amount > 50\n        ORDER BY amount DESC\n        LIMIT 10;\n    RETURN 'success';\nEND;\n$$;"}
+      ]
+    }
+  ]
+}

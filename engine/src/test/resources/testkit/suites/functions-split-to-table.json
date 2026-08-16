@@ -1,0 +1,93 @@
+{
+  "suite": "functions-split-to-table",
+  "description": "SPLIT_TO_TABLE splits a string into one row per part, emitting SEQ, INDEX and VALUE - SEQ numbers the INPUT RECORD so every row of one call shares it and it starts at 1, while INDEX is the 1-based position of the part. Leading, trailing and consecutive delimiters all produce empty-string parts, an empty string is one empty row, and an EMPTY delimiter splits nowhere. A NULL on either side contributes NO rows rather than an empty-string row. Its two parameters are documented as STRING and DELIMITER but Snowflake does not accept either BY NAME - whether a table function takes a named argument is a property of the function, and FLATTEN does while this one refuses - so the named forms are asserted as refusals, reporting the first named argument at its own position, upper-cased however it was written and keeping the quotes on a quoted one. Both arguments are required and live spells the three arity refusals three different ways, the one-argument call being the odd one: it names the internal SPLIT rewrite the arguments were folded into and carries no position at all. Both parameters take a VARCHAR and a number is refused rather than converted. Converted 1:1 from functions/SplitToTableTest (now retired); empty-string parts are stringified so they cannot be confused with SQL NULL.",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "a-basic-split-with-a-comma-delimiter", "steps": [
+      {"sql": "SELECT * FROM TABLE(SPLIT_TO_TABLE('apple,banana,cherry', ','))",
+       "expect": {"rowCount": 3, "columns": ["SEQ", "INDEX", "VALUE"]}},
+      {"sql": "SELECT SEQ, INDEX, VALUE FROM TABLE(SPLIT_TO_TABLE('apple,banana,cherry', ','))",
+       "expect": {"rows": [["1", "1", "apple"], ["1", "2", "banana"], ["1", "3", "cherry"]], "ordered": true}}
+    ]},
+    {"name": "a-pipe-delimiter", "steps": [
+      {"sql": "SELECT VALUE FROM TABLE(SPLIT_TO_TABLE('red|green|blue', '|'))",
+       "expect": {"rowCount": 3, "rows": [["red"], ["green"], ["blue"]], "ordered": true}}
+    ]},
+    {"name": "a-space-delimiter", "steps": [
+      {"sql": "SELECT VALUE FROM TABLE(SPLIT_TO_TABLE('one two three', ' '))",
+       "expect": {"rowCount": 3, "rows": [["one"], ["two"], ["three"]], "ordered": true}}
+    ]},
+    {"name": "a-multi-character-delimiter", "steps": [
+      {"sql": "SELECT VALUE FROM TABLE(SPLIT_TO_TABLE('alpha::beta::gamma', '::'))",
+       "expect": {"rowCount": 3, "rows": [["alpha"], ["beta"], ["gamma"]], "ordered": true}}
+    ]},
+    {"name": "an-empty-string-is-one-empty-row", "steps": [
+      {"sql": "SELECT '<' || VALUE || '>' FROM TABLE(SPLIT_TO_TABLE('', ','))",
+       "expect": {"rowCount": 1, "value": "<>"}}
+    ]},
+    {"name": "a-single-value", "steps": [
+      {"sql": "SELECT SEQ, INDEX, VALUE FROM TABLE(SPLIT_TO_TABLE('onlyOne', ','))",
+       "expect": {"rowCount": 1, "rows": [["1", "1", "onlyOne"]]}}
+    ]},
+    {"name": "a-trailing-delimiter", "steps": [
+      {"sql": "SELECT '<' || VALUE || '>' FROM TABLE(SPLIT_TO_TABLE('a,b,c,', ','))",
+       "expect": {"rowCount": 4, "rows": [["<a>"], ["<b>"], ["<c>"], ["<>"]], "ordered": true}}
+    ]},
+    {"name": "a-leading-delimiter", "steps": [
+      {"sql": "SELECT '<' || VALUE || '>' FROM TABLE(SPLIT_TO_TABLE(',a,b,c', ','))",
+       "expect": {"rowCount": 4, "rows": [["<>"], ["<a>"], ["<b>"], ["<c>"]], "ordered": true}}
+    ]},
+    {"name": "consecutive-delimiters", "steps": [
+      {"sql": "SELECT '<' || VALUE || '>' FROM TABLE(SPLIT_TO_TABLE('a,,b,,c', ','))",
+       "expect": {"rowCount": 5, "rows": [["<a>"], ["<>"], ["<b>"], ["<>"], ["<c>"]], "ordered": true}}
+    ]},
+    {"name": "an-empty-delimiter-does-not-split", "steps": [
+      {"sql": "SELECT VALUE FROM TABLE(SPLIT_TO_TABLE('abc', ''))",
+       "expect": {"rowCount": 1, "value": "abc"}}
+    ]},
+    {"name": "a-null-string-or-delimiter-yields-no-rows", "steps": [
+      {"sql": "SELECT * FROM TABLE(SPLIT_TO_TABLE(NULL, ','))", "expect": {"rowCount": 0}},
+      {"sql": "SELECT * FROM TABLE(SPLIT_TO_TABLE('a,b', NULL))", "expect": {"rowCount": 0}}
+    ]},
+    {"name": "a-where-clause-over-the-result", "steps": [
+      {"sql": "SELECT VALUE FROM TABLE(SPLIT_TO_TABLE('apple,banana,cherry', ','))\nWHERE INDEX > 1",
+       "expect": {"rowCount": 2, "rows": [["banana"], ["cherry"]], "ordered": true}}
+    ]},
+    {"name": "an-alias-over-the-table-function", "steps": [
+      {"sql": "SELECT VALUE, INDEX FROM TABLE(SPLIT_TO_TABLE('x,y,z', ',')) s",
+       "expect": {"rowCount": 3, "rows": [["x", "1"], ["y", "2"], ["z", "3"]], "ordered": true}}
+    ]},
+    {"name": "an-order-by-over-the-result", "steps": [
+      {"sql": "SELECT VALUE FROM TABLE(SPLIT_TO_TABLE('zebra,apple,monkey', ','))\nORDER BY VALUE",
+       "expect": {"rowCount": 3, "rows": [["apple"], ["monkey"], ["zebra"]], "ordered": true}}
+    ]},
+    {"name": "a-named-argument-is-refused", "steps": [
+      {"sql": "SELECT * FROM TABLE(SPLIT_TO_TABLE(STRING => 'a,b', DELIMITER => ','))",
+       "expect": {"error": {"messageContains": "unexpected argument [STRING] at position 1,"}}},
+      {"sql": "SELECT * FROM TABLE(SPLIT_TO_TABLE(string => 'a,b'))",
+       "expect": {"error": {"messageContains": "unexpected argument [STRING] at position 1,"}}},
+      {"sql": "SELECT * FROM TABLE(SPLIT_TO_TABLE(\"string\" => 'a,b'))",
+       "expect": {"error": {"messageContains": "unexpected argument [\"STRING\"] at position 1,"}}},
+      {"sql": "SELECT * FROM TABLE(SPLIT_TO_TABLE('a,b', DELIMITER => ','))",
+       "expect": {"error": {"messageContains": "unexpected argument [DELIMITER] at position 2,"}}},
+      {"sql": "SELECT * FROM TABLE(SPLIT_TO_TABLE('test', INVALID_PARAM => 'value'))",
+       "expect": {"error": {"messageContains": "unexpected argument [INVALID_PARAM] at position 2,"}}},
+      {"sql": "SELECT * FROM TABLE(SPLIT_TO_TABLE(STRING => 'a,b', DELIMITER => ','))",
+       "expect": {"error": {"messageContains": "invalid argument for function [SPLIT_TO_TABLE]"}}}
+    ]},
+    {"name": "a-call-without-exactly-two-arguments-is-refused", "steps": [
+      {"sql": "SELECT * FROM TABLE(SPLIT_TO_TABLE())",
+       "expect": {"error": {"messageContains": "not enough arguments for function [SPLIT_TO_TABLE], expected 1, got 0"}}},
+      {"sql": "SELECT * FROM TABLE(SPLIT_TO_TABLE('a,b,c'))",
+       "expect": {"error": {"messageContains": "not enough arguments for function [SPLIT('a,b,c' AS \"1\")], expected 2, got 1"}}},
+      {"sql": "SELECT * FROM TABLE(SPLIT_TO_TABLE('a', ',', 'x'))",
+       "expect": {"error": {"messageContains": "too many arguments for function [SPLIT_TO_TABLE] expected 2, got 3"}}}
+    ]},
+    {"name": "a-non-string-argument-is-refused", "steps": [
+      {"sql": "SELECT * FROM TABLE(SPLIT_TO_TABLE(123, ','))",
+       "expect": {"error": {"messageContains": "invalid type [NUMBER(3,0)] for parameter '1'"}}},
+      {"sql": "SELECT * FROM TABLE(SPLIT_TO_TABLE('1,2', 1))",
+       "expect": {"error": {"messageContains": "invalid type [NUMBER(1,0)] for parameter '2'"}}}
+    ]}
+  ]
+}

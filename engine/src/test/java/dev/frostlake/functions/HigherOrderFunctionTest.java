@@ -28,9 +28,10 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
  * Snowflake higher-order functions with lambda arguments: {@code TRANSFORM(<arr>, x -> …)},
  * {@code FILTER(<arr>, x -> <bool>)} and {@code REDUCE(<arr>, <init>, (acc, x) -> …)}. The lambda body is
  * applied per element with the parameter(s) bound as VARIANT — so arithmetic over them is DOUBLE
- * ({@code x + 1} over {@code [1,2,3]} yields {@code [2.0,3.0,4.0]}). A lambda parameter may DECLARE a
- * type, which casts the bound element and therefore changes that arithmetic; a second parameter receives
- * the element index (for TRANSFORM/FILTER).
+ * ({@code x + 1} over {@code [1,2,3]} yields
+ * {@code [2.000000000000000e+00,3.000000000000000e+00,4.000000000000000e+00]}). A lambda parameter may
+ * DECLARE a type, which casts the bound element and therefore changes that arithmetic; a second parameter
+ * receives the element index (for TRANSFORM/FILTER).
  */
 public class HigherOrderFunctionTest extends BaseDatabaseTest {
 
@@ -45,7 +46,8 @@ public class HigherOrderFunctionTest extends BaseDatabaseTest {
 
     @Test
     public void transformMapsEachElement() {
-        assertEquals("[2.0,3.0,4.0]", arr("SELECT TRANSFORM([1, 2, 3], x -> x + 1)"));
+        assertEquals("[2.000000000000000e+00,3.000000000000000e+00,4.000000000000000e+00]",
+            arr("SELECT TRANSFORM([1, 2, 3], x -> x + 1)"));
     }
 
     @Test
@@ -62,11 +64,11 @@ public class HigherOrderFunctionTest extends BaseDatabaseTest {
     public void lambdaParameterMayCarryAType() {
         // A declared parameter type is not decoration: it CASTS the bound element, and that changes the
         // arithmetic. Live-verified on a real account — TRANSFORM([1,2], a -> a * 2) is
-        // [2.0,4.0] because an untyped element binds as a VARIANT (VARIANT arithmetic is FLOAT), while
-        // TRANSFORM([1,2], a INT -> a * 2) is [2,4].
+        // [2.000000000000000e+00,4.000000000000000e+00] because an untyped element binds as a VARIANT
+        // (VARIANT arithmetic is FLOAT), while TRANSFORM([1,2], a INT -> a * 2) is [2,4].
         assertEquals("[2,4]", arr("SELECT TRANSFORM([1, 2], a INT -> a * 2)"));
         assertEquals("[2,4]", arr("SELECT TRANSFORM([1, 2], a NUMBER -> a * 2)"));
-        assertEquals("[2.0,4.0]", arr("SELECT TRANSFORM([1, 2], a -> a * 2)"));
+        assertEquals("[2.000000000000000e+00,4.000000000000000e+00]", arr("SELECT TRANSFORM([1, 2], a -> a * 2)"));
     }
 
     @Test
@@ -76,7 +78,8 @@ public class HigherOrderFunctionTest extends BaseDatabaseTest {
 
     @Test
     public void higherOrderFunctionsNest() {
-        assertEquals("[20.0,30.0,40.0]", arr("SELECT TRANSFORM(FILTER([1, 2, 3, 4], x -> x > 1), y -> y * 10)"));
+        assertEquals("[2.000000000000000e+01,3.000000000000000e+01,4.000000000000000e+01]",
+            arr("SELECT TRANSFORM(FILTER([1, 2, 3, 4], x -> x > 1), y -> y * 10)"));
     }
 
     @Test

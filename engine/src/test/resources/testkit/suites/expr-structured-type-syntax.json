@@ -1,0 +1,151 @@
+{
+  "suite": "expr-structured-type-syntax",
+  "description": "Structured types in casts including RENAME FIELDS / ADD FIELDS, all live-measured: plain values cast to structured types when the key set matches EXACTLY (field types applied, unconvertible values and NOT NULL violations failing Typed object schema mismatch, field names case-sensitive and never folded, duplicates rejected, NULL staying NULL); RENAME FIELDS maps POSITIONALLY (converting to target types, equal field counts required) while ADD FIELDS matches BY NAME (new fields null, target order, every source field kept, no-op legal); both modifiers demand a structured source AND target of the same family at COMPILE time, recurse into nested structures and ARRAY elements, are ignored at MAP level, and are refused by TRY_CAST and impossible in the :: shorthand; structured-to-structured without a modifier keeps the field layout (leaf types may change); structured columns keep their declared shape; OBJECT() is its own zero-field type and empty type parentheses are a character-type leniency only. Converted 1:1 from expressions/StructuredTypeSyntaxTest (now retired).",
+  "tags": ["expressions", "converted"],
+  "tests": [
+    {"name": "plain-cast-to-a-structured-type-still-works", "steps": [
+      {"sql": "SELECT CAST(OBJECT_CONSTRUCT('x','a') AS OBJECT(x VARCHAR))", "expect": {"value": "{\"x\":\"a\"}"}},
+      {"sql": "SELECT OBJECT_CONSTRUCT('x','a')::OBJECT(x VARCHAR)", "expect": {"value": "{\"x\":\"a\"}"}},
+      {"sql": "SELECT CAST([1, 2, 3] AS ARRAY(INT))", "expect": {"value": "[1,2,3]"}},
+      {"sql": "SELECT CAST(OBJECT_CONSTRUCT('k','v') AS MAP(VARCHAR,VARCHAR))", "expect": {"value": "{\"k\":\"v\"}"}}
+    ]},
+    {"name": "cast-to-a-structured-type-converts-the-values", "steps": [
+      {"sql": "SELECT CAST(OBJECT_CONSTRUCT('x','5') AS OBJECT(x INT))", "expect": {"value": "{\"x\":5}"}},
+      {"sql": "SELECT CAST(CAST(OBJECT_CONSTRUCT('x','5') AS OBJECT(x VARCHAR)) AS OBJECT(x INT))", "expect": {"value": "{\"x\":5}"}},
+      {"sql": "SELECT CAST(CAST(OBJECT_CONSTRUCT('x',5) AS OBJECT(x INT)) AS OBJECT(x VARCHAR))", "expect": {"value": "{\"x\":\"5\"}"}},
+      {"sql": "SELECT CAST(OBJECT_CONSTRUCT('k','5') AS MAP(VARCHAR,INT))", "expect": {"value": "{\"k\":5}"}},
+      {"sql": "SELECT CAST(CAST([1,2] AS ARRAY(INT)) AS ARRAY(VARCHAR))", "expect": {"value": "[\"1\",\"2\"]"}}
+    ]},
+    {"name": "unconvertible-field-value-is-rejected", "steps": [
+      {"sql": "SELECT CAST(OBJECT_CONSTRUCT('x','a') AS OBJECT(x INT))", "expect": {"error": {"messageContains": "Typed object schema mismatch in conversion"}}},
+      {"sql": "SELECT CAST(['a','b'] AS ARRAY(INT))", "expect": {"error": {"messageContains": "Typed object schema mismatch in conversion"}}}
+    ]},
+    {"name": "cast-to-a-structured-object-requires-an-exact-key-set", "steps": [
+      {"sql": "SELECT CAST(OBJECT_CONSTRUCT('x','a') AS OBJECT(x VARCHAR, q INT))", "expect": {"error": {"messageContains": "Typed object schema mismatch in conversion"}}},
+      {"sql": "SELECT CAST(OBJECT_CONSTRUCT('x','a','extra',9) AS OBJECT(x VARCHAR))", "expect": {"error": {"messageContains": "Typed object schema mismatch in conversion"}}},
+      {"sql": "SELECT CAST(OBJECT_CONSTRUCT() AS OBJECT(x VARCHAR))", "expect": {"error": {"messageContains": "Typed object schema mismatch in conversion"}}}
+    ]},
+    {"name": "not-null-field-rejects-a-null-value", "steps": [
+      {"sql": "SELECT CAST(OBJECT_CONSTRUCT('x',NULL) AS OBJECT(x VARCHAR NOT NULL))", "expect": {"error": {"messageContains": "Typed object schema mismatch in conversion"}}},
+      {"sql": "SELECT CAST(CAST(OBJECT_CONSTRUCT('x','a') AS OBJECT(x VARCHAR)) AS OBJECT(x VARCHAR, z INT NOT NULL) ADD FIELDS)", "expect": {"error": {"messageContains": "Typed object schema mismatch in conversion"}}}
+    ]},
+    {"name": "structured-field-names-are-case-sensitive", "steps": [
+      {"sql": "SELECT CAST(CAST(OBJECT_CONSTRUCT('x','a') AS OBJECT(x VARCHAR)) AS OBJECT(X VARCHAR) RENAME FIELDS)", "expect": {"value": "{\"X\":\"a\"}"}},
+      {"sql": "SELECT CAST(OBJECT_CONSTRUCT('x','a') AS OBJECT(X VARCHAR))", "expect": {"error": {"messageContains": "Typed object schema mismatch in conversion"}}},
+      {"sql": "SELECT CAST(OBJECT_CONSTRUCT('X','a') AS OBJECT(\"X\" VARCHAR))", "expect": {"value": "{\"X\":\"a\"}"}}
+    ]},
+    {"name": "duplicate-field-name-is-rejected", "steps": [
+      {"sql": "SELECT CAST(OBJECT_CONSTRUCT('x','a') AS OBJECT(x VARCHAR, x INT))", "expect": {"error": {"messageContains": "Duplicate field name 'x'"}}},
+      {"sql": "SELECT CAST(CAST(OBJECT_CONSTRUCT('x','a','y',1) AS OBJECT(x VARCHAR, y INT)) AS OBJECT(p VARCHAR, p INT) RENAME FIELDS)", "expect": {"error": {"messageContains": "Duplicate field name 'p'"}}}
+    ]},
+    {"name": "null-stays-null", "steps": [
+      {"sql": "SELECT NULL::OBJECT(x VARCHAR)", "expect": {"rows": [["NULL"]]}},
+      {"sql": "SELECT CAST(NULL::OBJECT(x VARCHAR) AS OBJECT(y VARCHAR) RENAME FIELDS)", "expect": {"rows": [["NULL"]]}}
+    ]},
+    {"name": "rename-fields-is-positional", "steps": [
+      {"sql": "SELECT CAST(CAST(OBJECT_CONSTRUCT('x','a','y',1) AS OBJECT(x VARCHAR, y INT)) AS OBJECT(p VARCHAR, q INT) RENAME FIELDS)", "expect": {"value": "{\"p\":\"a\",\"q\":1}"}},
+      {"sql": "SELECT CAST(CAST(OBJECT_CONSTRUCT('x','a','y',1) AS OBJECT(x VARCHAR, y INT)) AS OBJECT(y VARCHAR, x INT) RENAME FIELDS)", "expect": {"value": "{\"y\":\"a\",\"x\":1}"}},
+      {"sql": "SELECT CAST(CAST(OBJECT_CONSTRUCT('x','a','y',1) AS OBJECT(x VARCHAR, y INT)) AS OBJECT(x VARCHAR, y INT) RENAME FIELDS)", "expect": {"value": "{\"x\":\"a\",\"y\":1}"}}
+    ]},
+    {"name": "rename-fields-converts-to-the-target-field-types", "steps": [
+      {"sql": "SELECT CAST(CAST(OBJECT_CONSTRUCT('x','5','y',1) AS OBJECT(x VARCHAR, y INT)) AS OBJECT(p INT, q VARCHAR) RENAME FIELDS)", "expect": {"value": "{\"p\":5,\"q\":\"1\"}"}},
+      {"sql": "SELECT CAST(CAST(OBJECT_CONSTRUCT('x','a','y',1) AS OBJECT(x VARCHAR, y INT)) AS OBJECT(p INT, q VARCHAR) RENAME FIELDS)", "expect": {"error": {"messageContains": "Typed object schema mismatch in conversion"}}}
+    ]},
+    {"name": "rename-fields-requires-equal-field-counts", "steps": [
+      {"sql": "SELECT CAST(CAST(OBJECT_CONSTRUCT('x','a','y',1) AS OBJECT(x VARCHAR, y INT)) AS OBJECT(p VARCHAR) RENAME FIELDS)", "expect": {"error": {"messageContains": "incompatible types: [STRUCTURED_OBJECT] and [STRUCTURED_OBJECT]"}}},
+      {"sql": "SELECT CAST(CAST(OBJECT_CONSTRUCT('x','a') AS OBJECT(x VARCHAR)) AS OBJECT(p VARCHAR, q INT) RENAME FIELDS)", "expect": {"error": {"messageContains": "incompatible types: [STRUCTURED_OBJECT] and [STRUCTURED_OBJECT]"}}}
+    ]},
+    {"name": "add-fields-matches-by-name-and-defaults-new-fields-to-null", "steps": [
+      {"sql": "SELECT CAST(CAST(OBJECT_CONSTRUCT('x','a') AS OBJECT(x VARCHAR)) AS OBJECT(x VARCHAR, z INT) ADD FIELDS)", "expect": {"value": "{\"x\":\"a\",\"z\":null}"}},
+      {"sql": "SELECT CAST(CAST(OBJECT_CONSTRUCT('x','a') AS OBJECT(x VARCHAR)) AS OBJECT(x VARCHAR, z INT, w VARCHAR) ADD FIELDS)", "expect": {"value": "{\"x\":\"a\",\"z\":null,\"w\":null}"}},
+      {"sql": "SELECT CAST(CAST(OBJECT_CONSTRUCT('x','a') AS OBJECT(x VARCHAR)) AS OBJECT(z INT, x VARCHAR) ADD FIELDS)", "expect": {"value": "{\"z\":null,\"x\":\"a\"}"}},
+      {"sql": "SELECT CAST(CAST(OBJECT_CONSTRUCT('x','a','y',1) AS OBJECT(x VARCHAR, y INT)) AS OBJECT(x VARCHAR, y INT, z VARCHAR) ADD FIELDS)", "expect": {"value": "{\"x\":\"a\",\"y\":1,\"z\":null}"}}
+    ]},
+    {"name": "add-fields-requires-the-target-to-keep-every-source-field", "steps": [
+      {"sql": "SELECT CAST(CAST(OBJECT_CONSTRUCT('x','a') AS OBJECT(x VARCHAR)) AS OBJECT(z INT) ADD FIELDS)", "expect": {"error": {"messageContains": "incompatible types: [STRUCTURED_OBJECT] and [STRUCTURED_OBJECT]"}}},
+      {"sql": "SELECT CAST(CAST(OBJECT_CONSTRUCT('x','a','y',1) AS OBJECT(x VARCHAR, y INT)) AS OBJECT(x VARCHAR, z INT) ADD FIELDS)", "expect": {"error": {"messageContains": "incompatible types: [STRUCTURED_OBJECT] and [STRUCTURED_OBJECT]"}}},
+      {"sql": "SELECT CAST(CAST(OBJECT_CONSTRUCT('x','a','y',1) AS OBJECT(x VARCHAR, y INT)) AS OBJECT(x VARCHAR, q INT, z INT) ADD FIELDS)", "expect": {"error": {"messageContains": "incompatible types: [STRUCTURED_OBJECT] and [STRUCTURED_OBJECT]"}}}
+    ]},
+    {"name": "add-fields-with-no-new-field-is-allowed", "steps": [
+      {"sql": "SELECT CAST(CAST(OBJECT_CONSTRUCT('x','5','y',1) AS OBJECT(x VARCHAR, y INT)) AS OBJECT(x VARCHAR, y INT) ADD FIELDS)", "expect": {"value": "{\"x\":\"5\",\"y\":1}"}},
+      {"sql": "SELECT CAST(CAST(OBJECT_CONSTRUCT('x','5','y',1) AS OBJECT(x VARCHAR, y INT)) AS OBJECT(y INT, x VARCHAR, z INT) ADD FIELDS)", "expect": {"value": "{\"y\":1,\"x\":\"5\",\"z\":null}"}}
+    ]},
+    {"name": "field-modifiers-require-a-structured-source", "steps": [
+      {"sql": "SELECT CAST(OBJECT_CONSTRUCT('x','a') AS OBJECT(y VARCHAR) RENAME FIELDS)", "expect": {"error": {"messageContains": "Function CAST RENAME FIELDS cannot be used with arguments of types"}}},
+      {"sql": "SELECT CAST(OBJECT_CONSTRUCT('x','a') AS OBJECT(x VARCHAR, z INT) ADD FIELDS)", "expect": {"error": {"messageContains": "Function CAST ADD FIELDS cannot be used with arguments of types"}}},
+      {"sql": "SELECT CAST(PARSE_JSON('{\"x\":\"a\"}') AS OBJECT(y VARCHAR) RENAME FIELDS)", "expect": {"error": {"messageContains": "Function CAST RENAME FIELDS cannot be used with arguments of types"}}},
+      {"sql": "SELECT CAST([1,2] AS ARRAY(INT) RENAME FIELDS)", "expect": {"error": {"messageContains": "Function CAST RENAME FIELDS cannot be used with arguments of types"}}},
+      {"sql": "SELECT CAST([1,2] AS ARRAY(INT) ADD FIELDS)", "expect": {"error": {"messageContains": "Function CAST ADD FIELDS cannot be used with arguments of types"}}},
+      {"sql": "SELECT CAST(OBJECT_CONSTRUCT('k','v') AS MAP(VARCHAR,VARCHAR) RENAME FIELDS)", "expect": {"error": {"messageContains": "Function CAST RENAME FIELDS cannot be used with arguments of types"}}},
+      {"sql": "SELECT CAST(NULL AS OBJECT(y VARCHAR) RENAME FIELDS)", "expect": {"error": {"messageContains": "Function CAST RENAME FIELDS cannot be used with arguments of types"}}}
+    ]},
+    {"name": "field-modifiers-require-a-structured-target", "steps": [
+      {"sql": "SELECT CAST(CAST(OBJECT_CONSTRUCT('x','a','y',1) AS OBJECT(x VARCHAR, y INT)) AS OBJECT RENAME FIELDS)", "expect": {"error": {"messageContains": "Function CAST RENAME FIELDS cannot be used with arguments of types"}}},
+      {"sql": "SELECT CAST(CAST(OBJECT_CONSTRUCT('x','a','y',1) AS OBJECT(x VARCHAR, y INT)) AS VARIANT RENAME FIELDS)", "expect": {"error": {"messageContains": "Function CAST RENAME FIELDS cannot be used with arguments of types"}}}
+    ]},
+    {"name": "field-modifiers-require-the-same-structured-family", "steps": [
+      {"sql": "SELECT CAST(CAST([1,2] AS ARRAY(INT)) AS OBJECT(x INT) RENAME FIELDS)", "expect": {"error": {"messageContains": "incompatible types: [STRUCTURED_ARRAY] and [STRUCTURED_OBJECT]"}}}
+    ]},
+    {"name": "field-modifier-rejection-is-compile-time", "steps": [
+      {"sql": "CREATE TABLE empty_rows (i INT)"},
+      {"sql": "SELECT CAST(OBJECT_CONSTRUCT('x','a') AS OBJECT(y VARCHAR) RENAME FIELDS) FROM empty_rows", "expect": {"error": {"messageContains": "Function CAST RENAME FIELDS cannot be used with arguments of types"}}},
+      {"sql": "SELECT CAST(OBJECT_CONSTRUCT('x','a') AS OBJECT(y VARCHAR) RENAME FIELDS) FROM empty_rows WHERE FALSE", "expect": {"error": {"messageContains": "Function CAST RENAME FIELDS cannot be used with arguments of types"}}},
+      {"sql": "SELECT 1 WHERE CAST(OBJECT_CONSTRUCT('x','a') AS OBJECT(y VARCHAR) RENAME FIELDS) IS NOT NULL AND FALSE", "expect": {"error": {"messageContains": "Function CAST RENAME FIELDS cannot be used with arguments of types"}}}
+    ]},
+    {"name": "structured-to-structured-without-a-modifier-keeps-the-field-layout", "steps": [
+      {"sql": "SELECT CAST(CAST(OBJECT_CONSTRUCT('x','a','y',1) AS OBJECT(x VARCHAR, y INT)) AS OBJECT(x VARCHAR))", "expect": {"error": {"messageContains": "incompatible types: [STRUCTURED_OBJECT] and [STRUCTURED_OBJECT]"}}},
+      {"sql": "SELECT CAST(CAST(OBJECT_CONSTRUCT('x','a') AS OBJECT(x VARCHAR)) AS OBJECT(x VARCHAR, z INT))", "expect": {"error": {"messageContains": "incompatible types: [STRUCTURED_OBJECT] and [STRUCTURED_OBJECT]"}}},
+      {"sql": "SELECT CAST(CAST(OBJECT_CONSTRUCT('x','a','y',1) AS OBJECT(x VARCHAR, y INT)) AS OBJECT(p VARCHAR, q INT))", "expect": {"error": {"messageContains": "incompatible types: [STRUCTURED_OBJECT] and [STRUCTURED_OBJECT]"}}},
+      {"sql": "SELECT CAST(CAST(OBJECT_CONSTRUCT('x','5','y',1) AS OBJECT(x VARCHAR, y INT)) AS OBJECT(x VARCHAR, y VARCHAR))", "expect": {"value": "{\"x\":\"5\",\"y\":\"1\"}"}}
+    ]},
+    {"name": "field-modifiers-recurse-into-nested-structures", "steps": [
+      {"sql": "SELECT CAST(CAST(OBJECT_CONSTRUCT('x',OBJECT_CONSTRUCT('y','a')) AS OBJECT(x OBJECT(y VARCHAR))) AS OBJECT(p OBJECT(q VARCHAR)) RENAME FIELDS)", "expect": {"value": "{\"p\":{\"q\":\"a\"}}"}},
+      {"sql": "SELECT CAST(CAST(OBJECT_CONSTRUCT('x',OBJECT_CONSTRUCT('y','a')) AS OBJECT(x OBJECT(y VARCHAR))) AS OBJECT(x OBJECT(y VARCHAR, z INT), w INT) ADD FIELDS)", "expect": {"value": "{\"x\":{\"y\":\"a\",\"z\":null},\"w\":null}"}},
+      {"sql": "SELECT CAST(CAST([OBJECT_CONSTRUCT('y','a')] AS ARRAY(OBJECT(y VARCHAR))) AS ARRAY(OBJECT(y VARCHAR, z INT)) ADD FIELDS)", "expect": {"value": "[{\"y\":\"a\",\"z\":null}]"}},
+      {"sql": "SELECT CAST(CAST([OBJECT_CONSTRUCT('y','a')] AS ARRAY(OBJECT(y VARCHAR))) AS ARRAY(OBJECT(q VARCHAR)) RENAME FIELDS)", "expect": {"value": "[{\"q\":\"a\"}]"}}
+    ]},
+    {"name": "nested-field-layout-is-checked-without-a-modifier", "steps": [
+      {"sql": "SELECT CAST(CAST(OBJECT_CONSTRUCT('x',OBJECT_CONSTRUCT('y','a')) AS OBJECT(x OBJECT(y VARCHAR))) AS OBJECT(x OBJECT(y VARCHAR, z INT)))", "expect": {"error": {"messageContains": "incompatible types: [STRUCTURED_OBJECT] and [STRUCTURED_OBJECT]"}}},
+      {"sql": "SELECT CAST(CAST([OBJECT_CONSTRUCT('y','a')] AS ARRAY(OBJECT(y VARCHAR))) AS ARRAY(OBJECT(q VARCHAR)))", "expect": {"error": {"messageContains": "incompatible types: [STRUCTURED_OBJECT] and [STRUCTURED_OBJECT]"}}}
+    ]},
+    {"name": "map-target-ignores-the-field-modifiers", "steps": [
+      {"sql": "SELECT CAST(CAST(OBJECT_CONSTRUCT('k','v') AS MAP(VARCHAR,VARCHAR)) AS MAP(VARCHAR,VARCHAR) RENAME FIELDS)", "expect": {"value": "{\"k\":\"v\"}"}},
+      {"sql": "SELECT CAST(CAST(OBJECT_CONSTRUCT('k','v') AS MAP(VARCHAR,VARCHAR)) AS MAP(VARCHAR,VARCHAR) ADD FIELDS)", "expect": {"value": "{\"k\":\"v\"}"}},
+      {"sql": "SELECT CAST(CAST(OBJECT_CONSTRUCT('x','a') AS OBJECT(x VARCHAR)) AS MAP(VARCHAR,VARCHAR) RENAME FIELDS)", "expect": {"value": "{\"x\":\"a\"}"}}
+    ]},
+    {"name": "structured-array-source-accepts-the-modifiers", "steps": [
+      {"sql": "SELECT CAST(CAST([1,2] AS ARRAY(INT)) AS ARRAY(VARCHAR) RENAME FIELDS)", "expect": {"value": "[\"1\",\"2\"]"}},
+      {"sql": "SELECT CAST(CAST([1,2] AS ARRAY(INT)) AS ARRAY(VARCHAR) ADD FIELDS)", "expect": {"value": "[\"1\",\"2\"]"}}
+    ]},
+    {"name": "try-cast-to-a-structured-type", "steps": [
+      {"sql": "SELECT TRY_CAST(CAST(OBJECT_CONSTRUCT('x','a') AS OBJECT(x VARCHAR)) AS OBJECT(x VARCHAR))", "expect": {"value": "{\"x\":\"a\"}"}},
+      {"sql": "SELECT TRY_CAST(OBJECT_CONSTRUCT('x','a','e',1) AS OBJECT(x VARCHAR))", "expect": {"rows": [["NULL"]]}},
+      {"sql": "SELECT TRY_CAST(CAST(OBJECT_CONSTRUCT('x','a') AS OBJECT(x VARCHAR)) AS OBJECT(y VARCHAR) RENAME FIELDS)", "expect": {"error": {"messageContains": "modifier is not supported with TRY_CAST"}}}
+    ]},
+    {"name": "double-colon-cast-takes-no-field-modifier", "steps": [
+      {"sql": "SELECT OBJECT_CONSTRUCT('x','a')::OBJECT(x VARCHAR) RENAME FIELDS", "expect": {"error": {"messageContains": "FIELDS"}}}
+    ]},
+    {"name": "structured-column-keeps-its-declared-shape", "steps": [
+      {"sql": "CREATE TABLE structured_cols (o OBJECT(x VARCHAR, y INT), po OBJECT)"},
+      {"sql": "INSERT INTO structured_cols SELECT CAST(OBJECT_CONSTRUCT('x','a','y',1) AS OBJECT(x VARCHAR, y INT)), OBJECT_CONSTRUCT('x','a')"},
+      {"sql": "SELECT o FROM structured_cols", "expect": {"value": "{\"x\":\"a\",\"y\":1}"}},
+      {"sql": "SELECT CAST(o AS OBJECT(p VARCHAR, q INT) RENAME FIELDS) FROM structured_cols", "expect": {"value": "{\"p\":\"a\",\"q\":1}"}},
+      {"sql": "SELECT CAST(o AS OBJECT(x VARCHAR, y INT, z INT) ADD FIELDS) FROM structured_cols", "expect": {"value": "{\"x\":\"a\",\"y\":1,\"z\":null}"}},
+      {"sql": "SELECT CAST(po AS OBJECT(p VARCHAR) RENAME FIELDS) FROM structured_cols", "expect": {"error": {"messageContains": "Function CAST RENAME FIELDS cannot be used with arguments of types"}}}
+    ]},
+    {"name": "zero-field-object-is-its-own-structured-type", "steps": [
+      {"sql": "SELECT CAST(OBJECT_CONSTRUCT() AS OBJECT())", "expect": {"value": "{}"}},
+      {"sql": "SELECT OBJECT_CONSTRUCT()::OBJECT()", "expect": {"value": "{}"}},
+      {"sql": "SELECT CAST(PARSE_JSON('{}') AS OBJECT())", "expect": {"value": "{}"}},
+      {"sql": "SELECT NULL::OBJECT()", "expect": {"rows": [["NULL"]]}},
+      {"sql": "SELECT CAST(CAST(OBJECT_CONSTRUCT() AS OBJECT()) AS OBJECT(z INT) ADD FIELDS)", "expect": {"value": "{\"z\":null}"}},
+      {"sql": "SELECT CAST(OBJECT_CONSTRUCT('x','a') AS OBJECT())", "expect": {"error": {}}}
+    ]},
+    {"name": "empty-type-parentheses-are-a-character-type-leniency-only", "steps": [
+      {"sql": "SELECT CAST('x' AS VARCHAR())", "expect": {"value": "x"}},
+      {"sql": "SELECT CAST('x' AS NVARCHAR())", "expect": {"value": "x"}},
+      {"sql": "SELECT CAST([1,2] AS ARRAY())", "expect": {"error": {}}},
+      {"sql": "SELECT CAST(OBJECT_CONSTRUCT() AS MAP())", "expect": {"error": {}}}
+    ]}
+  ]
+}

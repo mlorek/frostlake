@@ -1,0 +1,148 @@
+{
+  "suite": "dml-merge-operations",
+  "description": "MERGE insert/update matrices over VALUES sources and staging tables, converted 1:1 from dml/MergeOperationsTest.java (now retired).",
+  "tags": ["dml", "converted"],
+  "tests": [
+    {
+      "name": "merge-insert-only",
+      "steps": [
+        {"sql": "CREATE TABLE products (id INTEGER, name VARCHAR, price INTEGER)"},
+        {"sql": "INSERT INTO products VALUES (1, 'Widget', 100)"},
+        {"sql": "MERGE INTO products USING (VALUES (2, 'Gadget', 200)) ON id = 2 WHEN NOT MATCHED THEN INSERT VALUES (2, 'Gadget', 200)"},
+        {"sql": "SELECT * FROM products ORDER BY id", "expect": {"rows": [["1", "Widget", "100"], ["2", "Gadget", "200"]], "ordered": true}}
+      ]
+    },
+    {
+      "name": "merge-update-only",
+      "steps": [
+        {"sql": "CREATE TABLE products (id INTEGER, name VARCHAR, price INTEGER)"},
+        {"sql": "INSERT INTO products VALUES (1, 'Widget', 100), (2, 'Gadget', 200)"},
+        {"sql": "MERGE INTO products USING (VALUES (1, 'Widget', 150)) ON id = 1 WHEN MATCHED THEN UPDATE SET price = 150"},
+        {"sql": "SELECT * FROM products WHERE id = 1", "expect": {"rows": [["1", "Widget", "150"]]}}
+      ]
+    },
+    {
+      "name": "merge-insert-and-update",
+      "steps": [
+        {"sql": "CREATE TABLE products (id INTEGER, name VARCHAR, price INTEGER)"},
+        {"sql": "INSERT INTO products VALUES (1, 'Widget', 100)"},
+        {"sql": "MERGE INTO products USING (VALUES (1, 'Widget', 120)) ON id = 1 WHEN MATCHED THEN UPDATE SET price = 120 WHEN NOT MATCHED THEN INSERT VALUES (1, 'Widget', 120)"},
+        {"sql": "SELECT price FROM products WHERE id = 1", "expect": {"value": "120"}}
+      ]
+    },
+    {
+      "name": "merge-multiple-rows",
+      "steps": [
+        {"sql": "CREATE TABLE inventory (id INTEGER, product VARCHAR, quantity INTEGER)"},
+        {"sql": "INSERT INTO inventory VALUES (1, 'Widget', 50), (2, 'Gadget', 30)"},
+        {"sql": "CREATE TABLE updates (id INTEGER, product VARCHAR, quantity INTEGER)"},
+        {"sql": "INSERT INTO updates VALUES (1, 'Widget', 75), (3, 'Doohickey', 20)"},
+        {"sql": "MERGE INTO inventory USING updates ON inventory.id = updates.id WHEN MATCHED THEN UPDATE SET quantity = 75 WHEN NOT MATCHED THEN INSERT VALUES (3, 'Doohickey', 20)"},
+        {"sql": "SELECT * FROM inventory ORDER BY id", "expect": {"rowCount": 3}},
+        {"sql": "SELECT quantity FROM inventory WHERE id = 1", "expect": {"value": "75"}},
+        {"sql": "SELECT product FROM inventory WHERE id = 3", "expect": {"value": "Doohickey"}}
+      ]
+    },
+    {
+      "name": "merge-with-complex-update",
+      "steps": [
+        {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, salary INTEGER, bonus INTEGER)"},
+        {"sql": "INSERT INTO employees VALUES (1, 'Alice', 90000, 5000), (2, 'Bob', 80000, 4000)"},
+        {"sql": "MERGE INTO employees USING (VALUES (1, 'Alice', 95000, 6000)) ON id = 1 WHEN MATCHED THEN UPDATE SET salary = 95000, bonus = 6000"},
+        {"sql": "SELECT * FROM employees WHERE id = 1", "expect": {"rows": [["1", "Alice", "95000", "6000"]]}}
+      ]
+    },
+    {
+      "name": "merge-with-column-list",
+      "steps": [
+        {"sql": "CREATE TABLE products (id INTEGER, name VARCHAR, price INTEGER, stock INTEGER)"},
+        {"sql": "INSERT INTO products VALUES (1, 'Widget', 100, 50)"},
+        {"sql": "MERGE INTO products USING (VALUES (2, 'Gadget', 200)) ON id = 2 WHEN NOT MATCHED THEN INSERT (id, name, price) VALUES (2, 'Gadget', 200)"},
+        {"sql": "SELECT * FROM products WHERE id = 2", "expect": {"rows": [["2", "Gadget", "200", null]]}}
+      ]
+    },
+    {
+      "name": "merge-bulk-upsert",
+      "steps": [
+        {"sql": "CREATE TABLE products (id INTEGER, name VARCHAR, price INTEGER, last_updated VARCHAR)"},
+        {"sql": "INSERT INTO products VALUES (1, 'Widget', 100, '2024-01-01'), (2, 'Gadget', 200, '2024-01-01')"},
+        {"sql": "CREATE TABLE staging (id INTEGER, name VARCHAR, price INTEGER, last_updated VARCHAR)"},
+        {"sql": "INSERT INTO staging VALUES (1, 'Widget', 120, '2024-02-01'), (2, 'Gadget', 220, '2024-02-01'), (3, 'Doohickey', 150, '2024-02-01')"},
+        {"sql": "MERGE INTO products USING staging ON products.id = staging.id WHEN MATCHED THEN UPDATE SET price = 120, last_updated = '2024-02-01' WHEN NOT MATCHED THEN INSERT VALUES (3, 'Doohickey', 150, '2024-02-01')"},
+        {"sql": "SELECT * FROM products ORDER BY id", "expect": {"rowCount": 3}},
+        {"sql": "SELECT price FROM products WHERE id = 1", "expect": {"value": "120"}},
+        {"sql": "SELECT name FROM products WHERE id = 3", "expect": {"value": "Doohickey"}}
+      ]
+    },
+    {
+      "name": "merge-no-match",
+      "steps": [
+        {"sql": "CREATE TABLE products (id INTEGER, name VARCHAR, price INTEGER)"},
+        {"sql": "INSERT INTO products VALUES (1, 'Widget', 100)"},
+        {"sql": "MERGE INTO products USING (VALUES (2, 'Gadget', 200)) ON id = 2 WHEN MATCHED THEN UPDATE SET price = 250"},
+        {"sql": "SELECT * FROM products", "expect": {"rows": [["1", "Widget", "100"]]}}
+      ]
+    },
+    {
+      "name": "merge-all-match",
+      "steps": [
+        {"sql": "CREATE TABLE products (id INTEGER, name VARCHAR, price INTEGER)"},
+        {"sql": "INSERT INTO products VALUES (1, 'Widget', 100), (2, 'Gadget', 200)"},
+        {"sql": "MERGE INTO products USING (VALUES (1, 'Widget', 120)) ON id = 1 WHEN NOT MATCHED THEN INSERT VALUES (1, 'Widget', 120)"},
+        {"sql": "SELECT * FROM products", "expect": {"rowCount": 2}}
+      ]
+    },
+    {
+      "name": "merge-empty-target",
+      "steps": [
+        {"sql": "CREATE TABLE products (id INTEGER, name VARCHAR, price INTEGER)"},
+        {"sql": "MERGE INTO products USING (VALUES (1, 'Widget', 100)) ON id = 1 WHEN MATCHED THEN UPDATE SET price = 150 WHEN NOT MATCHED THEN INSERT VALUES (1, 'Widget', 100)"},
+        {"sql": "SELECT * FROM products", "expect": {"rows": [["1", "Widget", "100"]]}}
+      ]
+    },
+    {
+      "name": "merge-with-different-types",
+      "steps": [
+        {"sql": "CREATE TABLE test_types (id INTEGER, str_val VARCHAR, bool_val BOOLEAN, float_val FLOAT)"},
+        {"sql": "INSERT INTO test_types VALUES (1, 'original', true, 1.5)"},
+        {"sql": "MERGE INTO test_types USING (VALUES (1, 'updated', false, 2.5)) ON id = 1 WHEN MATCHED THEN UPDATE SET str_val = 'updated', bool_val = false, float_val = 2.5"},
+        {"sql": "SELECT * FROM test_types", "expect": {"rows": [["1", "updated", "false", "2.5"]]}}
+      ]
+    },
+    {
+      "name": "merge-incremental-load",
+      "steps": [
+        {"sql": "CREATE TABLE sales (date VARCHAR, product VARCHAR, amount INTEGER)"},
+        {"sql": "INSERT INTO sales VALUES ('2024-01-01', 'Widget', 1000)"},
+        {"sql": "CREATE TABLE daily_sales (date VARCHAR, product VARCHAR, amount INTEGER)"},
+        {"sql": "INSERT INTO daily_sales VALUES ('2024-01-01', 'Widget', 1500), ('2024-01-02', 'Gadget', 2000)"},
+        {"sql": "MERGE INTO sales USING daily_sales ON sales.date = daily_sales.date AND sales.product = daily_sales.product WHEN MATCHED THEN UPDATE SET amount = 1500 WHEN NOT MATCHED THEN INSERT VALUES ('2024-01-02', 'Gadget', 2000)"},
+        {"sql": "SELECT * FROM sales ORDER BY date", "expect": {"rowCount": 2}},
+        {"sql": "SELECT amount FROM sales WHERE date = '2024-01-01'", "expect": {"value": "1500"}},
+        {"sql": "SELECT * FROM sales WHERE date = '2024-01-02'", "expect": {"rowCount": 1}}
+      ]
+    },
+    {
+      "name": "unaliased-target-matched-update-to-null",
+      "steps": [
+        {"sql": "CREATE TABLE t (id INTEGER, c VARCHAR)"},
+        {"sql": "INSERT INTO t VALUES (1, 'seed1'), (2, 'seed2')"},
+        {"sql": "CREATE TABLE src (id INTEGER, x VARCHAR)"},
+        {"sql": "INSERT INTO src SELECT 1, NULL"},
+        {"sql": "MERGE INTO t USING src s ON t.id = s.id WHEN MATCHED THEN UPDATE SET t.c = NVL(s.x, s.x)"},
+        {"sql": "SELECT c FROM t ORDER BY id", "expect": {"rows": [[null], ["seed2"]], "ordered": true}}
+      ]
+    },
+    {
+      "name": "unaliased-target-with-aliased-source",
+      "steps": [
+        {"sql": "CREATE TABLE t (id INTEGER, c VARCHAR)"},
+        {"sql": "INSERT INTO t VALUES (1, 'seed1'), (2, 'seed2')"},
+        {"sql": "CREATE TABLE src (id INTEGER, x VARCHAR)"},
+        {"sql": "INSERT INTO src VALUES (1, 'NEW')"},
+        {"sql": "MERGE INTO t USING src s ON t.id = s.id WHEN MATCHED THEN UPDATE SET t.c = s.x"},
+        {"sql": "SELECT c FROM t ORDER BY id", "expect": {"rows": [["NEW"], ["seed2"]], "ordered": true}}
+      ]
+    }
+  ]
+}

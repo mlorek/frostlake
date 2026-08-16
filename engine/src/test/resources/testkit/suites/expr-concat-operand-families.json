@@ -1,0 +1,74 @@
+{
+  "suite": "expr-concat-operand-families",
+  "description": "Which operand families || takes: any scalar (VARIANT included) beside a string converts to the full-width VARCHAR, while the CONTAINER families (OBJECT, ARRAY) are refused against everything including VARIANT and each other - at compile time, so a view over such a body cannot be created; BINARY joins only BINARY with lengths adding and SATURATING at the 8MB binary maximum, as string concatenation saturates at the 16MB VARCHAR maximum. Converted 1:1 from expressions/ConcatOperandFamilyTest (now retired).",
+  "tags": ["expressions", "converted"],
+  "tests": [
+    {"name": "every-scalar-family-beside-a-string-gives-full-width-text", "steps": [
+      {"sql": "CREATE TABLE cf_t (s VARCHAR(4), n NUMBER(5,1), d DATE, b BOOLEAN, v VARIANT, o OBJECT, a ARRAY, bin BINARY(4))"},
+      {"sql": "CREATE OR REPLACE VIEW cf_v AS SELECT n || s AS c FROM cf_t"},
+      {"sql": "SHOW COLUMNS IN TABLE test_db.test_schema.cf_v"},
+      {"sql": "SELECT \"data_type\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "{\"type\":\"TEXT\",\"length\":16777216,\"byteLength\":67108864,\"nullable\":true,\"fixed\":false}"}},
+      {"sql": "CREATE OR REPLACE VIEW cf_v AS SELECT d || s AS c FROM cf_t"},
+      {"sql": "SHOW COLUMNS IN TABLE test_db.test_schema.cf_v"},
+      {"sql": "SELECT \"data_type\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "{\"type\":\"TEXT\",\"length\":16777216,\"byteLength\":67108864,\"nullable\":true,\"fixed\":false}"}},
+      {"sql": "CREATE OR REPLACE VIEW cf_v AS SELECT b || s AS c FROM cf_t"},
+      {"sql": "SHOW COLUMNS IN TABLE test_db.test_schema.cf_v"},
+      {"sql": "SELECT \"data_type\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "{\"type\":\"TEXT\",\"length\":16777216,\"byteLength\":67108864,\"nullable\":true,\"fixed\":false}"}},
+      {"sql": "CREATE OR REPLACE VIEW cf_v AS SELECT v || s AS c FROM cf_t"},
+      {"sql": "SHOW COLUMNS IN TABLE test_db.test_schema.cf_v"},
+      {"sql": "SELECT \"data_type\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "{\"type\":\"TEXT\",\"length\":16777216,\"byteLength\":67108864,\"nullable\":true,\"fixed\":false}"}},
+      {"sql": "CREATE OR REPLACE VIEW cf_v AS SELECT v || v AS c FROM cf_t"},
+      {"sql": "SHOW COLUMNS IN TABLE test_db.test_schema.cf_v"},
+      {"sql": "SELECT \"data_type\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "{\"type\":\"TEXT\",\"length\":16777216,\"byteLength\":67108864,\"nullable\":true,\"fixed\":false}"}}
+    ]},
+    {"name": "a-container-operand-is-refused-against-everything", "steps": [
+      {"sql": "CREATE TABLE cf_t (s VARCHAR(4), n NUMBER(5,1), d DATE, b BOOLEAN, v VARIANT, o OBJECT, a ARRAY, bin BINARY(4))"},
+      {"sql": "SELECT o || s AS c FROM cf_t",
+       "expect": {"error": {"messageContains": "Invalid argument types for function '||': (OBJECT, VARCHAR(4))"}}},
+      {"sql": "SELECT s || o AS c FROM cf_t",
+       "expect": {"error": {"messageContains": "Invalid argument types for function '||': (VARCHAR(4), OBJECT)"}}},
+      {"sql": "SELECT a || s AS c FROM cf_t",
+       "expect": {"error": {"messageContains": "Invalid argument types for function '||': (ARRAY, VARCHAR(4))"}}},
+      {"sql": "SELECT o || n AS c FROM cf_t",
+       "expect": {"error": {"messageContains": "Invalid argument types for function '||': (OBJECT, NUMBER(5,1))"}}},
+      {"sql": "SELECT o || v AS c FROM cf_t",
+       "expect": {"error": {"messageContains": "Invalid argument types for function '||': (OBJECT, VARIANT)"}}},
+      {"sql": "SELECT o || o AS c FROM cf_t",
+       "expect": {"error": {"messageContains": "Invalid argument types for function '||': (OBJECT, OBJECT)"}}},
+      {"sql": "SELECT a || a AS c FROM cf_t",
+       "expect": {"error": {"messageContains": "Invalid argument types for function '||': (ARRAY, ARRAY)"}}}
+    ]},
+    {"name": "a-view-over-a-container-concatenation-cannot-be-created", "steps": [
+      {"sql": "CREATE TABLE cf_t (s VARCHAR(4), n NUMBER(5,1), d DATE, b BOOLEAN, v VARIANT, o OBJECT, a ARRAY, bin BINARY(4))"},
+      {"sql": "CREATE OR REPLACE VIEW cf_bad AS SELECT o || s AS c FROM cf_t",
+       "expect": {"error": {"messageContains": "Invalid argument types for function '||'"}}},
+      {"sql": "CREATE OR REPLACE VIEW cf_bad AS SELECT o || s AS c FROM cf_t",
+       "expect": {"error": {"messageContains": "SQL compilation error"}}}
+    ]},
+    {"name": "binary-joins-only-binary", "steps": [
+      {"sql": "CREATE TABLE cf_t (s VARCHAR(4), n NUMBER(5,1), d DATE, b BOOLEAN, v VARIANT, o OBJECT, a ARRAY, bin BINARY(4))"},
+      {"sql": "SELECT bin || s AS c FROM cf_t",
+       "expect": {"error": {"messageContains": "Invalid argument types for function '||': (BINARY(4), VARCHAR(4))"}}},
+      {"sql": "SELECT bin || n AS c FROM cf_t",
+       "expect": {"error": {"messageContains": "Invalid argument types for function '||': (BINARY(4), NUMBER(5,1))"}}}
+    ]},
+    {"name": "two-binaries-add-their-lengths-and-saturate", "steps": [
+      {"sql": "CREATE TABLE cf_t (s VARCHAR(4), n NUMBER(5,1), d DATE, b BOOLEAN, v VARIANT, o OBJECT, a ARRAY, bin BINARY(4))"},
+      {"sql": "CREATE OR REPLACE VIEW cf_v AS SELECT bin || bin AS c FROM cf_t"},
+      {"sql": "SHOW COLUMNS IN TABLE test_db.test_schema.cf_v"},
+      {"sql": "SELECT CONTAINS(\"data_type\", '\"length\":8,') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "true"}},
+      {"sql": "CREATE OR REPLACE VIEW cf_v AS SELECT CAST(s AS BINARY(8388608)) || bin AS c FROM cf_t"},
+      {"sql": "SHOW COLUMNS IN TABLE test_db.test_schema.cf_v"},
+      {"sql": "SELECT CONTAINS(\"data_type\", '\"length\":8388608') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "true"}},
+      {"sql": "CREATE OR REPLACE VIEW cf_v AS SELECT CAST(s AS BINARY(8388608)) || CAST(s AS BINARY(8388608)) AS c FROM cf_t"},
+      {"sql": "SHOW COLUMNS IN TABLE test_db.test_schema.cf_v"},
+      {"sql": "SELECT CONTAINS(\"data_type\", '\"length\":8388608') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "true"}}
+    ]},
+    {"name": "two-strings-saturate-at-the-varchar-maximum", "steps": [
+      {"sql": "CREATE TABLE cf_t (s VARCHAR(4), n NUMBER(5,1), d DATE, b BOOLEAN, v VARIANT, o OBJECT, a ARRAY, bin BINARY(4))"},
+      {"sql": "CREATE OR REPLACE VIEW cf_v AS SELECT CAST(s AS VARCHAR(16777216)) || s AS c FROM cf_t"},
+      {"sql": "SHOW COLUMNS IN TABLE test_db.test_schema.cf_v"},
+      {"sql": "SELECT \"data_type\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "{\"type\":\"TEXT\",\"length\":16777216,\"byteLength\":67108864,\"nullable\":true,\"fixed\":false}"}}
+    ]}
+  ]
+}

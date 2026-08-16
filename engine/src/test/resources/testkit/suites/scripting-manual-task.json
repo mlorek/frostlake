@@ -1,0 +1,77 @@
+{
+  "suite": "scripting-manual-task",
+  "description": "Manual-only tasks - CREATE TASK with no SCHEDULE - and the EXECUTE TASK command that runs them. A manual task shows a NULL schedule and starts SUSPENDED, where a scheduled one carries its schedule text; EXECUTE TASK runs the body once per call, so three calls insert three rows, and it accepts a SCHEMA-QUALIFIED name. A task body may be any statement, including an aggregating INSERT ... SELECT. EXECUTE TASK on a missing name answers Snowflake's own sentence with the fully-qualified name and no preamble. The execution HISTORY records each run: two successful runs are two SUCCEEDED rows, and a task whose body fails still exists afterwards with one FAILED row, because the scheduler catches the error and records it rather than propagating. And a scheduled task sitting beside a manual one does NOT run when the manual one is executed. Converted 1:1 from scripting/ManualTaskTest (now retired); the Java read the Task object out of the catalog through engine.getCatalog(), which has no SQL surface, so the converted tests read SHOW TASKS for the schedule and state and TABLE(INFORMATION_SCHEMA.TASK_HISTORY()) for the execution history - the success and failure COUNTS the Java asserted are the counts of SUCCEEDED and FAILED rows there. The one claim not carried over is getScheduleType() being non-null, which SHOW TASKS does not expose separately; the schedule text it reports implies it.",
+  "tags": ["scripting", "converted"],
+  "tests": [
+    {"name": "a-manual-only-task-has-no-schedule-and-starts-suspended", "steps": [
+      {"sql": "CREATE TABLE task_log (id INTEGER, message VARCHAR)"},
+      {"sql": "CREATE TASK my_manual_task WAREHOUSE = 'compute_wh' AS INSERT INTO task_log VALUES (1, 'Task executed')"},
+      {"sql": "SHOW TASKS"},
+      {"sql": "SELECT LISTAGG(\"name\" || '/' || COALESCE(\"schedule\", '~') || '/' || \"state\", ' ') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"value": "MY_MANUAL_TASK/~/suspended"}}
+    ]},
+    {"name": "a-scheduled-task-carries-its-schedule", "steps": [
+      {"sql": "CREATE TABLE task_log (id INTEGER, message VARCHAR)"},
+      {"sql": "CREATE TASK my_scheduled_task WAREHOUSE = 'compute_wh' SCHEDULE = '5 MINUTES' AS INSERT INTO task_log VALUES (2, 'Scheduled task')"},
+      {"sql": "SHOW TASKS"},
+      {"sql": "SELECT LISTAGG(\"name\" || '/' || COALESCE(\"schedule\", '~') || '/' || \"state\", ' ') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"value": "MY_SCHEDULED_TASK/5 MINUTES/suspended"}}
+    ]},
+    {"name": "execute-task-runs-a-manual-task", "steps": [
+      {"sql": "CREATE TABLE task_log (id INTEGER, message VARCHAR)"},
+      {"sql": "CREATE TASK my_manual_task WAREHOUSE = 'compute_wh' AS INSERT INTO task_log VALUES (1, 'Manually executed')"},
+      {"sql": "EXECUTE TASK my_manual_task"},
+      {"sql": "SELECT id, message FROM task_log", "expect": {"rows": [[1,"Manually executed"]]}}
+    ]},
+    {"name": "execute-task-runs-once-per-call", "steps": [
+      {"sql": "CREATE TABLE task_log (id INTEGER, message VARCHAR)"},
+      {"sql": "CREATE TASK my_manual_task WAREHOUSE = 'compute_wh' AS INSERT INTO task_log VALUES (1, 'Execution')"},
+      {"sql": "EXECUTE TASK my_manual_task"},
+      {"sql": "EXECUTE TASK my_manual_task"},
+      {"sql": "EXECUTE TASK my_manual_task"},
+      {"sql": "SELECT COUNT(*) FROM task_log", "expect": {"value": 3}}
+    ]},
+    {"name": "execute-task-accepts-a-qualified-name", "steps": [
+      {"sql": "CREATE TABLE task_log (id INTEGER, message VARCHAR)"},
+      {"sql": "CREATE TASK my_manual_task WAREHOUSE = 'compute_wh' AS INSERT INTO task_log VALUES (1, 'Qualified execution')"},
+      {"sql": "EXECUTE TASK test_schema.my_manual_task"},
+      {"sql": "SELECT COUNT(*) FROM task_log", "expect": {"value": 1}}
+    ]},
+    {"name": "execute-task-on-a-missing-name-is-refused", "steps": [
+      {"sql": "EXECUTE TASK non_existent_task",
+       "expect": {"error": {"messageContains": "Task 'TEST_DB.TEST_SCHEMA.NON_EXISTENT_TASK' does not exist or not authorized."}}}
+    ]},
+    {"name": "a-task-body-may-be-an-aggregating-insert-select", "steps": [
+      {"sql": "CREATE TABLE source_data (id INTEGER, value VARCHAR)"},
+      {"sql": "CREATE TABLE summary (total INTEGER, distinct_count INTEGER)"},
+      {"sql": "INSERT INTO source_data VALUES (1, 'A'), (2, 'B'), (3, 'A')"},
+      {"sql": "CREATE TASK summarize_task WAREHOUSE = 'compute_wh' AS INSERT INTO summary SELECT COUNT(*) as total, COUNT(DISTINCT value) as distinct_count FROM source_data"},
+      {"sql": "EXECUTE TASK summarize_task"},
+      {"sql": "SELECT total, distinct_count FROM summary", "expect": {"rows": [[3,2]]}}
+    ]},
+    {"name": "the-execution-history-records-each-run", "steps": [
+      {"sql": "CREATE TABLE task_log (id INTEGER, message VARCHAR)"},
+      {"sql": "CREATE TASK my_manual_task WAREHOUSE = 'compute_wh' AS INSERT INTO task_log VALUES (1, 'Execution')"},
+      {"sql": "EXECUTE TASK my_manual_task"},
+      {"sql": "EXECUTE TASK my_manual_task"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(INFORMATION_SCHEMA.TASK_HISTORY()) WHERE NAME = 'MY_MANUAL_TASK'", "expect": {"value": 2}},
+      {"sql": "SELECT COUNT(*) FROM TABLE(INFORMATION_SCHEMA.TASK_HISTORY()) WHERE NAME = 'MY_MANUAL_TASK' AND STATE = 'SUCCEEDED'", "expect": {"value": 2}},
+      {"sql": "SELECT COUNT(*) FROM TABLE(INFORMATION_SCHEMA.TASK_HISTORY()) WHERE NAME = 'MY_MANUAL_TASK' AND STATE = 'FAILED'", "expect": {"value": 0}}
+    ]},
+    {"name": "a-failing-task-records-a-failed-run-and-still-exists", "steps": [
+      {"sql": "CREATE TASK failing_task WAREHOUSE = 'compute_wh' AS INSERT INTO non_existent_table VALUES (1)"},
+      {"sql": "EXECUTE TASK failing_task"},
+      {"sql": "SHOW TASKS"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'FAILING_TASK'", "expect": {"value": 1}},
+      {"sql": "SELECT COUNT(*) FROM TABLE(INFORMATION_SCHEMA.TASK_HISTORY()) WHERE NAME = 'FAILING_TASK'", "expect": {"value": 1}},
+      {"sql": "SELECT STATE FROM TABLE(INFORMATION_SCHEMA.TASK_HISTORY()) WHERE NAME = 'FAILING_TASK'", "expect": {"value": "FAILED"}}
+    ]},
+    {"name": "a-scheduled-task-does-not-run-when-a-manual-one-is-executed", "steps": [
+      {"sql": "CREATE TABLE task_log (id INTEGER, message VARCHAR)"},
+      {"sql": "CREATE TASK manual_task WAREHOUSE = 'compute_wh' AS INSERT INTO task_log VALUES (1, 'Manual')"},
+      {"sql": "CREATE TASK scheduled_task WAREHOUSE = 'compute_wh' SCHEDULE = '10 MINUTES' AS INSERT INTO task_log VALUES (2, 'Scheduled')"},
+      {"sql": "EXECUTE TASK manual_task"},
+      {"sql": "SELECT id, message FROM task_log", "expect": {"rows": [[1,"Manual"]]}}
+    ]}
+  ]
+}

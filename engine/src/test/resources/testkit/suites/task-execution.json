@@ -1,0 +1,158 @@
+{
+  "suite": "task-execution",
+  "description": "Task execution semantics driven through EXECUTE TASK (synchronous - no timing-sensitive scheduler assertions): the task's SQL runs, a WHEN condition gates execution (skipped while false, run once true - the canonical stream-driven shape) and a WHEN that cannot be EVALUATED skips the run rather than running unconditionally, SHOW TASKS reflects RESUME and SUSPEND, and AFTER dependency chains cascade - a resumed child and grandchild run once their predecessor completes, while a suspended child and the children of a FAILED parent do not. SYSTEM$TASK_DEPENDENTS_ENABLE resumes a named root's dependents and only that root's, a task may be scheduled OR a DAG child but never both, SUSPEND_TASK_AFTER_NUM_FAILURES suspends a running task once its consecutive failures reach the limit (and a success in between resets the streak), TASK_AUTO_RETRY_ATTEMPTS records one plus N attempts for a single EXECUTE, and SYSTEM$SET_RETURN_VALUE in a parent is readable by its child through SYSTEM$GET_PREDECESSOR_RETURN_VALUE. Converted from task/TaskExecutionTest, which keeps only its cron-arming test (see the task note). Where the Java read the engine's Task model directly, the same claim is made through SQL: SHOW TASKS read back via RESULT_SCAN for state, INFORMATION_SCHEMA.TASK_HISTORY for the retry attempts, and the observable auto-suspension itself for the failure counter.",
+  "tags": ["task", "converted"],
+  "tests": [
+    {"name": "execute-task-runs-its-sql",
+     "skip": {"backends": ["snowflake"], "reason": "runs a task and asserts what it did: on a real account EXECUTE TASK is an asynchronous, scheduler-driven run that needs task/warehouse privileges, so the effect is not observable synchronously"},
+     "steps": [
+      {"sql": "CREATE TABLE tlog (v INTEGER)"},
+      {"sql": "CREATE TASK t1 SCHEDULE = '1 MINUTE' AS INSERT INTO tlog VALUES (1)"},
+      {"sql": "EXECUTE TASK t1"},
+      {"sql": "SELECT COUNT(*) FROM tlog", "expect": {"value": 1}}
+    ]},
+    {"name": "show-tasks-reflects-resume-and-suspend", "steps": [
+      {"sql": "CREATE TABLE tlog (v INTEGER)"},
+      {"sql": "CREATE TASK t1 SCHEDULE = '1 MINUTE' AS INSERT INTO tlog VALUES (1)"},
+      {"sql": "SHOW TASKS"},
+      {"sql": "SELECT \"state\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'T1'", "expect": {"value": "suspended"}},
+      {"sql": "ALTER TASK t1 RESUME"},
+      {"sql": "SHOW TASKS"},
+      {"sql": "SELECT \"state\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'T1'", "expect": {"value": "started"}},
+      {"sql": "ALTER TASK t1 SUSPEND"},
+      {"sql": "SHOW TASKS"},
+      {"sql": "SELECT \"state\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'T1'", "expect": {"value": "suspended"}}
+    ]},
+    {"name": "a-when-condition-gates-execution",
+     "skip": {"backends": ["snowflake"], "reason": "runs a task and asserts what it did: on a real account EXECUTE TASK is an asynchronous, scheduler-driven run that needs task/warehouse privileges, so the effect is not observable synchronously"},
+     "steps": [
+      {"sql": "CREATE TABLE tlog (v INTEGER)"},
+      {"sql": "CREATE TABLE src (id INTEGER)"},
+      {"sql": "CREATE STREAM st ON TABLE src"},
+      {"sql": "CREATE TASK t2 SCHEDULE = '1 MINUTE' WHEN SYSTEM$STREAM_HAS_DATA('st') AS INSERT INTO tlog VALUES (1)"},
+      {"sql": "EXECUTE TASK t2"},
+      {"sql": "SELECT COUNT(*) FROM tlog", "expect": {"value": 0}},
+      {"sql": "INSERT INTO src VALUES (1)"},
+      {"sql": "EXECUTE TASK t2"},
+      {"sql": "SELECT COUNT(*) FROM tlog", "expect": {"value": 1}}
+    ]},
+    {"name": "an-after-chain-runs-a-resumed-child",
+     "skip": {"backends": ["snowflake"], "reason": "runs a task and asserts what it did: on a real account EXECUTE TASK is an asynchronous, scheduler-driven run that needs task/warehouse privileges, so the effect is not observable synchronously"},
+     "steps": [
+      {"sql": "CREATE TABLE tlog (v VARCHAR)"},
+      {"sql": "CREATE TASK parent SCHEDULE = '1 MINUTE' AS INSERT INTO tlog VALUES ('p')"},
+      {"sql": "CREATE TASK child AFTER parent AS INSERT INTO tlog VALUES ('c')"},
+      {"sql": "ALTER TASK child RESUME"},
+      {"sql": "EXECUTE TASK parent"},
+      {"sql": "SELECT v FROM tlog ORDER BY v", "expect": {"rows": [["c"], ["p"]], "ordered": true}}
+    ]},
+    {"name": "an-after-chain-skips-a-suspended-child",
+     "skip": {"backends": ["snowflake"], "reason": "runs a task and asserts what it did: on a real account EXECUTE TASK is an asynchronous, scheduler-driven run that needs task/warehouse privileges, so the effect is not observable synchronously"},
+     "steps": [
+      {"sql": "CREATE TABLE tlog (v VARCHAR)"},
+      {"sql": "CREATE TASK parent SCHEDULE = '1 MINUTE' AS INSERT INTO tlog VALUES ('p')"},
+      {"sql": "CREATE TASK child AFTER parent AS INSERT INTO tlog VALUES ('c')"},
+      {"sql": "EXECUTE TASK parent"},
+      {"sql": "SELECT v FROM tlog", "expect": {"rows": [["p"]]}}
+    ]},
+    {"name": "an-after-chain-cascades-to-a-grandchild",
+     "skip": {"backends": ["snowflake"], "reason": "runs a task and asserts what it did: on a real account EXECUTE TASK is an asynchronous, scheduler-driven run that needs task/warehouse privileges, so the effect is not observable synchronously"},
+     "steps": [
+      {"sql": "CREATE TABLE tlog (v VARCHAR)"},
+      {"sql": "CREATE TASK gen1 SCHEDULE = '1 MINUTE' AS INSERT INTO tlog VALUES ('a')"},
+      {"sql": "CREATE TASK gen2 AFTER gen1 AS INSERT INTO tlog VALUES ('b')"},
+      {"sql": "CREATE TASK gen3 AFTER gen2 AS INSERT INTO tlog VALUES ('c')"},
+      {"sql": "ALTER TASK gen2 RESUME"},
+      {"sql": "ALTER TASK gen3 RESUME"},
+      {"sql": "EXECUTE TASK gen1"},
+      {"sql": "SELECT COUNT(*) FROM tlog", "expect": {"value": 3}}
+    ]},
+    {"name": "a-when-evaluation-error-skips-the-run",
+     "skip": {"backends": ["snowflake"], "reason": "runs a task and asserts what it did: on a real account EXECUTE TASK is an asynchronous, scheduler-driven run that needs task/warehouse privileges, so the effect is not observable synchronously"},
+     "steps": [
+      {"sql": "CREATE TABLE tlog (v INTEGER)"},
+      {"sql": "CREATE TASK t3 SCHEDULE = '1 MINUTE' WHEN 1 / 0 = 1 AS INSERT INTO tlog VALUES (1)"},
+      {"sql": "EXECUTE TASK t3"},
+      {"sql": "SELECT COUNT(*) FROM tlog", "expect": {"value": 0}}
+    ]},
+    {"name": "task-dependents-enable-resumes-children",
+     "skip": {"backends": ["snowflake"], "reason": "runs a task and asserts what it did: on a real account EXECUTE TASK is an asynchronous, scheduler-driven run that needs task/warehouse privileges, so the effect is not observable synchronously"},
+     "steps": [
+      {"sql": "CREATE TABLE tlog (v VARCHAR)"},
+      {"sql": "CREATE TASK parent SCHEDULE = '1 MINUTE' AS INSERT INTO tlog VALUES ('p')"},
+      {"sql": "CREATE TASK child AFTER parent AS INSERT INTO tlog VALUES ('c')"},
+      {"sql": "SELECT SYSTEM$TASK_DEPENDENTS_ENABLE('parent')"},
+      {"sql": "SHOW TASKS"},
+      {"sql": "SELECT \"state\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'CHILD'", "expect": {"value": "started"}},
+      {"sql": "EXECUTE TASK parent"},
+      {"sql": "SELECT COUNT(*) FROM tlog", "expect": {"value": 2}}
+    ]},
+    {"name": "a-failed-parent-does-not-cascade",
+     "skip": {"backends": ["snowflake"], "reason": "runs a task and asserts what it did: on a real account EXECUTE TASK is an asynchronous, scheduler-driven run that needs task/warehouse privileges, so the effect is not observable synchronously"},
+     "steps": [
+      {"sql": "CREATE TABLE tlog (v VARCHAR)"},
+      {"sql": "CREATE TASK parent SCHEDULE = '1 MINUTE' AS INSERT INTO no_such_table VALUES ('p')"},
+      {"sql": "CREATE TASK child AFTER parent AS INSERT INTO tlog VALUES ('c')"},
+      {"sql": "ALTER TASK child RESUME"},
+      {"sql": "EXECUTE TASK parent"},
+      {"sql": "SELECT COUNT(*) FROM tlog", "expect": {"value": 0}}
+    ]},
+    {"name": "consecutive-failures-suspend-a-running-task",
+     "skip": {"backends": ["snowflake"], "reason": "runs a task and asserts what it did: on a real account EXECUTE TASK is an asynchronous, scheduler-driven run that needs task/warehouse privileges, so the effect is not observable synchronously, and the failure bookkeeping asserted here lives on the embedded engine"},
+     "steps": [
+      {"sql": "CREATE TASK failing SCHEDULE = '1 MINUTE' SUSPEND_TASK_AFTER_NUM_FAILURES = 2 AS INSERT INTO no_such_table VALUES (1)"},
+      {"sql": "ALTER TASK failing RESUME"},
+      {"sql": "EXECUTE TASK failing"},
+      {"sql": "SHOW TASKS"},
+      {"sql": "SELECT \"state\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'FAILING'", "expect": {"value": "started"}},
+      {"sql": "EXECUTE TASK failing"},
+      {"sql": "SHOW TASKS"},
+      {"sql": "SELECT \"state\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'FAILING'", "expect": {"value": "suspended"}}
+    ]},
+    {"name": "a-success-resets-the-failure-streak",
+     "skip": {"backends": ["snowflake"], "reason": "runs a task and asserts what it did: on a real account EXECUTE TASK is an asynchronous, scheduler-driven run that needs task/warehouse privileges, so the effect is not observable synchronously, and the failure bookkeeping asserted here lives on the embedded engine"},
+     "steps": [
+      {"sql": "CREATE TASK flaky SCHEDULE = '1 MINUTE' SUSPEND_TASK_AFTER_NUM_FAILURES = 2 AS INSERT INTO maybe_t VALUES (1)"},
+      {"sql": "ALTER TASK flaky RESUME"},
+      {"sql": "EXECUTE TASK flaky"},
+      {"sql": "CREATE TABLE maybe_t (v INTEGER)"},
+      {"sql": "EXECUTE TASK flaky"},
+      {"sql": "DROP TABLE maybe_t"},
+      {"sql": "EXECUTE TASK flaky"},
+      {"sql": "SHOW TASKS"},
+      {"sql": "SELECT \"state\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'FLAKY'", "expect": {"value": "started"}}
+    ]},
+    {"name": "auto-retry-records-each-attempt",
+     "skip": {"backends": ["snowflake"], "reason": "runs a task and asserts what it did: on a real account EXECUTE TASK is an asynchronous, scheduler-driven run that needs task/warehouse privileges, so the effect is not observable synchronously, and the retry bookkeeping asserted here lives on the embedded engine"},
+     "steps": [
+      {"sql": "CREATE TASK retrying SCHEDULE = '1 MINUTE' TASK_AUTO_RETRY_ATTEMPTS = 2 AS INSERT INTO no_such_table VALUES (1)"},
+      {"sql": "EXECUTE TASK retrying"},
+      {"sql": "SELECT NAME || '/' || STATE AS r FROM TABLE(INFORMATION_SCHEMA.TASK_HISTORY())", "expect": {"rows": [["RETRYING/FAILED"], ["RETRYING/FAILED"], ["RETRYING/FAILED"]]}}
+    ]},
+    {"name": "a-task-cannot-have-both-a-schedule-and-a-predecessor", "steps": [
+      {"sql": "CREATE TABLE tlog (v VARCHAR)"},
+      {"sql": "CREATE TASK sched_parent SCHEDULE = '1 MINUTE' AS INSERT INTO tlog VALUES ('p')"},
+      {"sql": "CREATE TASK bad_child SCHEDULE = '1 MINUTE' AFTER sched_parent AS INSERT INTO tlog VALUES ('c')", "expect": {"error": {"messageContains": "Task BAD_CHILD cannot have both a schedule and a predecessor."}}}
+    ]},
+    {"name": "dependents-enable-is-scoped-to-the-named-root", "steps": [
+      {"sql": "CREATE TABLE tlog (v VARCHAR)"},
+      {"sql": "CREATE TASK p1 SCHEDULE = '1 MINUTE' AS INSERT INTO tlog VALUES ('p1')"},
+      {"sql": "CREATE TASK c1 AFTER p1 AS INSERT INTO tlog VALUES ('c1')"},
+      {"sql": "CREATE TASK p2 SCHEDULE = '1 MINUTE' AS INSERT INTO tlog VALUES ('p2')"},
+      {"sql": "CREATE TASK c2 AFTER p2 AS INSERT INTO tlog VALUES ('c2')"},
+      {"sql": "SELECT SYSTEM$TASK_DEPENDENTS_ENABLE('p1')"},
+      {"sql": "SHOW TASKS"},
+      {"sql": "SELECT \"name\" || '=' || \"state\" AS r FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" IN ('C1', 'C2') ORDER BY r", "expect": {"rows": [["C1=started"], ["C2=suspended"]], "ordered": true}}
+    ]},
+    {"name": "a-predecessor-return-value-flows-to-the-child",
+     "skip": {"backends": ["snowflake"], "reason": "runs a task and asserts what it did: on a real account EXECUTE TASK is an asynchronous, scheduler-driven run that needs task/warehouse privileges, so the effect is not observable synchronously"},
+     "steps": [
+      {"sql": "CREATE TABLE tlog (v VARCHAR)"},
+      {"sql": "CREATE TASK parent SCHEDULE = '1 MINUTE' AS SELECT SYSTEM$SET_RETURN_VALUE('hello')"},
+      {"sql": "CREATE TASK child AFTER parent AS INSERT INTO tlog VALUES (SYSTEM$GET_PREDECESSOR_RETURN_VALUE())"},
+      {"sql": "ALTER TASK child RESUME"},
+      {"sql": "EXECUTE TASK parent"},
+      {"sql": "SELECT v FROM tlog", "expect": {"rows": [["hello"]]}}
+    ]}
+  ]
+}

@@ -17,6 +17,7 @@
 package dev.frostlake.jdbc;
 
 import dev.frostlake.storage.ResultSetColumn;
+import dev.frostlake.types.ColumnLengths;
 import dev.frostlake.types.DataType;
 import dev.frostlake.types.NumericType;
 
@@ -99,7 +100,9 @@ class DirectResultSetMetaData implements ResultSetMetaData {
 
     @Override
     public int getColumnDisplaySize(final int column) throws SQLException {
-        return 100;
+        // A text or binary column displays at its length, as the account's driver answers.
+        final Integer length = ColumnLengths.of(columns.get(column - 1).getDataType());
+        return length != null ? length.intValue() : 100;
     }
 
     @Override
@@ -110,6 +113,11 @@ class DirectResultSetMetaData implements ResultSetMetaData {
     @Override
     public int getPrecision(final int column) throws SQLException {
         final DataType type = columns.get(column - 1).getDataType();
+        // A text or binary column's precision is its length, as the account's driver answers.
+        final Integer length = ColumnLengths.of(type);
+        if (length != null) {
+            return length.intValue();
+        }
         // The APPROXIMATE family carries no precision: Snowflake's own driver answers 0 for a FLOAT
         // column, and every metadata surface agrees with it — SHOW COLUMNS prints {"type":"REAL",
         // "nullable":true} with no numbers at all, and INFORMATION_SCHEMA leaves both cells NULL.

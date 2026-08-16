@@ -1,0 +1,43 @@
+{
+  "suite": "expr-bracket-path-access",
+  "description": "Bracket subscripts on a VARIANT: a numeric subscript indexes an array, a string subscript x['key'] is object member access (equivalent to x:key), dot field access chains after subscripts (c[0].b, c[0].a.b, c[0].b.c[0]) including over ARRAY columns of nested object literals, and a bare dotted name stays a table-qualified column reference. Converted 1:1 from expressions/BracketPathAccessTest (now retired).",
+  "tags": ["expressions", "converted"],
+  "tests": [
+    {"name": "string-key-subscript-reads-object-member", "steps": [
+      {"sql": "SELECT PARSE_JSON('{\"a\":1}')['a']", "expect": {"value": "1"}}
+    ]},
+    {"name": "nested-string-key-subscripts", "steps": [
+      {"sql": "SELECT PARSE_JSON('{\"a\":{\"b\":2}}')['a']['b']", "expect": {"value": "2"}}
+    ]},
+    {"name": "numeric-subscript-still-indexes-array", "steps": [
+      {"sql": "SELECT PARSE_JSON('[10,20,30]')[1]", "expect": {"value": "20"}}
+    ]},
+    {"name": "colon-path-still-works", "steps": [
+      {"sql": "SELECT PARSE_JSON('{\"a\":1}'):a", "expect": {"value": "1"}}
+    ]},
+    {"name": "dot-field-after-array-subscript", "steps": [
+      {"sql": "SELECT PARSE_JSON('[{\"b\":1},{\"b\":2}]')[0].b", "expect": {"value": "1"}},
+      {"sql": "SELECT PARSE_JSON('[{\"b\":1},{\"b\":2}]')[1].b", "expect": {"value": "2"}}
+    ]},
+    {"name": "dot-field-chain-after-subscript", "steps": [
+      {"sql": "SELECT PARSE_JSON('[{\"a\":{\"b\":7}}]')[0].a.b", "expect": {"value": "7"}}
+    ]},
+    {"name": "dot-field-after-subscript-on-array-column", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE t1 (c ARRAY)"},
+      {"sql": "INSERT INTO t1 SELECT [{'b' : 1}, {'b' : 2}] AS c"},
+      {"sql": "SELECT c[0].b FROM t1", "expect": {"value": "1"}},
+      {"sql": "SELECT c[1].b FROM t1", "expect": {"value": "2"}}
+    ]},
+    {"name": "bare-dotted-name-stays-column-reference", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE t1 (n INTEGER)"},
+      {"sql": "INSERT INTO t1 VALUES (42)"},
+      {"sql": "SELECT t1.n FROM t1", "expect": {"value": "42"}}
+    ]},
+    {"name": "deep-nested-dot-and-subscript-chain", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE t1 (c ARRAY)"},
+      {"sql": "INSERT INTO t1 SELECT [{'b' : {'c' : [1]}}, {'b' : 2}] AS c"},
+      {"sql": "SELECT c[0].b.c[0] FROM t1", "expect": {"value": "1"}},
+      {"sql": "SELECT COUNT(*) FROM (SELECT *, c[0].b.c[0] AS x FROM t1) WHERE x = 1", "expect": {"value": "1"}}
+    ]}
+  ]
+}

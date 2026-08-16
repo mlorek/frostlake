@@ -1,0 +1,65 @@
+{
+  "suite": "features-change-tracking",
+  "description": "CHANGE_TRACKING through the SQL surface (the change_tracking cell of SHOW TABLES): a fresh table is OFF; the CREATE TABLE option, ALTER ... SET, or creating a stream turns it ON (and it survives the stream); the CHANGES clause requires it - an untracked table refuses with the single-line wording - and a CHANGES point is bounded by the table's creation (the retention wording) and must be a CONSTANT. Converted 1:1 from features/ChangeTrackingTest (now retired).",
+  "tags": ["features", "converted"],
+  "tests": [
+    {"name": "a-fresh-table-is-off", "steps": [
+      {"sql": "CREATE TABLE ct_fresh (id INTEGER)"},
+      {"sql": "SHOW TABLES LIKE 'ct_fresh'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"change_tracking\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "OFF"}}
+    ]},
+    {"name": "creating-a-stream-turns-it-on-and-it-survives-the-stream", "steps": [
+      {"sql": "CREATE TABLE ct_streamed (id INTEGER)"},
+      {"sql": "SHOW TABLES LIKE 'ct_streamed'"},
+      {"sql": "SELECT \"change_tracking\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "OFF"}},
+      {"sql": "CREATE STREAM ct_s ON TABLE ct_streamed"},
+      {"sql": "SHOW TABLES LIKE 'ct_streamed'"},
+      {"sql": "SELECT \"change_tracking\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "ON"}},
+      {"sql": "DROP STREAM ct_s"},
+      {"sql": "SHOW TABLES LIKE 'ct_streamed'"},
+      {"sql": "SELECT \"change_tracking\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "ON"}}
+    ]},
+    {"name": "alter-set-toggles-it", "steps": [
+      {"sql": "CREATE TABLE ct_alter (id INTEGER)"},
+      {"sql": "ALTER TABLE ct_alter SET CHANGE_TRACKING = TRUE"},
+      {"sql": "SHOW TABLES LIKE 'ct_alter'"},
+      {"sql": "SELECT \"change_tracking\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "ON"}},
+      {"sql": "ALTER TABLE ct_alter SET CHANGE_TRACKING = FALSE"},
+      {"sql": "SHOW TABLES LIKE 'ct_alter'"},
+      {"sql": "SELECT \"change_tracking\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "OFF"}}
+    ]},
+    {"name": "the-create-option-turns-it-on", "steps": [
+      {"sql": "CREATE TABLE ct_opt (id INTEGER) CHANGE_TRACKING = TRUE"},
+      {"sql": "SHOW TABLES LIKE 'ct_opt'"},
+      {"sql": "SELECT \"change_tracking\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "ON"}}
+    ]},
+    {"name": "changes-over-an-untracked-table-refuses", "steps": [
+      {"sql": "CREATE TABLE ct_plain (id INTEGER)"},
+      {"sql": "SELECT * FROM ct_plain CHANGES (INFORMATION => DEFAULT) AT (OFFSET => 0)",
+       "expect": {"error": {"messageContains": "Change tracking is not enabled or has been missing for the time range requested on table 'TEST_DB.TEST_SCHEMA.CT_PLAIN'."}}}
+    ]},
+    {"name": "changes-after-disabling-refuses-the-same-way", "steps": [
+      {"sql": "CREATE TABLE ct_toggled (id INTEGER)"},
+      {"sql": "ALTER TABLE ct_toggled SET CHANGE_TRACKING = TRUE"},
+      {"sql": "ALTER TABLE ct_toggled SET CHANGE_TRACKING = FALSE"},
+      {"sql": "SELECT * FROM ct_toggled CHANGES (INFORMATION => DEFAULT) AT (OFFSET => 0)",
+       "expect": {"error": {"messageContains": "Change tracking is not enabled"}}}
+    ]},
+    {"name": "changes-over-a-tracked-table-answers-an-empty-window", "steps": [
+      {"sql": "CREATE TABLE ct_ok (id INTEGER)"},
+      {"sql": "ALTER TABLE ct_ok SET CHANGE_TRACKING = TRUE"},
+      {"sql": "SELECT * FROM ct_ok CHANGES (INFORMATION => DEFAULT) AT (OFFSET => 0)", "expect": {"rowCount": 0}},
+      {"sql": "SELECT * FROM ct_ok CHANGES (INFORMATION => APPEND_ONLY) AT (OFFSET => 0)", "expect": {"rowCount": 0}}
+    ]},
+    {"name": "a-changes-point-before-creation-refuses-with-the-retention-wording", "steps": [
+      {"sql": "CREATE TABLE ct_bound (id INTEGER) CHANGE_TRACKING = TRUE"},
+      {"sql": "SELECT * FROM ct_bound CHANGES (INFORMATION => DEFAULT) AT (OFFSET => -86400)",
+       "expect": {"error": {"messageContains": "Time travel data is not available for table CT_BOUND. The requested time is either beyond the allowed time travel period or before the object creation time."}}}
+    ]},
+    {"name": "a-changes-point-must-be-constant", "steps": [
+      {"sql": "CREATE TABLE ct_const (id INTEGER) CHANGE_TRACKING = TRUE"},
+      {"sql": "SELECT * FROM ct_const CHANGES (INFORMATION => DEFAULT) AT (TIMESTAMP => DATEADD(minute, -30, CURRENT_TIMESTAMP()))",
+       "expect": {"error": {"messageContains": "argument TIMESTAMP to function AT needs to be constant"}}}
+    ]}
+  ]
+}

@@ -49,9 +49,27 @@ public final class ColumnLengthException extends RuntimeException {
     private final String value;
 
     public ColumnLengthException(final int limit, final String value) {
-        super("String '" + value + "' is too long and would be truncated");
+        this("String '" + value + "' is too long and would be truncated", limit, value);
+    }
+
+    private ColumnLengthException(final String message, final int limit, final String value) {
+        super(message);
         this.limit = limit;
         this.value = value;
+    }
+
+    /**
+     * The same violation for a BINARY column, which live words by the family: {@code Binary value
+     * '0AFF' is too long and would be truncated}, the bytes spelled as upper-case hex whatever they
+     * were written as.
+     *
+     * @param limit the column's declared width in bytes
+     * @param hex   the offending value as upper-case hex
+     * @return the exception the DML envelope then wraps
+     */
+    public static ColumnLengthException forBinary(final int limit, final String hex) {
+        return new ColumnLengthException(
+            "Binary value '" + hex + "' is too long and would be truncated", limit, hex);
     }
 
     /** The column's declared maximum length. */

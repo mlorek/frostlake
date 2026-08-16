@@ -1,0 +1,28 @@
+{
+  "suite": "query-lateral-before-join-order",
+  "description": "FROM items apply in TEXTUAL order. A comma LATERAL / TABLE(FLATTEN(...)) written BEFORE an explicit join must be in scope for that join's ON condition - the flatten output is the join's left side - and a lateral written AFTER the joins still sees the joined tables. Before the fix, any explicit join DEFERRED every comma-lateral, so an ON referencing the flatten output matched nothing. The ON may also reference the SELECT-list ALIAS of the flatten output, the vendor idiom. Converted 1:1 from query/LateralBeforeJoinOrderTest (now retired); its second test asserted only a row count, which the converted test states as the rows.",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "a-join-on-sees-a-preceding-flatten-output", "steps": [
+      {"sql": "CREATE TABLE cards (card_id VARCHAR, labels VARIANT)"},
+      {"sql": "INSERT INTO cards SELECT 'c1', PARSE_JSON('[\"l1\",\"l2\"]')"},
+      {"sql": "CREATE TABLE labels (label_key VARCHAR, label_name VARCHAR)"},
+      {"sql": "INSERT INTO labels VALUES ('l1', 'first'), ('l2', 'second'), ('l3', 'third')"},
+      {"sql": "SELECT c.card_id, t.value::VARCHAR AS label_id, lb.label_name FROM cards AS c, TABLE(FLATTEN(labels)) AS t INNER JOIN labels AS lb ON lb.label_key = t.value::VARCHAR ORDER BY label_id", "expect": {"rows": [["c1","l1","first"],["c1","l2","second"]], "ordered": true}}
+    ]},
+    {"name": "a-join-on-sees-a-preceding-flatten-via-its-lateral-alias", "steps": [
+      {"sql": "CREATE TABLE cards (card_id VARCHAR, labels VARIANT)"},
+      {"sql": "INSERT INTO cards SELECT 'c1', PARSE_JSON('[\"l1\",\"l2\"]')"},
+      {"sql": "CREATE TABLE labels (label_key VARCHAR, label_name VARCHAR)"},
+      {"sql": "INSERT INTO labels VALUES ('l1', 'first'), ('l2', 'second'), ('l3', 'third')"},
+      {"sql": "SELECT c.card_id, t.value::VARCHAR AS label_id, lb.label_name FROM cards AS c, TABLE(FLATTEN(labels)) AS t INNER JOIN labels AS lb ON lb.label_key = label_id ORDER BY label_id", "expect": {"rows": [["c1","l1","first"],["c1","l2","second"]], "ordered": true}}
+    ]},
+    {"name": "a-lateral-after-a-join-still-sees-the-joined-table", "steps": [
+      {"sql": "CREATE TABLE a_side (k VARCHAR)"},
+      {"sql": "INSERT INTO a_side VALUES ('x')"},
+      {"sql": "CREATE TABLE b_side (k VARCHAR, arr VARIANT)"},
+      {"sql": "INSERT INTO b_side SELECT 'x', PARSE_JSON('[10,20]')"},
+      {"sql": "SELECT a.k, f.value::NUMBER AS v FROM a_side AS a INNER JOIN b_side AS b ON b.k = a.k, TABLE(FLATTEN(b.arr)) AS f ORDER BY v", "expect": {"rows": [["x",10],["x",20]], "ordered": true}}
+    ]}
+  ]
+}

@@ -1,0 +1,153 @@
+{
+  "suite": "features-cluster-by",
+  "description": "CLUSTER BY on CREATE TABLE through the SQL surface - the cluster_by cell of SHOW TABLES (LINEAR(keys) exactly as written, empty when unclustered): single and multiple keys, alongside COMMENT, plain columns and function/CAST/arithmetic/concat expressions, preserved by CREATE TABLE CLONE and CREATE DATABASE CLONE, schema-qualified names, the unknown-column refusal (creating nothing), and the CLUSTER BY-before-the-column-list placement Snowflake also accepts. Converted 1:1 from features/ClusterByTest (now retired).",
+  "tags": ["features", "converted"],
+  "tests": [
+    {"name": "create-table-with-single-cluster-key", "steps": [
+      {"sql": "CREATE TABLE customers (id INTEGER, name VARCHAR, region VARCHAR) CLUSTER BY (region)"},
+      {"sql": "SHOW TABLES LIKE 'customers'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"cluster_by\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "LINEAR(region)"}}
+    ]},
+    {"name": "create-table-with-multiple-cluster-keys", "steps": [
+      {"sql": "CREATE TABLE orders (order_id INTEGER, customer_id INTEGER, order_date VARCHAR, status VARCHAR) CLUSTER BY (order_date, status)"},
+      {"sql": "SHOW TABLES LIKE 'orders'"},
+      {"sql": "SELECT \"cluster_by\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "LINEAR(order_date, status)"}}
+    ]},
+    {"name": "create-table-without-cluster-by", "steps": [
+      {"sql": "CREATE TABLE products (id INTEGER, name VARCHAR, price INTEGER)"},
+      {"sql": "SHOW TABLES LIKE 'products'"},
+      {"sql": "SELECT '<' || \"cluster_by\" || '>' FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "<>"}}
+    ]},
+    {"name": "create-table-with-cluster-by-and-comment", "steps": [
+      {"sql": "CREATE TABLE sales (id INTEGER, product VARCHAR, amount INTEGER) CLUSTER BY (product) COMMENT = 'Sales data clustered by product'"},
+      {"sql": "SHOW TABLES LIKE 'sales'"},
+      {"sql": "SELECT \"cluster_by\", \"comment\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["LINEAR(product)", "Sales data clustered by product"]]}}
+    ]},
+    {"name": "insert-and-select-with-cluster-by", "steps": [
+      {"sql": "CREATE TABLE inventory (item_id INTEGER, category VARCHAR, quantity INTEGER) CLUSTER BY (category)"},
+      {"sql": "INSERT INTO inventory VALUES (1, 'Electronics', 100)"},
+      {"sql": "INSERT INTO inventory VALUES (2, 'Furniture', 50)"},
+      {"sql": "INSERT INTO inventory VALUES (3, 'Electronics', 75)"},
+      {"sql": "SELECT * FROM inventory WHERE category = 'Electronics'", "expect": {"rowCount": 2}}
+    ]},
+    {"name": "clone-table-preserves-cluster-by", "steps": [
+      {"sql": "CREATE TABLE original_table (id INTEGER, region VARCHAR, data VARCHAR) CLUSTER BY (region)"},
+      {"sql": "INSERT INTO original_table VALUES (1, 'US', 'data1')"},
+      {"sql": "CREATE TABLE cloned_table CLONE original_table"},
+      {"sql": "SHOW TABLES LIKE 'cloned_table'"},
+      {"sql": "SELECT \"cluster_by\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "LINEAR(region)"}},
+      {"sql": "SELECT * FROM cloned_table", "expect": {"rowCount": 1}}
+    ]},
+    {"name": "clone-database-preserves-cluster-by", "steps": [
+      {"sql": "CREATE TABLE users (user_id INTEGER, country VARCHAR, name VARCHAR) CLUSTER BY (country)"},
+      {"sql": "INSERT INTO users VALUES (1, 'USA', 'Alice')"},
+      {"sql": "CREATE DATABASE test_db_clone CLONE test_db"},
+      {"sql": "USE DATABASE test_db"},
+      {"sql": "USE SCHEMA test_schema"},
+      {"sql": "SHOW TABLES LIKE 'users' IN SCHEMA test_db_clone.test_schema", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"cluster_by\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "LINEAR(country)"}},
+      {"sql": "DROP DATABASE IF EXISTS test_db_clone"}
+    ]},
+    {"name": "cluster-by-with-qualified-name", "steps": [
+      {"sql": "CREATE SCHEMA analytics"},
+      {"sql": "USE SCHEMA test_schema"},
+      {"sql": "CREATE TABLE analytics.metrics (metric_id INTEGER, date VARCHAR, value INTEGER) CLUSTER BY (date)"},
+      {"sql": "SHOW TABLES LIKE 'metrics' IN SCHEMA analytics", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"cluster_by\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "LINEAR(date)"}}
+    ]},
+    {"name": "multiple-tables-with-different-clustering", "steps": [
+      {"sql": "CREATE TABLE t1 (id INTEGER, col1 VARCHAR) CLUSTER BY (col1)"},
+      {"sql": "CREATE TABLE t2 (id INTEGER, col2 VARCHAR, col3 VARCHAR) CLUSTER BY (col2, col3)"},
+      {"sql": "CREATE TABLE t3 (id INTEGER, col4 VARCHAR)"},
+      {"sql": "SHOW TABLES LIKE 't1'"},
+      {"sql": "SELECT \"cluster_by\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "LINEAR(col1)"}},
+      {"sql": "SHOW TABLES LIKE 't2'"},
+      {"sql": "SELECT \"cluster_by\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "LINEAR(col2, col3)"}},
+      {"sql": "SHOW TABLES LIKE 't3'"},
+      {"sql": "SELECT '<' || \"cluster_by\" || '>' FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "<>"}}
+    ]},
+    {"name": "cluster-by-with-function-expression", "steps": [
+      {"sql": "CREATE TABLE users (id INTEGER, email VARCHAR, created_at VARCHAR) CLUSTER BY (UPPER(email))"},
+      {"sql": "SHOW TABLES LIKE 'users'"},
+      {"sql": "SELECT \"cluster_by\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "LINEAR(UPPER(email))"}}
+    ]},
+    {"name": "cluster-by-with-multiple-function-expressions", "steps": [
+      {"sql": "CREATE TABLE events (id INTEGER, name VARCHAR, timestamp VARCHAR) CLUSTER BY (UPPER(name), DATE(timestamp))"},
+      {"sql": "SHOW TABLES LIKE 'events'"},
+      {"sql": "SELECT CONTAINS(\"cluster_by\", 'UPPER(name)'), CONTAINS(\"cluster_by\", 'DATE'), CONTAINS(\"cluster_by\", 'timestamp') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["true", "true", "true"]]}}
+    ]},
+    {"name": "cluster-by-with-cast-expression", "steps": [
+      {"sql": "CREATE TABLE data (id INTEGER, value VARCHAR, amount DECIMAL) CLUSTER BY (CAST(value AS INTEGER))"},
+      {"sql": "SHOW TABLES LIKE 'data'"},
+      {"sql": "SELECT CONTAINS(\"cluster_by\", 'CAST'), CONTAINS(\"cluster_by\", 'value'), CONTAINS(\"cluster_by\", 'INTEGER') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["true", "true", "true"]]}}
+    ]},
+    {"name": "cluster-by-with-arithmetic-expression", "steps": [
+      {"sql": "CREATE TABLE metrics (id INTEGER, value INTEGER, multiplier INTEGER) CLUSTER BY (value * multiplier)"},
+      {"sql": "SHOW TABLES LIKE 'metrics'"},
+      {"sql": "SELECT CONTAINS(\"cluster_by\", 'value'), CONTAINS(\"cluster_by\", 'multiplier') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["true", "true"]]}}
+    ]},
+    {"name": "cluster-by-with-complex-expression", "steps": [
+      {"sql": "CREATE TABLE orders (id INTEGER, customer_id INTEGER, order_date VARCHAR, amount DECIMAL) CLUSTER BY (UPPER(order_date), customer_id + 1000)"},
+      {"sql": "SHOW TABLES LIKE 'orders'"},
+      {"sql": "SELECT CONTAINS(\"cluster_by\", 'UPPER'), CONTAINS(\"cluster_by\", 'order_date'), CONTAINS(\"cluster_by\", 'customer_id') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["true", "true", "true"]]}}
+    ]},
+    {"name": "cluster-by-mixed-columns-and-expressions", "steps": [
+      {"sql": "CREATE TABLE sales (id INTEGER, region VARCHAR, amount INTEGER, date VARCHAR) CLUSTER BY (region, UPPER(date), amount * 2)"},
+      {"sql": "SHOW TABLES LIKE 'sales'"},
+      {"sql": "SELECT STARTSWITH(\"cluster_by\", 'LINEAR(region,'), CONTAINS(\"cluster_by\", 'UPPER'), CONTAINS(\"cluster_by\", 'amount') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["true", "true", "true"]]}}
+    ]},
+    {"name": "cluster-by-with-substring-expression", "steps": [
+      {"sql": "CREATE TABLE logs (id INTEGER, message VARCHAR, timestamp VARCHAR) CLUSTER BY (SUBSTRING(message, 1, 10))"},
+      {"sql": "SHOW TABLES LIKE 'logs'"},
+      {"sql": "SELECT CONTAINS(\"cluster_by\", 'SUBSTRING'), CONTAINS(\"cluster_by\", 'message') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["true", "true"]]}}
+    ]},
+    {"name": "cluster-by-expression-with-clone", "steps": [
+      {"sql": "CREATE TABLE original (id INTEGER, name VARCHAR, value INTEGER) CLUSTER BY (UPPER(name), value * 10)"},
+      {"sql": "INSERT INTO original VALUES (1, 'test', 5)"},
+      {"sql": "CREATE TABLE cloned CLONE original"},
+      {"sql": "SHOW TABLES LIKE 'cloned'"},
+      {"sql": "SELECT CONTAINS(\"cluster_by\", 'UPPER'), CONTAINS(\"cluster_by\", 'value') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["true", "true"]]}}
+    ]},
+    {"name": "cluster-by-with-concat-expression", "steps": [
+      {"sql": "CREATE TABLE people (id INTEGER, first_name VARCHAR, last_name VARCHAR) CLUSTER BY (first_name || ' ' || last_name)"},
+      {"sql": "SHOW TABLES LIKE 'people'"},
+      {"sql": "SELECT CONTAINS(\"cluster_by\", 'first_name'), CONTAINS(\"cluster_by\", 'last_name') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["true", "true"]]}}
+    ]},
+    {"name": "cluster-by-unknown-column-is-refused", "steps": [
+      {"sql": "CREATE TABLE cbad (id INTEGER) CLUSTER BY (nosuchcol)",
+       "expect": {"error": {"messageContains": "invalid identifier 'NOSUCHCOL'"}}},
+      {"sql": "SHOW TABLES LIKE 'cbad'", "expect": {"rowCount": 0}}
+    ]},
+    {"name": "cluster-by-before-column-list", "steps": [
+      {"sql": "CREATE TABLE lead_single CLUSTER BY (i) (i INTEGER, name VARCHAR)"},
+      {"sql": "SHOW TABLES LIKE 'lead_single'"},
+      {"sql": "SELECT \"cluster_by\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "LINEAR(i)"}}
+    ]},
+    {"name": "cluster-by-before-column-list-multiple-keys", "steps": [
+      {"sql": "CREATE TABLE lead_multi CLUSTER BY (region, status) (id INTEGER, region VARCHAR, status VARCHAR)"},
+      {"sql": "SHOW TABLES LIKE 'lead_multi'"},
+      {"sql": "SELECT \"cluster_by\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "LINEAR(region, status)"}}
+    ]},
+    {"name": "cluster-by-before-column-list-with-expression", "steps": [
+      {"sql": "CREATE TABLE lead_expr CLUSTER BY (UPPER(name)) (id INTEGER, name VARCHAR)"},
+      {"sql": "SHOW TABLES LIKE 'lead_expr'"},
+      {"sql": "SELECT \"cluster_by\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "LINEAR(UPPER(name))"}}
+    ]},
+    {"name": "cluster-by-before-column-list-insert-and-select", "steps": [
+      {"sql": "CREATE TABLE lead_data CLUSTER BY (category) (item_id INTEGER, category VARCHAR, quantity INTEGER)"},
+      {"sql": "INSERT INTO lead_data VALUES (1, 'Electronics', 100)"},
+      {"sql": "INSERT INTO lead_data VALUES (2, 'Furniture', 50)"},
+      {"sql": "INSERT INTO lead_data VALUES (3, 'Electronics', 75)"},
+      {"sql": "SELECT * FROM lead_data WHERE category = 'Electronics'", "expect": {"rowCount": 2}}
+    ]}
+  ]
+}

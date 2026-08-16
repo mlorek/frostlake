@@ -1,0 +1,43 @@
+{
+  "suite": "query-window-partition-by",
+  "description": "Window functions with PARTITION BY: the result must be computed PER PARTITION, not across all rows. Every assertion here is deliberately partition-sensitive - it gives a different answer if PARTITION BY is ignored, which is the previous behaviour that treated the whole result as one partition. The decisive one is that id 3 (Sales, 80) is the third-highest salary OVERALL but the TOP of the Sales partition, so its ROW_NUMBER is 1 and not 3. Then: ROW_NUMBER = 1 once per partition gives two rows where a single partition would give one; the top two per partition gives four where a single partition would give two; RANK restarts the same way; PARTITION BY two columns whose pairs are all unique makes each row its own partition so all five qualify; and no PARTITION BY at all leaves one partition, where the top two are two rows. Converted 1:1 from query/WindowPartitionByTest (now retired); the Java scanned for a given id with a cursor loop and asserted row counts, so the converted tests pin the whole ordered row set.",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "row-number-values-restart-per-partition", "steps": [
+      {"sql": "CREATE TABLE emp (id INTEGER, dept VARCHAR, salary INTEGER)"},
+      {"sql": "INSERT INTO emp VALUES (1, 'Eng', 100), (2, 'Eng', 90), (3, 'Sales', 80), (4, 'Sales', 70), (5, 'Sales', 60)"},
+      {"sql": "SELECT id, ROW_NUMBER() OVER (PARTITION BY dept ORDER BY salary DESC) AS rn FROM emp ORDER BY id",
+       "expect": {"rows": [[1,1],[2,2],[3,1],[4,2],[5,3]], "ordered": true}}
+    ]},
+    {"name": "row-number-one-is-the-first-of-each-partition", "steps": [
+      {"sql": "CREATE TABLE emp (id INTEGER, dept VARCHAR, salary INTEGER)"},
+      {"sql": "INSERT INTO emp VALUES (1, 'Eng', 100), (2, 'Eng', 90), (3, 'Sales', 80), (4, 'Sales', 70), (5, 'Sales', 60)"},
+      {"sql": "SELECT id, ROW_NUMBER() OVER (PARTITION BY dept ORDER BY salary DESC) AS rn FROM emp QUALIFY rn = 1 ORDER BY id",
+       "expect": {"rows": [[1,1],[3,1]], "ordered": true}}
+    ]},
+    {"name": "the-top-two-of-each-partition", "steps": [
+      {"sql": "CREATE TABLE emp (id INTEGER, dept VARCHAR, salary INTEGER)"},
+      {"sql": "INSERT INTO emp VALUES (1, 'Eng', 100), (2, 'Eng', 90), (3, 'Sales', 80), (4, 'Sales', 70), (5, 'Sales', 60)"},
+      {"sql": "SELECT id, ROW_NUMBER() OVER (PARTITION BY dept ORDER BY salary DESC) AS rn FROM emp QUALIFY rn <= 2 ORDER BY id",
+       "expect": {"rows": [[1,1],[2,2],[3,1],[4,2]], "ordered": true}}
+    ]},
+    {"name": "rank-restarts-per-partition", "steps": [
+      {"sql": "CREATE TABLE emp (id INTEGER, dept VARCHAR, salary INTEGER)"},
+      {"sql": "INSERT INTO emp VALUES (1, 'Eng', 100), (2, 'Eng', 90), (3, 'Sales', 80), (4, 'Sales', 70), (5, 'Sales', 60)"},
+      {"sql": "SELECT id, RANK() OVER (PARTITION BY dept ORDER BY salary DESC) AS rk FROM emp QUALIFY rk = 1 ORDER BY id",
+       "expect": {"rows": [[1,1],[3,1]], "ordered": true}}
+    ]},
+    {"name": "a-multi-column-partition", "steps": [
+      {"sql": "CREATE TABLE emp (id INTEGER, dept VARCHAR, salary INTEGER)"},
+      {"sql": "INSERT INTO emp VALUES (1, 'Eng', 100), (2, 'Eng', 90), (3, 'Sales', 80), (4, 'Sales', 70), (5, 'Sales', 60)"},
+      {"sql": "SELECT id, ROW_NUMBER() OVER (PARTITION BY dept, salary ORDER BY id) AS rn FROM emp QUALIFY rn = 1 ORDER BY id",
+       "expect": {"rows": [[1,1],[2,1],[3,1],[4,1],[5,1]], "ordered": true}}
+    ]},
+    {"name": "no-partition-leaves-one-partition", "steps": [
+      {"sql": "CREATE TABLE emp (id INTEGER, dept VARCHAR, salary INTEGER)"},
+      {"sql": "INSERT INTO emp VALUES (1, 'Eng', 100), (2, 'Eng', 90), (3, 'Sales', 80), (4, 'Sales', 70), (5, 'Sales', 60)"},
+      {"sql": "SELECT id, ROW_NUMBER() OVER (ORDER BY salary DESC) AS rn FROM emp QUALIFY rn <= 2 ORDER BY id",
+       "expect": {"rows": [[1,1],[2,2]], "ordered": true}}
+    ]}
+  ]
+}

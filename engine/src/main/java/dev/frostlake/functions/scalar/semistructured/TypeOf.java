@@ -21,6 +21,7 @@ import dev.frostlake.functions.scalar.JsonTypeHelper;
 import dev.frostlake.types.StringType;
 import dev.frostlake.values.BinaryValue;
 import dev.frostlake.values.GeoValue;
+import dev.frostlake.values.TypedVectorNode;
 import dev.frostlake.values.VariantValue;
 import dev.frostlake.values.VectorValue;
 import dev.frostlake.values.XmlVariants;
@@ -30,6 +31,8 @@ import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
+import java.time.OffsetDateTime;
+import java.time.ZonedDateTime;
 import java.util.List;
 import java.util.Map;
 
@@ -50,6 +53,9 @@ public class TypeOf extends StructuredArgumentFunction {
             // (live-verified even for PARSE_JSON('{"$":1,"@":"b"}')), so test the shape first.
             if (XmlVariants.isXmlElement(root)) return "XML";
             if (root.isObject()) return "OBJECT";
+            // ★ Asked BEFORE the array test, which it would otherwise answer: a VECTOR member prints
+            // as an array but reports its own kind, and live agrees it is not an ARRAY.
+            if (TypedVectorNode.vectorValueOf(root) != null) return "VECTOR";
             if (root.isArray()) return "ARRAY";
             if (root.isNull()) return "NULL_VALUE";
             if (root.isBoolean()) return "BOOLEAN";
@@ -76,6 +82,9 @@ public class TypeOf extends StructuredArgumentFunction {
         if (v instanceof Double || v instanceof Float) return "DOUBLE";
         if (v instanceof LocalDate) return "DATE";
         if (v instanceof LocalTime) return "TIME";
+        // An LTZ arrives as an OffsetDateTime; only the naive class is a TIMESTAMP_NTZ.
+        if (v instanceof ZonedDateTime) return "TIMESTAMP_TZ";
+        if (v instanceof OffsetDateTime) return "TIMESTAMP_LTZ";
         if (v instanceof LocalDateTime) return "TIMESTAMP_NTZ";
         if (v instanceof List) return "ARRAY";
         if (v instanceof Map) return "OBJECT";

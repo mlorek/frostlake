@@ -1,0 +1,44 @@
+{
+  "suite": "functions-random-uniform",
+  "description": "RANDOM([seed]) returns a signed 64-bit integer and a constant seed is deterministic; UNIFORM(min, max, gen) returns an integer INCLUSIVE of both bounds when the bounds are integers, or a double in [min, max) with a float bound, and a per-row RANDOM() varies it while a constant RANDOM(seed) repeats it across rows. Snowflake's UNIFORM is strictly three-argument, so UNIFORM(5, 10) is refused. The assertions check these invariants rather than specific draws. Converted 1:1 from functions/RandomUniformTest (now retired); its 50-row Java-built fixture becomes an INSERT ... SELECT over GENERATOR, the per-row range loops become COUNT_IF checks, the repeat-across-rows loop becomes COUNT(DISTINCT), and the instanceof Long / Double checks become TYPEOF(TO_VARIANT(...)) reading INTEGER or DOUBLE. Two tests keep the class's live exemptions.",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "random-returns-a-signed-integer", "steps": [
+      {"sql": "SELECT TYPEOF(TO_VARIANT(RANDOM())) AS r", "expect": {"value": "INTEGER"}}
+    ]},
+    {"name": "random-with-a-seed-is-deterministic", "steps": [
+      {"sql": "SELECT RANDOM(123) = RANDOM(123) AS r", "expect": {"value": "true"}},
+      {"sql": "SELECT RANDOM(1) = RANDOM(2) AS r", "expect": {"value": "false"}}
+    ]},
+    {"name": "uniform-integer-bounds-are-inclusive-integers", "steps": [
+      {"sql": "CREATE TABLE t (id INTEGER)"},
+      {"sql": "INSERT INTO t SELECT SEQ4() FROM TABLE(GENERATOR(ROWCOUNT => 50))"},
+      {"sql": "SELECT TYPEOF(TO_VARIANT(UNIFORM(1, 3, RANDOM()))) FROM t LIMIT 1", "expect": {"value": "INTEGER"}},
+      {"sql": "SELECT COUNT_IF(r < 1 OR r > 3) FROM (SELECT UNIFORM(1, 3, RANDOM()) AS r FROM t)",
+       "expect": {"value": "0"}},
+      {"sql": "SELECT COUNT(*) FROM t", "expect": {"value": "50"}}
+    ]},
+    {"name": "uniform-float-bounds-return-a-double-in-a-half-open-range",
+     "skip": {"backends": ["snowflake"], "reason": "asserts the runtime type of a single nondeterministic draw; over JDBC a live UNIFORM(0.0, 1.0, ...) arrives as a scaled decimal, and whether the upper bound is open is an RNG-internal detail of the account"},
+     "steps": [
+      {"sql": "SELECT TYPEOF(TO_VARIANT(UNIFORM(0.0, 1.0, RANDOM()))) AS r", "expect": {"value": "DOUBLE"}},
+      {"sql": "SELECT r >= 0.0 AND r < 1.0 FROM (SELECT UNIFORM(0.0, 1.0, RANDOM()) AS r)",
+       "expect": {"value": "true"}}
+    ]},
+    {"name": "a-constant-seed-generator-repeats-across-rows",
+     "skip": {"backends": ["snowflake"], "reason": "the RNG algorithm is Snowflake-internal"},
+     "steps": [
+      {"sql": "CREATE TABLE t (id INTEGER)"},
+      {"sql": "INSERT INTO t SELECT SEQ4() FROM TABLE(GENERATOR(ROWCOUNT => 50))"},
+      {"sql": "SELECT COUNT(DISTINCT r) FROM (SELECT UNIFORM(1, 100, RANDOM(7)) AS r FROM t)",
+       "expect": {"value": "1"}}
+    ]},
+    {"name": "uniform-requires-a-generator-argument", "steps": [
+      {"sql": "CREATE TABLE t (id INTEGER)"},
+      {"sql": "INSERT INTO t SELECT SEQ4() FROM TABLE(GENERATOR(ROWCOUNT => 50))"},
+      {"sql": "SELECT UNIFORM(5, 10) AS r FROM t", "expect": {"error": {}}},
+      {"sql": "SELECT COUNT_IF(r < 5 OR r > 10) FROM (SELECT UNIFORM(5, 10, RANDOM()) AS r FROM t)",
+       "expect": {"value": "0"}}
+    ]}
+  ]
+}

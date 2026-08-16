@@ -1,0 +1,43 @@
+{
+  "suite": "query-having",
+  "description": "HAVING with COUNT/SUM/AVG, aliases, multiple conditions, without GROUP BY, filter-all. Converted 1:1 from query/HavingTest.java (now retired).",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "having-with-count", "steps": [
+      {"sql": "CREATE TABLE orders (customer VARCHAR, amount INT)"},
+      {"sql": "INSERT INTO orders VALUES ('Alice', 100), ('Alice', 200), ('Bob', 150), ('Charlie', 300), ('Charlie', 250), ('Charlie', 180)"},
+      {"sql": "SELECT customer, COUNT(*) as order_count FROM orders GROUP BY customer HAVING COUNT(*) > 2", "expect": {"rows": [["Charlie", "3"]]}}
+    ]},
+    {"name": "having-with-sum", "steps": [
+      {"sql": "CREATE TABLE sales (region VARCHAR, amount INT)"},
+      {"sql": "INSERT INTO sales VALUES ('East', 1000), ('East', 1500), ('West', 800), ('West', 600), ('North', 2000)"},
+      {"sql": "SELECT region, SUM(amount) as total FROM sales GROUP BY region HAVING SUM(amount) > 2000", "expect": {"rows": [["East", "2500"]]}}
+    ]},
+    {"name": "having-with-avg", "steps": [
+      {"sql": "CREATE TABLE scores (student VARCHAR, score INT)"},
+      {"sql": "INSERT INTO scores VALUES ('Alice', 90), ('Alice', 85), ('Alice', 95), ('Bob', 70), ('Bob', 75), ('Charlie', 95), ('Charlie', 98)"},
+      {"sql": "SELECT student, AVG(score) as avg_score FROM scores GROUP BY student HAVING AVG(score) >= 90 ORDER BY student",
+       "expect": {"rowCount": 2, "rows": [["Alice", "90"], ["Charlie", "96.500000"]], "ordered": true}}
+    ]},
+    {"name": "having-with-alias", "steps": [
+      {"sql": "CREATE TABLE transactions (acct_id VARCHAR, amount INT)"},
+      {"sql": "INSERT INTO transactions VALUES ('A', 100), ('A', 200), ('A', 150), ('B', 50), ('B', 75)"},
+      {"sql": "SELECT acct_id, SUM(amount) as total_amount FROM transactions GROUP BY acct_id HAVING total_amount > 200", "expect": {"rows": [["A", "450"]]}}
+    ]},
+    {"name": "having-with-multiple-conditions", "steps": [
+      {"sql": "CREATE TABLE sales_data (category VARCHAR, quantity INT, price INT)"},
+      {"sql": "INSERT INTO sales_data VALUES ('Electronics', 5, 100), ('Electronics', 3, 150), ('Books', 10, 20), ('Books', 15, 25), ('Clothing', 8, 50)"},
+      {"sql": "SELECT category, SUM(quantity) as total_qty, COUNT(*) as num_sales FROM sales_data GROUP BY category HAVING SUM(quantity) > 5", "expect": {"rowCount": 3}}
+    ]},
+    {"name": "having-with-no-group-by", "steps": [
+      {"sql": "CREATE TABLE numbers (value INT)"},
+      {"sql": "INSERT INTO numbers VALUES (10), (20), (30)"},
+      {"sql": "SELECT COUNT(*) as total FROM numbers HAVING COUNT(*) > 2", "expect": {"rows": [["3"]]}}
+    ]},
+    {"name": "having-filter-all", "steps": [
+      {"sql": "CREATE TABLE items (category VARCHAR, count INT)"},
+      {"sql": "INSERT INTO items VALUES ('A', 1), ('B', 2), ('C', 3)"},
+      {"sql": "SELECT category, SUM(count) as total FROM items GROUP BY category HAVING SUM(count) > 100", "expect": {"rowCount": 0}}
+    ]}
+  ]
+}

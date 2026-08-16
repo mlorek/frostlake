@@ -1,0 +1,30 @@
+{
+  "suite": "scripting-procedural-expression-eval",
+  "description": "Procedural (scripting) expression evaluation goes through the SAME AST operator semantics as row expressions. The headline is boolean OR, which the old hand-rolled procedural evaluator mis-evaluated as string CONCATENATION - so 'false OR false' produced a non-empty and therefore TRUTHY string and every such IF was taken. Both directions of OR are pinned, along with AND, NOT, comparison over arithmetic, and the unary operators: unary minus maps to the shared NEGATE operator while unary plus is folded to the identity at build time and no longer creates a UnaryExpression, so both must still evaluate correctly including nested as the operand of a binary operator. Converted 1:1 from scripting/ProceduralExpressionEvalTest (now retired); each condition is run through the same IF ... THEN RETURN 1 ... RETURN 0 shape the Java used.",
+  "tags": ["scripting", "converted"],
+  "tests": [
+    {"name": "or-is-true-when-either-side-is", "steps": [
+      {"sql": "BEGIN IF (1 = 2 OR 1 = 1) THEN RETURN 1; END IF; RETURN 0; END", "expect": {"value": 1}}
+    ]},
+    {"name": "or-is-false-when-neither-side-is", "steps": [
+      {"sql": "BEGIN IF (1 = 2 OR 1 = 3) THEN RETURN 1; END IF; RETURN 0; END", "expect": {"value": 0}}
+    ]},
+    {"name": "and", "steps": [
+      {"sql": "BEGIN IF (1 = 1 AND 2 = 2) THEN RETURN 1; END IF; RETURN 0; END", "expect": {"value": 1}},
+      {"sql": "BEGIN IF (1 = 1 AND 2 = 3) THEN RETURN 1; END IF; RETURN 0; END", "expect": {"value": 0}}
+    ]},
+    {"name": "not", "steps": [
+      {"sql": "BEGIN IF (NOT (1 = 2)) THEN RETURN 1; END IF; RETURN 0; END", "expect": {"value": 1}},
+      {"sql": "BEGIN IF (NOT (1 = 1)) THEN RETURN 1; END IF; RETURN 0; END", "expect": {"value": 0}}
+    ]},
+    {"name": "comparison-over-arithmetic-in-a-condition", "steps": [
+      {"sql": "BEGIN IF (2 + 3 = 5) THEN RETURN 1; END IF; RETURN 0; END", "expect": {"value": 1}},
+      {"sql": "BEGIN IF (10 - 4 > 5) THEN RETURN 1; END IF; RETURN 0; END", "expect": {"value": 1}}
+    ]},
+    {"name": "unary-plus-and-minus-in-a-condition", "steps": [
+      {"sql": "BEGIN IF (-3 < 0) THEN RETURN 1; END IF; RETURN 0; END", "expect": {"value": 1}},
+      {"sql": "BEGIN IF (+3 = 3) THEN RETURN 1; END IF; RETURN 0; END", "expect": {"value": 1}},
+      {"sql": "BEGIN IF (10 + -4 = 6) THEN RETURN 1; END IF; RETURN 0; END", "expect": {"value": 1}}
+    ]}
+  ]
+}

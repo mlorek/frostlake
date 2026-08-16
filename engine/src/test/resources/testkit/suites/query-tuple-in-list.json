@@ -1,0 +1,39 @@
+{
+  "suite": "query-tuple-in-list",
+  "description": "Tuple (row-constructor) IN semantics, which differ BY RIGHT-HAND SHAPE. The tuple-ROW list form (a, b) IN ((1, 2), (3, 4)) applies full row-value THREE-valued logic: a NULL pair makes a candidate row UNKNOWN unless another pair definitely mismatches, so (1,2) IN ((1,NULL)) is NULL while (1,2) NOT IN ((3,NULL),(5,6)) is TRUE - the 1 <> 3 makes that row definitely FALSE despite the NULL. The SUBQUERY form is TWO-valued: a NULL on either side simply never matches and never yields UNKNOWN, so (1,2) IN (SELECT 1, NULL) is FALSE and its negation keeps the row. The FLAT list (a, b) IN (1, 2) compares a ROW against scalars and is refused naming the ROW shape, a wrong-WIDTH row is a conversion error naming the row it could not convert, and a scalar subject beside a ROW member is refused by both engines. Converted 1:1 from query/TupleInListTest (now retired).",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "a-tuple-list-match-is-true", "steps": [
+      {"sql": "SELECT ((1,2) IN ((1,2),(3,4))) AS r", "expect": {"value": true}},
+      {"sql": "SELECT 1 WHERE (1,2) IN ((3,NULL),(1,2))", "expect": {"rows": [[1]]}}
+    ]},
+    {"name": "a-tuple-list-miss-is-false", "steps": [
+      {"sql": "SELECT ((1,2) IN ((3,4))) AS r", "expect": {"value": false}}
+    ]},
+    {"name": "a-null-pair-makes-it-unknown", "steps": [
+      {"sql": "SELECT ((1,2) IN ((1,NULL))) AS r", "expect": {"rows": [[null]]}},
+      {"sql": "SELECT ((1,2) NOT IN ((1,NULL),(3,4))) AS r", "expect": {"rows": [[null]]}},
+      {"sql": "SELECT ((NULL,2) IN ((1,2))) AS r", "expect": {"rows": [[null]]}}
+    ]},
+    {"name": "a-definite-mismatch-beats-a-null-pair", "steps": [
+      {"sql": "SELECT ((1,2) NOT IN ((3,NULL),(5,6))) AS r", "expect": {"value": true}}
+    ]},
+    {"name": "the-subquery-form-is-two-valued", "steps": [
+      {"sql": "SELECT ((1,2) IN (SELECT 1, NULL)) AS r", "expect": {"value": false}},
+      {"sql": "SELECT ((NULL,1) IN (SELECT 1, 1)) AS r", "expect": {"value": false}},
+      {"sql": "SELECT ((1,2) IN (SELECT 1, 2)) AS r", "expect": {"value": true}},
+      {"sql": "SELECT 1 WHERE (1,2) NOT IN (SELECT 1, NULL)", "expect": {"rows": [[1]]}},
+      {"sql": "SELECT 1 WHERE (NULL,1) NOT IN (SELECT 1, 1)", "expect": {"rows": [[1]]}},
+      {"sql": "SELECT 1 WHERE (1,2) NOT IN (SELECT 1, 2)", "expect": {"rowCount": 0}}
+    ]},
+    {"name": "a-flat-list-is-a-type-error", "steps": [
+      {"sql": "SELECT ((1,2) IN (1,2,3,4)) AS r", "expect": {"error": {"messageContains": "Invalid argument types for function 'IN'"}}}
+    ]},
+    {"name": "a-wrong-width-row-is-a-conversion-error", "steps": [
+      {"sql": "SELECT ((1,2) IN ((1,2,3))) AS r", "expect": {"error": {"messageContains": "Can not convert parameter 'ROW(1, 2, 3)'"}}}
+    ]},
+    {"name": "a-scalar-left-with-a-tuple-member-is-refused", "steps": [
+      {"sql": "SELECT (1 IN ((1,2))) AS r", "expect": {"error": {}}}
+    ]}
+  ]
+}

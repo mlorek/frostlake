@@ -1,0 +1,59 @@
+{
+  "suite": "functions-regr",
+  "description": "The REGR_* linear-regression aggregate family, argument order REGR_xxx(y, x) with y dependent and x independent. The base fixture is the perfect line y = 2x + 1 over x = 1..4, so the fit is exact and every statistic is a clean constant; NULL-bearing pairs are dropped entirely. The degenerate cases exercise the edges: a constant x gives a NULL slope and NULL R2 with SXX zero, a constant y gives R2 one, and an empty input counts zero while the rest answer NULL. Grouped regression fits each group separately. Converted 1:1 from functions/RegrFunctionsTest (now retired); its @BeforeEach fixture is inlined per test and the 1e-9 tolerances are supplied by the testkit's numeric normalisation.",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "the-slope-and-intercept", "steps": [
+      {"sql": "CREATE TABLE t (x DOUBLE, y DOUBLE)"},
+      {"sql": "INSERT INTO t VALUES (1, 3), (2, 5), (3, 7), (4, 9)"},
+      {"sql": "SELECT REGR_SLOPE(y, x), REGR_INTERCEPT(y, x) FROM t", "expect": {"rows": [["2", "1"]]}}
+    ]},
+    {"name": "r2-is-one-for-a-perfect-fit", "steps": [
+      {"sql": "CREATE TABLE t (x DOUBLE, y DOUBLE)"},
+      {"sql": "INSERT INTO t VALUES (1, 3), (2, 5), (3, 7), (4, 9)"},
+      {"sql": "SELECT REGR_R2(y, x) FROM t", "expect": {"value": "1"}}
+    ]},
+    {"name": "the-count-and-averages", "steps": [
+      {"sql": "CREATE TABLE t (x DOUBLE, y DOUBLE)"},
+      {"sql": "INSERT INTO t VALUES (1, 3), (2, 5), (3, 7), (4, 9)"},
+      {"sql": "SELECT REGR_COUNT(y, x), REGR_AVGX(y, x), REGR_AVGY(y, x) FROM t",
+       "expect": {"rows": [["4", "2.5", "6"]]}}
+    ]},
+    {"name": "the-sums-of-squares-and-products", "steps": [
+      {"sql": "CREATE TABLE t (x DOUBLE, y DOUBLE)"},
+      {"sql": "INSERT INTO t VALUES (1, 3), (2, 5), (3, 7), (4, 9)"},
+      {"sql": "SELECT REGR_SXX(y, x), REGR_SYY(y, x), REGR_SXY(y, x) FROM t",
+       "expect": {"rows": [["5", "20", "10"]]}}
+    ]},
+    {"name": "null-pairs-are-ignored", "steps": [
+      {"sql": "CREATE TABLE t (x DOUBLE, y DOUBLE)"},
+      {"sql": "INSERT INTO t VALUES (1, 3), (2, 5), (3, 7), (4, 9)"},
+      {"sql": "INSERT INTO t VALUES (5, NULL), (NULL, 11)"},
+      {"sql": "SELECT REGR_SLOPE(y, x), REGR_COUNT(y, x) FROM t", "expect": {"rows": [["2", "4"]]}}
+    ]},
+    {"name": "a-constant-x-makes-the-slope-and-r2-null", "steps": [
+      {"sql": "CREATE TABLE c (x DOUBLE, y DOUBLE)"},
+      {"sql": "INSERT INTO c VALUES (5, 1), (5, 2), (5, 3)"},
+      {"sql": "SELECT REGR_SLOPE(y, x) FROM c", "expect": {"rows": [[null]]}},
+      {"sql": "SELECT REGR_R2(y, x) FROM c", "expect": {"rows": [[null]]}},
+      {"sql": "SELECT REGR_SXX(y, x) FROM c", "expect": {"value": "0"}}
+    ]},
+    {"name": "a-constant-y-makes-r2-one", "steps": [
+      {"sql": "CREATE TABLE k (x DOUBLE, y DOUBLE)"},
+      {"sql": "INSERT INTO k VALUES (1, 7), (2, 7), (3, 7)"},
+      {"sql": "SELECT REGR_R2(y, x) FROM k", "expect": {"value": "1"}}
+    ]},
+    {"name": "an-empty-input-counts-zero-and-the-others-are-null", "steps": [
+      {"sql": "CREATE TABLE e (x DOUBLE, y DOUBLE)"},
+      {"sql": "SELECT REGR_COUNT(y, x) FROM e", "expect": {"value": "0"}},
+      {"sql": "SELECT REGR_SLOPE(y, x) FROM e", "expect": {"rows": [[null]]}},
+      {"sql": "SELECT REGR_AVGX(y, x) FROM e", "expect": {"rows": [[null]]}}
+    ]},
+    {"name": "grouped-regression", "steps": [
+      {"sql": "CREATE TABLE g (grp INTEGER, x DOUBLE, y DOUBLE)"},
+      {"sql": "INSERT INTO g VALUES (1,1,3),(1,2,5),(1,3,7),(2,1,9),(2,2,8),(2,3,7)"},
+      {"sql": "SELECT REGR_SLOPE(y, x) FROM g WHERE grp = 1", "expect": {"value": "2"}},
+      {"sql": "SELECT REGR_SLOPE(y, x) FROM g WHERE grp = 2", "expect": {"value": "-1"}}
+    ]}
+  ]
+}

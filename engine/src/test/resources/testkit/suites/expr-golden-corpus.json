@@ -1,0 +1,127 @@
+{
+  "suite": "expr-golden-corpus",
+  "description": "Golden / characterization corpus for expression evaluation - literals, arithmetic (left-associativity, unary sign), comparisons and logical chains, strings and NULL propagation, CASE and CAST, IN/BETWEEN/LIKE/tuple-IN over constants, predicates and column expressions over a fixture table, PARSE_JSON colon-path access over VARCHAR-stored JSON, and scalar/IN/EXISTS subqueries. Deliberately an own-engine golden pin (the Java class ran embedded-only, never on the live surface). Converted 1:1 from expressions/ExpressionGoldenCorpusTest (now retired).",
+  "tags": ["expressions", "converted"],
+  "tests": [
+    {"name": "literals",
+     "skip": {"backends": ["snowflake"], "reason": "own-engine golden baseline; the Java class was deliberately not on the live surface"},
+     "steps": [
+      {"sql": "SELECT 42", "expect": {"value": "42"}},
+      {"sql": "SELECT 'hello'", "expect": {"value": "hello"}},
+      {"sql": "SELECT 'it''s'", "expect": {"value": "it's"}},
+      {"sql": "SELECT true", "expect": {"value": "true"}},
+      {"sql": "SELECT false", "expect": {"value": "false"}}
+    ]},
+    {"name": "arithmetic",
+     "skip": {"backends": ["snowflake"], "reason": "own-engine golden baseline; the Java class was deliberately not on the live surface"},
+     "steps": [
+      {"sql": "SELECT 1 + 2 * 3", "expect": {"value": "7"}},
+      {"sql": "SELECT (1 + 2) * 3", "expect": {"value": "9"}},
+      {"sql": "SELECT 100 - 58", "expect": {"value": "42"}},
+      {"sql": "SELECT 10 - 4 - 2", "expect": {"value": "4"}},
+      {"sql": "SELECT 2 * 5 + 5 * 2", "expect": {"value": "20"}},
+      {"sql": "SELECT 10 / 4 = 2.5", "expect": {"value": "true"}},
+      {"sql": "SELECT 1.5 + 1.5 = 3.0", "expect": {"value": "true"}},
+      {"sql": "SELECT -5", "expect": {"value": "-5"}},
+      {"sql": "SELECT -(-5)", "expect": {"value": "5"}}
+    ]},
+    {"name": "comparisons-and-logical",
+     "skip": {"backends": ["snowflake"], "reason": "own-engine golden baseline; the Java class was deliberately not on the live surface"},
+     "steps": [
+      {"sql": "SELECT 2 > 1", "expect": {"value": "true"}},
+      {"sql": "SELECT 5 = 5", "expect": {"value": "true"}},
+      {"sql": "SELECT 5 <> 6", "expect": {"value": "true"}},
+      {"sql": "SELECT 5 >= 5", "expect": {"value": "true"}},
+      {"sql": "SELECT 4 <= 5", "expect": {"value": "true"}},
+      {"sql": "SELECT 1 = 1 AND 2 = 2", "expect": {"value": "true"}},
+      {"sql": "SELECT 1 = 1 AND 2 = 3", "expect": {"value": "false"}},
+      {"sql": "SELECT 1 = 2 OR 3 = 3", "expect": {"value": "true"}},
+      {"sql": "SELECT NOT 1 = 2", "expect": {"value": "true"}},
+      {"sql": "SELECT 1 = 1 AND 2 = 2 OR 1 = 2", "expect": {"value": "true"}}
+    ]},
+    {"name": "strings-and-null",
+     "skip": {"backends": ["snowflake"], "reason": "own-engine golden baseline; the Java class was deliberately not on the live surface"},
+     "steps": [
+      {"sql": "SELECT 'a' || 'b' || 'c'", "expect": {"value": "abc"}},
+      {"sql": "SELECT 'foo' || NULL", "expect": {"rows": [["NULL"]]}},
+      {"sql": "SELECT NULL IS NULL", "expect": {"value": "true"}},
+      {"sql": "SELECT 5 IS NOT NULL", "expect": {"value": "true"}},
+      {"sql": "SELECT UPPER('abc') = 'ABC'", "expect": {"value": "true"}},
+      {"sql": "SELECT LENGTH('hello') = 5", "expect": {"value": "true"}},
+      {"sql": "SELECT COALESCE(NULL, 5) = 5", "expect": {"value": "true"}},
+      {"sql": "SELECT ABS(-7) = 7", "expect": {"value": "true"}}
+    ]},
+    {"name": "case-and-cast",
+     "skip": {"backends": ["snowflake"], "reason": "own-engine golden baseline; the Java class was deliberately not on the live surface"},
+     "steps": [
+      {"sql": "SELECT CASE WHEN 1 = 1 THEN 'yes' ELSE 'no' END", "expect": {"value": "yes"}},
+      {"sql": "SELECT CASE 2 WHEN 1 THEN 'a' WHEN 2 THEN 'b' END", "expect": {"value": "b"}},
+      {"sql": "SELECT CAST(42 AS VARCHAR)", "expect": {"value": "42"}},
+      {"sql": "SELECT CAST('17' AS INTEGER)", "expect": {"value": "17"}},
+      {"sql": "SELECT '17' :: INTEGER", "expect": {"value": "17"}}
+    ]},
+    {"name": "membership-constants",
+     "skip": {"backends": ["snowflake"], "reason": "own-engine golden baseline; the Java class was deliberately not on the live surface"},
+     "steps": [
+      {"sql": "SELECT 3 IN (1, 2, 3)", "expect": {"value": "true"}},
+      {"sql": "SELECT 4 NOT IN (1, 2, 3)", "expect": {"value": "true"}},
+      {"sql": "SELECT 5 BETWEEN 1 AND 10", "expect": {"value": "true"}},
+      {"sql": "SELECT 15 NOT BETWEEN 1 AND 10", "expect": {"value": "true"}},
+      {"sql": "SELECT 'abc' LIKE 'a%'", "expect": {"value": "true"}},
+      {"sql": "SELECT 'abc' NOT LIKE 'z%'", "expect": {"value": "true"}},
+      {"sql": "SELECT (1, 2) IN ((3, 4), (1, 2))", "expect": {"value": "true"}},
+      {"sql": "SELECT (1, 2) IN ((3, 4))", "expect": {"value": "false"}}
+    ]},
+    {"name": "table-predicates",
+     "skip": {"backends": ["snowflake"], "reason": "own-engine golden baseline; the Java class was deliberately not on the live surface"},
+     "steps": [
+      {"sql": "CREATE TABLE g (id INT, name VARCHAR, qty INT, descr VARCHAR, data VARCHAR)"},
+      {"sql": "INSERT INTO g VALUES (1, 'Alice', 10, 'hello world', '{\"a\": 1, \"b\": \"x\"}')"},
+      {"sql": "INSERT INTO g VALUES (2, 'Bob', 20, 'foo bar', '{\"a\": 2, \"b\": \"y\"}')"},
+      {"sql": "INSERT INTO g VALUES (3, 'Carol', NULL, NULL, '{\"a\": 3}')"},
+      {"sql": "SELECT COUNT(*) FROM g WHERE qty BETWEEN 5 AND 15", "expect": {"value": "1"}},
+      {"sql": "SELECT COUNT(*) FROM g WHERE qty IN (10, 20)", "expect": {"value": "2"}},
+      {"sql": "SELECT COUNT(*) FROM g WHERE qty IS NULL", "expect": {"value": "1"}},
+      {"sql": "SELECT COUNT(*) FROM g WHERE qty IS NOT NULL", "expect": {"value": "2"}},
+      {"sql": "SELECT COUNT(*) FROM g WHERE qty > 5 AND qty < 15", "expect": {"value": "1"}},
+      {"sql": "SELECT COUNT(*) FROM g WHERE name = 'Alice' OR name = 'Bob'", "expect": {"value": "2"}},
+      {"sql": "SELECT COUNT(*) FROM g WHERE name LIKE 'A%'", "expect": {"value": "1"}},
+      {"sql": "SELECT COUNT(*) FROM g WHERE name ILIKE 'a%'", "expect": {"value": "1"}},
+      {"sql": "SELECT COUNT(*) FROM g WHERE name NOT LIKE 'A%'", "expect": {"value": "2"}},
+      {"sql": "SELECT COUNT(*) FROM g WHERE (id, qty) IN ((1, 10))", "expect": {"value": "1"}}
+    ]},
+    {"name": "column-expressions",
+     "skip": {"backends": ["snowflake"], "reason": "own-engine golden baseline; the Java class was deliberately not on the live surface"},
+     "steps": [
+      {"sql": "CREATE TABLE g (id INT, name VARCHAR, qty INT, descr VARCHAR, data VARCHAR)"},
+      {"sql": "INSERT INTO g VALUES (1, 'Alice', 10, 'hello world', '{\"a\": 1, \"b\": \"x\"}')"},
+      {"sql": "SELECT name FROM g WHERE id = 1", "expect": {"value": "Alice"}},
+      {"sql": "SELECT qty * 2 FROM g WHERE id = 1", "expect": {"value": "20"}},
+      {"sql": "SELECT qty + id FROM g WHERE id = 1", "expect": {"value": "11"}},
+      {"sql": "SELECT UPPER(name) FROM g WHERE id = 1", "expect": {"value": "ALICE"}},
+      {"sql": "SELECT name || '!' FROM g WHERE id = 1", "expect": {"value": "Alice!"}},
+      {"sql": "SELECT CASE WHEN qty > 5 THEN 'big' ELSE 'small' END FROM g WHERE id = 1", "expect": {"value": "big"}},
+      {"sql": "SELECT qty > 5 FROM g WHERE id = 1", "expect": {"value": "true"}}
+    ]},
+    {"name": "json-access",
+     "skip": {"backends": ["snowflake"], "reason": "own-engine golden baseline; the Java class was deliberately not on the live surface"},
+     "steps": [
+      {"sql": "CREATE TABLE g (id INT, name VARCHAR, qty INT, descr VARCHAR, data VARCHAR)"},
+      {"sql": "INSERT INTO g VALUES (1, 'Alice', 10, 'hello world', '{\"a\": 1, \"b\": \"x\"}')"},
+      {"sql": "SELECT PARSE_JSON(data):a = 1 FROM g WHERE id = 1", "expect": {"value": "true"}},
+      {"sql": "SELECT PARSE_JSON(data):b = 'x' FROM g WHERE id = 1", "expect": {"value": "true"}}
+    ]},
+    {"name": "subqueries",
+     "skip": {"backends": ["snowflake"], "reason": "own-engine golden baseline; the Java class was deliberately not on the live surface"},
+     "steps": [
+      {"sql": "CREATE TABLE g (id INT, name VARCHAR, qty INT, descr VARCHAR, data VARCHAR)"},
+      {"sql": "INSERT INTO g VALUES (1, 'Alice', 10, 'hello world', '{\"a\": 1, \"b\": \"x\"}')"},
+      {"sql": "INSERT INTO g VALUES (2, 'Bob', 20, 'foo bar', '{\"a\": 2, \"b\": \"y\"}')"},
+      {"sql": "INSERT INTO g VALUES (3, 'Carol', NULL, NULL, '{\"a\": 3}')"},
+      {"sql": "SELECT (SELECT MAX(qty) FROM g)", "expect": {"value": "20"}},
+      {"sql": "SELECT COUNT(*) FROM g WHERE qty IN (SELECT qty FROM g WHERE id = 2)", "expect": {"value": "1"}},
+      {"sql": "SELECT COUNT(*) FROM g WHERE EXISTS (SELECT 1 FROM g WHERE qty > 15)", "expect": {"value": "3"}},
+      {"sql": "SELECT COUNT(*) FROM g WHERE NOT EXISTS (SELECT 1 FROM g WHERE qty > 15)", "expect": {"value": "0"}}
+    ]}
+  ]
+}

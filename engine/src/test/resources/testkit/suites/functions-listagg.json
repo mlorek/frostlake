@@ -1,0 +1,48 @@
+{
+  "suite": "functions-listagg",
+  "description": "LISTAGG semantics: the delimiter defaults to the EMPTY string (Snowflake, not a comma), the optional second argument sets an explicit delimiter - previously dropped, because the executor treated it as a second column and aggregated the wrong one - and a comma INSIDE the delimiter literal survives the value/delimiter split. NULLs are skipped, numeric values are stringified, it applies per group when grouped, and WITHIN GROUP reorders the values rather than concatenating them as scanned. Converted 1:1 from functions/ListAggTest (now retired); its @BeforeEach la fixture is inlined per test.",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "the-default-delimiter-is-the-empty-string", "steps": [
+      {"sql": "CREATE TABLE la (k INTEGER, v VARCHAR)"},
+      {"sql": "INSERT INTO la VALUES (1, 'a'), (1, 'b'), (2, 'c'), (2, NULL)"},
+      {"sql": "SELECT LISTAGG(v) AS r FROM la", "expect": {"value": "abc"}}
+    ]},
+    {"name": "an-explicit-delimiter-is-applied", "steps": [
+      {"sql": "CREATE TABLE la (k INTEGER, v VARCHAR)"},
+      {"sql": "INSERT INTO la VALUES (1, 'a'), (1, 'b'), (2, 'c'), (2, NULL)"},
+      {"sql": "SELECT LISTAGG(v, '|') AS r FROM la", "expect": {"value": "a|b|c"}}
+    ]},
+    {"name": "the-delimiter-may-contain-a-comma", "steps": [
+      {"sql": "CREATE TABLE la (k INTEGER, v VARCHAR)"},
+      {"sql": "INSERT INTO la VALUES (1, 'a'), (1, 'b'), (2, 'c'), (2, NULL)"},
+      {"sql": "SELECT LISTAGG(v, ', ') AS r FROM la", "expect": {"value": "a, b, c"}}
+    ]},
+    {"name": "null-values-are-skipped", "steps": [
+      {"sql": "CREATE TABLE la (k INTEGER, v VARCHAR)"},
+      {"sql": "INSERT INTO la VALUES (1, 'a'), (1, 'b'), (2, 'c'), (2, NULL)"},
+      {"sql": "SELECT LISTAGG(v, '|') AS r FROM la WHERE k = 2", "expect": {"value": "c"}}
+    ]},
+    {"name": "numeric-values-are-stringified", "steps": [
+      {"sql": "CREATE TABLE la (k INTEGER, v VARCHAR)"},
+      {"sql": "INSERT INTO la VALUES (1, 'a'), (1, 'b'), (2, 'c'), (2, NULL)"},
+      {"sql": "SELECT LISTAGG(k, '-') AS r FROM la", "expect": {"value": "1-1-2-2"}}
+    ]},
+    {"name": "a-grouped-listagg-applies-per-group", "steps": [
+      {"sql": "CREATE TABLE la (k INTEGER, v VARCHAR)"},
+      {"sql": "INSERT INTO la VALUES (1, 'a'), (1, 'b'), (2, 'c'), (2, NULL)"},
+      {"sql": "SELECT k, LISTAGG(v, '-') AS r FROM la GROUP BY k ORDER BY k",
+       "expect": {"rowCount": 2, "rows": [["1", "a-b"], ["2", "c"]], "ordered": true}}
+    ]},
+    {"name": "within-group-orders-ascending", "steps": [
+      {"sql": "CREATE TABLE la (k INTEGER, v VARCHAR)"},
+      {"sql": "INSERT INTO la VALUES (1, 'a'), (1, 'b'), (2, 'c'), (2, NULL)"},
+      {"sql": "SELECT LISTAGG(v, '|') WITHIN GROUP (ORDER BY v) AS r FROM la", "expect": {"value": "a|b|c"}}
+    ]},
+    {"name": "within-group-orders-descending", "steps": [
+      {"sql": "CREATE TABLE la (k INTEGER, v VARCHAR)"},
+      {"sql": "INSERT INTO la VALUES (1, 'a'), (1, 'b'), (2, 'c'), (2, NULL)"},
+      {"sql": "SELECT LISTAGG(v, '|') WITHIN GROUP (ORDER BY v DESC) AS r FROM la", "expect": {"value": "c|b|a"}}
+    ]}
+  ]
+}

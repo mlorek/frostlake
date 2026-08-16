@@ -179,16 +179,92 @@ public class NestedBeginEndBlockTest extends BaseDatabaseTest {
 
         engine.execute("CREATE TABLE results (value INTEGER)");
 
+        // Two BEGINs and two ENDs. The block this test means to exercise is the one with no DECLARE
+        // section, not an unbalanced one — that shape is refused, and is asserted below.
         engine.execute("""
             BEGIN
             BEGIN
                 INSERT INTO results VALUES (42);
+            END;
             END;
             """);
 
         final ResultSet rs = engine.executeQuery("SELECT * FROM results");
         assertEquals(1, rs.getRowCount());
         assertEquals(42L, ((Number) rs.getRows().get(0).getValue(0)).longValue());
+    }
+
+    /**
+     * A block that loses an END runs to the end of its input, and live says so there — at the position
+     * one PAST the last character, which for text ending in a newline is column 0 of the next line.
+     *
+     * <p>★ IT IS THE ACCEPTED-BUT-INVALID DIRECTION that makes this worth refusing: a script missing an
+     * END used to run here and fail on a real account. The outer BEGIN was being read as a transaction
+     * start — legal on its own, which is why the shape parsed at all.
+     *
+     * <p>NOT COVERED HERE: a SURPLUS end, an unbalanced DECLARE block and a leading semicolon have their
+     * own class (BlockBoundaryRefusalTest); a body given to CREATE PROCEDURE is not compiled at CREATE
+     * at all, so an unbalanced one is still accepted there.
+     */
+    /** One statement's refusal, with its line break shown as a bar — the shape both backends give. */
+    private String refusal(final String sql) {
+        try {
+            engine.execute(sql);
+            return "ACCEPTED";
+        } catch (final RuntimeException refused) {
+            return String.valueOf(refused.getMessage()).replace('\n', '|');
+        }
+    }
+
+    /**
+     * A block that loses an END runs to the end of its input, and live says so there — at the position
+     * one PAST the last character, which for text ending in a newline is column 0 of the next line.
+     *
+     * <p>★ IT IS THE ACCEPTED-BUT-INVALID DIRECTION that makes this worth refusing: a script missing an
+     * END used to run here and fail on a real account. The outer BEGIN was being read as a transaction
+     * start — legal on its own, which is why the shape parsed at all.
+     *
+     * <p>NOT COVERED HERE: a SURPLUS end and an unbalanced DECLARE block are pinned in
+     * BlockBoundaryRefusalTest; a body given to CREATE PROCEDURE is not compiled at CREATE at all, so an
+     * unbalanced one is still accepted there.
+     */
+    @Test
+    public void anUnbalancedBlockRunsToTheEndOfItsInput() {
+        assertEquals("SQL compilation error:|syntax error line 1 at position 27 unexpected '<EOF>'.",
+            refusal("BEGIN BEGIN RETURN 42; END;"));
+        assertEquals("SQL compilation error:|syntax error line 4 at position 4 unexpected '<EOF>'.",
+            refusal("BEGIN\nBEGIN\n    RETURN 42;\nEND;"));
+        // A trailing newline moves the anchor onto the line after the last one written.
+        assertEquals("SQL compilation error:|syntax error line 6 at position 0 unexpected '<EOF>'.",
+            refusal("BEGIN\nBEGIN\n    RETURN 42;\nEND;\n\n"));
+        // Any body, not just a nested block — and however many BEGINs are left open.
+        assertEquals("SQL compilation error:|syntax error line 2 at position 13 unexpected '<EOF>'.",
+            refusal("BEGIN\n    RETURN 1;"));
+        assertEquals("SQL compilation error:|syntax error line 5 at position 4 unexpected '<EOF>'.",
+            refusal("BEGIN\nBEGIN\nBEGIN\n    RETURN 1;\nEND;"));
+    }
+
+    /**
+     * The statements live REQUIRES a semicolon between, and the BEGIN spellings that stay legal without
+     * one. A bare BEGIN is a transaction start when it IS the whole statement and a block opener when
+     * anything follows it, which is why the two refusals differ.
+     */
+    @Test
+    public void twoStatementsNeedASeparatorBetweenThem() {
+        assertEquals("SQL compilation error:|syntax error line 2 at position 0 unexpected 'SELECT'.",
+            refusal("SELECT 1\nSELECT 2"));
+        assertEquals("SQL compilation error:|syntax error line 2 at position 0 unexpected 'BEGIN'.",
+            refusal("BEGIN TRANSACTION\nBEGIN\n    RETURN 1;\nEND;"));
+
+        // Each of these IS the whole statement, so nothing follows to need separating.
+        assertEquals("ACCEPTED", refusal("BEGIN"));
+        assertEquals("ACCEPTED", refusal("COMMIT"));
+        assertEquals("ACCEPTED", refusal("BEGIN TRANSACTION"));
+        assertEquals("ACCEPTED", refusal("COMMIT"));
+        assertEquals("ACCEPTED", refusal("BEGIN WORK"));
+        assertEquals("ACCEPTED", refusal("COMMIT"));
+        assertEquals("ACCEPTED", refusal("BEGIN NAME t1"));
+        assertEquals("ACCEPTED", refusal("COMMIT"));
     }
 
     @Test
@@ -201,7 +277,7 @@ public class NestedBeginEndBlockTest extends BaseDatabaseTest {
 
         engine.execute("""
             DECLARE
-                cur1 CURSOR FOR SELECT id, name FROM source;
+                cur1 CURSOR FOR SELECT id, name FROM source ORDER BY id;
                 rec_id INTEGER;
                 rec_name VARCHAR;
             BEGIN

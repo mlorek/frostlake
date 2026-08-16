@@ -17,6 +17,7 @@
 package dev.frostlake.rt.js;
 
 import dev.frostlake.DatabaseEngine;
+import dev.frostlake.executor.SessionZone;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
 import dev.frostlake.metastore.model.Parameter;
 import dev.frostlake.metastore.model.Procedure;
@@ -63,7 +64,7 @@ public final class JavaScriptProcedureExecutor {
         try {
             // Via the shared engine so Truffle logging + warning options apply; host access and
             // class lookup are already fixed in its context configuration (see GraalJsEngine).
-            scriptEngine = GraalJsEngine.newScriptEngine();
+            scriptEngine = GraalJsEngine.newScriptEngine(SessionZone.current());
         } catch (final Exception e) {
             logger.debug("GraalVM JavaScript not available: {}", e.getMessage());
         }
@@ -95,7 +96,8 @@ public final class JavaScriptProcedureExecutor {
             final SnowflakeAPIWrapper apiWrapper = new SnowflakeAPIWrapper(engine);
             scriptEngine.put("snowflake", apiWrapper);
 
-            final String body = procedure.getBody().trim();
+            // The body keeps its own text and starts the third line, so a failure's line and column are the body's.
+            final String body = procedure.getBody();
             // A JS object/array return value must come back as JSON text so it round-trips as a Frostlake
             // OBJECT/ARRAY (a raw JS Value stringifies to "{a: 1}", which isn't valid JSON and breaks
             // downstream variant-path access). Scalars (string/number/boolean) and null pass through.
@@ -111,7 +113,8 @@ public final class JavaScriptProcedureExecutor {
             return result;
         } catch (final ScriptException e) {
             logger.error("Error executing JavaScript procedure: {}", procedure.getName(), e);
-            throw new RuntimeException("Error executing JavaScript procedure " + procedure.getName() + ": " + e.getMessage(), e);
+            throw new RuntimeException(JavaScriptErrorText.of(e, procedure.getName(), procedure.getBody(), 3,
+                "Error executing JavaScript procedure " + procedure.getName() + ": " + e.getMessage()), e);
         }
     }
 
@@ -133,10 +136,12 @@ public final class JavaScriptProcedureExecutor {
                 logger.debug("semi-structured JS parameter {} was not valid JSON; left as string", name);
             }
         } else if (value instanceof VariantValue) {
-            // A semi-structured runtime value carries its canonical JSON text — parse that directly.
+            // A semi-structured runtime value carries its canonical JSON text — parse THAT, not the
+            // display form, where a variant string shows its content unquoted and an XML variant shows
+            // as XML; JSON.parse can read neither.
             final String holder = "__frostlake_json_" + name;
             try {
-                engine.put(holder, value.toString());
+                engine.put(holder, ((VariantValue) value).text());
                 engine.eval(name + " = JSON.parse(" + holder + "); " + holder + " = undefined;");
             } catch (final ScriptException e) {
                 logger.debug("semi-structured JS parameter {} could not be parsed; left as text", name);

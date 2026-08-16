@@ -1,0 +1,50 @@
+{
+  "suite": "expr-structured-udf-arguments",
+  "description": "Binding arguments to UDF parameters declared with STRUCTURED types, matched EXACTLY in both directions (live-verified): a matching structured cast binds (field-type LENGTH ignored), plain OBJECT/VARIANT/ARRAY arguments are refused by structured parameters and structured arguments by plain ones (each naming the argument's type), a different structured type (wider, renamed, retyped, MAP) does not bind, a bare NULL binds, and a structured COLUMN binds by its declared type exactly like a cast expression. Converted 1:1 from expressions/StructuredTypeUdfArgumentTest (now retired).",
+  "tags": ["expressions", "converted"],
+  "tests": [
+    {"name": "structured-parameter-accepts-the-matching-structured-argument", "steps": [
+      {"sql": "CREATE FUNCTION f_struct(o OBJECT(x VARCHAR)) RETURNS VARCHAR AS $$ o:x::VARCHAR $$"},
+      {"sql": "CREATE FUNCTION f_arr(v ARRAY(INT)) RETURNS INT AS $$ v[0]::INT $$"},
+      {"sql": "SELECT f_struct(CAST(OBJECT_CONSTRUCT('x','a') AS OBJECT(x VARCHAR)))", "expect": {"value": "a"}},
+      {"sql": "SELECT f_struct(OBJECT_CONSTRUCT('x','a')::OBJECT(x VARCHAR))", "expect": {"value": "a"}},
+      {"sql": "SELECT f_arr(CAST([1,2] AS ARRAY(INT)))", "expect": {"value": "1"}}
+    ]},
+    {"name": "structured-parameter-rejects-plain-semi-structured-arguments", "steps": [
+      {"sql": "CREATE FUNCTION f_struct(o OBJECT(x VARCHAR)) RETURNS VARCHAR AS $$ o:x::VARCHAR $$"},
+      {"sql": "CREATE FUNCTION f_arr(v ARRAY(INT)) RETURNS INT AS $$ v[0]::INT $$"},
+      {"sql": "SELECT f_struct(OBJECT_CONSTRUCT('x','a'))", "expect": {"error": {"messageContains": "Invalid argument types for function 'F_STRUCT'"}}},
+      {"sql": "SELECT f_struct(PARSE_JSON('{\"x\":\"a\"}'))", "expect": {"error": {"messageContains": "Invalid argument types for function 'F_STRUCT'"}}},
+      {"sql": "SELECT f_arr([1,2])", "expect": {"error": {"messageContains": "Invalid argument types for function 'F_ARR'"}}}
+    ]},
+    {"name": "structured-parameter-rejects-a-different-structured-type", "steps": [
+      {"sql": "CREATE FUNCTION f_struct(o OBJECT(x VARCHAR)) RETURNS VARCHAR AS $$ o:x::VARCHAR $$"},
+      {"sql": "SELECT f_struct(CAST(OBJECT_CONSTRUCT('x','a','y',1) AS OBJECT(x VARCHAR, y INT)))", "expect": {"error": {"messageContains": "Invalid argument types for function 'F_STRUCT'"}}},
+      {"sql": "SELECT f_struct(CAST(OBJECT_CONSTRUCT('y','a') AS OBJECT(y VARCHAR)))", "expect": {"error": {"messageContains": "Invalid argument types for function 'F_STRUCT'"}}},
+      {"sql": "SELECT f_struct(CAST(OBJECT_CONSTRUCT('x',5) AS OBJECT(x INT)))", "expect": {"error": {"messageContains": "Invalid argument types for function 'F_STRUCT'"}}},
+      {"sql": "SELECT f_struct(CAST(OBJECT_CONSTRUCT('x','a') AS MAP(VARCHAR,VARCHAR)))", "expect": {"error": {"messageContains": "Invalid argument types for function 'F_STRUCT'"}}},
+      {"sql": "SELECT f_struct(CAST(OBJECT_CONSTRUCT('x','a') AS OBJECT(x VARCHAR(10))))", "expect": {"value": "a"}}
+    ]},
+    {"name": "plain-semi-structured-parameter-rejects-a-structured-argument", "steps": [
+      {"sql": "CREATE FUNCTION f_plain(o OBJECT) RETURNS VARCHAR AS $$ o:x::VARCHAR $$"},
+      {"sql": "CREATE FUNCTION f_variant(o VARIANT) RETURNS VARCHAR AS $$ o:x::VARCHAR $$"},
+      {"sql": "CREATE FUNCTION f_plain_arr(v ARRAY) RETURNS INT AS $$ v[0]::INT $$"},
+      {"sql": "SELECT f_plain(CAST(OBJECT_CONSTRUCT('x','a') AS OBJECT(x VARCHAR)))", "expect": {"error": {"messageContains": "Invalid argument types for function 'F_PLAIN'"}}},
+      {"sql": "SELECT f_variant(CAST(OBJECT_CONSTRUCT('x','a') AS OBJECT(x VARCHAR)))", "expect": {"error": {"messageContains": "Invalid argument types for function 'F_VARIANT'"}}},
+      {"sql": "SELECT f_plain_arr(CAST([1,2] AS ARRAY(INT)))", "expect": {"error": {"messageContains": "Invalid argument types for function 'F_PLAIN_ARR'"}}},
+      {"sql": "SELECT f_plain(OBJECT_CONSTRUCT('x','a'))", "expect": {"value": "a"}},
+      {"sql": "SELECT f_variant(OBJECT_CONSTRUCT('x','a'))", "expect": {"value": "a"}}
+    ]},
+    {"name": "bare-null-binds-to-a-structured-parameter", "steps": [
+      {"sql": "CREATE FUNCTION f_struct(o OBJECT(x VARCHAR)) RETURNS VARCHAR AS $$ o:x::VARCHAR $$"},
+      {"sql": "SELECT f_struct(NULL)", "expect": {"rows": [["NULL"]]}}
+    ]},
+    {"name": "structured-column-binds-by-its-declared-type", "steps": [
+      {"sql": "CREATE FUNCTION f_struct(o OBJECT(x VARCHAR)) RETURNS VARCHAR AS $$ o:x::VARCHAR $$"},
+      {"sql": "CREATE TABLE udf_cols (o OBJECT(x VARCHAR), po OBJECT)"},
+      {"sql": "INSERT INTO udf_cols SELECT CAST(OBJECT_CONSTRUCT('x','a') AS OBJECT(x VARCHAR)), OBJECT_CONSTRUCT('x','a')"},
+      {"sql": "SELECT f_struct(o) FROM udf_cols", "expect": {"value": "a"}},
+      {"sql": "SELECT f_struct(po) FROM udf_cols", "expect": {"error": {"messageContains": "Invalid argument types for function 'F_STRUCT'"}}}
+    ]}
+  ]
+}

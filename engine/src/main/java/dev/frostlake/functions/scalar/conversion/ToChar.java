@@ -23,6 +23,7 @@ import dev.frostlake.functions.scalar.SnowflakeDateFormat;
 import dev.frostlake.functions.scalar.SnowflakeNumberFormat;
 import dev.frostlake.types.StringType;
 import dev.frostlake.values.BinaryValue;
+import dev.frostlake.values.VariantJsonText;
 import dev.frostlake.values.VariantValue;
 
 import java.math.BigDecimal;
@@ -53,14 +54,32 @@ public class ToChar extends BuiltInFunction {
             : SemiStructuredRejection.NONE;
     }
 
+    /**
+     * A VECTOR has no text conversion, and the refusal is the SAME sentence a structured value gets —
+     * live quotes the whole call and names the conversion the written spelling routes through, so
+     * {@code TO_CHAR(v)} reports 'TO_CHAR' where {@code TO_VARCHAR(v)} reports 'TO_VARCHAR'.
+     *
+     * <p>Position 0 only, and the ARGUMENT beats the ARITY: live gives
+     * {@code TO_VARCHAR(v, 'x')} this same refusal rather than complaining about the format
+     * argument, echoing the format in the quoted call.
+     */
+    @Override
+    public SemiStructuredRejection vectorRejection(final int position) {
+        return position == 0 ? SemiStructuredRejection.INVALID_TYPE_PARAMETER
+            : SemiStructuredRejection.NONE;
+    }
+
     @Override
     public Object evaluate(final List<Object> args) {
         if (args.get(0) == null) return null;
         final Object value = args.get(0);
         if (value instanceof VariantValue) {
             // An explicit conversion is always the COMPACT text on a real account, whatever
-            // JSON_INDENT is set to — only a variant DISPLAYED as itself follows the width.
-            return ((VariantValue) value).text();
+            // JSON_INDENT is set to — only a variant DISPLAYED as itself follows the width. It is the
+            // CONVERSION text too, so a DOUBLE inside it is rewritten (VariantJsonText) — while a bare
+            // double converts to its display spelling.
+            final String convertedVariant = VariantJsonText.stringConversionTextOf(value);
+            return convertedVariant != null ? convertedVariant : ((VariantValue) value).text();
         }
         if (value instanceof BinaryValue && args.size() >= 2 && args.get(1) != null) {
             // BINARY has its own format model — the target ENCODING, not a picture string.
@@ -88,7 +107,14 @@ public class ToChar extends BuiltInFunction {
                 }
             }
         }
-        // No format: temporals render in Snowflake's default output forms (space + FF3), not java.time's.
+        // No format: temporals render in Snowflake's default output forms (space + FF3), not java.time's,
+        // and a semi-structured value renders as its CONVERSION text, which is not its display text —
+        // TO_VARCHAR of an array holding a FLOAT is [1.000000000000000e+00] where the array itself
+        // displays as [1.0].
+        final String convertedJson = VariantJsonText.convertedTextOf(value);
+        if (convertedJson != null) {
+            return convertedJson;
+        }
         return SharedFunctionHelpers.textOf(value);
     }
 

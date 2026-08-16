@@ -1,0 +1,12 @@
+{
+  "suite": "features-unique-key-enforcement",
+  "description": "UNIQUE enforcement is opt-in via the engine's constraints.enforce.uniqueKey property and OFF by default, so on a default engine a UNIQUE column is informational only - exactly as on Snowflake - and a duplicate non-null value inserts without complaint. The enforcement-ON behaviour (rejecting a duplicate across statements and within one multi-row INSERT, accepting distinct values, and leaving NULLs unconstrained) needs an engine built with that property set, which has no SQL surface, and stays in features/UniqueKeyEnforcementTest. Converted from that class, which is trimmed to its four enforcement-ON tests.",
+  "tags": ["features", "converted"],
+  "tests": [
+    {"name": "unique-is-informational-by-default", "steps": [
+      {"sql": "CREATE TABLE t (id INTEGER, email VARCHAR UNIQUE)"},
+      {"sql": "INSERT INTO t VALUES (1, 'a@x'), (2, 'a@x')"},
+      {"sql": "SELECT COUNT(*) AS c FROM t", "expect": {"value": "2"}}
+    ]}
+  ]
+}

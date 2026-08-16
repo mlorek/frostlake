@@ -18,6 +18,7 @@ package dev.frostlake.formats;
 
 import dev.frostlake.DatabaseEngine;
 import dev.frostlake.config.EngineConfig;
+import dev.frostlake.executor.copy.StageReaderFactory;
 import dev.frostlake.storage.ResultSet;
 import org.apache.avro.Schema;
 import org.apache.avro.generic.GenericData;
@@ -170,7 +171,7 @@ public class CopyParquetLoadTest {
     }
 
     @Test
-    public void unsupportedFormatMessageListsParquet() throws IOException {
+    public void anUnknownTypeIsAnInvalidValueAndThisModulesReaderIsListed() throws IOException {
         Files.writeString(stageDir.resolve("x.dat"), "x");
         engine.execute("CREATE TABLE docs (rec VARIANT)");
 
@@ -180,7 +181,13 @@ public class CopyParquetLoadTest {
                 engine.execute("COPY INTO docs FROM @data_stage FILE_FORMAT = (TYPE = 'PROTOBUF')");
             }
         });
-        assertTrue(ex.getMessage().contains("PARQUET"), ex.getMessage());
+        // PROTOBUF is not a file format type at all, so the account refuses the VALUE before any
+        // reader is looked up (live-verified). That this module's reader IS registered is what the
+        // supported list says, and the loading tests above prove it end to end.
+        assertTrue(ex.getMessage().contains("invalid value ['PROTOBUF'] for parameter 'TYPE'"),
+            ex.getMessage());
+        assertTrue(StageReaderFactory.supportedTypesDisplay().contains("PARQUET"),
+            StageReaderFactory.supportedTypesDisplay());
     }
 
     private void deleteRecursively(final File file) {

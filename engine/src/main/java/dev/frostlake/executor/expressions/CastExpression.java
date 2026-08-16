@@ -34,6 +34,8 @@ public class CastExpression implements Expression {
     private final boolean tryMode;
     private final DataType declaredTarget;
     private final CastFieldsModifier fieldsModifier;
+    /** Where the cast was written — its {@code ::} or its CAST keyword — relative to its fragment. */
+    private SourcePosition position;
 
     public CastExpression(final Expression expression, final String targetType) {
         this(expression, targetType, false);
@@ -75,6 +77,19 @@ public class CastExpression implements Expression {
     /** The {@code RENAME FIELDS} / {@code ADD FIELDS} modifier, never null. */
     public CastFieldsModifier getFieldsModifier() {
         return fieldsModifier;
+    }
+
+    /**
+     * Where the cast was written, relative to its fragment — the {@code ::} of the shorthand, the CAST
+     * or TRY_CAST keyword otherwise — or null for a cast the engine built itself. A refusal of the cast
+     * as a whole is positioned there: live points {@code v::VECTOR(INT,3)} at the {@code ::}.
+     */
+    public SourcePosition getPosition() {
+        return position;
+    }
+
+    public void setPosition(final SourcePosition position) {
+        this.position = position;
     }
 
     @Override

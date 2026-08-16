@@ -130,7 +130,7 @@ public class StagesTest {
         engine.execute("""
             CREATE STAGE csv_stage
             URL = 'file://%s'
-            FILE_FORMAT = 'CSV'
+            FILE_FORMAT = (TYPE = CSV)
             COMMENT = 'CSV data stage'
             """.formatted(csvStageDir));
 
@@ -225,7 +225,7 @@ public class StagesTest {
         assertThrows(RuntimeException.class, new Executable() {
             @Override
             public void execute() throws Throwable {
-                engine.getCatalog().createStage("my_stage", StageType.INTERNAL,
+                engine.getCatalog().createStage("MY_STAGE", StageType.INTERNAL,
                                                "file://" + testStageDir);
                 
             }
@@ -400,7 +400,7 @@ public class StagesTest {
         engine.execute("ALTER STAGE alter_stage_test SET COMMENT = 'altered comment'");
         assertEquals("altered comment", engine.getCatalog().getStage("alter_stage_test").getComment());
 
-        engine.execute("ALTER STAGE alter_stage_test SET FILE_FORMAT = 'JSON'");
+        engine.execute("ALTER STAGE alter_stage_test SET FILE_FORMAT = (TYPE = JSON)");
         assertEquals("JSON", engine.getCatalog().getStage("alter_stage_test").getFileFormat());
 
         // SET URL repoints the stage (and recomputes its local directory).

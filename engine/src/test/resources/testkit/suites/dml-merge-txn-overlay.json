@@ -1,0 +1,49 @@
+{
+  "suite": "dml-merge-txn-overlay",
+  "description": "MERGE inside an explicit transaction sees its target through the transaction overlay: rows INSERTed earlier in the same transaction match ON and are updatable/deletable, pending UPDATEs of committed rows are visible, and rows DELETEd in the same transaction are not resurrected as MATCHED. Converted 1:1 from transaction/MergeTargetOverlayTest (now retired).",
+  "tags": ["dml", "transaction", "converted"],
+  "tests": [
+    {"name": "merge-matches-rows-inserted-in-same-transaction", "steps": [
+      {"sql": "CREATE TABLE agg_tmp (k VARCHAR, v NUMBER)"},
+      {"sql": "CREATE TABLE feed (k VARCHAR, amt NUMBER)"},
+      {"sql": "INSERT INTO feed VALUES ('a', 42), ('b', 7)"},
+      {"sql": "BEGIN TRANSACTION"},
+      {"sql": "INSERT INTO agg_tmp VALUES ('a', 0), ('b', 0)"},
+      {"sql": "MERGE INTO agg_tmp t USING (SELECT k, amt FROM feed) AS s (k2, v2)\nON t.k = s.k2\nWHEN MATCHED THEN UPDATE SET t.v = s.v2"},
+      {"sql": "COMMIT"},
+      {"sql": "SELECT k, v FROM agg_tmp ORDER BY k", "expect": {"rows": [["a", "42"], ["b", "7"]], "ordered": true}}
+    ]},
+    {"name": "merge-delete-removes-a-pending-insert", "steps": [
+      {"sql": "CREATE TABLE agg_tmp (k VARCHAR, v NUMBER)"},
+      {"sql": "CREATE TABLE feed (k VARCHAR, amt NUMBER)"},
+      {"sql": "INSERT INTO feed VALUES ('a', 42), ('b', 7)"},
+      {"sql": "BEGIN TRANSACTION"},
+      {"sql": "INSERT INTO agg_tmp VALUES ('a', 0), ('keepme', 0)"},
+      {"sql": "MERGE INTO agg_tmp t USING (SELECT k FROM feed) AS s (k2)\nON t.k = s.k2\nWHEN MATCHED THEN DELETE"},
+      {"sql": "COMMIT"},
+      {"sql": "SELECT k FROM agg_tmp", "expect": {"rows": [["keepme"]]}}
+    ]},
+    {"name": "merge-sees-pending-updates-of-committed-rows", "steps": [
+      {"sql": "CREATE TABLE agg_tmp (k VARCHAR, v NUMBER)"},
+      {"sql": "CREATE TABLE feed (k VARCHAR, amt NUMBER)"},
+      {"sql": "INSERT INTO feed VALUES ('a', 42), ('b', 7)"},
+      {"sql": "INSERT INTO agg_tmp VALUES ('renamed', 0)"},
+      {"sql": "BEGIN TRANSACTION"},
+      {"sql": "UPDATE agg_tmp SET k = 'a' WHERE k = 'renamed'"},
+      {"sql": "MERGE INTO agg_tmp t USING (SELECT k, amt FROM feed) AS s (k2, v2)\nON t.k = s.k2\nWHEN MATCHED THEN UPDATE SET t.v = s.v2"},
+      {"sql": "COMMIT"},
+      {"sql": "SELECT k, v FROM agg_tmp", "expect": {"rows": [["a", "42"]]}}
+    ]},
+    {"name": "merge-does-not-resurrect-rows-deleted-in-same-transaction", "steps": [
+      {"sql": "CREATE TABLE agg_tmp (k VARCHAR, v NUMBER)"},
+      {"sql": "CREATE TABLE feed (k VARCHAR, amt NUMBER)"},
+      {"sql": "INSERT INTO feed VALUES ('a', 42), ('b', 7)"},
+      {"sql": "INSERT INTO agg_tmp VALUES ('a', 5)"},
+      {"sql": "BEGIN TRANSACTION"},
+      {"sql": "DELETE FROM agg_tmp WHERE k = 'a'"},
+      {"sql": "MERGE INTO agg_tmp t USING (SELECT k, amt FROM feed) AS s (k2, v2)\nON t.k = s.k2\nWHEN MATCHED THEN UPDATE SET t.v = s.v2\nWHEN NOT MATCHED THEN INSERT (k, v) VALUES (s.k2, s.v2)"},
+      {"sql": "COMMIT"},
+      {"sql": "SELECT k, v FROM agg_tmp ORDER BY k", "expect": {"rows": [["a", "42"], ["b", "7"]], "ordered": true}}
+    ]}
+  ]
+}

@@ -1,0 +1,68 @@
+{
+  "suite": "features-binary-typed-values",
+  "description": "BINARY as a real typed runtime value: declared BINARY/VARBINARY columns carry the binary type (pinned via CTAS + DESCRIBE, values rendering as uppercase hex), comparisons against strings are rejected at compile time (use TO_BINARY) while binary-to-binary comparisons order, GROUP BY / DISTINCT / joins use byte equality (hex-text case irrelevant), informational binary PKs accept duplicates while DISTINCT collapses byte-identical rows, ORDER BY uses unsigned byte order, the length family counts bytes not hex characters, the *_DECODE_BINARY family produces binary (TRY_ forms yielding NULL on bad input), binary embeds in semi-structured values as hex text, and casts to/from VARCHAR round-trip through hex. Converted 1:1 from features/BinaryTypedValuesTest (now retired).",
+  "tags": ["features", "converted"],
+  "tests": [
+    {"name": "binary-columns-carry-the-binary-type", "steps": [
+      {"sql": "CREATE TABLE bt_meta (b BINARY, vb VARBINARY)"},
+      {"sql": "INSERT INTO bt_meta VALUES (x'AB', x'CD')"},
+      {"sql": "CREATE TABLE bt_probe AS SELECT b, vb FROM bt_meta"},
+      {"sql": "DESCRIBE TABLE bt_probe"},
+      {"sql": "SELECT COUNT_IF(STARTSWITH(\"type\", 'BINARY')) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "2"}},
+      {"sql": "SELECT b FROM bt_meta", "expect": {"value": "AB"}}
+    ]},
+    {"name": "comparisons-against-strings-are-rejected-like-snowflake", "steps": [
+      {"sql": "SELECT x'AB' = 'AB'", "expect": {"error": {"messageContains": "Can not convert parameter"}}},
+      {"sql": "SELECT x'AB' = 'AB'", "expect": {"error": {"messageContains": "[BINARY"}}},
+      {"sql": "SELECT x'AB' = TO_BINARY('AB', 'HEX')", "expect": {"value": "true"}},
+      {"sql": "SELECT x'01' < x'02'", "expect": {"value": "true"}}
+    ]},
+    {"name": "group-by-and-distinct-use-byte-equality", "steps": [
+      {"sql": "CREATE TABLE bt_grp (b BINARY)"},
+      {"sql": "INSERT INTO bt_grp VALUES (x'AB'), (x'ab'), (x'CD')"},
+      {"sql": "SELECT DISTINCT b FROM bt_grp", "expect": {"rowCount": 2}},
+      {"sql": "SELECT b, COUNT(*) AS n FROM bt_grp GROUP BY b ORDER BY b",
+       "expect": {"rows": [["AB", "2"], ["CD", "1"]], "ordered": true}}
+    ]},
+    {"name": "joins-match-on-byte-equality", "steps": [
+      {"sql": "CREATE TABLE bt_l (id INTEGER, b BINARY)"},
+      {"sql": "CREATE TABLE bt_r (b BINARY, tag VARCHAR)"},
+      {"sql": "INSERT INTO bt_l VALUES (1, x'0102'), (2, x'0304')"},
+      {"sql": "INSERT INTO bt_r VALUES (x'0102', 'match')"},
+      {"sql": "SELECT l.id, r.tag FROM bt_l l JOIN bt_r r ON l.b = r.b",
+       "expect": {"rows": [["1", "match"]]}}
+    ]},
+    {"name": "binary-primary-keys-use-byte-identity", "steps": [
+      {"sql": "CREATE TABLE bt_pk (b BINARY PRIMARY KEY)"},
+      {"sql": "INSERT INTO bt_pk VALUES (x'FF01')"},
+      {"sql": "INSERT INTO bt_pk VALUES (x'ff01')"},
+      {"sql": "SELECT * FROM bt_pk", "expect": {"rowCount": 2}},
+      {"sql": "SELECT DISTINCT b FROM bt_pk", "expect": {"rowCount": 1}}
+    ]},
+    {"name": "order-by-uses-unsigned-byte-order", "steps": [
+      {"sql": "CREATE TABLE bt_ord (b BINARY)"},
+      {"sql": "INSERT INTO bt_ord VALUES (x'FF'), (x'01'), (x'7F')"},
+      {"sql": "SELECT b FROM bt_ord ORDER BY b",
+       "expect": {"rows": [["01"], ["7F"], ["FF"]], "ordered": true}}
+    ]},
+    {"name": "length-family-counts-bytes-not-hex-characters", "steps": [
+      {"sql": "SELECT LENGTH(TO_BINARY('SNOW', 'UTF-8'))", "expect": {"value": "4"}},
+      {"sql": "SELECT OCTET_LENGTH(TO_BINARY('SNOW', 'UTF-8'))", "expect": {"value": "4"}},
+      {"sql": "SELECT BIT_LENGTH(TO_BINARY('SNOW', 'UTF-8'))", "expect": {"value": "32"}}
+    ]},
+    {"name": "decode-binary-family-produces-binary", "steps": [
+      {"sql": "SELECT HEX_DECODE_BINARY('534e4f57')", "expect": {"value": "534E4F57"}},
+      {"sql": "SELECT BASE64_DECODE_BINARY('U05PVw==')", "expect": {"value": "534E4F57"}},
+      {"sql": "SELECT TRY_HEX_DECODE_BINARY('zz')", "expect": {"rows": [["NULL"]]}},
+      {"sql": "SELECT TRY_BASE64_DECODE_BINARY('!not-base64!')", "expect": {"rows": [["NULL"]]}},
+      {"sql": "SELECT HEX_DECODE_BINARY('534E4F57') = TO_BINARY('SNOW', 'UTF-8')", "expect": {"value": "true"}}
+    ]},
+    {"name": "binary-embeds-in-semi-structured-as-hex-text", "steps": [
+      {"sql": "SELECT ARRAY_CONSTRUCT(x'AB12')", "expect": {"value": "[\"AB12\"]"}}
+    ]},
+    {"name": "cast-binary-to-varchar-yields-hex-text", "steps": [
+      {"sql": "SELECT x'AB12'::VARCHAR", "expect": {"value": "AB12"}},
+      {"sql": "SELECT 'ab12'::BINARY", "expect": {"value": "AB12"}}
+    ]}
+  ]
+}

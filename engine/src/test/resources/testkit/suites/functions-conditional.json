@@ -1,0 +1,106 @@
+{
+  "suite": "functions-conditional",
+  "description": "NULLIF / IFF / GREATEST / LEAST (+ _IGNORE_NULLS) over literals, columns and NULLs. Converted 1:1 from functions/ConditionalFunctionsTest.java (now retired); the shared fixture became per-test setup.",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "nullif-equal", "steps": [
+      {"sql": "CREATE TABLE test_data (id INTEGER, name VARCHAR, value NUMBER, flag BOOLEAN)"},
+      {"sql": "INSERT INTO test_data VALUES (1, 'Alice', 100, true)"},
+      {"sql": "SELECT name, NULLIF(value, 100) as adjusted_value FROM test_data WHERE id = 1", "expect": {"rows": [["Alice", null]]}}
+    ]},
+    {"name": "nullif-not-equal", "steps": [
+      {"sql": "CREATE TABLE test_data (id INTEGER, name VARCHAR, value NUMBER, flag BOOLEAN)"},
+      {"sql": "INSERT INTO test_data VALUES (2, 'Bob', 200, false)"},
+      {"sql": "SELECT name, NULLIF(value, 100) as adjusted_value FROM test_data WHERE id = 2", "expect": {"rows": [["Bob", "200"]]}}
+    ]},
+    {"name": "nullif-with-null", "steps": [
+      {"sql": "CREATE TABLE test_data (id INTEGER, name VARCHAR, value NUMBER, flag BOOLEAN)"},
+      {"sql": "INSERT INTO test_data VALUES (4, NULL, NULL, NULL)"},
+      {"sql": "SELECT name, NULLIF(value, 100) as adjusted_value FROM test_data WHERE id = 4", "expect": {"rows": [[null, null]]}}
+    ]},
+    {"name": "nullif-strings", "steps": [
+      {"sql": "CREATE TABLE test_data (id INTEGER, name VARCHAR, value NUMBER, flag BOOLEAN)"},
+      {"sql": "INSERT INTO test_data VALUES (1, 'Alice', 100, true)"},
+      {"sql": "INSERT INTO test_data VALUES (2, 'Bob', 200, false)"},
+      {"sql": "SELECT id, NULLIF(name, 'Bob') as filtered_name FROM test_data WHERE id IN (1, 2)", "expect": {"rows": [["1", "Alice"], ["2", null]]}}
+    ]},
+    {"name": "iff-true", "steps": [
+      {"sql": "CREATE TABLE test_data (id INTEGER, name VARCHAR, value NUMBER, flag BOOLEAN)"},
+      {"sql": "INSERT INTO test_data VALUES (1, 'Alice', 100, true)"},
+      {"sql": "SELECT name, IFF(flag, 'Active', 'Inactive') as status FROM test_data WHERE id = 1", "expect": {"rows": [["Alice", "Active"]]}}
+    ]},
+    {"name": "iff-false", "steps": [
+      {"sql": "CREATE TABLE test_data (id INTEGER, name VARCHAR, value NUMBER, flag BOOLEAN)"},
+      {"sql": "INSERT INTO test_data VALUES (2, 'Bob', 200, false)"},
+      {"sql": "SELECT name, IFF(flag, 'Active', 'Inactive') as status FROM test_data WHERE id = 2", "expect": {"rows": [["Bob", "Inactive"]]}}
+    ]},
+    {"name": "iff-with-null", "steps": [
+      {"sql": "CREATE TABLE test_data (id INTEGER, name VARCHAR, value NUMBER, flag BOOLEAN)"},
+      {"sql": "INSERT INTO test_data VALUES (4, NULL, NULL, NULL)"},
+      {"sql": "SELECT name, IFF(flag, 'Active', 'Inactive') as status FROM test_data WHERE id = 4", "expect": {"rows": [[null, "Inactive"]]}}
+    ]},
+    {"name": "iff-with-comparison", "steps": [
+      {"sql": "CREATE TABLE test_data (id INTEGER, name VARCHAR, value NUMBER, flag BOOLEAN)"},
+      {"sql": "INSERT INTO test_data VALUES (1, 'Alice', 100, true)"},
+      {"sql": "INSERT INTO test_data VALUES (2, 'Bob', 200, false)"},
+      {"sql": "SELECT name, IFF(value > 150, 'High', 'Low') as category FROM test_data WHERE id IN (1, 2)", "expect": {"rows": [["Alice", "Low"], ["Bob", "High"]]}}
+    ]},
+    {"name": "iff-with-null-values", "steps": [
+      {"sql": "CREATE TABLE test_data (id INTEGER, name VARCHAR, value NUMBER, flag BOOLEAN)"},
+      {"sql": "INSERT INTO test_data VALUES (1, 'Alice', 100, true)"},
+      {"sql": "INSERT INTO test_data VALUES (2, 'Bob', 200, false)"},
+      {"sql": "INSERT INTO test_data VALUES (5, 'Eve', 300, false)"},
+      {"sql": "SELECT name, IFF(value > 150, value, NULL) as high_values FROM test_data WHERE id IN (1, 2, 5)", "expect": {"rows": [["Alice", null], ["Bob", "200"], ["Eve", "300"]]}}
+    ]},
+    {"name": "greatest-two-values", "steps": [
+      {"sql": "SELECT GREATEST(100, 200) as max_val", "expect": {"value": "200"}}
+    ]},
+    {"name": "greatest-multiple-values", "steps": [
+      {"sql": "SELECT GREATEST(50, 200, 75, 300, 150) as max_val", "expect": {"value": "300"}}
+    ]},
+    {"name": "greatest-with-columns", "steps": [
+      {"sql": "CREATE TABLE test_data (id INTEGER, name VARCHAR, value NUMBER, flag BOOLEAN)"},
+      {"sql": "INSERT INTO test_data VALUES (1, 'Alice', 100, true)"},
+      {"sql": "INSERT INTO test_data VALUES (2, 'Bob', 200, false)"},
+      {"sql": "SELECT name, GREATEST(value, 150) as max_val FROM test_data WHERE id IN (1, 2)", "expect": {"rows": [["Alice", "150"], ["Bob", "200"]]}}
+    ]},
+    {"name": "greatest-with-null", "steps": [
+      {"sql": "SELECT GREATEST(100, NULL, 200) as max_val, GREATEST_IGNORE_NULLS(100, NULL, 200) as max_skip", "expect": {"rows": [[null, "200"]]}}
+    ]},
+    {"name": "greatest-strings", "steps": [
+      {"sql": "SELECT GREATEST('Alice', 'Bob', 'Charlie') as max_name", "expect": {"value": "Charlie"}}
+    ]},
+    {"name": "least-two-values", "steps": [
+      {"sql": "SELECT LEAST(100, 200) as min_val", "expect": {"value": "100"}}
+    ]},
+    {"name": "least-multiple-values", "steps": [
+      {"sql": "SELECT LEAST(50, 200, 75, 300, 25) as min_val", "expect": {"value": "25"}}
+    ]},
+    {"name": "least-with-columns", "steps": [
+      {"sql": "CREATE TABLE test_data (id INTEGER, name VARCHAR, value NUMBER, flag BOOLEAN)"},
+      {"sql": "INSERT INTO test_data VALUES (1, 'Alice', 100, true)"},
+      {"sql": "INSERT INTO test_data VALUES (2, 'Bob', 200, false)"},
+      {"sql": "SELECT name, LEAST(value, 150) as min_val FROM test_data WHERE id IN (1, 2)", "expect": {"rows": [["Alice", "100"], ["Bob", "150"]]}}
+    ]},
+    {"name": "least-with-null", "steps": [
+      {"sql": "SELECT LEAST(100, NULL, 200) as min_val, LEAST_IGNORE_NULLS(100, NULL, 200) as min_skip", "expect": {"rows": [[null, "100"]]}}
+    ]},
+    {"name": "least-strings", "steps": [
+      {"sql": "SELECT LEAST('Alice', 'Bob', 'Charlie') as min_name", "expect": {"value": "Alice"}}
+    ]},
+    {"name": "combined-functions", "steps": [
+      {"sql": "CREATE TABLE test_data (id INTEGER, name VARCHAR, value NUMBER, flag BOOLEAN)"},
+      {"sql": "INSERT INTO test_data VALUES (1, 'Alice', 100, true)"},
+      {"sql": "INSERT INTO test_data VALUES (2, 'Bob', 200, false)"},
+      {"sql": "INSERT INTO test_data VALUES (5, 'Eve', 300, false)"},
+      {"sql": "SELECT name,   IFF(value > 150, GREATEST(value, 250), LEAST(value, 50)) as adjusted FROM test_data WHERE id IN (1, 2, 5)",
+       "expect": {"rows": [["Alice", "50"], ["Bob", "250"], ["Eve", "300"]]}}
+    ]},
+    {"name": "nullif-with-greatest", "steps": [
+      {"sql": "CREATE TABLE test_data (id INTEGER, name VARCHAR, value NUMBER, flag BOOLEAN)"},
+      {"sql": "INSERT INTO test_data VALUES (1, 'Alice', 100, true)"},
+      {"sql": "INSERT INTO test_data VALUES (2, 'Bob', 200, false)"},
+      {"sql": "SELECT name, NULLIF(GREATEST(value, 100), 100) as result FROM test_data WHERE id IN (1, 2)", "expect": {"rows": [["Alice", null], ["Bob", "200"]]}}
+    ]}
+  ]
+}

@@ -1,0 +1,39 @@
+{
+  "suite": "ddl-drop-commands",
+  "description": "DROP TABLE / VIEW / SCHEMA / DATABASE remove exactly the named object: created objects listed by SHOW, gone after DROP, and a sibling table survives. Probed by name (SHOW ... LIKE), never by total counts, so the assertions hold on a stateful account. Converted 1:1 from ddl/DropCommandsTest (now retired).",
+  "tags": ["ddl", "converted"],
+  "tests": [
+    {"name": "drop-table", "steps": [
+      {"sql": "CREATE TABLE users (id INTEGER, username VARCHAR)"},
+      {"sql": "SHOW TABLES LIKE 'users'", "expect": {"rowCount": 1}},
+      {"sql": "DROP TABLE users"},
+      {"sql": "SHOW TABLES LIKE 'users'", "expect": {"rowCount": 0}}
+    ]},
+    {"name": "drop-view", "steps": [
+      {"sql": "CREATE TABLE users (id INTEGER, name VARCHAR)"},
+      {"sql": "CREATE VIEW user_view AS SELECT * FROM users"},
+      {"sql": "SHOW VIEWS LIKE 'user_view'", "expect": {"rowCount": 1}},
+      {"sql": "DROP VIEW user_view"},
+      {"sql": "SHOW VIEWS LIKE 'user_view'", "expect": {"rowCount": 0}}
+    ]},
+    {"name": "drop-schema", "steps": [
+      {"sql": "CREATE SCHEMA drop_test_schema"},
+      {"sql": "SHOW SCHEMAS LIKE 'drop_test_schema'", "expect": {"rowCount": 1}},
+      {"sql": "DROP SCHEMA drop_test_schema"},
+      {"sql": "SHOW SCHEMAS LIKE 'drop_test_schema'", "expect": {"rowCount": 0}}
+    ]},
+    {"name": "drop-database", "steps": [
+      {"sql": "CREATE DATABASE drop_test_db"},
+      {"sql": "SHOW DATABASES LIKE 'drop_test_db'", "expect": {"rowCount": 1}},
+      {"sql": "DROP DATABASE drop_test_db"},
+      {"sql": "SHOW DATABASES LIKE 'drop_test_db'", "expect": {"rowCount": 0}}
+    ]},
+    {"name": "drop-table-does-not-affect-other-tables", "steps": [
+      {"sql": "CREATE TABLE users (id INTEGER)"},
+      {"sql": "CREATE TABLE products (id INTEGER)"},
+      {"sql": "DROP TABLE users"},
+      {"sql": "SHOW TABLES LIKE 'users'", "expect": {"rowCount": 0}},
+      {"sql": "SHOW TABLES LIKE 'products'", "expect": {"rowCount": 1}}
+    ]}
+  ]
+}

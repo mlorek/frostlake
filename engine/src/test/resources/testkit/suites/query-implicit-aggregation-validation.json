@@ -1,0 +1,73 @@
+{
+  "suite": "query-implicit-aggregation-validation",
+  "description": "Implicit aggregation - an aggregate or a HAVING with no GROUP BY - holds the select list to live's rule: a bare column, reached directly or through an expression, an alias, or star expansion, is refused with the BRACKETED family '[<OWNER>.<COLUMN>] is not a valid group by expression'. That form is POSITIONLESS, names the FIRST offender in select-list order, spells the qualifier as written and folded, keeps a quoted identifier verbatim, and uses the \"values\" moniker for an unaliased derived table. The refusal fires at COMPILE time, over an empty table, and a window function beside the plain aggregate does not shield the column. Constants and aggregate-derived expressions stay legal, as does a window function with NO plain aggregate beside it - that query is not aggregated at all and returns a row per source row. Converted 1:1 from query/ImplicitAggregationValidationTest (now retired); the Java's assertEquals on the full message is kept, and the two legal tests gain their values where they only counted rows.",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "a-bare-column-beside-an-aggregate-is-refused", "steps": [
+      {"sql": "CREATE TABLE ia_orders (city VARCHAR, qty INTEGER)"},
+      {"sql": "INSERT INTO ia_orders VALUES ('Berlin', 1), ('Oslo', 5)"},
+      {"sql": "SELECT city, COUNT(1) AS n FROM ia_orders", "expect": {"error": {"messageContains": "SQL compilation error:\n[IA_ORDERS.CITY] is not a valid group by expression"}}}
+    ]},
+    {"name": "the-first-offender-in-select-list-order-is-named", "steps": [
+      {"sql": "CREATE TABLE ia_orders (city VARCHAR, qty INTEGER)"},
+      {"sql": "INSERT INTO ia_orders VALUES ('Berlin', 1), ('Oslo', 5)"},
+      {"sql": "SELECT qty, city, COUNT(1) FROM ia_orders", "expect": {"error": {"messageContains": "SQL compilation error:\n[IA_ORDERS.QTY] is not a valid group by expression"}}}
+    ]},
+    {"name": "a-qualified-reference-names-the-written-alias", "steps": [
+      {"sql": "CREATE TABLE ia_orders (city VARCHAR, qty INTEGER)"},
+      {"sql": "INSERT INTO ia_orders VALUES ('Berlin', 1), ('Oslo', 5)"},
+      {"sql": "SELECT t.city, COUNT(1) FROM ia_orders t", "expect": {"error": {"messageContains": "SQL compilation error:\n[T.CITY] is not a valid group by expression"}}}
+    ]},
+    {"name": "an-item-alias-does-not-shield-the-column", "steps": [
+      {"sql": "CREATE TABLE ia_orders (city VARCHAR, qty INTEGER)"},
+      {"sql": "INSERT INTO ia_orders VALUES ('Berlin', 1), ('Oslo', 5)"},
+      {"sql": "SELECT city AS c, COUNT(1) FROM ia_orders", "expect": {"error": {"messageContains": "SQL compilation error:\n[IA_ORDERS.CITY] is not a valid group by expression"}}}
+    ]},
+    {"name": "a-column-inside-an-expression-is-reached", "steps": [
+      {"sql": "CREATE TABLE ia_orders (city VARCHAR, qty INTEGER)"},
+      {"sql": "INSERT INTO ia_orders VALUES ('Berlin', 1), ('Oslo', 5)"},
+      {"sql": "SELECT UPPER(city), COUNT(1) FROM ia_orders", "expect": {"error": {"messageContains": "SQL compilation error:\n[IA_ORDERS.CITY] is not a valid group by expression"}}}
+    ]},
+    {"name": "a-having-alone-implies-the-aggregation", "steps": [
+      {"sql": "CREATE TABLE ia_orders (city VARCHAR, qty INTEGER)"},
+      {"sql": "INSERT INTO ia_orders VALUES ('Berlin', 1), ('Oslo', 5)"},
+      {"sql": "SELECT city FROM ia_orders HAVING COUNT(*) > 0", "expect": {"error": {"messageContains": "SQL compilation error:\n[IA_ORDERS.CITY] is not a valid group by expression"}}}
+    ]},
+    {"name": "the-refusal-fires-at-compile-time-over-an-empty-table", "steps": [
+      {"sql": "CREATE TABLE ia_empty (a INTEGER, b INTEGER)"},
+      {"sql": "SELECT COUNT(*) FROM ia_empty", "expect": {"value": "0"}},
+      {"sql": "SELECT a, COUNT(1) FROM ia_empty", "expect": {"error": {"messageContains": "SQL compilation error:\n[IA_EMPTY.A] is not a valid group by expression"}}}
+    ]},
+    {"name": "a-window-beside-the-plain-aggregate-does-not-shield", "steps": [
+      {"sql": "CREATE TABLE ia_orders (city VARCHAR, qty INTEGER)"},
+      {"sql": "INSERT INTO ia_orders VALUES ('Berlin', 1), ('Oslo', 5)"},
+      {"sql": "SELECT city, COUNT(1) OVER (), COUNT(1) FROM ia_orders", "expect": {"error": {"messageContains": "SQL compilation error:\n[IA_ORDERS.CITY] is not a valid group by expression"}}}
+    ]},
+    {"name": "a-star-names-its-first-column", "steps": [
+      {"sql": "CREATE TABLE ia_orders (city VARCHAR, qty INTEGER)"},
+      {"sql": "INSERT INTO ia_orders VALUES ('Berlin', 1), ('Oslo', 5)"},
+      {"sql": "SELECT * FROM ia_orders HAVING COUNT(*) > 1", "expect": {"error": {"messageContains": "SQL compilation error:\n[IA_ORDERS.CITY] is not a valid group by expression"}}}
+    ]},
+    {"name": "a-quoted-column-keeps-its-quotes", "steps": [
+      {"sql": "CREATE TABLE ia_qt (\"mIxed\" INTEGER, n INTEGER)"},
+      {"sql": "SELECT \"mIxed\", COUNT(1) FROM ia_qt", "expect": {"error": {"messageContains": "SQL compilation error:\n[IA_QT.\"mIxed\"] is not a valid group by expression"}}}
+    ]},
+    {"name": "an-unaliased-derived-table-spells-the-values-moniker", "steps": [
+      {"sql": "CREATE TABLE ia_orders (city VARCHAR, qty INTEGER)"},
+      {"sql": "INSERT INTO ia_orders VALUES ('Berlin', 1), ('Oslo', 5)"},
+      {"sql": "SELECT c2, COUNT(1) FROM (SELECT city AS c2 FROM ia_orders)", "expect": {"error": {"messageContains": "SQL compilation error:\n[\"values\".C2] is not a valid group by expression"}}}
+    ]},
+    {"name": "constants-and-aggregate-expressions-stay-legal", "steps": [
+      {"sql": "CREATE TABLE ia_orders (city VARCHAR, qty INTEGER)"},
+      {"sql": "INSERT INTO ia_orders VALUES ('Berlin', 1), ('Oslo', 5)"},
+      {"sql": "SELECT 'x', COUNT(1) FROM ia_orders", "expect": {"rows": [["x", 2]]}},
+      {"sql": "SELECT COUNT(1)+1 FROM ia_orders", "expect": {"rows": [[3]]}},
+      {"sql": "SELECT 1, COUNT(1) FROM ia_orders", "expect": {"rows": [[1, 2]]}}
+    ]},
+    {"name": "a-window-with-no-plain-aggregate-stays-legal", "steps": [
+      {"sql": "CREATE TABLE ia_orders (city VARCHAR, qty INTEGER)"},
+      {"sql": "INSERT INTO ia_orders VALUES ('Berlin', 1), ('Oslo', 5)"},
+      {"sql": "SELECT city, COUNT(1) OVER () FROM ia_orders ORDER BY city", "expect": {"rows": [["Berlin",2],["Oslo",2]], "ordered": true}}
+    ]}
+  ]
+}

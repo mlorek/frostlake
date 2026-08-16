@@ -16,6 +16,7 @@
 
 package dev.frostlake.functions.scalar.string;
 
+import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.functions.TextArgumentFunction;
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.types.StringType;
@@ -26,6 +27,17 @@ import java.util.List;
 public class Concat extends TextArgumentFunction {
     public Concat() {
         super("CONCAT", StringType.VARCHAR);
+    }
+
+
+    /**
+     * CONCAT refuses a VECTOR in ANY position, listing the argument types and carrying a position —
+     * the other of the two shapes a vector-to-text refusal takes. The {@code ||} spelling of the same
+     * operation is refused by the operator's own rule, which reports the function as '||'.
+     */
+    @Override
+    public SemiStructuredRejection vectorRejection(final int position) {
+        return SemiStructuredRejection.ARGUMENT_TYPES;
     }
 
     @Override

@@ -1,0 +1,117 @@
+{
+  "suite": "query",
+  "description": "SELECT semantics: filtering, aggregation, grouping, joins, set operations, ordering, limits.",
+  "tags": ["query"],
+  "tests": [
+    {
+      "name": "where-filter",
+      "steps": [
+        {"sql": "CREATE TABLE t (id INTEGER, v VARCHAR)"},
+        {"sql": "INSERT INTO t VALUES (1,'a'), (2,'b'), (3,'c')"},
+        {"sql": "SELECT COUNT(*) FROM t WHERE id >= 2", "expect": {"value": "2"}}
+      ]
+    },
+    {
+      "name": "aggregates",
+      "steps": [
+        {"sql": "CREATE TABLE t (n INTEGER)"},
+        {"sql": "INSERT INTO t VALUES (10), (20), (30), (NULL)"},
+        {"sql": "SELECT COUNT(*) FROM t", "expect": {"value": "4"}},
+        {"sql": "SELECT COUNT(n) FROM t", "expect": {"value": "3"}},
+        {"sql": "SELECT SUM(n) FROM t", "expect": {"value": "60"}},
+        {"sql": "SELECT AVG(n) FROM t", "expect": {"value": "20"}},
+        {"sql": "SELECT MIN(n) FROM t", "expect": {"value": "10"}},
+        {"sql": "SELECT MAX(n) FROM t", "expect": {"value": "30"}}
+      ]
+    },
+    {
+      "name": "group-by-having",
+      "steps": [
+        {"sql": "CREATE TABLE t (grp VARCHAR, n INTEGER)"},
+        {"sql": "INSERT INTO t VALUES ('a',1), ('a',2), ('b',3), ('b',4), ('c',5)"},
+        {"sql": "SELECT grp, SUM(n) FROM t GROUP BY grp HAVING SUM(n) > 3 ORDER BY grp",
+         "expect": {"rows": [["b","7"],["c","5"]], "ordered": true}}
+      ]
+    },
+    {
+      "name": "order-by-desc-nulls",
+      "steps": [
+        {"sql": "CREATE TABLE t (n INTEGER)"},
+        {"sql": "INSERT INTO t VALUES (2), (1), (3)"},
+        {"sql": "SELECT n FROM t ORDER BY n DESC", "expect": {"rows": [["3"],["2"],["1"]], "ordered": true}}
+      ]
+    },
+    {
+      "name": "distinct",
+      "steps": [
+        {"sql": "CREATE TABLE t (v VARCHAR)"},
+        {"sql": "INSERT INTO t VALUES ('x'), ('x'), ('y')"},
+        {"sql": "SELECT COUNT(DISTINCT v) FROM t", "expect": {"value": "2"}}
+      ]
+    },
+    {
+      "name": "inner-join",
+      "steps": [
+        {"sql": "CREATE TABLE a (id INTEGER, v VARCHAR)"},
+        {"sql": "CREATE TABLE b (id INTEGER, w VARCHAR)"},
+        {"sql": "INSERT INTO a VALUES (1,'a1'), (2,'a2')"},
+        {"sql": "INSERT INTO b VALUES (2,'b2'), (3,'b3')"},
+        {"sql": "SELECT a.v, b.w FROM a JOIN b ON a.id = b.id", "expect": {"rows": [["a2","b2"]]}}
+      ]
+    },
+    {
+      "name": "left-join-null-padding",
+      "steps": [
+        {"sql": "CREATE TABLE a (id INTEGER)"},
+        {"sql": "CREATE TABLE b (id INTEGER)"},
+        {"sql": "INSERT INTO a VALUES (1), (2)"},
+        {"sql": "INSERT INTO b VALUES (2)"},
+        {"sql": "SELECT a.id, b.id FROM a LEFT JOIN b ON a.id = b.id ORDER BY a.id",
+         "expect": {"rows": [["1", null],["2","2"]], "ordered": true}}
+      ]
+    },
+    {
+      "name": "union-and-union-all",
+      "steps": [
+        {"sql": "CREATE TABLE t (n INTEGER)"},
+        {"sql": "INSERT INTO t VALUES (1), (2)"},
+        {"sql": "SELECT COUNT(*) FROM (SELECT n FROM t UNION ALL SELECT n FROM t)", "expect": {"value": "4"}},
+        {"sql": "SELECT COUNT(*) FROM (SELECT n FROM t UNION SELECT n FROM t)", "expect": {"value": "2"}}
+      ]
+    },
+    {
+      "name": "limit-offset",
+      "steps": [
+        {"sql": "CREATE TABLE t (n INTEGER)"},
+        {"sql": "INSERT INTO t VALUES (1), (2), (3), (4), (5)"},
+        {"sql": "SELECT n FROM t ORDER BY n LIMIT 2", "expect": {"rows": [["1"],["2"]], "ordered": true}},
+        {"sql": "SELECT n FROM t ORDER BY n LIMIT 2 OFFSET 3", "expect": {"rows": [["4"],["5"]], "ordered": true}}
+      ]
+    },
+    {
+      "name": "subquery-and-cte",
+      "steps": [
+        {"sql": "CREATE TABLE t (n INTEGER)"},
+        {"sql": "INSERT INTO t VALUES (1), (2), (3)"},
+        {"sql": "SELECT COUNT(*) FROM t WHERE n IN (SELECT n FROM t WHERE n > 1)", "expect": {"value": "2"}},
+        {"sql": "WITH big AS (SELECT n FROM t WHERE n >= 2) SELECT COUNT(*) FROM big", "expect": {"value": "2"}}
+      ]
+    },
+    {
+      "name": "window-row-number",
+      "steps": [
+        {"sql": "CREATE TABLE t (grp VARCHAR, n INTEGER)"},
+        {"sql": "INSERT INTO t VALUES ('a',10), ('a',20), ('b',30)"},
+        {"sql": "SELECT grp, n, ROW_NUMBER() OVER (PARTITION BY grp ORDER BY n) FROM t ORDER BY grp, n",
+         "expect": {"rows": [["a","10","1"],["a","20","2"],["b","30","1"]], "ordered": true}}
+      ]
+    },
+    {
+      "name": "column-names-projection",
+      "steps": [
+        {"sql": "CREATE TABLE t (id INTEGER, v VARCHAR)"},
+        {"sql": "SELECT id AS the_id, v AS the_v FROM t", "expect": {"columns": ["THE_ID", "THE_V"], "rowCount": 0}}
+      ]
+    }
+  ]
+}

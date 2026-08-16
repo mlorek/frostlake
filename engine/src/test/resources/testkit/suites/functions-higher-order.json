@@ -1,0 +1,120 @@
+{
+  "suite": "functions-higher-order",
+  "description": "Snowflake higher-order functions with lambda arguments: TRANSFORM(<arr>, x -> ...), FILTER(<arr>, x -> <bool>) and REDUCE(<arr>, <init>, (acc, x) -> ...). The lambda body is applied per element with the parameter bound as VARIANT, so arithmetic over it is FLOAT - x + 1 over [1,2,3] yields [2.000000000000000e+00,3.000000000000000e+00,4.000000000000000e+00]. A lambda parameter may DECLARE a type, which is not decoration: it CASTS the bound element and therefore changes that arithmetic, live-verified - TRANSFORM([1,2], a -> a * 2) is [2.000000000000000e+00,4.000000000000000e+00] while TRANSFORM([1,2], a INT -> a * 2) is [2,4]. TRANSFORM and FILTER take a ONE-parameter lambda; the index-carrying two-parameter form is not Snowflake syntax and is refused, while REDUCE's two-parameter lambda stays valid. Converted 1:1 from functions/HigherOrderFunctionTest (now retired); the Java class read the ARRAY cell's toString with whitespace stripped. TO_VARCHAR prints a DOUBLE element in the fifteen-decimal exponent form, and that spelling is what carries the FLOAT claim.",
+  "tags": [
+    "functions",
+    "converted"
+  ],
+  "tests": [
+    {
+      "name": "transform-maps-each-element",
+      "steps": [
+        {
+          "sql": "SELECT REPLACE(TO_VARCHAR(TRANSFORM([1, 2, 3], x -> x + 1)), ' ', '')",
+          "expect": {
+            "value": "[2.000000000000000e+00,3.000000000000000e+00,4.000000000000000e+00]"
+          }
+        }
+      ]
+    },
+    {
+      "name": "filter-keeps-matching-elements",
+      "steps": [
+        {
+          "sql": "SELECT REPLACE(TO_VARCHAR(FILTER([1, 2, 3, 4], x -> x > 2)), ' ', '')",
+          "expect": {
+            "value": "[3,4]"
+          }
+        }
+      ]
+    },
+    {
+      "name": "reduce-folds-to-a-scalar",
+      "steps": [
+        {
+          "sql": "SELECT REDUCE([1, 2, 3, 4], 0, (acc, x) -> acc + x)",
+          "expect": {
+            "value": "10"
+          }
+        }
+      ]
+    },
+    {
+      "name": "a-lambda-parameter-may-carry-a-type",
+      "steps": [
+        {
+          "sql": "SELECT REPLACE(TO_VARCHAR(TRANSFORM([1, 2], a INT -> a * 2)), ' ', '')",
+          "expect": {
+            "value": "[2,4]"
+          }
+        },
+        {
+          "sql": "SELECT REPLACE(TO_VARCHAR(TRANSFORM([1, 2], a NUMBER -> a * 2)), ' ', '')",
+          "expect": {
+            "value": "[2,4]"
+          }
+        },
+        {
+          "sql": "SELECT REPLACE(TO_VARCHAR(TRANSFORM([1, 2], a -> a * 2)), ' ', '')",
+          "expect": {
+            "value": "[2.000000000000000e+00,4.000000000000000e+00]"
+          }
+        }
+      ]
+    },
+    {
+      "name": "a-lambda-over-object-elements-with-a-variant-path",
+      "steps": [
+        {
+          "sql": "SELECT REPLACE(TO_VARCHAR(TRANSFORM(PARSE_JSON('[{\"v\":1},{\"v\":2}]'), a -> a:v)), ' ', '')",
+          "expect": {
+            "value": "[1,2]"
+          }
+        }
+      ]
+    },
+    {
+      "name": "higher-order-functions-nest",
+      "steps": [
+        {
+          "sql": "SELECT REPLACE(TO_VARCHAR(TRANSFORM(FILTER([1, 2, 3, 4], x -> x > 1), y -> y * 10)), ' ', '')",
+          "expect": {
+            "value": "[2.000000000000000e+01,3.000000000000000e+01,4.000000000000000e+01]"
+          }
+        }
+      ]
+    },
+    {
+      "name": "index-carrying-lambdas-are-rejected",
+      "steps": [
+        {
+          "sql": "SELECT FILTER([10, 20, 30], (x, i) -> i > 0)",
+          "expect": {
+            "error": {}
+          }
+        },
+        {
+          "sql": "SELECT TRANSFORM([10, 20], (x, i) -> x + i)",
+          "expect": {
+            "error": {}
+          }
+        }
+      ]
+    },
+    {
+      "name": "a-null-array-yields-null",
+      "steps": [
+        {
+          "sql": "SELECT REDUCE(NULL, 0, (a, b) -> a + b)",
+          "expect": {
+            "rows": [
+              [
+                null
+              ]
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

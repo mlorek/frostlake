@@ -1,0 +1,56 @@
+{
+  "suite": "scripting-owners-rights-temporary-object",
+  "description": "What an OWNER'S RIGHTS stored procedure may not create, measured cell by cell on a real account, because the documented sentence ('cannot create named temporary objects') is both narrower and wider than it sounds. Every spelling of a temporary TABLE - TEMPORARY, TEMP, LOCAL TEMPORARY, GLOBAL TEMPORARY, VOLATILE, IF NOT EXISTS, OR REPLACE, and the CTAS form - is refused as the SAME kind, because live folds them all to 'temporary TABLE'. STAGE and FILE FORMAT name their own kinds, and so now do VIEW and FUNCTION, which used to escape this guard entirely: before the grammar learned their temporary spellings both failed as unsupported SYNTAX long before the owner's-rights check ran, so the refusal they were supposed to produce could not be asserted at all. TRANSIENT is NOT temporary and is created without complaint, as is a permanent table. EXECUTE AS CALLER is unrestricted. And the restriction belongs to the HANDLER LANGUAGES: a LANGUAGE SQL procedure creates a temporary table under owner's rights on a real account, so frostlake must not refuse it - and the rule follows the STATEMENT rather than the call tree, so a Java owner's-rights handler that CALLs a SQL procedure creating a temporary table is allowed, because that statement never passes through the handler's session. Converted 1:1 from scripting/OwnersRightsTemporaryObjectTest (now retired). Two notes the Java carried and this suite keeps: the .collect() is not decoration, because Snowpark's session.sql is LAZY on live so without an action the statement is never submitted and the refusal never fires; and PACKAGES is what puts Snowpark on the compiler's classpath live, though frostlake supplies its own stub either way. The Java looked at the ROOT cause message; frostlake raises the sentence at the top level, while live wraps it in a Java stack trace - the two agree on the claim and differ only in the packaging, which is why messageContains is the right shape here.",
+  "tags": ["scripting", "converted"],
+  "tests": [
+    {"name": "every-temporary-table-spelling-is-refused-as-a-table", "steps": [
+      {"sql": "CREATE OR REPLACE PROCEDURE p1() RETURNS VARCHAR LANGUAGE JAVA PACKAGES=('com.snowflake:snowpark:latest') HANDLER='H.go' EXECUTE AS OWNER AS $$\nimport com.snowflake.snowpark_java.Session;\npublic class H {\n  public String go(Session session) {\n    session.sql(\"CREATE TEMPORARY TABLE t1 (a INTEGER)\").collect();\n    return \"created\";\n  }\n}\n$$"},
+      {"sql": "CALL p1()", "expect": {"error": {"messageContains": "Stored procedure execution error: Unsupported statement type 'temporary TABLE'."}}},
+      {"sql": "CREATE OR REPLACE PROCEDURE p2() RETURNS VARCHAR LANGUAGE JAVA PACKAGES=('com.snowflake:snowpark:latest') HANDLER='H.go' EXECUTE AS OWNER AS $$\nimport com.snowflake.snowpark_java.Session;\npublic class H {\n  public String go(Session session) {\n    session.sql(\"CREATE TEMP TABLE t2 (a INTEGER)\").collect();\n    return \"created\";\n  }\n}\n$$"},
+      {"sql": "CALL p2()", "expect": {"error": {"messageContains": "Stored procedure execution error: Unsupported statement type 'temporary TABLE'."}}},
+      {"sql": "CREATE OR REPLACE PROCEDURE p3() RETURNS VARCHAR LANGUAGE JAVA PACKAGES=('com.snowflake:snowpark:latest') HANDLER='H.go' EXECUTE AS OWNER AS $$\nimport com.snowflake.snowpark_java.Session;\npublic class H {\n  public String go(Session session) {\n    session.sql(\"CREATE LOCAL TEMPORARY TABLE t3 (a INTEGER)\").collect();\n    return \"created\";\n  }\n}\n$$"},
+      {"sql": "CALL p3()", "expect": {"error": {"messageContains": "Stored procedure execution error: Unsupported statement type 'temporary TABLE'."}}},
+      {"sql": "CREATE OR REPLACE PROCEDURE p4() RETURNS VARCHAR LANGUAGE JAVA PACKAGES=('com.snowflake:snowpark:latest') HANDLER='H.go' EXECUTE AS OWNER AS $$\nimport com.snowflake.snowpark_java.Session;\npublic class H {\n  public String go(Session session) {\n    session.sql(\"CREATE GLOBAL TEMPORARY TABLE t4 (a INTEGER)\").collect();\n    return \"created\";\n  }\n}\n$$"},
+      {"sql": "CALL p4()", "expect": {"error": {"messageContains": "Stored procedure execution error: Unsupported statement type 'temporary TABLE'."}}},
+      {"sql": "CREATE OR REPLACE PROCEDURE p5() RETURNS VARCHAR LANGUAGE JAVA PACKAGES=('com.snowflake:snowpark:latest') HANDLER='H.go' EXECUTE AS OWNER AS $$\nimport com.snowflake.snowpark_java.Session;\npublic class H {\n  public String go(Session session) {\n    session.sql(\"CREATE VOLATILE TABLE t5 (a INTEGER)\").collect();\n    return \"created\";\n  }\n}\n$$"},
+      {"sql": "CALL p5()", "expect": {"error": {"messageContains": "Stored procedure execution error: Unsupported statement type 'temporary TABLE'."}}},
+      {"sql": "CREATE OR REPLACE PROCEDURE p6() RETURNS VARCHAR LANGUAGE JAVA PACKAGES=('com.snowflake:snowpark:latest') HANDLER='H.go' EXECUTE AS OWNER AS $$\nimport com.snowflake.snowpark_java.Session;\npublic class H {\n  public String go(Session session) {\n    session.sql(\"CREATE TEMPORARY TABLE IF NOT EXISTS t6 (a INTEGER)\").collect();\n    return \"created\";\n  }\n}\n$$"},
+      {"sql": "CALL p6()", "expect": {"error": {"messageContains": "Stored procedure execution error: Unsupported statement type 'temporary TABLE'."}}},
+      {"sql": "CREATE OR REPLACE PROCEDURE p7() RETURNS VARCHAR LANGUAGE JAVA PACKAGES=('com.snowflake:snowpark:latest') HANDLER='H.go' EXECUTE AS OWNER AS $$\nimport com.snowflake.snowpark_java.Session;\npublic class H {\n  public String go(Session session) {\n    session.sql(\"CREATE OR REPLACE TEMPORARY TABLE t7 (a INTEGER)\").collect();\n    return \"created\";\n  }\n}\n$$"},
+      {"sql": "CALL p7()", "expect": {"error": {"messageContains": "Stored procedure execution error: Unsupported statement type 'temporary TABLE'."}}},
+      {"sql": "CREATE OR REPLACE PROCEDURE p8() RETURNS VARCHAR LANGUAGE JAVA PACKAGES=('com.snowflake:snowpark:latest') HANDLER='H.go' EXECUTE AS OWNER AS $$\nimport com.snowflake.snowpark_java.Session;\npublic class H {\n  public String go(Session session) {\n    session.sql(\"CREATE TEMPORARY TABLE t8 AS SELECT 1 a\").collect();\n    return \"created\";\n  }\n}\n$$"},
+      {"sql": "CALL p8()", "expect": {"error": {"messageContains": "Stored procedure execution error: Unsupported statement type 'temporary TABLE'."}}}
+    ]},
+    {"name": "a-stage-and-a-file-format-name-their-own-kind", "steps": [
+      {"sql": "CREATE OR REPLACE PROCEDURE p_stage() RETURNS VARCHAR LANGUAGE JAVA PACKAGES=('com.snowflake:snowpark:latest') HANDLER='H.go' EXECUTE AS OWNER AS $$\nimport com.snowflake.snowpark_java.Session;\npublic class H {\n  public String go(Session session) {\n    session.sql(\"CREATE TEMPORARY STAGE s1\").collect();\n    return \"created\";\n  }\n}\n$$"},
+      {"sql": "CALL p_stage()", "expect": {"error": {"messageContains": "Stored procedure execution error: Unsupported statement type 'temporary STAGE'."}}},
+      {"sql": "CREATE OR REPLACE PROCEDURE p_ff() RETURNS VARCHAR LANGUAGE JAVA PACKAGES=('com.snowflake:snowpark:latest') HANDLER='H.go' EXECUTE AS OWNER AS $$\nimport com.snowflake.snowpark_java.Session;\npublic class H {\n  public String go(Session session) {\n    session.sql(\"CREATE TEMPORARY FILE FORMAT f1 TYPE=CSV\").collect();\n    return \"created\";\n  }\n}\n$$"},
+      {"sql": "CALL p_ff()", "expect": {"error": {"messageContains": "Stored procedure execution error: Unsupported statement type 'temporary FILE_FORMAT'."}}}
+    ]},
+    {"name": "a-view-and-a-function-name-their-own-kind", "steps": [
+      {"sql": "CREATE OR REPLACE PROCEDURE p_view() RETURNS VARCHAR LANGUAGE JAVA PACKAGES=('com.snowflake:snowpark:latest') HANDLER='H.go' EXECUTE AS OWNER AS $$\nimport com.snowflake.snowpark_java.Session;\npublic class H {\n  public String go(Session session) {\n    session.sql(\"CREATE TEMPORARY VIEW v1 AS SELECT 1 AS n\").collect();\n    return \"created\";\n  }\n}\n$$"},
+      {"sql": "CALL p_view()", "expect": {"error": {"messageContains": "Stored procedure execution error: Unsupported statement type 'temporary VIEW'."}}},
+      {"sql": "CREATE OR REPLACE PROCEDURE p_fn() RETURNS VARCHAR LANGUAGE JAVA PACKAGES=('com.snowflake:snowpark:latest') HANDLER='H.go' EXECUTE AS OWNER AS $$\nimport com.snowflake.snowpark_java.Session;\npublic class H {\n  public String go(Session session) {\n    session.sql(\"CREATE TEMPORARY FUNCTION f1() RETURNS INTEGER AS '1'\").collect();\n    return \"created\";\n  }\n}\n$$"},
+      {"sql": "CALL p_fn()", "expect": {"error": {"messageContains": "Stored procedure execution error: Unsupported statement type 'temporary FUNCTION'."}}}
+    ]},
+    {"name": "transient-and-permanent-objects-are-allowed", "steps": [
+      {"sql": "CREATE OR REPLACE PROCEDURE p_transient() RETURNS VARCHAR LANGUAGE JAVA PACKAGES=('com.snowflake:snowpark:latest') HANDLER='H.go' EXECUTE AS OWNER AS $$\nimport com.snowflake.snowpark_java.Session;\npublic class H {\n  public String go(Session session) {\n    session.sql(\"CREATE TRANSIENT TABLE tr1 (a INTEGER)\").collect();\n    return \"created\";\n  }\n}\n$$"},
+      {"sql": "CALL p_transient()", "expect": {"value": "created"}},
+      {"sql": "CREATE OR REPLACE PROCEDURE p_perm() RETURNS VARCHAR LANGUAGE JAVA PACKAGES=('com.snowflake:snowpark:latest') HANDLER='H.go' EXECUTE AS OWNER AS $$\nimport com.snowflake.snowpark_java.Session;\npublic class H {\n  public String go(Session session) {\n    session.sql(\"CREATE TABLE pm1 (a INTEGER)\").collect();\n    return \"created\";\n  }\n}\n$$"},
+      {"sql": "CALL p_perm()", "expect": {"value": "created"}}
+    ]},
+    {"name": "callers-rights-is-unrestricted", "steps": [
+      {"sql": "CREATE OR REPLACE PROCEDURE p_caller() RETURNS VARCHAR LANGUAGE JAVA PACKAGES=('com.snowflake:snowpark:latest') HANDLER='H.go' EXECUTE AS CALLER AS $$\nimport com.snowflake.snowpark_java.Session;\npublic class H {\n  public String go(Session session) {\n    session.sql(\"CREATE TEMPORARY TABLE c1 (a INTEGER)\").collect();\n    return \"created\";\n  }\n}\n$$"},
+      {"sql": "CALL p_caller()", "expect": {"value": "created"}}
+    ]},
+    {"name": "a-sql-procedure-is-unrestricted-under-owners-rights", "steps": [
+      {"sql": "CREATE OR REPLACE PROCEDURE sql_owner() RETURNS VARCHAR LANGUAGE SQL EXECUTE AS OWNER AS $$BEGIN CREATE TEMPORARY TABLE sq1 (a INTEGER); RETURN 'created'; END;$$"},
+      {"sql": "CALL sql_owner()", "expect": {"value": "created"}}
+    ]},
+    {"name": "calling-a-sql-procedure-that-creates-a-temp-table-is-allowed", "steps": [
+      {"sql": "CREATE OR REPLACE PROCEDURE inner_sql() RETURNS VARCHAR LANGUAGE SQL AS $$BEGIN CREATE TEMPORARY TABLE nested1 (a INTEGER); RETURN 'ok'; END;$$"},
+      {"sql": "CREATE OR REPLACE PROCEDURE p_nested() RETURNS VARCHAR LANGUAGE JAVA PACKAGES=('com.snowflake:snowpark:latest') HANDLER='H.go' EXECUTE AS OWNER AS $$\nimport com.snowflake.snowpark_java.Session;\npublic class H {\n  public String go(Session session) {\n    session.sql(\"CALL inner_sql()\").collect();\n    return \"created\";\n  }\n}\n$$"},
+      {"sql": "CALL p_nested()", "expect": {"value": "created"}}
+    ]}
+  ]
+}

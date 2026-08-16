@@ -1,0 +1,83 @@
+{
+  "suite": "features-default-expression",
+  "description": "The DEFAULT constraint with expressions, through the SQL surface - the DESCRIBE TABLE default cell, which carries the declared expression verbatim: literals (quoted back exactly), CURRENT_TIMESTAMP with and without parentheses, CURRENT_DATE, arithmetic, function calls, concatenation, CASE, negative numbers, complex and parenthesized expressions, several defaulted columns in one table, DEFAULT NULL leaving the column nullable, booleans, and decimal expressions. Converted 1:1 from features/DefaultExpressionTest (now retired).",
+  "tags": ["features", "converted"],
+  "tests": [
+    {"name": "default-with-literal", "steps": [
+      {"sql": "CREATE TABLE test1 (id INTEGER, status VARCHAR DEFAULT 'active')"},
+      {"sql": "DESCRIBE TABLE test1"},
+      {"sql": "SELECT MAX(IFF(\"name\" = 'STATUS', \"default\", NULL)) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "'active'"}}
+    ]},
+    {"name": "default-with-current-timestamp", "steps": [
+      {"sql": "CREATE TABLE test2 (id INTEGER, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"},
+      {"sql": "DESCRIBE TABLE test2"},
+      {"sql": "SELECT CONTAINS(UPPER(MAX(IFF(\"name\" = 'CREATED_AT', \"default\", NULL))), 'CURRENT_TIMESTAMP') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "true"}}
+    ]},
+    {"name": "default-with-current-timestamp-parens", "steps": [
+      {"sql": "CREATE TABLE test3 (id INTEGER, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP())"},
+      {"sql": "DESCRIBE TABLE test3"},
+      {"sql": "SELECT CONTAINS(UPPER(MAX(IFF(\"name\" = 'UPDATED_AT', \"default\", NULL))), 'CURRENT_TIMESTAMP') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "true"}}
+    ]},
+    {"name": "default-with-current-date", "steps": [
+      {"sql": "CREATE TABLE test4 (id INTEGER, date_col DATE DEFAULT CURRENT_DATE)"},
+      {"sql": "DESCRIBE TABLE test4"},
+      {"sql": "SELECT CONTAINS(UPPER(MAX(IFF(\"name\" = 'DATE_COL', \"default\", NULL))), 'CURRENT_DATE') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "true"}}
+    ]},
+    {"name": "default-with-arithmetic-expression", "steps": [
+      {"sql": "CREATE TABLE test5 (id INTEGER, quantity INTEGER DEFAULT 10 + 5)"},
+      {"sql": "DESCRIBE TABLE test5"},
+      {"sql": "SELECT CONTAINS(UPPER(MAX(IFF(\"name\" = 'QUANTITY', \"default\", NULL))), '10 + 5') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "true"}}
+    ]},
+    {"name": "default-with-function-call", "steps": [
+      {"sql": "CREATE TABLE test6 (id INTEGER, upper_name VARCHAR DEFAULT UPPER('test'))"},
+      {"sql": "DESCRIBE TABLE test6"},
+      {"sql": "SELECT CONTAINS(UPPER(MAX(IFF(\"name\" = 'UPPER_NAME', \"default\", NULL))), 'UPPER') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "true"}}
+    ]},
+    {"name": "default-with-concatenation", "steps": [
+      {"sql": "CREATE TABLE test7 (id INTEGER, full_name VARCHAR DEFAULT 'Mr. ' || 'Unknown')"},
+      {"sql": "DESCRIBE TABLE test7"},
+      {"sql": "SELECT CONTAINS(MAX(IFF(\"name\" = 'FULL_NAME', \"default\", NULL)), '||') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "true"}}
+    ]},
+    {"name": "default-with-case-expression", "steps": [
+      {"sql": "CREATE TABLE test8 (id INTEGER, priority VARCHAR DEFAULT CASE WHEN 1 = 1 THEN 'high' ELSE 'low' END)"},
+      {"sql": "DESCRIBE TABLE test8"},
+      {"sql": "SELECT CONTAINS(UPPER(MAX(IFF(\"name\" = 'PRIORITY', \"default\", NULL))), 'CASE') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "true"}}
+    ]},
+    {"name": "default-with-negative-number", "steps": [
+      {"sql": "CREATE TABLE test9 (id INTEGER, balance INTEGER DEFAULT -100)"},
+      {"sql": "DESCRIBE TABLE test9"},
+      {"sql": "SELECT CONTAINS(MAX(IFF(\"name\" = 'BALANCE', \"default\", NULL)), '-100') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "true"}}
+    ]},
+    {"name": "default-with-complex-expression", "steps": [
+      {"sql": "CREATE TABLE test10 (id INTEGER, computed INTEGER DEFAULT (10 * 5) + (20 - 5))"},
+      {"sql": "DESCRIBE TABLE test10"},
+      {"sql": "SELECT CONTAINS(MAX(IFF(\"name\" = 'COMPUTED', \"default\", NULL)), '(10 * 5)') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "true"}}
+    ]},
+    {"name": "default-with-parenthesized-expression", "steps": [
+      {"sql": "CREATE TABLE test11 (id INTEGER, value INTEGER DEFAULT (100))"},
+      {"sql": "DESCRIBE TABLE test11"},
+      {"sql": "SELECT CONTAINS(MAX(IFF(\"name\" = 'VALUE', \"default\", NULL)), '100') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "true"}}
+    ]},
+    {"name": "multiple-columns-with-default-expressions", "steps": [
+      {"sql": "CREATE TABLE test12 (id INTEGER DEFAULT 0, name VARCHAR DEFAULT 'unnamed', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, count INTEGER DEFAULT 5 * 2)"},
+      {"sql": "DESCRIBE TABLE test12", "expect": {"rowCount": 4}},
+      {"sql": "SELECT CONTAINS(MAX(IFF(\"name\" = 'ID', \"default\", NULL)), '0'), MAX(IFF(\"name\" = 'NAME', \"default\", NULL)), CONTAINS(UPPER(MAX(IFF(\"name\" = 'CREATED_AT', \"default\", NULL))), 'CURRENT_TIMESTAMP'), CONTAINS(MAX(IFF(\"name\" = 'COUNT', \"default\", NULL)), '5 * 2') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["true", "'unnamed'", "true", "true"]]}}
+    ]},
+    {"name": "default-with-null", "steps": [
+      {"sql": "CREATE TABLE test13 (id INTEGER, nullable_col VARCHAR DEFAULT NULL)"},
+      {"sql": "DESCRIBE TABLE test13"},
+      {"sql": "SELECT MAX(IFF(\"name\" = 'NULLABLE_COL', \"null?\", NULL)) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "Y"}}
+    ]},
+    {"name": "default-with-boolean", "steps": [
+      {"sql": "CREATE TABLE test14 (id INTEGER, is_active BOOLEAN DEFAULT TRUE)"},
+      {"sql": "DESCRIBE TABLE test14"},
+      {"sql": "SELECT CONTAINS(UPPER(MAX(IFF(\"name\" = 'IS_ACTIVE', \"default\", NULL))), 'TRUE') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "true"}}
+    ]},
+    {"name": "default-with-decimal-expression", "steps": [
+      {"sql": "CREATE TABLE test15 (id INTEGER, rate DECIMAL DEFAULT 3.14 * 2)"},
+      {"sql": "DESCRIBE TABLE test15"},
+      {"sql": "SELECT CONTAINS(MAX(IFF(\"name\" = 'RATE', \"default\", NULL)), '3.14') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "true"}}
+    ]}
+  ]
+}

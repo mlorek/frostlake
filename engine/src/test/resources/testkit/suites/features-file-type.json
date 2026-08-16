@@ -1,0 +1,102 @@
+{
+  "suite": "features-file-type",
+  "description": "The FILE column type - the TYPE SURFACE only (the TO_FILE / FL_* function family is a separate concern): CREATE TABLE (f FILE) is accepted and DESCRIBE TABLE / SHOW COLUMNS (OBJECT-valued descriptor) / GET_DDL / INFORMATION_SCHEMA.COLUMNS.DATA_TYPE all report FILE (not folded onto a family the way INTEGER folds onto NUMBER), ALTER TABLE adds FILE columns, NULL round-trips, a write of a missing stage path is rejected ('was not found' - the write path validates as TO_FILE does), FILE is NOT a cast target (::/CAST render the operand, TRY_CAST renders without the target type), not a structured element type, takes no type parameters, remains a plain identifier (column, alias, table, scripting variable), is a routine parameter and RETURNS type, a scripting variable type, and CTAS preserves it. Converted 1:1 from features/FileTypeTest (now retired).",
+  "tags": ["features", "converted"],
+  "tests": [
+    {"name": "describe-table-reports-file-type", "steps": [
+      {"sql": "CREATE TABLE ft_desc (id INTEGER, f FILE)"},
+      {"sql": "DESCRIBE TABLE ft_desc", "expect": {"rowCount": 2}},
+      {"sql": "SELECT MAX(IFF(\"name\" = 'F', UPPER(\"type\"), NULL)) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "FILE"}}
+    ]},
+    {"name": "information-schema-reports-file-data-type", "steps": [
+      {"sql": "CREATE TABLE ft_isc (id INTEGER, f FILE)"},
+      {"sql": "SELECT UPPER(data_type) FROM information_schema.columns WHERE table_name = 'FT_ISC' AND column_name = 'F'",
+       "expect": {"rowCount": 1, "rows": [["FILE"]]}},
+      {"sql": "SELECT UPPER(data_type) FROM information_schema.columns WHERE table_name = 'FT_ISC' AND column_name = 'ID'",
+       "expect": {"rowCount": 1, "rows": [["NUMBER"]]}}
+    ]},
+    {"name": "show-columns-reports-file-data-type", "steps": [
+      {"sql": "CREATE TABLE ft_show (f FILE)"},
+      {"sql": "SHOW COLUMNS IN TABLE ft_show", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"data_type\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"value": "{\"type\":\"FILE\",\"outputType\":\"OBJECT\",\"nullable\":true}"}}
+    ]},
+    {"name": "get-ddl-renders-file-column", "steps": [
+      {"sql": "CREATE TABLE ft_ddl (id INTEGER, f FILE)"},
+      {"sql": "SELECT CONTAINS(GET_DDL('TABLE', 'ft_ddl'), 'F FILE')", "expect": {"value": "true"}}
+    ]},
+    {"name": "alter-table-adds-file-column", "steps": [
+      {"sql": "CREATE TABLE ft_alter (id INTEGER)"},
+      {"sql": "ALTER TABLE ft_alter ADD COLUMN g FILE"},
+      {"sql": "DESCRIBE TABLE ft_alter", "expect": {"rowCount": 2}},
+      {"sql": "SELECT MAX(IFF(\"name\" = 'G', UPPER(\"type\"), NULL)) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "FILE"}}
+    ]},
+    {"name": "null-round-trips-through-file-column", "steps": [
+      {"sql": "CREATE TABLE ft_null (id INTEGER, f FILE)"},
+      {"sql": "INSERT INTO ft_null VALUES (1, NULL)"},
+      {"sql": "SELECT id, f FROM ft_null", "expect": {"rows": [["1", "NULL"]]}},
+      {"sql": "SELECT id FROM ft_null WHERE f IS NULL", "expect": {"rowCount": 1}}
+    ]},
+    {"name": "write-of-a-missing-stage-file-is-rejected", "steps": [
+      {"sql": "CREATE STAGE ft_stage"},
+      {"sql": "CREATE TABLE ft_write (id INTEGER, f FILE)"},
+      {"sql": "INSERT INTO ft_write SELECT 1, '@ft_stage/no_such_file.txt'",
+       "expect": {"error": {"messageContains": "was not found"}}},
+      {"sql": "INSERT INTO ft_write VALUES (2, NULL)"},
+      {"sql": "UPDATE ft_write SET f = '@ft_stage/no_such_file.txt' WHERE id = 2",
+       "expect": {"error": {"messageContains": "was not found"}}}
+    ]},
+    {"name": "cast-to-file-is-rejected", "steps": [
+      {"sql": "SELECT NULL::FILE",
+       "expect": {"error": {"messageContains": "invalid type [CAST(NULL AS FILE)] for parameter 'TO_FILE'"}}},
+      {"sql": "SELECT CAST(NULL AS FILE)",
+       "expect": {"error": {"messageContains": "invalid type [CAST(NULL AS FILE)] for parameter 'TO_FILE'"}}}
+    ]},
+    {"name": "cast-of-a-literal-to-file-names-the-operand", "steps": [
+      {"sql": "SELECT '@st/x.txt'::FILE",
+       "expect": {"error": {"messageContains": "invalid type [CAST('@st/x.txt' AS FILE)] for parameter 'TO_FILE'"}}}
+    ]},
+    {"name": "try-cast-to-file-is-rejected", "steps": [
+      {"sql": "SELECT TRY_CAST(NULL AS FILE)",
+       "expect": {"error": {"messageContains": "invalid type [TRY_CAST(NULL)] for parameter 'TO_FILE'"}}}
+    ]},
+    {"name": "file-is-not-a-structured-element-type", "steps": [
+      {"sql": "CREATE TABLE ft_arr (f ARRAY(FILE))",
+       "expect": {"error": {"messageContains": "Unsupported data type 'FILE'"}}},
+      {"sql": "CREATE TABLE ft_obj (f OBJECT(x FILE))",
+       "expect": {"error": {"messageContains": "Unsupported data type 'FILE'"}}},
+      {"sql": "CREATE TABLE ft_map (f MAP(VARCHAR, FILE))",
+       "expect": {"error": {"messageContains": "Unsupported data type 'FILE'"}}}
+    ]},
+    {"name": "file-takes-no-type-parameters", "steps": [
+      {"sql": "CREATE TABLE ft_sized (f FILE(10))", "expect": {"error": {"messageContains": "syntax error"}}},
+      {"sql": "CREATE TABLE ft_empty (f FILE())", "expect": {"error": {"messageContains": "syntax error"}}}
+    ]},
+    {"name": "file-remains-a-plain-identifier", "steps": [
+      {"sql": "CREATE TABLE ft_ident (file INTEGER)"},
+      {"sql": "INSERT INTO ft_ident VALUES (7)"},
+      {"sql": "SELECT file FROM ft_ident", "expect": {"value": "7"}},
+      {"sql": "SELECT 1 AS file", "expect": {"value": "1"}},
+      {"sql": "CREATE TABLE file (x INTEGER)"},
+      {"sql": "INSERT INTO file VALUES (3)"},
+      {"sql": "SELECT x FROM file", "expect": {"value": "3"}},
+      {"sql": "EXECUTE IMMEDIATE $$\nDECLARE file INTEGER := 1;\nBEGIN\n  RETURN file;\nEND;\n$$", "expect": {"value": "1"}}
+    ]},
+    {"name": "file-is-a-routine-parameter-and-return-type", "steps": [
+      {"sql": "CREATE FUNCTION ft_fn_arg(x FILE) RETURNS VARCHAR AS $$ 'a' $$"},
+      {"sql": "CREATE FUNCTION ft_fn_ret(x INTEGER) RETURNS FILE AS $$ NULL $$"},
+      {"sql": "CREATE PROCEDURE ft_proc_arg(x FILE) RETURNS VARCHAR LANGUAGE SQL AS $$\nBEGIN\n  RETURN 'a';\nEND;\n$$"},
+      {"sql": "CREATE PROCEDURE ft_proc_ret(x INTEGER) RETURNS FILE LANGUAGE SQL AS $$\nBEGIN\n  RETURN NULL;\nEND;\n$$"}
+    ]},
+    {"name": "file-is-a-scripting-variable-type", "steps": [
+      {"sql": "EXECUTE IMMEDIATE $$\nDECLARE v FILE;\nBEGIN\n  v := NULL;\n  RETURN 1;\nEND;\n$$", "expect": {"value": "1"}},
+      {"sql": "EXECUTE IMMEDIATE $$\nBEGIN\n  LET v FILE := NULL;\n  RETURN 1;\nEND;\n$$", "expect": {"value": "1"}}
+    ]},
+    {"name": "ctas-preserves-the-file-column-type", "steps": [
+      {"sql": "CREATE TABLE ft_src (f FILE)"},
+      {"sql": "CREATE TABLE ft_copy AS SELECT f FROM ft_src"},
+      {"sql": "DESCRIBE TABLE ft_copy", "expect": {"rowCount": 1}},
+      {"sql": "SELECT MAX(IFF(\"name\" = 'F', UPPER(\"type\"), NULL)) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "FILE"}}
+    ]}
+  ]
+}

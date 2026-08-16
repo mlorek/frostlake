@@ -1,0 +1,29 @@
+{
+  "suite": "query-group-by-all",
+  "description": "GROUP BY ALL groups by every NON-AGGREGATE select item without naming them. An expression item groups just as a bare column does, so SELECT LOWER(region), COUNT(*) ... GROUP BY ALL groups by the folded value. When EVERY item is an aggregate there is nothing to group by, and the result is one grand-total row. It composes with HAVING and with joins, taking its keys from both sides. Converted 1:1 from query/GroupByAllTest (now retired); the Java read individual row indexes, which the converted tests state as whole ordered row sets.",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "it-groups-by-every-non-aggregate-item", "steps": [
+      {"sql": "CREATE TABLE sales (region VARCHAR, city VARCHAR, amount INTEGER)"},
+      {"sql": "INSERT INTO sales VALUES ('EMEA', 'Paris', 10), ('EMEA', 'Paris', 20), ('EMEA', 'Berlin', 5), ('APAC', 'Tokyo', 40)"},
+      {"sql": "SELECT region, city, SUM(amount) FROM sales GROUP BY ALL ORDER BY region, city", "expect": {"rows": [["APAC","Tokyo",40],["EMEA","Berlin",5],["EMEA","Paris",30]], "ordered": true}}
+    ]},
+    {"name": "expression-items-group-too", "steps": [
+      {"sql": "CREATE TABLE sales (region VARCHAR, city VARCHAR, amount INTEGER)"},
+      {"sql": "INSERT INTO sales VALUES ('EMEA', 'Paris', 10), ('EMEA', 'Paris', 20), ('EMEA', 'Berlin', 5), ('APAC', 'Tokyo', 40)"},
+      {"sql": "SELECT LOWER(region), COUNT(*) FROM sales GROUP BY ALL ORDER BY 1", "expect": {"rows": [["apac",1],["emea",3]], "ordered": true}}
+    ]},
+    {"name": "all-aggregates-means-one-grand-total-row", "steps": [
+      {"sql": "CREATE TABLE sales (region VARCHAR, city VARCHAR, amount INTEGER)"},
+      {"sql": "INSERT INTO sales VALUES ('EMEA', 'Paris', 10), ('EMEA', 'Paris', 20), ('EMEA', 'Berlin', 5), ('APAC', 'Tokyo', 40)"},
+      {"sql": "SELECT SUM(amount), COUNT(*) FROM sales GROUP BY ALL", "expect": {"rows": [[75, 4]]}}
+    ]},
+    {"name": "it-composes-with-having-and-joins", "steps": [
+      {"sql": "CREATE TABLE sales (region VARCHAR, city VARCHAR, amount INTEGER)"},
+      {"sql": "INSERT INTO sales VALUES ('EMEA', 'Paris', 10), ('EMEA', 'Paris', 20), ('EMEA', 'Berlin', 5), ('APAC', 'Tokyo', 40)"},
+      {"sql": "CREATE TABLE regions (region VARCHAR, mgr VARCHAR)"},
+      {"sql": "INSERT INTO regions VALUES ('EMEA', 'M1'), ('APAC', 'M2')"},
+      {"sql": "SELECT r.mgr, s.region, SUM(s.amount) AS total FROM sales s JOIN regions r ON r.region = s.region GROUP BY ALL HAVING SUM(s.amount) > 30 ORDER BY r.mgr", "expect": {"rows": [["M1","EMEA",35],["M2","APAC",40]], "ordered": true}}
+    ]}
+  ]
+}

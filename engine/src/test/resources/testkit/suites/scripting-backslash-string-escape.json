@@ -1,0 +1,42 @@
+{
+  "suite": "scripting-backslash-string-escape",
+  "description": "Backslash escape sequences inside single-quoted string literals, matching Snowflake. A '...' literal accepts BOTH quote doubling ('' becomes ') and BACKSLASH escapes: \\' becomes ', \\\\ becomes a single backslash, and \\n / \\t / \\r become their control characters. A backslash before an OCTAL DIGIT yields that control character, so '\\2' is the single character 0x02 and not a backslash followed by a digit - LENGTH proves it is one character. Any OTHER backslash is simply DROPPED, so '\\%' is just %. All decode sites share SqlStringLiterals and the lexer treats a backslash as always beginning an escape, so the boundaries agree. The headline case is a stored procedure whose '-quoted body builds dynamic SQL with backslash-escaped quotes, a shape Snowflake exports produce: the body is decoded ONCE at CREATE and re-parsed at CALL, so both layers have to agree - previously the body was left with stray backslashes that failed to re-lex (token recognition error at: '\\'). The last test proves the built SQL not only looks clean but actually EXECUTES. Converted 1:1 from scripting/BackslashStringEscapeTest (now retired); the procedure bodies are written on one line here, which changes nothing about the escaping under test.",
+  "tags": ["scripting", "converted"],
+  "tests": [
+    {"name": "a-backslash-escaped-quote-yields-a-quote", "steps": [
+      {"sql": "SELECT '\\''", "expect": {"value": "'"}}
+    ]},
+    {"name": "a-doubled-quote-yields-a-quote", "steps": [
+      {"sql": "SELECT ''''", "expect": {"value": "'"}}
+    ]},
+    {"name": "an-escaped-backslash-yields-a-single-backslash", "steps": [
+      {"sql": "SELECT '\\\\'", "expect": {"value": "\\"}}
+    ]},
+    {"name": "a-backslash-in-a-windows-path-is-preserved", "steps": [
+      {"sql": "SELECT 'C:\\\\Users'", "expect": {"value": "C:\\Users"}}
+    ]},
+    {"name": "a-quote-embedded-with-a-backslash", "steps": [
+      {"sql": "SELECT 'It\\'s'", "expect": {"value": "It's"}}
+    ]},
+    {"name": "an-unrecognized-backslash-is-dropped", "steps": [
+      {"sql": "SELECT 'a\\%b'", "expect": {"value": "a%b"}}
+    ]},
+    {"name": "a-backslash-digit-decodes-as-an-octal-control-character", "steps": [
+      {"sql": "SELECT 'a\\2b'", "expect": {"value": "a\u0002b"}},
+      {"sql": "SELECT LENGTH('\\2')", "expect": {"value": 1}}
+    ]},
+    {"name": "a-backslash-n-yields-a-newline", "steps": [
+      {"sql": "SELECT 'a\\nb'", "expect": {"value": "a\nb"}}
+    ]},
+    {"name": "a-procedure-body-builds-clean-quoted-sql-from-backslash-escapes", "steps": [
+      {"sql": "CREATE OR REPLACE PROCEDURE build_stmt(\"COL\" VARCHAR, \"VAL\" VARCHAR) RETURNS VARCHAR LANGUAGE SQL AS 'BEGIN LET stmt VARCHAR := ''UPDATE t SET '' || :col || '' = \\\\'''' || :val || ''\\\\'';''; RETURN stmt; END;'"},
+      {"sql": "CALL build_stmt('label', 'active')", "expect": {"value": "UPDATE t SET label = 'active';"}}
+    ]},
+    {"name": "execute-immediate-runs-a-backslash-built-statement", "steps": [
+      {"sql": "CREATE TABLE tvals (v VARCHAR)"},
+      {"sql": "CREATE OR REPLACE PROCEDURE ins_val(\"V\" VARCHAR) RETURNS VARCHAR LANGUAGE SQL AS 'BEGIN LET stmt VARCHAR := ''INSERT INTO tvals VALUES (\\\\'''' || :v || ''\\\\'')''; EXECUTE IMMEDIATE stmt; RETURN ''ok''; END;'"},
+      {"sql": "CALL ins_val('hello')", "expect": {"value": "ok"}},
+      {"sql": "SELECT v FROM tvals", "expect": {"value": "hello"}}
+    ]}
+  ]
+}

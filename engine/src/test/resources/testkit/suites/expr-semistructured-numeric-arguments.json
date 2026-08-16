@@ -1,0 +1,291 @@
+{
+  "suite": "expr-semistructured-numeric-arguments",
+  "description": "A statically OBJECT/ARRAY/MAP-typed value is not a number, refused in live's three distinct shapes: SUM/AVG and the numeric scalars name themselves in an argument-type list (bare AVG reporting the SUM it desugars into), MEDIAN and the percentile WITHIN GROUP value use the incompatible-types pair with a constant NUMBER(9,0), and the moment aggregates report their internal '*' listing the offending type twice - over empty inputs, every argument position, DISTINCT/windowed forms, conditionals, derived columns and producer functions, with structured types naming their whole parameterised type. The bounds: a VARIANT is never rejected at compile time (casting to VARIANT lifts the rejection, casting back brings it back, path reads yield accepted VARIANTs), the accepted aggregates / key positions / ordinary arithmetic / explicit conversions / semi-structured-aware functions all stay untouched. Converted 1:1 from expressions/SemiStructuredNumericArgumentTest (now retired).",
+  "tags": ["expressions", "converted"],
+  "tests": [
+    {"name": "sum-and-avg-reject-semi-structured", "steps": [
+      {"sql": "CREATE TABLE snt (id INTEGER, o OBJECT, a ARRAY, v VARIANT, vo VARIANT, s VARCHAR, n NUMBER, f DOUBLE, d DATE)"},
+      {"sql": "SELECT SUM(o) FROM snt", "expect": {"error": {"messageContains": "Invalid argument types for function 'SUM': (OBJECT)"}}},
+      {"sql": "SELECT SUM(a) FROM snt", "expect": {"error": {"messageContains": "Invalid argument types for function 'SUM': (ARRAY)"}}},
+      {"sql": "SELECT AVG(o) FROM snt", "expect": {"error": {"messageContains": "Invalid argument types for function 'SUM': (OBJECT)"}}},
+      {"sql": "SELECT AVG(a) FROM snt", "expect": {"error": {"messageContains": "Invalid argument types for function 'SUM': (ARRAY)"}}}
+    ]},
+    {"name": "the-distinct-and-windowed-forms-reject-too", "steps": [
+      {"sql": "CREATE TABLE snt (id INTEGER, o OBJECT, a ARRAY, v VARIANT, vo VARIANT, s VARCHAR, n NUMBER, f DOUBLE, d DATE)"},
+      {"sql": "SELECT SUM(DISTINCT o) FROM snt", "expect": {"error": {"messageContains": "Invalid argument types for function 'SUM': (OBJECT)"}}},
+      {"sql": "SELECT AVG(DISTINCT o) FROM snt", "expect": {"error": {"messageContains": "Invalid argument types for function 'AVG': (OBJECT)"}}},
+      {"sql": "SELECT SUM(o) OVER (PARTITION BY id) FROM snt", "expect": {"error": {"messageContains": "Invalid argument types for function 'SUM': (OBJECT)"}}},
+      {"sql": "SELECT AVG(o) OVER (PARTITION BY id) FROM snt", "expect": {"error": {"messageContains": "Invalid argument types for function 'AVG': (OBJECT)"}}},
+      {"sql": "SELECT STDDEV(o) OVER (PARTITION BY id) FROM snt", "expect": {"error": {"messageContains": "Invalid argument types for function '*': (OBJECT, OBJECT)"}}}
+    ]},
+    {"name": "avg-reports-the-sum-it-desugars-into", "steps": [
+      {"sql": "CREATE TABLE snt (id INTEGER, o OBJECT, a ARRAY, v VARIANT, vo VARIANT, s VARCHAR, n NUMBER, f DOUBLE, d DATE)"},
+      {"sql": "SELECT AVG(o) FROM snt", "expect": {"error": {"messageContains": "Invalid argument types for function 'SUM': (OBJECT)"}}}
+    ]},
+    {"name": "the-aggregates-reject-over-an-empty-input", "steps": [
+      {"sql": "CREATE TABLE snt (id INTEGER, o OBJECT, a ARRAY, v VARIANT, vo VARIANT, s VARCHAR, n NUMBER, f DOUBLE, d DATE)"},
+      {"sql": "SELECT SUM(o) FROM snt WHERE 1 = 0", "expect": {"error": {"messageContains": "Invalid argument types for function 'SUM': (OBJECT)"}}},
+      {"sql": "SELECT MEDIAN(o) FROM snt WHERE 1 = 0", "expect": {"error": {"messageContains": "incompatible types: [OBJECT] and [NUMBER(9,0)]"}}},
+      {"sql": "SELECT STDDEV(o) FROM snt WHERE 1 = 0", "expect": {"error": {"messageContains": "Invalid argument types for function '*': (OBJECT, OBJECT)"}}},
+      {"sql": "SELECT o + 1 FROM snt WHERE 1 = 0", "expect": {"error": {"messageContains": "Invalid argument types for function '+': (OBJECT, NUMBER(1,0))"}}}
+    ]},
+    {"name": "the-bitwise-aggregates-reject-semi-structured", "steps": [
+      {"sql": "CREATE TABLE snt (id INTEGER, o OBJECT, a ARRAY, v VARIANT, vo VARIANT, s VARCHAR, n NUMBER, f DOUBLE, d DATE)"},
+      {"sql": "SELECT BITAND_AGG(o) FROM snt", "expect": {"error": {"messageContains": "Invalid argument types for function 'BITAND_AGG': (OBJECT)"}}},
+      {"sql": "SELECT BITOR_AGG(o) FROM snt", "expect": {"error": {"messageContains": "Invalid argument types for function 'BITOR_AGG': (OBJECT)"}}},
+      {"sql": "SELECT BITXOR_AGG(o) FROM snt", "expect": {"error": {"messageContains": "Invalid argument types for function 'BITXOR_AGG': (OBJECT)"}}},
+      {"sql": "SELECT BITOR_AGG(a) FROM snt", "expect": {"error": {"messageContains": "Invalid argument types for function 'BITOR_AGG': (ARRAY)"}}}
+    ]},
+    {"name": "median-uses-the-incompatible-types-shape", "steps": [
+      {"sql": "CREATE TABLE snt (id INTEGER, o OBJECT, a ARRAY, v VARIANT, vo VARIANT, s VARCHAR, n NUMBER, f DOUBLE, d DATE)"},
+      {"sql": "SELECT MEDIAN(o) FROM snt", "expect": {"error": {"messageContains": "incompatible types: [OBJECT] and [NUMBER(9,0)]"}}},
+      {"sql": "SELECT MEDIAN(a) FROM snt", "expect": {"error": {"messageContains": "incompatible types: [ARRAY] and [NUMBER(9,0)]"}}},
+      {"sql": "SELECT MEDIAN(o) FROM snt GROUP BY id", "expect": {"error": {"messageContains": "incompatible types: [OBJECT] and [NUMBER(9,0)]"}}},
+      {"sql": "SELECT MEDIAN(o) OVER (PARTITION BY id) FROM snt", "expect": {"error": {"messageContains": "incompatible types: [OBJECT] and [NUMBER(9,0)]"}}}
+    ]},
+    {"name": "the-percentile-within-group-value-rejects", "steps": [
+      {"sql": "CREATE TABLE snt (id INTEGER, o OBJECT, a ARRAY, v VARIANT, vo VARIANT, s VARCHAR, n NUMBER, f DOUBLE, d DATE)"},
+      {"sql": "SELECT PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY o) FROM snt", "expect": {"error": {"messageContains": "incompatible types: [OBJECT] and [NUMBER(9,0)]"}}},
+      {"sql": "SELECT PERCENTILE_DISC(0.5) WITHIN GROUP (ORDER BY o) FROM snt", "expect": {"error": {"messageContains": "incompatible types: [OBJECT] and [NUMBER(9,0)]"}}},
+      {"sql": "SELECT PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY o) FROM snt", "expect": {"error": {"messageContains": "incompatible types: [OBJECT] and [NUMBER(9,0)]"}}},
+      {"sql": "SELECT PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY a) FROM snt", "expect": {"error": {"messageContains": "incompatible types: [ARRAY] and [NUMBER(9,0)]"}}}
+    ]},
+    {"name": "the-percentile-fraction-argument-uses-the-other-shape", "steps": [
+      {"sql": "CREATE TABLE snt (id INTEGER, o OBJECT, a ARRAY, v VARIANT, vo VARIANT, s VARCHAR, n NUMBER, f DOUBLE, d DATE)"},
+      {"sql": "SELECT PERCENTILE_CONT(o) WITHIN GROUP (ORDER BY n) FROM snt", "expect": {"error": {"messageContains": "Invalid argument types for function 'PERCENTILE_CONT': (OBJECT)"}}}
+    ]},
+    {"name": "the-moment-aggregates-report-their-internal-multiplication", "steps": [
+      {"sql": "CREATE TABLE snt (id INTEGER, o OBJECT, a ARRAY, v VARIANT, vo VARIANT, s VARCHAR, n NUMBER, f DOUBLE, d DATE)"},
+      {"sql": "SELECT STDDEV(o) FROM snt", "expect": {"error": {"messageContains": "Invalid argument types for function '*': (OBJECT, OBJECT)"}}},
+      {"sql": "SELECT STDDEV_POP(o) FROM snt", "expect": {"error": {"messageContains": "Invalid argument types for function '*': (OBJECT, OBJECT)"}}},
+      {"sql": "SELECT STDDEV_SAMP(o) FROM snt", "expect": {"error": {"messageContains": "Invalid argument types for function '*': (OBJECT, OBJECT)"}}},
+      {"sql": "SELECT VARIANCE(o) FROM snt", "expect": {"error": {"messageContains": "Invalid argument types for function '*': (OBJECT, OBJECT)"}}},
+      {"sql": "SELECT VARIANCE_POP(o) FROM snt", "expect": {"error": {"messageContains": "Invalid argument types for function '*': (OBJECT, OBJECT)"}}},
+      {"sql": "SELECT VARIANCE_SAMP(o) FROM snt", "expect": {"error": {"messageContains": "Invalid argument types for function '*': (OBJECT, OBJECT)"}}},
+      {"sql": "SELECT VAR_POP(o) FROM snt", "expect": {"error": {"messageContains": "Invalid argument types for function '*': (OBJECT, OBJECT)"}}},
+      {"sql": "SELECT VAR_SAMP(o) FROM snt", "expect": {"error": {"messageContains": "Invalid argument types for function '*': (OBJECT, OBJECT)"}}},
+      {"sql": "SELECT SKEW(o) FROM snt", "expect": {"error": {"messageContains": "Invalid argument types for function '*': (OBJECT, OBJECT)"}}},
+      {"sql": "SELECT KURTOSIS(o) FROM snt", "expect": {"error": {"messageContains": "Invalid argument types for function '*': (OBJECT, OBJECT)"}}},
+      {"sql": "SELECT REGR_R2(o, n) FROM snt", "expect": {"error": {"messageContains": "Invalid argument types for function '*': (OBJECT, OBJECT)"}}}
+    ]},
+    {"name": "the-moment-aggregates-name-the-offending-type-on-both-sides", "steps": [
+      {"sql": "CREATE TABLE snt (id INTEGER, o OBJECT, a ARRAY, v VARIANT, vo VARIANT, s VARCHAR, n NUMBER, f DOUBLE, d DATE)"},
+      {"sql": "SELECT STDDEV(a) FROM snt", "expect": {"error": {"messageContains": "Invalid argument types for function '*': (ARRAY, ARRAY)"}}},
+      {"sql": "SELECT VARIANCE(a) FROM snt", "expect": {"error": {"messageContains": "Invalid argument types for function '*': (ARRAY, ARRAY)"}}},
+      {"sql": "SELECT REGR_R2(n, o) FROM snt", "expect": {"error": {"messageContains": "Invalid argument types for function '*': (OBJECT, OBJECT)"}}}
+    ]},
+    {"name": "the-numeric-scalars-reject-semi-structured", "steps": [
+      {"sql": "CREATE TABLE snt (id INTEGER, o OBJECT, a ARRAY, v VARIANT, vo VARIANT, s VARCHAR, n NUMBER, f DOUBLE, d DATE)"},
+      {"sql": "SELECT ABS(o) FROM snt", "expect": {"error": {"messageContains": "Invalid argument types for function 'ABS': (OBJECT)"}}},
+      {"sql": "SELECT CEIL(o) FROM snt", "expect": {"error": {"messageContains": "Invalid argument types for function 'CEIL': (OBJECT)"}}},
+      {"sql": "SELECT FLOOR(o) FROM snt", "expect": {"error": {"messageContains": "Invalid argument types for function 'FLOOR': (OBJECT)"}}},
+      {"sql": "SELECT ROUND(o) FROM snt", "expect": {"error": {"messageContains": "Invalid argument types for function 'ROUND': (OBJECT)"}}},
+      {"sql": "SELECT SQRT(o) FROM snt", "expect": {"error": {"messageContains": "Invalid argument types for function 'SQRT': (OBJECT)"}}},
+      {"sql": "SELECT EXP(o) FROM snt", "expect": {"error": {"messageContains": "Invalid argument types for function 'EXP': (OBJECT)"}}},
+      {"sql": "SELECT LN(o) FROM snt", "expect": {"error": {"messageContains": "Invalid argument types for function 'LN': (OBJECT)"}}},
+      {"sql": "SELECT SIGN(o) FROM snt", "expect": {"error": {"messageContains": "Invalid argument types for function 'SIGN': (OBJECT)"}}},
+      {"sql": "SELECT SQUARE(o) FROM snt", "expect": {"error": {"messageContains": "Invalid argument types for function 'SQUARE': (OBJECT)"}}},
+      {"sql": "SELECT FACTORIAL(o) FROM snt", "expect": {"error": {"messageContains": "Invalid argument types for function 'FACTORIAL': (OBJECT)"}}},
+      {"sql": "SELECT DEGREES(o) FROM snt", "expect": {"error": {"messageContains": "Invalid argument types for function 'DEGREES': (OBJECT)"}}},
+      {"sql": "SELECT ZEROIFNULL(o) FROM snt", "expect": {"error": {"messageContains": "Invalid argument types for function 'ZEROIFNULL': (OBJECT)"}}},
+      {"sql": "SELECT ABS(a) FROM snt", "expect": {"error": {"messageContains": "Invalid argument types for function 'ABS': (ARRAY)"}}}
+    ]},
+    {"name": "the-trigonometric-and-bitwise-scalars-reject-semi-structured", "steps": [
+      {"sql": "CREATE TABLE snt (id INTEGER, o OBJECT, a ARRAY, v VARIANT, vo VARIANT, s VARCHAR, n NUMBER, f DOUBLE, d DATE)"},
+      {"sql": "SELECT ACOS(o) FROM snt", "expect": {"error": {"messageContains": "Invalid argument types for function 'ACOS': (OBJECT)"}}},
+      {"sql": "SELECT ASIN(a) FROM snt", "expect": {"error": {"messageContains": "Invalid argument types for function 'ASIN': (ARRAY)"}}},
+      {"sql": "SELECT COS(o) FROM snt", "expect": {"error": {"messageContains": "Invalid argument types for function 'COS': (OBJECT)"}}},
+      {"sql": "SELECT TANH(o) FROM snt", "expect": {"error": {"messageContains": "Invalid argument types for function 'TANH': (OBJECT)"}}},
+      {"sql": "SELECT BITNOT(o) FROM snt", "expect": {"error": {"messageContains": "Invalid argument types for function 'BITNOT': (OBJECT)"}}},
+      {"sql": "SELECT BITAND(o, 1) FROM snt", "expect": {"error": {"messageContains": "Invalid argument types for function 'BITAND': (OBJECT, NUMBER(1,0))"}}},
+      {"sql": "SELECT BITSHIFTLEFT(o, 1) FROM snt", "expect": {"error": {"messageContains": "Invalid argument types for function 'BITSHIFTLEFT': (OBJECT, NUMBER(1,0))"}}},
+      {"sql": "SELECT GETBIT(o, 1) FROM snt", "expect": {"error": {"messageContains": "Invalid argument types for function 'GETBIT': (OBJECT, NUMBER(1,0))"}}}
+    ]},
+    {"name": "every-argument-position-refuses-semi-structured", "steps": [
+      {"sql": "CREATE TABLE snt (id INTEGER, o OBJECT, a ARRAY, v VARIANT, vo VARIANT, s VARCHAR, n NUMBER, f DOUBLE, d DATE)"},
+      {"sql": "SELECT ROUND(n, o) FROM snt", "expect": {"error": {"messageContains": "Invalid argument types for function 'ROUND': (NUMBER(38,0), OBJECT)"}}},
+      {"sql": "SELECT ATAN2(1, o) FROM snt", "expect": {"error": {"messageContains": "Invalid argument types for function 'ATAN2': (NUMBER(1,0), OBJECT)"}}},
+      {"sql": "SELECT LOG(2, o) FROM snt", "expect": {"error": {"messageContains": "Invalid argument types for function 'LOG': (NUMBER(1,0), OBJECT)"}}},
+      {"sql": "SELECT POWER(2, o) FROM snt", "expect": {"error": {"messageContains": "Invalid argument types for function 'POWER': (NUMBER(1,0), OBJECT)"}}},
+      {"sql": "SELECT MOD(2, o) FROM snt", "expect": {"error": {"messageContains": "Invalid argument types for function 'MOD': (NUMBER(1,0), OBJECT)"}}},
+      {"sql": "SELECT DIV0(2, o) FROM snt", "expect": {"error": {"messageContains": "Invalid argument types for function 'DIV0': (NUMBER(1,0), OBJECT)"}}},
+      {"sql": "SELECT GETBIT(n, o) FROM snt", "expect": {"error": {"messageContains": "Invalid argument types for function 'GETBIT': (NUMBER(38,0), OBJECT)"}}},
+      {"sql": "SELECT WIDTH_BUCKET(1, o, 10, 3) FROM snt", "expect": {"error": {"messageContains": "Invalid argument types for function 'WIDTH_BUCKET': (NUMBER(1,0), OBJECT, NUMBER(2,0), NUMBER(1,0))"}}},
+      {"sql": "SELECT HAVERSINE(1, 2, 3, o) FROM snt", "expect": {"error": {"messageContains": "Invalid argument types for function 'HAVERSINE': (NUMBER(1,0), NUMBER(1,0), NUMBER(1,0), OBJECT)"}}}
+    ]},
+    {"name": "the-arithmetic-operators-reject-semi-structured", "steps": [
+      {"sql": "CREATE TABLE snt (id INTEGER, o OBJECT, a ARRAY, v VARIANT, vo VARIANT, s VARCHAR, n NUMBER, f DOUBLE, d DATE)"},
+      {"sql": "SELECT o + 1 FROM snt", "expect": {"error": {"messageContains": "Invalid argument types for function '+': (OBJECT, NUMBER(1,0))"}}},
+      {"sql": "SELECT 1 + o FROM snt", "expect": {"error": {"messageContains": "Invalid argument types for function '+': (NUMBER(1,0), OBJECT)"}}},
+      {"sql": "SELECT o - 1 FROM snt", "expect": {"error": {"messageContains": "Invalid argument types for function '-': (OBJECT, NUMBER(1,0))"}}},
+      {"sql": "SELECT o * 2 FROM snt", "expect": {"error": {"messageContains": "Invalid argument types for function '*': (OBJECT, NUMBER(1,0))"}}},
+      {"sql": "SELECT o / 2 FROM snt", "expect": {"error": {"messageContains": "Invalid argument types for function '/': (OBJECT, NUMBER(1,0))"}}},
+      {"sql": "SELECT o % 2 FROM snt", "expect": {"error": {"messageContains": "Invalid argument types for function '%': (OBJECT, NUMBER(1,0))"}}},
+      {"sql": "SELECT o + o FROM snt", "expect": {"error": {"messageContains": "Invalid argument types for function '+': (OBJECT, OBJECT)"}}},
+      {"sql": "SELECT a + 1 FROM snt", "expect": {"error": {"messageContains": "Invalid argument types for function '+': (ARRAY, NUMBER(1,0))"}}},
+      {"sql": "SELECT o + n FROM snt", "expect": {"error": {"messageContains": "Invalid argument types for function '+': (OBJECT, NUMBER(38,0))"}}},
+      {"sql": "SELECT d + o FROM snt", "expect": {"error": {"messageContains": "Invalid argument types for function '+': (DATE, OBJECT)"}}},
+      {"sql": "SELECT s + o FROM snt", "expect": {"error": {"messageContains": "Invalid argument types for function '+': (VARCHAR(16777216), OBJECT)"}}}
+    ]},
+    {"name": "unary-minus-reports-itself-as-negate", "steps": [
+      {"sql": "CREATE TABLE snt (id INTEGER, o OBJECT, a ARRAY, v VARIANT, vo VARIANT, s VARCHAR, n NUMBER, f DOUBLE, d DATE)"},
+      {"sql": "SELECT -o FROM snt", "expect": {"error": {"messageContains": "Invalid argument types for function 'NEGATE': (OBJECT)"}}},
+      {"sql": "SELECT -a FROM snt", "expect": {"error": {"messageContains": "Invalid argument types for function 'NEGATE': (ARRAY)"}}}
+    ]},
+    {"name": "the-operator-rule-fires-inside-a-larger-expression", "steps": [
+      {"sql": "CREATE TABLE snt (id INTEGER, o OBJECT, a ARRAY, v VARIANT, vo VARIANT, s VARCHAR, n NUMBER, f DOUBLE, d DATE)"},
+      {"sql": "SELECT SUM(o + 1) FROM snt", "expect": {"error": {"messageContains": "Invalid argument types for function '+': (OBJECT, NUMBER(1,0))"}}},
+      {"sql": "SELECT ABS(o * 2) FROM snt", "expect": {"error": {"messageContains": "Invalid argument types for function '*': (OBJECT, NUMBER(1,0))"}}}
+    ]},
+    {"name": "structured-types-name-their-whole-type-in-every-shape", "steps": [
+      {"sql": "CREATE TABLE snst (id INTEGER, so OBJECT(x VARCHAR), sa ARRAY(INT), sm MAP(VARCHAR, INT))"},
+      {"sql": "INSERT INTO snst SELECT 1, OBJECT_CONSTRUCT('x', 'a')::OBJECT(x VARCHAR), ARRAY_CONSTRUCT(1, 2)::ARRAY(INT), OBJECT_CONSTRUCT('k', 1)::MAP(VARCHAR, INT)"},
+      {"sql": "SELECT SUM(so) FROM snst", "expect": {"error": {"messageContains": "Invalid argument types for function 'SUM': (OBJECT(x VARCHAR(16777216)))"}}},
+      {"sql": "SELECT SUM(sa) FROM snst", "expect": {"error": {"messageContains": "Invalid argument types for function 'SUM': (ARRAY(NUMBER(38,0)))"}}},
+      {"sql": "SELECT SUM(sm) FROM snst", "expect": {"error": {"messageContains": "Invalid argument types for function 'SUM': (MAP(VARCHAR(16777216), NUMBER(38,0)))"}}},
+      {"sql": "SELECT MEDIAN(so) FROM snst", "expect": {"error": {"messageContains": "incompatible types: [OBJECT(x VARCHAR(16777216))] and [NUMBER(9,0)]"}}},
+      {"sql": "SELECT MEDIAN(sm) FROM snst", "expect": {"error": {"messageContains": "incompatible types: [MAP(VARCHAR(16777216), NUMBER(38,0))] and [NUMBER(9,0)]"}}},
+      {"sql": "SELECT STDDEV(so) FROM snst", "expect": {"error": {"messageContains": "Invalid argument types for function '*': (OBJECT(x VARCHAR(16777216)), OBJECT(x VARCHAR(16777216)))"}}},
+      {"sql": "SELECT VARIANCE(sm) FROM snst", "expect": {"error": {"messageContains": "Invalid argument types for function '*': (MAP(VARCHAR(16777216), NUMBER(38,0)), MAP(VARCHAR(16777216), NUMBER(38,0)))"}}},
+      {"sql": "SELECT so + 1 FROM snst", "expect": {"error": {"messageContains": "Invalid argument types for function '+': (OBJECT(x VARCHAR(16777216)), NUMBER(1,0))"}}},
+      {"sql": "SELECT -sm FROM snst", "expect": {"error": {"messageContains": "Invalid argument types for function 'NEGATE': (MAP(VARCHAR(16777216), NUMBER(38,0)))"}}},
+      {"sql": "SELECT ABS(so) FROM snst", "expect": {"error": {"messageContains": "Invalid argument types for function 'ABS': (OBJECT(x VARCHAR(16777216)))"}}}
+    ]},
+    {"name": "a-variant-is-never-rejected-at-compile-time-even-holding-an-object", "steps": [
+      {"sql": "CREATE TABLE snt (id INTEGER, o OBJECT, a ARRAY, v VARIANT, vo VARIANT, s VARCHAR, n NUMBER, f DOUBLE, d DATE)"},
+      {"sql": "INSERT INTO snt SELECT 1, OBJECT_CONSTRUCT('k', 'v1'), ARRAY_CONSTRUCT(1, 2), TO_VARIANT(1), TO_VARIANT(OBJECT_CONSTRUCT('x', 1)), 'xy', 10, 1.5, '2020-01-01'"},
+      {"sql": "INSERT INTO snt SELECT 2, OBJECT_CONSTRUCT('k', 'v2'), ARRAY_CONSTRUCT(3, 4), TO_VARIANT(2), TO_VARIANT(OBJECT_CONSTRUCT('x', 2)), 'zw', 20, 2.5, '2020-02-01'"},
+      {"sql": "SELECT SUM(v) FROM snt", "expect": {"rowCount": 1}},
+      {"sql": "SELECT AVG(v) FROM snt", "expect": {"rowCount": 1}},
+      {"sql": "SELECT MEDIAN(v) FROM snt", "expect": {"rowCount": 1}},
+      {"sql": "SELECT STDDEV(v) FROM snt", "expect": {"rowCount": 1}},
+      {"sql": "SELECT BITOR_AGG(v) FROM snt", "expect": {"rowCount": 1}},
+      {"sql": "SELECT v + 1 FROM snt", "expect": {"rowCount": 2}},
+      {"sql": "SELECT ABS(v) FROM snt", "expect": {"rowCount": 2}},
+      {"sql": "SELECT ROUND(v, 1) FROM snt", "expect": {"rowCount": 2}},
+      {"sql": "SELECT SUM(vo) FROM snt", "expect": {"error": {"messageContains": "Failed to cast variant value"}}},
+      {"sql": "SELECT AVG(vo) FROM snt", "expect": {"error": {"messageContains": "Failed to cast variant value"}}},
+      {"sql": "SELECT MEDIAN(vo) FROM snt", "expect": {"error": {"messageContains": "Failed to cast variant value"}}},
+      {"sql": "SELECT STDDEV(vo) FROM snt", "expect": {"error": {"messageContains": "Failed to cast variant value"}}}
+    ]},
+    {"name": "casting-to-variant-lifts-the-compile-time-rejection", "steps": [
+      {"sql": "CREATE TABLE snt (id INTEGER, o OBJECT, a ARRAY, v VARIANT, vo VARIANT, s VARCHAR, n NUMBER, f DOUBLE, d DATE)"},
+      {"sql": "INSERT INTO snt SELECT 1, OBJECT_CONSTRUCT('k', 'v1'), ARRAY_CONSTRUCT(1, 2), TO_VARIANT(1), TO_VARIANT(OBJECT_CONSTRUCT('x', 1)), 'xy', 10, 1.5, '2020-01-01'"},
+      {"sql": "SELECT SUM(o::VARIANT) FROM snt", "expect": {"error": {"messageContains": "Failed to cast variant value"}}},
+      {"sql": "SELECT SUM(TO_VARIANT(o)) FROM snt", "expect": {"error": {"messageContains": "Failed to cast variant value"}}}
+    ]},
+    {"name": "a-numeric-operator-over-an-object-variant-fails-its-cast",
+     "steps": [
+      {"sql": "CREATE TABLE snt (id INTEGER, o OBJECT, vo VARIANT)"},
+      {"sql": "INSERT INTO snt SELECT 1, OBJECT_CONSTRUCT('k', 'v1'), TO_VARIANT(OBJECT_CONSTRUCT('x', 1))"},
+      {"sql": "SELECT vo + 1 FROM snt", "expect": {"error": {"messageContains": "Failed to cast variant value {\"x\":1} to REAL"}}},
+      {"sql": "SELECT ABS(vo) FROM snt", "expect": {"error": {"messageContains": "Failed to cast variant value {\"x\":1} to REAL"}}},
+      {"sql": "SELECT ROUND(vo, 1) FROM snt", "expect": {"error": {"messageContains": "Failed to cast variant value {\"x\":1} to REAL"}}},
+      {"sql": "SELECT BITOR_AGG(vo) FROM snt", "expect": {"error": {"messageContains": "Failed to cast variant value {\"x\":1} to FIXED"}}},
+      {"sql": "SELECT ABS(o::VARIANT) FROM snt", "expect": {"error": {"messageContains": "Failed to cast variant value {\"k\":\"v1\"} to REAL"}}}
+    ]},
+    {"name": "casting-a-variant-to-object-brings-the-rejection-back", "steps": [
+      {"sql": "CREATE TABLE snt (id INTEGER, o OBJECT, a ARRAY, v VARIANT, vo VARIANT, s VARCHAR, n NUMBER, f DOUBLE, d DATE)"},
+      {"sql": "SELECT SUM(v::OBJECT) FROM snt", "expect": {"error": {"messageContains": "Invalid argument types for function 'SUM': (OBJECT)"}}},
+      {"sql": "SELECT MEDIAN(v::OBJECT) FROM snt", "expect": {"error": {"messageContains": "incompatible types: [OBJECT] and [NUMBER(9,0)]"}}},
+      {"sql": "SELECT STDDEV(v::OBJECT) FROM snt", "expect": {"error": {"messageContains": "Invalid argument types for function '*': (OBJECT, OBJECT)"}}},
+      {"sql": "SELECT v::OBJECT + 1 FROM snt", "expect": {"error": {"messageContains": "Invalid argument types for function '+': (OBJECT, NUMBER(1,0))"}}}
+    ]},
+    {"name": "reading-into-the-value-yields-a-variant-that-is-accepted", "steps": [
+      {"sql": "CREATE TABLE snt (id INTEGER, o OBJECT, a ARRAY, v VARIANT, vo VARIANT, s VARCHAR, n NUMBER, f DOUBLE, d DATE)"},
+      {"sql": "INSERT INTO snt SELECT 1, OBJECT_CONSTRUCT('k', 'v1'), ARRAY_CONSTRUCT(1, 2), TO_VARIANT(1), TO_VARIANT(OBJECT_CONSTRUCT('x', 1)), 'xy', 10, 1.5, '2020-01-01'"},
+      {"sql": "INSERT INTO snt SELECT 2, OBJECT_CONSTRUCT('k', 'v2'), ARRAY_CONSTRUCT(3, 4), TO_VARIANT(2), TO_VARIANT(OBJECT_CONSTRUCT('x', 2)), 'zw', 20, 2.5, '2020-02-01'"},
+      {"sql": "SELECT SUM(a[0]) FROM snt", "expect": {"rowCount": 1}},
+      {"sql": "SELECT ABS(a[0]) FROM snt", "expect": {"rowCount": 2}},
+      {"sql": "SELECT a[0] + 1 FROM snt", "expect": {"rowCount": 2}},
+      {"sql": "SELECT MEDIAN(a[0]) FROM snt", "expect": {"rowCount": 1}}
+    ]},
+    {"name": "the-accepted-aggregates-are-untouched", "steps": [
+      {"sql": "CREATE TABLE snt (id INTEGER, o OBJECT, a ARRAY, v VARIANT, vo VARIANT, s VARCHAR, n NUMBER, f DOUBLE, d DATE)"},
+      {"sql": "INSERT INTO snt SELECT 1, OBJECT_CONSTRUCT('k', 'v1'), ARRAY_CONSTRUCT(1, 2), TO_VARIANT(1), TO_VARIANT(OBJECT_CONSTRUCT('x', 1)), 'xy', 10, 1.5, '2020-01-01'"},
+      {"sql": "INSERT INTO snt SELECT 2, OBJECT_CONSTRUCT('k', 'v2'), ARRAY_CONSTRUCT(3, 4), TO_VARIANT(2), TO_VARIANT(OBJECT_CONSTRUCT('x', 2)), 'zw', 20, 2.5, '2020-02-01'"},
+      {"sql": "SELECT ANY_VALUE(o) FROM snt", "expect": {"rowCount": 1}},
+      {"sql": "SELECT OBJECT_AGG(s, o) FROM snt", "expect": {"rowCount": 1}},
+      {"sql": "SELECT HASH_AGG(o) FROM snt", "expect": {"rowCount": 1}},
+      {"sql": "SELECT MAX_BY(o, n) FROM snt", "expect": {"rowCount": 1}},
+      {"sql": "SELECT MIN_BY(o, n) FROM snt", "expect": {"rowCount": 1}},
+      {"sql": "SELECT APPROX_COUNT_DISTINCT(o) FROM snt", "expect": {"rowCount": 1}},
+      {"sql": "SELECT ARRAY_AGG(o) FROM snt", "expect": {"rowCount": 1}},
+      {"sql": "SELECT ARRAY_UNIQUE_AGG(o) FROM snt", "expect": {"rowCount": 1}},
+      {"sql": "SELECT COUNT(o) FROM snt", "expect": {"rowCount": 1}},
+      {"sql": "SELECT COUNT(DISTINCT o) FROM snt", "expect": {"rowCount": 1}}
+    ]},
+    {"name": "key-positions-still-accept-semi-structured", "steps": [
+      {"sql": "CREATE TABLE snt (id INTEGER, o OBJECT, a ARRAY, v VARIANT, vo VARIANT, s VARCHAR, n NUMBER, f DOUBLE, d DATE)"},
+      {"sql": "INSERT INTO snt SELECT 1, OBJECT_CONSTRUCT('k', 'v1'), ARRAY_CONSTRUCT(1, 2), TO_VARIANT(1), TO_VARIANT(OBJECT_CONSTRUCT('x', 1)), 'xy', 10, 1.5, '2020-01-01'"},
+      {"sql": "INSERT INTO snt SELECT 2, OBJECT_CONSTRUCT('k', 'v2'), ARRAY_CONSTRUCT(3, 4), TO_VARIANT(2), TO_VARIANT(OBJECT_CONSTRUCT('x', 2)), 'zw', 20, 2.5, '2020-02-01'"},
+      {"sql": "SELECT COUNT(*) FROM snt GROUP BY o", "expect": {"rowCount": 2}},
+      {"sql": "SELECT SUM(n) FROM snt GROUP BY o", "expect": {"rowCount": 2}},
+      {"sql": "SELECT id FROM snt ORDER BY o", "expect": {"rowCount": 2}},
+      {"sql": "SELECT SUM(n) OVER (PARTITION BY o) FROM snt", "expect": {"rowCount": 2}},
+      {"sql": "SELECT DISTINCT o FROM snt", "expect": {"rowCount": 2}},
+      {"sql": "SELECT id FROM snt WHERE o = o", "expect": {"rowCount": 2}},
+      {"sql": "SELECT o FROM snt UNION SELECT o FROM snt", "expect": {"rowCount": 2}}
+    ]},
+    {"name": "ordinary-arithmetic-still-works", "steps": [
+      {"sql": "CREATE TABLE snt (id INTEGER, o OBJECT, a ARRAY, v VARIANT, vo VARIANT, s VARCHAR, n NUMBER, f DOUBLE, d DATE)"},
+      {"sql": "INSERT INTO snt SELECT 1, OBJECT_CONSTRUCT('k', 'v1'), ARRAY_CONSTRUCT(1, 2), TO_VARIANT(1), TO_VARIANT(OBJECT_CONSTRUCT('x', 1)), 'xy', 10, 1.5, '2020-01-01'"},
+      {"sql": "INSERT INTO snt SELECT 2, OBJECT_CONSTRUCT('k', 'v2'), ARRAY_CONSTRUCT(3, 4), TO_VARIANT(2), TO_VARIANT(OBJECT_CONSTRUCT('x', 2)), 'zw', 20, 2.5, '2020-02-01'"},
+      {"sql": "SELECT n + 1, n - 1, n * 2, n / 2, n % 3, -n FROM snt", "expect": {"rowCount": 2}},
+      {"sql": "SELECT f + 1 FROM snt", "expect": {"rowCount": 2}},
+      {"sql": "SELECT d + 1 FROM snt", "expect": {"rowCount": 2}},
+      {"sql": "SELECT NULL + 1 FROM snt", "expect": {"rowCount": 2}},
+      {"sql": "SELECT v + v FROM snt", "expect": {"rowCount": 2}}
+    ]},
+    {"name": "the-ordinary-numeric-surface-still-works", "steps": [
+      {"sql": "CREATE TABLE snt (id INTEGER, o OBJECT, a ARRAY, v VARIANT, vo VARIANT, s VARCHAR, n NUMBER, f DOUBLE, d DATE)"},
+      {"sql": "INSERT INTO snt SELECT 1, OBJECT_CONSTRUCT('k', 'v1'), ARRAY_CONSTRUCT(1, 2), TO_VARIANT(1), TO_VARIANT(OBJECT_CONSTRUCT('x', 1)), 'xy', 10, 1.5, '2020-01-01'"},
+      {"sql": "INSERT INTO snt SELECT 2, OBJECT_CONSTRUCT('k', 'v2'), ARRAY_CONSTRUCT(3, 4), TO_VARIANT(2), TO_VARIANT(OBJECT_CONSTRUCT('x', 2)), 'zw', 20, 2.5, '2020-02-01'"},
+      {"sql": "SELECT ABS(n), CEIL(f), SQRT(n), POWER(n, 2), MOD(n, 3) FROM snt", "expect": {"rowCount": 2}},
+      {"sql": "SELECT ROUND(f, 1) FROM snt", "expect": {"rowCount": 2}},
+      {"sql": "SELECT ABS(NULL) FROM snt", "expect": {"rowCount": 2}},
+      {"sql": "SELECT SUM(n), AVG(n), MEDIAN(n), STDDEV(n), VARIANCE(n) FROM snt", "expect": {"rowCount": 1}},
+      {"sql": "SELECT PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY n) FROM snt", "expect": {"rowCount": 1}},
+      {"sql": "SELECT BITOR_AGG(n) FROM snt", "expect": {"rowCount": 1}}
+    ]},
+    {"name": "explicit-conversions-stay-accepted", "steps": [
+      {"sql": "CREATE TABLE snt (id INTEGER, o OBJECT, a ARRAY, v VARIANT, vo VARIANT, s VARCHAR, n NUMBER, f DOUBLE, d DATE)"},
+      {"sql": "INSERT INTO snt SELECT 1, OBJECT_CONSTRUCT('k', 'v1'), ARRAY_CONSTRUCT(1, 2), TO_VARIANT(1), TO_VARIANT(OBJECT_CONSTRUCT('x', 1)), 'xy', 10, 1.5, '2020-01-01'"},
+      {"sql": "INSERT INTO snt SELECT 2, OBJECT_CONSTRUCT('k', 'v2'), ARRAY_CONSTRUCT(3, 4), TO_VARIANT(2), TO_VARIANT(OBJECT_CONSTRUCT('x', 2)), 'zw', 20, 2.5, '2020-02-01'"},
+      {"sql": "SELECT CAST(o AS VARCHAR) FROM snt WHERE id = 1", "expect": {"value": "{\"k\":\"v1\"}"}},
+      {"sql": "SELECT TO_VARCHAR(o) FROM snt WHERE id = 1", "expect": {"value": "{\"k\":\"v1\"}"}},
+      {"sql": "SELECT TO_CHAR(o) FROM snt WHERE id = 1", "expect": {"value": "{\"k\":\"v1\"}"}},
+      {"sql": "SELECT LENGTH(TO_VARCHAR(o)) + 1 FROM snt", "expect": {"rowCount": 2}},
+      {"sql": "SELECT SUM(ARRAY_SIZE(a)) FROM snt", "expect": {"rowCount": 1}}
+    ]},
+    {"name": "the-semi-structured-aware-functions-are-untouched", "steps": [
+      {"sql": "CREATE TABLE snt (id INTEGER, o OBJECT, a ARRAY, v VARIANT, vo VARIANT, s VARCHAR, n NUMBER, f DOUBLE, d DATE)"},
+      {"sql": "INSERT INTO snt SELECT 1, OBJECT_CONSTRUCT('k', 'v1'), ARRAY_CONSTRUCT(1, 2), TO_VARIANT(1), TO_VARIANT(OBJECT_CONSTRUCT('x', 1)), 'xy', 10, 1.5, '2020-01-01'"},
+      {"sql": "INSERT INTO snt SELECT 2, OBJECT_CONSTRUCT('k', 'v2'), ARRAY_CONSTRUCT(3, 4), TO_VARIANT(2), TO_VARIANT(OBJECT_CONSTRUCT('x', 2)), 'zw', 20, 2.5, '2020-02-01'"},
+      {"sql": "SELECT ARRAY_SIZE(a) FROM snt", "expect": {"rowCount": 2}},
+      {"sql": "SELECT OBJECT_KEYS(o) FROM snt", "expect": {"rowCount": 2}},
+      {"sql": "SELECT TYPEOF(o) FROM snt", "expect": {"rowCount": 2}},
+      {"sql": "SELECT COALESCE(o, o) FROM snt", "expect": {"rowCount": 2}},
+      {"sql": "SELECT GREATEST(o, o) FROM snt", "expect": {"rowCount": 2}},
+      {"sql": "SELECT HASH(o) FROM snt", "expect": {"rowCount": 2}},
+      {"sql": "SELECT OBJECT_INSERT(o, 'j', 2) FROM snt", "expect": {"rowCount": 2}}
+    ]},
+    {"name": "the-declared-type-is-read-through-conditionals-and-derived-columns", "steps": [
+      {"sql": "CREATE TABLE snt (id INTEGER, o OBJECT, a ARRAY, v VARIANT, vo VARIANT, s VARCHAR, n NUMBER, f DOUBLE, d DATE)"},
+      {"sql": "SELECT SUM(IFF(TRUE, o, o)) FROM snt", "expect": {"error": {"messageContains": "Invalid argument types for function 'SUM': (OBJECT)"}}},
+      {"sql": "SELECT SUM(COALESCE(o, o)) FROM snt", "expect": {"error": {"messageContains": "Invalid argument types for function 'SUM': (OBJECT)"}}},
+      {"sql": "SELECT SUM(CASE WHEN TRUE THEN o ELSE o END) FROM snt", "expect": {"error": {"messageContains": "Invalid argument types for function 'SUM': (OBJECT)"}}},
+      {"sql": "SELECT SUM(x) FROM (SELECT o AS x FROM snt)", "expect": {"error": {"messageContains": "Invalid argument types for function 'SUM': (OBJECT)"}}},
+      {"sql": "WITH c AS (SELECT o AS x FROM snt) SELECT SUM(x) FROM c", "expect": {"error": {"messageContains": "Invalid argument types for function 'SUM': (OBJECT)"}}},
+      {"sql": "SELECT STDDEV(IFF(TRUE, o, o)) FROM snt", "expect": {"error": {"messageContains": "Invalid argument types for function '*': (OBJECT, OBJECT)"}}},
+      {"sql": "SELECT MEDIAN(IFF(TRUE, o, o)) FROM snt", "expect": {"error": {"messageContains": "incompatible types: [OBJECT] and [NUMBER(9,0)]"}}}
+    ]},
+    {"name": "the-semi-structured-producers-are-rejected-as-arguments", "steps": [
+      {"sql": "CREATE TABLE snt (id INTEGER, o OBJECT, a ARRAY, v VARIANT, vo VARIANT, s VARCHAR, n NUMBER, f DOUBLE, d DATE)"},
+      {"sql": "SELECT SUM(OBJECT_CONSTRUCT('k', 1)) FROM snt", "expect": {"error": {"messageContains": "Invalid argument types for function 'SUM': (OBJECT)"}}},
+      {"sql": "SELECT SUM(ARRAY_CONSTRUCT(1)) FROM snt", "expect": {"error": {"messageContains": "Invalid argument types for function 'SUM': (ARRAY)"}}},
+      {"sql": "SELECT SUM(ARRAY_AGG(n)) FROM snt", "expect": {"error": {"messageContains": "Invalid argument types for function 'SUM': (ARRAY)"}}},
+      {"sql": "SELECT ABS(OBJECT_KEYS(o)) FROM snt", "expect": {"error": {"messageContains": "Invalid argument types for function 'ABS': (ARRAY)"}}}
+    ]}
+  ]
+}

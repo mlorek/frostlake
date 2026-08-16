@@ -1,0 +1,33 @@
+{
+  "suite": "functions-approx-percentile",
+  "description": "APPROX_PERCENTILE(expr, percentile) - the second argument is a constant fraction in [0, 1]. This emulator computes the exact interpolated percentile (the best possible approximation), so results match PERCENTILE_CONT: the median of 1..10 is 5.5, the 0.9 percentile interpolates to 9.1 (index 0.9 * 9 = 8.1, so 9*0.9 + 10*0.1), the extremes return the minimum and maximum, a grouped call answers per group, and an empty input is NULL. Converted 1:1 from functions/ApproxPercentileTest (now retired); its @BeforeEach fixture is inlined per test and the 1e-9 tolerances are supplied by the testkit's numeric normalisation.",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "the-median", "steps": [
+      {"sql": "CREATE TABLE p (grp INTEGER, v DOUBLE)"},
+      {"sql": "INSERT INTO p VALUES (1,1),(1,2),(1,3),(1,4),(1,5),(1,6),(1,7),(1,8),(1,9),(1,10),(2,100),(2,200)"},
+      {"sql": "SELECT APPROX_PERCENTILE(v, 0.5) FROM p WHERE grp = 1", "expect": {"value": "5.5"}}
+    ]},
+    {"name": "a-high-percentile-interpolates", "steps": [
+      {"sql": "CREATE TABLE p (grp INTEGER, v DOUBLE)"},
+      {"sql": "INSERT INTO p VALUES (1,1),(1,2),(1,3),(1,4),(1,5),(1,6),(1,7),(1,8),(1,9),(1,10),(2,100),(2,200)"},
+      {"sql": "SELECT ABS(APPROX_PERCENTILE(v, 0.9) - 9.1) < 0.000000001 FROM p WHERE grp = 1",
+       "expect": {"value": "true"}}
+    ]},
+    {"name": "the-extremes-return-the-minimum-and-maximum", "steps": [
+      {"sql": "CREATE TABLE p (grp INTEGER, v DOUBLE)"},
+      {"sql": "INSERT INTO p VALUES (1,1),(1,2),(1,3),(1,4),(1,5),(1,6),(1,7),(1,8),(1,9),(1,10),(2,100),(2,200)"},
+      {"sql": "SELECT APPROX_PERCENTILE(v, 0.0), APPROX_PERCENTILE(v, 1.0) FROM p WHERE grp = 1",
+       "expect": {"rows": [["1", "10"]]}}
+    ]},
+    {"name": "a-grouped-call-answers-per-group", "steps": [
+      {"sql": "CREATE TABLE p (grp INTEGER, v DOUBLE)"},
+      {"sql": "INSERT INTO p VALUES (1,1),(1,2),(1,3),(1,4),(1,5),(1,6),(1,7),(1,8),(1,9),(1,10),(2,100),(2,200)"},
+      {"sql": "SELECT APPROX_PERCENTILE(v, 0.5) FROM p WHERE grp = 2", "expect": {"value": "150"}}
+    ]},
+    {"name": "an-empty-input-is-null", "steps": [
+      {"sql": "CREATE TABLE e (v DOUBLE)"},
+      {"sql": "SELECT APPROX_PERCENTILE(v, 0.5) FROM e", "expect": {"rows": [[null]]}}
+    ]}
+  ]
+}

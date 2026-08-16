@@ -1,0 +1,38 @@
+{
+  "suite": "features-for-over-array-literal",
+  "description": "FOR x IN [a, b] DO ... END FOR iterates the ARRAY literal's elements, binding the loop variable to each element's VALUE (booleans as real BOOLEAN literals, not truthy strings - a FALSE flag must take the false branch of IFF), an empty array runs zero iterations, and IFF rejects non-BOOLEAN conditions at compile time (Invalid argument types) while NULL conditions choose the else branch. Converted 1:1 from features/ForOverArrayLiteralTest (now retired). The two binding tests skip the snowflake backend: binding the loop variable of a FOR-over-array-literal into the body's SQL is a Frostlake extension (a real account's FOR takes a range or cursor, so the body's binds are never set there).",
+  "tags": ["features", "converted"],
+  "tests": [
+    {"name": "iterates-boolean-array-with-correct-binding",
+     "skip": {"backends": ["snowflake"], "reason": "FOR-over-array-literal binds are a Frostlake extension; live FOR takes a range or cursor"},
+     "steps": [
+      {"sql": "CREATE TABLE loop_out (val VARCHAR, branch VARCHAR)"},
+      {"sql": "CREATE OR REPLACE PROCEDURE dual_pass() RETURNS VARCHAR LANGUAGE SQL AS $$\nDECLARE flag BOOLEAN;\nBEGIN\n  FOR x IN [False, True] DO\n    IF (:x = False) THEN flag := False; ELSE flag := True; END IF;\n    INSERT INTO loop_out SELECT :x::VARCHAR, IFF(:flag, 'cluster', 'leaf');\n  END FOR;\n  RETURN 'done';\nEND $$"},
+      {"sql": "CALL dual_pass()"},
+      {"sql": "SELECT val, branch FROM loop_out ORDER BY val",
+       "expect": {"rows": [["false", "leaf"], ["true", "cluster"]], "ordered": true}}
+    ]},
+    {"name": "iterates-string-and-number-arrays",
+     "skip": {"backends": ["snowflake"], "reason": "FOR-over-array-literal binds are a Frostlake extension; live FOR takes a range or cursor"},
+     "steps": [
+      {"sql": "CREATE TABLE loop_out2 (val VARCHAR)"},
+      {"sql": "CREATE OR REPLACE PROCEDURE walk_lists() RETURNS VARCHAR LANGUAGE SQL AS $$\nBEGIN\n  FOR s IN ['alpha', 'beta'] DO\n    INSERT INTO loop_out2 SELECT :s;\n  END FOR;\n  FOR n IN [10, 20, 30] DO\n    INSERT INTO loop_out2 SELECT :n::VARCHAR;\n  END FOR;\n  RETURN 'done';\nEND $$"},
+      {"sql": "CALL walk_lists()"},
+      {"sql": "SELECT val FROM loop_out2", "expect": {"rowCount": 5}},
+      {"sql": "SELECT val FROM loop_out2 WHERE val = 'beta'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT val FROM loop_out2 WHERE val = '20'", "expect": {"rowCount": 1}}
+    ]},
+    {"name": "empty-array-runs-zero-iterations", "steps": [
+      {"sql": "CREATE TABLE loop_out3 (val VARCHAR)"},
+      {"sql": "CREATE OR REPLACE PROCEDURE walk_empty() RETURNS VARCHAR LANGUAGE SQL AS $$\nBEGIN\n  FOR s IN [] DO\n    INSERT INTO loop_out3 SELECT 'never';\n  END FOR;\n  RETURN 'done';\nEND $$"},
+      {"sql": "CALL walk_empty()"},
+      {"sql": "SELECT val FROM loop_out3", "expect": {"rowCount": 0}}
+    ]},
+    {"name": "iff-rejects-non-boolean-conditions-at-compile-time", "steps": [
+      {"sql": "SELECT IFF('false', 'a', 'b')",
+       "expect": {"error": {"messageContains": "Invalid argument types for function 'IFF'"}}},
+      {"sql": "SELECT IFF(1 = 2, 'a', 'b')", "expect": {"value": "b"}},
+      {"sql": "SELECT IFF(NULL, 'a', 'b')", "expect": {"value": "b"}}
+    ]}
+  ]
+}

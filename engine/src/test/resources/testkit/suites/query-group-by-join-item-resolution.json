@@ -1,0 +1,35 @@
+{
+  "suite": "query-group-by-join-item-resolution",
+  "description": "A complex (non-aggregate) SELECT item over a grouped JOIN must resolve its qualified references - s.col, o.col - against the JOINED-row layout. The representative-row evaluator used for such items previously lacked the multi-table context, so on a LEFT-JOIN group whose right side is a MISS (null-padded) the whole item silently evaluated to NULL, while the same reference INSIDE an aggregate worked. Group keys referencing the item's alias were unaffected, which is what made the output rows exist with a NULL where the computed value belonged. A right-side column really is NULL on a miss group, which is the control that keeps the fix from over-reaching. Converted 1:1 from query/GroupByJoinItemResolutionTest (now retired); the Java built a node-keyed Map and checked entries, which the converted tests state as whole ordered row sets with an explicit ORDER BY.",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "a-complex-item-resolves-left-side-columns-on-join-miss-groups", "steps": [
+      {"sql": "CREATE TABLE readings (grp VARCHAR, node VARCHAR, label VARCHAR)"},
+      {"sql": "CREATE TABLE catalog_names (grp VARCHAR, node VARCHAR, label VARCHAR, family VARCHAR)"},
+      {"sql": "INSERT INTO readings VALUES ('g','n1','alpha:beta:'), ('g','n2','SOLO_LABEL'), ('g','n3','OTHER')"},
+      {"sql": "INSERT INTO catalog_names VALUES ('g','n1','alpha:beta:','alpha')"},
+      {"sql": "SELECT s.node, UPPER(s.label) AS u FROM readings s LEFT JOIN catalog_names o ON o.grp = s.grp AND o.node = s.node GROUP BY s.node, u ORDER BY s.node", "expect": {"rows": [["n1","ALPHA:BETA:"],["n2","SOLO_LABEL"],["n3","OTHER"]], "ordered": true}}
+    ]},
+    {"name": "a-case-over-both-sides-uses-the-else-branch-on-miss-groups", "steps": [
+      {"sql": "CREATE TABLE readings (grp VARCHAR, node VARCHAR, label VARCHAR)"},
+      {"sql": "CREATE TABLE catalog_names (grp VARCHAR, node VARCHAR, label VARCHAR, family VARCHAR)"},
+      {"sql": "INSERT INTO readings VALUES ('g','n1','alpha:beta:'), ('g','n2','SOLO_LABEL'), ('g','n3','OTHER')"},
+      {"sql": "INSERT INTO catalog_names VALUES ('g','n1','alpha:beta:','alpha')"},
+      {"sql": "SELECT s.node, UPPER(CASE WHEN o.node IS NOT NULL AND ARRAY_SIZE(SPLIT(s.label, ':')) = 3 THEN o.family || ':' || o.label ELSE s.label END) AS sid FROM readings s LEFT JOIN catalog_names o ON o.grp = s.grp AND o.node = s.node GROUP BY s.node, sid ORDER BY s.node", "expect": {"rows": [["n1","ALPHA:ALPHA:BETA:"],["n2","SOLO_LABEL"],["n3","OTHER"]], "ordered": true}}
+    ]},
+    {"name": "an-alias-in-where-filters-before-grouping", "steps": [
+      {"sql": "CREATE TABLE readings (grp VARCHAR, node VARCHAR, label VARCHAR)"},
+      {"sql": "CREATE TABLE catalog_names (grp VARCHAR, node VARCHAR, label VARCHAR, family VARCHAR)"},
+      {"sql": "INSERT INTO readings VALUES ('g','n1','alpha:beta:'), ('g','n2','SOLO_LABEL'), ('g','n3','OTHER')"},
+      {"sql": "INSERT INTO catalog_names VALUES ('g','n1','alpha:beta:','alpha')"},
+      {"sql": "SELECT s.node, UPPER(s.label) AS u FROM readings s LEFT JOIN catalog_names o ON o.grp = s.grp AND o.node = s.node WHERE u <> 'OTHER' GROUP BY s.node, u ORDER BY s.node", "expect": {"rows": [["n1","ALPHA:BETA:"],["n2","SOLO_LABEL"]], "ordered": true}}
+    ]},
+    {"name": "a-right-side-column-stays-null-on-miss-groups", "steps": [
+      {"sql": "CREATE TABLE readings (grp VARCHAR, node VARCHAR, label VARCHAR)"},
+      {"sql": "CREATE TABLE catalog_names (grp VARCHAR, node VARCHAR, label VARCHAR, family VARCHAR)"},
+      {"sql": "INSERT INTO readings VALUES ('g','n1','alpha:beta:'), ('g','n2','SOLO_LABEL'), ('g','n3','OTHER')"},
+      {"sql": "INSERT INTO catalog_names VALUES ('g','n1','alpha:beta:','alpha')"},
+      {"sql": "SELECT s.node, o.family AS fam, COUNT(*) AS c FROM readings s LEFT JOIN catalog_names o ON o.grp = s.grp AND o.node = s.node GROUP BY s.node, fam ORDER BY s.node", "expect": {"rows": [["n1","alpha",1],["n2",null,1],["n3",null,1]], "ordered": true}}
+    ]}
+  ]
+}

@@ -1,0 +1,220 @@
+{
+  "suite": "query-operators",
+  "description": "The ordinary query operators over one six-row employee fixture: WHERE with =, >, <=, <>, AND and OR; ORDER BY ascending, descending and on two columns with opposite directions; GROUP BY with COUNT, SUM, AVG and MIN/MAX together; LIMIT; and the combinations - WHERE with ORDER BY, WHERE with GROUP BY, GROUP BY with an ORDER BY over the aggregate, and one query using all of WHERE, GROUP BY, ORDER BY and LIMIT at once. The second half is the % (MODULO) binary operator, which was parsed to BinaryOperator.MODULO but never handled in the evaluator's binary-op switch, so a % b threw \"Unsupported binary operator: MODULO\" while the MOD(a,b) function worked: pinned on integers, against MOD itself, on a negative dividend (Snowflake's % takes the sign of the DIVIDEND), on decimals, over a column inside WHERE, and inside a stored procedure's DECLARE. Converted 1:1 from query/QueryOperatorsTest (now retired); the Java asserted row COUNTS and scanned groups with a Java loop and a found-flag, so each converted test pins the whole row set - unordered where the query has no ORDER BY, ordered where it does.",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "where-equals", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, department VARCHAR, salary INTEGER, age INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 'Engineering', 90000, 30)"},
+      {"sql": "INSERT INTO employees VALUES (2, 'Bob', 'Sales', 70000, 35)"},
+      {"sql": "INSERT INTO employees VALUES (3, 'Charlie', 'Engineering', 95000, 28)"},
+      {"sql": "INSERT INTO employees VALUES (4, 'Diana', 'Sales', 75000, 32)"},
+      {"sql": "INSERT INTO employees VALUES (5, 'Eve', 'Engineering', 85000, 29)"},
+      {"sql": "INSERT INTO employees VALUES (6, 'Frank', 'HR', 65000, 40)"},
+      {"sql": "SELECT * FROM employees WHERE department = 'Engineering'",
+       "expect": {"rows": [[1,"Alice","Engineering",90000,30],[3,"Charlie","Engineering",95000,28],[5,"Eve","Engineering",85000,29]]}}
+    ]},
+    {"name": "where-greater-than", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, department VARCHAR, salary INTEGER, age INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 'Engineering', 90000, 30)"},
+      {"sql": "INSERT INTO employees VALUES (2, 'Bob', 'Sales', 70000, 35)"},
+      {"sql": "INSERT INTO employees VALUES (3, 'Charlie', 'Engineering', 95000, 28)"},
+      {"sql": "INSERT INTO employees VALUES (4, 'Diana', 'Sales', 75000, 32)"},
+      {"sql": "INSERT INTO employees VALUES (5, 'Eve', 'Engineering', 85000, 29)"},
+      {"sql": "INSERT INTO employees VALUES (6, 'Frank', 'HR', 65000, 40)"},
+      {"sql": "SELECT name FROM employees WHERE salary > 80000", "expect": {"rows": [["Alice"],["Charlie"],["Eve"]]}}
+    ]},
+    {"name": "where-less-than-or-equal", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, department VARCHAR, salary INTEGER, age INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 'Engineering', 90000, 30)"},
+      {"sql": "INSERT INTO employees VALUES (2, 'Bob', 'Sales', 70000, 35)"},
+      {"sql": "INSERT INTO employees VALUES (3, 'Charlie', 'Engineering', 95000, 28)"},
+      {"sql": "INSERT INTO employees VALUES (4, 'Diana', 'Sales', 75000, 32)"},
+      {"sql": "INSERT INTO employees VALUES (5, 'Eve', 'Engineering', 85000, 29)"},
+      {"sql": "INSERT INTO employees VALUES (6, 'Frank', 'HR', 65000, 40)"},
+      {"sql": "SELECT name FROM employees WHERE age <= 30", "expect": {"rows": [["Alice"],["Charlie"],["Eve"]]}}
+    ]},
+    {"name": "where-and", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, department VARCHAR, salary INTEGER, age INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 'Engineering', 90000, 30)"},
+      {"sql": "INSERT INTO employees VALUES (2, 'Bob', 'Sales', 70000, 35)"},
+      {"sql": "INSERT INTO employees VALUES (3, 'Charlie', 'Engineering', 95000, 28)"},
+      {"sql": "INSERT INTO employees VALUES (4, 'Diana', 'Sales', 75000, 32)"},
+      {"sql": "INSERT INTO employees VALUES (5, 'Eve', 'Engineering', 85000, 29)"},
+      {"sql": "INSERT INTO employees VALUES (6, 'Frank', 'HR', 65000, 40)"},
+      {"sql": "SELECT name FROM employees WHERE department = 'Engineering' AND salary > 85000", "expect": {"rows": [["Alice"],["Charlie"]]}}
+    ]},
+    {"name": "where-or", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, department VARCHAR, salary INTEGER, age INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 'Engineering', 90000, 30)"},
+      {"sql": "INSERT INTO employees VALUES (2, 'Bob', 'Sales', 70000, 35)"},
+      {"sql": "INSERT INTO employees VALUES (3, 'Charlie', 'Engineering', 95000, 28)"},
+      {"sql": "INSERT INTO employees VALUES (4, 'Diana', 'Sales', 75000, 32)"},
+      {"sql": "INSERT INTO employees VALUES (5, 'Eve', 'Engineering', 85000, 29)"},
+      {"sql": "INSERT INTO employees VALUES (6, 'Frank', 'HR', 65000, 40)"},
+      {"sql": "SELECT name FROM employees WHERE department = 'HR' OR age >= 35", "expect": {"rows": [["Bob"],["Frank"]]}}
+    ]},
+    {"name": "where-not-equal", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, department VARCHAR, salary INTEGER, age INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 'Engineering', 90000, 30)"},
+      {"sql": "INSERT INTO employees VALUES (2, 'Bob', 'Sales', 70000, 35)"},
+      {"sql": "INSERT INTO employees VALUES (3, 'Charlie', 'Engineering', 95000, 28)"},
+      {"sql": "INSERT INTO employees VALUES (4, 'Diana', 'Sales', 75000, 32)"},
+      {"sql": "INSERT INTO employees VALUES (5, 'Eve', 'Engineering', 85000, 29)"},
+      {"sql": "INSERT INTO employees VALUES (6, 'Frank', 'HR', 65000, 40)"},
+      {"sql": "SELECT name FROM employees WHERE department <> 'Engineering'", "expect": {"rows": [["Bob"],["Diana"],["Frank"]]}}
+    ]},
+    {"name": "order-by-ascending", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, department VARCHAR, salary INTEGER, age INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 'Engineering', 90000, 30)"},
+      {"sql": "INSERT INTO employees VALUES (2, 'Bob', 'Sales', 70000, 35)"},
+      {"sql": "INSERT INTO employees VALUES (3, 'Charlie', 'Engineering', 95000, 28)"},
+      {"sql": "INSERT INTO employees VALUES (4, 'Diana', 'Sales', 75000, 32)"},
+      {"sql": "INSERT INTO employees VALUES (5, 'Eve', 'Engineering', 85000, 29)"},
+      {"sql": "INSERT INTO employees VALUES (6, 'Frank', 'HR', 65000, 40)"},
+      {"sql": "SELECT name, salary FROM employees ORDER BY salary ASC",
+       "expect": {"rows": [["Frank",65000],["Bob",70000],["Diana",75000],["Eve",85000],["Alice",90000],["Charlie",95000]], "ordered": true}}
+    ]},
+    {"name": "order-by-descending", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, department VARCHAR, salary INTEGER, age INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 'Engineering', 90000, 30)"},
+      {"sql": "INSERT INTO employees VALUES (2, 'Bob', 'Sales', 70000, 35)"},
+      {"sql": "INSERT INTO employees VALUES (3, 'Charlie', 'Engineering', 95000, 28)"},
+      {"sql": "INSERT INTO employees VALUES (4, 'Diana', 'Sales', 75000, 32)"},
+      {"sql": "INSERT INTO employees VALUES (5, 'Eve', 'Engineering', 85000, 29)"},
+      {"sql": "INSERT INTO employees VALUES (6, 'Frank', 'HR', 65000, 40)"},
+      {"sql": "SELECT name, age FROM employees ORDER BY age DESC",
+       "expect": {"rows": [["Frank",40],["Bob",35],["Diana",32],["Alice",30],["Eve",29],["Charlie",28]], "ordered": true}}
+    ]},
+    {"name": "order-by-two-columns-in-opposite-directions", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, department VARCHAR, salary INTEGER, age INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 'Engineering', 90000, 30)"},
+      {"sql": "INSERT INTO employees VALUES (2, 'Bob', 'Sales', 70000, 35)"},
+      {"sql": "INSERT INTO employees VALUES (3, 'Charlie', 'Engineering', 95000, 28)"},
+      {"sql": "INSERT INTO employees VALUES (4, 'Diana', 'Sales', 75000, 32)"},
+      {"sql": "INSERT INTO employees VALUES (5, 'Eve', 'Engineering', 85000, 29)"},
+      {"sql": "INSERT INTO employees VALUES (6, 'Frank', 'HR', 65000, 40)"},
+      {"sql": "SELECT department, salary, name FROM employees ORDER BY department ASC, salary DESC",
+       "expect": {"rows": [["Engineering",95000,"Charlie"],["Engineering",90000,"Alice"],["Engineering",85000,"Eve"],["HR",65000,"Frank"],["Sales",75000,"Diana"],["Sales",70000,"Bob"]], "ordered": true}}
+    ]},
+    {"name": "group-by-with-count", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, department VARCHAR, salary INTEGER, age INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 'Engineering', 90000, 30)"},
+      {"sql": "INSERT INTO employees VALUES (2, 'Bob', 'Sales', 70000, 35)"},
+      {"sql": "INSERT INTO employees VALUES (3, 'Charlie', 'Engineering', 95000, 28)"},
+      {"sql": "INSERT INTO employees VALUES (4, 'Diana', 'Sales', 75000, 32)"},
+      {"sql": "INSERT INTO employees VALUES (5, 'Eve', 'Engineering', 85000, 29)"},
+      {"sql": "INSERT INTO employees VALUES (6, 'Frank', 'HR', 65000, 40)"},
+      {"sql": "SELECT department, COUNT(*) FROM employees GROUP BY department",
+       "expect": {"rows": [["Engineering",3],["HR",1],["Sales",2]]}}
+    ]},
+    {"name": "group-by-with-sum", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, department VARCHAR, salary INTEGER, age INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 'Engineering', 90000, 30)"},
+      {"sql": "INSERT INTO employees VALUES (2, 'Bob', 'Sales', 70000, 35)"},
+      {"sql": "INSERT INTO employees VALUES (3, 'Charlie', 'Engineering', 95000, 28)"},
+      {"sql": "INSERT INTO employees VALUES (4, 'Diana', 'Sales', 75000, 32)"},
+      {"sql": "INSERT INTO employees VALUES (5, 'Eve', 'Engineering', 85000, 29)"},
+      {"sql": "INSERT INTO employees VALUES (6, 'Frank', 'HR', 65000, 40)"},
+      {"sql": "SELECT department, SUM(salary) FROM employees GROUP BY department",
+       "expect": {"rows": [["Engineering",270000],["HR",65000],["Sales",145000]]}}
+    ]},
+    {"name": "group-by-with-avg", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, department VARCHAR, salary INTEGER, age INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 'Engineering', 90000, 30)"},
+      {"sql": "INSERT INTO employees VALUES (2, 'Bob', 'Sales', 70000, 35)"},
+      {"sql": "INSERT INTO employees VALUES (3, 'Charlie', 'Engineering', 95000, 28)"},
+      {"sql": "INSERT INTO employees VALUES (4, 'Diana', 'Sales', 75000, 32)"},
+      {"sql": "INSERT INTO employees VALUES (5, 'Eve', 'Engineering', 85000, 29)"},
+      {"sql": "INSERT INTO employees VALUES (6, 'Frank', 'HR', 65000, 40)"},
+      {"sql": "SELECT department, AVG(salary) FROM employees GROUP BY department",
+       "expect": {"rows": [["Engineering",90000],["HR",65000],["Sales",72500]]}}
+    ]},
+    {"name": "group-by-with-min-and-max", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, department VARCHAR, salary INTEGER, age INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 'Engineering', 90000, 30)"},
+      {"sql": "INSERT INTO employees VALUES (2, 'Bob', 'Sales', 70000, 35)"},
+      {"sql": "INSERT INTO employees VALUES (3, 'Charlie', 'Engineering', 95000, 28)"},
+      {"sql": "INSERT INTO employees VALUES (4, 'Diana', 'Sales', 75000, 32)"},
+      {"sql": "INSERT INTO employees VALUES (5, 'Eve', 'Engineering', 85000, 29)"},
+      {"sql": "INSERT INTO employees VALUES (6, 'Frank', 'HR', 65000, 40)"},
+      {"sql": "SELECT department, MIN(age), MAX(age) FROM employees GROUP BY department",
+       "expect": {"rows": [["Engineering",28,30],["HR",40,40],["Sales",32,35]]}}
+    ]},
+    {"name": "limit", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, department VARCHAR, salary INTEGER, age INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 'Engineering', 90000, 30)"},
+      {"sql": "INSERT INTO employees VALUES (2, 'Bob', 'Sales', 70000, 35)"},
+      {"sql": "INSERT INTO employees VALUES (3, 'Charlie', 'Engineering', 95000, 28)"},
+      {"sql": "INSERT INTO employees VALUES (4, 'Diana', 'Sales', 75000, 32)"},
+      {"sql": "INSERT INTO employees VALUES (5, 'Eve', 'Engineering', 85000, 29)"},
+      {"sql": "INSERT INTO employees VALUES (6, 'Frank', 'HR', 65000, 40)"},
+      {"sql": "SELECT * FROM employees LIMIT 3", "expect": {"rowCount": 3}}
+    ]},
+    {"name": "where-with-order-by", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, department VARCHAR, salary INTEGER, age INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 'Engineering', 90000, 30)"},
+      {"sql": "INSERT INTO employees VALUES (2, 'Bob', 'Sales', 70000, 35)"},
+      {"sql": "INSERT INTO employees VALUES (3, 'Charlie', 'Engineering', 95000, 28)"},
+      {"sql": "INSERT INTO employees VALUES (4, 'Diana', 'Sales', 75000, 32)"},
+      {"sql": "INSERT INTO employees VALUES (5, 'Eve', 'Engineering', 85000, 29)"},
+      {"sql": "INSERT INTO employees VALUES (6, 'Frank', 'HR', 65000, 40)"},
+      {"sql": "SELECT name, salary FROM employees WHERE salary > 70000 ORDER BY salary DESC",
+       "expect": {"rows": [["Charlie",95000],["Alice",90000],["Eve",85000],["Diana",75000]], "ordered": true}}
+    ]},
+    {"name": "where-with-group-by", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, department VARCHAR, salary INTEGER, age INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 'Engineering', 90000, 30)"},
+      {"sql": "INSERT INTO employees VALUES (2, 'Bob', 'Sales', 70000, 35)"},
+      {"sql": "INSERT INTO employees VALUES (3, 'Charlie', 'Engineering', 95000, 28)"},
+      {"sql": "INSERT INTO employees VALUES (4, 'Diana', 'Sales', 75000, 32)"},
+      {"sql": "INSERT INTO employees VALUES (5, 'Eve', 'Engineering', 85000, 29)"},
+      {"sql": "INSERT INTO employees VALUES (6, 'Frank', 'HR', 65000, 40)"},
+      {"sql": "SELECT department, COUNT(*) FROM employees WHERE salary > 70000 GROUP BY department",
+       "expect": {"rows": [["Engineering",3],["Sales",1]]}}
+    ]},
+    {"name": "group-by-with-order-by-over-the-aggregate", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, department VARCHAR, salary INTEGER, age INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 'Engineering', 90000, 30)"},
+      {"sql": "INSERT INTO employees VALUES (2, 'Bob', 'Sales', 70000, 35)"},
+      {"sql": "INSERT INTO employees VALUES (3, 'Charlie', 'Engineering', 95000, 28)"},
+      {"sql": "INSERT INTO employees VALUES (4, 'Diana', 'Sales', 75000, 32)"},
+      {"sql": "INSERT INTO employees VALUES (5, 'Eve', 'Engineering', 85000, 29)"},
+      {"sql": "INSERT INTO employees VALUES (6, 'Frank', 'HR', 65000, 40)"},
+      {"sql": "SELECT department, COUNT(*) FROM employees GROUP BY department ORDER BY COUNT(*) DESC",
+       "expect": {"rows": [["Engineering",3],["Sales",2],["HR",1]], "ordered": true}}
+    ]},
+    {"name": "where-group-by-order-by-and-limit-together", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, department VARCHAR, salary INTEGER, age INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 'Engineering', 90000, 30)"},
+      {"sql": "INSERT INTO employees VALUES (2, 'Bob', 'Sales', 70000, 35)"},
+      {"sql": "INSERT INTO employees VALUES (3, 'Charlie', 'Engineering', 95000, 28)"},
+      {"sql": "INSERT INTO employees VALUES (4, 'Diana', 'Sales', 75000, 32)"},
+      {"sql": "INSERT INTO employees VALUES (5, 'Eve', 'Engineering', 85000, 29)"},
+      {"sql": "INSERT INTO employees VALUES (6, 'Frank', 'HR', 65000, 40)"},
+      {"sql": "SELECT department, AVG(salary), COUNT(*) FROM employees WHERE age < 35 GROUP BY department ORDER BY AVG(salary) DESC LIMIT 2",
+       "expect": {"rows": [["Engineering",90000,3],["Sales",75000,1]], "ordered": true}}
+    ]},
+    {"name": "the-modulo-operator-on-integers", "steps": [
+      {"sql": "SELECT 10 % 3", "expect": {"value": 1}}
+    ]},
+    {"name": "the-modulo-operator-matches-the-mod-function", "steps": [
+      {"sql": "SELECT (17 % 5) = MOD(17, 5)", "expect": {"value": true}}
+    ]},
+    {"name": "the-modulo-operator-takes-the-dividends-sign", "steps": [
+      {"sql": "SELECT -10 % 3", "expect": {"value": -1}}
+    ]},
+    {"name": "the-modulo-operator-on-decimals", "steps": [
+      {"sql": "SELECT 10.5 % 3", "expect": {"value": 1.5}}
+    ]},
+    {"name": "the-modulo-operator-in-a-column-expression", "steps": [
+      {"sql": "CREATE TABLE mod_t (n INTEGER)"},
+      {"sql": "INSERT INTO mod_t VALUES (10), (7), (6)"},
+      {"sql": "SELECT n FROM mod_t WHERE n % 2 = 0 ORDER BY n", "expect": {"rows": [[6],[10]], "ordered": true}}
+    ]},
+    {"name": "the-modulo-operator-inside-a-procedure", "steps": [
+      {"sql": "CREATE OR REPLACE PROCEDURE p_mod() RETURNS INTEGER LANGUAGE SQL AS $$ DECLARE x INTEGER := 17 % 5; BEGIN RETURN :x; END $$"},
+      {"sql": "CALL p_mod()", "expect": {"value": 2}}
+    ]}
+  ]
+}

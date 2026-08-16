@@ -1,0 +1,22 @@
+{
+  "suite": "functions-array-contains-numeric",
+  "description": "ARRAY_CONTAINS / ARRAY_REMOVE match numeric members by VALUE, whatever the element node and the search value are (int, long or double) - a strict node-equality misses them. The needle's type matters: live-verified on a real account, it must be VARIANT-coercible and a VARCHAR is NOT, so ARRAY_CONTAINS('b', [...]) fails with \"Invalid argument types for function 'ARRAY_CONTAINS': (VARCHAR(1), ARRAY)\" (as do a DATE and a BINARY needle) while a NUMBER, a BOOLEAN and an explicit ::VARIANT all work. Converted 1:1 from functions/ArrayContainsNumericTest (now retired); the ARRAY_REMOVE result is read through TO_JSON so the assertion is on the array's JSON text rather than on a transport's own rendering of an ARRAY cell.",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "array-contains-finds-a-numeric-member", "steps": [
+      {"sql": "SELECT ARRAY_CONTAINS(2, ARRAY_CONSTRUCT(1, 2, 3)), ARRAY_CONTAINS(1, ARRAY_CONSTRUCT(1, 2, 3)), ARRAY_CONTAINS(3, ARRAY_CONSTRUCT(1, 2, 3))",
+       "expect": {"rows": [["true", "true", "true"]]}}
+    ]},
+    {"name": "a-missing-numeric-member-is-false", "steps": [
+      {"sql": "SELECT ARRAY_CONTAINS(5, ARRAY_CONSTRUCT(1, 2, 3))", "expect": {"value": "false"}}
+    ]},
+    {"name": "the-needle-must-be-variant-coercible", "steps": [
+      {"sql": "SELECT ARRAY_CONTAINS('b', ARRAY_CONSTRUCT('a', 'b', 'c'))", "expect": {"error": {}}},
+      {"sql": "SELECT ARRAY_CONTAINS('b'::VARIANT, ARRAY_CONSTRUCT('a', 'b', 'c'))", "expect": {"value": "true"}},
+      {"sql": "SELECT ARRAY_CONTAINS('z'::VARIANT, ARRAY_CONSTRUCT('a', 'b', 'c'))", "expect": {"value": "false"}}
+    ]},
+    {"name": "array-remove-drops-a-numeric-member", "steps": [
+      {"sql": "SELECT TO_JSON(ARRAY_REMOVE(ARRAY_CONSTRUCT(1, 2, 3), 2))", "expect": {"value": "[1,3]"}}
+    ]}
+  ]
+}

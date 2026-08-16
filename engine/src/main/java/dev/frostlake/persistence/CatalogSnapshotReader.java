@@ -18,6 +18,7 @@ package dev.frostlake.persistence;
 
 import dev.frostlake.config.S3PathResolver;
 import dev.frostlake.metastore.Catalog;
+import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.model.AggregationPolicy;
 import dev.frostlake.metastore.model.ChangeType;
 import dev.frostlake.metastore.model.CheckConstraint;
@@ -71,6 +72,7 @@ import dev.frostlake.types.DateTimeType;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.types.ObjectType;
 import dev.frostlake.types.StringType;
+import dev.frostlake.types.UuidType;
 import dev.frostlake.types.VariantType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -412,7 +414,7 @@ final class CatalogSnapshotReader {
                 schema.addTable(table);
 
                 // Create storage for table
-                final String qualifiedName = db.getName().toUpperCase() + "." + schema.getName().toUpperCase() + "." + table.getName().toUpperCase();
+                final String qualifiedName = QualifiedName.key(db.getName(), schema.getName(), table.getName());
                 storageEngine.createTable(qualifiedName, table);
 
                 // Load table data
@@ -646,6 +648,7 @@ final class CatalogSnapshotReader {
                         fn.setVolatility(fnSnapshot.volatility);
                     }
                     fn.setSecure(fnSnapshot.secure);
+                    fn.setMemoizable(fnSnapshot.memoizable);
                     fn.setImports(fnSnapshot.imports);
                     fn.setComment(fnSnapshot.comment);
                     if (fnSnapshot.owner != null) {
@@ -758,7 +761,7 @@ final class CatalogSnapshotReader {
             return;
         }
 
-        final String qualifiedName = database.toUpperCase() + "." + schema.toUpperCase() + "." + table.getName().toUpperCase();
+        final String qualifiedName = QualifiedName.key(database, schema, table.getName());
         final TableStorage storage = storageEngine.getTableStorage(qualifiedName);
 
         // Insert all rows — each row's values defensively copied, so a snapshot applied from memory
@@ -835,6 +838,8 @@ final class CatalogSnapshotReader {
                 return NumericType.SMALLINT;
             case "TINYINT":
                 return NumericType.TINYINT;
+            case "UUID":
+                return UuidType.UUID;
             case "NUMBER":
             case "DECIMAL":
             case "NUMERIC":

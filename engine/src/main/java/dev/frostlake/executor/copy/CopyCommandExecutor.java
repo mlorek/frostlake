@@ -18,9 +18,12 @@ package dev.frostlake.executor.copy;
 
 import dev.frostlake.executor.ColumnLengthException;
 import dev.frostlake.executor.ExpressionEvaluator;
+import dev.frostlake.executor.FileFormatReference;
+import dev.frostlake.executor.FileFormatSurfaces;
 import dev.frostlake.executor.ParseTreeText;
 import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.executor.SqlCompilationError;
+import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.executor.StatementErrors;
 import dev.frostlake.executor.expressions.AntlrExpressionParser;
 import dev.frostlake.executor.expressions.BinaryOperationExpression;
@@ -32,6 +35,7 @@ import dev.frostlake.executor.expressions.FunctionCallExpression;
 import dev.frostlake.executor.expressions.UnaryOperationExpression;
 import dev.frostlake.executor.expressions.WhenClause;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
+import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.model.FileFormat;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.TableColumn;
@@ -210,7 +214,14 @@ public final class CopyCommandExecutor {
     private Object executeCopyIntoTable(final FrostlakeParser.CopyIntoStatementContext ctx, final String tableName) {
         logger.info("Executing COPY INTO table: {}", tableName);
 
-        // Resolve the table
+        // COPY refuses a missing target in words of its own: the name as the statement wrote it, and no
+        // "or not authorized" tail. A name the session cannot place, with no current database, is missing
+        // in the same words (live-verified, with a current database and without one).
+        final QualifiedName written = QualifiedName.parse(tableName);
+        if (!executor.getCatalog().hasTableAsWritten(written)) {
+            throw new RuntimeException(SqlCompilationError.of("Table '"
+                + SqlIdentifiers.spellAlreadyCanonicalPath(String.join(".", written.parts())) + "' does not exist"));
+        }
         final Table table = executor.getCatalog().resolveTable(tableName);
         final String fullyQualifiedTableName = executor.getFullyQualifiedTableName(tableName);
 
@@ -279,6 +290,8 @@ public final class CopyCommandExecutor {
                     requireDistinctFormatOptions(clause.copyFormatOptions().copyFormatOption());
                     for (final FrostlakeParser.CopyFormatOptionContext option : clause.copyFormatOptions().copyFormatOption()) {
                         if (option.TYPE() != null) {
+                            FileFormatSurfaces.requireLegalValue("TYPE",
+                                copyOptValue(option.copyOptionValue()), option.copyOptionValue().getText());
                             fileFormat = copyOptValue(option.copyOptionValue()).toUpperCase();
                         } else if (option.FIELD_DELIMITER() != null) {
                             fieldDelimiter = copyOptValue(option.copyOptionValue());
@@ -308,6 +321,8 @@ public final class CopyCommandExecutor {
                         } else if (option.identifier() != null && option.copyOptionValue() != null
                                 && "FORMAT_NAME".equalsIgnoreCase(ParseTreeText.getIdentifier(option.identifier()))) {
                             // FILE_FORMAT = (FORMAT_NAME = 'ff') — resolve the named file format and adopt its options.
+                            FileFormatReference.require(executor.getCatalog(),
+                                SqlIdentifiers.canonicalText(copyOptValue(option.copyOptionValue())));
                             final FileFormat named = resolveFileFormat(copyOptValue(option.copyOptionValue()));
                             if (named != null) {
                                 fileFormat = named.getType();
@@ -2139,6 +2154,8 @@ public final class CopyCommandExecutor {
                 requireDistinctFormatOptions(clause.copyFormatOptions().copyFormatOption());
                 for (final FrostlakeParser.CopyFormatOptionContext opt : clause.copyFormatOptions().copyFormatOption()) {
                     if (opt.TYPE() != null) {
+                        FileFormatSurfaces.requireLegalValue("TYPE",
+                            copyOptValue(opt.copyOptionValue()), opt.copyOptionValue().getText());
                         fileFormat = copyOptValue(opt.copyOptionValue()).toUpperCase();
                     } else if (opt.COMPRESSION() != null) {
                         compression = copyOptValue(opt.copyOptionValue()).toUpperCase();

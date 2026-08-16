@@ -150,6 +150,7 @@ public class DatabaseConnection implements Connection {
     public void close() throws SQLException {
         if (!closed) {
             closed = true;
+            httpClient.releaseSession();
             logger.debug("Closed connection (session: {})", httpClient.getSessionId());
         }
     }

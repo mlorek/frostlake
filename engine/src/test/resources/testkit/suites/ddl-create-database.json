@@ -1,0 +1,39 @@
+{
+  "suite": "ddl-create-database",
+  "description": "CREATE DATABASE visibility and activation, converted from ddl/CreateDatabaseTest.java (now retired). SHOW ... LIKE keeps counts deterministic on a shared engine.",
+  "tags": ["ddl", "converted"],
+  "tests": [
+    {
+      "name": "create-database-is-listed",
+      "steps": [
+        {"sql": "CREATE DATABASE cdt_new_db"},
+        {"sql": "SHOW DATABASES LIKE 'cdt_new_db'", "expect": {"rowCount": 1}},
+        {"sql": "USE DATABASE test_db"},
+        {"sql": "USE SCHEMA test_schema"},
+        {"sql": "DROP DATABASE IF EXISTS cdt_new_db"}
+      ]
+    },
+    {
+      "name": "multiple-databases-listed",
+      "steps": [
+        {"sql": "CREATE DATABASE cdt_multi_1"},
+        {"sql": "CREATE DATABASE cdt_multi_2"},
+        {"sql": "SHOW DATABASES LIKE 'CDT_MULTI_%'", "expect": {"rowCount": 2}},
+        {"sql": "USE DATABASE test_db"},
+        {"sql": "USE SCHEMA test_schema"},
+        {"sql": "DROP DATABASE IF EXISTS cdt_multi_1"},
+        {"sql": "DROP DATABASE IF EXISTS cdt_multi_2"}
+      ]
+    },
+    {
+      "name": "use-database-after-create",
+      "steps": [
+        {"sql": "CREATE DATABASE cdt_use_db"},
+        {"sql": "USE DATABASE cdt_use_db"},
+        {"sql": "USE DATABASE test_db"},
+        {"sql": "USE SCHEMA test_schema"},
+        {"sql": "DROP DATABASE IF EXISTS cdt_use_db"}
+      ]
+    }
+  ]
+}

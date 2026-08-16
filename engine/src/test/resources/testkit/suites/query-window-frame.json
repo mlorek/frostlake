@@ -1,0 +1,89 @@
+{
+  "suite": "query-window-frame",
+  "description": "Window FRAME clauses - ROWS and RANGE BETWEEN. The Snowflake DEFAULTS come first: an ORDERED aggregate is a running, peer-aware window (UNBOUNDED PRECEDING to CURRENT ROW) while an UNORDERED one spans the whole partition. Explicit ROWS frames give moving windows - a two-row trailing sum, a centred three-row average clamped at the ends, a suffix sum from the current row to unbounded following - and a SINGLE bound implies '... AND CURRENT ROW'. LAST_VALUE over an explicit whole-partition frame is the last row's value for every row. The RANGE half is where the two differ: the default RANGE frame groups PEERS, so two rows tied on the ORDER BY key see the same sum through the last peer, where ROWS is positional and does not group them; and a RANGE OFFSET is VALUE-based, so over gapped values it includes what falls inside the numeric window rather than a fixed number of rows - asserted preceding, following, both-sided, with a DESC order that flips which side 'preceding' means, and over tied peers that share one frame. A RANGE offset requires a numeric ORDER BY key and is refused over a string one. Converted 1:1 from query/WindowFrameTest (now retired); the Java read cells by index with a 0.001 tolerance, so each converted test pins the whole ordered row set.",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "an-ordered-aggregate-defaults-to-a-running-window", "steps": [
+      {"sql": "CREATE TABLE t (id INTEGER, val INTEGER)"},
+      {"sql": "INSERT INTO t VALUES (1, 10), (2, 20), (3, 30), (4, 40)"},
+      {"sql": "SELECT id, SUM(val) OVER (ORDER BY id) AS s FROM t ORDER BY id", "expect": {"rows": [[1,10],[2,30],[3,60],[4,100]], "ordered": true}}
+    ]},
+    {"name": "an-unordered-aggregate-spans-the-whole-partition", "steps": [
+      {"sql": "CREATE TABLE t (id INTEGER, val INTEGER)"},
+      {"sql": "INSERT INTO t VALUES (1, 10), (2, 20), (3, 30), (4, 40)"},
+      {"sql": "SELECT id, SUM(val) OVER () AS s FROM t ORDER BY id", "expect": {"rows": [[1,100],[2,100],[3,100],[4,100]], "ordered": true}}
+    ]},
+    {"name": "rows-preceding-gives-a-moving-sum", "steps": [
+      {"sql": "CREATE TABLE t (id INTEGER, val INTEGER)"},
+      {"sql": "INSERT INTO t VALUES (1, 10), (2, 20), (3, 30), (4, 40)"},
+      {"sql": "SELECT id, SUM(val) OVER (ORDER BY id ROWS BETWEEN 1 PRECEDING AND CURRENT ROW) AS s FROM t ORDER BY id",
+       "expect": {"rows": [[1,10],[2,30],[3,50],[4,70]], "ordered": true}}
+    ]},
+    {"name": "rows-between-preceding-and-following-centres-the-window", "steps": [
+      {"sql": "CREATE TABLE t (id INTEGER, val INTEGER)"},
+      {"sql": "INSERT INTO t VALUES (1, 10), (2, 20), (3, 30), (4, 40)"},
+      {"sql": "SELECT id, AVG(val) OVER (ORDER BY id ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING) AS a FROM t ORDER BY id",
+       "expect": {"rows": [[1,15],[2,20],[3,30],[4,35]], "ordered": true}}
+    ]},
+    {"name": "rows-from-current-to-unbounded-following-gives-a-suffix-sum", "steps": [
+      {"sql": "CREATE TABLE t (id INTEGER, val INTEGER)"},
+      {"sql": "INSERT INTO t VALUES (1, 10), (2, 20), (3, 30), (4, 40)"},
+      {"sql": "SELECT id, SUM(val) OVER (ORDER BY id ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING) AS s FROM t ORDER BY id",
+       "expect": {"rows": [[1,100],[2,90],[3,70],[4,40]], "ordered": true}}
+    ]},
+    {"name": "a-single-bound-frame-ends-at-the-current-row", "steps": [
+      {"sql": "CREATE TABLE t (id INTEGER, val INTEGER)"},
+      {"sql": "INSERT INTO t VALUES (1, 10), (2, 20), (3, 30), (4, 40)"},
+      {"sql": "SELECT id, SUM(val) OVER (ORDER BY id ROWS UNBOUNDED PRECEDING) AS s FROM t ORDER BY id",
+       "expect": {"rows": [[1,10],[2,30],[3,60],[4,100]], "ordered": true}}
+    ]},
+    {"name": "last-value-over-a-whole-partition-frame", "steps": [
+      {"sql": "CREATE TABLE t (id INTEGER, val INTEGER)"},
+      {"sql": "INSERT INTO t VALUES (1, 10), (2, 20), (3, 30), (4, 40)"},
+      {"sql": "SELECT id, LAST_VALUE(val) OVER (ORDER BY id ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) AS lv FROM t ORDER BY id",
+       "expect": {"rows": [[1,40],[2,40],[3,40],[4,40]], "ordered": true}}
+    ]},
+    {"name": "the-default-range-frame-groups-peers-on-a-tied-order-key", "steps": [
+      {"sql": "CREATE TABLE p (id INTEGER, k INTEGER, val INTEGER)"},
+      {"sql": "INSERT INTO p VALUES (1, 1, 10), (2, 1, 20), (3, 2, 30)"},
+      {"sql": "SELECT id, SUM(val) OVER (ORDER BY k) AS s FROM p ORDER BY id", "expect": {"rows": [[1,30],[2,30],[3,60]], "ordered": true}},
+      {"sql": "SELECT id, SUM(val) OVER (ORDER BY k ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS s FROM p ORDER BY id",
+       "expect": {"rows": [[1,10],[2,30],[3,60]], "ordered": true}}
+    ]},
+    {"name": "a-range-preceding-offset-is-value-based", "steps": [
+      {"sql": "CREATE TABLE g (id INTEGER, v INTEGER)"},
+      {"sql": "INSERT INTO g VALUES (1, 10), (2, 20), (3, 30), (4, 100)"},
+      {"sql": "SELECT id, SUM(v) OVER (ORDER BY v RANGE BETWEEN 15 PRECEDING AND CURRENT ROW) AS s FROM g ORDER BY id",
+       "expect": {"rows": [[1,10],[2,30],[3,50],[4,100]], "ordered": true}}
+    ]},
+    {"name": "a-range-following-offset", "steps": [
+      {"sql": "CREATE TABLE g (id INTEGER, v INTEGER)"},
+      {"sql": "INSERT INTO g VALUES (1, 10), (2, 20), (3, 30), (4, 100)"},
+      {"sql": "SELECT id, SUM(v) OVER (ORDER BY v RANGE BETWEEN CURRENT ROW AND 15 FOLLOWING) AS s FROM g ORDER BY id",
+       "expect": {"rows": [[1,30],[2,50],[3,30],[4,100]], "ordered": true}}
+    ]},
+    {"name": "a-both-sided-range-offset", "steps": [
+      {"sql": "CREATE TABLE g (id INTEGER, v INTEGER)"},
+      {"sql": "INSERT INTO g VALUES (1, 10), (2, 20), (3, 30), (4, 100)"},
+      {"sql": "SELECT id, SUM(v) OVER (ORDER BY v RANGE BETWEEN 15 PRECEDING AND 15 FOLLOWING) AS s FROM g ORDER BY id",
+       "expect": {"rows": [[1,30],[2,60],[3,50],[4,100]], "ordered": true}}
+    ]},
+    {"name": "a-descending-order-flips-the-preceding-side", "steps": [
+      {"sql": "CREATE TABLE g (id INTEGER, v INTEGER)"},
+      {"sql": "INSERT INTO g VALUES (1, 10), (2, 20), (3, 30), (4, 100)"},
+      {"sql": "SELECT id, SUM(v) OVER (ORDER BY v DESC RANGE BETWEEN 15 PRECEDING AND CURRENT ROW) AS s FROM g ORDER BY id",
+       "expect": {"rows": [[1,30],[2,50],[3,30],[4,100]], "ordered": true}}
+    ]},
+    {"name": "range-peers-share-the-same-frame", "steps": [
+      {"sql": "CREATE TABLE p (id INTEGER, v INTEGER)"},
+      {"sql": "INSERT INTO p VALUES (1, 10), (2, 10), (3, 20), (4, 25)"},
+      {"sql": "SELECT id, SUM(v) OVER (ORDER BY v RANGE BETWEEN 5 PRECEDING AND CURRENT ROW) AS s FROM p ORDER BY id",
+       "expect": {"rows": [[1,20],[2,20],[3,20],[4,45]], "ordered": true}}
+    ]},
+    {"name": "a-range-offset-requires-a-numeric-order-by-column", "steps": [
+      {"sql": "CREATE TABLE s (id INTEGER, name VARCHAR)"},
+      {"sql": "INSERT INTO s VALUES (1, 'a'), (2, 'b')"},
+      {"sql": "SELECT id, COUNT(*) OVER (ORDER BY name RANGE BETWEEN 1 PRECEDING AND CURRENT ROW) AS c FROM s", "expect": {"error": {}}}
+    ]}
+  ]
+}

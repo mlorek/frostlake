@@ -1,0 +1,47 @@
+{
+  "suite": "functions-unknown-function-refusal",
+  "description": "A call that resolves to nothing is a COMPILATION error: 'Unknown function NAME.' - the name upper-cased however it was written, a full stop at the end, and no position. A QUALIFIED name gets a different sentence, 'Unknown user-defined function SCHEMA.NAME.' Live-verified. The 'SQL compilation error:' prefix is load-bearing beyond its wording: it is what marks the error compile-time, which is how a CREATE VIEW over an unknown function comes to be refused at all, and why an EMPTY table is refused identically - the name is resolved while the statement is planned rather than while rows are produced. The refusal does not outrank everything, and the order is measured: an invalid IDENTIFIER wins over it wherever each of them stands, and a syntax error wins over both. CUBE and ROLLUP are ordinary unknown names when nested inside another super-group. Measured and deliberately NOT asserted: live ACCUMULATES the names when a statement has more than one, pluralising the noun and listing one entry per OCCURRENCE - SELECT zzzfn(1), aaafn(2) is 'Unknown functions ZZZFN, AAAFN.' where Frostlake names the first only; inside the super-groups the counts follow Snowflake's grouping-set EXPANSION, so CUBE (a, ROLLUP (b)) lists ROLLUP twice and CUBE (ROLLUP (a), ROLLUP (b)) lists it four times. Converted 1:1 from functions/UnknownFunctionRefusalTest (now retired); the class's setupTest created uf_t with one row so the expression was actually evaluated, which each converted test recreates.",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "an-empty-table-is-refused-identically", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE uf_empty (a INT)"},
+      {"sql": "SELECT nosuchfn(a) FROM uf_empty", "expect": {"error": {"messageContains": "SQL compilation error:\nUnknown function NOSUCHFN."}}}
+    ]},
+    {"name": "a-nested-super-group-is-an-unknown-name", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE t (a INT, b INT)"},
+      {"sql": "SELECT SUM(b) FROM t GROUP BY ROLLUP (a, CUBE (b))", "expect": {"error": {"messageContains": "SQL compilation error:\nUnknown function CUBE."}}}
+    ]},
+    {"name": "an-invalid-identifier-outranks-it", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE t (a INT, b INT)"},
+      {"sql": "SELECT nosuchfn(1), nosuchcol FROM t", "expect": {"error": {"messageContains": "error line 1 at position 20"}}},
+      {"sql": "SELECT nosuchfn(1), nosuchcol FROM t", "expect": {"error": {"messageContains": "invalid identifier 'NOSUCHCOL'"}}},
+      {"sql": "SELECT nosuchcol, nosuchfn(1) FROM t", "expect": {"error": {"messageContains": "error line 1 at position 7"}}},
+      {"sql": "SELECT nosuchfn(nosuchcol) FROM t", "expect": {"error": {"messageContains": "error line 1 at position 16"}}}
+    ]},
+    {"name": "a-syntax-error-outranks-both", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE t (a INT, b INT)"},
+      {"sql": "SELECT nosuchfn(1), FROM t WHERE", "expect": {"error": {"messageContains": "SQL compilation error:\nsyntax error line 1 at position 32 unexpected '<EOF>'."}}}
+    ]},
+    {"name": "an-unknown-function-names-itself-upper-cased", "steps": [
+      {"sql": "CREATE TABLE uf_t (k NUMBER)"},
+      {"sql": "INSERT INTO uf_t VALUES (1)"},
+      {"sql": "SELECT no_such_fn(k) FROM uf_t", "expect": {"error": {"messageContains": "SQL compilation error:\nUnknown function NO_SUCH_FN."}}},
+      {"sql": "SELECT NO_SUCH_FN(k) FROM uf_t", "expect": {"error": {"messageContains": "SQL compilation error:\nUnknown function NO_SUCH_FN."}}}
+    ]},
+    {"name": "an-argument-less-call-reads-the-same", "steps": [
+      {"sql": "CREATE TABLE uf_t (k NUMBER)"},
+      {"sql": "INSERT INTO uf_t VALUES (1)"},
+      {"sql": "SELECT no_such_fn() FROM uf_t", "expect": {"error": {"messageContains": "SQL compilation error:\nUnknown function NO_SUCH_FN."}}}
+    ]},
+    {"name": "a-qualified-name-is-a-user-defined-function", "steps": [
+      {"sql": "CREATE TABLE uf_t (k NUMBER)"},
+      {"sql": "INSERT INTO uf_t VALUES (1)"},
+      {"sql": "SELECT nosuchschema.no_such_fn(k) FROM uf_t", "expect": {"error": {"messageContains": "SQL compilation error:\nUnknown user-defined function NOSUCHSCHEMA.NO_SUCH_FN."}}}
+    ]},
+    {"name": "a-view-over-an-unknown-function-is-refused", "steps": [
+      {"sql": "CREATE TABLE uf_t (k NUMBER)"},
+      {"sql": "INSERT INTO uf_t VALUES (1)"},
+      {"sql": "CREATE VIEW uf_v AS SELECT no_such_fn(k) AS x FROM uf_t", "expect": {"error": {"messageContains": "SQL compilation error:\nUnknown function NO_SUCH_FN."}}}
+    ]}
+  ]
+}

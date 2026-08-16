@@ -56,6 +56,7 @@ public class ApproxCountDistinct extends AggregateFunction {
 
     @Override
     public int getMinArgCount() { return 1; }
+    /** Documented `APPROX_COUNT_DISTINCT([DISTINCT] expr [, expr ...])`: the tuples are what is counted. */
     @Override
-    public int getMaxArgCount() { return 1; }
+    public int getMaxArgCount() { return Integer.MAX_VALUE; }
 }

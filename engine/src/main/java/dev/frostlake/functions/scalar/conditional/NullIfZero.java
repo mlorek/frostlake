@@ -16,6 +16,7 @@
 
 package dev.frostlake.functions.scalar.conditional;
 
+import dev.frostlake.executor.NumericRangeRefusal;
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.types.NumericType;
 
@@ -25,13 +26,29 @@ import java.util.List;
 public class NullIfZero extends BuiltInFunction {
     public NullIfZero() { super("NULLIFZERO", NumericType.NUMBER); }
 
+    /**
+     * The argument, or NULL when it reads as zero. A SQL BOOLEAN is read as its number, so FALSE is
+     * the zero and TRUE is handed back (live: {@code NULLIFZERO(FALSE)} is NULL, {@code NULLIFZERO(TRUE)}
+     * is TRUE). A text is read as a number the way every numeric reader reads one — {@code '0'} is
+     * NULL, {@code '5'} comes back as itself — and a text that reads as no number is live's row-time
+     * sentence, "Numeric value 'x' is not recognized". A VARIANT holding something else (a JSON
+     * true) is not zero and comes back unchanged.
+     */
     @Override
     public Object evaluate(final List<Object> args) {
         final Object v = args.get(0);
         if (v == null) return null;
+        if (v instanceof Boolean) {
+            return ((Boolean) v).booleanValue() ? v : null;
+        }
+        final String text = v.toString().trim();
         try {
-            if (new BigDecimal(v.toString()).compareTo(BigDecimal.ZERO) == 0) return null;
-        } catch (final Exception ignored) {}
+            if (new BigDecimal(text).compareTo(BigDecimal.ZERO) == 0) return null;
+        } catch (final NumberFormatException notANumber) {
+            if (v instanceof String) {
+                throw new RuntimeException(NumericRangeRefusal.unreadableText(text));
+            }
+        }
         return v;
     }
 

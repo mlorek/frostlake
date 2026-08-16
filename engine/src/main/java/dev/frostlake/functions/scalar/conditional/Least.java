@@ -17,6 +17,7 @@
 package dev.frostlake.functions.scalar.conditional;
 
 import dev.frostlake.executor.ValueComparisons;
+import dev.frostlake.executor.expressions.CollationSpec;
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.types.VariantType;
@@ -49,11 +50,37 @@ public class Least extends BuiltInFunction {
             }
             if (min == null) {
                 min = arg;
-            } else if (ValueComparisons.compareValues(arg, min) < 0) {
+            } else if (ValueComparisons.compareForExtreme(arg, min) < 0) {
                 min = arg;
             }
         }
         return min;
+    }
+
+    /** Under a collation the arguments are ordered by its rules, so 'a' outranks 'B' where it should. */
+    @Override
+    public Object evaluate(final List<Object> args, final CollationSpec collation) {
+        if (collation == null) {
+            return evaluate(args);
+        }
+        Object min = null;
+        for (final Object arg : OrderingCoercion.coerceAll(args)) {
+            if (arg == null) {
+                return null;
+            }
+            if (min == null || compareUnder(collation, arg, min) < 0) {
+                min = arg;
+            }
+        }
+        return min;
+    }
+
+    /** The extreme's comparison, by the collation when both sides are text. */
+    private static int compareUnder(final CollationSpec collation, final Object left, final Object right) {
+        if (left instanceof String && right instanceof String) {
+            return collation.compare((String) left, (String) right);
+        }
+        return ValueComparisons.compareForExtreme(left, right);
     }
 
     @Override

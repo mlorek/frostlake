@@ -1,0 +1,156 @@
+{
+ "suite": "features-statement-clock",
+ "description": "The clock is read once per STATEMENT: every row of one INSERT stores the same CURRENT_TIMESTAMP, two calls inside one statement are equal, and the session-zone temporal family agrees with itself. SYSDATE is the same instant rendered in UTC rather than the session zone, a stored instant does not move when re-read, two statements inside one transaction get SEPARATE instants (the pin is per statement, not per transaction), and the pinned instant is a real reading rather than a frozen constant. Converted from features/StatementClockTest; its the-pin-does-not-outlive-its-statement test stays in the trimmed Java class (StatementClock.isPinned() is a static engine API with no SQL surface). The transaction test burns a GENERATOR scan between its two INSERTs: the pin is per statement, but two statements issued back-to-back can land inside one clock reading, and the Java class only avoided that by the framework overhead between its calls.",
+ "tags": [
+  "features",
+  "converted"
+ ],
+ "tests": [
+  {
+   "name": "every-row-of-one-statement-shares-the-instant",
+   "steps": [
+    {
+     "sql": "CREATE TABLE ticks(id INT, ts TIMESTAMP_NTZ)"
+    },
+    {
+     "sql": "INSERT INTO ticks SELECT 1, CURRENT_TIMESTAMP() FROM TABLE(GENERATOR(ROWCOUNT => 5))"
+    },
+    {
+     "sql": "SELECT COUNT(*) FROM ticks",
+     "expect": {
+      "value": "5"
+     }
+    },
+    {
+     "sql": "SELECT COUNT(DISTINCT ts) FROM ticks",
+     "expect": {
+      "value": "1"
+     }
+    }
+   ]
+  },
+  {
+   "name": "two-calls-in-one-statement-are-equal",
+   "steps": [
+    {
+     "sql": "SELECT CURRENT_TIMESTAMP() = CURRENT_TIMESTAMP()",
+     "expect": {
+      "value": "true"
+     }
+    }
+   ]
+  },
+  {
+   "name": "the-temporal-functions-agree-within-a-statement",
+   "steps": [
+    {
+     "sql": "SELECT CURRENT_TIMESTAMP() = LOCALTIMESTAMP()",
+     "expect": {
+      "value": "true"
+     }
+    },
+    {
+     "sql": "SELECT CURRENT_DATE() = TO_DATE(CURRENT_TIMESTAMP())",
+     "expect": {
+      "value": "true"
+     }
+    }
+   ]
+  },
+  {
+   "name": "sysdate-is-the-same-instant-rendered-in-utc",
+   "skip": {
+    "backends": [
+     "snowflake"
+    ],
+    "reason": "pins the engine branch (its session zone is UTC, so the lead is zero); against live the Java class asserted instead that the lead is a whole number of quarter-hours within +/-14h"
+   },
+   "steps": [
+    {
+     "sql": "SELECT DATEDIFF(second, SYSDATE(), CURRENT_TIMESTAMP())",
+     "expect": {
+      "value": "0"
+     }
+    },
+    {
+     "sql": "SELECT SYSDATE() = CURRENT_TIMESTAMP()",
+     "expect": {
+      "value": "true"
+     }
+    },
+    {
+     "sql": "SELECT (SYSDATE() = CURRENT_TIMESTAMP()) = (DATEDIFF(second, SYSDATE(), CURRENT_TIMESTAMP()) = 0)",
+     "expect": {
+      "value": "true"
+     }
+    }
+   ]
+  },
+  {
+   "name": "a-stored-instant-does-not-move-on-read",
+   "steps": [
+    {
+     "sql": "CREATE TABLE stored(ts TIMESTAMP_NTZ)"
+    },
+    {
+     "sql": "INSERT INTO stored SELECT CURRENT_TIMESTAMP()"
+    },
+    {
+     "sql": "SET first = (SELECT TO_VARCHAR(ts) FROM stored)"
+    },
+    {
+     "sql": "SELECT TO_VARCHAR(ts) = $first FROM stored",
+     "expect": {
+      "value": "true"
+     }
+    }
+   ]
+  },
+  {
+   "name": "separate-statements-in-one-transaction-get-separate-instants",
+   "steps": [
+    {
+     "sql": "CREATE TABLE spans(n INT, ts TIMESTAMP_NTZ)"
+    },
+    {
+     "sql": "BEGIN"
+    },
+    {
+     "sql": "INSERT INTO spans SELECT 1, CURRENT_TIMESTAMP()"
+    },
+    {
+     "sql": "SELECT COUNT(*) FROM TABLE(GENERATOR(ROWCOUNT => 300000))"
+    },
+    {
+     "sql": "INSERT INTO spans SELECT 2, CURRENT_TIMESTAMP()"
+    },
+    {
+     "sql": "COMMIT"
+    },
+    {
+     "sql": "SELECT (SELECT ts FROM spans WHERE n = 1) <> (SELECT ts FROM spans WHERE n = 2)",
+     "expect": {
+      "value": "true"
+     }
+    }
+   ]
+  },
+  {
+   "name": "the-pinned-instant-tracks-wall-clock-time",
+   "steps": [
+    {
+     "sql": "SELECT CURRENT_TIMESTAMP() >= DATEADD(year, -1, CURRENT_TIMESTAMP())",
+     "expect": {
+      "value": "true"
+     }
+    },
+    {
+     "sql": "SELECT LENGTH(CURRENT_TIMESTAMP()::VARCHAR) > 0",
+     "expect": {
+      "value": "true"
+     }
+    }
+   ]
+  }
+ ]
+}

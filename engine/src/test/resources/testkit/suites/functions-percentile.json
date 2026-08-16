@@ -1,0 +1,33 @@
+{
+  "suite": "functions-percentile",
+  "description": "PERCENTILE_CONT / PERCENTILE_DISC via WITHIN GROUP (ORDER BY <expr>): the function argument is the fraction p and the ORDER BY expression supplies the data. Previously the WITHIN GROUP clause was a parse error and the accumulator hardcoded p = 0.5 over the constant function argument. PERCENTILE_CONT interpolates - p=0.9 over [10,20,30,40,100] lands at index 3.6, so 40*0.4 + 100*0.6 = 76 - while PERCENTILE_DISC returns a value actually present in the set, and both compute per group. Converted 1:1 from functions/PercentileTest (now retired); its @BeforeEach fixture is inlined per test.",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "the-continuous-median", "steps": [
+      {"sql": "CREATE TABLE p (grp INTEGER, x DOUBLE)"},
+      {"sql": "INSERT INTO p VALUES (1,10),(1,20),(1,30),(1,40),(1,100),(2,5),(2,15)"},
+      {"sql": "SELECT PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY x) AS r FROM p WHERE grp = 1",
+       "expect": {"value": "30"}}
+    ]},
+    {"name": "the-continuous-form-interpolates-between-values", "steps": [
+      {"sql": "CREATE TABLE p (grp INTEGER, x DOUBLE)"},
+      {"sql": "INSERT INTO p VALUES (1,10),(1,20),(1,30),(1,40),(1,100),(2,5),(2,15)"},
+      {"sql": "SELECT PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY x) AS r FROM p WHERE grp = 1",
+       "expect": {"value": "76"}}
+    ]},
+    {"name": "the-discrete-form-returns-an-actual-value", "steps": [
+      {"sql": "CREATE TABLE p (grp INTEGER, x DOUBLE)"},
+      {"sql": "INSERT INTO p VALUES (1,10),(1,20),(1,30),(1,40),(1,100),(2,5),(2,15)"},
+      {"sql": "SELECT PERCENTILE_DISC(0.9) WITHIN GROUP (ORDER BY x) AS r FROM p WHERE grp = 1",
+       "expect": {"value": "100"}},
+      {"sql": "SELECT PERCENTILE_DISC(0.5) WITHIN GROUP (ORDER BY x) AS r FROM p WHERE grp = 1",
+       "expect": {"value": "30"}}
+    ]},
+    {"name": "the-percentile-is-computed-per-group", "steps": [
+      {"sql": "CREATE TABLE p (grp INTEGER, x DOUBLE)"},
+      {"sql": "INSERT INTO p VALUES (1,10),(1,20),(1,30),(1,40),(1,100),(2,5),(2,15)"},
+      {"sql": "SELECT grp, PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY x) AS r FROM p GROUP BY grp ORDER BY grp",
+       "expect": {"rowCount": 2, "rows": [["1", "30"], ["2", "10"]], "ordered": true}}
+    ]}
+  ]
+}

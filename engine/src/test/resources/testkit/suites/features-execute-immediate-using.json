@@ -1,0 +1,55 @@
+{
+  "suite": "features-execute-immediate-using",
+  "description": "EXECUTE IMMEDIATE ... USING: rejected at session level (with the two live-measured wordings), binds inside scripting blocks, string-escape of binds, and the RETURN-expression rejection. Converted 1:1 from features/ExecuteImmediateUsingTest.java (now retired; exact-message asserts became distinctive messageContains).",
+  "tags": ["features", "converted"],
+  "tests": [
+    {
+      "name": "using-is-rejected-in-a-top-level-statement",
+      "steps": [
+        {"sql": "CREATE TABLE t (id INTEGER, name VARCHAR)"},
+        {"sql": "EXECUTE IMMEDIATE 'INSERT INTO t VALUES (?, ?)' USING (1, 'Alice')", "expect": {"error": {}}},
+        {"sql": "SELECT name FROM t", "expect": {"rowCount": 0}}
+      ]
+    },
+    {
+      "name": "top-level-using-wordings-match-live",
+      "steps": [
+        {"sql": "EXECUTE IMMEDIATE 'SELECT ?' USING (1)", "expect": {"error": {"messageContains": "unexpected '1'"}}},
+        {"sql": "EXECUTE IMMEDIATE 'SELECT ?' USING (myv)", "expect": {"error": {"messageContains": "Unsupported statement type 'EXECUTE'"}}}
+      ]
+    },
+    {
+      "name": "using-binds-variables-in-procedure-statement",
+      "steps": [
+        {"sql": "CREATE TABLE u (id INTEGER, name VARCHAR)"},
+        {"sql": "DECLARE i INTEGER DEFAULT 7; nm STRING DEFAULT 'Bob'; BEGIN   EXECUTE IMMEDIATE 'INSERT INTO u VALUES (?, ?)' USING (i, nm);   RETURN 'ok'; END"},
+        {"sql": "SELECT name FROM u WHERE id = 7", "expect": {"value": "Bob"}}
+      ]
+    },
+    {
+      "name": "using-binds-with-variable-sql-source-in-block",
+      "steps": [
+        {"sql": "CREATE TABLE p (id INTEGER, price INTEGER)"},
+        {"sql": "INSERT INTO p VALUES (1, 50), (2, 150), (3, 250)"},
+        {"sql": "CREATE TABLE p_out (cnt INTEGER)"},
+        {"sql": "DECLARE minp INTEGER DEFAULT 100;         q STRING DEFAULT 'INSERT INTO p_out SELECT COUNT(*) FROM p WHERE price > ?'; BEGIN   EXECUTE IMMEDIATE :q USING (minp);   RETURN 'ok'; END"},
+        {"sql": "SELECT cnt FROM p_out", "expect": {"value": "2"}}
+      ]
+    },
+    {
+      "name": "execute-immediate-inside-return-expression-is-rejected",
+      "steps": [
+        {"sql": "CREATE TABLE r (id INTEGER)"},
+        {"sql": "DECLARE q STRING DEFAULT 'SELECT COUNT(*) FROM r'; BEGIN   RETURN (EXECUTE IMMEDIATE :q); END", "expect": {"error": {}}}
+      ]
+    },
+    {
+      "name": "using-escapes-string-bind",
+      "steps": [
+        {"sql": "CREATE TABLE q (name VARCHAR)"},
+        {"sql": "DECLARE nm VARCHAR DEFAULT 'O''Brien';\nBEGIN\n  EXECUTE IMMEDIATE 'INSERT INTO q VALUES (?)' USING (nm);\n  RETURN 'ok';\nEND"},
+        {"sql": "SELECT name FROM q", "expect": {"value": "O'Brien"}}
+      ]
+    }
+  ]
+}

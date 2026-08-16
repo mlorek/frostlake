@@ -1,0 +1,90 @@
+{
+  "suite": "functions-parse-xml",
+  "description": "PARSE_XML against the live-verified Snowflake XML-in-VARIANT model: the value is an ordinary variant OBJECT shaped {\"$\": content, \"@\": tag, \"@attr\": value, \"childname\": index} whose XML-ness is STRUCTURAL - TYPEOF reports XML for any object of that shape, even one built by PARSE_JSON - and whose rendering is the XML text. Attributes are @-prefixed members that auto-convert to numbers, a child element contributes its FIRST-occurrence index and the index counts text pieces too, and auto-conversion follows Snowflake's rules: the text is trimmed first, leading zeros and a bare .5 or +7 keep their text, a plain fraction stays DECIMAL and an exponent form becomes DOUBLE. The second argument disables auto-conversion. Entities and CDATA re-escape on render, the prolog, comments, a DOCTYPE and namespace prefixes are all handled (prefixes and xmlns stay verbatim, no namespace processing), NULL and blank inputs answer SQL NULL, and malformed XML raises a parse error. Converted 1:1 from functions/ParseXmlTest (now retired). XML renders COMPACT: Snowflake's indentation follows JSON_INDENT and the engine has no such parameter, so the compact form is its canonical rendering and matches TO_XML.",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "it-renders-xml-text-and-reports-type-xml", "steps": [
+      {"sql": "SELECT PARSE_XML('<test>22</test>')::VARCHAR", "expect": {"value": "<test>22</test>"}},
+      {"sql": "SELECT TYPEOF(PARSE_XML('<test>22</test>'))", "expect": {"value": "XML"}},
+      {"sql": "SELECT PARSE_XML('<a><b>1</b></a>')::VARCHAR", "expect": {"value": "<a><b>1</b></a>"}}
+    ]},
+    {"name": "the-model-keeps-dollar-at-and-attribute-members", "steps": [
+      {"sql": "SELECT TO_JSON(PARSE_XML('<a attr1=\"v1\" attr2=\"2\">x</a>'))",
+       "expect": {"value": "{\"$\":\"x\",\"@\":\"a\",\"@attr1\":\"v1\",\"@attr2\":2}"}},
+      {"sql": "SELECT TO_JSON(PARSE_XML('<a/>'))", "expect": {"value": "{\"$\":\"\",\"@\":\"a\"}"}},
+      {"sql": "SELECT PARSE_XML('<a></a>')::VARCHAR", "expect": {"value": "<a></a>"}}
+    ]},
+    {"name": "child-elements-carry-first-occurrence-index-members", "steps": [
+      {"sql": "SELECT TO_JSON(PARSE_XML('<a><b>1</b></a>'))",
+       "expect": {"value": "{\"$\":{\"$\":1,\"@\":\"b\"},\"@\":\"a\",\"b\":0}"}},
+      {"sql": "SELECT TO_JSON(PARSE_XML('<a><b>1</b><c>2</c></a>'))",
+       "expect": {"value": "{\"$\":[{\"$\":1,\"@\":\"b\"},{\"$\":2,\"@\":\"c\"}],\"@\":\"a\",\"b\":0,\"c\":1}"}},
+      {"sql": "SELECT TO_JSON(PARSE_XML('<a>text<b>1</b>tail</a>'))",
+       "expect": {"value": "{\"$\":[\"text\",{\"$\":1,\"@\":\"b\"},\"tail\"],\"@\":\"a\",\"b\":1}"}}
+    ]},
+    {"name": "auto-convert-follows-snowflake-rules", "steps": [
+      {"sql": "SELECT TO_JSON(PARSE_XML('<a> 22 </a>'))", "expect": {"value": "{\"$\":22,\"@\":\"a\"}"}},
+      {"sql": "SELECT TYPEOF(PARSE_XML('<a>22</a>'):\"$\")", "expect": {"value": "INTEGER"}},
+      {"sql": "SELECT TO_JSON(PARSE_XML('<a>007</a>'))", "expect": {"value": "{\"$\":\"007\",\"@\":\"a\"}"}},
+      {"sql": "SELECT TO_JSON(PARSE_XML('<a>.5</a>'))", "expect": {"value": "{\"$\":\".5\",\"@\":\"a\"}"}},
+      {"sql": "SELECT TO_JSON(PARSE_XML('<a>+7</a>'))", "expect": {"value": "{\"$\":\"+7\",\"@\":\"a\"}"}},
+      {"sql": "SELECT TO_JSON(PARSE_XML('<a>-0.5</a>'))", "expect": {"value": "{\"$\":-0.5,\"@\":\"a\"}"}},
+      {"sql": "SELECT TO_JSON(PARSE_XML('<a>true</a>'))", "expect": {"value": "{\"$\":true,\"@\":\"a\"}"}},
+      {"sql": "SELECT TO_JSON(PARSE_XML('<a>99999999999999999999999999</a>'))",
+       "expect": {"value": "{\"$\":99999999999999999999999999,\"@\":\"a\"}"}},
+      {"sql": "SELECT PARSE_XML('<a>1.0</a>')::VARCHAR", "expect": {"value": "<a>1.0</a>"}},
+      {"sql": "SELECT TYPEOF(PARSE_XML('<a>1.0</a>'):\"$\")", "expect": {"value": "DECIMAL"}},
+      {"sql": "SELECT TYPEOF(PARSE_XML('<a>1e5</a>'):\"$\")", "expect": {"value": "DOUBLE"}}
+    ]},
+    {"name": "disabling-auto-convert-keeps-the-text", "steps": [
+      {"sql": "SELECT TO_JSON(PARSE_XML('<a>22</a>', TRUE))", "expect": {"value": "{\"$\":\"22\",\"@\":\"a\"}"}},
+      {"sql": "SELECT TYPEOF(PARSE_XML('<a>22</a>', TRUE):\"$\")", "expect": {"value": "VARCHAR"}},
+      {"sql": "SELECT TO_JSON(PARSE_XML('<a>22</a>', FALSE))", "expect": {"value": "{\"$\":22,\"@\":\"a\"}"}}
+    ]},
+    {"name": "entities-and-cdata-re-escape-on-render", "steps": [
+      {"sql": "SELECT PARSE_XML('<a>&lt;&amp;&gt;</a>')::VARCHAR", "expect": {"value": "<a>&lt;&amp;&gt;</a>"}},
+      {"sql": "SELECT PARSE_XML('<a><![CDATA[hi <b> &amp;]]></a>')::VARCHAR",
+       "expect": {"value": "<a>hi &lt;b&gt; &amp;amp;</a>"}}
+    ]},
+    {"name": "prolog-comments-doctype-and-namespaces-are-handled", "steps": [
+      {"sql": "SELECT PARSE_XML('<?xml version=\"1.0\" encoding=\"UTF-8\"?><a>1</a>')::VARCHAR",
+       "expect": {"value": "<a>1</a>"}},
+      {"sql": "SELECT TO_JSON(PARSE_XML('<a><!-- comment --><b>1</b></a>'))",
+       "expect": {"value": "{\"$\":{\"$\":1,\"@\":\"b\"},\"@\":\"a\",\"b\":0}"}},
+      {"sql": "SELECT PARSE_XML('<!DOCTYPE a []><a>1</a>')::VARCHAR", "expect": {"value": "<a>1</a>"}},
+      {"sql": "SELECT TO_JSON(PARSE_XML('<x:a xmlns:x=\"urn:foo\">1</x:a>'))",
+       "expect": {"value": "{\"$\":1,\"@\":\"x:a\",\"@xmlns:x\":\"urn:foo\"}"}}
+    ]},
+    {"name": "null-and-blank-inputs-yield-sql-null", "steps": [
+      {"sql": "SELECT PARSE_XML(NULL)", "expect": {"rows": [[null]]}},
+      {"sql": "SELECT PARSE_XML('')", "expect": {"rows": [[null]]}},
+      {"sql": "SELECT PARSE_XML('   ')", "expect": {"rows": [[null]]}}
+    ]},
+    {"name": "malformed-xml-raises-a-parse-error", "steps": [
+      {"sql": "SELECT PARSE_XML('not xml')", "expect": {"error": {"messageContains": "Error parsing XML"}}},
+      {"sql": "SELECT PARSE_XML('<a><b></a>')", "expect": {"error": {}}}
+    ]},
+    {"name": "the-xml-shape-is-structural-even-from-parse-json", "steps": [
+      {"sql": "SELECT PARSE_JSON('{\"$\":1,\"@\":\"b\"}')::VARCHAR", "expect": {"value": "<b>1</b>"}},
+      {"sql": "SELECT TYPEOF(PARSE_JSON('{\"$\":1,\"@\":\"b\"}'))", "expect": {"value": "XML"}}
+    ]},
+    {"name": "path-access-sees-the-model", "steps": [
+      {"sql": "SELECT PARSE_XML('<a>x</a>'):\"$\"::VARCHAR", "expect": {"value": "x"}},
+      {"sql": "SELECT GET(PARSE_XML('<a>x</a>'), '@')::VARCHAR", "expect": {"value": "a"}},
+      {"sql": "SELECT GET(PARSE_XML('<a><b>1</b></a>'), '$')::VARCHAR", "expect": {"value": "<b>1</b>"}}
+    ]},
+    {"name": "xml-values-round-trip-through-table-storage", "steps": [
+      {"sql": "CREATE TABLE xml_t (v VARIANT)"},
+      {"sql": "INSERT INTO xml_t SELECT PARSE_XML('<r a=\"1\"><b>2</b></r>')"},
+      {"sql": "SELECT v::VARCHAR FROM xml_t", "expect": {"value": "<r a=\"1\"><b>2</b></r>"}},
+      {"sql": "SELECT TYPEOF(v) FROM xml_t", "expect": {"value": "XML"}}
+    ]},
+    {"name": "a-bare-xml-variant-cell-renders-as-xml-text",
+     "skip": {"backends": ["http"], "reason": "transport divergence: the HTTP transport re-serialises a VARIANT cell with the JSON serialiser, so a bare XML value arrives as its object model {\"$\":22,\"@\":\"test\"} instead of the XML text. Every other check in this suite reads through ::VARCHAR, which renders identically on all transports; this test keeps the un-cast claim on the embedded and JDBC paths."},
+     "steps": [
+      {"sql": "SELECT PARSE_XML('<test>22</test>')", "expect": {"value": "<test>22</test>"}},
+      {"sql": "SELECT PARSE_JSON('{\"$\":1,\"@\":\"b\"}')", "expect": {"value": "<b>1</b>"}},
+      {"sql": "SELECT GET(PARSE_XML('<a><b>1</b></a>'), '$')", "expect": {"value": "<b>1</b>"}}
+    ]}
+  ]
+}

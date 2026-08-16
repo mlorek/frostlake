@@ -24,11 +24,14 @@ import dev.frostlake.metastore.model.Schema;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
+import dev.frostlake.types.DateTimeType;
 import dev.frostlake.types.StringType;
 
 import java.time.Instant;
 import java.time.LocalDateTime;
+import java.time.OffsetDateTime;
 import java.time.ZoneId;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -191,18 +194,32 @@ public final class ShowResultHelpers {
      * {@code retention_time} (a number of days), {@code granted_on} in SHOW GRANTS (the granted
      * object's TYPE, not a time), and the {@code mins_to_unlock} / {@code days_to_expiry} family.
      *
-     * <p>{@code LocalDateTime} in the session zone, which is what the engine's other TIMESTAMP_LTZ
-     * cells carry and what a live account's own TIMESTAMPLTZ arrives as over JDBC.
+     * <p>An {@code OffsetDateTime} at the TRUE instant, to the millisecond — the account declares every
+     * one of them TIMESTAMP_LTZ(3) — which is what the engine's other TIMESTAMP_LTZ cells carry: it
+     * renders at whatever zone the session has when it is read ({@code 18:37:20.748 -0700} under
+     * America/Los_Angeles, {@code 01:37:20.748 Z} under UTC, the same moment), and a TIMESTAMPDIFF
+     * against CURRENT_TIMESTAMP is the real age. A host-local wall clock read as a naive value was
+     * neither: it printed no offset and drifted by the host's own.
      */
-    public static LocalDateTime createdOn(final Instant createdTime) {
+    /**
+     * The type every SHOW and DESCRIBE {@code created_on} column declares: TIMESTAMP_LTZ at precision
+     * THREE — {@code SYSTEM$TYPEOF("created_on")} over a RESULT_SCAN of SHOW TABLES, SHOW SEQUENCES,
+     * SHOW SCHEMAS, SHOW DATABASES or SHOW VIEWS reads TIMESTAMP_LTZ(3)[SB8] on the account — which is
+     * also the precision the cells carry (see {@link #createdOn(Instant)}).
+     */
+    public static final DateTimeType CREATED_ON = new DateTimeType("TIMESTAMP_LTZ", 3, true);
+
+    public static OffsetDateTime createdOn(final Instant createdTime) {
         if (createdTime == null) {
             return null;
         }
-        return createdTime.atZone(ZoneId.systemDefault()).toLocalDateTime();
+        return createdTime.truncatedTo(ChronoUnit.MILLIS).atZone(SessionZone.current()).toOffsetDateTime();
     }
 
-    /** As {@link #createdOn(Instant)}, for the models that carry a local creation time already. */
-    public static LocalDateTime createdOn(final LocalDateTime createdTime) {
-        return createdTime;
+    /** As {@link #createdOn(Instant)}, for the models that stamp a HOST-LOCAL wall clock: read back in
+     *  the host's zone, the instant is recovered exactly. */
+    public static OffsetDateTime createdOn(final LocalDateTime createdTime) {
+        return createdTime == null ? null
+            : createdOn(createdTime.atZone(ZoneId.systemDefault()).toInstant());
     }
 }

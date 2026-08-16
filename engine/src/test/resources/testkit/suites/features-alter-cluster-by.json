@@ -1,0 +1,132 @@
+{
+  "suite": "features-alter-cluster-by",
+  "description": "ALTER TABLE ... CLUSTER BY through SHOW TABLES' cluster_by cell (LINEAR(keys) exactly as written, empty when unclustered): adding, changing, narrowing and widening cluster keys, expression keys (UPPER, DATE, arithmetic, CAST, SUBSTRING, mixed with columns), qualified names, data-bearing tables (data preserved), IF EXISTS (the clustering expression still compiled - an unresolvable column errors even when the table is forgiven), unknown columns refused leaving clustering untouched, and composition with other ALTER operations. Converted 1:1 from features/AlterTableClusterByTest (now retired).",
+  "tags": ["features", "converted"],
+  "tests": [
+    {"name": "alter-table-add-cluster-by", "steps": [
+      {"sql": "CREATE TABLE orders (order_id INTEGER, customer_id INTEGER, order_date VARCHAR)"},
+      {"sql": "SHOW TABLES LIKE 'orders'"},
+      {"sql": "SELECT '<' || \"cluster_by\" || '>' FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "<>"}},
+      {"sql": "ALTER TABLE orders CLUSTER BY (order_date)"},
+      {"sql": "SHOW TABLES LIKE 'orders'"},
+      {"sql": "SELECT \"cluster_by\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "LINEAR(order_date)"}}
+    ]},
+    {"name": "alter-table-add-multiple-cluster-keys", "steps": [
+      {"sql": "CREATE TABLE sales (id INTEGER, region VARCHAR, product VARCHAR, amount INTEGER)"},
+      {"sql": "ALTER TABLE sales CLUSTER BY (region, product)"},
+      {"sql": "SHOW TABLES LIKE 'sales'"},
+      {"sql": "SELECT \"cluster_by\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "LINEAR(region, product)"}}
+    ]},
+    {"name": "alter-table-change-cluster-by", "steps": [
+      {"sql": "CREATE TABLE customers (id INTEGER, name VARCHAR, country VARCHAR, city VARCHAR) CLUSTER BY (country)"},
+      {"sql": "SHOW TABLES LIKE 'customers'"},
+      {"sql": "SELECT \"cluster_by\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "LINEAR(country)"}},
+      {"sql": "ALTER TABLE customers CLUSTER BY (city)"},
+      {"sql": "SHOW TABLES LIKE 'customers'"},
+      {"sql": "SELECT \"cluster_by\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "LINEAR(city)"}}
+    ]},
+    {"name": "alter-table-change-to-multiple-cluster-keys", "steps": [
+      {"sql": "CREATE TABLE products (id INTEGER, category VARCHAR, brand VARCHAR, price INTEGER) CLUSTER BY (category)"},
+      {"sql": "ALTER TABLE products CLUSTER BY (category, brand)"},
+      {"sql": "SHOW TABLES LIKE 'products'"},
+      {"sql": "SELECT \"cluster_by\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "LINEAR(category, brand)"}}
+    ]},
+    {"name": "alter-table-cluster-by-with-expression", "steps": [
+      {"sql": "CREATE TABLE users (id INTEGER, email VARCHAR, created_at VARCHAR)"},
+      {"sql": "ALTER TABLE users CLUSTER BY (UPPER(email))"},
+      {"sql": "SHOW TABLES LIKE 'users'"},
+      {"sql": "SELECT CONTAINS(\"cluster_by\", 'UPPER'), CONTAINS(\"cluster_by\", 'email') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["true", "true"]]}}
+    ]},
+    {"name": "alter-table-cluster-by-with-multiple-expressions", "steps": [
+      {"sql": "CREATE TABLE events (id INTEGER, name VARCHAR, timestamp VARCHAR)"},
+      {"sql": "ALTER TABLE events CLUSTER BY (UPPER(name), DATE(timestamp))"},
+      {"sql": "SHOW TABLES LIKE 'events'"},
+      {"sql": "SELECT CONTAINS(\"cluster_by\", 'UPPER'), CONTAINS(\"cluster_by\", 'DATE') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["true", "true"]]}}
+    ]},
+    {"name": "alter-table-cluster-by-with-arithmetic-expression", "steps": [
+      {"sql": "CREATE TABLE metrics (id INTEGER, value INTEGER, multiplier INTEGER)"},
+      {"sql": "ALTER TABLE metrics CLUSTER BY (value * multiplier)"},
+      {"sql": "SHOW TABLES LIKE 'metrics'"},
+      {"sql": "SELECT CONTAINS(\"cluster_by\", 'value'), CONTAINS(\"cluster_by\", 'multiplier') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["true", "true"]]}}
+    ]},
+    {"name": "alter-table-cluster-by-mixed-columns-and-expressions", "steps": [
+      {"sql": "CREATE TABLE transactions (id INTEGER, user_id INTEGER, date VARCHAR, amount INTEGER)"},
+      {"sql": "ALTER TABLE transactions CLUSTER BY (user_id, UPPER(date), amount * 100)"},
+      {"sql": "SHOW TABLES LIKE 'transactions'"},
+      {"sql": "SELECT STARTSWITH(\"cluster_by\", 'LINEAR(user_id,'), CONTAINS(\"cluster_by\", 'UPPER'), CONTAINS(\"cluster_by\", 'amount') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["true", "true", "true"]]}}
+    ]},
+    {"name": "alter-table-cluster-by-with-qualified-name", "steps": [
+      {"sql": "CREATE SCHEMA analytics"},
+      {"sql": "CREATE TABLE analytics.reports (id INTEGER, region VARCHAR, quarter VARCHAR)"},
+      {"sql": "ALTER TABLE analytics.reports CLUSTER BY (region, quarter)"},
+      {"sql": "SHOW TABLES LIKE 'reports' IN SCHEMA analytics"},
+      {"sql": "SELECT \"cluster_by\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "LINEAR(region, quarter)"}}
+    ]},
+    {"name": "alter-table-cluster-by-after-insert", "steps": [
+      {"sql": "CREATE TABLE items (id INTEGER, category VARCHAR)"},
+      {"sql": "INSERT INTO items VALUES (1, 'Electronics'), (2, 'Furniture'), (3, 'Electronics')"},
+      {"sql": "ALTER TABLE items CLUSTER BY (category)"},
+      {"sql": "SHOW TABLES LIKE 'items'"},
+      {"sql": "SELECT \"cluster_by\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "LINEAR(category)"}}
+    ]},
+    {"name": "alter-table-cluster-by-with-if-exists", "steps": [
+      {"sql": "CREATE TABLE test1 (id INTEGER, name VARCHAR)"},
+      {"sql": "ALTER TABLE IF EXISTS test1 CLUSTER BY (name)"},
+      {"sql": "SHOW TABLES LIKE 'test1'"},
+      {"sql": "SELECT \"cluster_by\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "LINEAR(name)"}},
+      {"sql": "ALTER TABLE IF EXISTS nonexistent CLUSTER BY (col1)",
+       "expect": {"error": {"messageContains": "invalid identifier 'COL1'"}}}
+    ]},
+    {"name": "cluster-by-unknown-column-is-refused", "steps": [
+      {"sql": "CREATE TABLE known_cols (id INTEGER, name VARCHAR)"},
+      {"sql": "ALTER TABLE known_cols CLUSTER BY (nosuchcol)",
+       "expect": {"error": {"messageContains": "invalid identifier 'NOSUCHCOL'"}}},
+      {"sql": "SHOW TABLES LIKE 'known_cols'"},
+      {"sql": "SELECT '<' || \"cluster_by\" || '>' FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "<>"}}
+    ]},
+    {"name": "alter-table-multiple-alterations", "steps": [
+      {"sql": "CREATE TABLE multi_alter (id INTEGER, col1 VARCHAR)"},
+      {"sql": "ALTER TABLE multi_alter ADD COLUMN col2 INTEGER"},
+      {"sql": "ALTER TABLE multi_alter CLUSTER BY (col1)"},
+      {"sql": "ALTER TABLE multi_alter ADD COLUMN col3 VARCHAR"},
+      {"sql": "ALTER TABLE multi_alter CLUSTER BY (col1, col2)"},
+      {"sql": "DESCRIBE TABLE multi_alter", "expect": {"rowCount": 4}},
+      {"sql": "SHOW TABLES LIKE 'multi_alter'"},
+      {"sql": "SELECT \"cluster_by\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "LINEAR(col1, col2)"}}
+    ]},
+    {"name": "alter-table-cluster-by-with-cast-expression", "steps": [
+      {"sql": "CREATE TABLE data (id INTEGER, value VARCHAR, score DECIMAL)"},
+      {"sql": "ALTER TABLE data CLUSTER BY (CAST(value AS INTEGER))"},
+      {"sql": "SHOW TABLES LIKE 'data'"},
+      {"sql": "SELECT CONTAINS(\"cluster_by\", 'CAST'), CONTAINS(\"cluster_by\", 'value') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["true", "true"]]}}
+    ]},
+    {"name": "alter-table-cluster-by-remove-by-setting-empty", "steps": [
+      {"sql": "CREATE TABLE clustered (id INTEGER, col1 VARCHAR, col2 VARCHAR) CLUSTER BY (col1, col2)"},
+      {"sql": "SHOW TABLES LIKE 'clustered'"},
+      {"sql": "SELECT \"cluster_by\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "LINEAR(col1, col2)"}},
+      {"sql": "ALTER TABLE clustered CLUSTER BY (col1)"},
+      {"sql": "SHOW TABLES LIKE 'clustered'"},
+      {"sql": "SELECT \"cluster_by\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "LINEAR(col1)"}}
+    ]},
+    {"name": "alter-table-cluster-by-with-substring-expression", "steps": [
+      {"sql": "CREATE TABLE logs (id INTEGER, message VARCHAR, timestamp VARCHAR)"},
+      {"sql": "ALTER TABLE logs CLUSTER BY (SUBSTRING(message, 1, 10))"},
+      {"sql": "SHOW TABLES LIKE 'logs'"},
+      {"sql": "SELECT CONTAINS(\"cluster_by\", 'SUBSTRING'), CONTAINS(\"cluster_by\", 'message') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["true", "true"]]}}
+    ]},
+    {"name": "alter-table-cluster-by-preserves-data", "steps": [
+      {"sql": "CREATE TABLE preserve_test (id INTEGER, region VARCHAR, amount INTEGER)"},
+      {"sql": "INSERT INTO preserve_test VALUES (1, 'US', 100), (2, 'EU', 200), (3, 'US', 150)"},
+      {"sql": "ALTER TABLE preserve_test CLUSTER BY (region)"},
+      {"sql": "SHOW TABLES LIKE 'preserve_test'"},
+      {"sql": "SELECT \"cluster_by\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "LINEAR(region)"}},
+      {"sql": "SELECT * FROM preserve_test", "expect": {"rowCount": 3}}
+    ]}
+  ]
+}

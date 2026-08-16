@@ -1,0 +1,46 @@
+{
+  "suite": "features-identifier-quoting-resolution",
+  "description": "A column reference resolves to a name and then has to MATCH one exactly: written bare it folds to upper case; written in double quotes it is taken verbatim. A column created as \"lower\" is reachable only as \"lower\" (bare and upper spellings refuse with invalid identifier 'LOWER'), a bare-created column answers bare or as its upper-case quoted spelling (never lower-case quoted), a mixed-case column only verbatim, each spelling reaches its own column's value, SHOW names its result columns in lower case (RESULT_SCAN read-back needs the quotes, the bare form refuses 'NAME'), and INFORMATION_SCHEMA names its columns upper case so the bare form reaches them. Converted 1:1 from features/IdentifierQuotingResolutionTest (now retired).",
+  "tags": ["features", "converted"],
+  "tests": [
+    {"name": "a-lower-case-column-needs-its-quotes", "steps": [
+      {"sql": "CREATE TABLE mixed (\"lower\" INTEGER, UPPER_COL INTEGER, \"MiXeD\" INTEGER)"},
+      {"sql": "INSERT INTO mixed VALUES (1, 2, 3)"},
+      {"sql": "SELECT \"lower\" FROM mixed", "expect": {"value": "1"}},
+      {"sql": "SELECT lower FROM mixed", "expect": {"error": {"messageContains": "invalid identifier 'LOWER'"}}},
+      {"sql": "SELECT LOWER FROM mixed", "expect": {"error": {"messageContains": "invalid identifier 'LOWER'"}}}
+    ]},
+    {"name": "a-bare-column-answers-to-either-upper-case-spelling", "steps": [
+      {"sql": "CREATE TABLE mixed (\"lower\" INTEGER, UPPER_COL INTEGER, \"MiXeD\" INTEGER)"},
+      {"sql": "INSERT INTO mixed VALUES (1, 2, 3)"},
+      {"sql": "SELECT upper_col FROM mixed", "expect": {"value": "2"}},
+      {"sql": "SELECT UPPER_COL FROM mixed", "expect": {"value": "2"}},
+      {"sql": "SELECT \"UPPER_COL\" FROM mixed", "expect": {"value": "2"}},
+      {"sql": "SELECT \"upper_col\" FROM mixed", "expect": {"error": {"messageContains": "invalid identifier"}}}
+    ]},
+    {"name": "a-mixed-case-column-is-reachable-only-verbatim", "steps": [
+      {"sql": "CREATE TABLE mixed (\"lower\" INTEGER, UPPER_COL INTEGER, \"MiXeD\" INTEGER)"},
+      {"sql": "INSERT INTO mixed VALUES (1, 2, 3)"},
+      {"sql": "SELECT \"MiXeD\" FROM mixed", "expect": {"value": "3"}},
+      {"sql": "SELECT \"mixed\" FROM mixed", "expect": {"error": {"messageContains": "invalid identifier"}}},
+      {"sql": "SELECT mixed FROM mixed", "expect": {"error": {"messageContains": "invalid identifier 'MIXED'"}}}
+    ]},
+    {"name": "each-spelling-reaches-its-own-column", "steps": [
+      {"sql": "CREATE TABLE mixed (\"lower\" INTEGER, UPPER_COL INTEGER, \"MiXeD\" INTEGER)"},
+      {"sql": "INSERT INTO mixed VALUES (1, 2, 3)"},
+      {"sql": "SELECT \"lower\", upper_col, \"MiXeD\" FROM mixed", "expect": {"rows": [["1", "2", "3"]]}}
+    ]},
+    {"name": "show-columns-read-back-need-their-quotes", "steps": [
+      {"sql": "CREATE TABLE probe_t (a INTEGER)"},
+      {"sql": "SHOW TABLES LIKE 'PROBE_T'"},
+      {"sql": "SELECT \"name\", \"rows\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"rowCount": 1}},
+      {"sql": "SHOW TABLES LIKE 'PROBE_T'"},
+      {"sql": "SELECT name FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"error": {"messageContains": "invalid identifier 'NAME'"}}}
+    ]},
+    {"name": "information-schema-columns-answer-to-the-bare-form", "steps": [
+      {"sql": "SELECT table_name, table_schema FROM INFORMATION_SCHEMA.TABLES"},
+      {"sql": "SELECT \"TABLE_NAME\" FROM INFORMATION_SCHEMA.TABLES"}
+    ]}
+  ]
+}

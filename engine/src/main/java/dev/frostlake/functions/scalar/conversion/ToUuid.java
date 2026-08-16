@@ -17,7 +17,7 @@
 package dev.frostlake.functions.scalar.conversion;
 
 import dev.frostlake.functions.BuiltInFunction;
-import dev.frostlake.types.StringType;
+import dev.frostlake.types.UuidType;
 import java.util.List;
 import java.util.regex.Pattern;
 
@@ -30,7 +30,7 @@ public class ToUuid extends BuiltInFunction {
     private static final Pattern HYPHENATED_UUID = Pattern.compile(
         "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}");
 
-    public ToUuid() { super("TO_UUID", StringType.VARCHAR); }
+    public ToUuid() { super("TO_UUID", UuidType.UUID); }
 
     @Override
     public Object evaluate(final List<Object> args) {
@@ -38,8 +38,17 @@ public class ToUuid extends BuiltInFunction {
         return canonical(args.get(0).toString());
     }
 
-    /** The lowercase canonical form, or an error mirroring Snowflake's message for invalid input. */
-    static String canonical(final String input) {
+    /**
+     * The lowercase canonical form; NULL for an empty string, which live converts to NULL; and an error
+     * mirroring Snowflake's message for any other invalid input.
+     *
+     * @param input the text to convert
+     * @return the canonical form, or null
+     */
+    public static String canonical(final String input) {
+        if (input.isEmpty()) {
+            return null;
+        }
         if (!HYPHENATED_UUID.matcher(input).matches()) {
             throw new RuntimeException("UUID '" + input + "' is invalid, expected format is "
                 + "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx (8-4-4-4-12 hexadecimal digits with hyphens)");

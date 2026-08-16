@@ -1,0 +1,19 @@
+{
+  "suite": "scripting-procedure-returns-not-null",
+  "description": "CREATE FUNCTION and CREATE PROCEDURE accept a RETURNS <type> NOT NULL return clause, where the NOT NULL is INFORMATIONAL - it parses and the routine runs, and the plain RETURNS without it still works. Previously the NOT NULL suffix failed to parse at all. Converted 1:1 from scripting/ProcedureReturnsNotNullTest (now retired).",
+  "tags": ["scripting", "converted"],
+  "tests": [
+    {"name": "a-procedure-with-returns-not-null", "steps": [
+      {"sql": "CREATE OR REPLACE PROCEDURE p() RETURNS VARCHAR NOT NULL LANGUAGE SQL AS $$ BEGIN RETURN 'hi'; END; $$"},
+      {"sql": "CALL p()", "expect": {"value": "hi"}}
+    ]},
+    {"name": "a-function-with-returns-not-null", "steps": [
+      {"sql": "CREATE OR REPLACE FUNCTION f() RETURNS NUMBER NOT NULL AS $$ 42 $$"},
+      {"sql": "SELECT f()", "expect": {"value": 42}}
+    ]},
+    {"name": "returns-without-not-null-still-works", "steps": [
+      {"sql": "CREATE OR REPLACE FUNCTION g() RETURNS NUMBER AS $$ 7 $$"},
+      {"sql": "SELECT g()", "expect": {"value": 7}}
+    ]}
+  ]
+}

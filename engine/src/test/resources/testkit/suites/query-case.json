@@ -1,0 +1,89 @@
+{
+  "suite": "query-case",
+  "description": "CASE expressions: simple/searched forms, nesting, NULL handling, arithmetic, concatenation, LIKE/BETWEEN conditions, WHERE placement. Converted 1:1 from query/CaseElseTest and CaseExpressionsTest (both now retired; the Java file's commented-out ORDER BY test was not carried).",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "simple-else", "steps": [
+      {"sql": "SELECT CASE WHEN 1 = 2 THEN 'no' ELSE 'yes' END as result", "expect": {"value": "yes"}}
+    ]},
+    {"name": "else-with-null", "steps": [
+      {"sql": "CREATE TABLE test (id INTEGER, val INTEGER)"},
+      {"sql": "INSERT INTO test VALUES (1, 10)"},
+      {"sql": "INSERT INTO test VALUES (2, NULL)"},
+      {"sql": "SELECT id, CASE WHEN val > 5 THEN 'big' ELSE 'small' END as size FROM test ORDER BY id",
+       "expect": {"rows": [["1", "big"], ["2", "small"]], "ordered": true}}
+    ]},
+    {"name": "simple-case-expression", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, dept VARCHAR, salary INTEGER, status VARCHAR)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'John Doe', 'Sales', 50000, 'active'), (2, 'Jane Smith', 'IT', 60000, 'active'), (3, 'Bob Wilson', 'Sales', 45000, 'inactive'), (4, 'Alice Brown', 'IT', 75000, 'active'), (5, 'Charlie Davis', 'HR', NULL, 'active')"},
+      {"sql": "SELECT name, CASE dept WHEN 'Sales' THEN 'Revenue' WHEN 'IT' THEN 'Technology' WHEN 'HR' THEN 'People' ELSE 'Other' END as dept_category FROM employees ORDER BY id",
+       "expect": {"rows": [["John Doe", "Revenue"], ["Jane Smith", "Technology"], ["Bob Wilson", "Revenue"], ["Alice Brown", "Technology"], ["Charlie Davis", "People"]], "ordered": true}}
+    ]},
+    {"name": "simple-case-without-else", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, dept VARCHAR, salary INTEGER, status VARCHAR)"},
+      {"sql": "INSERT INTO employees VALUES (5, 'Charlie Davis', 'HR', NULL, 'active')"},
+      {"sql": "SELECT name, CASE dept WHEN 'Sales' THEN 'Revenue' WHEN 'IT' THEN 'Technology' END as dept_category FROM employees WHERE id = 5",
+       "expect": {"rows": [["Charlie Davis", null]]}}
+    ]},
+    {"name": "searched-case-expression", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, dept VARCHAR, salary INTEGER, status VARCHAR)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'John Doe', 'Sales', 50000, 'active'), (2, 'Jane Smith', 'IT', 60000, 'active'), (3, 'Bob Wilson', 'Sales', 45000, 'inactive'), (4, 'Alice Brown', 'IT', 75000, 'active'), (5, 'Charlie Davis', 'HR', NULL, 'active')"},
+      {"sql": "SELECT name, CASE WHEN salary >= 70000 THEN 'High' WHEN salary >= 50000 THEN 'Medium' WHEN salary < 50000 THEN 'Low' ELSE 'Unknown' END as salary_level FROM employees ORDER BY id",
+       "expect": {"rows": [["John Doe", "Medium"], ["Jane Smith", "Medium"], ["Bob Wilson", "Low"], ["Alice Brown", "High"], ["Charlie Davis", "Unknown"]], "ordered": true}}
+    ]},
+    {"name": "searched-case-with-complex-conditions", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, dept VARCHAR, salary INTEGER, status VARCHAR)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'John Doe', 'Sales', 50000, 'active'), (2, 'Jane Smith', 'IT', 60000, 'active'), (3, 'Bob Wilson', 'Sales', 45000, 'inactive'), (4, 'Alice Brown', 'IT', 75000, 'active'), (5, 'Charlie Davis', 'HR', NULL, 'active')"},
+      {"sql": "SELECT name, CASE WHEN dept = 'IT' AND salary > 65000 THEN 'Senior Tech' WHEN dept = 'IT' THEN 'Tech' WHEN dept = 'Sales' AND status = 'active' THEN 'Active Sales' ELSE 'Other' END as employee_type FROM employees ORDER BY id",
+       "expect": {"rows": [["John Doe", "Active Sales"], ["Jane Smith", "Tech"], ["Bob Wilson", "Other"], ["Alice Brown", "Senior Tech"], ["Charlie Davis", "Other"]], "ordered": true}}
+    ]},
+    {"name": "case-in-where-clause", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, dept VARCHAR, salary INTEGER, status VARCHAR)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'John Doe', 'Sales', 50000, 'active'), (2, 'Jane Smith', 'IT', 60000, 'active'), (3, 'Bob Wilson', 'Sales', 45000, 'inactive'), (4, 'Alice Brown', 'IT', 75000, 'active'), (5, 'Charlie Davis', 'HR', NULL, 'active')"},
+      {"sql": "SELECT name FROM employees WHERE CASE dept WHEN 'IT' THEN 1 WHEN 'Sales' THEN 1 ELSE 0 END = 1 ORDER BY id",
+       "expect": {"rows": [["John Doe"], ["Jane Smith"], ["Bob Wilson"], ["Alice Brown"]], "ordered": true}}
+    ]},
+    {"name": "nested-case-expressions", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, dept VARCHAR, salary INTEGER, status VARCHAR)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'John Doe', 'Sales', 50000, 'active'), (2, 'Jane Smith', 'IT', 60000, 'active'), (3, 'Bob Wilson', 'Sales', 45000, 'inactive'), (4, 'Alice Brown', 'IT', 75000, 'active'), (5, 'Charlie Davis', 'HR', NULL, 'active')"},
+      {"sql": "SELECT name, CASE dept WHEN 'IT' THEN CASE WHEN salary > 65000 THEN 'Senior IT' ELSE 'Junior IT' END WHEN 'Sales' THEN 'Sales Team' ELSE 'Other' END as classification FROM employees ORDER BY id",
+       "expect": {"rows": [["John Doe", "Sales Team"], ["Jane Smith", "Junior IT"], ["Bob Wilson", "Sales Team"], ["Alice Brown", "Senior IT"], ["Charlie Davis", "Other"]], "ordered": true}}
+    ]},
+    {"name": "case-with-null-handling", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, dept VARCHAR, salary INTEGER, status VARCHAR)"},
+      {"sql": "INSERT INTO employees VALUES (4, 'Alice Brown', 'IT', 75000, 'active'), (5, 'Charlie Davis', 'HR', NULL, 'active')"},
+      {"sql": "SELECT name, CASE WHEN salary IS NULL THEN 'No Salary' WHEN salary > 50000 THEN 'Good Salary' ELSE 'Standard Salary' END as salary_status FROM employees WHERE id IN (4, 5) ORDER BY id",
+       "expect": {"rows": [["Alice Brown", "Good Salary"], ["Charlie Davis", "No Salary"]], "ordered": true}}
+    ]},
+    {"name": "case-with-arithmetic", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, dept VARCHAR, salary INTEGER, status VARCHAR)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'John Doe', 'Sales', 50000, 'active'), (2, 'Jane Smith', 'IT', 60000, 'active'), (3, 'Bob Wilson', 'Sales', 45000, 'inactive'), (4, 'Alice Brown', 'IT', 75000, 'active')"},
+      {"sql": "SELECT name, CASE WHEN salary >= 60000 THEN salary * 1.1 WHEN salary >= 50000 THEN salary * 1.05 ELSE salary END as adjusted_salary FROM employees WHERE id <= 4 ORDER BY id",
+       "expect": {"rows": [["John Doe", "52500"], ["Jane Smith", "66000"], ["Bob Wilson", "45000"], ["Alice Brown", "82500"]], "ordered": true}}
+    ]},
+    {"name": "case-with-string-concatenation", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, dept VARCHAR, salary INTEGER, status VARCHAR)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'John Doe', 'Sales', 50000, 'active'), (2, 'Jane Smith', 'IT', 60000, 'active'), (3, 'Bob Wilson', 'Sales', 45000, 'inactive')"},
+      {"sql": "SELECT CASE status WHEN 'active' THEN name || ' (Active)' WHEN 'inactive' THEN name || ' (Inactive)' ELSE name END as display_name FROM employees WHERE id <= 3 ORDER BY id",
+       "expect": {"rows": [["John Doe (Active)"], ["Jane Smith (Active)"], ["Bob Wilson (Inactive)"]], "ordered": true}}
+    ]},
+    {"name": "case-with-like-operator", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, dept VARCHAR, salary INTEGER, status VARCHAR)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'John Doe', 'Sales', 50000, 'active'), (2, 'Jane Smith', 'IT', 60000, 'active'), (3, 'Bob Wilson', 'Sales', 45000, 'inactive'), (4, 'Alice Brown', 'IT', 75000, 'active'), (5, 'Charlie Davis', 'HR', NULL, 'active')"},
+      {"sql": "SELECT name, CASE WHEN name LIKE 'J%' THEN 'Starts with J' WHEN name LIKE '%son' THEN 'Ends with son' ELSE 'Other' END as name_pattern FROM employees ORDER BY id",
+       "expect": {"rows": [["John Doe", "Starts with J"], ["Jane Smith", "Starts with J"], ["Bob Wilson", "Ends with son"], ["Alice Brown", "Other"], ["Charlie Davis", "Other"]], "ordered": true}}
+    ]},
+    {"name": "multiple-case-expressions-in-select", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, dept VARCHAR, salary INTEGER, status VARCHAR)"},
+      {"sql": "INSERT INTO employees VALUES (2, 'Jane Smith', 'IT', 60000, 'active')"},
+      {"sql": "SELECT name, CASE dept WHEN 'IT' THEN 'Tech' ELSE 'Non-Tech' END as tech_status, CASE WHEN salary > 50000 THEN 'High' ELSE 'Standard' END as pay_level FROM employees WHERE id = 2",
+       "expect": {"rows": [["Jane Smith", "Tech", "High"]]}}
+    ]},
+    {"name": "case-with-between-operator", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, dept VARCHAR, salary INTEGER, status VARCHAR)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'John Doe', 'Sales', 50000, 'active'), (2, 'Jane Smith', 'IT', 60000, 'active'), (3, 'Bob Wilson', 'Sales', 45000, 'inactive'), (4, 'Alice Brown', 'IT', 75000, 'active'), (5, 'Charlie Davis', 'HR', NULL, 'active')"},
+      {"sql": "SELECT name, CASE WHEN salary BETWEEN 40000 AND 50000 THEN 'Entry Level' WHEN salary BETWEEN 50001 AND 65000 THEN 'Mid Level' WHEN salary > 65000 THEN 'Senior Level' ELSE 'Unknown' END as level FROM employees ORDER BY id",
+       "expect": {"rows": [["John Doe", "Entry Level"], ["Jane Smith", "Mid Level"], ["Bob Wilson", "Entry Level"], ["Alice Brown", "Senior Level"], ["Charlie Davis", "Unknown"]], "ordered": true}}
+    ]}
+  ]
+}

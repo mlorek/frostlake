@@ -20,6 +20,7 @@ import dev.frostlake.functions.TableFunction;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
+import dev.frostlake.types.LengthlessStringType;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.types.StringType;
 
@@ -76,10 +77,12 @@ public class SplitToTable extends TableFunction {
     }
 
     private ResultSet split(final Object stringValue, final Object delimiterValue) {
+        // Declared as the account declares them: SEQ and INDEX NUMBER(38,0), VALUE a VARCHAR the
+        // plan spells bare (live-verified).
         final List<ResultSetColumn> columns = new ArrayList<>();
-        columns.add(new ResultSetColumn("SEQ", NumericType.INTEGER));
-        columns.add(new ResultSetColumn("INDEX", NumericType.INTEGER));
-        columns.add(new ResultSetColumn("VALUE", StringType.VARCHAR));
+        columns.add(new ResultSetColumn("SEQ", NumericType.INTEGER, null, new NumericType("NUMBER", 38, 0)));
+        columns.add(new ResultSetColumn("INDEX", NumericType.INTEGER, null, new NumericType("NUMBER", 38, 0)));
+        columns.add(new ResultSetColumn("VALUE", StringType.VARCHAR, null, new LengthlessStringType()));
 
         final List<Row> rows = new ArrayList<>();
         // NULL in either parameter contributes nothing at all — not an empty-string row.

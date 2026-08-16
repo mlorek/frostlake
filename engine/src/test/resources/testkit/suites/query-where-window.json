@@ -1,0 +1,118 @@
+{
+  "suite": "query-where-window",
+  "description": "WHERE comparison/logic matrix, ROW_NUMBER/RANK/DENSE_RANK (single and combined), and QUALIFY pre-projection windows over base expressions, deep aliases and grouped windows. Converted 1:1 from query/WhereClauseTest, WindowFunctionsTest and WindowQualifyPreProjectionTest (all now retired; tie-ambiguous ROW_NUMBER cells gained a name tie-break in the window ORDER BY for determinism).",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "where-equals", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, department VARCHAR, salary INTEGER, age INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 'Engineering', 90000, 30), (2, 'Bob', 'Sales', 70000, 35), (3, 'Charlie', 'Engineering', 95000, 28), (4, 'Diana', 'Sales', 75000, 32), (5, 'Eve', 'Engineering', 85000, 29), (6, 'Frank', 'HR', 65000, 40)"},
+      {"sql": "SELECT * FROM employees WHERE department = 'Engineering'", "expect": {"rowCount": 3}}
+    ]},
+    {"name": "where-greater-than", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, department VARCHAR, salary INTEGER, age INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 'Engineering', 90000, 30), (2, 'Bob', 'Sales', 70000, 35), (3, 'Charlie', 'Engineering', 95000, 28), (4, 'Diana', 'Sales', 75000, 32), (5, 'Eve', 'Engineering', 85000, 29), (6, 'Frank', 'HR', 65000, 40)"},
+      {"sql": "SELECT * FROM employees WHERE salary > 80000", "expect": {"rowCount": 3}}
+    ]},
+    {"name": "where-less-than-or-equal", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, department VARCHAR, salary INTEGER, age INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 'Engineering', 90000, 30), (2, 'Bob', 'Sales', 70000, 35), (3, 'Charlie', 'Engineering', 95000, 28), (4, 'Diana', 'Sales', 75000, 32), (5, 'Eve', 'Engineering', 85000, 29), (6, 'Frank', 'HR', 65000, 40)"},
+      {"sql": "SELECT * FROM employees WHERE age <= 30", "expect": {"rowCount": 3}}
+    ]},
+    {"name": "where-and", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, department VARCHAR, salary INTEGER, age INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 'Engineering', 90000, 30), (2, 'Bob', 'Sales', 70000, 35), (3, 'Charlie', 'Engineering', 95000, 28), (4, 'Diana', 'Sales', 75000, 32), (5, 'Eve', 'Engineering', 85000, 29), (6, 'Frank', 'HR', 65000, 40)"},
+      {"sql": "SELECT * FROM employees WHERE department = 'Engineering' AND salary > 85000", "expect": {"rowCount": 2}}
+    ]},
+    {"name": "where-or", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, department VARCHAR, salary INTEGER, age INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 'Engineering', 90000, 30), (2, 'Bob', 'Sales', 70000, 35), (3, 'Charlie', 'Engineering', 95000, 28), (4, 'Diana', 'Sales', 75000, 32), (5, 'Eve', 'Engineering', 85000, 29), (6, 'Frank', 'HR', 65000, 40)"},
+      {"sql": "SELECT * FROM employees WHERE department = 'HR' OR age >= 35", "expect": {"rowCount": 2}}
+    ]},
+    {"name": "where-not-equal", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, department VARCHAR, salary INTEGER, age INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 'Engineering', 90000, 30), (2, 'Bob', 'Sales', 70000, 35), (3, 'Charlie', 'Engineering', 95000, 28), (4, 'Diana', 'Sales', 75000, 32), (5, 'Eve', 'Engineering', 85000, 29), (6, 'Frank', 'HR', 65000, 40)"},
+      {"sql": "SELECT * FROM employees WHERE department <> 'Engineering'", "expect": {"rowCount": 3}}
+    ]},
+    {"name": "where-complex-condition", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, department VARCHAR, salary INTEGER, age INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 'Engineering', 90000, 30), (2, 'Bob', 'Sales', 70000, 35), (3, 'Charlie', 'Engineering', 95000, 28), (4, 'Diana', 'Sales', 75000, 32), (5, 'Eve', 'Engineering', 85000, 29), (6, 'Frank', 'HR', 65000, 40)"},
+      {"sql": "SELECT * FROM employees WHERE (salary > 70000 AND age < 35) OR department = 'HR'", "expect": {"rowCount": 5}}
+    ]},
+    {"name": "where-with-order-by", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, department VARCHAR, salary INTEGER, age INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 'Engineering', 90000, 30), (2, 'Bob', 'Sales', 70000, 35), (3, 'Charlie', 'Engineering', 95000, 28), (4, 'Diana', 'Sales', 75000, 32), (5, 'Eve', 'Engineering', 85000, 29), (6, 'Frank', 'HR', 65000, 40)"},
+      {"sql": "SELECT * FROM employees WHERE salary > 70000 ORDER BY salary DESC", "expect": {"rowCount": 4}}
+    ]},
+    {"name": "where-with-group-by", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, department VARCHAR, salary INTEGER, age INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 'Engineering', 90000, 30), (2, 'Bob', 'Sales', 70000, 35), (3, 'Charlie', 'Engineering', 95000, 28), (4, 'Diana', 'Sales', 75000, 32), (5, 'Eve', 'Engineering', 85000, 29), (6, 'Frank', 'HR', 65000, 40)"},
+      {"sql": "SELECT department, COUNT(*) FROM employees WHERE salary > 70000 GROUP BY department", "expect": {"rowCount": 2}}
+    ]},
+    {"name": "dense-rank-multi-key-order-by-qualified-and-cast", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, salary INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 100000), (2, 'Bob', 95000), (3, 'Charlie', 95000), (4, 'David', 90000), (5, 'Eve', 85000)"},
+      {"sql": "SELECT name,\n       DENSE_RANK() OVER (ORDER BY employees.salary DESC, employees.name::VARCHAR) AS rnk\nFROM employees\nORDER BY rnk",
+       "expect": {"rows": [["Alice", "1"], ["Bob", "2"], ["Charlie", "3"], ["David", "4"], ["Eve", "5"]], "ordered": true}}
+    ]},
+    {"name": "row-number", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, salary INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 100000), (2, 'Bob', 95000), (3, 'Charlie', 95000), (4, 'David', 90000), (5, 'Eve', 85000)"},
+      {"sql": "SELECT name, salary, ROW_NUMBER() OVER (ORDER BY salary DESC, name) as row_num\nFROM employees",
+       "expect": {"rows": [["Alice", "100000", "1"], ["Bob", "95000", "2"], ["Charlie", "95000", "3"], ["David", "90000", "4"], ["Eve", "85000", "5"]]}}
+    ]},
+    {"name": "rank", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, salary INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 100000), (2, 'Bob', 95000), (3, 'Charlie', 95000), (4, 'David', 90000), (5, 'Eve', 85000)"},
+      {"sql": "SELECT name, salary, RANK() OVER (ORDER BY salary DESC) as rank\nFROM employees",
+       "expect": {"rows": [["Alice", "100000", "1"], ["Bob", "95000", "2"], ["Charlie", "95000", "2"], ["David", "90000", "4"], ["Eve", "85000", "5"]]}}
+    ]},
+    {"name": "dense-rank", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, salary INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 100000), (2, 'Bob', 95000), (3, 'Charlie', 95000), (4, 'David', 90000), (5, 'Eve', 85000)"},
+      {"sql": "SELECT name, salary, DENSE_RANK() OVER (ORDER BY salary DESC) as dense_rank\nFROM employees",
+       "expect": {"rows": [["Alice", "100000", "1"], ["Bob", "95000", "2"], ["Charlie", "95000", "2"], ["David", "90000", "3"], ["Eve", "85000", "4"]]}}
+    ]},
+    {"name": "all-three-window-functions", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, salary INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 100000), (2, 'Bob', 95000), (3, 'Charlie', 95000), (4, 'David', 90000), (5, 'Eve', 85000)"},
+      {"sql": "SELECT name, salary,\nROW_NUMBER() OVER (ORDER BY salary DESC, name) as row_num,\nRANK() OVER (ORDER BY salary DESC) as rank,\nDENSE_RANK() OVER (ORDER BY salary DESC) as dense_rank\nFROM employees",
+       "expect": {"rows": [["Alice", "100000", "1", "1", "1"], ["Bob", "95000", "2", "2", "2"], ["Charlie", "95000", "3", "2", "2"], ["David", "90000", "4", "4", "3"], ["Eve", "85000", "5", "5", "4"]]}}
+    ]},
+    {"name": "qualify-window-partitioned-by-base-expression-keeps-all-partitions", "steps": [
+      {"sql": "CREATE TABLE feed_files (doc VARCHAR, fname VARCHAR)"},
+      {"sql": "INSERT INTO feed_files VALUES ('d1', 'a/b/x-20230629.gz'), ('d1', 'a/b/x-20230630.gz'), ('d1', 'a/b/x-20230705.gz')"},
+      {"sql": "SELECT ROW_NUMBER() OVER (PARTITION BY doc ORDER BY fname DESC) AS rnk, fname\nFROM feed_files s\nQUALIFY ROW_NUMBER() OVER (PARTITION BY GET(SPLIT(s.fname, '/'), 2) ORDER BY s.fname DESC) = 1\nORDER BY fname",
+       "expect": {"rowCount": 3, "rows": [["3", "a/b/x-20230629.gz"], ["2", "a/b/x-20230630.gz"], ["1", "a/b/x-20230705.gz"]], "ordered": true}}
+    ]},
+    {"name": "qualify-window-partitioned-by-select-alias-of-deep-expression", "steps": [
+      {"sql": "CREATE TABLE feed_files (doc VARCHAR, fname VARCHAR)"},
+      {"sql": "INSERT INTO feed_files VALUES ('d1', 'a/b/x-20230629.gz'), ('d1', 'a/b/x-20230630.gz'), ('d1', 'a/b/x-20230705.gz')"},
+      {"sql": "SELECT REPLACE(GET(SPLIT(s.fname, '/'), 2), '.gz') AS piece,\n       ROW_NUMBER() OVER (PARTITION BY doc ORDER BY piece DESC) AS rnk\nFROM feed_files s\nQUALIFY ROW_NUMBER() OVER (PARTITION BY doc, piece ORDER BY s.fname DESC) = 1\nORDER BY piece",
+       "expect": {"rowCount": 3}}
+    ]},
+    {"name": "qualify-on-select-window-alias-still-filters", "steps": [
+      {"sql": "CREATE TABLE feed_files (doc VARCHAR, fname VARCHAR)"},
+      {"sql": "INSERT INTO feed_files VALUES ('d1', 'a/b/x-20230629.gz'), ('d1', 'a/b/x-20230630.gz'), ('d1', 'a/b/x-20230705.gz')"},
+      {"sql": "SELECT fname, ROW_NUMBER() OVER (PARTITION BY doc ORDER BY fname DESC) AS rnk\nFROM feed_files s\nQUALIFY rnk = 1",
+       "expect": {"rows": [["a/b/x-20230705.gz", "1"]]}}
+    ]},
+    {"name": "qualify-referencing-non-window-alias-over-base-rows", "steps": [
+      {"sql": "CREATE TABLE feed_files (doc VARCHAR, fname VARCHAR)"},
+      {"sql": "INSERT INTO feed_files VALUES ('d1', 'a/b/x-20230629.gz'), ('d1', 'a/b/x-20230630.gz'), ('d1', 'a/b/x-20230705.gz')"},
+      {"sql": "SELECT UPPER(fname) AS shout, ROW_NUMBER() OVER (ORDER BY fname) AS rnk\nFROM feed_files s\nQUALIFY shout LIKE '%20230630%'",
+       "expect": {"rows": [["A/B/X-20230630.GZ", "2"]]}}
+    ]},
+    {"name": "qualify-predicate-over-base-column-not-in-select-list", "steps": [
+      {"sql": "CREATE TABLE feed_files (doc VARCHAR, fname VARCHAR)"},
+      {"sql": "INSERT INTO feed_files VALUES ('d1', 'a/b/x-20230629.gz'), ('d1', 'a/b/x-20230630.gz'), ('d1', 'a/b/x-20230705.gz')"},
+      {"sql": "SELECT ROW_NUMBER() OVER (ORDER BY fname) AS rnk\nFROM feed_files s\nQUALIFY s.fname != 'a/b/x-20230630.gz'\nORDER BY rnk",
+       "expect": {"rowCount": 2}}
+    ]},
+    {"name": "grouped-window-with-qualify-keeps-projected-semantics", "steps": [
+      {"sql": "CREATE TABLE sales (region VARCHAR, amt NUMBER)"},
+      {"sql": "INSERT INTO sales VALUES ('e', 10), ('e', 20), ('w', 5)"},
+      {"sql": "SELECT region, SUM(amt) AS total, RANK() OVER (ORDER BY total DESC) AS rk\nFROM sales GROUP BY region\nQUALIFY rk = 1",
+       "expect": {"rows": [["e", "30", "1"]]}}
+    ]}
+  ]
+}

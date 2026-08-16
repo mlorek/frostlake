@@ -1,0 +1,53 @@
+{
+  "suite": "functions-variant-json-null-scalar-context",
+  "description": "Where a VARIANT JSON null LEAVES the semi-structured world it reads as SQL NULL, and where it stays inside it, it is a value. Both halves were measured on a real Snowflake account with jn standing for PARSE_JSON('{\"b\":null}'):b. Scalar reading gives SQL NULL: jn+1, jn-1, jn*2, jn||'x', CONCAT(jn,'x'), UPPER(jn), LENGTH(jn), ABS(jn), TO_VARCHAR(jn), jn::INT, jn::VARCHAR, DATEADD(day,jn,d), COUNT(jn)=0, and SUM/AVG/LISTAGG skip it. Value reading keeps the JSON null: TYPEOF, IS_NULL_VALUE, TO_JSON, ARRAY_CONSTRUCT, OBJECT_CONSTRUCT, COALESCE/IFNULL/NVL, EQUAL_NULL and MAX. Because COALESCE RETURNS the JSON null rather than replacing it, COALESCE(jn,9)::VARCHAR is SQL NULL and not '9'. Converted 1:1 from functions/VariantJsonNullScalarContextTest (now retired).",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "arithmetic-over-a-json-null-is-sql-null-not-an-error", "steps": [
+      {"sql": "SELECT PARSE_JSON('{\"b\":null}'):b + 1", "expect": {"rows": [[null]]}},
+      {"sql": "SELECT PARSE_JSON('{\"b\":null}'):b - 1", "expect": {"rows": [[null]]}},
+      {"sql": "SELECT PARSE_JSON('{\"b\":null}'):b * 2", "expect": {"rows": [[null]]}},
+      {"sql": "SELECT PARSE_JSON('{\"b\":null}'):b / 2", "expect": {"rows": [[null]]}},
+      {"sql": "SELECT -(PARSE_JSON('{\"b\":null}'):b)", "expect": {"rows": [[null]]}},
+      {"sql": "SELECT GET(PARSE_JSON('{\"b\":null}'),'b') + 1", "expect": {"rows": [[null]]}}
+    ]},
+    {"name": "string-context-over-a-json-null-is-sql-null", "steps": [
+      {"sql": "SELECT PARSE_JSON('{\"b\":null}'):b || 'x'", "expect": {"rows": [[null]]}},
+      {"sql": "SELECT 'x' || PARSE_JSON('{\"b\":null}'):b", "expect": {"rows": [[null]]}},
+      {"sql": "SELECT CONCAT(PARSE_JSON('{\"b\":null}'):b, 'x')", "expect": {"rows": [[null]]}},
+      {"sql": "SELECT UPPER(PARSE_JSON('{\"b\":null}'):b)", "expect": {"rows": [[null]]}},
+      {"sql": "SELECT LENGTH(PARSE_JSON('{\"b\":null}'):b)", "expect": {"rows": [[null]]}},
+      {"sql": "SELECT TO_VARCHAR(PARSE_JSON('{\"b\":null}'):b)", "expect": {"rows": [[null]]}}
+    ]},
+    {"name": "a-cast-to-an-ordinary-type-is-sql-null-even-through-coalesce", "steps": [
+      {"sql": "SELECT PARSE_JSON('{\"b\":null}'):b::INT", "expect": {"rows": [[null]]}},
+      {"sql": "SELECT PARSE_JSON('{\"b\":null}'):b::VARCHAR", "expect": {"rows": [[null]]}},
+      {"sql": "SELECT PARSE_JSON('{\"b\":null}'):b::BOOLEAN", "expect": {"rows": [[null]]}},
+      {"sql": "SELECT COALESCE(PARSE_JSON('{\"b\":null}'):b, 9)::VARCHAR", "expect": {"rows": [[null]]}},
+      {"sql": "SELECT IFNULL(PARSE_JSON('{\"b\":null}'):b, 9)::VARCHAR", "expect": {"rows": [[null]]}},
+      {"sql": "SELECT NVL(PARSE_JSON('{\"b\":null}'):b, 9)::VARCHAR", "expect": {"rows": [[null]]}},
+      {"sql": "SELECT TYPEOF(PARSE_JSON('{\"b\":null}'):b::VARIANT)", "expect": {"value": "NULL_VALUE"}}
+    ]},
+    {"name": "value-reading-functions-still-see-the-json-null", "steps": [
+      {"sql": "SELECT EQUAL_NULL(PARSE_JSON('{\"b\":null}'):b, NULL)", "expect": {"value": "false"}},
+      {"sql": "SELECT TO_JSON(PARSE_JSON('{\"b\":null}'):b)", "expect": {"value": "null"}},
+      {"sql": "SELECT TO_JSON(ARRAY_CONSTRUCT(PARSE_JSON('{\"b\":null}'):b))", "expect": {"value": "[null]"}},
+      {"sql": "SELECT TO_JSON(OBJECT_CONSTRUCT('k', PARSE_JSON('{\"b\":null}'):b))", "expect": {"value": "{\"k\":null}"}},
+      {"sql": "SELECT IS_NULL_VALUE(PARSE_JSON('{\"b\":null}'):b)", "expect": {"value": "true"}}
+    ]},
+    {"name": "value-computing-aggregates-skip-a-json-null", "steps": [
+      {"sql": "CREATE TABLE json_null_agg (id INTEGER, v VARIANT)"},
+      {"sql": "INSERT INTO json_null_agg SELECT 1, PARSE_JSON('{\"b\":null}')"},
+      {"sql": "INSERT INTO json_null_agg SELECT 2, PARSE_JSON('{\"b\":7}')"},
+      {"sql": "INSERT INTO json_null_agg SELECT 3, PARSE_JSON('{\"c\":1}')"},
+      {"sql": "SELECT COUNT(v:b) FROM json_null_agg", "expect": {"value": "1"}},
+      {"sql": "SELECT SUM(v:b) FROM json_null_agg", "expect": {"value": "7.0"}},
+      {"sql": "SELECT SYSTEM$TYPEOF(SUM(v:b)) FROM json_null_agg", "expect": {"value": "FLOAT[DOUBLE]"}},
+      {"sql": "SELECT COUNT(v:b) OVER () FROM json_null_agg WHERE id = 1", "expect": {"value": "0"}},
+      {"sql": "SELECT COUNT(v:b) OVER () FROM json_null_agg WHERE id = 2", "expect": {"value": "1"}},
+      {"sql": "SELECT SUM(v:b) OVER () FROM json_null_agg LIMIT 1", "expect": {"value": "7.0"}},
+      {"sql": "SELECT AVG(v:b) OVER () FROM json_null_agg LIMIT 1", "expect": {"value": "7.0"}},
+      {"sql": "SELECT AVG(v:b) FROM json_null_agg", "expect": {"value": "7.0"}}
+    ]}
+  ]
+}

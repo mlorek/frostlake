@@ -1,0 +1,108 @@
+{
+  "suite": "ddl-contact",
+  "description": "The CONTACT object and its ALTER TABLE ... SET CONTACT <purpose> = <contact> attachment (both live-measured): SHOW CONTACTS cells, duplicate-create refusal, IF NOT EXISTS / OR REPLACE, URL vs one-address EMAIL_DISTRIBUTION_LIST (exactly one valid address; URL and address together refused; EMAIL not a property), ALTER CONTACT SET COMMENT, the attachment taking NO parentheses (parenthesized form refused), quoted purposes, the closed three-purpose set validated on SET and UNSET, no-op UNSET, missing-contact refusal fully qualified, DROP semantics, and CONTACT staying usable as a name. Converted 1:1 from ddl/ContactTest (now retired).",
+  "tags": ["ddl", "converted"],
+  "tests": [
+    {"name": "show-lists-a-contact-with-its-comment", "steps": [
+      {"sql": "CREATE CONTACT c2 COMMENT = 'the second'"},
+      {"sql": "SHOW CONTACTS LIKE 'c2'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"comment\", \"schema_name\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'C2'",
+       "expect": {"rows": [["the second", "TEST_SCHEMA"]]}}
+    ]},
+    {"name": "creating-one-twice-is-refused", "steps": [
+      {"sql": "CREATE CONTACT c1"},
+      {"sql": "CREATE CONTACT c1",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nObject 'C1' already exists."}}}
+    ]},
+    {"name": "if-not-exists-and-or-replace-both-survive-the-second-create", "steps": [
+      {"sql": "CREATE CONTACT c1"},
+      {"sql": "CREATE CONTACT IF NOT EXISTS c1"},
+      {"sql": "CREATE OR REPLACE CONTACT c1 COMMENT = 'replaced'"},
+      {"sql": "SHOW CONTACTS LIKE 'c1'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"comment\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'C1'", "expect": {"value": "replaced"}}
+    ]},
+    {"name": "url-and-one-email-address-are-properties", "steps": [
+      {"sql": "CREATE CONTACT c3 URL = 'https://example.com'"},
+      {"sql": "CREATE CONTACT c7 EMAIL_DISTRIBUTION_LIST = 'someone@example.com'"},
+      {"sql": "SHOW CONTACTS LIKE 'c3'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"url\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "https://example.com"}},
+      {"sql": "SHOW CONTACTS LIKE 'c7'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"email_distribution_list\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "someone@example.com"}}
+    ]},
+    {"name": "an-address-and-a-url-together-are-refused", "steps": [
+      {"sql": "CREATE CONTACT c8 URL = 'https://example.com' EMAIL_DISTRIBUTION_LIST = 'someone@example.com'",
+       "expect": {"error": {"messageContains": "Email, url or users/email_list, only one could be set."}}}
+    ]},
+    {"name": "an-address-that-is-not-one-is-refused", "steps": [
+      {"sql": "CREATE CONTACT c4 EMAIL_DISTRIBUTION_LIST = 'a@b.c'",
+       "expect": {"error": {"messageContains": "Invalid email address(es): [a@b.c]."}}}
+    ]},
+    {"name": "a-list-of-addresses-is-refused-despite-the-property-name", "steps": [
+      {"sql": "CREATE CONTACT c5 EMAIL_DISTRIBUTION_LIST = 'a@b.com, c@d.com'",
+       "expect": {"error": {"messageContains": "Invalid email address(es): [a@b.com, c@d.com]."}}}
+    ]},
+    {"name": "a-property-the-object-does-not-have-is-refused", "steps": [
+      {"sql": "CREATE CONTACT c6 EMAIL = 'someone@example.com'",
+       "expect": {"error": {"messageContains": "SQL compilation error:\ninvalid property 'EMAIL' for 'CONTACT'"}}}
+    ]},
+    {"name": "the-comment-can-be-changed-later", "steps": [
+      {"sql": "CREATE CONTACT c1"},
+      {"sql": "ALTER CONTACT c1 SET COMMENT = 'later'"},
+      {"sql": "SHOW CONTACTS LIKE 'c1'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"comment\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'C1'", "expect": {"value": "later"}}
+    ]},
+    {"name": "attaching-takes-no-parentheses", "steps": [
+      {"sql": "CREATE TABLE c_t (id INT)"},
+      {"sql": "CREATE CONTACT c1"},
+      {"sql": "CREATE CONTACT c2 COMMENT = 'the second'"},
+      {"sql": "ALTER TABLE c_t SET CONTACT SUPPORT = c1"},
+      {"sql": "ALTER TABLE c_t SET CONTACT SUPPORT = c1, STEWARD = c2"},
+      {"sql": "ALTER TABLE c_t SET CONTACT ACCESS_APPROVAL = c2"},
+      {"sql": "ALTER TABLE c_t UNSET CONTACT SUPPORT"},
+      {"sql": "ALTER TABLE c_t UNSET CONTACT STEWARD, ACCESS_APPROVAL"}
+    ]},
+    {"name": "the-parenthesized-attachment-is-refused", "steps": [
+      {"sql": "CREATE TABLE c_t (id INT)"},
+      {"sql": "CREATE CONTACT c1"},
+      {"sql": "ALTER TABLE c_t SET CONTACT (SUPPORT = c1)",
+       "expect": {"error": {"messageContains": "syntax error"}}}
+    ]},
+    {"name": "a-quoted-purpose-is-accepted", "steps": [
+      {"sql": "CREATE TABLE c_t (id INT)"},
+      {"sql": "CREATE CONTACT c1"},
+      {"sql": "ALTER TABLE c_t SET CONTACT 'support' = c1"}
+    ]},
+    {"name": "a-purpose-outside-the-three-is-refused", "steps": [
+      {"sql": "CREATE TABLE c_t (id INT)"},
+      {"sql": "CREATE CONTACT c1"},
+      {"sql": "ALTER TABLE c_t SET CONTACT APPROVER = c1",
+       "expect": {"error": {"messageContains": "SQL compilation error: Purpose type APPROVER is not valid, please use access_approval, steward and support."}}}
+    ]},
+    {"name": "unsetting-a-purpose-outside-the-three-is-refused-too", "steps": [
+      {"sql": "CREATE TABLE c_t (id INT)"},
+      {"sql": "ALTER TABLE c_t UNSET CONTACT APPROVER",
+       "expect": {"error": {"messageContains": "SQL compilation error: Purpose type APPROVER is not valid, please use access_approval, steward and support."}}}
+    ]},
+    {"name": "unsetting-a-purpose-that-was-never-set-is-a-no-op", "steps": [
+      {"sql": "CREATE TABLE c_t (id INT)"},
+      {"sql": "ALTER TABLE c_t UNSET CONTACT ACCESS_APPROVAL"}
+    ]},
+    {"name": "attaching-a-contact-that-does-not-exist-is-refused", "steps": [
+      {"sql": "CREATE TABLE c_t (id INT)"},
+      {"sql": "ALTER TABLE c_t SET CONTACT SUPPORT = no_such_contact",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nContact 'TEST_DB.TEST_SCHEMA.NO_SUCH_CONTACT' does not exist or not authorized."}}}
+    ]},
+    {"name": "dropping-one-that-is-gone-is-refused-unless-forgiven", "steps": [
+      {"sql": "CREATE CONTACT c2 COMMENT = 'the second'"},
+      {"sql": "DROP CONTACT c2"},
+      {"sql": "DROP CONTACT c2",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nContact 'TEST_DB.TEST_SCHEMA.C2' does not exist or not authorized."}}},
+      {"sql": "DROP CONTACT IF EXISTS c2"}
+    ]},
+    {"name": "contact-remains-usable-as-a-name", "steps": [
+      {"sql": "CREATE TABLE contact (contact INT, contacts INT, support INT, steward INT)"},
+      {"sql": "INSERT INTO contact VALUES (1, 2, 3, 4)"},
+      {"sql": "SELECT contact FROM contact", "expect": {"value": "1"}}
+    ]}
+  ]
+}

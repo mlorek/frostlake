@@ -109,7 +109,9 @@ public class ExpressionAstBuilderTest {
         assertEquals("(NOT ACTIVE)", ast("NOT active"));
         assertEquals("(NOT (A = B))", ast("NOT (a = b)"));
         assertEquals("(- 5)", ast("-5"));
-        assertEquals("5", ast("+5"));
+        // Unary plus is a node of its own — it converts a text or a VARIANT operand and refuses the
+        // families that have no numeric reading under its own name — so it prints, like the minus.
+        assertEquals("(+ 5)", ast("+5"));
     }
 
     @Test

@@ -1,0 +1,69 @@
+{
+  "suite": "query-exponent-literal",
+  "description": "An exponent literal written without a decimal point - 1e0, 1E+3, 1e-3 - is a number wherever a number is allowed. The lexer used to require the point, so 1e0 split into the integer 1 and the identifier e0: a syntax error in every position EXCEPT a select item, where the identifier read as an ALIAS and the query quietly returned the wrong column name. The exponent is folded in BEFORE the type is taken, so these are FIXED-point numbers and not approximate ones - 1e0 is NUMBER(1,0), 1e20 is NUMBER(21,0) counting the expansion's digits rather than the four written, and 1e-3 is NUMBER(4,3). The value prints in PLAIN notation at either extreme: 1e20 is 100000000000000000000, never 1E+20. Every clause takes it, DML writes it and a column default holds it. The naming is what the old split gave away: an unaliased item is named by its source text, so the literal names itself - and written with a SPACE it really IS an alias, a reading that has to survive. Converted 1:1 from query/ExponentLiteralTest (now retired); the declared types are read through the VIEW + INFORMATION_SCHEMA instrument.",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "an-exponent-literal-is-a-fixed-point-number", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE ex (n NUMBER(10,2), f FLOAT, i INT)"},
+      {"sql": "INSERT INTO ex VALUES (1.5, 2.5, 3)"},
+      {"sql": "CREATE OR REPLACE VIEW ex_v AS SELECT 1e0 AS a1, 1.5e0 AS a2, 1e-3 AS a3, 1.5E-2 AS a4, 1e20 AS a5, 1.5e20 AS a6 FROM ex"},
+      {"sql": "SELECT LISTAGG('NUMBER(' || NUMERIC_PRECISION || ',' || NUMERIC_SCALE || ')', '|') WITHIN GROUP (ORDER BY ORDINAL_POSITION) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'EX_V'", "expect": {"value": "NUMBER(1,0)|NUMBER(2,1)|NUMBER(4,3)|NUMBER(4,3)|NUMBER(21,0)|NUMBER(21,0)"}}
+    ]},
+    {"name": "the-value-prints-in-plain-notation", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE ex (n NUMBER(10,2), f FLOAT, i INT)"},
+      {"sql": "INSERT INTO ex VALUES (1.5, 2.5, 3)"},
+      {"sql": "SELECT TO_VARCHAR(1e0) FROM ex", "expect": {"value": "1"}},
+      {"sql": "SELECT TO_VARCHAR(1e-3) FROM ex", "expect": {"value": "0.001"}},
+      {"sql": "SELECT TO_VARCHAR(1E+3) FROM ex", "expect": {"value": "1000"}},
+      {"sql": "SELECT TO_VARCHAR(1e20) FROM ex", "expect": {"value": "100000000000000000000"}},
+      {"sql": "SELECT TO_VARCHAR(1.5e20) FROM ex", "expect": {"value": "150000000000000000000"}}
+    ]},
+    {"name": "it-reads-as-a-function-argument", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE ex (n NUMBER(10,2), f FLOAT, i INT)"},
+      {"sql": "INSERT INTO ex VALUES (1.5, 2.5, 3)"},
+      {"sql": "SELECT TO_VARCHAR(COALESCE(n, 1e0)) FROM ex", "expect": {"value": "1.50"}},
+      {"sql": "SELECT TO_VARCHAR(COALESCE(f, 1e0)) FROM ex", "expect": {"value": "2.5"}},
+      {"sql": "SELECT TO_VARCHAR(GREATEST(n, 1e0)) FROM ex", "expect": {"value": "1.50"}},
+      {"sql": "SELECT TO_VARCHAR(COALESCE(n, 1E0)) FROM ex", "expect": {"value": "1.50"}},
+      {"sql": "SELECT TO_VARCHAR(COALESCE(n, 1e+3)) FROM ex", "expect": {"value": "1.50"}},
+      {"sql": "SELECT TO_VARCHAR(COALESCE(n, -1e0)) FROM ex", "expect": {"value": "1.50"}},
+      {"sql": "SELECT TO_VARCHAR(COALESCE(n, 1e20)) FROM ex", "expect": {"value": "1.50"}},
+      {"sql": "SELECT TO_VARCHAR(ABS(ROUND(1.55e0, 1))) FROM ex", "expect": {"value": "1.6"}},
+      {"sql": "CREATE OR REPLACE VIEW ex_v AS SELECT COALESCE(n, 1e0) AS a1, COALESCE(n, 1e-3) AS a2 FROM ex"},
+      {"sql": "SELECT LISTAGG('NUMBER(' || NUMERIC_PRECISION || ',' || NUMERIC_SCALE || ')', '|') WITHIN GROUP (ORDER BY ORDINAL_POSITION) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'EX_V'", "expect": {"value": "NUMBER(10,2)|NUMBER(11,3)"}}
+    ]},
+    {"name": "every-clause-takes-it", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE ex (n NUMBER(10,2), f FLOAT, i INT)"},
+      {"sql": "INSERT INTO ex VALUES (1.5, 2.5, 3)"},
+      {"sql": "SELECT i FROM ex WHERE n = 1.5e0", "expect": {"rows": [[3]]}},
+      {"sql": "SELECT TO_VARCHAR(CASE WHEN i = 3 THEN 1e0 ELSE 2e0 END) FROM ex", "expect": {"value": "1"}},
+      {"sql": "SELECT i FROM ex WHERE i IN (3e0, 4e0)", "expect": {"rows": [[3]]}},
+      {"sql": "SELECT TO_VARCHAR(i + 1e0) FROM ex", "expect": {"value": "4"}},
+      {"sql": "SELECT TO_VARCHAR((1e0 + 2e0) * 3) FROM ex", "expect": {"value": "9"}},
+      {"sql": "SELECT COUNT(*) FROM ex GROUP BY i + 1e0", "expect": {"rows": [[1]]}},
+      {"sql": "SELECT i FROM ex ORDER BY i + 1e0", "expect": {"rows": [[3]]}},
+      {"sql": "SELECT COUNT(*) FROM ex HAVING COUNT(*) > 0e0", "expect": {"rows": [[1]]}},
+      {"sql": "SELECT TO_VARCHAR(CAST(1e0 AS NUMBER(5,2))) FROM ex", "expect": {"value": "1.00"}},
+      {"sql": "SELECT 1e0 AS x FROM ex", "expect": {"rows": [[1]], "columns": ["X"]}}
+    ]},
+    {"name": "dml-and-defaults-take-it-too", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE exi (a NUMBER(10,2))"},
+      {"sql": "INSERT INTO exi VALUES (1e0)"},
+      {"sql": "INSERT INTO exi SELECT 2e0"},
+      {"sql": "SELECT TO_VARCHAR(a) FROM exi ORDER BY a", "expect": {"rows": [["1.00"], ["2.00"]], "ordered": true}},
+      {"sql": "UPDATE exi SET a = 5e0 WHERE a = 1e0"},
+      {"sql": "SELECT TO_VARCHAR(a) FROM exi ORDER BY a", "expect": {"rows": [["2.00"], ["5.00"]], "ordered": true}},
+      {"sql": "CREATE OR REPLACE TABLE exd (a NUMBER(10,2) DEFAULT 1e0)"},
+      {"sql": "INSERT INTO exd (a) VALUES (DEFAULT)"},
+      {"sql": "SELECT TO_VARCHAR(a) FROM exd", "expect": {"rows": [["1.00"]]}}
+    ]},
+    {"name": "the-column-is-named-after-the-literal", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE ex (n NUMBER(10,2), f FLOAT, i INT)"},
+      {"sql": "INSERT INTO ex VALUES (1.5, 2.5, 3)"},
+      {"sql": "SELECT 1e0 FROM ex", "expect": {"columns": ["1E0"]}},
+      {"sql": "SELECT 1.5e0 FROM ex", "expect": {"columns": ["1.5E0"]}},
+      {"sql": "SELECT 1e+3 FROM ex", "expect": {"columns": ["1E+3"]}},
+      {"sql": "SELECT 1 e0 FROM ex", "expect": {"columns": ["E0"]}}
+    ]}
+  ]
+}

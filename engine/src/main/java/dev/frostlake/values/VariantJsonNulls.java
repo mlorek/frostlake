@@ -57,8 +57,13 @@ public final class VariantJsonNulls {
 
     /**
      * Aggregates that treat a JSON null as a VALUE rather than as missing input: the ordering-based
-     * ones and the collection builders. Live: MAX over {JSON null, 5} is the JSON null while
-     * SUM/COUNT/AVG/LISTAGG over the same input ignore it. Every other aggregate sees SQL NULL.
+     * ones, the collection builders, and HASH_AGG. Live: MAX over {JSON null, 5} is the JSON null
+     * while SUM/COUNT/AVG/LISTAGG over the same input ignore it. Every other aggregate sees SQL NULL.
+     *
+     * <p>HASH_AGG belongs here for the reason the scalar HASH does: it encodes each value's IDENTITY,
+     * and live gives a different hash for a group holding a JSON null than for one holding SQL NULL.
+     * It is not an ordering or collecting aggregate, so the set is really "aggregates that do not read
+     * their input as a scalar".
      */
     private static final Set<String> VALUE_AGGREGATES = new HashSet<>();
 
@@ -73,6 +78,7 @@ public final class VariantJsonNulls {
         VALUE_AGGREGATES.add("ARRAY_UNION_AGG");
         VALUE_AGGREGATES.add("ARRAY_UNIQUE_AGG");
         VALUE_AGGREGATES.add("OBJECT_AGG");
+        VALUE_AGGREGATES.add("HASH_AGG");
     }
 
     private VariantJsonNulls() {

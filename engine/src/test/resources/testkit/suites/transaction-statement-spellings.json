@@ -1,0 +1,38 @@
+{
+  "suite": "transaction-statement-spellings",
+  "description": "WORK is the SQL-standard synonym of TRANSACTION and Snowflake accepts it on all three transaction statements - live-verified for BEGIN WORK, COMMIT WORK and ROLLBACK WORK - naming the SAME transaction the plain spellings start and end, not a separate construct: BEGIN WORK commits with a plain COMMIT, a plain BEGIN ends with COMMIT WORK, and ROLLBACK WORK discards what BEGIN WORK started. The keyword stays an ordinary name, since live accepts a COLUMN and a TABLE called work, so admitting the spelling must not reserve the word. Converted 1:1 from transaction/TransactionStatementSpellingsTest (now retired).",
+  "tags": ["transaction", "converted"],
+  "tests": [
+    {"name": "begin-work-starts-a-transaction-that-commits", "steps": [
+      {"sql": "CREATE TABLE tx_rows (n INT)"},
+      {"sql": "BEGIN WORK"},
+      {"sql": "INSERT INTO tx_rows VALUES (1)"},
+      {"sql": "COMMIT"},
+      {"sql": "SELECT COUNT(*) FROM tx_rows", "expect": {"value": 1}}
+    ]},
+    {"name": "commit-work-ends-it", "steps": [
+      {"sql": "CREATE TABLE tx_rows (n INT)"},
+      {"sql": "BEGIN"},
+      {"sql": "INSERT INTO tx_rows VALUES (1)"},
+      {"sql": "COMMIT WORK"},
+      {"sql": "SELECT COUNT(*) FROM tx_rows", "expect": {"value": 1}}
+    ]},
+    {"name": "rollback-work-discards-it", "steps": [
+      {"sql": "CREATE TABLE tx_rows (n INT)"},
+      {"sql": "BEGIN WORK"},
+      {"sql": "INSERT INTO tx_rows VALUES (1)"},
+      {"sql": "ROLLBACK WORK"},
+      {"sql": "SELECT COUNT(*) FROM tx_rows", "expect": {"value": 0}}
+    ]},
+    {"name": "work-remains-usable-as-a-column-name", "steps": [
+      {"sql": "CREATE TABLE kw_column (work INT)"},
+      {"sql": "INSERT INTO kw_column VALUES (7)"},
+      {"sql": "SELECT work FROM kw_column WHERE work = 7", "expect": {"value": 7}}
+    ]},
+    {"name": "work-remains-usable-as-a-table-name", "steps": [
+      {"sql": "CREATE TABLE work (n INT)"},
+      {"sql": "INSERT INTO work VALUES (3)"},
+      {"sql": "SELECT n FROM work", "expect": {"value": 3}}
+    ]}
+  ]
+}

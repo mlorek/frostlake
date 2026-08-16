@@ -1,0 +1,29 @@
+{
+  "suite": "functions-current-available-roles",
+  "description": "CURRENT_AVAILABLE_ROLES() - a JSON array string of the roles the session can use: the active role, the current user's granted roles, and the closure over roles granted to roles, listed alphabetically. Converted 1:1 from functions/CurrentAvailableRolesTest (now retired); the Java class compared the text against a separately-queried CURRENT_ROLE(), which the converted suite does inside one statement, and its indexOf ordering check becomes a POSITION comparison. Roles are account-level, so the hierarchy test revokes its grant and drops the roles it creates.",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "it-includes-the-current-role-as-a-json-array", "steps": [
+      {"sql": "SELECT STARTSWITH(CURRENT_AVAILABLE_ROLES(), '[') AND ENDSWITH(CURRENT_AVAILABLE_ROLES(), ']')",
+       "expect": {"value": "true"}},
+      {"sql": "SELECT CONTAINS(CURRENT_AVAILABLE_ROLES(), '\"' || CURRENT_ROLE() || '\"')",
+       "expect": {"value": "true"}}
+    ]},
+    {"name": "it-includes-roles-granted-through-the-hierarchy", "steps": [
+      {"sql": "DROP ROLE IF EXISTS outer_r"},
+      {"sql": "DROP ROLE IF EXISTS inner_r"},
+      {"sql": "CREATE ROLE outer_r"},
+      {"sql": "CREATE ROLE inner_r"},
+      {"sql": "GRANT ROLE inner_r TO ROLE outer_r"},
+      {"sql": "GRANT ROLE outer_r TO ROLE SYSADMIN"},
+      {"sql": "SELECT CONTAINS(CURRENT_AVAILABLE_ROLES(), '\"OUTER_R\"'), CONTAINS(CURRENT_AVAILABLE_ROLES(), '\"INNER_R\"')",
+       "expect": {"rows": [["true", "true"]]}},
+      {"sql": "SELECT POSITION('INNER_R', CURRENT_AVAILABLE_ROLES()) < POSITION('OUTER_R', CURRENT_AVAILABLE_ROLES())",
+       "expect": {"value": "true"}},
+      {"sql": "SELECT LEFT(CURRENT_AVAILABLE_ROLES(), 1)", "expect": {"value": "["}},
+      {"sql": "REVOKE ROLE outer_r FROM ROLE SYSADMIN"},
+      {"sql": "DROP ROLE inner_r"},
+      {"sql": "DROP ROLE outer_r"}
+    ]}
+  ]
+}

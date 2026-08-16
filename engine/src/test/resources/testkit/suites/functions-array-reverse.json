@@ -1,0 +1,16 @@
+{
+  "suite": "functions-array-reverse",
+  "description": "ARRAY_REVERSE(array) reverses element order, for numeric and for text arrays, and answers NULL for a NULL input. Converted 1:1 from functions/ArrayReverseTest (now retired); the array cells are read through TO_JSON so the assertion is on the array's JSON text rather than on a transport's own rendering of an ARRAY cell.",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "it-reverses-a-numeric-array", "steps": [
+      {"sql": "SELECT TO_JSON(ARRAY_REVERSE(ARRAY_CONSTRUCT(1, 2, 3)))", "expect": {"value": "[3,2,1]"}}
+    ]},
+    {"name": "it-reverses-a-text-array", "steps": [
+      {"sql": "SELECT TO_JSON(ARRAY_REVERSE(ARRAY_CONSTRUCT('a', 'b')))", "expect": {"value": "[\"b\",\"a\"]"}}
+    ]},
+    {"name": "a-null-input-is-null", "steps": [
+      {"sql": "SELECT ARRAY_REVERSE(NULL)", "expect": {"rows": [[null]]}}
+    ]}
+  ]
+}

@@ -1,0 +1,86 @@
+{
+  "suite": "ddl-view-with-columns",
+  "description": "CREATE VIEW with an explicit column-name list: names applied and queryable (plain, renamed, computed, aggregated, star bodies), the count mismatch refused at create, views with lists usable in joins and WHERE, and OR REPLACE swapping the list. Converted 1:1 from ddl/CreateViewWithColumnsTest (now retired; it ran over JDBC but was pure SQL).",
+  "tags": ["ddl", "views", "converted"],
+  "tests": [
+    {"name": "create-view-with-column-names", "steps": [
+      {"sql": "CREATE TABLE products (id INTEGER, name VARCHAR, price INTEGER)"},
+      {"sql": "INSERT INTO products VALUES (1, 'Apple', 100)"},
+      {"sql": "INSERT INTO products VALUES (2, 'Banana', 50)"},
+      {"sql": "CREATE VIEW product_view (product_id, product_name, product_price) AS SELECT id, name, price FROM products"},
+      {"sql": "SELECT product_id, product_name, product_price FROM product_view ORDER BY product_id",
+       "expect": {"rows": [["1", "Apple", "100"], ["2", "Banana", "50"]], "ordered": true}}
+    ]},
+    {"name": "create-view-without-column-names", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, salary INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'John', 50000)"},
+      {"sql": "CREATE VIEW emp_view AS SELECT id, name, salary FROM employees"},
+      {"sql": "SELECT id, name, salary FROM emp_view", "expect": {"rows": [["1", "John", "50000"]]}}
+    ]},
+    {"name": "view-column-count-mismatch", "steps": [
+      {"sql": "CREATE TABLE items (a INTEGER, b INTEGER, c INTEGER)"},
+      {"sql": "INSERT INTO items VALUES (1, 2, 3)"},
+      {"sql": "CREATE VIEW bad_view (col1, col2) AS SELECT a, b, c FROM items",
+       "expect": {"error": {"messageContains": "Invalid column definition list"}}}
+    ]},
+    {"name": "view-with-renamed-columns", "steps": [
+      {"sql": "CREATE TABLE orders (order_id INTEGER, customer_id INTEGER, amount INTEGER)"},
+      {"sql": "INSERT INTO orders VALUES (100, 1, 250)"},
+      {"sql": "INSERT INTO orders VALUES (101, 2, 300)"},
+      {"sql": "CREATE VIEW order_summary (id, cust, total) AS SELECT order_id, customer_id, amount FROM orders"},
+      {"sql": "SELECT id, cust, total FROM order_summary WHERE total > 200 ORDER BY id",
+       "expect": {"rows": [["100", "1", "250"], ["101", "2", "300"]], "ordered": true}}
+    ]},
+    {"name": "view-with-computed-columns", "steps": [
+      {"sql": "CREATE TABLE numbers (a INTEGER, b INTEGER)"},
+      {"sql": "INSERT INTO numbers VALUES (10, 5)"},
+      {"sql": "INSERT INTO numbers VALUES (20, 8)"},
+      {"sql": "CREATE VIEW calculations (sum_col, diff_col, prod_col) AS SELECT a + b, a - b, a * b FROM numbers"},
+      {"sql": "SELECT sum_col, diff_col, prod_col FROM calculations ORDER BY sum_col",
+       "expect": {"rows": [["15", "5", "50"], ["28", "12", "160"]], "ordered": true}}
+    ]},
+    {"name": "view-with-aggregate-and-column-names", "steps": [
+      {"sql": "CREATE TABLE sales (product VARCHAR, quantity INTEGER, revenue INTEGER)"},
+      {"sql": "INSERT INTO sales VALUES ('Apple', 10, 100)"},
+      {"sql": "INSERT INTO sales VALUES ('Apple', 5, 50)"},
+      {"sql": "INSERT INTO sales VALUES ('Banana', 20, 80)"},
+      {"sql": "CREATE VIEW sales_summary (product_name, total_qty, total_rev) AS SELECT product, SUM(quantity), SUM(revenue) FROM sales GROUP BY product"},
+      {"sql": "SELECT product_name, total_qty, total_rev FROM sales_summary ORDER BY product_name",
+       "expect": {"rows": [["Apple", "15", "150"], ["Banana", "20", "80"]], "ordered": true}}
+    ]},
+    {"name": "view-in-join", "steps": [
+      {"sql": "CREATE TABLE customers (id INTEGER, name VARCHAR)"},
+      {"sql": "CREATE TABLE orders_table (order_id INTEGER, cust_id INTEGER, amount INTEGER)"},
+      {"sql": "INSERT INTO customers VALUES (1, 'Alice')"},
+      {"sql": "INSERT INTO customers VALUES (2, 'Bob')"},
+      {"sql": "INSERT INTO orders_table VALUES (100, 1, 500)"},
+      {"sql": "INSERT INTO orders_table VALUES (101, 2, 300)"},
+      {"sql": "CREATE VIEW order_view (oid, customer, amt) AS SELECT order_id, cust_id, amount FROM orders_table"},
+      {"sql": "SELECT c.name, ov.oid, ov.amt FROM customers c JOIN order_view ov ON c.id = ov.customer ORDER BY ov.oid",
+       "expect": {"rows": [["Alice", "100", "500"], ["Bob", "101", "300"]], "ordered": true}}
+    ]},
+    {"name": "or-replace-view-with-column-names", "steps": [
+      {"sql": "CREATE TABLE data (x INTEGER, y INTEGER)"},
+      {"sql": "INSERT INTO data VALUES (1, 2)"},
+      {"sql": "CREATE VIEW data_view (col1, col2) AS SELECT x, y FROM data"},
+      {"sql": "SELECT col1, col2 FROM data_view", "expect": {"rows": [["1", "2"]]}},
+      {"sql": "CREATE OR REPLACE VIEW data_view (alpha, beta) AS SELECT x, y FROM data"},
+      {"sql": "SELECT alpha, beta FROM data_view", "expect": {"rows": [["1", "2"]], "columns": ["alpha", "beta"]}}
+    ]},
+    {"name": "view-with-where-clause", "steps": [
+      {"sql": "CREATE TABLE users (id INTEGER, name VARCHAR, age INTEGER)"},
+      {"sql": "INSERT INTO users VALUES (1, 'Alice', 30)"},
+      {"sql": "INSERT INTO users VALUES (2, 'Bob', 25)"},
+      {"sql": "INSERT INTO users VALUES (3, 'Charlie', 35)"},
+      {"sql": "CREATE VIEW adult_users (user_id, user_name) AS SELECT id, name FROM users WHERE age >= 30"},
+      {"sql": "SELECT user_id, user_name FROM adult_users ORDER BY user_id",
+       "expect": {"rows": [["1", "Alice"], ["3", "Charlie"]], "ordered": true}}
+    ]},
+    {"name": "view-with-star-and-column-names", "steps": [
+      {"sql": "CREATE TABLE simple (a INTEGER, b INTEGER)"},
+      {"sql": "INSERT INTO simple VALUES (1, 2)"},
+      {"sql": "CREATE VIEW simple_view (col_a, col_b) AS SELECT * FROM simple"},
+      {"sql": "SELECT col_a, col_b FROM simple_view", "expect": {"rows": [["1", "2"]]}}
+    ]}
+  ]
+}

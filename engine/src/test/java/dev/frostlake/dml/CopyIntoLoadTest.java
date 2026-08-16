@@ -181,7 +181,7 @@ public class CopyIntoLoadTest {
         engine.execute("COPY INTO events FROM @data_stage FILE_FORMAT = (TYPE = 'JSON')");
 
         assertEquals(2, count("events"));
-        final ResultSet rs = engine.executeQuery("SELECT payload FROM events");
+        final ResultSet rs = engine.executeQuery("SELECT payload FROM events ORDER BY payload:user::VARCHAR");
         assertTrue(rs.getRows().get(0).getValue(0).toString().contains("login"));
     }
 

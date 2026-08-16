@@ -1,0 +1,178 @@
+{
+  "suite": "functions-parse-json-argument-type",
+  "description": "PARSE_JSON's parameter is a VARCHAR, so a VARIANT argument is coerced to VARCHAR before the text is read - and coercing a variant STRING hands over its raw content, without the JSON quotes. That one rule decides a pair which otherwise looks contradictory: PARSE_JSON(PARSE_JSON('{\"k\":\"[1,2]\"}'):k) is an ARRAY because the VARIANT argument coerces to [1,2], while PARSE_JSON('\"[1,2,3]\"') is a VARCHAR because that VARCHAR's own text carries the quotes. Frostlake used to decide from the CONTENT instead - any quoted string whose inside looked like JSON was unwrapped - so the second answered an ARRAY and a string that merely reads as JSON stopped being a string. The two values are identical once evaluated, because path extraction hands back the quoted text, so the argument's DECLARED type is the only thing that can tell them apart. The JSON null coerces to SQL NULL on its way to VARCHAR, so re-parsing it gives SQL NULL rather than the JSON null a second time, while PARSE_JSON('null') on its own is still the JSON null. Converted 1:1 from functions/ParseJsonArgumentTypeTest (now retired); its @BeforeEach js_t fixture is inlined per test.",
+  "tags": [
+    "functions",
+    "converted"
+  ],
+  "tests": [
+    {
+      "name": "a-quoted-json-string-stays-a-string",
+      "steps": [
+        {
+          "sql": "SELECT TYPEOF(PARSE_JSON('\"[1,2,3]\"'))",
+          "expect": {
+            "value": "VARCHAR"
+          }
+        },
+        {
+          "sql": "SELECT TYPEOF(PARSE_JSON('\"{}\"'))",
+          "expect": {
+            "value": "VARCHAR"
+          }
+        },
+        {
+          "sql": "SELECT TYPEOF(PARSE_JSON('\"abc\"'))",
+          "expect": {
+            "value": "VARCHAR"
+          }
+        },
+        {
+          "sql": "SELECT TYPEOF(TRY_PARSE_JSON('\"[1,2,3]\"'))",
+          "expect": {
+            "value": "VARCHAR"
+          }
+        }
+      ]
+    },
+    {
+      "name": "unquoted-text-is-the-json-itself",
+      "steps": [
+        {
+          "sql": "SELECT TYPEOF(PARSE_JSON('[1,2,3]'))",
+          "expect": {
+            "value": "ARRAY"
+          }
+        },
+        {
+          "sql": "SELECT TYPEOF(PARSE_JSON('{\"a\":1}'))",
+          "expect": {
+            "value": "OBJECT"
+          }
+        },
+        {
+          "sql": "SELECT TYPEOF(PARSE_JSON('7'))",
+          "expect": {
+            "value": "INTEGER"
+          }
+        }
+      ]
+    },
+    {
+      "name": "a-variant-string-is-coerced-to-its-content-first",
+      "steps": [
+        {
+          "sql": "CREATE TABLE js_t (js VARCHAR(50), v VARIANT)"
+        },
+        {
+          "sql": "INSERT INTO js_t SELECT '[1,2]', PARSE_JSON('{\"k\":\"[3,4]\"}')"
+        },
+        {
+          "sql": "SELECT TYPEOF(PARSE_JSON(PARSE_JSON('{\"k\":\"[1,2]\"}'):k))",
+          "expect": {
+            "value": "ARRAY"
+          }
+        },
+        {
+          "sql": "SELECT TYPEOF(PARSE_JSON(PARSE_JSON('{\"k\":\"{\\\\\"a\\\\\":1}\"}'):k))",
+          "expect": {
+            "value": "OBJECT"
+          }
+        },
+        {
+          "sql": "SELECT TYPEOF(TRY_PARSE_JSON(PARSE_JSON('{\"k\":\"[1,2]\"}'):k))",
+          "expect": {
+            "value": "ARRAY"
+          }
+        },
+        {
+          "sql": "SELECT TYPEOF(PARSE_JSON(v:k)) FROM js_t",
+          "expect": {
+            "value": "ARRAY"
+          }
+        }
+      ]
+    },
+    {
+      "name": "a-varchar-column-holding-json-parses-to-its-container",
+      "steps": [
+        {
+          "sql": "CREATE TABLE js_t (js VARCHAR(50), v VARIANT)"
+        },
+        {
+          "sql": "INSERT INTO js_t SELECT '[1,2]', PARSE_JSON('{\"k\":\"[3,4]\"}')"
+        },
+        {
+          "sql": "SELECT TYPEOF(PARSE_JSON(js)) FROM js_t",
+          "expect": {
+            "value": "ARRAY"
+          }
+        }
+      ]
+    },
+    {
+      "name": "reparsing-a-non-string-variant-keeps-it",
+      "steps": [
+        {
+          "sql": "SELECT TYPEOF(PARSE_JSON(PARSE_JSON('[1,2]')))",
+          "expect": {
+            "value": "ARRAY"
+          }
+        },
+        {
+          "sql": "SELECT TYPEOF(PARSE_JSON(PARSE_JSON('{\"a\":1}')))",
+          "expect": {
+            "value": "OBJECT"
+          }
+        },
+        {
+          "sql": "SELECT TYPEOF(PARSE_JSON(PARSE_JSON('7')))",
+          "expect": {
+            "value": "INTEGER"
+          }
+        }
+      ]
+    },
+    {
+      "name": "reparsing-the-json-null-yields-a-sql-null",
+      "steps": [
+        {
+          "sql": "SELECT PARSE_JSON(PARSE_JSON('null'))",
+          "expect": {
+            "rows": [
+              [
+                null
+              ]
+            ]
+          }
+        },
+        {
+          "sql": "SELECT TYPEOF(PARSE_JSON(PARSE_JSON('null')))",
+          "expect": {
+            "rows": [
+              [
+                null
+              ]
+            ]
+          }
+        },
+        {
+          "sql": "SELECT TRY_PARSE_JSON(PARSE_JSON('null'))",
+          "expect": {
+            "rows": [
+              [
+                null
+              ]
+            ]
+          }
+        },
+        {
+          "sql": "SELECT TYPEOF(PARSE_JSON('null'))",
+          "expect": {
+            "value": "NULL_VALUE"
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,25 @@
+{
+  "suite": "functions-to-boolean",
+  "description": "TO_BOOLEAN accepts the full Snowflake input set: a NUMERIC value where 0 is false and any non-zero is true, and the text tokens true/t/yes/y/on/1 and false/f/no/n/off/0, case-insensitively. A numeric STRING like '2' is still an error - only the numeric 2 is truthy - and NULL passes through. Previously only true/1/yes/on and false/0/no/off were accepted and any numeric argument such as 2 threw. Converted 1:1 from functions/ToBooleanTest (now retired); the Java loops over token arrays become one projection per token set.",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "numeric-zero-is-false-and-non-zero-is-true", "steps": [
+      {"sql": "SELECT TO_BOOLEAN(0), TO_BOOLEAN(2), TO_BOOLEAN(-5)",
+       "expect": {"rows": [["false", "true", "true"]]}}
+    ]},
+    {"name": "the-truthy-text-tokens", "steps": [
+      {"sql": "SELECT TO_BOOLEAN('true'), TO_BOOLEAN('t'), TO_BOOLEAN('yes'), TO_BOOLEAN('y'), TO_BOOLEAN('on'), TO_BOOLEAN('1'), TO_BOOLEAN('TRUE')",
+       "expect": {"rows": [["true", "true", "true", "true", "true", "true", "true"]]}}
+    ]},
+    {"name": "the-falsy-text-tokens", "steps": [
+      {"sql": "SELECT TO_BOOLEAN('false'), TO_BOOLEAN('f'), TO_BOOLEAN('no'), TO_BOOLEAN('n'), TO_BOOLEAN('off'), TO_BOOLEAN('0'), TO_BOOLEAN('FALSE')",
+       "expect": {"rows": [["false", "false", "false", "false", "false", "false", "false"]]}}
+    ]},
+    {"name": "a-numeric-string-is-not-a-valid-token", "steps": [
+      {"sql": "SELECT TO_BOOLEAN('2')", "expect": {"error": {}}}
+    ]},
+    {"name": "null-passes-through", "steps": [
+      {"sql": "SELECT TO_BOOLEAN(NULL)", "expect": {"rows": [[null]]}}
+    ]}
+  ]
+}

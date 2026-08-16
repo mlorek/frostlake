@@ -37,7 +37,9 @@ import java.util.concurrent.ThreadLocalRandom;
  * durability question about the log, not something a function can answer for itself.
  */
 public class Random extends BuiltInFunction {
-    public Random() { super("RANDOM", NumericType.BIGINT); }
+    // The account declares RANDOM() as NUMBER(19,0) — SYSTEM$TYPEOF(RANDOM()) reads NUMBER(19,0)[SB8],
+    // and a refusal listing it as an argument spells the same pair.
+    public Random() { super("RANDOM", new NumericType("NUMBER", 19, 0)); }
 
     @Override
     public Object evaluate(final List<Object> args) {

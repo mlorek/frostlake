@@ -1,0 +1,42 @@
+{
+  "suite": "query-group-by",
+  "description": "GROUP BY with the ordinary aggregate functions over a six-employee, three-department fixture: COUNT, SUM, AVG, MIN and MAX, several aggregates in one list, an ORDER BY over an aggregate, and a WHERE that filters before grouping. Converted 1:1 from query/GroupByTest (now retired); the Java asserted a row COUNT and then looped looking for ONE department, so five of its seven tests checked a single group and two checked nothing but the shape - the converted tests state every group's values, which is what makes the aggregate itself the claim rather than the grouping alone.",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "group-by-with-count", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, department VARCHAR, salary INTEGER, age INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 'Engineering', 90000, 30), (2, 'Bob', 'Sales', 70000, 35), (3, 'Charlie', 'Engineering', 95000, 28), (4, 'Diana', 'Sales', 75000, 32), (5, 'Eve', 'Engineering', 85000, 29), (6, 'Frank', 'HR', 65000, 40)"},
+      {"sql": "SELECT department, COUNT(*) FROM employees GROUP BY department ORDER BY department", "expect": {"rows": [["Engineering",3],["HR",1],["Sales",2]], "ordered": true}}
+    ]},
+    {"name": "group-by-with-sum", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, department VARCHAR, salary INTEGER, age INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 'Engineering', 90000, 30), (2, 'Bob', 'Sales', 70000, 35), (3, 'Charlie', 'Engineering', 95000, 28), (4, 'Diana', 'Sales', 75000, 32), (5, 'Eve', 'Engineering', 85000, 29), (6, 'Frank', 'HR', 65000, 40)"},
+      {"sql": "SELECT department, SUM(salary) FROM employees GROUP BY department ORDER BY department", "expect": {"rows": [["Engineering",270000],["HR",65000],["Sales",145000]], "ordered": true}}
+    ]},
+    {"name": "group-by-with-avg", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, department VARCHAR, salary INTEGER, age INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 'Engineering', 90000, 30), (2, 'Bob', 'Sales', 70000, 35), (3, 'Charlie', 'Engineering', 95000, 28), (4, 'Diana', 'Sales', 75000, 32), (5, 'Eve', 'Engineering', 85000, 29), (6, 'Frank', 'HR', 65000, 40)"},
+      {"sql": "SELECT department, AVG(salary) FROM employees GROUP BY department ORDER BY department", "expect": {"rows": [["Engineering",90000],["HR",65000],["Sales",72500]], "ordered": true}}
+    ]},
+    {"name": "group-by-with-min-and-max", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, department VARCHAR, salary INTEGER, age INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 'Engineering', 90000, 30), (2, 'Bob', 'Sales', 70000, 35), (3, 'Charlie', 'Engineering', 95000, 28), (4, 'Diana', 'Sales', 75000, 32), (5, 'Eve', 'Engineering', 85000, 29), (6, 'Frank', 'HR', 65000, 40)"},
+      {"sql": "SELECT department, MIN(age), MAX(age) FROM employees GROUP BY department ORDER BY department", "expect": {"rows": [["Engineering",28,30],["HR",40,40],["Sales",32,35]], "ordered": true}}
+    ]},
+    {"name": "group-by-with-multiple-aggregates", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, department VARCHAR, salary INTEGER, age INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 'Engineering', 90000, 30), (2, 'Bob', 'Sales', 70000, 35), (3, 'Charlie', 'Engineering', 95000, 28), (4, 'Diana', 'Sales', 75000, 32), (5, 'Eve', 'Engineering', 85000, 29), (6, 'Frank', 'HR', 65000, 40)"},
+      {"sql": "SELECT department, COUNT(*), AVG(salary), MAX(salary) FROM employees GROUP BY department ORDER BY department", "expect": {"rows": [["Engineering",3,90000,95000],["HR",1,65000,65000],["Sales",2,72500,75000]], "ordered": true}}
+    ]},
+    {"name": "group-by-with-order-by-an-aggregate", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, department VARCHAR, salary INTEGER, age INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 'Engineering', 90000, 30), (2, 'Bob', 'Sales', 70000, 35), (3, 'Charlie', 'Engineering', 95000, 28), (4, 'Diana', 'Sales', 75000, 32), (5, 'Eve', 'Engineering', 85000, 29), (6, 'Frank', 'HR', 65000, 40)"},
+      {"sql": "SELECT department, COUNT(*) FROM employees GROUP BY department ORDER BY COUNT(*) DESC, department", "expect": {"rows": [["Engineering",3],["Sales",2],["HR",1]], "ordered": true}}
+    ]},
+    {"name": "group-by-with-a-where-that-filters-first", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, department VARCHAR, salary INTEGER, age INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 'Engineering', 90000, 30), (2, 'Bob', 'Sales', 70000, 35), (3, 'Charlie', 'Engineering', 95000, 28), (4, 'Diana', 'Sales', 75000, 32), (5, 'Eve', 'Engineering', 85000, 29), (6, 'Frank', 'HR', 65000, 40)"},
+      {"sql": "SELECT department, COUNT(*) FROM employees WHERE salary > 70000 GROUP BY department ORDER BY department", "expect": {"rows": [["Engineering",3],["Sales",1]], "ordered": true}}
+    ]}
+  ]
+}

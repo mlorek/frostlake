@@ -16,6 +16,7 @@
 
 package dev.frostlake.types;
 
+import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -83,7 +84,8 @@ public final class DeclaredTypeFold {
             // BINARY, so without this a fixed and a non-fixed binary of one width would read as the
             // same type and the fold would hand back the first rather than applying its own rule.
             return ((BinaryType) left).getMaxLength() == ((BinaryType) right).getMaxLength()
-                && ((BinaryType) left).isFixed() == ((BinaryType) right).isFixed();
+                && ((BinaryType) left).isFixed() == ((BinaryType) right).isFixed()
+                && ((BinaryType) left).getWidthSpelling() == ((BinaryType) right).getWidthSpelling();
         }
         // A temporal's PRECISION is deliberately not compared here. The set-operation path has always
         // treated two same-named temporals as one declared type, and the vendor gate depends on it —
@@ -202,6 +204,16 @@ public final class DeclaredTypeFold {
         return new NumericType("NUMBER", Math.min(integerDigits + scale, MAX_PRECISION), scale);
     }
 
+    /** Whether any branch is an exact or approximate NUMBER, which is what a string literal joins. */
+    private static boolean hasNumericBranch(final List<DataType> branchTypes) {
+        for (final DataType type : branchTypes) {
+            if (type instanceof NumericType) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     /**
      * What a VARCHAR branch contributes when it sits beside exactly one OTHER family: it joins that
      * family rather than dragging everything to text.
@@ -220,10 +232,12 @@ public final class DeclaredTypeFold {
             }
             return null;
         }
-        // A DATE and the three TIMESTAMP flavours all take the string with them — live declares
-        // COALESCE(vt, ts) TIMESTAMP_NTZ and COALESCE(vt, tl) TIMESTAMP_LTZ, in either written order.
-        // A TIME does not: it has no measured pairing with a string here.
-        if (nonString instanceof DateTimeType && temporalRank(nonString.getName()) >= 0) {
+        // EVERY temporal takes the string with it — live declares COALESCE(vt, ts) TIMESTAMP_NTZ,
+        // COALESCE(vt, tl) TIMESTAMP_LTZ and COALESCE(vt, tm) TIME, in either written order. TIME is
+        // included even though temporalRank leaves it OUTSIDE the widening order: that rank governs
+        // which temporal wins against ANOTHER temporal, where a TIME beside a TIMESTAMP is refused,
+        // and it has nothing to say about a string, which joins all four alike.
+        if (nonString instanceof DateTimeType) {
             return nonString;
         }
         return null;
@@ -328,13 +342,89 @@ public final class DeclaredTypeFold {
      * @param branchTypes each branch's declared type, in written order
      * @return the folded type, or null
      */
+    /**
+     * A UUID branch DOMINATES the text ones beside it: the account folds a UUID with a VARCHAR, and a
+     * UUID with an untyped NULL, to UUID rather than to the widest text. Null when no branch is one, or
+     * when some branch belongs to another family — that pair is the ordinary fold's to settle.
+     *
+     * @param branchTypes each branch's declared type
+     * @return UUID when the branches fold to it, otherwise null
+     */
+    private static DataType uuidFold(final List<DataType> branchTypes) {
+        boolean anyUuid = false;
+        for (final DataType type : branchTypes) {
+            if (type instanceof UuidType) {
+                anyUuid = true;
+            } else if (type != null && !(type instanceof StringType)) {
+                // An untyped branch — a bare NULL — does not stop the fold: live reads IFF(TRUE, u, NULL)
+                // as a UUID.
+                return null;
+            }
+        }
+        return anyUuid ? UuidType.UUID : null;
+    }
+
     public static DataType foldBranches(final List<DataType> branchTypes) {
+        return foldBranches(branchTypes, null);
+    }
+
+    /**
+     * The branch fold, told which branches were written as STRING LITERALS and what each measures as
+     * a number. A string literal beside a number contributes exactly what the same number written
+     * WITHOUT quotes would — measured on a real account, and the pair is identical either way:
+     *
+     * <pre>
+     *   COALESCE(n2, '5.12345')        NUMBER(13,5)      n2 is NUMBER(10,2)
+     *   COALESCE(n2,  5.12345 )        NUMBER(13,5)      the same, unquoted
+     *   COALESCE(n2, '123456789012')   NUMBER(14,2)
+     *   COALESCE(n2,  123456789012 )   NUMBER(14,2)      the same again
+     * </pre>
+     *
+     * <p>A string COLUMN is different and keeps the flat NUMBER(18,5) — it has no literal text to
+     * measure, so live cannot narrow it. That column-versus-literal split is the whole reason this
+     * needs the branch EXPRESSION and not just its type.
+     *
+     * <p>The old behaviour answered NUMBER(18,5) for every string branch. It happened to be right for
+     * a one-digit literal like {@code '5'}, where the fold with NUMBER(10,2) lands on NUMBER(10,2)
+     * either way — which is exactly why measuring only that shape left the rule underdetermined.
+     *
+     * @param branchTypes         each branch's declared type
+     * @param literalMeasurements per branch, the numeric type a STRING LITERAL branch measures as, or
+     *                            null for a branch that is not one; null for the whole list when the
+     *                            caller has no expressions to read
+     * @return the folded type, or null when the branches do not fold
+     */
+    public static DataType foldBranches(final List<DataType> branchTypes,
+                                        final List<DataType> literalMeasurements) {
         if (branchTypes.isEmpty()) {
             return null;
+        }
+        if (literalMeasurements != null) {
+            final List<DataType> measured = new ArrayList<>(branchTypes.size());
+            boolean anyMeasured = false;
+            for (int i = 0; i < branchTypes.size(); i++) {
+                final DataType measurement = i < literalMeasurements.size()
+                    ? literalMeasurements.get(i) : null;
+                if (measurement != null && branchTypes.get(i) instanceof StringType) {
+                    measured.add(measurement);
+                    anyMeasured = true;
+                } else {
+                    measured.add(branchTypes.get(i));
+                }
+            }
+            // Only when some OTHER branch is a number: a string literal beside a string column is
+            // still text, and measuring it would drag a text fold into the numeric family.
+            if (anyMeasured && hasNumericBranch(branchTypes)) {
+                return foldBranches(measured, null);
+            }
         }
         final DataType temporal = temporalFold(branchTypes);
         if (temporal != null) {
             return temporal;
+        }
+        final DataType uuid = uuidFold(branchTypes);
+        if (uuid != null) {
+            return uuid;
         }
         boolean anyString = false;
         DataType nonString = null;

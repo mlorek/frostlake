@@ -1,0 +1,21 @@
+{
+  "suite": "ddl-internal-stage",
+  "description": "Internal (URL-less) and external stage creation, converted 1:1 from ddl/InternalStageTest.java (now retired). The DROP proves the CREATE really made the stage.",
+  "tags": ["ddl", "converted"],
+  "tests": [
+    {
+      "name": "create-internal-stage-without-url-succeeds",
+      "steps": [
+        {"sql": "CREATE STAGE int_stage"},
+        {"sql": "DROP STAGE int_stage"}
+      ]
+    },
+    {
+      "name": "external-stage-with-url-still-works",
+      "steps": [
+        {"sql": "CREATE STAGE ext_stage URL = 's3://bucket/path/'"},
+        {"sql": "DROP STAGE ext_stage"}
+      ]
+    }
+  ]
+}

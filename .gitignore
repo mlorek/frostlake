@@ -31,5 +31,4 @@ generated-test-sources/
 dependency-reduced-pom.xml
 # flatten-maven-plugin output (resolves ${revision} for install/deploy; regenerated each build)
 .flattened-pom.xml
-docs
 logs

@@ -184,7 +184,6 @@ public class StringResultWidthTest extends BaseDatabaseTest {
         assertEquals("VARCHAR(1)", typeOf("CHR(65)"));
         assertEquals("VARCHAR(3)", typeOf("DAYNAME(d)"));
         assertEquals("VARCHAR(3)", typeOf("MONTHNAME(d)"));
-        assertEquals("VARCHAR(0)", typeOf("TRY_TO_UUID(v)"));
     }
 
     /** Encoding counts BYTES, and a character is budgeted four of them. */

@@ -1,0 +1,41 @@
+{
+  "suite": "functions-map-delete",
+  "description": "MAP_DELETE(map, key ...) - the map without the named keys, measured live. One key or several may be removed, a repeated key is harmless, a key the map does not hold is ignored, and a NULL key removes nothing - a NULL among real keys simply contributes nothing. A NULL map answers NULL, a MAP column reads normally, and a plain OBJECT in the map position is refused. Converted 1:1 from functions/MapDeleteTest (now retired); the class's shared three-key fixture literal is spelled out in each step.",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "it-removes-one-key", "steps": [
+      {"sql": "SELECT MAP_DELETE(OBJECT_CONSTRUCT('a',1,'b',2,'c',3)::MAP(VARCHAR,INT), 'a')",
+       "expect": {"value": "{\"b\":2,\"c\":3}"}}
+    ]},
+    {"name": "it-removes-several-keys", "steps": [
+      {"sql": "SELECT MAP_DELETE(OBJECT_CONSTRUCT('a',1,'b',2,'c',3)::MAP(VARCHAR,INT), 'a', 'b')",
+       "expect": {"value": "{\"c\":3}"}}
+    ]},
+    {"name": "a-repeated-key-is-harmless", "steps": [
+      {"sql": "SELECT MAP_DELETE(OBJECT_CONSTRUCT('a',1,'b',2,'c',3)::MAP(VARCHAR,INT), 'a', 'a')",
+       "expect": {"value": "{\"b\":2,\"c\":3}"}}
+    ]},
+    {"name": "a-key-the-map-does-not-hold-is-ignored", "steps": [
+      {"sql": "SELECT MAP_DELETE(OBJECT_CONSTRUCT('a',1,'b',2,'c',3)::MAP(VARCHAR,INT), 'zzz')",
+       "expect": {"value": "{\"a\":1,\"b\":2,\"c\":3}"}}
+    ]},
+    {"name": "a-null-key-removes-nothing", "steps": [
+      {"sql": "SELECT MAP_DELETE(OBJECT_CONSTRUCT('a',1,'b',2,'c',3)::MAP(VARCHAR,INT), NULL)",
+       "expect": {"value": "{\"a\":1,\"b\":2,\"c\":3}"}},
+      {"sql": "SELECT MAP_DELETE(OBJECT_CONSTRUCT('a',1,'b',2,'c',3)::MAP(VARCHAR,INT), 'a', NULL, 'b')",
+       "expect": {"value": "{\"c\":3}"}}
+    ]},
+    {"name": "a-null-map-answers-null", "steps": [
+      {"sql": "SELECT MAP_DELETE(NULL::MAP(VARCHAR,INT), 'a')", "expect": {"rows": [[null]]}}
+    ]},
+    {"name": "it-reads-a-map-column", "steps": [
+      {"sql": "CREATE TABLE md (m MAP(VARCHAR,INT))"},
+      {"sql": "INSERT INTO md SELECT OBJECT_CONSTRUCT('z',1,'a',2)::MAP(VARCHAR,INT)"},
+      {"sql": "SELECT MAP_DELETE(m, 'z') FROM md", "expect": {"value": "{\"a\":2}"}}
+    ]},
+    {"name": "a-plain-object-is-refused", "steps": [
+      {"sql": "SELECT MAP_DELETE(OBJECT_CONSTRUCT('a',1), 'a')",
+       "expect": {"error": {"messageContains": "Invalid argument types for function 'MAP_DELETE'"}}}
+    ]}
+  ]
+}

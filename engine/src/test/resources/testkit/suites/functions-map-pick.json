@@ -1,0 +1,44 @@
+{
+  "suite": "functions-map-pick",
+  "description": "MAP_PICK(map, key ...) and MAP_PICK(map, keyArray) - the map narrowed to the named keys. Both spellings are real overloads live, and every expectation was measured. A key the map does not hold is SKIPPED rather than added as a null, a repeated key is harmless, and a NULL key picks nothing so the result is the EMPTY map rather than NULL - in either spelling. A NULL map answers NULL, a MAP column reads normally, and a plain OBJECT is refused. Converted 1:1 from functions/MapPickTest (now retired); its shared M3 Java constant is spelled out per step.",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "it-picks-the-named-keys", "steps": [
+      {"sql": "SELECT MAP_PICK(OBJECT_CONSTRUCT('a',1,'b',2,'c',3)::MAP(VARCHAR,INT), 'a', 'c')",
+       "expect": {"value": "{\"a\":1,\"c\":3}"}}
+    ]},
+    {"name": "it-picks-from-a-key-array", "steps": [
+      {"sql": "SELECT MAP_PICK(OBJECT_CONSTRUCT('a',1,'b',2,'c',3)::MAP(VARCHAR,INT), ARRAY_CONSTRUCT('a','b'))",
+       "expect": {"value": "{\"a\":1,\"b\":2}"}}
+    ]},
+    {"name": "a-key-the-map-does-not-hold-is-skipped-not-added-as-null", "steps": [
+      {"sql": "SELECT MAP_PICK(OBJECT_CONSTRUCT('a',1,'b',2,'c',3)::MAP(VARCHAR,INT), 'zzz')",
+       "expect": {"value": "{}"}},
+      {"sql": "SELECT MAP_PICK(OBJECT_CONSTRUCT('a',1,'b',2,'c',3)::MAP(VARCHAR,INT), ARRAY_CONSTRUCT('a','zz'))",
+       "expect": {"value": "{\"a\":1}"}}
+    ]},
+    {"name": "a-repeated-key-is-harmless", "steps": [
+      {"sql": "SELECT MAP_PICK(OBJECT_CONSTRUCT('a',1,'b',2,'c',3)::MAP(VARCHAR,INT), 'a', 'a')",
+       "expect": {"value": "{\"a\":1}"}}
+    ]},
+    {"name": "a-null-key-picks-nothing-so-the-result-is-the-empty-map-not-null", "steps": [
+      {"sql": "SELECT MAP_PICK(OBJECT_CONSTRUCT('a',1,'b',2,'c',3)::MAP(VARCHAR,INT), NULL)",
+       "expect": {"value": "{}"}},
+      {"sql": "SELECT MAP_PICK(OBJECT_CONSTRUCT('a',1,'b',2,'c',3)::MAP(VARCHAR,INT), NULL::ARRAY)",
+       "expect": {"value": "{}"}}
+    ]},
+    {"name": "a-null-map-answers-null", "steps": [
+      {"sql": "SELECT MAP_PICK(NULL::MAP(VARCHAR,INT), 'a')", "expect": {"rows": [[null]]}},
+      {"sql": "SELECT MAP_PICK(NULL::MAP(VARCHAR,INT), ARRAY_CONSTRUCT('a'))", "expect": {"rows": [[null]]}}
+    ]},
+    {"name": "it-reads-a-map-column", "steps": [
+      {"sql": "CREATE TABLE mp (m MAP(VARCHAR,INT))"},
+      {"sql": "INSERT INTO mp SELECT OBJECT_CONSTRUCT('z',1,'a',2,'M',3)::MAP(VARCHAR,INT)"},
+      {"sql": "SELECT MAP_PICK(m, 'z', 'a') FROM mp", "expect": {"value": "{\"a\":2,\"z\":1}"}}
+    ]},
+    {"name": "a-plain-object-is-refused", "steps": [
+      {"sql": "SELECT MAP_PICK(OBJECT_CONSTRUCT('a',1,'b',2), 'a')",
+       "expect": {"error": {"messageContains": "Invalid argument types for function 'MAP_PICK'"}}}
+    ]}
+  ]
+}

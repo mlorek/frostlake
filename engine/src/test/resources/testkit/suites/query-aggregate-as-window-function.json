@@ -1,0 +1,46 @@
+{
+  "suite": "query-aggregate-as-window-function",
+  "description": "Two window-stage gaps found together. (1) ANY registered aggregate is usable as a window function over the frame - ARRAY_AGG(x) OVER (PARTITION BY g), LISTAGG, MEDIAN and the rest - where only a hard-coded set (SUM/AVG/MIN/MAX/COUNT) used to be dispatched and everything else threw 'Unsupported window function'. (2) A GROUPED query with a window function: after GROUP BY the rows are already SELECT-list-shaped, so the window stage must resolve names against the PROJECTED columns - a window's ORDER BY commonly references an aggregate's ALIAS - and take non-window values POSITIONALLY. Re-evaluating each item against the BASE table sent aggregate text to the scalar evaluator, giving 'Unknown function: ARRAY_AGG'. QUALIFY over such a grouped window rank must filter it. Converted 1:1 from query/AggregateAsWindowFunctionTest (now retired); the Java read individual row indexes out of a ResultSet, which the converted tests state as whole ordered row sets.",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "array-agg-over-a-partition", "steps": [
+      {"sql": "CREATE TABLE t (g INTEGER, v VARCHAR, m INTEGER)"},
+      {"sql": "INSERT INTO t VALUES (1,'b',10),(1,'a',20),(1,'b',5),(2,'z',7)"},
+      {"sql": "SELECT g, ARRAY_AGG(v) OVER (PARTITION BY g) FROM t WHERE g = 2", "expect": {"rows": [[2, "[\"z\"]"]]}}
+    ]},
+    {"name": "array-agg-distinct-over-a-partition",
+     "skip": {"backends": ["snowflake"], "reason": "asserts the exact element ORDER of ARRAY_AGG(DISTINCT ...) without a WITHIN GROUP clause; the order of a distinct aggregation is unspecified, so a real account may build the array in any order."},
+     "steps": [
+      {"sql": "CREATE TABLE t (g INTEGER, v VARCHAR, m INTEGER)"},
+      {"sql": "INSERT INTO t VALUES (1,'b',10),(1,'a',20),(1,'b',5),(2,'z',7)"},
+      {"sql": "SELECT DISTINCT g, ARRAY_AGG(DISTINCT v) OVER (PARTITION BY g) AS vs FROM t ORDER BY g", "expect": {"rows": [[1, "[\"b\",\"a\"]"], [2, "[\"z\"]"]], "ordered": true}}
+    ]},
+    {"name": "listagg-and-median-over-a-partition", "steps": [
+      {"sql": "CREATE TABLE t (g INTEGER, v VARCHAR, m INTEGER)"},
+      {"sql": "INSERT INTO t VALUES (1,'b',10),(1,'a',20),(1,'b',5),(2,'z',7)"},
+      {"sql": "SELECT LISTAGG(v) OVER (PARTITION BY g) FROM t WHERE g = 2", "expect": {"value": "z"}},
+      {"sql": "SELECT MEDIAN(m) OVER (PARTITION BY g) FROM t WHERE g = 2", "expect": {"value": "7.0"}}
+    ]},
+    {"name": "a-window-order-by-may-reference-an-aggregates-alias", "steps": [
+      {"sql": "CREATE TABLE t (g INTEGER, v VARCHAR, m INTEGER)"},
+      {"sql": "INSERT INTO t VALUES (1,'b',10),(1,'a',20),(1,'b',5),(2,'z',7)"},
+      {"sql": "SELECT g, SUM(m) AS metric, ROW_NUMBER() OVER (PARTITION BY g ORDER BY metric DESC) AS rnk FROM t GROUP BY g, v ORDER BY g, rnk", "expect": {"rows": [[1, 20, 1], [1, 15, 2], [2, 7, 1]], "ordered": true}}
+    ]},
+    {"name": "a-grouped-aggregate-item-survives-the-window-stage", "steps": [
+      {"sql": "CREATE TABLE t (g INTEGER, v VARCHAR, m INTEGER)"},
+      {"sql": "INSERT INTO t VALUES (1,'b',10),(1,'a',20),(1,'b',5),(2,'z',7)"},
+      {"sql": "SELECT g, ARRAY_AGG(DISTINCT v) WITHIN GROUP (ORDER BY v) AS vals, ROW_NUMBER() OVER (PARTITION BY g ORDER BY g) AS rnk FROM t GROUP BY g ORDER BY g", "expect": {"rows": [[1, "[\"a\",\"b\"]", 1], [2, "[\"z\"]", 1]], "ordered": true}}
+    ]},
+    {"name": "qualify-filters-a-grouped-window-rank", "steps": [
+      {"sql": "CREATE TABLE t (g INTEGER, v VARCHAR, m INTEGER)"},
+      {"sql": "INSERT INTO t VALUES (1,'b',10),(1,'a',20),(1,'b',5),(2,'z',7)"},
+      {"sql": "SELECT g, SUM(m) AS metric, ROW_NUMBER() OVER (PARTITION BY g ORDER BY metric DESC) AS rnk FROM t GROUP BY g, v QUALIFY rnk = 1 ORDER BY g", "expect": {"rows": [[1, 20, 1], [2, 7, 1]], "ordered": true}}
+    ]},
+    {"name": "plain-window-and-plain-grouped-queries-are-unchanged", "steps": [
+      {"sql": "CREATE TABLE t (g INTEGER, v VARCHAR, m INTEGER)"},
+      {"sql": "INSERT INTO t VALUES (1,'b',10),(1,'a',20),(1,'b',5),(2,'z',7)"},
+      {"sql": "SELECT g, ROW_NUMBER() OVER (PARTITION BY g ORDER BY m) FROM t", "expect": {"rowCount": 4}},
+      {"sql": "SELECT g, SUM(m) FROM t GROUP BY g", "expect": {"rowCount": 2}}
+    ]}
+  ]
+}

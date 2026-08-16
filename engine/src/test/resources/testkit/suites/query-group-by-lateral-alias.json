@@ -1,0 +1,218 @@
+{
+  "suite": "query-group-by-lateral-alias",
+  "description": "Snowflake lateral column aliases in a SELECT list that does NOT go through ProjectOperator: a select item may reference the alias of an EARLIER item of the same list. The plain projection path always supported this; two others did not, because each projects the SELECT list itself. Every GROUPED path - plain GROUP BY, GROUP BY ALL, positional ordinals, ROLLUP / CUBE / GROUPING SETS and implicit whole-relation aggregation - evaluated each item against a representative group row with no sibling-alias context, so the derived item silently came out NULL; and a WINDOWED projection failed the whole query with 'Column not found'. The rule has a rejecting half a plain GROUP BY now enforces the way Snowflake does: only EARLIER aliases are visible, so naming a later item's alias is 'invalid identifier', and because a real COLUMN outranks a same-named alias, an item reading a column that is neither grouped nor aggregated fails to compile. The permissive shapes are pinned beside them - star items, correlated subqueries, GROUP BY ALL, super-groups against the UNION of their grouping sets, an expression key matched across formatting and an AS-less alias, and a date-part keyword that must not be read as a column. On a super-group's subtotal row the NULLed dimension must NULL its derived siblings too, not carry the representative row's value. An alias inside an aggregate's ARGUMENT means the alias's defining EXPRESSION evaluated per row, not its per-group value. Converted 1:1 from query/GroupByLateralAliasTest (now retired); the Java read individual row indexes and, for the super-group cases, looped over rows checking a relationship, which the converted tests state as whole ordered row sets.",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "a-plain-group-by-resolves-an-earlier-alias", "steps": [
+      {"sql": "CREATE TABLE orders (city VARCHAR, qty INTEGER)"},
+      {"sql": "INSERT INTO orders VALUES ('Berlin', 1), ('Berlin', 2), ('Oslo', 5)"},
+      {"sql": "SELECT city AS c, LOWER(c) AS lc, COUNT(1) AS n FROM orders GROUP BY city ORDER BY c", "expect": {"rows": [["Berlin","berlin",2],["Oslo","oslo",1]], "ordered": true}}
+    ]},
+    {"name": "group-by-all-resolves-an-earlier-alias", "steps": [
+      {"sql": "CREATE TABLE orders (city VARCHAR, qty INTEGER)"},
+      {"sql": "INSERT INTO orders VALUES ('Berlin', 1), ('Berlin', 2), ('Oslo', 5)"},
+      {"sql": "SELECT city AS c, LOWER(c) AS lc, COUNT(1) AS n FROM orders GROUP BY ALL ORDER BY c", "expect": {"rows": [["Berlin","berlin",2],["Oslo","oslo",1]], "ordered": true}}
+    ]},
+    {"name": "a-positional-group-by-resolves-an-earlier-alias", "steps": [
+      {"sql": "CREATE TABLE orders (city VARCHAR, qty INTEGER)"},
+      {"sql": "INSERT INTO orders VALUES ('Berlin', 1), ('Berlin', 2), ('Oslo', 5)"},
+      {"sql": "SELECT city AS c, UPPER(c) || '!' AS shout, SUM(qty) AS total FROM orders GROUP BY 1 ORDER BY c", "expect": {"rows": [["Berlin","BERLIN!",3],["Oslo","OSLO!",5]], "ordered": true}}
+    ]},
+    {"name": "implicit-aggregation-resolves-an-earlier-alias", "steps": [
+      {"sql": "CREATE TABLE orders (city VARCHAR, qty INTEGER)"},
+      {"sql": "INSERT INTO orders VALUES ('Berlin', 1), ('Berlin', 2), ('Oslo', 5)"},
+      {"sql": "SELECT COUNT(1) AS n, n + 1 AS next FROM orders", "expect": {"rows": [[3, 4]]}}
+    ]},
+    {"name": "aliases-chain-across-several-items", "steps": [
+      {"sql": "CREATE TABLE orders (city VARCHAR, qty INTEGER)"},
+      {"sql": "INSERT INTO orders VALUES ('Berlin', 1), ('Berlin', 2), ('Oslo', 5)"},
+      {"sql": "SELECT city AS c, LOWER(c) AS lc, lc || '#' AS tagged, COUNT(1) AS n FROM orders GROUP BY city ORDER BY c", "expect": {"rows": [["Berlin","berlin","berlin#",2],["Oslo","oslo","oslo#",1]], "ordered": true}}
+    ]},
+    {"name": "an-item-may-be-exactly-an-earlier-aggregate-alias", "steps": [
+      {"sql": "CREATE TABLE orders (city VARCHAR, qty INTEGER)"},
+      {"sql": "INSERT INTO orders VALUES ('Berlin', 1), ('Berlin', 2), ('Oslo', 5)"},
+      {"sql": "SELECT COUNT(1) AS n, n AS again, city AS c FROM orders GROUP BY city ORDER BY c", "expect": {"rows": [[2,2,"Berlin"],[1,1,"Oslo"]], "ordered": true}}
+    ]},
+    {"name": "an-item-may-be-derived-from-an-earlier-aggregate-alias", "steps": [
+      {"sql": "CREATE TABLE orders (city VARCHAR, qty INTEGER)"},
+      {"sql": "INSERT INTO orders VALUES ('Berlin', 1), ('Berlin', 2), ('Oslo', 5)"},
+      {"sql": "SELECT city AS c, SUM(qty) AS total, total * 10 AS scaled FROM orders GROUP BY city ORDER BY c", "expect": {"rows": [["Berlin",3,30],["Oslo",5,50]], "ordered": true}}
+    ]},
+    {"name": "the-alias-value-is-per-group-not-shared", "steps": [
+      {"sql": "CREATE TABLE orders (city VARCHAR, qty INTEGER)"},
+      {"sql": "INSERT INTO orders VALUES ('Berlin', 1), ('Berlin', 2), ('Oslo', 5)"},
+      {"sql": "SELECT city AS c, CASE WHEN c = 'Berlin' THEN c ELSE NULL END AS only_berlin, COUNT(1) AS n FROM orders GROUP BY city ORDER BY c", "expect": {"rows": [["Berlin","Berlin",2],["Oslo",null,1]], "ordered": true}}
+    ]},
+    {"name": "a-real-column-wins-over-an-alias-of-the-same-name", "steps": [
+      {"sql": "CREATE TABLE orders (city VARCHAR, qty INTEGER)"},
+      {"sql": "INSERT INTO orders VALUES ('Berlin', 1), ('Berlin', 2), ('Oslo', 5)"},
+      {"sql": "SELECT qty AS city, LOWER(city) AS lc, COUNT(1) AS n FROM orders GROUP BY qty ORDER BY city", "expect": {"error": {"messageContains": "SQL compilation error:"}}},
+      {"sql": "SELECT qty AS city, LOWER(city) AS lc, COUNT(1) AS n FROM orders GROUP BY qty ORDER BY city", "expect": {"error": {"messageContains": "'ORDERS.CITY' in select clause is neither an aggregate nor in the group by clause."}}}
+    ]},
+    {"name": "a-forward-alias-reference-is-rejected", "steps": [
+      {"sql": "CREATE TABLE orders (city VARCHAR, qty INTEGER)"},
+      {"sql": "INSERT INTO orders VALUES ('Berlin', 1), ('Berlin', 2), ('Oslo', 5)"},
+      {"sql": "SELECT LOWER(c) AS lc, city AS c, COUNT(1) AS n FROM orders GROUP BY city", "expect": {"error": {"messageContains": "SQL compilation error:"}}},
+      {"sql": "SELECT LOWER(c) AS lc, city AS c, COUNT(1) AS n FROM orders GROUP BY city", "expect": {"error": {"messageContains": "invalid identifier 'C'"}}}
+    ]},
+    {"name": "mutually-recursive-aliases-are-rejected", "steps": [
+      {"sql": "CREATE TABLE orders (city VARCHAR, qty INTEGER)"},
+      {"sql": "INSERT INTO orders VALUES ('Berlin', 1), ('Berlin', 2), ('Oslo', 5)"},
+      {"sql": "SELECT b AS a, a AS b, COUNT(1) AS n FROM orders GROUP BY city", "expect": {"error": {"messageContains": "invalid identifier 'B'"}}}
+    ]},
+    {"name": "an-item-naming-its-own-alias-is-rejected", "steps": [
+      {"sql": "CREATE TABLE orders (city VARCHAR, qty INTEGER)"},
+      {"sql": "INSERT INTO orders VALUES ('Berlin', 1), ('Berlin', 2), ('Oslo', 5)"},
+      {"sql": "SELECT n AS n, COUNT(1) AS c FROM orders GROUP BY city", "expect": {"error": {"messageContains": "invalid identifier 'N'"}}}
+    ]},
+    {"name": "a-bare-ungrouped-column-is-rejected", "steps": [
+      {"sql": "CREATE TABLE orders (city VARCHAR, qty INTEGER)"},
+      {"sql": "INSERT INTO orders VALUES ('Berlin', 1), ('Berlin', 2), ('Oslo', 5)"},
+      {"sql": "SELECT city, qty, COUNT(1) FROM orders GROUP BY city", "expect": {"error": {"messageContains": "'ORDERS.QTY' in select clause is neither an aggregate nor in the group by clause."}}}
+    ]},
+    {"name": "an-ungrouped-column-nested-in-an-expression-is-rejected", "steps": [
+      {"sql": "CREATE TABLE orders (city VARCHAR, qty INTEGER)"},
+      {"sql": "INSERT INTO orders VALUES ('Berlin', 1), ('Berlin', 2), ('Oslo', 5)"},
+      {"sql": "SELECT city, CASE WHEN qty > 1 THEN 'big' ELSE 'small' END, COUNT(1) FROM orders GROUP BY city", "expect": {"error": {"messageContains": "'ORDERS.QTY' in select clause is neither an aggregate nor in the group by clause."}}}
+    ]},
+    {"name": "an-ungrouped-column-of-the-other-side-of-a-join-is-rejected", "steps": [
+      {"sql": "CREATE TABLE orders (city VARCHAR, qty INTEGER)"},
+      {"sql": "INSERT INTO orders VALUES ('Berlin', 1), ('Berlin', 2), ('Oslo', 5)"},
+      {"sql": "CREATE TABLE fees (city VARCHAR, fee INTEGER)"},
+      {"sql": "INSERT INTO fees VALUES ('Berlin', 9)"},
+      {"sql": "SELECT o.city, f.fee, COUNT(1) FROM orders o JOIN fees f ON o.city = f.city GROUP BY o.city", "expect": {"error": {"messageContains": "'F.FEE' in select clause is neither an aggregate nor in the group by clause."}}}
+    ]},
+    {"name": "a-grouped-column-may-be-read-through-any-expression", "steps": [
+      {"sql": "CREATE TABLE orders (city VARCHAR, qty INTEGER)"},
+      {"sql": "INSERT INTO orders VALUES ('Berlin', 1), ('Berlin', 2), ('Oslo', 5)"},
+      {"sql": "SELECT LOWER(city) || '/' || UPPER(city) AS both, COUNT(1) AS n FROM orders GROUP BY city ORDER BY 1", "expect": {"rows": [["berlin/BERLIN",2],["oslo/OSLO",1]], "ordered": true}}
+    ]},
+    {"name": "a-group-key-expression-may-be-selected-wholesale", "steps": [
+      {"sql": "CREATE TABLE orders (city VARCHAR, qty INTEGER)"},
+      {"sql": "INSERT INTO orders VALUES ('Berlin', 1), ('Berlin', 2), ('Oslo', 5)"},
+      {"sql": "SELECT LOWER(city) AS lc, COUNT(1) AS n FROM orders GROUP BY LOWER(city) ORDER BY lc", "expect": {"rows": [["berlin",2],["oslo",1]], "ordered": true}}
+    ]},
+    {"name": "an-expression-key-matches-across-formatting-and-an-as-less-alias", "steps": [
+      {"sql": "CREATE TABLE orders (city VARCHAR, qty INTEGER)"},
+      {"sql": "INSERT INTO orders VALUES ('Berlin', 1), ('Berlin', 2), ('Oslo', 5)"},
+      {"sql": "SELECT COALESCE(city, '') AS c,\n       CASE\n           WHEN qty = 1 THEN 'one'\n           WHEN qty = 2 THEN 'two'\n           ELSE 'many'\n       END size_class,\n       COUNT(1) AS n\nFROM orders\nGROUP BY COALESCE(city, '') ,\n         CASE WHEN qty = 1 THEN 'one' WHEN qty = 2 THEN 'two' ELSE 'many' END\nORDER BY c, size_class", "expect": {"rows": [["Berlin","one",1],["Berlin","two",1],["Oslo","many",1]], "ordered": true}}
+    ]},
+    {"name": "an-as-less-alias-is-visible-to-later-items", "steps": [
+      {"sql": "CREATE TABLE orders (city VARCHAR, qty INTEGER)"},
+      {"sql": "INSERT INTO orders VALUES ('Berlin', 1), ('Berlin', 2), ('Oslo', 5)"},
+      {"sql": "SELECT city c, LOWER(c) lc, COUNT(1) n FROM orders GROUP BY city ORDER BY c", "expect": {"rows": [["Berlin","berlin",2],["Oslo","oslo",1]], "ordered": true}}
+    ]},
+    {"name": "a-qualifier-mismatch-against-the-group-key-still-resolves", "steps": [
+      {"sql": "CREATE TABLE orders (city VARCHAR, qty INTEGER)"},
+      {"sql": "INSERT INTO orders VALUES ('Berlin', 1), ('Berlin', 2), ('Oslo', 5)"},
+      {"sql": "SELECT o.city, COUNT(1) AS n FROM orders o GROUP BY city ORDER BY 1", "expect": {"rows": [["Berlin",2],["Oslo",1]], "ordered": true}}
+    ]},
+    {"name": "group-by-all-accepts-every-item", "steps": [
+      {"sql": "CREATE TABLE orders (city VARCHAR, qty INTEGER)"},
+      {"sql": "INSERT INTO orders VALUES ('Berlin', 1), ('Berlin', 2), ('Oslo', 5)"},
+      {"sql": "SELECT city, qty, COUNT(1) AS n FROM orders GROUP BY ALL ORDER BY city, qty", "expect": {"rows": [["Berlin",1,1],["Berlin",2,1],["Oslo",5,1]], "ordered": true}}
+    ]},
+    {"name": "super-groups-accept-every-item-of-their-key-union", "steps": [
+      {"sql": "CREATE TABLE orders (city VARCHAR, qty INTEGER)"},
+      {"sql": "INSERT INTO orders VALUES ('Berlin', 1), ('Berlin', 2), ('Oslo', 5)"},
+      {"sql": "SELECT city, COUNT(1) AS n FROM orders GROUP BY ROLLUP(city) ORDER BY city NULLS LAST", "expect": {"rows": [["Berlin",2],["Oslo",1],[null,3]], "ordered": true}},
+      {"sql": "SELECT city, qty, COUNT(1) AS n FROM orders GROUP BY GROUPING SETS ((city), (qty)) ORDER BY city NULLS LAST, qty NULLS LAST", "expect": {"rows": [["Berlin",null,2],["Oslo",null,1],[null,1,1],[null,2,1],[null,5,1]], "ordered": true}},
+      {"sql": "SELECT COUNT(*) FROM (SELECT city, qty, COUNT(1) AS n FROM orders GROUP BY CUBE(city, qty))", "expect": {"value": "9"}}
+    ]},
+    {"name": "a-fully-grouped-star-is-accepted", "steps": [
+      {"sql": "CREATE TABLE orders (city VARCHAR, qty INTEGER)"},
+      {"sql": "INSERT INTO orders VALUES ('Berlin', 1), ('Berlin', 2), ('Oslo', 5)"},
+      {"sql": "SELECT *, COUNT(1) OVER () AS n FROM orders GROUP BY city, qty ORDER BY city, qty", "expect": {"rows": [["Berlin",1,3],["Berlin",2,3],["Oslo",5,3]], "ordered": true}}
+    ]},
+    {"name": "a-date-part-keyword-argument-is-not-read-as-a-column", "steps": [
+      {"sql": "CREATE TABLE shipments (day INTEGER, sent DATE)"},
+      {"sql": "INSERT INTO shipments VALUES (1, '2026-01-01')"},
+      {"sql": "SELECT TO_VARCHAR(sent), DATEADD(day, 1, sent) AS next_day, COUNT(1) AS n FROM shipments GROUP BY sent", "expect": {"rowCount": 1}},
+      {"sql": "SELECT COUNT(1) AS n FROM shipments GROUP BY sent", "expect": {"rows": [[1]]}}
+    ]},
+    {"name": "a-correlated-subquery-item-is-not-rejected", "steps": [
+      {"sql": "CREATE TABLE orders (city VARCHAR, qty INTEGER)"},
+      {"sql": "INSERT INTO orders VALUES ('Berlin', 1), ('Berlin', 2), ('Oslo', 5)"},
+      {"sql": "CREATE TABLE fee_book (city VARCHAR, fee INTEGER)"},
+      {"sql": "INSERT INTO fee_book VALUES ('Berlin', 9), ('Oslo', 4)"},
+      {"sql": "SELECT city, (SELECT MAX(fee) FROM fee_book b WHERE b.city = orders.city) AS top_fee, COUNT(1) AS n FROM orders GROUP BY city ORDER BY city", "expect": {"rows": [["Berlin",9,2],["Oslo",4,1]], "ordered": true}}
+    ]},
+    {"name": "a-quoted-alias-resolves", "steps": [
+      {"sql": "CREATE TABLE orders (city VARCHAR, qty INTEGER)"},
+      {"sql": "INSERT INTO orders VALUES ('Berlin', 1), ('Berlin', 2), ('Oslo', 5)"},
+      {"sql": "SELECT city AS \"CityName\", LOWER(\"CityName\") AS lc, COUNT(1) AS n FROM orders GROUP BY city ORDER BY 1", "expect": {"rows": [["Berlin","berlin",2],["Oslo","oslo",1]], "ordered": true}}
+    ]},
+    {"name": "rollup-nulls-a-derived-alias-on-subtotal-rows", "steps": [
+      {"sql": "CREATE TABLE orders (city VARCHAR, qty INTEGER)"},
+      {"sql": "INSERT INTO orders VALUES ('Berlin', 1), ('Berlin', 2), ('Oslo', 5)"},
+      {"sql": "SELECT city AS c, LOWER(c) AS lc, COUNT(1) AS n FROM orders GROUP BY ROLLUP(city) ORDER BY c NULLS LAST", "expect": {"rows": [["Berlin","berlin",2],["Oslo","oslo",1],[null,null,3]], "ordered": true}}
+    ]},
+    {"name": "grouping-sets-null-a-derived-alias-where-its-source-is-aggregated-away", "steps": [
+      {"sql": "CREATE TABLE orders (city VARCHAR, qty INTEGER)"},
+      {"sql": "INSERT INTO orders VALUES ('Berlin', 1), ('Berlin', 2), ('Oslo', 5)"},
+      {"sql": "SELECT city AS c, qty AS q, LOWER(c) AS lc, COUNT(1) AS n FROM orders GROUP BY GROUPING SETS ((city), (qty)) ORDER BY c NULLS LAST, q NULLS LAST", "expect": {"rows": [["Berlin",null,"berlin",2],["Oslo",null,"oslo",1],[null,1,null,1],[null,2,null,1],[null,5,null,1]], "ordered": true}}
+    ]},
+    {"name": "an-empty-group-still-evaluates-a-derived-alias", "steps": [
+      {"sql": "CREATE TABLE orders (city VARCHAR, qty INTEGER)"},
+      {"sql": "INSERT INTO orders VALUES ('Berlin', 1), ('Berlin', 2), ('Oslo', 5)"},
+      {"sql": "SELECT COUNT(*) AS n, n + 1 AS next FROM orders WHERE FALSE", "expect": {"rows": [[0, 1]]}}
+    ]},
+    {"name": "a-derived-alias-is-orderable", "steps": [
+      {"sql": "CREATE TABLE orders (city VARCHAR, qty INTEGER)"},
+      {"sql": "INSERT INTO orders VALUES ('Berlin', 1), ('Berlin', 2), ('Oslo', 5)"},
+      {"sql": "SELECT city AS c, LOWER(c) AS lc, COUNT(1) AS n FROM orders GROUP BY city ORDER BY lc DESC", "expect": {"rows": [["Oslo","oslo",1],["Berlin","berlin",2]], "ordered": true}}
+    ]},
+    {"name": "a-derived-alias-works-over-a-join", "steps": [
+      {"sql": "CREATE TABLE orders (city VARCHAR, qty INTEGER)"},
+      {"sql": "INSERT INTO orders VALUES ('Berlin', 1), ('Berlin', 2), ('Oslo', 5)"},
+      {"sql": "CREATE TABLE couriers (city VARCHAR, fee INTEGER)"},
+      {"sql": "INSERT INTO couriers VALUES ('Berlin', 9)"},
+      {"sql": "SELECT o.city AS c, LOWER(c) AS lc, COUNT(1) AS n FROM orders o JOIN couriers r ON o.city = r.city GROUP BY o.city", "expect": {"rows": [["Berlin","berlin",2]]}}
+    ]},
+    {"name": "a-sibling-alias-resolves-in-an-iff-whose-branches-are-aggregates", "steps": [
+      {"sql": "CREATE TABLE deliveries (city VARCHAR, active BOOLEAN, courier VARCHAR)"},
+      {"sql": "INSERT INTO deliveries VALUES ('Berlin', TRUE, 'ada'), ('Berlin', TRUE, 'bo'), ('Oslo', FALSE, 'cy')"},
+      {"sql": "SELECT city AS c, SUM(IFF(active, 1, 0)) AS active_count, IFF(active_count > 0, ARRAY_UNIQUE_AGG(IFF(active, courier, NULL)), ARRAY_UNIQUE_AGG(courier)) AS couriers FROM deliveries GROUP BY city ORDER BY c", "expect": {"rows": [["Berlin",2,"[\"ada\",\"bo\"]"],["Oslo",0,"[\"cy\"]"]], "ordered": true}}
+    ]},
+    {"name": "a-sibling-alias-resolves-alongside-an-aggregate-in-arithmetic", "steps": [
+      {"sql": "CREATE TABLE orders (city VARCHAR, qty INTEGER)"},
+      {"sql": "INSERT INTO orders VALUES ('Berlin', 1), ('Berlin', 2), ('Oslo', 5)"},
+      {"sql": "SELECT city AS c, SUM(qty) AS total, total + COUNT(1) AS combo FROM orders GROUP BY city ORDER BY c", "expect": {"rows": [["Berlin",3,5],["Oslo",5,6]], "ordered": true}}
+    ]},
+    {"name": "a-real-column-still-wins-inside-an-aggregate-bearing-item", "steps": [
+      {"sql": "CREATE TABLE orders (city VARCHAR, qty INTEGER)"},
+      {"sql": "INSERT INTO orders VALUES ('Berlin', 1), ('Berlin', 2), ('Oslo', 5)"},
+      {"sql": "SELECT SUM(qty) AS qty, MAX(qty) + 0 AS biggest, city AS c FROM orders GROUP BY city ORDER BY c", "expect": {"rows": [[3,2,"Berlin"],[5,5,"Oslo"]], "ordered": true}}
+    ]},
+    {"name": "a-sibling-alias-resolves-when-the-list-has-a-window-function", "steps": [
+      {"sql": "CREATE TABLE orders (city VARCHAR, qty INTEGER)"},
+      {"sql": "INSERT INTO orders VALUES ('Berlin', 1), ('Berlin', 2), ('Oslo', 5)"},
+      {"sql": "SELECT city AS c, LOWER(c) AS lc, ROW_NUMBER() OVER (PARTITION BY city ORDER BY qty DESC) AS rn FROM orders ORDER BY c, rn", "expect": {"rows": [["Berlin","berlin",1],["Berlin","berlin",2],["Oslo","oslo",1]], "ordered": true}}
+    ]},
+    {"name": "aliases-chain-in-a-windowed-projection", "steps": [
+      {"sql": "CREATE TABLE orders (city VARCHAR, qty INTEGER)"},
+      {"sql": "INSERT INTO orders VALUES ('Berlin', 1), ('Berlin', 2), ('Oslo', 5)"},
+      {"sql": "SELECT city AS c, LOWER(c) AS lc, lc || '#' AS tagged, ROW_NUMBER() OVER (ORDER BY qty) AS rn FROM orders ORDER BY rn", "expect": {"rows": [["Berlin","berlin","berlin#",1],["Berlin","berlin","berlin#",2],["Oslo","oslo","oslo#",3]], "ordered": true}}
+    ]},
+    {"name": "qualify-filters-on-a-window-alias-alongside-a-derived-alias", "steps": [
+      {"sql": "CREATE TABLE orders (city VARCHAR, qty INTEGER)"},
+      {"sql": "INSERT INTO orders VALUES ('Berlin', 1), ('Berlin', 2), ('Oslo', 5)"},
+      {"sql": "SELECT city AS c, LOWER(c) AS lc, ROW_NUMBER() OVER (PARTITION BY city ORDER BY qty DESC) AS rn FROM orders QUALIFY rn = 1 ORDER BY c", "expect": {"rows": [["Berlin","berlin",1],["Oslo","oslo",1]], "ordered": true}}
+    ]},
+    {"name": "an-item-may-reuse-a-window-functions-alias", "steps": [
+      {"sql": "CREATE TABLE orders (city VARCHAR, qty INTEGER)"},
+      {"sql": "INSERT INTO orders VALUES ('Berlin', 1), ('Berlin', 2), ('Oslo', 5)"},
+      {"sql": "SELECT ROW_NUMBER() OVER (ORDER BY qty) AS rn, rn AS again FROM orders ORDER BY rn", "expect": {"rows": [[1,1],[2,2],[3,3]], "ordered": true}}
+    ]},
+    {"name": "a-real-column-wins-over-an-alias-in-a-windowed-projection", "steps": [
+      {"sql": "CREATE TABLE orders (city VARCHAR, qty INTEGER)"},
+      {"sql": "INSERT INTO orders VALUES ('Berlin', 1), ('Berlin', 2), ('Oslo', 5)"},
+      {"sql": "SELECT qty AS city, LOWER(city) AS lc, ROW_NUMBER() OVER (ORDER BY qty) AS rn FROM orders ORDER BY rn", "expect": {"rows": [[1,"berlin",1],[2,"berlin",2],[5,"oslo",3]], "ordered": true}}
+    ]},
+    {"name": "an-aggregate-argument-may-name-a-sibling-alias", "steps": [
+      {"sql": "CREATE TABLE orders (city VARCHAR, qty INTEGER)"},
+      {"sql": "INSERT INTO orders VALUES ('Berlin', 1), ('Berlin', 2), ('Oslo', 5)"},
+      {"sql": "SELECT city AS c, MAX(LENGTH(c)) AS widest FROM orders GROUP BY city ORDER BY c", "expect": {"rows": [["Berlin",6],["Oslo",4]], "ordered": true}}
+    ]}
+  ]
+}

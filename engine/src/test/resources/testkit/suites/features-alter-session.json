@@ -1,0 +1,33 @@
+{
+  "suite": "features-alter-session",
+  "description": "ALTER SESSION SET/UNSET observed through SHOW PARAMETERS - the SQL surface a real account exposes: QUERY_TAG round-trips (UNSET back to empty), numeric and boolean parameters round-trip, and session parameters persist across statements. Converted 1:1 from features/AlterSessionTest (trimmed: the MULTI_STATEMENT_COUNT round-trip breaks every follow-up single-statement request on driver-shaped transports including the testkit's, and the SessionContext typing/reset tests are Java-API-only - all three stay in the Java class).",
+  "tags": ["features", "converted"],
+  "tests": [
+    {"name": "query-tag-round-trips-through-show-parameters", "steps": [
+      {"sql": "ALTER SESSION SET QUERY_TAG = 'test_query'"},
+      {"sql": "SHOW PARAMETERS LIKE 'QUERY_TAG'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"value\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "test_query"}},
+      {"sql": "ALTER SESSION UNSET QUERY_TAG"},
+      {"sql": "SHOW PARAMETERS LIKE 'QUERY_TAG'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT '<' || \"value\" || '>' FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "<>"}}
+    ]},
+    {"name": "numeric-parameter-round-trips-through-show-parameters", "steps": [
+      {"sql": "ALTER SESSION SET STATEMENT_TIMEOUT_IN_SECONDS = 3600"},
+      {"sql": "SHOW PARAMETERS LIKE 'STATEMENT_TIMEOUT_IN_SECONDS'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"value\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "3600"}},
+      {"sql": "ALTER SESSION UNSET STATEMENT_TIMEOUT_IN_SECONDS"}
+    ]},
+    {"name": "boolean-parameter-round-trips-through-show-parameters", "steps": [
+      {"sql": "ALTER SESSION SET AUTOCOMMIT = TRUE"},
+      {"sql": "SHOW PARAMETERS LIKE 'AUTOCOMMIT'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"value\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "true"}}
+    ]},
+    {"name": "session-parameters-persist-across-statements", "steps": [
+      {"sql": "ALTER SESSION SET QUERY_TAG = 'persist_tag'"},
+      {"sql": "CREATE TABLE alter_session_t (id INTEGER)"},
+      {"sql": "SHOW PARAMETERS LIKE 'QUERY_TAG'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"value\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "persist_tag"}},
+      {"sql": "ALTER SESSION UNSET QUERY_TAG"}
+    ]}
+  ]
+}

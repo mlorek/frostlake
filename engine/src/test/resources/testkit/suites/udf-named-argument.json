@@ -1,0 +1,41 @@
+{
+  "suite": "udf-named-argument",
+  "description": "Named function arguments - f(name => value) - previously threw \"not yet ported\". A call now maps each named argument to the parameter of that name, case-INSENSITIVELY, and reorders the values to the function's DECLARED parameter order, so an order-sensitive UDF gives the right answer regardless of the written order. Leading positional arguments are still allowed before the named ones, named arguments bind over table columns, and an argument name that matches no parameter is refused. Order-sensitive bodies make the reordering observable: a - b written b-first still computes 10 - 3, and a three-parameter concatenation written c, a, b still yields 123. Converted 1:1 from udf/NamedArgumentTest (now retired); the class asserted only that an unknown name throws, and the message it throws is pinned here.",
+  "tags": ["udf", "converted"],
+  "tests": [
+    {"name": "positional-still-works", "steps": [
+      {"sql": "CREATE FUNCTION sub_it(a INTEGER, b INTEGER) RETURNS INTEGER AS 'a - b'"},
+      {"sql": "SELECT sub_it(10, 3)", "expect": {"value": 7}}
+    ]},
+    {"name": "named-in-declared-order", "steps": [
+      {"sql": "CREATE FUNCTION sub_it(a INTEGER, b INTEGER) RETURNS INTEGER AS 'a - b'"},
+      {"sql": "SELECT sub_it(a => 10, b => 3)", "expect": {"value": 7}}
+    ]},
+    {"name": "named-reordered-matches-parameter-names", "steps": [
+      {"sql": "CREATE FUNCTION sub_it(a INTEGER, b INTEGER) RETURNS INTEGER AS 'a - b'"},
+      {"sql": "SELECT sub_it(b => 3, a => 10)", "expect": {"value": 7}}
+    ]},
+    {"name": "a-three-way-reorder", "steps": [
+      {"sql": "CREATE FUNCTION cat3(a VARCHAR, b VARCHAR, c VARCHAR) RETURNS VARCHAR AS 'a || b || c'"},
+      {"sql": "SELECT cat3(c => '3', a => '1', b => '2')", "expect": {"value": "123"}}
+    ]},
+    {"name": "positional-then-named", "steps": [
+      {"sql": "CREATE FUNCTION sub_it(a INTEGER, b INTEGER) RETURNS INTEGER AS 'a - b'"},
+      {"sql": "SELECT sub_it(10, b => 3)", "expect": {"value": 7}}
+    ]},
+    {"name": "a-named-argument-is-case-insensitive", "steps": [
+      {"sql": "CREATE FUNCTION sub_it(a INTEGER, b INTEGER) RETURNS INTEGER AS 'a - b'"},
+      {"sql": "SELECT sub_it(B => 3, A => 10)", "expect": {"value": 7}}
+    ]},
+    {"name": "named-arguments-bind-over-columns", "steps": [
+      {"sql": "CREATE FUNCTION sub_it(a INTEGER, b INTEGER) RETURNS INTEGER AS 'a - b'"},
+      {"sql": "CREATE TABLE t (x INTEGER, y INTEGER)"},
+      {"sql": "INSERT INTO t VALUES (100, 40)"},
+      {"sql": "SELECT sub_it(b => y, a => x) FROM t", "expect": {"value": 60}}
+    ]},
+    {"name": "an-unknown-argument-name-is-refused", "steps": [
+      {"sql": "CREATE FUNCTION sub_it(a INTEGER, b INTEGER) RETURNS INTEGER AS 'a - b'"},
+      {"sql": "SELECT sub_it(a => 10, z => 3)", "expect": {"error": {"messageContains": "Unknown argument name 'z' for function SUB_IT"}}}
+    ]}
+  ]
+}

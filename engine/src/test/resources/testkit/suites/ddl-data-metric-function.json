@@ -1,0 +1,90 @@
+{
+  "suite": "ddl-data-metric-function",
+  "description": "ALTER TABLE ADD/MODIFY/DROP DATA METRIC FUNCTION and DATA_METRIC_SCHEDULE, converted 1:1 from ddl/DataMetricFunctionTest.java (now retired). Exact-message asserts became messageContains on the distinctive fragment.",
+  "tags": ["ddl", "converted"],
+  "tests": [
+    {
+      "name": "column-metric-attaches-to-its-column",
+      "steps": [
+        {"sql": "CREATE TABLE dm_t (id NUMBER, txt VARCHAR, d DATE)"},
+        {"sql": "ALTER TABLE dm_t ADD DATA METRIC FUNCTION SNOWFLAKE.CORE.NULL_COUNT ON (id)"},
+        {"sql": "ALTER TABLE dm_t ADD DATA METRIC FUNCTION SNOWFLAKE.CORE.NULL_COUNT ON (txt)"}
+      ]
+    },
+    {
+      "name": "table-metric-takes-no-columns",
+      "steps": [
+        {"sql": "CREATE TABLE dm_t (id NUMBER, txt VARCHAR, d DATE)"},
+        {"sql": "ALTER TABLE dm_t ADD DATA METRIC FUNCTION SNOWFLAKE.CORE.ROW_COUNT ON ()"}
+      ]
+    },
+    {
+      "name": "attaching-the-same-metric-twice-is-silent",
+      "steps": [
+        {"sql": "CREATE TABLE dm_t (id NUMBER, txt VARCHAR, d DATE)"},
+        {"sql": "ALTER TABLE dm_t ADD DATA METRIC FUNCTION SNOWFLAKE.CORE.NULL_COUNT ON (id)"},
+        {"sql": "ALTER TABLE dm_t ADD DATA METRIC FUNCTION SNOWFLAKE.CORE.NULL_COUNT ON (id)"}
+      ]
+    },
+    {
+      "name": "metric-that-is-not-a-system-one-is-refused",
+      "steps": [
+        {"sql": "CREATE TABLE dm_t (id NUMBER, txt VARCHAR, d DATE)"},
+        {"sql": "ALTER TABLE dm_t ADD DATA METRIC FUNCTION SNOWFLAKE.CORE.NO_SUCH_M ON (id)",
+         "expect": {"error": {"messageContains": "Function 'SNOWFLAKE.CORE.NO_SUCH_M' does not exist or not authorized"}}}
+      ]
+    },
+    {
+      "name": "bare-metric-name-does-not-resolve",
+      "steps": [
+        {"sql": "CREATE TABLE dm_t (id NUMBER, txt VARCHAR, d DATE)"},
+        {"sql": "ALTER TABLE dm_t ADD DATA METRIC FUNCTION NULL_COUNT ON (id)",
+         "expect": {"error": {"messageContains": "Function 'NULL_COUNT' does not exist or not authorized"}}}
+      ]
+    },
+    {
+      "name": "unknown-column-is-refused",
+      "steps": [
+        {"sql": "CREATE TABLE dm_t (id NUMBER, txt VARCHAR, d DATE)"},
+        {"sql": "ALTER TABLE dm_t ADD DATA METRIC FUNCTION SNOWFLAKE.CORE.NULL_COUNT ON (no_such_c)",
+         "expect": {"error": {"messageContains": "column 'NO_SUCH_C' does not exist"}}}
+      ]
+    },
+    {
+      "name": "attachment-may-be-suspended-and-resumed",
+      "steps": [
+        {"sql": "CREATE TABLE dm_t (id NUMBER, txt VARCHAR, d DATE)"},
+        {"sql": "ALTER TABLE dm_t ADD DATA METRIC FUNCTION SNOWFLAKE.CORE.NULL_COUNT ON (id)"},
+        {"sql": "ALTER TABLE dm_t MODIFY DATA METRIC FUNCTION SNOWFLAKE.CORE.NULL_COUNT ON (id) SUSPEND"},
+        {"sql": "ALTER TABLE dm_t MODIFY DATA METRIC FUNCTION SNOWFLAKE.CORE.NULL_COUNT ON (id) RESUME"}
+      ]
+    },
+    {
+      "name": "dropping-an-attachment-that-is-not-there-is-refused",
+      "steps": [
+        {"sql": "CREATE TABLE dm_t (id NUMBER, txt VARCHAR, d DATE)"},
+        {"sql": "ALTER TABLE dm_t ADD DATA METRIC FUNCTION SNOWFLAKE.CORE.NULL_COUNT ON (id)"},
+        {"sql": "ALTER TABLE dm_t DROP DATA METRIC FUNCTION SNOWFLAKE.CORE.NULL_COUNT ON (id)"},
+        {"sql": "ALTER TABLE dm_t DROP DATA METRIC FUNCTION SNOWFLAKE.CORE.NULL_COUNT ON (id)",
+         "expect": {"error": {"messageContains": "is not attached to Table DM_T"}}}
+      ]
+    },
+    {
+      "name": "schedule-and-metrics-live-together",
+      "steps": [
+        {"sql": "CREATE TABLE dm_t (id NUMBER, txt VARCHAR, d DATE)"},
+        {"sql": "ALTER TABLE dm_t ADD DATA METRIC FUNCTION SNOWFLAKE.CORE.ROW_COUNT ON ()"},
+        {"sql": "ALTER TABLE dm_t SET DATA_METRIC_SCHEDULE = '60 MINUTE'"},
+        {"sql": "ALTER TABLE dm_t UNSET DATA_METRIC_SCHEDULE"}
+      ]
+    },
+    {
+      "name": "its-words-remain-usable-as-names",
+      "steps": [
+        {"sql": "CREATE TABLE metric (metric NUMBER, data NUMBER)"},
+        {"sql": "INSERT INTO metric VALUES (1, 2)"},
+        {"sql": "SELECT metric FROM metric", "expect": {"value": "1"}}
+      ]
+    }
+  ]
+}

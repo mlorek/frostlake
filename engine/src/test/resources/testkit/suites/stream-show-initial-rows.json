@@ -1,0 +1,101 @@
+{
+  "suite": "stream-show-initial-rows",
+  "description": "The SHOW_INITIAL_ROWS option on CREATE STREAM, across the whole option grid: TRUE, FALSE, alongside APPEND_ONLY in either ORDER, on its own, absent entirely (the older syntax stays accepted), with no options at all, and combined with a COMMENT. Two streams over the same table may carry different SHOW_INITIAL_ROWS values, all four APPEND_ONLY-by-SHOW_INITIAL_ROWS combinations are accepted, IF NOT EXISTS is idempotent so a repeated CREATE leaves exactly ONE stream, and a schema-qualified CREATE puts the stream in THAT schema - so it is only listed by SHOW STREAMS IN SCHEMA, since the session's current schema is PUBLIC. Converted 1:1 from stream/StreamShowInitialRowsTest (now retired), which was a JDBC test that scanned the SHOW STREAMS ResultSet row by row for a name; each such scan is expressed here as a COUNT over RESULT_SCAN(LAST_QUERY_ID()) filtered on the quoted lowercase name column, which asserts the same thing including the uppercase normalisation the class's own helper documented.",
+  "tags": ["stream", "converted"],
+  "tests": [
+    {"name": "show-initial-rows-true", "steps": [
+      {"sql": "CREATE TABLE products (id INTEGER, name VARCHAR, price INTEGER)"},
+      {"sql": "INSERT INTO products VALUES (1, 'Apple', 100)"},
+      {"sql": "INSERT INTO products VALUES (2, 'Banana', 50)"},
+      {"sql": "CREATE STREAM products_stream ON TABLE products SHOW_INITIAL_ROWS = TRUE"},
+      {"sql": "SHOW STREAMS"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'PRODUCTS_STREAM'", "expect": {"value": 1}}
+    ]},
+    {"name": "show-initial-rows-false", "steps": [
+      {"sql": "CREATE TABLE customers (id INTEGER, name VARCHAR)"},
+      {"sql": "INSERT INTO customers VALUES (1, 'John')"},
+      {"sql": "CREATE STREAM customers_stream ON TABLE customers SHOW_INITIAL_ROWS = FALSE"},
+      {"sql": "SHOW STREAMS"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'CUSTOMERS_STREAM'", "expect": {"value": 1}}
+    ]},
+    {"name": "append-only-and-show-initial-rows-together", "steps": [
+      {"sql": "CREATE TABLE orders (id INTEGER, amount INTEGER)"},
+      {"sql": "INSERT INTO orders VALUES (1, 500)"},
+      {"sql": "CREATE STREAM orders_stream ON TABLE orders APPEND_ONLY = TRUE SHOW_INITIAL_ROWS = TRUE"},
+      {"sql": "SHOW STREAMS"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'ORDERS_STREAM'", "expect": {"value": 1}}
+    ]},
+    {"name": "show-initial-rows-as-the-only-option", "steps": [
+      {"sql": "CREATE TABLE inventory (item VARCHAR, quantity INTEGER)"},
+      {"sql": "INSERT INTO inventory VALUES ('Widget', 100)"},
+      {"sql": "CREATE STREAM inventory_stream ON TABLE inventory SHOW_INITIAL_ROWS = TRUE"},
+      {"sql": "SHOW STREAMS"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'INVENTORY_STREAM'", "expect": {"value": 1}}
+    ]},
+    {"name": "the-two-options-in-reversed-order", "steps": [
+      {"sql": "CREATE TABLE events (id INTEGER, event_type VARCHAR)"},
+      {"sql": "INSERT INTO events VALUES (1, 'LOGIN')"},
+      {"sql": "CREATE STREAM events_stream ON TABLE events SHOW_INITIAL_ROWS = TRUE APPEND_ONLY = TRUE"},
+      {"sql": "SHOW STREAMS"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'EVENTS_STREAM'", "expect": {"value": 1}}
+    ]},
+    {"name": "the-older-syntax-without-show-initial-rows-still-works", "steps": [
+      {"sql": "CREATE TABLE logs (id INTEGER, message VARCHAR)"},
+      {"sql": "INSERT INTO logs VALUES (1, 'Test')"},
+      {"sql": "CREATE STREAM logs_stream ON TABLE logs APPEND_ONLY = TRUE"},
+      {"sql": "SHOW STREAMS"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'LOGS_STREAM'", "expect": {"value": 1}}
+    ]},
+    {"name": "no-options-at-all", "steps": [
+      {"sql": "CREATE TABLE activity (id INTEGER, action VARCHAR)"},
+      {"sql": "INSERT INTO activity VALUES (1, 'CREATE')"},
+      {"sql": "CREATE STREAM activity_stream ON TABLE activity"},
+      {"sql": "SHOW STREAMS"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'ACTIVITY_STREAM'", "expect": {"value": 1}}
+    ]},
+    {"name": "show-initial-rows-with-a-comment", "steps": [
+      {"sql": "CREATE TABLE transactions (id INTEGER, amount INTEGER)"},
+      {"sql": "INSERT INTO transactions VALUES (1, 250)"},
+      {"sql": "CREATE STREAM transactions_stream ON TABLE transactions SHOW_INITIAL_ROWS = TRUE COMMENT = 'Transaction change stream'"},
+      {"sql": "SHOW STREAMS"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'TRANSACTIONS_STREAM'", "expect": {"value": 1}}
+    ]},
+    {"name": "if-not-exists-with-show-initial-rows-is-idempotent", "steps": [
+      {"sql": "CREATE TABLE users (id INTEGER, username VARCHAR)"},
+      {"sql": "INSERT INTO users VALUES (1, 'alice')"},
+      {"sql": "CREATE STREAM IF NOT EXISTS users_stream ON TABLE users SHOW_INITIAL_ROWS = TRUE"},
+      {"sql": "CREATE STREAM IF NOT EXISTS users_stream ON TABLE users SHOW_INITIAL_ROWS = TRUE"},
+      {"sql": "SHOW STREAMS"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'USERS_STREAM'", "expect": {"value": 1}}
+    ]},
+    {"name": "two-streams-over-one-table-with-different-show-initial-rows", "steps": [
+      {"sql": "CREATE TABLE sales (id INTEGER, product VARCHAR, amount INTEGER)"},
+      {"sql": "INSERT INTO sales VALUES (1, 'Widget', 100)"},
+      {"sql": "CREATE STREAM sales_stream_with_initial ON TABLE sales SHOW_INITIAL_ROWS = TRUE"},
+      {"sql": "CREATE STREAM sales_stream_without_initial ON TABLE sales SHOW_INITIAL_ROWS = FALSE"},
+      {"sql": "SHOW STREAMS"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" IN ('SALES_STREAM_WITH_INITIAL', 'SALES_STREAM_WITHOUT_INITIAL')", "expect": {"value": 2}}
+    ]},
+    {"name": "all-four-option-combinations-are-accepted", "steps": [
+      {"sql": "CREATE TABLE test_table (id INTEGER, data VARCHAR)"},
+      {"sql": "INSERT INTO test_table VALUES (1, 'test')"},
+      {"sql": "CREATE STREAM stream1 ON TABLE test_table APPEND_ONLY = TRUE SHOW_INITIAL_ROWS = TRUE"},
+      {"sql": "CREATE STREAM stream2 ON TABLE test_table APPEND_ONLY = TRUE SHOW_INITIAL_ROWS = FALSE"},
+      {"sql": "CREATE STREAM stream3 ON TABLE test_table APPEND_ONLY = FALSE SHOW_INITIAL_ROWS = TRUE"},
+      {"sql": "CREATE STREAM stream4 ON TABLE test_table APPEND_ONLY = FALSE SHOW_INITIAL_ROWS = FALSE"},
+      {"sql": "SHOW STREAMS"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" IN ('STREAM1', 'STREAM2', 'STREAM3', 'STREAM4')", "expect": {"value": 4}}
+    ]},
+    {"name": "a-schema-qualified-stream-is-listed-only-in-that-schema", "steps": [
+      {"sql": "CREATE SCHEMA IF NOT EXISTS stream_schema"},
+      {"sql": "USE SCHEMA PUBLIC"},
+      {"sql": "CREATE OR REPLACE TABLE stream_schema.data_table (id INTEGER, value VARCHAR)"},
+      {"sql": "INSERT INTO stream_schema.data_table VALUES (1, 'data')"},
+      {"sql": "CREATE OR REPLACE STREAM stream_schema.data_stream ON TABLE stream_schema.data_table SHOW_INITIAL_ROWS = TRUE"},
+      {"sql": "SHOW STREAMS IN SCHEMA stream_schema"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'DATA_STREAM'", "expect": {"value": 1}},
+      {"sql": "SHOW STREAMS"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'DATA_STREAM'", "expect": {"value": 0}}
+    ]}
+  ]
+}

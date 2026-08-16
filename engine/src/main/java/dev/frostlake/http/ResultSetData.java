@@ -18,20 +18,34 @@ package dev.frostlake.http;
 
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
+import dev.frostlake.types.ColumnLengths;
+import dev.frostlake.types.DataType;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.values.BinaryValue;
 import dev.frostlake.values.TemporalText;
+import dev.frostlake.values.VariantJsonFormat;
+import dev.frostlake.values.VariantJsonText;
 import dev.frostlake.values.VariantValue;
+import dev.frostlake.values.VectorValue;
 import java.util.ArrayList;
 import java.util.List;
+import tools.jackson.databind.annotation.JsonDeserialize;
 
 /**
  * Serializable result set data
  */
 public class ResultSetData {
     private List<ColumnData> columns;
+    // Read off the wire token by token rather than through a tree, so a FLOAT's negative zero keeps
+    // its sign: the mapper's BigDecimal reading of every fraction, which keeps a NUMBER exact, has no
+    // negative zero to keep.
+    @JsonDeserialize(using = WireRowsDeserializer.class)
     private List<List<Object>> rows;
     private int rowCount;
+    // The affected-row count when this result is a DML statement's count grid, -1 for any other result.
+    // Always sent, so a client can tell a server that marks its results (a number) from one that
+    // predates the field (absent), and never has to recognise DML by the grid's column names.
+    private Long updateCount;
 
     public ResultSetData() {
         this.columns = new ArrayList<>();
@@ -58,6 +72,9 @@ public class ResultSetData {
             // expression and a literal all send false, which is what the driver reports as
             // columnNoNulls. Absent therefore means only one thing — a server predating the field.
             colData.setNullable(Boolean.valueOf(col.isNullabilityKnown() && col.isNullable()));
+            // A text or binary column's length, as the account's driver reports it; every other family
+            // leaves the field out.
+            colData.setLength(ColumnLengths.of(col.getDataType()));
             data.getColumns().add(colData);
         }
 
@@ -72,14 +89,27 @@ public class ResultSetData {
             final List<Object> rowData = new ArrayList<>();
             for (int i = 0; i < rs.getColumnCount(); i++) {
                 final Object cell = rs.getValue(i);
+                final DataType declared = rs.getColumns().get(i).getDataType();
+                // A VECTOR crosses as its text, the way live's REST answers it: serialized as an object
+                // it would arrive as its element type alone. A semi-structured cell crosses as its JSON
+                // text with every DOUBLE in the account's fifteen-decimal form, and so does a DOUBLE read
+                // out of a VARIANT, which the engine holds unwrapped and would send as a bare JSON number.
+                // A STRING read out of one crosses JSON-quoted, as live's driver hands it back.
+                final String unwrappedDouble = VariantJsonText.unwrappedDoubleText(cell, declared);
                 rowData.add(cell instanceof BinaryValue ? ((BinaryValue) cell).toHex()
-                    : cell instanceof VariantValue ? ((VariantValue) cell).text()
-                    : TemporalText.wireValue(cell, rs.getColumns().get(i).getDataType()));
+                    : cell instanceof VariantValue ? VariantJsonFormat.render(((VariantValue) cell).node(),
+                        VariantJsonText.clientTextOf((VariantValue) cell))
+                    : cell instanceof VectorValue ? cell.toString()
+                    : cell instanceof String && VariantJsonText.isSemiStructured(declared)
+                        ? VariantJsonText.unwrappedStringText((String) cell)
+                    : unwrappedDouble != null ? unwrappedDouble
+                    : TemporalText.wireValue(cell, declared));
             }
             data.getRows().add(rowData);
         }
 
         data.setRowCount(rs.getRowCount());
+        data.setUpdateCount(Long.valueOf(rs.getUpdateCount() != null ? rs.getUpdateCount().longValue() : -1L));
         return data;
     }
 
@@ -107,5 +137,13 @@ public class ResultSetData {
 
     public void setRowCount(final int rowCount) {
         this.rowCount = rowCount;
+    }
+
+    public Long getUpdateCount() {
+        return updateCount;
+    }
+
+    public void setUpdateCount(final Long updateCount) {
+        this.updateCount = updateCount;
     }
 }

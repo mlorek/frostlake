@@ -1,0 +1,129 @@
+{
+  "suite": "dml-update-from-delete-using",
+  "description": "UPDATE ... FROM and DELETE ... USING - Snowflake's join-update / join-delete: SET expressions and predicates resolve qualified references over target and source(s), source aliases and multi-source joins work, JOIN / LEFT JOIN shaped sources work, target aliases keep colliding column names apart (regression: wcs.cid = d.cid once resolved both sides to the target and hit every row), unmatched rows stay untouched, and the join-update participates in BEGIN/ROLLBACK. Converted 1:1 from dml/UpdateFromDeleteUsingTest (now retired).",
+  "tags": ["dml", "converted"],
+  "tests": [
+    {"name": "update-from-copies-matching-source-values", "steps": [
+      {"sql": "CREATE TABLE tgt (id INTEGER, amount INTEGER)"},
+      {"sql": "INSERT INTO tgt VALUES (1, 10), (2, 20), (3, 30)"},
+      {"sql": "CREATE TABLE src (id INTEGER, amount INTEGER)"},
+      {"sql": "INSERT INTO src VALUES (1, 100), (2, 200)"},
+      {"sql": "UPDATE tgt SET amount = src.amount FROM src WHERE tgt.id = src.id"},
+      {"sql": "SELECT amount FROM tgt ORDER BY id", "expect": {"rows": [["100"], ["200"], ["30"]], "ordered": true}}
+    ]},
+    {"name": "update-from-evaluates-expression-over-both-tables", "steps": [
+      {"sql": "CREATE TABLE acct (id INTEGER, balance INTEGER)"},
+      {"sql": "INSERT INTO acct VALUES (1, 100), (2, 50)"},
+      {"sql": "CREATE TABLE adj (id INTEGER, delta INTEGER)"},
+      {"sql": "INSERT INTO adj VALUES (1, 5), (2, 7)"},
+      {"sql": "UPDATE acct SET balance = acct.balance + adj.delta FROM adj WHERE acct.id = adj.id"},
+      {"sql": "SELECT balance FROM acct ORDER BY id", "expect": {"rows": [["105"], ["57"]], "ordered": true}}
+    ]},
+    {"name": "update-from-honors-source-alias", "steps": [
+      {"sql": "CREATE TABLE t (id INTEGER, name VARCHAR)"},
+      {"sql": "INSERT INTO t VALUES (1, 'old'), (2, 'old')"},
+      {"sql": "CREATE TABLE s (id INTEGER, name VARCHAR)"},
+      {"sql": "INSERT INTO s VALUES (1, 'Alice'), (2, 'Bob')"},
+      {"sql": "UPDATE t SET name = src.name FROM s AS src WHERE t.id = src.id"},
+      {"sql": "SELECT name FROM t ORDER BY id", "expect": {"rows": [["Alice"], ["Bob"]], "ordered": true}}
+    ]},
+    {"name": "update-from-two-sources-joins-through-both", "steps": [
+      {"sql": "CREATE TABLE t (id INTEGER, label VARCHAR)"},
+      {"sql": "INSERT INTO t VALUES (1, '?'), (2, '?')"},
+      {"sql": "CREATE TABLE a (id INTEGER, code INTEGER)"},
+      {"sql": "INSERT INTO a VALUES (1, 10), (2, 20)"},
+      {"sql": "CREATE TABLE b (code INTEGER, name VARCHAR)"},
+      {"sql": "INSERT INTO b VALUES (10, 'TEN'), (20, 'TWENTY')"},
+      {"sql": "UPDATE t SET label = b.name FROM a, b WHERE t.id = a.id AND a.code = b.code"},
+      {"sql": "SELECT label FROM t ORDER BY id", "expect": {"rows": [["TEN"], ["TWENTY"]], "ordered": true}}
+    ]},
+    {"name": "update-from-rolls-back-with-transaction", "steps": [
+      {"sql": "CREATE TABLE tgt (id INTEGER, amount INTEGER)"},
+      {"sql": "INSERT INTO tgt VALUES (1, 10)"},
+      {"sql": "CREATE TABLE src (id INTEGER, amount INTEGER)"},
+      {"sql": "INSERT INTO src VALUES (1, 999)"},
+      {"sql": "BEGIN"},
+      {"sql": "UPDATE tgt SET amount = src.amount FROM src WHERE tgt.id = src.id"},
+      {"sql": "ROLLBACK"},
+      {"sql": "SELECT amount FROM tgt WHERE id = 1", "expect": {"value": "10"}}
+    ]},
+    {"name": "delete-using-removes-matching-rows", "steps": [
+      {"sql": "CREATE TABLE tgt (id INTEGER, v VARCHAR)"},
+      {"sql": "INSERT INTO tgt VALUES (1, 'a'), (2, 'b'), (3, 'c')"},
+      {"sql": "CREATE TABLE bad (id INTEGER)"},
+      {"sql": "INSERT INTO bad VALUES (1), (3)"},
+      {"sql": "DELETE FROM tgt USING bad WHERE tgt.id = bad.id"},
+      {"sql": "SELECT id FROM tgt", "expect": {"rows": [["2"]]}}
+    ]},
+    {"name": "delete-using-honors-source-alias-and-predicate", "steps": [
+      {"sql": "CREATE TABLE orders (id INTEGER, region VARCHAR)"},
+      {"sql": "INSERT INTO orders VALUES (1, 'EAST'), (2, 'WEST'), (3, 'EAST')"},
+      {"sql": "CREATE TABLE removals (region VARCHAR)"},
+      {"sql": "INSERT INTO removals VALUES ('EAST')"},
+      {"sql": "DELETE FROM orders USING removals AS p WHERE orders.region = p.region"},
+      {"sql": "SELECT region FROM orders", "expect": {"rows": [["WEST"]]}}
+    ]},
+    {"name": "delete-using-with-no-matches-keeps-all-rows", "steps": [
+      {"sql": "CREATE TABLE tgt (id INTEGER)"},
+      {"sql": "INSERT INTO tgt VALUES (1), (2)"},
+      {"sql": "CREATE TABLE other (id INTEGER)"},
+      {"sql": "INSERT INTO other VALUES (8), (9)"},
+      {"sql": "DELETE FROM tgt USING other WHERE tgt.id = other.id"},
+      {"sql": "SELECT COUNT(*) FROM tgt", "expect": {"value": "2"}}
+    ]},
+    {"name": "delete-using-target-alias-with-colliding-column-names", "steps": [
+      {"sql": "CREATE TABLE t (cid INTEGER, ak INTEGER)"},
+      {"sql": "INSERT INTO t VALUES (1, 10), (2, 20), (3, 30)"},
+      {"sql": "CREATE TABLE src (cid INTEGER, ak INTEGER)"},
+      {"sql": "INSERT INTO src VALUES (2, 20), (3, 30)"},
+      {"sql": "DELETE FROM t wcs USING src d WHERE wcs.cid = d.cid AND wcs.ak = d.ak"},
+      {"sql": "SELECT cid FROM t", "expect": {"rows": [["1"]]}}
+    ]},
+    {"name": "delete-using-target-alias-does-not-match-on-non-matching-key", "steps": [
+      {"sql": "CREATE TABLE t (cid INTEGER, ak INTEGER)"},
+      {"sql": "INSERT INTO t VALUES (1, 10), (2, 20)"},
+      {"sql": "CREATE TABLE src (cid INTEGER, ak INTEGER)"},
+      {"sql": "INSERT INTO src VALUES (2, 999)"},
+      {"sql": "DELETE FROM t wcs USING src d WHERE wcs.cid = d.cid AND wcs.ak = d.ak"},
+      {"sql": "SELECT COUNT(*) FROM t", "expect": {"value": "2"}}
+    ]},
+    {"name": "update-from-inner-join-in-source", "steps": [
+      {"sql": "CREATE TABLE t (id INTEGER, label VARCHAR)"},
+      {"sql": "INSERT INTO t VALUES (1, '?'), (2, '?'), (3, '?')"},
+      {"sql": "CREATE TABLE amap (id INTEGER, code INTEGER)"},
+      {"sql": "INSERT INTO amap VALUES (1, 10), (2, 20)"},
+      {"sql": "CREATE TABLE bname (code INTEGER, nm VARCHAR)"},
+      {"sql": "INSERT INTO bname VALUES (10, 'TEN'), (20, 'TWENTY')"},
+      {"sql": "UPDATE t SET label = b.nm FROM amap a JOIN bname b ON a.code = b.code WHERE t.id = a.id"},
+      {"sql": "SELECT label FROM t ORDER BY id", "expect": {"rows": [["TEN"], ["TWENTY"], ["?"]], "ordered": true}}
+    ]},
+    {"name": "update-from-left-join-keeps-unmatched-outer-rows", "steps": [
+      {"sql": "CREATE TABLE t (id INTEGER, nm VARCHAR)"},
+      {"sql": "INSERT INTO t VALUES (1, 'x'), (2, 'x'), (3, 'x')"},
+      {"sql": "CREATE TABLE l (id INTEGER, k INTEGER)"},
+      {"sql": "INSERT INTO l VALUES (1, 100), (2, 200), (3, 300)"},
+      {"sql": "CREATE TABLE rmap (k INTEGER, nm VARCHAR)"},
+      {"sql": "INSERT INTO rmap VALUES (100, 'A')"},
+      {"sql": "UPDATE t SET nm = COALESCE(r.nm, 'NONE') FROM l LEFT JOIN rmap r ON l.k = r.k WHERE t.id = l.id"},
+      {"sql": "SELECT nm FROM t ORDER BY id", "expect": {"rows": [["A"], ["NONE"], ["NONE"]], "ordered": true}}
+    ]},
+    {"name": "delete-using-join-in-source", "steps": [
+      {"sql": "CREATE TABLE d1 (id INTEGER)"},
+      {"sql": "INSERT INTO d1 VALUES (1), (2), (3), (4)"},
+      {"sql": "CREATE TABLE j1 (id INTEGER, gid INTEGER)"},
+      {"sql": "INSERT INTO j1 VALUES (1, 7), (2, 8), (3, 9)"},
+      {"sql": "CREATE TABLE j2 (gid INTEGER)"},
+      {"sql": "INSERT INTO j2 VALUES (7), (9)"},
+      {"sql": "DELETE FROM d1 USING j1 JOIN j2 ON j1.gid = j2.gid WHERE d1.id = j1.id"},
+      {"sql": "SELECT id FROM d1 ORDER BY id", "expect": {"rows": [["2"], ["4"]], "ordered": true}}
+    ]},
+    {"name": "update-from-target-alias-with-colliding-column-names", "steps": [
+      {"sql": "CREATE TABLE t (cid INTEGER, ak INTEGER)"},
+      {"sql": "INSERT INTO t VALUES (1, 10), (2, 20), (3, 30)"},
+      {"sql": "CREATE TABLE src (cid INTEGER, ak INTEGER)"},
+      {"sql": "INSERT INTO src VALUES (2, 999), (3, 888)"},
+      {"sql": "UPDATE t tgt SET tgt.ak = src.ak FROM src WHERE tgt.cid = src.cid"},
+      {"sql": "SELECT ak FROM t ORDER BY cid", "expect": {"rows": [["10"], ["999"], ["888"]], "ordered": true}}
+    ]}
+  ]
+}

@@ -1,0 +1,36 @@
+{
+  "suite": "query-grouped-order-by-window",
+  "description": "A window call written in the ORDER BY of a query with an EXPLICIT GROUP BY is refused, and refused whatever its keys name: a group key, a SELECT alias, an aggregate and an ungrouped column all get the same answer, so this is a rule about the CLAUSE rather than about scope. A window nested inside a larger key expression is refused too - the CALL is what is refused. Two neighbours stay legal and are asserted here so the rule cannot widen by accident: ordering by a window the SELECT LIST carries, which is an ordinary reference to a projected column, and a window in the ORDER BY of an IMPLICITLY aggregated query, which live runs because that query has exactly one row and no ordering of it can change anything. Live re-prints the call canonicalised where this prints it as written, so the cases assert the sentence around the brackets. Converted 1:1 from query/GroupedOrderByWindowTest (now retired).",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "a-grouped-order-by-refuses-a-window-whatever-it-names", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE g (a INT, b INT, c INT)"},
+      {"sql": "INSERT INTO g VALUES (1, 10, 100), (1, 20, 200), (2, 30, 300)"},
+      {"sql": "SELECT a, SUM(b) s FROM g GROUP BY a ORDER BY ROW_NUMBER() OVER (ORDER BY c)", "expect": {"error": {"messageContains": "is not a valid order by expression"}}},
+      {"sql": "SELECT a, SUM(b) s FROM g GROUP BY a ORDER BY ROW_NUMBER() OVER (ORDER BY s)", "expect": {"error": {"messageContains": "is not a valid order by expression"}}},
+      {"sql": "SELECT a, SUM(b) s FROM g GROUP BY a ORDER BY ROW_NUMBER() OVER (ORDER BY a)", "expect": {"error": {"messageContains": "is not a valid order by expression"}}},
+      {"sql": "SELECT a, SUM(b) s FROM g GROUP BY a ORDER BY ROW_NUMBER() OVER (ORDER BY MAX(c))", "expect": {"error": {"messageContains": "is not a valid order by expression"}}}
+    ]},
+    {"name": "a-window-inside-a-larger-key-is-refused-too", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE g (a INT, b INT, c INT)"},
+      {"sql": "INSERT INTO g VALUES (1, 10, 100), (1, 20, 200), (2, 30, 300)"},
+      {"sql": "SELECT a, SUM(b) s FROM g GROUP BY a ORDER BY ROW_NUMBER() OVER (ORDER BY a) + 1", "expect": {"error": {"messageContains": "is not a valid order by expression"}}}
+    ]},
+    {"name": "a-selected-window-is-orderable-by-its-alias", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE g (a INT, b INT, c INT)"},
+      {"sql": "INSERT INTO g VALUES (1, 10, 100), (1, 20, 200), (2, 30, 300)"},
+      {"sql": "SELECT a, ROW_NUMBER() OVER (ORDER BY a) r FROM g GROUP BY a ORDER BY r", "expect": {"rows": [[1,1],[2,2]], "ordered": true}}
+    ]},
+    {"name": "implicit-aggregation-accepts-a-window-key", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE g (a INT, b INT, c INT)"},
+      {"sql": "INSERT INTO g VALUES (1, 10, 100), (1, 20, 200), (2, 30, 300)"},
+      {"sql": "SELECT SUM(b) FROM g ORDER BY ROW_NUMBER() OVER (ORDER BY 1)", "expect": {"rows": [[60]]}}
+    ]},
+    {"name": "the-ordinary-grouped-keys-still-order", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE g (a INT, b INT, c INT)"},
+      {"sql": "INSERT INTO g VALUES (1, 10, 100), (1, 20, 200), (2, 30, 300)"},
+      {"sql": "SELECT a, SUM(b) s FROM g GROUP BY a ORDER BY a", "expect": {"rows": [[1,30],[2,30]], "ordered": true}},
+      {"sql": "SELECT a, SUM(b) s FROM g GROUP BY a ORDER BY SUM(b)", "expect": {"rows": [[1,30],[2,30]], "ordered": true}}
+    ]}
+  ]
+}

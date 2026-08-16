@@ -1,0 +1,78 @@
+{
+  "suite": "functions-window-functions-ext",
+  "description": "The extended window functions over a six-row two-department sales table: NTILE, PERCENT_RANK, CUME_DIST, RATIO_TO_REPORT, FIRST_VALUE, LAST_VALUE and NTH_VALUE. The frame defaults are the point of several of them - FIRST_VALUE with the default frame reports the partition's first row for every row, and Snowflake's default frame for LAST_VALUE and NTH_VALUE is the WHOLE partition (RANGE BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING), so every row sees the partition's last value. Ties share a CUME_DIST, an out-of-range NTH_VALUE is NULL on every row, NTH_VALUE(x, 1) is FIRST_VALUE, and the RATIO_TO_REPORT values sum to 1. Converted 1:1 from functions/WindowFunctionsExtTest (now retired); the Java read individual row indexes out of a ResultSet with a 0.001 tolerance, which the suite replaces with whole-column LISTAGG renders at a fixed ROUND scale - every row is pinned rather than the two or three the Java sampled. The class's setupTest built the sales table, which each converted test recreates.",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "ntile-2-splits-the-partition-in-half", "steps": [
+      {"sql": "CREATE TABLE sales (id INTEGER, dept VARCHAR, amount DOUBLE)"},
+      {"sql": "INSERT INTO sales VALUES (1,'A',100),(2,'A',200),(3,'A',300),(4,'B',150),(5,'B',150),(6,'B',400)"},
+      {"sql": "SELECT id, NTILE(2) OVER (ORDER BY id) AS bucket FROM sales ORDER BY id", "expect": {"rowCount": 6}},
+      {"sql": "SELECT LISTAGG(bucket, ',') WITHIN GROUP (ORDER BY id) FROM (SELECT id, NTILE(2) OVER (ORDER BY id) AS bucket FROM sales)", "expect": {"value": "1,1,1,2,2,2"}}
+    ]},
+    {"name": "ntile-3-splits-the-partition-in-thirds", "steps": [
+      {"sql": "CREATE TABLE sales (id INTEGER, dept VARCHAR, amount DOUBLE)"},
+      {"sql": "INSERT INTO sales VALUES (1,'A',100),(2,'A',200),(3,'A',300),(4,'B',150),(5,'B',150),(6,'B',400)"},
+      {"sql": "SELECT id, NTILE(3) OVER (ORDER BY id) AS bucket FROM sales ORDER BY id", "expect": {"rowCount": 6}},
+      {"sql": "SELECT LISTAGG(bucket, ',') WITHIN GROUP (ORDER BY id) FROM (SELECT id, NTILE(3) OVER (ORDER BY id) AS bucket FROM sales)", "expect": {"value": "1,1,2,2,3,3"}}
+    ]},
+    {"name": "percent-rank-runs-from-zero-to-one", "steps": [
+      {"sql": "CREATE TABLE sales (id INTEGER, dept VARCHAR, amount DOUBLE)"},
+      {"sql": "INSERT INTO sales VALUES (1,'A',100),(2,'A',200),(3,'A',300),(4,'B',150),(5,'B',150),(6,'B',400)"},
+      {"sql": "SELECT id, amount, PERCENT_RANK() OVER (ORDER BY amount) AS pr FROM sales ORDER BY amount", "expect": {"rowCount": 6}},
+      {"sql": "SELECT LISTAGG(ROUND(pr, 4), ',') WITHIN GROUP (ORDER BY amount, id) FROM (SELECT id, amount, PERCENT_RANK() OVER (ORDER BY amount) AS pr FROM sales)", "expect": {"value": "0,0.2,0.2,0.6,0.8,1"}}
+    ]},
+    {"name": "percent-rank-over-a-single-row-is-zero", "steps": [
+      {"sql": "CREATE TABLE one_row (v INTEGER)"},
+      {"sql": "INSERT INTO one_row VALUES (42)"},
+      {"sql": "SELECT PERCENT_RANK() OVER (ORDER BY v) FROM one_row", "expect": {"value": "0.0"}}
+    ]},
+    {"name": "cume-dist-reaches-one-on-the-last-row", "steps": [
+      {"sql": "CREATE TABLE sales (id INTEGER, dept VARCHAR, amount DOUBLE)"},
+      {"sql": "INSERT INTO sales VALUES (1,'A',100),(2,'A',200),(3,'A',300),(4,'B',150),(5,'B',150),(6,'B',400)"},
+      {"sql": "SELECT id, CUME_DIST() OVER (ORDER BY id) AS cd FROM sales ORDER BY id", "expect": {"rowCount": 6}},
+      {"sql": "SELECT LISTAGG(ROUND(cd, 4), ',') WITHIN GROUP (ORDER BY id) FROM (SELECT id, CUME_DIST() OVER (ORDER BY id) AS cd FROM sales)", "expect": {"value": "0.1667,0.3333,0.5,0.6667,0.8333,1"}}
+    ]},
+    {"name": "tied-rows-share-a-cume-dist", "steps": [
+      {"sql": "CREATE TABLE sales (id INTEGER, dept VARCHAR, amount DOUBLE)"},
+      {"sql": "INSERT INTO sales VALUES (1,'A',100),(2,'A',200),(3,'A',300),(4,'B',150),(5,'B',150),(6,'B',400)"},
+      {"sql": "SELECT LISTAGG(ROUND(cd, 4), ',') WITHIN GROUP (ORDER BY amount, id) FROM (SELECT id, amount, CUME_DIST() OVER (ORDER BY amount) AS cd FROM sales)", "expect": {"value": "0.1667,0.5,0.5,0.6667,0.8333,1"}},
+      {"sql": "SELECT COUNT(DISTINCT cd) FROM (SELECT amount, CUME_DIST() OVER (ORDER BY amount) AS cd FROM sales) WHERE amount = 150", "expect": {"value": "1"}}
+    ]},
+    {"name": "ratio-to-report-divides-by-the-partition-total", "steps": [
+      {"sql": "CREATE TABLE sales (id INTEGER, dept VARCHAR, amount DOUBLE)"},
+      {"sql": "INSERT INTO sales VALUES (1,'A',100),(2,'A',200),(3,'A',300),(4,'B',150),(5,'B',150),(6,'B',400)"},
+      {"sql": "SELECT id, RATIO_TO_REPORT(amount) OVER () AS ratio FROM sales ORDER BY id", "expect": {"rowCount": 6}},
+      {"sql": "SELECT LISTAGG(ROUND(ratio, 6), ',') WITHIN GROUP (ORDER BY id) FROM (SELECT id, RATIO_TO_REPORT(amount) OVER () AS ratio FROM sales)", "expect": {"value": "0.076923,0.153846,0.230769,0.115385,0.115385,0.307692"}},
+      {"sql": "SELECT ROUND(SUM(ratio), 6) FROM (SELECT RATIO_TO_REPORT(amount) OVER () AS ratio FROM sales)", "expect": {"value": "1.000000"}}
+    ]},
+    {"name": "first-value-reports-the-partitions-first-row-everywhere", "steps": [
+      {"sql": "CREATE TABLE sales (id INTEGER, dept VARCHAR, amount DOUBLE)"},
+      {"sql": "INSERT INTO sales VALUES (1,'A',100),(2,'A',200),(3,'A',300),(4,'B',150),(5,'B',150),(6,'B',400)"},
+      {"sql": "SELECT id, FIRST_VALUE(amount) OVER (ORDER BY id) AS fv FROM sales ORDER BY id", "expect": {"rowCount": 6}},
+      {"sql": "SELECT LISTAGG(fv, ',') WITHIN GROUP (ORDER BY id) FROM (SELECT id, FIRST_VALUE(amount) OVER (ORDER BY id) AS fv FROM sales)", "expect": {"value": "100,100,100,100,100,100"}}
+    ]},
+    {"name": "last-value-defaults-to-the-whole-partition", "steps": [
+      {"sql": "CREATE TABLE sales (id INTEGER, dept VARCHAR, amount DOUBLE)"},
+      {"sql": "INSERT INTO sales VALUES (1,'A',100),(2,'A',200),(3,'A',300),(4,'B',150),(5,'B',150),(6,'B',400)"},
+      {"sql": "SELECT id, LAST_VALUE(amount) OVER (ORDER BY id) AS lv FROM sales ORDER BY id", "expect": {"rowCount": 6}},
+      {"sql": "SELECT LISTAGG(lv, ',') WITHIN GROUP (ORDER BY id) FROM (SELECT id, LAST_VALUE(amount) OVER (ORDER BY id) AS lv FROM sales)", "expect": {"value": "400,400,400,400,400,400"}}
+    ]},
+    {"name": "nth-value-2-reads-the-second-row-of-the-partition", "steps": [
+      {"sql": "CREATE TABLE sales (id INTEGER, dept VARCHAR, amount DOUBLE)"},
+      {"sql": "INSERT INTO sales VALUES (1,'A',100),(2,'A',200),(3,'A',300),(4,'B',150),(5,'B',150),(6,'B',400)"},
+      {"sql": "SELECT id, NTH_VALUE(amount, 2) OVER (ORDER BY id) AS nv FROM sales ORDER BY id", "expect": {"rowCount": 6}},
+      {"sql": "SELECT LISTAGG(nv, ',') WITHIN GROUP (ORDER BY id) FROM (SELECT id, NTH_VALUE(amount, 2) OVER (ORDER BY id) AS nv FROM sales)", "expect": {"value": "200,200,200,200,200,200"}}
+    ]},
+    {"name": "an-out-of-range-nth-value-is-null-on-every-row", "steps": [
+      {"sql": "CREATE TABLE sales (id INTEGER, dept VARCHAR, amount DOUBLE)"},
+      {"sql": "INSERT INTO sales VALUES (1,'A',100),(2,'A',200),(3,'A',300),(4,'B',150),(5,'B',150),(6,'B',400)"},
+      {"sql": "SELECT id, NTH_VALUE(amount, 99) OVER (ORDER BY id) AS nv FROM sales ORDER BY id", "expect": {"rowCount": 6}},
+      {"sql": "SELECT COUNT(*) FROM (SELECT id, NTH_VALUE(amount, 99) OVER (ORDER BY id) AS nv FROM sales) WHERE nv IS NULL", "expect": {"value": "6"}}
+    ]},
+    {"name": "nth-value-1-is-the-same-as-first-value", "steps": [
+      {"sql": "CREATE TABLE sales (id INTEGER, dept VARCHAR, amount DOUBLE)"},
+      {"sql": "INSERT INTO sales VALUES (1,'A',100),(2,'A',200),(3,'A',300),(4,'B',150),(5,'B',150),(6,'B',400)"},
+      {"sql": "SELECT COUNT_IF(a = b) FROM (SELECT NTH_VALUE(amount, 1) OVER (ORDER BY id) AS a, FIRST_VALUE(amount) OVER (ORDER BY id) AS b FROM sales)", "expect": {"value": "6"}}
+    ]}
+  ]
+}

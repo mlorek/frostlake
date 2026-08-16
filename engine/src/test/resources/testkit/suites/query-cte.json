@@ -1,0 +1,63 @@
+{
+  "suite": "query-cte",
+  "description": "CTE query shapes: joins, multiples, aggregation, multiple references, ORDER BY/LIMIT, unions, nesting. Converted 1:1 from query/CTETest.java (now retired); shared fixture became per-test setup.",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "simple-cte", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, dept_id INTEGER, salary INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 10, 50000), (2, 'Bob', 20, 60000), (3, 'Charlie', 10, 55000), (4, 'Diana', 30, 70000)"},
+      {"sql": "WITH high_earners AS (SELECT * FROM employees WHERE salary > 55000) SELECT * FROM high_earners", "expect": {"rowCount": 2}}
+    ]},
+    {"name": "cte-with-join", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, dept_id INTEGER, salary INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 10, 50000), (2, 'Bob', 20, 60000), (3, 'Charlie', 10, 55000), (4, 'Diana', 30, 70000)"},
+      {"sql": "CREATE TABLE departments (id INTEGER, name VARCHAR)"},
+      {"sql": "INSERT INTO departments VALUES (10, 'Engineering'), (20, 'Sales'), (30, 'Marketing')"},
+      {"sql": "WITH eng_employees AS (SELECT * FROM employees WHERE dept_id = 10) SELECT e.name, d.name as dept_name FROM eng_employees e JOIN departments d ON e.dept_id = d.id", "expect": {"rowCount": 2}}
+    ]},
+    {"name": "multiple-ctes", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, dept_id INTEGER, salary INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 10, 50000), (2, 'Bob', 20, 60000), (3, 'Charlie', 10, 55000), (4, 'Diana', 30, 70000)"},
+      {"sql": "WITH high_earners AS (SELECT * FROM employees WHERE salary > 55000), engineering AS (SELECT * FROM employees WHERE dept_id = 10) SELECT h.name, h.salary FROM high_earners h JOIN engineering e ON h.id = e.id", "expect": {"rowCount": 0}}
+    ]},
+    {"name": "cte-with-aggregation", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, dept_id INTEGER, salary INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 10, 50000), (2, 'Bob', 20, 60000), (3, 'Charlie', 10, 55000), (4, 'Diana', 30, 70000)"},
+      {"sql": "WITH dept_stats AS (SELECT dept_id, COUNT(*) as emp_count, AVG(salary) as avg_salary FROM employees GROUP BY dept_id) SELECT * FROM dept_stats WHERE emp_count > 1", "expect": {"rowCount": 1}}
+    ]},
+    {"name": "cte-referenced-multiple-times", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, dept_id INTEGER, salary INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 10, 50000), (2, 'Bob', 20, 60000), (3, 'Charlie', 10, 55000), (4, 'Diana', 30, 70000)"},
+      {"sql": "WITH high_salary AS (SELECT * FROM employees WHERE salary >= 60000) SELECT h1.name as name1, h2.name as name2 FROM high_salary h1 CROSS JOIN high_salary h2 WHERE h1.id < h2.id", "expect": {"rowCount": 1}}
+    ]},
+    {"name": "cte-with-order-by-limit", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, dept_id INTEGER, salary INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 10, 50000), (2, 'Bob', 20, 60000), (3, 'Charlie', 10, 55000), (4, 'Diana', 30, 70000)"},
+      {"sql": "WITH sorted_employees AS (SELECT * FROM employees ORDER BY salary DESC) SELECT name, salary FROM sorted_employees LIMIT 2",
+       "expect": {"rows": [["Diana", "70000"], ["Bob", "60000"]], "ordered": true}}
+    ]},
+    {"name": "cte-with-where-clause", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, dept_id INTEGER, salary INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 10, 50000), (2, 'Bob', 20, 60000), (3, 'Charlie', 10, 55000), (4, 'Diana', 30, 70000)"},
+      {"sql": "WITH all_employees AS (SELECT * FROM employees) SELECT name FROM all_employees WHERE dept_id = 20", "expect": {"rows": [["Bob"]]}}
+    ]},
+    {"name": "cte-with-join-on-cte", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, dept_id INTEGER, salary INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 10, 50000), (2, 'Bob', 20, 60000), (3, 'Charlie', 10, 55000), (4, 'Diana', 30, 70000)"},
+      {"sql": "WITH high_earners AS (SELECT * FROM employees WHERE salary >= 60000) SELECT e.name, h.salary FROM employees e JOIN high_earners h ON e.dept_id = h.dept_id WHERE e.id <> h.id"}
+    ]},
+    {"name": "nested-cte-queries", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, dept_id INTEGER, salary INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 10, 50000), (2, 'Bob', 20, 60000), (3, 'Charlie', 10, 55000), (4, 'Diana', 30, 70000)"},
+      {"sql": "CREATE TABLE departments (id INTEGER, name VARCHAR)"},
+      {"sql": "INSERT INTO departments VALUES (10, 'Engineering'), (20, 'Sales'), (30, 'Marketing')"},
+      {"sql": "WITH dept_employees AS (SELECT e.id, e.name, e.dept_id, e.salary, d.name as dept_name FROM employees e JOIN departments d ON e.dept_id = d.id) SELECT dept_name, COUNT(*) as emp_count FROM dept_employees GROUP BY dept_name ORDER BY emp_count DESC",
+       "expect": {"rowCount": 3}}
+    ]},
+    {"name": "cte-with-union", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, dept_id INTEGER, salary INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 10, 50000), (2, 'Bob', 20, 60000), (3, 'Charlie', 10, 55000), (4, 'Diana', 30, 70000)"},
+      {"sql": "WITH eng_dept AS (SELECT * FROM employees WHERE dept_id = 10), sales_dept AS (SELECT * FROM employees WHERE dept_id = 20) SELECT name FROM eng_dept UNION ALL SELECT name FROM sales_dept", "expect": {"rowCount": 3}}
+    ]}
+  ]
+}

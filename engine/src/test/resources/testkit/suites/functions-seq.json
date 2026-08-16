@@ -1,0 +1,111 @@
+{
+  "suite": "functions-seq",
+  "description": "SEQ1 / SEQ2 / SEQ4 / SEQ8 - the row's 0-based ordinal, wrapped to the function's width. Every expectation is a cell measured on a real account. The number belongs to the ROW rather than to the call, so SEQ4()+SEQ4() gives 0,2,4,6 and two different widths report the same row; the count is POST-filter, numbering the rows the projection is handed, while a SEQ inside a predicate counts the rows the filter reads. A FROM-less SELECT is row zero. The width rule is a rule, not a single measurement: SEQ1 spans 0..127 unsigned and wraps, or -128..127 signed, and SEQ2 does the same two bytes wide. Each width declares its own digits - NUMBER(3,0), (5,0), (10,0), (19,0) - and the sign does not widen it. The sign argument must be 0 or 1, but anything whose numeric value lands there is taken, including a string. Converted 1:1 from functions/SeqFunctionTest (now retired); its @BeforeEach fixture is inlined per test. The two declared-type tests read the engine's column metadata in Java, which the live harness cannot carry, so they were skipped live; the suite reads the same fact through a CTAS and INFORMATION_SCHEMA.COLUMNS instead, and they now run on every backend.",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "every-width-counts-from-zero", "steps": [
+      {"sql": "CREATE TABLE nums (x INTEGER)"},
+      {"sql": "INSERT INTO nums VALUES (1),(2),(3),(4),(5),(6),(7),(8)"},
+      {"sql": "SELECT SEQ1() FROM nums",
+       "expect": {"rows": [["0"], ["1"], ["2"], ["3"], ["4"], ["5"], ["6"], ["7"]], "ordered": true}},
+      {"sql": "SELECT SEQ2() FROM nums",
+       "expect": {"rows": [["0"], ["1"], ["2"], ["3"], ["4"], ["5"], ["6"], ["7"]], "ordered": true}},
+      {"sql": "SELECT SEQ4() FROM nums",
+       "expect": {"rows": [["0"], ["1"], ["2"], ["3"], ["4"], ["5"], ["6"], ["7"]], "ordered": true}},
+      {"sql": "SELECT SEQ8() FROM nums",
+       "expect": {"rows": [["0"], ["1"], ["2"], ["3"], ["4"], ["5"], ["6"], ["7"]], "ordered": true}}
+    ]},
+    {"name": "a-from-less-select-is-row-zero", "steps": [
+      {"sql": "SELECT SEQ4()", "expect": {"value": "0"}}
+    ]},
+    {"name": "all-calls-in-one-row-agree", "steps": [
+      {"sql": "CREATE TABLE nums (x INTEGER)"},
+      {"sql": "INSERT INTO nums VALUES (1),(2),(3),(4),(5),(6),(7),(8)"},
+      {"sql": "SELECT SEQ4()+SEQ4() FROM nums",
+       "expect": {"rows": [["0"], ["2"], ["4"], ["6"], ["8"], ["10"], ["12"], ["14"]], "ordered": true}},
+      {"sql": "SELECT COUNT_IF(a <> b) FROM (SELECT SEQ4() AS a, SEQ8() AS b FROM nums)",
+       "expect": {"value": "0"}}
+    ]},
+    {"name": "the-count-is-post-filter", "steps": [
+      {"sql": "CREATE TABLE nums (x INTEGER)"},
+      {"sql": "INSERT INTO nums VALUES (1),(2),(3),(4),(5),(6),(7),(8)"},
+      {"sql": "SELECT SEQ4() FROM nums WHERE x > 4",
+       "expect": {"rows": [["0"], ["1"], ["2"], ["3"]], "ordered": true}},
+      {"sql": "SELECT SEQ4() FROM nums WHERE MOD(x,2) = 0",
+       "expect": {"rows": [["0"], ["1"], ["2"], ["3"]], "ordered": true}}
+    ]},
+    {"name": "the-count-is-available-inside-where", "steps": [
+      {"sql": "CREATE TABLE nums (x INTEGER)"},
+      {"sql": "INSERT INTO nums VALUES (1),(2),(3),(4),(5),(6),(7),(8)"},
+      {"sql": "SELECT x FROM nums WHERE SEQ4() < 2", "expect": {"rows": [["1"], ["2"]], "ordered": true}}
+    ]},
+    {"name": "an-aggregate-sums-the-ordinals", "steps": [
+      {"sql": "SELECT SUM(SEQ4()) FROM TABLE(GENERATOR(ROWCOUNT=>5))", "expect": {"value": "10"}}
+    ]},
+    {"name": "seq1-wraps-at-one-byte", "steps": [
+      {"sql": "SELECT MIN(s), MAX(s), COUNT(DISTINCT s) FROM (SELECT SEQ1() s FROM TABLE(GENERATOR(ROWCOUNT=>1000)))",
+       "expect": {"rows": [["0", "127", "128"]]}},
+      {"sql": "SELECT MIN(s), MAX(s), COUNT(DISTINCT s) FROM (SELECT SEQ1(1) s FROM TABLE(GENERATOR(ROWCOUNT=>1000)))",
+       "expect": {"rows": [["-128", "127", "256"]]}}
+    ]},
+    {"name": "seq2-wraps-at-two-bytes", "steps": [
+      {"sql": "SELECT MIN(s), MAX(s), COUNT(DISTINCT s) FROM (SELECT SEQ2() s FROM TABLE(GENERATOR(ROWCOUNT=>70000)))",
+       "expect": {"rows": [["0", "32767", "32768"]]}},
+      {"sql": "SELECT MIN(s), MAX(s), COUNT(DISTINCT s) FROM (SELECT SEQ2(1) s FROM TABLE(GENERATOR(ROWCOUNT=>70000)))",
+       "expect": {"rows": [["-32768", "32767", "65536"]]}}
+    ]},
+    {"name": "each-width-declares-its-own-digits", "steps": [
+      {"sql": "CREATE TABLE nums (x INTEGER)"},
+      {"sql": "INSERT INTO nums VALUES (1),(2),(3),(4),(5),(6),(7),(8)"},
+      {"sql": "CREATE OR REPLACE TABLE seq_probe AS SELECT c FROM (SELECT SEQ1() AS c FROM nums)"},
+      {"sql": "SELECT NUMERIC_PRECISION, NUMERIC_SCALE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'SEQ_PROBE'",
+       "expect": {"rows": [["3", "0"]]}},
+      {"sql": "CREATE OR REPLACE TABLE seq_probe AS SELECT c FROM (SELECT SEQ2() AS c FROM nums)"},
+      {"sql": "SELECT NUMERIC_PRECISION, NUMERIC_SCALE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'SEQ_PROBE'",
+       "expect": {"rows": [["5", "0"]]}},
+      {"sql": "CREATE OR REPLACE TABLE seq_probe AS SELECT c FROM (SELECT SEQ4() AS c FROM nums)"},
+      {"sql": "SELECT NUMERIC_PRECISION, NUMERIC_SCALE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'SEQ_PROBE'",
+       "expect": {"rows": [["10", "0"]]}},
+      {"sql": "CREATE OR REPLACE TABLE seq_probe AS SELECT c FROM (SELECT SEQ8() AS c FROM nums)"},
+      {"sql": "SELECT NUMERIC_PRECISION, NUMERIC_SCALE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'SEQ_PROBE'",
+       "expect": {"rows": [["19", "0"]]}}
+    ]},
+    {"name": "the-sign-does-not-change-the-declared-type", "steps": [
+      {"sql": "CREATE TABLE nums (x INTEGER)"},
+      {"sql": "INSERT INTO nums VALUES (1),(2),(3),(4),(5),(6),(7),(8)"},
+      {"sql": "CREATE OR REPLACE TABLE seq_probe AS SELECT c FROM (SELECT SEQ1(1) AS c FROM nums)"},
+      {"sql": "SELECT NUMERIC_PRECISION, NUMERIC_SCALE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'SEQ_PROBE'",
+       "expect": {"rows": [["3", "0"]]}},
+      {"sql": "CREATE OR REPLACE TABLE seq_probe AS SELECT c FROM (SELECT SEQ8(1) AS c FROM nums)"},
+      {"sql": "SELECT NUMERIC_PRECISION, NUMERIC_SCALE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'SEQ_PROBE'",
+       "expect": {"rows": [["19", "0"]]}}
+    ]},
+    {"name": "the-sign-must-be-zero-or-one", "steps": [
+      {"sql": "CREATE TABLE nums (x INTEGER)"},
+      {"sql": "INSERT INTO nums VALUES (1),(2),(3),(4),(5),(6),(7),(8)"},
+      {"sql": "SELECT SEQ1(2) FROM nums",
+       "expect": {"error": {"messageContains": "Invalid parameter value: 2. Reason: sign must be 0 or 1"}}},
+      {"sql": "SELECT SEQ1(-1) FROM nums",
+       "expect": {"error": {"messageContains": "Invalid parameter value: -1. Reason: sign must be 0 or 1"}}},
+      {"sql": "SELECT SEQ1(NULL) FROM nums",
+       "expect": {"error": {"messageContains": "Invalid parameter value: NULL. Reason: sign must not be NULL"}}},
+      {"sql": "SELECT SEQ1('x') FROM nums",
+       "expect": {"error": {"messageContains": "Numeric value 'x' is not recognized"}}}
+    ]},
+    {"name": "a-numeric-valued-sign-is-accepted", "steps": [
+      {"sql": "CREATE TABLE nums (x INTEGER)"},
+      {"sql": "INSERT INTO nums VALUES (1),(2),(3),(4),(5),(6),(7),(8)"},
+      {"sql": "SELECT SEQ1(1.0) FROM nums",
+       "expect": {"rows": [["0"], ["1"], ["2"], ["3"], ["4"], ["5"], ["6"], ["7"]], "ordered": true}},
+      {"sql": "SELECT SEQ1('1') FROM nums",
+       "expect": {"rows": [["0"], ["1"], ["2"], ["3"], ["4"], ["5"], ["6"], ["7"]], "ordered": true}},
+      {"sql": "SELECT SEQ1(0) FROM nums",
+       "expect": {"rows": [["0"], ["1"], ["2"], ["3"], ["4"], ["5"], ["6"], ["7"]], "ordered": true}}
+    ]},
+    {"name": "at-most-one-argument", "steps": [
+      {"sql": "CREATE TABLE nums (x INTEGER)"},
+      {"sql": "INSERT INTO nums VALUES (1),(2),(3),(4),(5),(6),(7),(8)"},
+      {"sql": "SELECT SEQ4(0,1) FROM nums", "expect": {"error": {"messageContains": "too many arguments"}}}
+    ]}
+  ]
+}

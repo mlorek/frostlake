@@ -1,0 +1,188 @@
+{
+  "suite": "query-pivot-unpivot",
+  "description": "PIVOT and UNPIVOT. The first half is the rule that the pivot output IS the query's source relation: every stage above it used to be silently DISCARDED - the pivoted result was returned straight from the pivot, so the SELECT list, GROUP BY, ORDER BY, DISTINCT and LIMIT never ran and SELECT <anything> handed back the whole pivoted relation. So each of those stages is pinned separately over the same fixture, including an inline WHERE, which Snowflake applies to the PIVOTED relation and may therefore reference the pivoted columns (frostlake filtered the pivot's INPUT, which made the shape impossible). The second half is naming: a pivoted column is named after the literal AS WRITTEN, so 'Q1' becomes a column called 'Q1' referenced as \"'Q1'\" - and MAX(\"'Q1'\") must READ that column, where the resolver's literal fallback once returned the STRING Q1 instead; numeric pivot values name columns \"1\"..\"4\" and ZEROIFNULL(\"1\") must likewise resolve the column, not the number 1. Explicit value aliases and a trailing pivot-alias column list win over both. The rest covers the ordinary surface: dynamic IN (ANY), a subquery-driven IN list, DEFAULT ON NULL, SUM / COUNT / AVG / MIN / MAX aggregates, UNPIVOT with one and several preserved columns, a pivot-then-unpivot round trip, and PIVOT after a base-table alias and after an aliased subquery. Converted 1:1 from query/PivotUnpivotTest (now retired); the round-trip test's Java loop that re-inserted the pivot output row by row becomes a single INSERT ... SELECT.",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "a-dynamic-pivot-with-any-uses-the-distinct-values", "steps": [
+      {"sql": "CREATE TABLE qs (empid INTEGER, amount INTEGER, quarter VARCHAR)"},
+      {"sql": "INSERT INTO qs VALUES (1, 10, 'Q1'), (1, 20, 'Q2'), (2, 50, 'Q1'), (2, 5, 'Q2')"},
+      {"sql": "SELECT * FROM qs PIVOT(SUM(amount) FOR quarter IN (ANY)) ORDER BY empid",
+       "expect": {"rows": [[1,10,20],[2,50,5]], "ordered": true, "columns": ["EMPID","'Q1'","'Q2'"]}},
+      {"sql": "SELECT * FROM qs PIVOT(SUM(amount) FOR quarter IN (ANY ORDER BY quarter)) ORDER BY empid",
+       "expect": {"rows": [[1,10,20],[2,50,5]], "ordered": true}}
+    ]},
+    {"name": "subquery-driven-pivot-columns", "steps": [
+      {"sql": "CREATE TABLE qs (empid INTEGER, amount INTEGER, quarter VARCHAR)"},
+      {"sql": "INSERT INTO qs VALUES (1, 10, 'Q1'), (1, 20, 'Q2'), (2, 50, 'Q1'), (2, 5, 'Q2')"},
+      {"sql": "CREATE TABLE wanted (q VARCHAR)"},
+      {"sql": "INSERT INTO wanted VALUES ('Q2')"},
+      {"sql": "SELECT * FROM qs PIVOT(SUM(amount) FOR quarter IN (SELECT DISTINCT q FROM wanted)) ORDER BY empid",
+       "expect": {"rows": [[1,20],[2,5]], "ordered": true, "columns": ["EMPID","'Q2'"]}}
+    ]},
+    {"name": "default-on-null-fills-the-empty-cells", "steps": [
+      {"sql": "CREATE TABLE qs (empid INTEGER, amount INTEGER, quarter VARCHAR)"},
+      {"sql": "INSERT INTO qs VALUES (1, 10, 'Q1'), (1, 20, 'Q2'), (2, 50, 'Q1'), (2, 5, 'Q2')"},
+      {"sql": "INSERT INTO qs VALUES (3, 7, 'Q1')"},
+      {"sql": "SELECT * FROM qs PIVOT(SUM(amount) FOR quarter IN ('Q1', 'Q2') DEFAULT ON NULL (0)) ORDER BY empid",
+       "expect": {"rows": [[1,10,20],[2,50,5],[3,7,0]], "ordered": true}}
+    ]},
+    {"name": "the-select-list-applies-to-the-pivot-output", "steps": [
+      {"sql": "CREATE TABLE qs (empid INTEGER, amount INTEGER, quarter VARCHAR)"},
+      {"sql": "INSERT INTO qs VALUES (1, 10, 'Q1'), (1, 20, 'Q2'), (2, 50, 'Q1'), (2, 5, 'Q2')"},
+      {"sql": "SELECT eid, q2 FROM qs PIVOT(SUM(amount) FOR quarter IN ('Q1','Q2')) AS p (eid, q1, q2) ORDER BY eid",
+       "expect": {"rows": [[1,20],[2,5]], "ordered": true, "columns": ["EID","Q2"]}}
+    ]},
+    {"name": "an-expression-over-a-pivoted-column-is-projected", "steps": [
+      {"sql": "CREATE TABLE qs (empid INTEGER, amount INTEGER, quarter VARCHAR)"},
+      {"sql": "INSERT INTO qs VALUES (1, 10, 'Q1'), (1, 20, 'Q2'), (2, 50, 'Q1'), (2, 5, 'Q2')"},
+      {"sql": "SELECT q1 + q2 AS total FROM qs PIVOT(SUM(amount) FOR quarter IN ('Q1','Q2')) AS p (eid, q1, q2) ORDER BY total",
+       "expect": {"rows": [[30],[55]], "ordered": true, "columns": ["TOTAL"]}}
+    ]},
+    {"name": "order-by-applies-to-the-pivot-output", "steps": [
+      {"sql": "CREATE TABLE qs (empid INTEGER, amount INTEGER, quarter VARCHAR)"},
+      {"sql": "INSERT INTO qs VALUES (1, 10, 'Q1'), (1, 20, 'Q2'), (2, 50, 'Q1'), (2, 5, 'Q2')"},
+      {"sql": "SELECT eid, q1 FROM qs PIVOT(SUM(amount) FOR quarter IN ('Q1','Q2')) AS p (eid, q1, q2) ORDER BY q1 DESC",
+       "expect": {"rows": [[2,50],[1,10]], "ordered": true}}
+    ]},
+    {"name": "an-aggregate-over-a-pivoted-column-is-computed", "steps": [
+      {"sql": "CREATE TABLE qs (empid INTEGER, amount INTEGER, quarter VARCHAR)"},
+      {"sql": "INSERT INTO qs VALUES (1, 10, 'Q1'), (1, 20, 'Q2'), (2, 50, 'Q1'), (2, 5, 'Q2')"},
+      {"sql": "SELECT SUM(q1) AS tot FROM qs PIVOT(SUM(amount) FOR quarter IN ('Q1','Q2')) AS p (eid, q1, q2)",
+       "expect": {"value": 60}}
+    ]},
+    {"name": "limit-applies-to-the-pivot-output", "steps": [
+      {"sql": "CREATE TABLE qs (empid INTEGER, amount INTEGER, quarter VARCHAR)"},
+      {"sql": "INSERT INTO qs VALUES (1, 10, 'Q1'), (1, 20, 'Q2'), (2, 50, 'Q1'), (2, 5, 'Q2')"},
+      {"sql": "SELECT eid FROM qs PIVOT(SUM(amount) FOR quarter IN ('Q1','Q2')) AS p (eid, q1, q2) ORDER BY eid LIMIT 1",
+       "expect": {"rows": [[1]]}}
+    ]},
+    {"name": "a-pivoted-column-resolves-through-the-pivot-alias", "steps": [
+      {"sql": "CREATE TABLE qs (empid INTEGER, amount INTEGER, quarter VARCHAR)"},
+      {"sql": "INSERT INTO qs VALUES (1, 10, 'Q1'), (1, 20, 'Q2'), (2, 50, 'Q1'), (2, 5, 'Q2')"},
+      {"sql": "SELECT p.eid FROM qs PIVOT(SUM(amount) FOR quarter IN ('Q1','Q2')) AS p (eid, q1, q2) ORDER BY 1",
+       "expect": {"rows": [[1],[2]], "ordered": true}}
+    ]},
+    {"name": "an-inline-where-filters-the-pivot-output", "steps": [
+      {"sql": "CREATE TABLE qs (empid INTEGER, amount INTEGER, quarter VARCHAR)"},
+      {"sql": "INSERT INTO qs VALUES (1, 10, 'Q1'), (1, 20, 'Q2'), (2, 50, 'Q1'), (2, 5, 'Q2')"},
+      {"sql": "SELECT eid, q1, q2 FROM qs PIVOT(SUM(amount) FOR quarter IN ('Q1','Q2')) AS p (eid, q1, q2) WHERE q2 > q1",
+       "expect": {"rows": [[1,10,20]]}}
+    ]},
+    {"name": "a-pivoted-column-is-named-after-the-literal-as-written", "steps": [
+      {"sql": "CREATE TABLE qs (empid INTEGER, amount INTEGER, quarter VARCHAR)"},
+      {"sql": "INSERT INTO qs VALUES (1, 10, 'Q1'), (1, 20, 'Q2'), (2, 50, 'Q1'), (2, 5, 'Q2')"},
+      {"sql": "SELECT * FROM qs PIVOT(SUM(amount) FOR quarter IN ('Q1','Q2'))",
+       "expect": {"columns": ["EMPID","'Q1'","'Q2'"]}}
+    ]},
+    {"name": "a-pivoted-column-is-referenced-with-its-quotes-double-quoted", "steps": [
+      {"sql": "CREATE TABLE qs (empid INTEGER, amount INTEGER, quarter VARCHAR)"},
+      {"sql": "INSERT INTO qs VALUES (1, 10, 'Q1'), (1, 20, 'Q2'), (2, 50, 'Q1'), (2, 5, 'Q2')"},
+      {"sql": "SELECT \"'Q2'\" FROM (SELECT * FROM qs PIVOT(SUM(amount) FOR quarter IN ('Q1','Q2'))) ORDER BY 1",
+       "expect": {"rows": [[5],[20]], "ordered": true}}
+    ]},
+    {"name": "an-aggregate-over-a-quoted-pivoted-column-reads-the-column", "steps": [
+      {"sql": "CREATE TABLE qs (empid INTEGER, amount INTEGER, quarter VARCHAR)"},
+      {"sql": "INSERT INTO qs VALUES (1, 10, 'Q1'), (1, 20, 'Q2'), (2, 50, 'Q1'), (2, 5, 'Q2')"},
+      {"sql": "SELECT MAX(\"'Q1'\") AS m FROM (SELECT * FROM qs PIVOT(SUM(amount) FOR quarter IN ('Q1','Q2')))",
+       "expect": {"value": 50}}
+    ]},
+    {"name": "an-explicit-pivot-value-alias-still-wins", "steps": [
+      {"sql": "CREATE TABLE qs (empid INTEGER, amount INTEGER, quarter VARCHAR)"},
+      {"sql": "INSERT INTO qs VALUES (1, 10, 'Q1'), (1, 20, 'Q2'), (2, 50, 'Q1'), (2, 5, 'Q2')"},
+      {"sql": "SELECT * FROM qs PIVOT(SUM(amount) FOR quarter IN ('Q1','Q2')) AS p (eid, first_q, second_q)",
+       "expect": {"columns": ["EID","FIRST_Q","SECOND_Q"]}}
+    ]},
+    {"name": "the-select-list-applies-to-an-unpivot-output", "steps": [
+      {"sql": "SELECT quarter FROM (SELECT 1 AS empid, 10 AS q1, 20 AS q2) UNPIVOT(amount FOR quarter IN (q1, q2)) ORDER BY quarter",
+       "expect": {"rows": [["Q1"],["Q2"]], "ordered": true, "columns": ["QUARTER"]}}
+    ]},
+    {"name": "a-basic-pivot", "steps": [
+      {"sql": "CREATE TABLE sales (product VARCHAR, quarter VARCHAR, amount INTEGER)"},
+      {"sql": "INSERT INTO sales VALUES ('A', 'Q1', 100), ('A', 'Q2', 150), ('A', 'Q3', 200)"},
+      {"sql": "INSERT INTO sales VALUES ('B', 'Q1', 200), ('B', 'Q2', 250), ('B', 'Q3', 300)"},
+      {"sql": "SELECT * FROM sales PIVOT (SUM(amount) FOR quarter IN ('Q1', 'Q2', 'Q3'))",
+       "expect": {"rows": [["A",100,150,200],["B",200,250,300]], "columns": ["PRODUCT","'Q1'","'Q2'","'Q3'"]}}
+    ]},
+    {"name": "a-pivot-with-count", "steps": [
+      {"sql": "CREATE TABLE orders (customer VARCHAR, status VARCHAR, order_id INTEGER)"},
+      {"sql": "INSERT INTO orders VALUES ('Alice', 'pending', 1), ('Alice', 'complete', 2), ('Alice', 'complete', 3)"},
+      {"sql": "INSERT INTO orders VALUES ('Bob', 'pending', 4), ('Bob', 'pending', 5), ('Bob', 'complete', 6)"},
+      {"sql": "SELECT * FROM orders PIVOT (COUNT(order_id) FOR status IN ('pending', 'complete'))",
+       "expect": {"rows": [["Alice",1,2],["Bob",2,1]], "columns": ["CUSTOMER","'pending'","'complete'"]}}
+    ]},
+    {"name": "a-pivot-with-value-aliases", "steps": [
+      {"sql": "CREATE TABLE revenue (region VARCHAR, month VARCHAR, sales INTEGER)"},
+      {"sql": "INSERT INTO revenue VALUES ('East', 'Jan', 1000), ('East', 'Feb', 1200)"},
+      {"sql": "INSERT INTO revenue VALUES ('West', 'Jan', 900), ('West', 'Feb', 1100)"},
+      {"sql": "SELECT * FROM revenue PIVOT (SUM(sales) FOR month IN ('Jan' AS January, 'Feb' AS February))",
+       "expect": {"rows": [["East",1000,1200],["West",900,1100]], "columns": ["REGION","JANUARY","FEBRUARY"]}}
+    ]},
+    {"name": "a-pivot-with-average", "steps": [
+      {"sql": "CREATE TABLE scores (student VARCHAR, subject VARCHAR, score INTEGER)"},
+      {"sql": "INSERT INTO scores VALUES ('Alice', 'Math', 90), ('Alice', 'Math', 95)"},
+      {"sql": "INSERT INTO scores VALUES ('Bob', 'Math', 80), ('Bob', 'Math', 85)"},
+      {"sql": "SELECT * FROM scores PIVOT (AVG(score) FOR subject IN ('Math')) ORDER BY student",
+       "expect": {"rows": [["Alice",92.5],["Bob",82.5]], "ordered": true}},
+      {"sql": "SELECT \"'Math'\"::VARCHAR FROM (SELECT * FROM scores PIVOT (AVG(score) FOR subject IN ('Math'))) ORDER BY 1",
+       "expect": {"rows": [["82.500000"],["92.500000"]], "ordered": true}}
+    ]},
+    {"name": "a-basic-unpivot", "steps": [
+      {"sql": "CREATE TABLE quarterly_sales (product VARCHAR, Q1 INTEGER, Q2 INTEGER, Q3 INTEGER)"},
+      {"sql": "INSERT INTO quarterly_sales VALUES ('A', 100, 150, 200)"},
+      {"sql": "INSERT INTO quarterly_sales VALUES ('B', 200, 250, 300)"},
+      {"sql": "SELECT * FROM quarterly_sales UNPIVOT (amount FOR quarter IN (Q1, Q2, Q3))",
+       "expect": {"rows": [["A","Q1",100],["A","Q2",150],["A","Q3",200],["B","Q1",200],["B","Q2",250],["B","Q3",300]],
+                  "columns": ["PRODUCT","QUARTER","AMOUNT"]}}
+    ]},
+    {"name": "an-unpivot-with-several-preserved-columns", "steps": [
+      {"sql": "CREATE TABLE data (region VARCHAR, product VARCHAR, jan INTEGER, feb INTEGER)"},
+      {"sql": "INSERT INTO data VALUES ('East', 'Widget', 100, 120)"},
+      {"sql": "INSERT INTO data VALUES ('West', 'Gadget', 200, 220)"},
+      {"sql": "SELECT * FROM data UNPIVOT (sales FOR month IN (jan, feb))",
+       "expect": {"rows": [["East","Widget","JAN",100],["East","Widget","FEB",120],["West","Gadget","JAN",200],["West","Gadget","FEB",220]],
+                  "columns": ["REGION","PRODUCT","MONTH","SALES"]}}
+    ]},
+    {"name": "a-pivot-then-unpivot-round-trip", "steps": [
+      {"sql": "CREATE TABLE original (product VARCHAR, quarter VARCHAR, amount INTEGER)"},
+      {"sql": "INSERT INTO original VALUES ('A', 'Q1', 100), ('A', 'Q2', 150)"},
+      {"sql": "INSERT INTO original VALUES ('B', 'Q1', 200), ('B', 'Q2', 250)"},
+      {"sql": "CREATE TABLE pivoted (product VARCHAR, Q1 INTEGER, Q2 INTEGER)"},
+      {"sql": "INSERT INTO pivoted SELECT * FROM original PIVOT (SUM(amount) FOR quarter IN ('Q1', 'Q2'))"},
+      {"sql": "SELECT * FROM pivoted", "expect": {"rows": [["A",100,150],["B",200,250]]}},
+      {"sql": "SELECT * FROM pivoted UNPIVOT (amount FOR quarter IN (Q1, Q2))",
+       "expect": {"rows": [["A","Q1",100],["A","Q2",150],["B","Q1",200],["B","Q2",250]],
+                  "columns": ["PRODUCT","QUARTER","AMOUNT"]}}
+    ]},
+    {"name": "a-pivot-with-min-and-max", "steps": [
+      {"sql": "CREATE TABLE temperatures (city VARCHAR, season VARCHAR, temp INTEGER)"},
+      {"sql": "INSERT INTO temperatures VALUES ('NYC', 'Summer', 85), ('NYC', 'Winter', 32)"},
+      {"sql": "INSERT INTO temperatures VALUES ('LA', 'Summer', 95), ('LA', 'Winter', 55)"},
+      {"sql": "SELECT * FROM temperatures PIVOT (MAX(temp) FOR season IN ('Summer', 'Winter')) ORDER BY city DESC",
+       "expect": {"rows": [["NYC",85,32],["LA",95,55]], "ordered": true}},
+      {"sql": "INSERT INTO temperatures VALUES ('NYC', 'Summer', 80)"},
+      {"sql": "SELECT * FROM temperatures PIVOT (MIN(temp) FOR season IN ('Summer')) ORDER BY city DESC",
+       "expect": {"rows": [["NYC",80],["LA",95]], "ordered": true}}
+    ]},
+    {"name": "a-pivot-after-a-source-alias-with-its-own-pivot-alias", "steps": [
+      {"sql": "CREATE TABLE sales (region VARCHAR, q VARCHAR, amt INTEGER)"},
+      {"sql": "INSERT INTO sales VALUES ('E','Q1',10), ('E','Q2',20), ('W','Q1',30), ('W','Q2',40)"},
+      {"sql": "SELECT * FROM (SELECT region, q, amt FROM sales) m PIVOT(SUM(amt) FOR q IN ('Q1','Q2')) p",
+       "expect": {"rows": [["E",10,20],["W",30,40]], "columns": ["REGION","'Q1'","'Q2'"]}}
+    ]},
+    {"name": "numeric-pivot-value-columns-are-readable-by-quoted-reference", "steps": [
+      {"sql": "CREATE TABLE wk (aid VARCHAR, sev INTEGER, wc INTEGER)"},
+      {"sql": "INSERT INTO wk VALUES ('a', 1, 2), ('b', 1, 7), ('b', 2, 4), ('b', 3, 1)"},
+      {"sql": "SELECT aid, ZEROIFNULL(\"1\") AS low, ZEROIFNULL(\"2\") AS med, ZEROIFNULL(\"3\") AS high FROM (SELECT aid, sev, SUM(wc) w FROM wk GROUP BY aid, sev) PIVOT(SUM(w) FOR sev IN (1, 2, 3, 4)) ORDER BY aid",
+       "expect": {"rows": [["a",2,0,0],["b",7,4,1]], "ordered": true}}
+    ]},
+    {"name": "a-quoted-numeric-named-column-resolves-as-a-column", "steps": [
+      {"sql": "SELECT \"1\" + 0 FROM (SELECT 42 AS \"1\")", "expect": {"value": 42}},
+      {"sql": "SELECT COUNT(*) FROM (SELECT 42 AS \"1\") WHERE \"1\" = 42", "expect": {"value": 1}}
+    ]},
+    {"name": "a-pivot-after-a-base-table-alias", "steps": [
+      {"sql": "CREATE TABLE t2 (region VARCHAR, q VARCHAR, amt INTEGER)"},
+      {"sql": "INSERT INTO t2 VALUES ('E','Q1',5), ('E','Q2',7)"},
+      {"sql": "SELECT * FROM t2 s PIVOT(SUM(amt) FOR q IN ('Q1','Q2'))", "expect": {"rows": [["E",5,7]]}}
+    ]}
+  ]
+}

@@ -1,0 +1,56 @@
+{
+  "suite": "types-binary",
+  "description": "The BINARY family end to end: BINARY and VARBINARY columns declare and describe, a scripting variable can be DECLAREd or LET with either spelling and its value inserted, and a BEGIN...END block can RETURN one. BINARY text is BARE UPPERCASE HEX in both directions - a VARCHAR-to-BINARY cast reads the string as hex and non-hex text is refused, a BINARY value displays as bare hex, and TO_BINARY with UTF-8 round-trips through it. Snowflake's decoder knows NO 0x prefix and refuses one exactly as it refuses any other non-hex text - from a cast, from TO_BINARY and from HEX_DECODE_BINARY alike, in either letter case - while the TRY_ forms answer NULL instead of raising and the bare spelling still decodes. Frostlake used to strip the prefix, so those cases were once written in a spelling no account accepts. Converted from types/BinaryTypeTest, which keeps only its two type-model unit tests (see the task note); the Java's BinaryType.parseValue and formatValue checks are expressed here through LENGTH, TO_VARCHAR with UTF-8 and the value's own display form.",
+  "tags": ["types", "converted"],
+  "tests": [
+    {"name": "a-table-can-declare-a-binary-column", "steps": [
+      {"sql": "CREATE TABLE binary_test (id INTEGER, data BINARY)"},
+      {"sql": "SHOW COLUMNS IN TABLE binary_test", "expect": {"rowCount": 2}}
+    ]},
+    {"name": "a-table-can-declare-a-varbinary-column", "steps": [
+      {"sql": "CREATE TABLE varbinary_test (id INTEGER, data VARBINARY)"},
+      {"sql": "SHOW COLUMNS IN TABLE varbinary_test", "expect": {"rowCount": 2}}
+    ]},
+    {"name": "a-declared-variable-can-be-binary", "steps": [
+      {"sql": "CREATE TABLE results (data BINARY)"},
+      {"sql": "DECLARE binary_var BINARY := '48656C6C6F';\nBEGIN\n    INSERT INTO results VALUES (:binary_var);\nEND;\n"},
+      {"sql": "SELECT TO_VARCHAR(data) FROM results", "expect": {"value": "48656C6C6F"}}
+    ]},
+    {"name": "a-declared-variable-can-be-varbinary", "steps": [
+      {"sql": "CREATE TABLE results (data VARBINARY)"},
+      {"sql": "DECLARE varbinary_var VARBINARY := '576F726C64';\nBEGIN\n    INSERT INTO results VALUES (:varbinary_var);\nEND;\n"},
+      {"sql": "SELECT TO_VARCHAR(data) FROM results", "expect": {"value": "576F726C64"}}
+    ]},
+    {"name": "a-cast-to-binary-reads-the-string-as-hex", "steps": [
+      {"sql": "SELECT CAST('48656C6C6F' AS BINARY) AS result", "expect": {"value": "48656C6C6F"}},
+      {"sql": "SELECT CAST('Hello' AS BINARY)", "expect": {"error": {"messageContains": "not a legal hex-encoded value"}}}
+    ]},
+    {"name": "a-cast-to-varbinary-reads-the-string-as-hex-too", "steps": [
+      {"sql": "SELECT CAST('576F726C64' AS VARBINARY) AS result", "expect": {"value": "576F726C64"}}
+    ]},
+    {"name": "bare-hex-parses-to-its-bytes", "steps": [
+      {"sql": "SELECT LENGTH('48656C6C6F'::BINARY) AS a, TO_VARCHAR('48656C6C6F'::BINARY, 'UTF-8') AS b", "expect": {"rows": [[5, "Hello"]]}}
+    ]},
+    {"name": "a-hex-string-has-no-zero-x-prefix", "steps": [
+      {"sql": "SELECT '0x48656C6C6F'::BINARY", "expect": {"error": {"messageContains": "The following string is not a legal hex-encoded value: '0x48656C6C6F'"}}},
+      {"sql": "SELECT '0X48656C6C6F'::BINARY", "expect": {"error": {"messageContains": "The following string is not a legal hex-encoded value: '0X48656C6C6F'"}}},
+      {"sql": "SELECT TO_BINARY('0x48656C6C6F')", "expect": {"error": {"messageContains": "The following string is not a legal hex-encoded value: '0x48656C6C6F'"}}},
+      {"sql": "SELECT HEX_DECODE_BINARY('0x48656C6C6F')", "expect": {"error": {"messageContains": "The following string is not a legal hex-encoded value: '0x48656C6C6F'"}}},
+      {"sql": "SELECT TRY_TO_BINARY('0x48656C6C6F')", "expect": {"value": null}},
+      {"sql": "SELECT TRY_HEX_DECODE_BINARY('0x48656C6C6F')", "expect": {"value": null}},
+      {"sql": "SELECT '48656C6C6F'::BINARY", "expect": {"value": "48656C6C6F"}}
+    ]},
+    {"name": "binary-formats-as-bare-uppercase-hex", "steps": [
+      {"sql": "SELECT '48656C6C6F'::BINARY AS x", "expect": {"value": "48656C6C6F"}},
+      {"sql": "SELECT TO_BINARY('Hello', 'UTF-8') AS x", "expect": {"value": "48656C6C6F"}}
+    ]},
+    {"name": "a-let-variable-can-be-binary", "steps": [
+      {"sql": "CREATE TABLE results (data BINARY)"},
+      {"sql": "BEGIN\n    LET bin_var BINARY := '414243';\n    INSERT INTO results VALUES (:bin_var);\nEND;\n"},
+      {"sql": "SELECT TO_VARCHAR(data) FROM results", "expect": {"value": "414243"}}
+    ]},
+    {"name": "a-block-can-return-a-binary", "steps": [
+      {"sql": "BEGIN\n    LET bin_data BINARY := '54657374';\n    RETURN bin_data;\nEND;\n", "expect": {"value": "54657374"}}
+    ]}
+  ]
+}

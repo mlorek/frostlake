@@ -19,6 +19,7 @@ package dev.frostlake.metastore.model;
 import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.metastore.SqlObject;
 import dev.frostlake.types.DataType;
+import dev.frostlake.values.RelationStatistics;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -30,6 +31,21 @@ import java.util.Locale;
 import java.util.Map;
 
 public class Table extends SqlObject {
+
+    /**
+     * The DATA_RETENTION_TIME_IN_DAYS this object declares, or null when it declares none and
+     * inherits its container's (the account default is 1 at the top of the chain).
+     */
+    private Integer dataRetentionTimeInDays;
+
+    public Integer getDataRetentionTimeInDays() {
+        return dataRetentionTimeInDays;
+    }
+
+    public void setDataRetentionTimeInDays(final Integer dataRetentionTimeInDays) {
+        this.dataRetentionTimeInDays = dataRetentionTimeInDays;
+    }
+
 
     private final List<TableColumn> columns;
     private final List<String> primaryKeys;
@@ -76,6 +92,7 @@ public class Table extends SqlObject {
     private final List<UniqueConstraint> uniqueConstraints = new ArrayList<>();
     // Whether this instance is the CATALOG's own object for its name — see isCatalogResident().
     private boolean catalogResident;
+    private String qualifiedName;
     // CHANGE_TRACKING: off on creation; flipped by the table option, ALTER … SET, or the creation
     // of a stream over the table (which enables it implicitly). The CHANGES clause requires it.
     private boolean changeTracking;
@@ -86,6 +103,12 @@ public class Table extends SqlObject {
     // reads the first NON-NULL of its per-side copies — the merged column of an outer join. Null for
     // every ordinary table.
     private List<String> joinKeyNames;
+    // Set only on a DERIVED relation that still carries the statistics of the catalog table beneath
+    // it — a subquery, CTE or view projecting that table's rows. Null for every other table.
+    private RelationStatistics relationStatistics;
+    // Set only on a join's merged relation: the relations it joins and which of them an outer join
+    // extends with NULLs. Null for every other table.
+    private JoinedRelations joinedRelations;
 
     public Table(final String name, final List<TableColumn> columns, final boolean isTemporary) {
         this(name, columns, isTemporary, false);
@@ -109,6 +132,25 @@ public class Table extends SqlObject {
         return catalogResident;
     }
 
+    /** The database.schema.table this instance was last resolved under, or null before any query
+     *  read it — the key its rows are stored by. Re-set on every resolution, so a rename catches up. */
+    public String getQualifiedName() {
+        return qualifiedName;
+    }
+
+    public void setQualifiedName(final String qualifiedName) {
+        this.qualifiedName = qualifiedName;
+    }
+
+    /** The statistics a derived relation carries of the catalog table beneath it, or null. */
+    public RelationStatistics getRelationStatistics() {
+        return relationStatistics;
+    }
+
+    public void setRelationStatistics(final RelationStatistics relationStatistics) {
+        this.relationStatistics = relationStatistics;
+    }
+
     /** Called by {@code Schema.addTable} as the table enters the catalog. One-way on purpose: a
      *  dropped table is unreachable from the query path, and a rename re-registers the same instance. */
     public void markCatalogResident() {
@@ -123,6 +165,16 @@ public class Table extends SqlObject {
 
     public void setJoinKeyNames(final List<String> joinKeyNames) {
         this.joinKeyNames = joinKeyNames;
+    }
+
+    /** The relations a join's merged relation joins and which of them an outer join extends with NULLs,
+     *  or null for any other table. */
+    public JoinedRelations getJoinedRelations() {
+        return joinedRelations;
+    }
+
+    public void setJoinedRelations(final JoinedRelations joinedRelations) {
+        this.joinedRelations = joinedRelations;
     }
 
     public Table(final String name, final List<TableColumn> columns, final boolean isTemporary, final boolean isTransient) {
@@ -152,6 +204,11 @@ public class Table extends SqlObject {
     /** The column count WITHOUT copying the column list ({@link #getColumns()} copies per call). */
     public int columnCount() {
         return columns.size();
+    }
+
+    /** The column at a position WITHOUT copying the column list — the per-row write path's accessor. */
+    public TableColumn columnAt(final int index) {
+        return columns.get(index);
     }
 
     /**

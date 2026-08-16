@@ -1,0 +1,19 @@
+{
+  "suite": "functions-acosh",
+  "description": "ACOSH(x) - inverse hyperbolic cosine, ln(x + sqrt(x*x - 1)): zero at 1, the known value at 2, an exact round trip through COSH, and NULL in / NULL out. Converted 1:1 from functions/AcoshTest (now retired); the Java class compared with a 1e-9 tolerance, which the testkit's 10-significant-figure normalisation supplies.",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "acosh-of-one-is-zero", "steps": [
+      {"sql": "SELECT ACOSH(1)", "expect": {"value": "0"}}
+    ]},
+    {"name": "acosh-of-two", "steps": [
+      {"sql": "SELECT ACOSH(2)", "expect": {"value": "1.316957897"}}
+    ]},
+    {"name": "acosh-inverts-cosh", "steps": [
+      {"sql": "SELECT ACOSH(COSH(2))", "expect": {"value": "2"}}
+    ]},
+    {"name": "null-is-null", "steps": [
+      {"sql": "SELECT ACOSH(NULL)", "expect": {"rows": [[null]]}}
+    ]}
+  ]
+}

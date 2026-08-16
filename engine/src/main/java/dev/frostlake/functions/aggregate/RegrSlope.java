@@ -17,6 +17,7 @@
 package dev.frostlake.functions.aggregate;
 
 import dev.frostlake.functions.AggregateFunction;
+import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.types.NumericType;
 
 import java.util.List;
@@ -35,4 +36,29 @@ public class RegrSlope extends AggregateFunction {
     public int getMinArgCount() { return 2; }
     @Override
     public int getMaxArgCount() { return 2; }
+
+    /**
+     * Either argument outside the numbers, the strings and VARIANT is refused at compile time as the
+     * DOUBLE conversion live plans under a null guard on the other argument — see
+     * {@link SemiStructuredRejection#DOUBLE_CONVERSION_PARAMETER}.
+     */
+    @Override
+    public SemiStructuredRejection semiStructuredRejection(final int position) {
+        return SemiStructuredRejection.DOUBLE_CONVERSION_PARAMETER;
+    }
+
+    @Override
+    public SemiStructuredRejection binaryRejection(final int position) {
+        return SemiStructuredRejection.DOUBLE_CONVERSION_PARAMETER;
+    }
+
+    @Override
+    public SemiStructuredRejection booleanRejection(final int position) {
+        return SemiStructuredRejection.DOUBLE_CONVERSION_PARAMETER;
+    }
+
+    @Override
+    public SemiStructuredRejection temporalRejection(final int position) {
+        return SemiStructuredRejection.DOUBLE_CONVERSION_PARAMETER;
+    }
 }

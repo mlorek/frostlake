@@ -1,0 +1,86 @@
+{
+  "suite": "ddl-drop-function-with-parameters",
+  "description": "DROP FUNCTION signature requirements and matching, converted 1:1 from ddl/DropFunctionWithParametersTest.java (now retired).",
+  "tags": ["ddl", "converted"],
+  "tests": [
+    {
+      "name": "drop-function-requires-the-signature",
+      "steps": [
+        {"sql": "CREATE FUNCTION add_one(x INTEGER) RETURNS INTEGER LANGUAGE SQL AS 'SELECT x + 1'"},
+        {"sql": "DROP FUNCTION add_one", "expect": {"error": {}}},
+        {"sql": "DROP FUNCTION add_one(INTEGER)"},
+        {"sql": "SELECT add_one(5)", "expect": {"error": {}}}
+      ]
+    },
+    {
+      "name": "drop-function-with-parameters",
+      "steps": [
+        {"sql": "CREATE FUNCTION multiply(a INTEGER, b INTEGER) RETURNS INTEGER LANGUAGE SQL AS 'SELECT a * b'"},
+        {"sql": "DROP FUNCTION multiply(INTEGER, INTEGER)"},
+        {"sql": "SELECT multiply(3, 4)", "expect": {"error": {}}}
+      ]
+    },
+    {
+      "name": "drop-function-with-empty-parameters",
+      "steps": [
+        {"sql": "CREATE FUNCTION get_constant() RETURNS INTEGER LANGUAGE SQL AS 'SELECT 42'"},
+        {"sql": "DROP FUNCTION get_constant()"},
+        {"sql": "SELECT get_constant()", "expect": {"error": {}}}
+      ]
+    },
+    {
+      "name": "drop-function-parameter-mismatch",
+      "steps": [
+        {"sql": "CREATE FUNCTION calc_func(x INTEGER, y INTEGER) RETURNS INTEGER LANGUAGE SQL AS 'x + y'"},
+        {"sql": "DROP FUNCTION calc_func(VARCHAR, VARCHAR)", "expect": {"error": {}}}
+      ]
+    },
+    {
+      "name": "drop-function-parameter-count-mismatch",
+      "steps": [
+        {"sql": "CREATE FUNCTION sum_func(x INTEGER, y INTEGER) RETURNS INTEGER LANGUAGE SQL AS 'x + y'"},
+        {"sql": "DROP FUNCTION sum_func(INTEGER)", "expect": {"error": {}}}
+      ]
+    },
+    {
+      "name": "drop-function-with-varchar-parameter",
+      "steps": [
+        {"sql": "CREATE FUNCTION greet(name VARCHAR) RETURNS VARCHAR LANGUAGE SQL AS 'SELECT name'"},
+        {"sql": "DROP FUNCTION greet(VARCHAR)"},
+        {"sql": "SELECT greet('Alice')", "expect": {"error": {}}}
+      ]
+    },
+    {
+      "name": "drop-function-if-exists",
+      "steps": [
+        {"sql": "CREATE FUNCTION test_func(x INTEGER) RETURNS INTEGER LANGUAGE SQL AS 'SELECT x'"},
+        {"sql": "DROP FUNCTION IF EXISTS test_func(INTEGER)"},
+        {"sql": "DROP FUNCTION IF EXISTS test_func(INTEGER)"}
+      ]
+    },
+    {
+      "name": "drop-function-mixed-data-types",
+      "steps": [
+        {"sql": "CREATE FUNCTION format_data(id INTEGER, name VARCHAR, active INTEGER) RETURNS VARCHAR LANGUAGE SQL AS 'SELECT name'"},
+        {"sql": "DROP FUNCTION format_data(INTEGER, VARCHAR, INTEGER)"},
+        {"sql": "SELECT format_data(1, 'test', 1)", "expect": {"error": {}}}
+      ]
+    },
+    {
+      "name": "drop-function-schema-qualified",
+      "steps": [
+        {"sql": "CREATE SCHEMA IF NOT EXISTS test_schema"},
+        {"sql": "CREATE FUNCTION test_schema.compute(x INTEGER) RETURNS INTEGER LANGUAGE SQL AS 'SELECT x * 2'"},
+        {"sql": "DROP FUNCTION test_schema.compute(INTEGER)"},
+        {"sql": "SELECT test_schema.compute(5)", "expect": {"error": {}}}
+      ]
+    },
+    {
+      "name": "drop-non-existent-function-with-parameters",
+      "steps": [
+        {"sql": "DROP FUNCTION non_existent(INTEGER, VARCHAR)", "expect": {"error": {}}},
+        {"sql": "DROP FUNCTION IF EXISTS non_existent(INTEGER, VARCHAR)"}
+      ]
+    }
+  ]
+}

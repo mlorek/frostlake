@@ -1,0 +1,31 @@
+{
+  "suite": "query-window-frame-aggregate",
+  "description": "Sliding-frame window aggregates - ROWS BETWEEN ... - which run through the generic per-frame accumulator path shared by SUM, AVG, COUNT, MIN and MAX. A two-row trailing frame is asserted for all five, per partition, so the frame is seen both to slide and to stop at the partition boundary; and a running total over UNBOUNDED PRECEDING is asserted across an ordering that spans both partitions, so the same accumulator is shown carrying the whole result when nothing partitions it. Converted 1:1 from query/WindowFrameAggregateTest (now retired); the Java read individual cells by row and column index, so each converted test pins the whole ordered row set.",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "sum-over-a-sliding-rows-frame", "steps": [
+      {"sql": "CREATE TABLE wf (g VARCHAR, i INTEGER, x INTEGER)"},
+      {"sql": "INSERT INTO wf VALUES ('a',1,10),('a',2,20),('a',3,30),('b',1,5),('b',2,7)"},
+      {"sql": "SELECT g, i, SUM(x) OVER (PARTITION BY g ORDER BY i ROWS BETWEEN 1 PRECEDING AND CURRENT ROW) AS s FROM wf ORDER BY g, i",
+       "expect": {"rows": [["a",1,10],["a",2,30],["a",3,50],["b",1,5],["b",2,12]], "ordered": true}}
+    ]},
+    {"name": "avg-and-count-over-a-sliding-rows-frame", "steps": [
+      {"sql": "CREATE TABLE wf (g VARCHAR, i INTEGER, x INTEGER)"},
+      {"sql": "INSERT INTO wf VALUES ('a',1,10),('a',2,20),('a',3,30),('b',1,5),('b',2,7)"},
+      {"sql": "SELECT g, i, AVG(x) OVER (PARTITION BY g ORDER BY i ROWS BETWEEN 1 PRECEDING AND CURRENT ROW) AS a, COUNT(x) OVER (PARTITION BY g ORDER BY i ROWS BETWEEN 1 PRECEDING AND CURRENT ROW) AS c FROM wf ORDER BY g, i",
+       "expect": {"rows": [["a",1,10,1],["a",2,15,2],["a",3,25,2],["b",1,5,1],["b",2,6,2]], "ordered": true}}
+    ]},
+    {"name": "min-and-max-over-a-sliding-rows-frame", "steps": [
+      {"sql": "CREATE TABLE wf (g VARCHAR, i INTEGER, x INTEGER)"},
+      {"sql": "INSERT INTO wf VALUES ('a',1,10),('a',2,20),('a',3,30),('b',1,5),('b',2,7)"},
+      {"sql": "SELECT g, i, MIN(x) OVER (PARTITION BY g ORDER BY i ROWS BETWEEN 1 PRECEDING AND CURRENT ROW) AS mn, MAX(x) OVER (PARTITION BY g ORDER BY i ROWS BETWEEN 1 PRECEDING AND CURRENT ROW) AS mx FROM wf ORDER BY g, i",
+       "expect": {"rows": [["a",1,10,10],["a",2,10,20],["a",3,20,30],["b",1,5,5],["b",2,5,7]], "ordered": true}}
+    ]},
+    {"name": "a-running-total-over-an-unbounded-preceding-frame", "steps": [
+      {"sql": "CREATE TABLE wf (g VARCHAR, i INTEGER, x INTEGER)"},
+      {"sql": "INSERT INTO wf VALUES ('a',1,10),('a',2,20),('a',3,30),('b',1,5),('b',2,7)"},
+      {"sql": "SELECT i, SUM(x) OVER (ORDER BY g, i ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS s FROM wf ORDER BY g, i",
+       "expect": {"rows": [[1,10],[2,30],[3,60],[1,65],[2,72]], "ordered": true}}
+    ]}
+  ]
+}

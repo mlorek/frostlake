@@ -1,0 +1,69 @@
+{
+  "suite": "scripting-uncaught-statement-error",
+  "description": "An error that escapes a scripting block UNCAUGHT reads as one sentence, live-verified: \"Uncaught exception of type 'STATEMENT_ERROR' on line L at position P : <error>\", where L and P name the STATEMENT that failed - however deeply it sat, in a nested block, an IF branch, a loop body or a procedure body - and the original error follows the colon. A RAISEd exception uses its OWN declared name in place of STATEMENT_ERROR. A bare RAISE re-raises the ORIGINAL failure and keeps that statement's position. Two boundaries matter as much as the sentence. A HANDLED error never gets it, and SQLERRM inside the handler still reads the RAW text. And a name the BLOCK owns - a :variable that was never declared - is refused BARE, because live resolves a block's own names when it COMPILES the block, before any statement runs, so that refusal is a compilation error rather than an uncaught exception; an unresolvable COLUMN is the other side of the same line, belonging to the statement's own compilation, so it IS wrapped. Converted 1:1 from scripting/UncaughtStatementErrorTest (now retired); these blocks keep their REAL newlines, written as \n, because the line and position the sentence reports are the claim.",
+  "tags": ["scripting", "converted"],
+  "tests": [
+    {"name": "an-uncaught-statement-error-names-the-statement-that-failed", "steps": [
+      {"sql": "CREATE TABLE t (n INT)"},
+      {"sql": "BEGIN\n    LET x INT := 1;\n    LET y INT := 2;\n    SELECT 1/0;\nEND;",
+       "expect": {"error": {"messageContains": "Uncaught exception of type 'STATEMENT_ERROR' on line 4 at position 4 : "}}}
+    ]},
+    {"name": "a-nested-blocks-failing-statement-names-itself", "steps": [
+      {"sql": "CREATE TABLE t (n INT)"},
+      {"sql": "BEGIN\n    BEGIN\n        SELECT 1/0;\n    END;\nEND;",
+       "expect": {"error": {"messageContains": "Uncaught exception of type 'STATEMENT_ERROR' on line 3 at position 8 : "}}}
+    ]},
+    {"name": "an-if-branches-failing-statement-names-itself", "steps": [
+      {"sql": "CREATE TABLE t (n INT)"},
+      {"sql": "BEGIN\n    IF (1 = 1) THEN\n        SELECT 1/0;\n    END IF;\nEND;",
+       "expect": {"error": {"messageContains": "Uncaught exception of type 'STATEMENT_ERROR' on line 3 at position 8 : "}}}
+    ]},
+    {"name": "a-loop-bodys-failing-statement-names-itself", "steps": [
+      {"sql": "CREATE TABLE t (n INT)"},
+      {"sql": "BEGIN\n    FOR i IN 1 TO 2 DO\n        SELECT 1/0;\n    END FOR;\nEND;",
+       "expect": {"error": {"messageContains": "Uncaught exception of type 'STATEMENT_ERROR' on line 3 at position 8 : "}}}
+    ]},
+    {"name": "the-original-error-follows-the-colon", "steps": [
+      {"sql": "CREATE TABLE t (n INT)"},
+      {"sql": "BEGIN\n    LET x INT := 1;\n    LET y INT := 2;\n    SELECT 1/0;\nEND;",
+       "expect": {"error": {"messageContains": "Division by zero"}}}
+    ]},
+    {"name": "an-unknown-object-is-wrapped-with-its-compilation-error", "steps": [
+      {"sql": "CREATE TABLE t (n INT)"},
+      {"sql": "BEGIN\n    INSERT INTO no_such_table VALUES (1);\nEND;",
+       "expect": {"error": {"messageContains": "Uncaught exception of type 'STATEMENT_ERROR' on line 2 at position 4 : "}}},
+      {"sql": "BEGIN\n    INSERT INTO no_such_table VALUES (1);\nEND;", "expect": {"error": {"messageContains": "NO_SUCH_TABLE"}}}
+    ]},
+    {"name": "an-unresolvable-column-is-wrapped-too", "steps": [
+      {"sql": "CREATE TABLE t (n INT)"},
+      {"sql": "BEGIN\n    SELECT nosuchcol FROM t;\nEND;",
+       "expect": {"error": {"messageContains": "Uncaught exception of type 'STATEMENT_ERROR' on line 2 at position 4 : "}}},
+      {"sql": "BEGIN\n    SELECT nosuchcol FROM t;\nEND;", "expect": {"error": {"messageContains": "invalid identifier 'NOSUCHCOL'"}}}
+    ]},
+    {"name": "a-handled-error-is-not-wrapped-and-sqlerrm-keeps-the-raw-text", "steps": [
+      {"sql": "CREATE TABLE t (n INT)"},
+      {"sql": "BEGIN\n    SELECT 1/0;\n    RETURN 'unreached';\nEXCEPTION\n    WHEN OTHER THEN\n        RETURN SQLERRM;\nEND;",
+       "expect": {"value": "Division by zero"}}
+    ]},
+    {"name": "a-re-raise-keeps-the-original-statements-position", "steps": [
+      {"sql": "CREATE TABLE t (n INT)"},
+      {"sql": "BEGIN\n    SELECT 1/0;\nEXCEPTION\n    WHEN OTHER THEN\n        RAISE;\nEND;",
+       "expect": {"error": {"messageContains": "Uncaught exception of type 'STATEMENT_ERROR' on line 2 at position 4 : "}}}
+    ]},
+    {"name": "a-raised-exception-uses-its-own-declared-name", "steps": [
+      {"sql": "CREATE TABLE t (n INT)"},
+      {"sql": "DECLARE\n    my_error EXCEPTION (-20001, 'boom');\nBEGIN\n    RAISE my_error;\nEND;",
+       "expect": {"error": {"messageContains": "Uncaught exception of type 'MY_ERROR' on line 4 at position 4 : boom"}}}
+    ]},
+    {"name": "an-undeclared-script-variable-is-refused-without-the-uncaught-sentence", "steps": [
+      {"sql": "CREATE TABLE t (n INT)"},
+      {"sql": "BEGIN INSERT INTO t VALUES (:nope); RETURN 'ok'; END",
+       "expect": {"error": {"messageContains": "SQL compilation error: error line 1 at position 28\ninvalid identifier 'NOPE'"}}}
+    ]},
+    {"name": "a-failing-procedure-body-names-the-statement-inside-it", "steps": [
+      {"sql": "CREATE TABLE t (n INT)"},
+      {"sql": "CREATE OR REPLACE PROCEDURE boom() RETURNS INT LANGUAGE SQL AS $$\nBEGIN\n    SELECT 1/0;\n    RETURN 1;\nEND;\n$$"},
+      {"sql": "CALL boom()", "expect": {"error": {"messageContains": "Uncaught exception of type 'STATEMENT_ERROR' on line 3 at position 4 : "}}}
+    ]}
+  ]
+}

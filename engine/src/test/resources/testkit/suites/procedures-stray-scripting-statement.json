@@ -1,0 +1,88 @@
+{
+  "suite": "procedures-stray-scripting-statement",
+  "description": "BREAK, CONTINUE, RETURN, RAISE, LET and NULL are SCRIPTING statements: legal inside a BEGIN...END block, and standing alone they are refused as syntax errors. THE POSITION IS THE OFFENDING TOKEN'S OWN, for all six alike - '   BREAK' reads position 3, a newline then two spaces then LET reads line 2 position 2 - and the word is echoed exactly as written, so a lower-case null is quoted in lower case. An earlier reading had five of them pinned at a constant line 1 position 0; that was the LIVE HARNESS trimming each statement's leading whitespace before submitting it, so the account was answering about text it had never been given. AFTER a complete query the same word is a different thing entirely: live parses 'SELECT x FROM t break' as a query with a bare ALIAS and runs it, and the alias resolves - a SEMICOLON is what makes it a statement again, and that one is refused at its own place. NULL is the exception among the trailing words: it is the literal, not a name, so it cannot alias anything. Converted 1:1 from procedures/StrayScriptingStatementTest (now retired).",
+  "tags": ["procedures", "parser", "converted"],
+  "tests": [
+    {"name": "a-trailing-scripting-word-is-a-bare-alias", "steps": [
+      {"sql": "CREATE TABLE st (x NUMBER)"},
+      {"sql": "INSERT INTO st VALUES (1)"},
+      {"sql": "SELECT x FROM st break", "expect": {"value": "1"}},
+      {"sql": "SELECT x FROM st continue", "expect": {"value": "1"}},
+      {"sql": "SELECT x FROM st return", "expect": {"value": "1"}},
+      {"sql": "SELECT x FROM st raise", "expect": {"value": "1"}},
+      {"sql": "SELECT x FROM st\n  break", "expect": {"value": "1"}},
+      {"sql": "\n\nSELECT x FROM st break", "expect": {"value": "1"}},
+      {"sql": "SELECT break.x FROM st break", "expect": {"value": "1"}},
+      {"sql": "SELECT return.x FROM st return", "expect": {"value": "1"}}
+    ]},
+    {"name": "a-semicolon-makes-it-a-statement-again",
+     "steps": [
+      {"sql": "CREATE TABLE st (x NUMBER)"},
+      {"sql": "INSERT INTO st VALUES (1)"},
+      {"sql": "SELECT x FROM st; break", "expect": {"error": {"messageContains": "syntax error line 1 at position 18 unexpected 'break'."}}}
+    ]},
+    {"name": "null-is-no-alias", "steps": [
+      {"sql": "CREATE TABLE st (x NUMBER)"},
+      {"sql": "INSERT INTO st VALUES (1)"},
+      {"sql": "SELECT x FROM st null", "expect": {"error": {"messageContains": "syntax error"}}}
+    ]},
+    {"name": "a-standalone-scripting-statement-is-refused", "steps": [
+      {"sql": "BREAK", "expect": {"error": {"messageContains": "syntax error line 1 at position 0 unexpected 'BREAK'."}}},
+      {"sql": "CONTINUE", "expect": {"error": {"messageContains": "syntax error line 1 at position 0 unexpected 'CONTINUE'."}}},
+      {"sql": "RETURN 1", "expect": {"error": {"messageContains": "syntax error line 1 at position 0 unexpected 'RETURN'."}}},
+      {"sql": "RAISE", "expect": {"error": {"messageContains": "syntax error line 1 at position 0 unexpected 'RAISE'."}}},
+      {"sql": "LET v := 1", "expect": {"error": {"messageContains": "syntax error line 1 at position 0 unexpected 'LET'."}}},
+      {"sql": "NULL", "expect": {"error": {"messageContains": "syntax error line 1 at position 0 unexpected 'NULL'."}}}
+    ]},
+    {"name": "the-position-is-the-offending-tokens-own", "steps": [
+      {"sql": "   BREAK", "expect": {"error": {"messageContains": "syntax error line 1 at position 3 unexpected 'BREAK'."}}},
+      {"sql": "\n  BREAK", "expect": {"error": {"messageContains": "syntax error line 2 at position 2 unexpected 'BREAK'."}}},
+      {"sql": "\n\n CONTINUE", "expect": {"error": {"messageContains": "syntax error line 3 at position 1 unexpected 'CONTINUE'."}}},
+      {"sql": "   LET v := 1", "expect": {"error": {"messageContains": "syntax error line 1 at position 3 unexpected 'LET'."}}},
+      {"sql": "\n  LET v := 1", "expect": {"error": {"messageContains": "syntax error line 2 at position 2 unexpected 'LET'."}}},
+      {"sql": "\n\n RETURN 1", "expect": {"error": {"messageContains": "syntax error line 3 at position 1 unexpected 'RETURN'."}}},
+      {"sql": "   RAISE", "expect": {"error": {"messageContains": "syntax error line 1 at position 3 unexpected 'RAISE'."}}}
+    ]},
+    {"name": "the-null-statement-is-positioned-at-its-own-token", "steps": [
+      {"sql": "NULL", "expect": {"error": {"messageContains": "syntax error line 1 at position 0 unexpected 'NULL'."}}},
+      {"sql": "NULL;", "expect": {"error": {"messageContains": "syntax error line 1 at position 0 unexpected 'NULL'."}}},
+      {"sql": "NULL   ", "expect": {"error": {"messageContains": "syntax error line 1 at position 0 unexpected 'NULL'."}}},
+      {"sql": " NULL", "expect": {"error": {"messageContains": "syntax error line 1 at position 1 unexpected 'NULL'."}}},
+      {"sql": "   NULL", "expect": {"error": {"messageContains": "syntax error line 1 at position 3 unexpected 'NULL'."}}},
+      {"sql": "       NULL", "expect": {"error": {"messageContains": "syntax error line 1 at position 7 unexpected 'NULL'."}}},
+      {"sql": "\tNULL", "expect": {"error": {"messageContains": "syntax error line 1 at position 1 unexpected 'NULL'."}}},
+      {"sql": "\nNULL", "expect": {"error": {"messageContains": "syntax error line 2 at position 0 unexpected 'NULL'."}}},
+      {"sql": "\n  NULL", "expect": {"error": {"messageContains": "syntax error line 2 at position 2 unexpected 'NULL'."}}},
+      {"sql": "\n\n   NULL", "expect": {"error": {"messageContains": "syntax error line 3 at position 3 unexpected 'NULL'."}}}
+    ]},
+    {"name": "the-null-statement-is-echoed-as-written", "steps": [
+      {"sql": "null", "expect": {"error": {"messageContains": "syntax error line 1 at position 0 unexpected 'null'."}}}
+    ]},
+    {"name": "null-keeps-its-block-meaning", "steps": [
+      {"sql": "BEGIN NULL; END"},
+      {"sql": "BEGIN SELECT 1; NULL; END"},
+      {"sql": "BEGIN IF (1 = 1) THEN NULL; ELSE NULL; END IF; END"},
+      {"sql": "SELECT NULL AS c", "expect": {"rows": [[null]]}},
+      {"sql": "BEGIN NULL END", "expect": {"error": {"messageContains": "syntax error"}}}
+    ]},
+    {"name": "an-ordinary-keyword-after-a-query-is-still-an-alias", "steps": [
+      {"sql": "CREATE TABLE st (x NUMBER)"},
+      {"sql": "INSERT INTO st VALUES (1)"},
+      {"sql": "SELECT x FROM st let", "expect": {"value": "1"}},
+      {"sql": "SELECT x FROM st exception", "expect": {"value": "1"}},
+      {"sql": "SELECT x FROM st while", "expect": {"value": "1"}},
+      {"sql": "SELECT x FROM st loop", "expect": {"value": "1"}},
+      {"sql": "SELECT x FROM st if", "expect": {"value": "1"}},
+      {"sql": "SELECT x FROM st open", "expect": {"value": "1"}},
+      {"sql": "SELECT x FROM st fetch", "expect": {"value": "1"}}
+    ]},
+    {"name": "inside-a-block-they-still-work", "steps": [
+      {"sql": "BEGIN RETURN 42; END"},
+      {"sql": "BEGIN FOR i IN 1 TO 3 DO BREAK; END FOR; RETURN 1; END"},
+      {"sql": "BEGIN FOR i IN 1 TO 3 DO CONTINUE; END FOR; RETURN 1; END"}
+    ]},
+    {"name": "a-block-still-returns-its-value", "steps": [
+      {"sql": "BEGIN RETURN 42; END", "expect": {"value": "42"}}
+    ]}
+  ]
+}

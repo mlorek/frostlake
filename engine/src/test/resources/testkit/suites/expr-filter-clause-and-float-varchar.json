@@ -1,0 +1,63 @@
+{
+  "suite": "expr-filter-clause-and-float-varchar",
+  "description": "Three measured surfaces: the FILTER (WHERE cond) aggregate clause does not exist in Snowflake - every use is a syntax error (plain, grouped, in expressions, HAVING, with OVER) while the portable spellings (CASE-wrapped arguments, COUNT_IF) work and FILTER stays a plain identifier; FLOAT-to-VARCHAR renders with 10 significant digits (C %.10g, trailing zeros stripped - 0.8999999762, not Java's shortest round-trip), short and integral doubles keeping their short forms, so a SHA2 over the stringified float matches Snowflake's record-id recipe; and hex binary literals x'A1B2' / X'a1b2' carry the real BINARY value (uppercase hex display), equal to TO_BINARY of the same hex and insertable into BINARY columns. Converted 1:1 from expressions/FilterClauseAggregateTest + expressions/FloatToVarcharTest + expressions/HexBinaryLiteralTest (now retired).",
+  "tags": ["expressions", "converted"],
+  "tests": [
+    {"name": "filter-on-aggregates-is-rejected", "steps": [
+      {"sql": "CREATE TABLE ft (a INTEGER, b INTEGER, c INTEGER, g INTEGER)"},
+      {"sql": "INSERT INTO ft VALUES (1, 1, 1, 1), (100, 100, -1, 1), (7, 7, 2, 2)"},
+      {"sql": "SELECT SUM(a) FILTER(WHERE c > 0) FROM ft", "expect": {"error": {}}},
+      {"sql": "SELECT COUNT(a) FILTER(WHERE c > 0) FROM ft", "expect": {"error": {}}},
+      {"sql": "SELECT g, SUM(a) FILTER(WHERE c > 0) FROM ft GROUP BY g ORDER BY g", "expect": {"error": {}}},
+      {"sql": "SELECT MIN_BY(a, b) FILTER(WHERE c = 2) FROM ft", "expect": {"error": {}}},
+      {"sql": "SELECT SUM(a) FILTER(WHERE c > 0) + 1 FROM ft", "expect": {"error": {}}},
+      {"sql": "SELECT g FROM ft GROUP BY g HAVING SUM(a) FILTER(WHERE c > 0) > 5", "expect": {"error": {}}}
+    ]},
+    {"name": "filter-with-over-is-rejected", "steps": [
+      {"sql": "CREATE TABLE ft (a INTEGER, b INTEGER, c INTEGER, g INTEGER)"},
+      {"sql": "INSERT INTO ft VALUES (1, 1, 1, 1), (100, 100, -1, 1), (7, 7, 2, 2)"},
+      {"sql": "SELECT SUM(a) FILTER(WHERE c > 0) OVER (PARTITION BY g) FROM ft", "expect": {"error": {}}}
+    ]},
+    {"name": "conditional-aggregation-uses-case-or-count-if", "steps": [
+      {"sql": "CREATE TABLE ft (a INTEGER, b INTEGER, c INTEGER, g INTEGER)"},
+      {"sql": "INSERT INTO ft VALUES (1, 1, 1, 1), (100, 100, -1, 1), (7, 7, 2, 2)"},
+      {"sql": "SELECT SUM(CASE WHEN c > 0 THEN a END) FROM ft", "expect": {"value": "8"}},
+      {"sql": "SELECT COUNT_IF(c > 0) FROM ft", "expect": {"value": "2"}},
+      {"sql": "SELECT SUM(a) FROM ft", "expect": {"value": "108"}}
+    ]},
+    {"name": "filter-remains-usable-as-an-identifier", "steps": [
+      {"sql": "CREATE TABLE ftab (filter VARCHAR)"},
+      {"sql": "INSERT INTO ftab VALUES ('x')"},
+      {"sql": "SELECT filter FROM ftab", "expect": {"value": "x"}},
+      {"sql": "SELECT 1 AS filter", "expect": {"columns": ["FILTER"], "rows": [["1"]]}}
+    ]},
+    {"name": "variant-double-renders-with-ten-significant-digits", "steps": [
+      {"sql": "SELECT PARSE_JSON('{\"s\":8.999999761581421e-01}'):s::VARCHAR", "expect": {"value": "0.8999999762"}}
+    ]},
+    {"name": "short-doubles-keep-their-short-form", "steps": [
+      {"sql": "SELECT PARSE_JSON('{\"s\":0.8}'):s::VARCHAR", "expect": {"value": "0.8"}},
+      {"sql": "SELECT PARSE_JSON('{\"s\":0.25}'):s::VARCHAR", "expect": {"value": "0.25"}}
+    ]},
+    {"name": "integral-double-renders-without-fraction", "steps": [
+      {"sql": "SELECT PARSE_JSON('{\"s\":3.0e0}'):s::VARCHAR", "expect": {"value": "3"}}
+    ]},
+    {"name": "variant-integer-is-untouched", "steps": [
+      {"sql": "SELECT PARSE_JSON('{\"s\":1}'):s::VARCHAR", "expect": {"value": "1"}}
+    ]},
+    {"name": "hash-over-stringified-float-matches-snowflake", "steps": [
+      {"sql": "SELECT SHA2('x:' || PARSE_JSON('{\"s\":8.999999761581421e-01}'):s::VARCHAR, 256) = SHA2('x:0.8999999762', 256)", "expect": {"value": "true"}}
+    ]},
+    {"name": "hex-literal-yields-the-uppercase-hex-value", "steps": [
+      {"sql": "SELECT x'A1B2'", "expect": {"value": "A1B2"}},
+      {"sql": "SELECT X'a1b2'", "expect": {"value": "A1B2"}}
+    ]},
+    {"name": "hex-literal-matches-the-engine-binary-form", "steps": [
+      {"sql": "SELECT x'A1B2' = TO_BINARY('A1B2', 'HEX')", "expect": {"value": "true"}}
+    ]},
+    {"name": "hex-literal-inserts-into-binary-columns", "steps": [
+      {"sql": "CREATE TABLE hx (b BINARY)"},
+      {"sql": "INSERT INTO hx VALUES (x'48FAF43B0AFCEF9B63EE3A93EE2AC2')"},
+      {"sql": "SELECT b FROM hx", "expect": {"value": "48FAF43B0AFCEF9B63EE3A93EE2AC2"}}
+    ]}
+  ]
+}

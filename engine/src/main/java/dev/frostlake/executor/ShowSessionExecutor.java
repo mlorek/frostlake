@@ -46,9 +46,11 @@ import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * SHOW / DESCRIBE handlers for session and runtime state: parameters, sessions, variables, locks,
@@ -103,57 +105,57 @@ final class ShowSessionExecutor {
     public ResultSet showParameters(final String likePattern) {
         final SecurityManager securityManager = facade.getSecurityManager();
         final List<ResultSetColumn> columns = parameterColumns();
-        // Built-in Snowflake session parameters with defaults
-        final Object[][] params = {
-            {"TIMEZONE",                     "UTC",   "UTC",   "ACCOUNT", "Time zone",                    "TEXT"},
-            {"TIMESTAMP_OUTPUT_FORMAT",      "YYYY-MM-DD HH24:MI:SS.FF3 TZHTZM", "YYYY-MM-DD HH24:MI:SS.FF3 TZHTZM", "ACCOUNT", "Timestamp output format", "TEXT"},
-            {"DATE_OUTPUT_FORMAT",           "YYYY-MM-DD", "YYYY-MM-DD", "ACCOUNT", "Date output format", "TEXT"},
-            {"TIME_OUTPUT_FORMAT",           "HH24:MI:SS", "HH24:MI:SS", "ACCOUNT", "Time output format", "TEXT"},
-            {"TIMESTAMP_TYPE_MAPPING",       "TIMESTAMP_NTZ", "TIMESTAMP_NTZ", "ACCOUNT", "Default timestamp type mapping", "TEXT"},
-            {"MULTI_STATEMENT_COUNT",        "1",  "1",  "SESSION", "Number of statements in a multi-statement request", "NUMBER"},
-            {"QUERY_TAG",                    "",   "",   "SESSION", "Query tag for resource tracking", "TEXT"},
-            {"ROWS_PER_RESULTSET",           "0",  "0",  "SESSION", "Max rows in result set (0 = unlimited)", "NUMBER"},
-            {"LOCK_TIMEOUT",                 "43200", "43200", "ACCOUNT", "Lock wait timeout in seconds", "NUMBER"},
-            {"STATEMENT_TIMEOUT_IN_SECONDS", "0",  "0",  "ACCOUNT", "Statement execution timeout (0 = disabled)", "NUMBER"},
-            {"AUTOCOMMIT",                   "true", "true", "ACCOUNT", "Auto-commit mode", "BOOLEAN"},
-            {"JSON_INDENT", String.valueOf(VariantJsonFormat.indent()), "2", "SESSION",
-                "Width of indentation in JSON output (0 for compact)", "NUMBER"},
-        };
-        // Also include current session parameters
+        // Every parameter a real account lists, with its default, description and type word —
+        // transcribed rather than invented (see SessionParameterCatalog). Frostlake used to carry a
+        // dozen hand-written rows, so SHOW PARAMETERS LIKE 'WEEK_START' returned NOTHING on a
+        // parameter live describes perfectly well.
         final Map<String, Object> sessionParams = securityManager != null
             ? securityManager.getSessionContext().getAllSessionParameters()
             : new LinkedHashMap<>();
 
         final List<Row> rows = new ArrayList<>();
-        for (final Object[] p : params) {
-            final String key = (String) p[0];
-            final String sessionVal = sessionParams.containsKey(key) ? sessionParams.get(key).toString() : (String) p[1];
-            if (likePattern == null || key.toUpperCase().contains(likePattern.toUpperCase().replace("%", ""))) {
-                rows.add(new Row(Arrays.asList(key, sessionVal, p[2], p[3], p[4], p[5])));
+        final Set<String> listed = new HashSet<>();
+        for (final SessionParameterRow parameter : SessionParameterCatalog.rows()) {
+            final String key = parameter.getName();
+            listed.add(key.toUpperCase());
+            if (!matchesLike(key, likePattern)) {
+                continue;
             }
+            final boolean setBySession = sessionParams.containsKey(key);
+            // JSON_INDENT is the one row whose unset value the ENGINE decides rather than the table:
+            // it is a real setting here, and SHOW must report what the renderer is actually using.
+            final String inForce;
+            if (setBySession) {
+                inForce = String.valueOf(sessionParams.get(key));
+            } else if ("JSON_INDENT".equals(key)) {
+                inForce = String.valueOf(VariantJsonFormat.indent());
+            } else {
+                inForce = parameter.getDefaultValue();
+            }
+            // The LEVEL is where the value in force came from: a parameter this session has SET reads
+            // SESSION, and one still on its default reads EMPTY — live shows an unset parameter with a
+            // blank level, never ACCOUNT.
+            rows.add(new Row(Arrays.asList(key, inForce, parameter.getDefaultValue(),
+                setBySession ? "SESSION" : "", parameter.getDescription(), parameter.getType())));
         }
-        // Add any extra session-only parameters
+        // A session parameter the catalog has never heard of still appears once it is set — with no
+        // default and no description, because there is nothing to report for either.
         for (final Map.Entry<String, Object> e : sessionParams.entrySet()) {
             final String key = e.getKey();
-            boolean already = false;
-            for (final Object[] p : params) {
-                if (key.equalsIgnoreCase((String) p[0])) {
-                    already = true;
-                    break;
-                }
-            }
-            if (!already && (likePattern == null || key.toUpperCase().contains(likePattern.toUpperCase().replace("%", "")))) {
-                rows.add(new Row(Arrays.asList(key, e.getValue() != null ? e.getValue().toString() : null, null, "SESSION", null, "TEXT")));
+            if (!listed.contains(key.toUpperCase()) && matchesLike(key, likePattern)) {
+                rows.add(new Row(Arrays.asList(key, e.getValue() != null ? e.getValue().toString() : null,
+                    null, "SESSION", null, "TEXT")));
             }
         }
         return new ResultSet(columns, rows);
     }
 
-    /**
-     * SHOW PARAMETERS IN TASK: the task-scoped parameters, each with the value in force for that
-     * task. The {@code level} column is TASK where the task set the parameter itself and empty
-     * where it is inheriting the default — measured on a real account.
-     */
+    /** SHOW … LIKE matching: the pattern's % are wildcards around a case-insensitive substring. */
+    private boolean matchesLike(final String name, final String likePattern) {
+        return likePattern == null
+            || name.toUpperCase().contains(likePattern.toUpperCase().replace("%", ""));
+    }
+
     public ResultSet showParametersInTask(final String taskName, final String likePattern) {
         final String dbName = catalog.getCurrentDatabase();
         final String scName = catalog.getCurrentSchema();
@@ -260,7 +262,7 @@ final class ShowSessionExecutor {
             new ResultSetColumn("snowflake_region", StringType.VARCHAR),
             new ResultSetColumn("edition", StringType.VARCHAR),
             new ResultSetColumn("account_url", StringType.VARCHAR),
-            new ResultSetColumn("created_on", DateTimeType.TIMESTAMP_LTZ),
+            new ResultSetColumn("created_on", ShowResultHelpers.CREATED_ON),
             new ResultSetColumn("comment", StringType.VARCHAR),
             new ResultSetColumn("account_locator", StringType.VARCHAR),
             new ResultSetColumn("account_locator_url", StringType.VARCHAR),
@@ -341,9 +343,9 @@ final class ShowSessionExecutor {
         columns.add(new ResultSetColumn("resource", StringType.VARCHAR));
         columns.add(new ResultSetColumn("type", StringType.VARCHAR));
         columns.add(new ResultSetColumn("transaction", NumericType.BIGINT));
-        columns.add(new ResultSetColumn("transaction_started_on", DateTimeType.TIMESTAMP_LTZ));
+        columns.add(new ResultSetColumn("transaction_started_on", ShowResultHelpers.CREATED_ON));
         columns.add(new ResultSetColumn("status", StringType.VARCHAR));
-        columns.add(new ResultSetColumn("acquired_on", DateTimeType.TIMESTAMP_LTZ));
+        columns.add(new ResultSetColumn("acquired_on", ShowResultHelpers.CREATED_ON));
         columns.add(new ResultSetColumn("query_id", StringType.VARCHAR));
         final List<Row> rows = new ArrayList<>();
         for (final Transaction txn : transactionManager.getActiveTransactions()) {
@@ -381,7 +383,7 @@ final class ShowSessionExecutor {
             new ResultSetColumn("user", StringType.VARCHAR),
             new ResultSetColumn("session", NumericType.BIGINT),
             new ResultSetColumn("name", StringType.VARCHAR),
-            new ResultSetColumn("started_on", DateTimeType.TIMESTAMP_LTZ),
+            new ResultSetColumn("started_on", ShowResultHelpers.CREATED_ON),
             new ResultSetColumn("state", StringType.VARCHAR),
             new ResultSetColumn("scope", NumericType.BIGINT)
         );
@@ -430,8 +432,8 @@ final class ShowSessionExecutor {
         // family (fixed / text / boolean).
         final List<ResultSetColumn> columns = Arrays.asList(
             new ResultSetColumn("session_id", NumericType.BIGINT),
-            new ResultSetColumn("created_on", DateTimeType.TIMESTAMP_LTZ),
-            new ResultSetColumn("updated_on", DateTimeType.TIMESTAMP_LTZ),
+            new ResultSetColumn("created_on", ShowResultHelpers.CREATED_ON),
+            new ResultSetColumn("updated_on", ShowResultHelpers.CREATED_ON),
             new ResultSetColumn("name", StringType.VARCHAR),
             new ResultSetColumn("value", StringType.VARCHAR),
             new ResultSetColumn("type", StringType.VARCHAR),
@@ -439,7 +441,7 @@ final class ShowSessionExecutor {
         );
         final List<Row> rows = new ArrayList<>();
         final Map<String, Object> vars = securityManager != null
-            ? securityManager.getSessionContext().getAllSessionParameters()
+            ? securityManager.getSessionContext().getAllSessionVariables()
             : sessionVariables;
         for (final Map.Entry<String, Object> e : vars.entrySet()) {
             final Object value = e.getValue();
@@ -540,7 +542,7 @@ final class ShowSessionExecutor {
      */
     public ResultSet showKeysScoped(final boolean primary, final String scopeKind, final String scopeName) {
         final List<ResultSetColumn> cols = Arrays.asList(
-            new ResultSetColumn("created_on", DateTimeType.TIMESTAMP_LTZ),
+            new ResultSetColumn("created_on", ShowResultHelpers.CREATED_ON),
             new ResultSetColumn("database_name", StringType.VARCHAR),
             new ResultSetColumn("schema_name", StringType.VARCHAR),
             new ResultSetColumn("table_name", StringType.VARCHAR),
@@ -612,7 +614,7 @@ final class ShowSessionExecutor {
      */
     public ResultSet showImportedKeys(final String scopeKind, final String scopeName) {
         final List<ResultSetColumn> cols = Arrays.asList(
-            new ResultSetColumn("created_on", DateTimeType.TIMESTAMP_LTZ),
+            new ResultSetColumn("created_on", ShowResultHelpers.CREATED_ON),
             new ResultSetColumn("pk_database_name", StringType.VARCHAR),
             new ResultSetColumn("pk_schema_name", StringType.VARCHAR),
             new ResultSetColumn("pk_table_name", StringType.VARCHAR),

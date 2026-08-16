@@ -16,17 +16,24 @@
 
 package dev.frostlake.functions.scalar.string;
 
+import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.functions.TextArgumentFunction;
 import dev.frostlake.types.StringType;
 
 import java.util.List;
 
+/**
+ * REPEAT(s, n): the string {@code n} times over, NULL when either argument is NULL. The account plans
+ * it as {@code LPAD('', n * LENGTH(s), s)}, which is what judges a BINARY argument — see
+ * {@link SemiStructuredRejection#REPEAT_REWRITE_OPERANDS}.
+ */
 public class Repeat extends TextArgumentFunction {
     public Repeat() { super("REPEAT", StringType.VARCHAR); }
 
     @Override
     public Object evaluate(final List<Object> args) {
-        if (args.get(0) == null) return null;
+        // A NULL count answers NULL as a NULL string does (live: REPEAT('ab', NULL) is NULL).
+        if (args.get(0) == null || args.get(1) == null) return null;
         final String s = args.get(0).toString();
         final int n = ((Number) args.get(1)).intValue();
         if (n <= 0) return "";
@@ -37,4 +44,10 @@ public class Repeat extends TextArgumentFunction {
     public int getMinArgCount() { return 2; }
     @Override
     public int getMaxArgCount() { return 2; }
+
+    /** A BINARY in either position is judged as the LPAD the call is planned as (live-verified). */
+    @Override
+    public SemiStructuredRejection binaryRejection(final int position) {
+        return SemiStructuredRejection.REPEAT_REWRITE_OPERANDS;
+    }
 }

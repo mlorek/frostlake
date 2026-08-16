@@ -1,0 +1,53 @@
+{
+  "suite": "functions-vector-sum",
+  "description": "VECTOR_SUM - every expectation measured on a real Snowflake account. It sums ELEMENT-WISE, skipping NULL rows, and reduces each dimension INDEPENDENTLY: the cross-row fixture is chosen so no row is the winner everywhere, giving [12.000000,16.000000,-3.000000]. The element type is NOT widened to FLOAT, so an INT input sums to [5,14,-3]. A group with no non-NULL row is SQL NULL, not a zero vector; a single-row group is that row; GROUP BY keeps per-group results, including NULL for the NULL row's own group. A non-vector argument is a compile error naming the argument's type. Converted 1:1 from functions/vector/VectorSumTest (now retired); every vector is read as a bare cell, as recorded in functions-vector-avg. The Java's grouped test read row indexes out of a ResultSet; the converted test asserts the whole grouped column as one ordered row set instead.",
+  "tags": ["functions", "vector", "converted"],
+  "tests": [
+    {"name": "it-sums-element-wise-skipping-null-rows", "steps": [
+      {"sql": "CREATE TABLE sum_rows (id INTEGER, v VECTOR(FLOAT,3))"},
+      {"sql": "INSERT INTO sum_rows SELECT 1, [1,2,3]::VECTOR(FLOAT,3)"},
+      {"sql": "INSERT INTO sum_rows SELECT 2, [4,5,6]::VECTOR(FLOAT,3)"},
+      {"sql": "INSERT INTO sum_rows SELECT 3, NULL"},
+      {"sql": "SELECT VECTOR_SUM(v) FROM sum_rows", "expect": {"value": "[5.000000,7.000000,9.000000]"}}
+    ]},
+    {"name": "it-reduces-each-dimension-independently", "steps": [
+      {"sql": "CREATE TABLE sum_cross (v VECTOR(FLOAT,3))"},
+      {"sql": "INSERT INTO sum_cross SELECT [1,9,3]::VECTOR(FLOAT,3)"},
+      {"sql": "INSERT INTO sum_cross SELECT [4,5,-6]::VECTOR(FLOAT,3)"},
+      {"sql": "INSERT INTO sum_cross SELECT [7,2,0]::VECTOR(FLOAT,3)"},
+      {"sql": "SELECT VECTOR_SUM(v) FROM sum_cross", "expect": {"value": "[12.000000,16.000000,-3.000000]"}}
+    ]},
+    {"name": "int-vectors-keep-the-int-element-type", "steps": [
+      {"sql": "CREATE TABLE sum_int (v VECTOR(INT,3))"},
+      {"sql": "INSERT INTO sum_int SELECT [1,9,3]::VECTOR(INT,3)"},
+      {"sql": "INSERT INTO sum_int SELECT [4,5,-6]::VECTOR(INT,3)"},
+      {"sql": "SELECT VECTOR_SUM(v) FROM sum_int", "expect": {"value": "[5,14,-3]"}}
+    ]},
+    {"name": "empty-and-all-null-groups-are-null", "steps": [
+      {"sql": "CREATE TABLE sum_rows (id INTEGER, v VECTOR(FLOAT,3))"},
+      {"sql": "INSERT INTO sum_rows SELECT 1, [1,2,3]::VECTOR(FLOAT,3)"},
+      {"sql": "INSERT INTO sum_rows SELECT 3, NULL"},
+      {"sql": "SELECT VECTOR_SUM(v) FROM sum_rows WHERE id = 99", "expect": {"rows": [[null]]}},
+      {"sql": "SELECT VECTOR_SUM(v) FROM sum_rows WHERE id = 3", "expect": {"rows": [[null]]}}
+    ]},
+    {"name": "a-single-row-group-is-that-row", "steps": [
+      {"sql": "CREATE TABLE sum_rows (id INTEGER, v VECTOR(FLOAT,3))"},
+      {"sql": "INSERT INTO sum_rows SELECT 1, [1,2,3]::VECTOR(FLOAT,3)"},
+      {"sql": "INSERT INTO sum_rows SELECT 2, [4,5,6]::VECTOR(FLOAT,3)"},
+      {"sql": "SELECT VECTOR_SUM(v) FROM sum_rows WHERE id = 1", "expect": {"value": "[1.000000,2.000000,3.000000]"}}
+    ]},
+    {"name": "group-by-keeps-per-group-results", "steps": [
+      {"sql": "CREATE TABLE sum_rows (id INTEGER, v VECTOR(FLOAT,3))"},
+      {"sql": "INSERT INTO sum_rows SELECT 1, [1,2,3]::VECTOR(FLOAT,3)"},
+      {"sql": "INSERT INTO sum_rows SELECT 2, [4,5,6]::VECTOR(FLOAT,3)"},
+      {"sql": "INSERT INTO sum_rows SELECT 3, NULL"},
+      {"sql": "SELECT id, VECTOR_SUM(v) FROM sum_rows GROUP BY id ORDER BY id", "expect": {"rows": [[1, "[1.000000,2.000000,3.000000]"], [2, "[4.000000,5.000000,6.000000]"], [3, null]], "ordered": true}}
+    ]},
+    {"name": "a-non-vector-argument-is-rejected", "steps": [
+      {"sql": "CREATE TABLE sum_rows (id INTEGER, v VECTOR(FLOAT,3))"},
+      {"sql": "INSERT INTO sum_rows SELECT 1, [1,2,3]::VECTOR(FLOAT,3)"},
+      {"sql": "SELECT VECTOR_SUM(1)", "expect": {"error": {"messageContains": "Invalid argument types for function 'VECTOR_SUM': (NUMBER(1,0))"}}},
+      {"sql": "SELECT VECTOR_SUM(id) FROM sum_rows", "expect": {"error": {"messageContains": "Invalid argument types for function 'VECTOR_SUM': (NUMBER(38,0))"}}}
+    ]}
+  ]
+}

@@ -1,0 +1,60 @@
+{
+  "suite": "functions-to-char-date",
+  "description": "TO_CHAR / TO_VARCHAR date-time format model: Snowflake elements (YYYY/YY/Y, MMMM/MON/MM, DD/DY/D, HH24/HH12/HH/H, MI, SS, AM/PM) translate to a formatter with greedy longest-match tokenisation, unmatched characters pass through as literals, and a non-date string is returned unchanged. Snowflake has NO full-name DAY or MONTH elements - both live-verified on 2020-01-15, a Wednesday: 'MONTH' tokenises MON+T+H giving Jan, a literal T and unpadded hour 0, while 'DAY' tokenises D+A+Y giving unpadded day 15, a literal A and 2-digit year 20. Month and day names render in title case, a documented approximation since the format element's case is not propagated. Over a VARCHAR input TO_CHAR is single-argument, so supplying a format is an arity error while the bare form passes the text through. Converted 1:1 from functions/ToCharDateTest (now retired); its @BeforeEach dt fixture is inlined per test.",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "an-iso-date", "steps": [
+      {"sql": "CREATE TABLE dt (d DATE, ts TIMESTAMP)"},
+      {"sql": "INSERT INTO dt VALUES ('2020-01-15', '2020-01-15 13:45:30')"},
+      {"sql": "SELECT TO_CHAR(d, 'YYYY-MM-DD') AS r FROM dt", "expect": {"value": "2020-01-15"}}
+    ]},
+    {"name": "a-us-date-with-slashes", "steps": [
+      {"sql": "CREATE TABLE dt (d DATE, ts TIMESTAMP)"},
+      {"sql": "INSERT INTO dt VALUES ('2020-01-15', '2020-01-15 13:45:30')"},
+      {"sql": "SELECT TO_CHAR(d, 'MM/DD/YYYY') AS r FROM dt", "expect": {"value": "01/15/2020"}}
+    ]},
+    {"name": "an-abbreviated-month-name", "steps": [
+      {"sql": "CREATE TABLE dt (d DATE, ts TIMESTAMP)"},
+      {"sql": "INSERT INTO dt VALUES ('2020-01-15', '2020-01-15 13:45:30')"},
+      {"sql": "SELECT TO_CHAR(d, 'MON DD, YYYY') AS r FROM dt", "expect": {"value": "Jan 15, 2020"}}
+    ]},
+    {"name": "a-full-month-name-and-the-month-non-element", "steps": [
+      {"sql": "CREATE TABLE dt (d DATE, ts TIMESTAMP)"},
+      {"sql": "INSERT INTO dt VALUES ('2020-01-15', '2020-01-15 13:45:30')"},
+      {"sql": "SELECT TO_CHAR(d, 'MMMM') AS r FROM dt", "expect": {"value": "January"}},
+      {"sql": "SELECT TO_CHAR(d, 'MONTH') AS r FROM dt", "expect": {"value": "JanT0"}}
+    ]},
+    {"name": "day-names-and-the-day-non-element", "steps": [
+      {"sql": "CREATE TABLE dt (d DATE, ts TIMESTAMP)"},
+      {"sql": "INSERT INTO dt VALUES ('2020-01-15', '2020-01-15 13:45:30')"},
+      {"sql": "SELECT TO_CHAR(d, 'DY') AS r FROM dt", "expect": {"value": "Wed"}},
+      {"sql": "SELECT TO_CHAR(d, 'DAY') AS r FROM dt", "expect": {"value": "15A20"}}
+    ]},
+    {"name": "the-single-letter-elements", "steps": [
+      {"sql": "CREATE TABLE dt (d DATE, ts TIMESTAMP)"},
+      {"sql": "INSERT INTO dt VALUES ('2020-01-15', '2020-01-15 13:45:30')"},
+      {"sql": "SELECT TO_CHAR(d, 'Y'), TO_CHAR(d, 'D'), TO_CHAR(ts, 'HH') FROM dt",
+       "expect": {"rows": [["20", "15", "13"]]}}
+    ]},
+    {"name": "a-twenty-four-hour-timestamp", "steps": [
+      {"sql": "CREATE TABLE dt (d DATE, ts TIMESTAMP)"},
+      {"sql": "INSERT INTO dt VALUES ('2020-01-15', '2020-01-15 13:45:30')"},
+      {"sql": "SELECT TO_CHAR(ts, 'YYYY-MM-DD HH24:MI:SS') AS r FROM dt",
+       "expect": {"value": "2020-01-15 13:45:30"}}
+    ]},
+    {"name": "a-twelve-hour-timestamp-with-a-meridiem", "steps": [
+      {"sql": "CREATE TABLE dt (d DATE, ts TIMESTAMP)"},
+      {"sql": "INSERT INTO dt VALUES ('2020-01-15', '2020-01-15 13:45:30')"},
+      {"sql": "SELECT TO_CHAR(ts, 'HH12:MI AM') AS r FROM dt", "expect": {"value": "01:45 PM"}}
+    ]},
+    {"name": "the-to-varchar-synonym-formats-a-year", "steps": [
+      {"sql": "CREATE TABLE dt (d DATE, ts TIMESTAMP)"},
+      {"sql": "INSERT INTO dt VALUES ('2020-01-15', '2020-01-15 13:45:30')"},
+      {"sql": "SELECT TO_VARCHAR(d, 'YYYY') AS r FROM dt", "expect": {"value": "2020"}}
+    ]},
+    {"name": "a-non-date-string-passes-through-without-a-format", "steps": [
+      {"sql": "SELECT TO_CHAR('hello') AS r", "expect": {"value": "hello"}},
+      {"sql": "SELECT TO_CHAR('hello', 'YYYY-MM-DD') AS r", "expect": {"error": {}}}
+    ]}
+  ]
+}

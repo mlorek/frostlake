@@ -18,18 +18,23 @@
 package dev.frostlake.executor.commands;
 
 import dev.frostlake.executor.ExpressionEvaluator;
+import dev.frostlake.executor.FileFormatReference;
+import dev.frostlake.executor.NumericRangeRefusal;
 import dev.frostlake.executor.ParseTreeText;
 import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.executor.SQLCommandVisitor;
 import dev.frostlake.executor.SqlCompilationError;
+import dev.frostlake.executor.SqlIdentifiers;
 import dev.frostlake.executor.SqlStringLiterals;
 import dev.frostlake.executor.StatementErrors;
+import dev.frostlake.executor.TransientRetentionLimit;
 import dev.frostlake.executor.expressions.ColumnReferenceExpression;
 import dev.frostlake.executor.expressions.Expression;
 import dev.frostlake.executor.procedural.ProceduralException;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.DataMetricFunctions;
 import dev.frostlake.metastore.InstanceFamilies;
+import dev.frostlake.metastore.NoCurrentDatabaseRefusal;
 import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.Taggable;
 import dev.frostlake.metastore.model.AggregationPolicy;
@@ -61,7 +66,10 @@ import dev.frostlake.metastore.model.View;
 import dev.frostlake.metastore.model.Warehouse;
 import dev.frostlake.metastore.model.WarehouseSize;
 import dev.frostlake.parser.FrostlakeParser;
+import dev.frostlake.storage.Row;
+import dev.frostlake.storage.TableStorage;
 import dev.frostlake.task.TaskScheduler;
+import dev.frostlake.types.BinaryType;
 import dev.frostlake.types.DataType;
 import dev.frostlake.types.DateTimeType;
 import dev.frostlake.types.GeographyType;
@@ -76,6 +84,7 @@ import org.antlr.v4.runtime.tree.TerminalNode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.math.BigDecimal;
 import java.time.Instant;
 
 import java.time.ZoneId;
@@ -181,18 +190,56 @@ public class AlterCommandHandler implements CommandHandler {
                         throw ParameterRegistry.invalidProperty(ParameterRegistry.spell(rawKey), "DATABASE");
                     }
                     requireLegalRetention(rawKey, ctx.databaseAction().copyOptionValue());
+                    requireAccountRetention(rawKey, ctx.databaseAction().copyOptionValue());
+                    requireTransientRetention(rawKey, database.isTransientObject(),
+                        ctx.databaseAction().copyOptionValue());
+                    if ("DATA_RETENTION_TIME_IN_DAYS".equalsIgnoreCase(rawKey)
+                            && ctx.databaseAction().copyOptionValue() != null
+                            && ctx.databaseAction().copyOptionValue().getText().matches("[0-9]+")) {
+                        database.setDataRetentionTimeInDays(
+                            Integer.valueOf(ctx.databaseAction().copyOptionValue().getText()));
+                    }
+                } else if (ctx.databaseAction().UNSET() != null
+                        && ctx.databaseAction().optionKey() != null) {
+                    // UNSET restores INHERITANCE: the database falls back to the account default,
+                    // and SHOW answers that value afterwards (live-verified). Other parameters are
+                    // accepted and inert, mirroring SET.
+                    if ("DATA_RETENTION_TIME_IN_DAYS".equalsIgnoreCase(
+                            ctx.databaseAction().optionKey().getText())) {
+                        database.setDataRetentionTimeInDays(null);
+                    }
                 }
 
             } else if (ctx.SCHEMA() != null) {
                 final String schemaName = visitor.getText(ctx.qualifiedName());
-                final Schema schema = catalog.resolveSchema(QualifiedName.of(qualifiedNameParts(ctx.qualifiedName())));
+                final Schema schema = catalog.resolveSchema(
+                    QualifiedName.of(catalog.withoutAccount(qualifiedNameParts(ctx.qualifiedName()), 2)));
                 checkAlter(SecurableObjectType.SCHEMA, schemaName);
                 if (ctx.schemaAction() != null && ctx.schemaAction().SET() != null
                         && ctx.schemaAction().optionKey() != null) {
                     // Schema parameters are accepted and inert — except a value the account
-                    // refuses: a negative retention is the bracketed invalid-value shape.
-                    requireLegalRetention(ctx.schemaAction().optionKey().getText(),
-                        ctx.schemaAction().copyOptionValue());
+                    // refuses (a negative retention, the 90-day ceiling, the transient cap) and
+                    // the retention itself, which is STORED and read back by SHOW.
+                    final String rawKey = ctx.schemaAction().optionKey().getText();
+                    requireLegalRetention(rawKey, ctx.schemaAction().copyOptionValue());
+                    requireAccountRetention(rawKey, ctx.schemaAction().copyOptionValue());
+                    requireTransientRetention(rawKey,
+                        schema.isTransientObject(), ctx.schemaAction().copyOptionValue());
+                    if ("DATA_RETENTION_TIME_IN_DAYS".equalsIgnoreCase(rawKey)
+                            && ctx.schemaAction().copyOptionValue() != null
+                            && ctx.schemaAction().copyOptionValue().getText().matches("[0-9]+")) {
+                        schema.setDataRetentionTimeInDays(
+                            Integer.valueOf(ctx.schemaAction().copyOptionValue().getText()));
+                    }
+                }
+                if (ctx.schemaAction() != null && ctx.schemaAction().UNSET() != null
+                        && ctx.schemaAction().optionKey() != null) {
+                    // UNSET restores INHERITANCE: the schema falls back to its database's CURRENT
+                    // value (live-verified — SHOW answers the container's value afterwards).
+                    if ("DATA_RETENTION_TIME_IN_DAYS".equalsIgnoreCase(
+                            ctx.schemaAction().optionKey().getText())) {
+                        schema.setDataRetentionTimeInDays(null);
+                    }
                 }
 
                 if (ctx.schemaAction().RENAME() != null) {
@@ -439,6 +486,11 @@ public class AlterCommandHandler implements CommandHandler {
                         // table there (Snowflake semantics); otherwise it is renamed in place. Both the
                         // catalog entry and the row storage are re-keyed so the new location is queryable.
                         final String[] targetParts = qualifiedNameParts(ctx.tableAction().qualifiedName());
+                        if (targetParts.length < 3 && catalog.getCurrentDatabase() == null) {
+                            // A new name that does not place itself is created in the session's schema, and
+                            // a session with no current database has none (live-verified).
+                            throw NoCurrentDatabaseRefusal.naming("CREATE TABLE");
+                        }
                         final String[] srcParts = QualifiedName.parse(
                             queryExecutor.getFullyQualifiedTableName(tableName)).parts();
                         final String srcDb = srcParts[0];
@@ -451,12 +503,15 @@ public class AlterCommandHandler implements CommandHandler {
                             targetSchema = targetParts[1];
                             newName = targetParts[2];
                         } else if (targetParts.length == 2) {
-                            targetDb = srcDb;
+                            // The new name resolves as any created name does: in the SESSION's database,
+                            // so a two-part one names a schema there and an unqualified one the session's
+                            // own schema — the table MOVES there (live-verified).
+                            targetDb = catalog.getCurrentDatabase();
                             targetSchema = targetParts[0];
                             newName = targetParts[1];
                         } else {
-                            targetDb = srcDb;
-                            targetSchema = srcSchema;
+                            targetDb = catalog.getCurrentDatabase();
+                            targetSchema = catalog.getCurrentSchema();
                             newName = targetParts[0];
                         }
                         if (targetDb.equalsIgnoreCase(srcDb) && targetSchema.equalsIgnoreCase(srcSchema)) {
@@ -735,8 +790,10 @@ public class AlterCommandHandler implements CommandHandler {
                             col.setProjectionPolicyName(policyName);
                         }
                         logger.trace("Set/unset projection policy on column {}.{}", tableName, colName);
-                    } else if (ctx.tableAction().ALTER() != null && ctx.tableAction().MASKING() != null) {
-                        // ALTER COLUMN col SET/UNSET MASKING POLICY
+                    } else if ((ctx.tableAction().ALTER() != null || ctx.tableAction().MODIFY() != null)
+                            && ctx.tableAction().MASKING() != null) {
+                        // {ALTER | MODIFY} COLUMN col SET/UNSET MASKING POLICY — one action, both
+                        // spellings (live-verified: the MODIFY form runs and refuses identically).
                         final String colName = visitor.getText(ctx.tableAction().identifier(0));
                         requireColumn(table, colName, ctx.tableAction().identifier(0));
                         final TableColumn col = table.getColumn(colName);
@@ -939,6 +996,9 @@ public class AlterCommandHandler implements CommandHandler {
                                 : ctx.tableAction().tableUnsetProperties().optionKey()) {
                             if ("CHANGE_TRACKING".equalsIgnoreCase(key.getText())) {
                                 table.setChangeTracking(false);
+                            } else if ("DATA_RETENTION_TIME_IN_DAYS".equalsIgnoreCase(key.getText())) {
+                                // Back to INHERITING the container's value, like the schema's UNSET.
+                                table.setDataRetentionTimeInDays(null);
                             } else if ("ENABLE_SCHEMA_EVOLUTION".equalsIgnoreCase(key.getText())) {
                                 table.setSchemaEvolution(false);
                             } else if ("DATA_METRIC_SCHEDULE".equalsIgnoreCase(key.getText())) {
@@ -955,8 +1015,15 @@ public class AlterCommandHandler implements CommandHandler {
                                 : ctx.tableAction().tableSetProperty()) {
                             final String rawKey = property.optionKey().getText();
                             requireLegalRetention(rawKey, property.copyOptionValue());
+                            requireAccountRetention(rawKey, property.copyOptionValue());
                             requireLegalExtensionTime(rawKey, property.copyOptionValue());
                             requireLegalErrorLogging(rawKey, property.copyOptionValue());
+                            if ("DATA_RETENTION_TIME_IN_DAYS".equalsIgnoreCase(rawKey)
+                                    && property.copyOptionValue() != null
+                                    && property.copyOptionValue().getText().matches("[0-9]+")) {
+                                table.setDataRetentionTimeInDays(
+                                    Integer.valueOf(property.copyOptionValue().getText()));
+                            }
                             if ("CHANGE_TRACKING".equalsIgnoreCase(rawKey)) {
                                 // The one modeled table property: the CHANGES clause requires it.
                                 final FrostlakeParser.CopyOptionValueContext value = property.copyOptionValue();
@@ -1004,8 +1071,13 @@ public class AlterCommandHandler implements CommandHandler {
                 checkAlter(SecurableObjectType.VIEW, viewName);
 
                 if (ctx.viewAction().RENAME() != null) {
+                    if (catalog.getCurrentDatabase() == null) {
+                        // The new name is created in the session's schema, as a table's is.
+                        throw NoCurrentDatabaseRefusal.naming("CREATE VIEW");
+                    }
                     final String newName = visitor.getText(ctx.viewAction().identifier());
-                    catalog.renameView(viewName, newName);
+                    // The new name is the session's schema's, as a table's is: a view read elsewhere MOVES.
+                    catalog.moveView(viewName, catalog.getCurrentDatabase(), catalog.getCurrentSchema(), newName);
                     logger.trace("Renamed view {} to {}", viewName, newName);
                 } else if (ctx.viewAction().COMMENT() != null) {
                     final String comment = visitor.extractStringLiteral(ctx.viewAction().STRING_LITERAL());
@@ -1220,9 +1292,13 @@ public class AlterCommandHandler implements CommandHandler {
                     logger.trace("Set URL on stage: {}", stageName);
                 } else if (stageAction.FILE_FORMAT() != null) {
                     if (stageAction.STRING_LITERAL() != null) {
-                        stage.setFileFormat(visitor.extractStringLiteral(stageAction.STRING_LITERAL()));
+                        final String named = visitor.extractStringLiteral(stageAction.STRING_LITERAL());
+                        FileFormatReference.require(catalog, SqlIdentifiers.canonicalText(named));
+                        stage.setFileFormat(named);
                     } else if (stageAction.qualifiedName() != null) {
-                        stage.setFileFormat(visitor.getText(stageAction.qualifiedName()));
+                        final String named = visitor.getText(stageAction.qualifiedName());
+                        FileFormatReference.require(catalog, named);
+                        stage.setFileFormat(named);
                     } else if (stageAction.parenOptionList() != null) {
                         applyStageFormatOptions(stage, stageAction.parenOptionList());
                     }
@@ -1510,14 +1586,14 @@ public class AlterCommandHandler implements CommandHandler {
     private void applyAlterColumnItems(final Table table, final String tableName,
             final List<FrostlakeParser.AlterColumnItemContext> items) {
         for (final FrostlakeParser.AlterColumnItemContext item : items) {
-            validateAlterColumnItem(table, item);
+            validateAlterColumnItem(table, tableName, item);
         }
         for (final FrostlakeParser.AlterColumnItemContext item : items) {
             applyAlterColumnItem(table, tableName, item);
         }
     }
 
-    private void validateAlterColumnItem(final Table table,
+    private void validateAlterColumnItem(final Table table, final String tableName,
             final FrostlakeParser.AlterColumnItemContext item) {
         final String colName = visitor.getText(item.identifier());
         if (!table.hasColumn(colName)) {
@@ -1537,21 +1613,23 @@ public class AlterCommandHandler implements CommandHandler {
             // is refused with a message that QUOTES both types (live-verified).
             final DataType newDataType =
                 visitor.parseDataType(action.dataTypeName(), action.typeParameters());
-            final String newCollation = action.collateClause() != null
-                ? visitor.extractStringLiteral(action.collateClause().STRING_LITERAL()) : null;
+            final String newCollation = ColumnDefinitionParser.storedCollation(action.collateClause());
             if (column.getDataType().getClass().equals(newDataType.getClass())
                     && !collationsMatch(column.getCollation(), newCollation)) {
-                throw new RuntimeException("cannot change column " + colName.toUpperCase()
+                throw new RuntimeException(SqlCompilationError.trailing("cannot change column "
+                    + colName.toUpperCase()
                     + " from type \"" + typeText(column.getDataType()) + collateSuffix(column.getCollation())
                     + "\" to \"" + typeText(newDataType) + collateSuffix(newCollation)
-                    + "\" because they have incompatible collations.");
+                    + "\" because they have incompatible collations."));
             }
             final String refusalReason = retypeRefusalReason(column.getDataType(), newDataType);
             if (refusalReason != null) {
-                throw new RuntimeException("cannot change column " + colName.toUpperCase()
+                throw new RuntimeException(SqlCompilationError.trailing("cannot change column "
+                    + colName.toUpperCase()
                     + " from type " + typeText(column.getDataType()) + " to " + typeText(newDataType)
-                    + refusalReason);
+                    + refusalReason));
             }
+            requireStoredValuesRepresentable(table, tableName, colName, column.getDataType(), newDataType);
         } else if (action.SET() != null && action.DEFAULT() != null) {
             // ALTER COLUMN SET DEFAULT is refused in almost every shape — the one accepted case is
             // re-pointing a column that ALREADY carries a sequence default at a sequence, which may
@@ -1586,12 +1664,67 @@ public class AlterCommandHandler implements CommandHandler {
      * restate its own subtype, DATE / TIME / the timestamp variants being distinct (TIMESTAMP and
      * DATETIME are spellings of TIMESTAMP_NTZ).
      */
+    /**
+     * A NUMBER may NARROW its precision only when every stored value still fits: the retype scans the
+     * column's data at DDL time and refuses the whole ALTER when any row cannot be represented at the
+     * new width — naming the two PRECISIONS, never the value (live-verified). NULLs pass, an empty
+     * column narrows freely, and the widths alone never refuse; the direction refusals above run
+     * first, so a scale change or a varchar shrink keeps its own sentence whatever the data.
+     */
+    private void requireStoredValuesRepresentable(final Table table, final String tableName,
+            final String colName, final DataType oldType, final DataType newType) {
+        if (!(oldType instanceof NumericType) || !(newType instanceof NumericType)
+                || NumericType.isApproximate(oldType) || NumericType.isApproximate(newType)) {
+            return;
+        }
+        final int oldPrecision = ((NumericType) oldType).getPrecision();
+        final int newPrecision = ((NumericType) newType).getPrecision();
+        if (newPrecision >= oldPrecision) {
+            return;
+        }
+        final TableStorage storage = queryExecutor.getStorageEngine()
+            .getTableStorage(queryExecutor.getFullyQualifiedTableName(tableName));
+        if (storage == null) {
+            return;
+        }
+        int slot = -1;
+        final List<TableColumn> columns = table.getColumns();
+        for (int i = 0; i < columns.size(); i++) {
+            if (columns.get(i).getName().equalsIgnoreCase(colName)) {
+                slot = i;
+                break;
+            }
+        }
+        if (slot < 0) {
+            return;
+        }
+        final int scale = ((NumericType) newType).getScale();
+        for (final Row row : storage.scan()) {
+            final Object value = row.getValue(slot);
+            if (value instanceof Number
+                    && NumericRangeRefusal.exceeds(new BigDecimal(value.toString()), newPrecision, scale)) {
+                throw new RuntimeException(SqlCompilationError.trailing("cannot change column "
+                    + colName.toUpperCase()
+                    + " from type " + typeText(oldType) + " to " + typeText(newType)
+                    + " because some existing values cannot be represented using precision "
+                    + newPrecision + " instead of precision " + oldPrecision + "."));
+            }
+        }
+    }
+
     private static String retypeRefusalReason(final DataType oldType, final DataType newType) {
         if (!oldType.getClass().equals(newType.getClass())) {
             return "";
         }
         if (oldType instanceof NumericType) {
-            return ((NumericType) newType).getScale() != ((NumericType) oldType).getScale() ? "" : null;
+            if (((NumericType) newType).getScale() == ((NumericType) oldType).getScale()) {
+                return null;
+            }
+            // The reason clause is for two EXACT numbers only. A FLOAT on either side is refused with
+            // no reason at all, even though the scales differ there too — live-measured in both
+            // directions, and the approximate family's scale is a placeholder rather than a decision.
+            return NumericType.isApproximate(oldType) || NumericType.isApproximate(newType)
+                ? "" : " because changing the scale of a number is not supported.";
         }
         if (oldType instanceof StringType) {
             return ((StringType) newType).getMaxLength() < ((StringType) oldType).getMaxLength()
@@ -1616,12 +1749,39 @@ public class AlterCommandHandler implements CommandHandler {
         return collation == null ? "" : " COLLATE '" + collation + "'";
     }
 
-    /** A type as Snowflake spells it in a retype refusal: with its parameters, e.g. VARCHAR(100). */
+    /**
+     * A type as Snowflake spells it in a retype refusal — with the parameters that type really has,
+     * which is not the same as "with its parameters". Measured across every target a retype can name:
+     *
+     * <pre>
+     *   VARCHAR(10)  BINARY(8)  NUMBER(10,2)      the width or the pair, as declared
+     *   TIME(9)  TIMESTAMP_NTZ(9)  TIMESTAMP_TZ(9)   a fractional-seconds precision, DEFAULTED to 9
+     *   DATE  BOOLEAN  VARIANT  OBJECT  ARRAY     no parameters at all
+     *   FLOAT                                     the approximate family has NO pair to quote
+     * </pre>
+     *
+     * <p>The FLOAT line is the one that was wrong: every NumericType was printed with a precision and
+     * scale, so an approximate column was quoted as FLOAT(38,9) — the same fabricated pair #344 removed
+     * from every other surface. That pair is an engine-internal placeholder and must never be shown.
+     * DOUBLE and REAL are stored as FLOAT and live names them FLOAT here too, so the name needs no
+     * mapping of its own.
+     */
     private static String typeText(final DataType type) {
         if (type instanceof StringType) {
             return type.getName() + "(" + ((StringType) type).getMaxLength() + ")";
         }
+        if (type instanceof BinaryType) {
+            return type.getName() + "(" + ((BinaryType) type).getMaxLength() + ")";
+        }
+        if (type instanceof DateTimeType) {
+            // A DATE has no fractional seconds to state; every other temporal names its precision.
+            return "DATE".equalsIgnoreCase(type.getName()) ? type.getName()
+                : type.getName() + "(" + ((DateTimeType) type).getPrecision() + ")";
+        }
         if (type instanceof NumericType) {
+            if (NumericType.isApproximate(type)) {
+                return type.getName();
+            }
             final NumericType numeric = (NumericType) type;
             return type.getName() + "(" + numeric.getPrecision() + "," + numeric.getScale() + ")";
         }
@@ -1661,6 +1821,22 @@ public class AlterCommandHandler implements CommandHandler {
             table.getColumn(colName).setComment(action.UNSET() != null
                 ? null : visitor.extractStringLiteral(action.STRING_LITERAL()));
             logger.trace("Set/unset comment on column {}.{}", tableName, colName);
+        }
+    }
+
+    /** The transient cap, which turns the modifier into a rule rather than a metadata word. */
+    private static void requireTransientRetention(final String rawKey, final boolean transientObject,
+            final FrostlakeParser.CopyOptionValueContext value) {
+        if ("DATA_RETENTION_TIME_IN_DAYS".equalsIgnoreCase(rawKey) && value != null) {
+            TransientRetentionLimit.requireWithinTransientLimit(transientObject, value.getText());
+        }
+    }
+
+    /** The 90-day account ceiling, applied wherever a retention value is SET. */
+    private static void requireAccountRetention(final String rawKey,
+            final FrostlakeParser.CopyOptionValueContext value) {
+        if ("DATA_RETENTION_TIME_IN_DAYS".equalsIgnoreCase(rawKey) && value != null) {
+            TransientRetentionLimit.requireWithinAccountLimit(value.getText());
         }
     }
 

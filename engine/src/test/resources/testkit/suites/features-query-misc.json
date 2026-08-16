@@ -1,0 +1,63 @@
+{
+  "suite": "features-query-misc",
+  "description": "MERGE into a PRIMARY KEY RELY table is idempotent; $n positional params inside a CTE; qualified star e.* works while the e.** spread is rejected. Converted 1:1 from features/MergePrimaryKeyTest, PositionalParamCteTest and SpreadOperatorTest (all now retired).",
+  "tags": ["features", "converted"],
+  "tests": [
+    {
+      "name": "merge-into-table-with-primary-key-constraint",
+      "steps": [
+        {"sql": "CREATE SCHEMA IF NOT EXISTS app"},
+        {"sql": "USE SCHEMA app"},
+        {"sql": "CREATE OR REPLACE TABLE app.sla_tier_bounds(    severity_level   NUMBER(38,0) NOT NULL,    days_lower_bound NUMBER(38,0),    days_upper_bound NUMBER(38,0),    CONSTRAINT pk_config PRIMARY KEY (severity_level) RELY)"},
+        {"sql": "MERGE INTO app.sla_tier_bounds AS t USING (    SELECT $1, $2, $3 FROM VALUES        (1, 1, 181), (2, 30, 92), (3, 7, 62), (4, 3, 32)) AS s (severity_level, days_lower_bound, days_upper_bound) ON s.severity_level = t.severity_level WHEN MATCHED AND (s.days_lower_bound != t.days_lower_bound OR s.days_upper_bound != t.days_upper_bound) THEN UPDATE     SET days_lower_bound = s.days_lower_bound, days_upper_bound = s.days_upper_bound WHEN NOT MATCHED THEN INSERT (severity_level, days_lower_bound, days_upper_bound)     VALUES (s.severity_level, s.days_lower_bound, s.days_upper_bound)"},
+        {"sql": "SELECT COUNT(*) FROM app.sla_tier_bounds", "expect": {"value": "4"}},
+        {"sql": "MERGE INTO app.sla_tier_bounds AS t USING (    SELECT $1, $2, $3 FROM VALUES        (1, 1, 181), (2, 30, 92), (3, 7, 62), (4, 3, 32)) AS s (severity_level, days_lower_bound, days_upper_bound) ON s.severity_level = t.severity_level WHEN MATCHED AND (s.days_lower_bound != t.days_lower_bound OR s.days_upper_bound != t.days_upper_bound) THEN UPDATE     SET days_lower_bound = s.days_lower_bound, days_upper_bound = s.days_upper_bound WHEN NOT MATCHED THEN INSERT (severity_level, days_lower_bound, days_upper_bound)     VALUES (s.severity_level, s.days_lower_bound, s.days_upper_bound)"},
+        {"sql": "SELECT COUNT(*) FROM app.sla_tier_bounds", "expect": {"value": "4"}}
+      ]
+    },
+    {
+      "name": "cte-with-positional-params",
+      "steps": [
+        {"sql": "WITH t AS (  SELECT $1 AS a1, $2 AS a2   FROM (    SELECT 'a', TRUE     UNION SELECT 'b', TRUE     UNION SELECT 'c', TRUE  )) SELECT a1, a2 FROM t ORDER BY a1",
+         "expect": {"rowCount": 3, "rows": [["a", "true"], ["b", "true"], ["c", "true"]], "ordered": true}}
+      ]
+    },
+    {
+      "name": "qualified-star",
+      "steps": [
+        {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, dept VARCHAR)"},
+        {"sql": "INSERT INTO employees VALUES (1, 'Alice', 'Engineering')"},
+        {"sql": "INSERT INTO employees VALUES (2, 'Bob', 'Marketing')"},
+        {"sql": "SELECT e.* FROM employees e ORDER BY e.id",
+         "expect": {"columns": ["ID", "NAME", "DEPT"], "rows": [["1", "Alice", "Engineering"], ["2", "Bob", "Marketing"]], "ordered": true}}
+      ]
+    },
+    {
+      "name": "spread-operator-is-rejected",
+      "steps": [
+        {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, dept VARCHAR)"},
+        {"sql": "SELECT e.** FROM employees e ORDER BY e.id", "expect": {"error": {}}}
+      ]
+    },
+    {
+      "name": "spread-operator-with-additional-column-is-rejected",
+      "steps": [
+        {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, dept VARCHAR)"},
+        {"sql": "SELECT e.**, UPPER(e.name) AS upper_name FROM employees e ORDER BY e.id", "expect": {"error": {}}}
+      ]
+    },
+    {
+      "name": "qualified-star-join",
+      "steps": [
+        {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, dept VARCHAR)"},
+        {"sql": "INSERT INTO employees VALUES (1, 'Alice', 'Engineering')"},
+        {"sql": "INSERT INTO employees VALUES (2, 'Bob', 'Marketing')"},
+        {"sql": "CREATE TABLE depts (dept VARCHAR, budget INTEGER)"},
+        {"sql": "INSERT INTO depts VALUES ('Engineering', 500000)"},
+        {"sql": "INSERT INTO depts VALUES ('Marketing', 200000)"},
+        {"sql": "SELECT e.*, d.budget FROM employees e JOIN depts d ON e.dept = d.dept ORDER BY e.id",
+         "expect": {"rows": [["1", "Alice", "Engineering", "500000"], ["2", "Bob", "Marketing", "200000"]], "ordered": true}}
+      ]
+    }
+  ]
+}

@@ -52,6 +52,10 @@ public final class NumericLiteralTypes {
         } else if (value instanceof Long || value instanceof Integer || value instanceof Short
                 || value instanceof Byte) {
             decimal = BigDecimal.valueOf(((Number) value).longValue());
+        } else if (value instanceof Double || value instanceof Float) {
+            // A literal past the exact range is carried as a double, and answers FLOAT the way every
+            // other approximate value does — see exceedsExactRange.
+            return NumericType.FLOAT;
         } else {
             return null;
         }
@@ -70,18 +74,53 @@ public final class NumericLiteralTypes {
      * @return its value
      */
     public static BigDecimal exactValue(final String text) {
-        final BigDecimal parsed = new BigDecimal(text);
-        return parsed.scale() < 0 ? parsed.setScale(0) : parsed;
+        // TRAILING ZEROS ARE NOT PART OF THE VALUE: live types 1.00 as NUMBER(1,0), spells it that way
+        // in an argument-type refusal, and renders it back as 1 — the literal is normalised before
+        // anything reads it, and 0.10 keeps only the decimal that means something (NUMBER(2,1)).
+        // A negative scale from the strip (100.00 → 1E+2) is put back to zero, as an exponentless
+        // spelling of the same value.
+        final BigDecimal stripped = new BigDecimal(text).stripTrailingZeros();
+        return stripped.scale() < 0 ? stripped.setScale(0) : stripped;
     }
 
     /** The NUMBER type of an exact decimal value. */
     public static NumericType forDecimal(final BigDecimal value) {
         final BigDecimal normalized = value.stripTrailingZeros();
         final int scale = Math.max(normalized.scale(), 0);
-        // precision() counts the unscaled digits, so subtracting the scale leaves the integer digits —
-        // which is zero or negative for a value below 1, hence the floor of one.
-        final int integerDigits = Math.max(normalized.precision() - normalized.scale(), 1);
-        final int precision = Math.min(integerDigits + scale, MAX_PRECISION);
+        final int precision = Math.min(digitsOf(normalized), MAX_PRECISION);
         return new NumericType("NUMBER", precision, scale);
+    }
+
+    /**
+     * Whether an exact value needs MORE digits than a NUMBER can hold, which is what takes a literal
+     * out of the fixed-point family altogether: live answers {@code 1e37} as NUMBER(38,0) and
+     * {@code 1e38} — one digit wider — as a DOUBLE, and does the same for the point spelling at
+     * thirty-nine digits. The notation decides nothing; only the magnitude does.
+     *
+     * <p>Trailing zeros are stripped first, for the reason {@link #forDecimal} strips them: a literal
+     * written {@code 99…9.0} with thirty-eight nines is a thirty-eight digit number, and counting its
+     * dropped {@code .0} would push it over a boundary live keeps it inside.
+     *
+     * @param value the literal's exact value
+     * @return whether it is past the exact range
+     */
+    public static boolean exceedsExactRange(final BigDecimal value) {
+        return digitsOf(value.stripTrailingZeros()) > MAX_PRECISION;
+    }
+
+    /**
+     * The digits a normalised value needs — its integer digits plus its scale.
+     *
+     * <p>{@code precision()} counts the unscaled digits, so subtracting the scale leaves the integer
+     * digits — which is zero or negative for a value below 1, hence the floor of one. A NEGATIVE scale
+     * (what {@code stripTrailingZeros} leaves for {@code 1e20}) widens the integer part by that much
+     * and contributes no decimals of its own.
+     *
+     * @param normalized the value with its trailing zeros stripped
+     * @return how many digits it needs
+     */
+    private static int digitsOf(final BigDecimal normalized) {
+        return Math.max(normalized.precision() - normalized.scale(), 1)
+            + Math.max(normalized.scale(), 0);
     }
 }

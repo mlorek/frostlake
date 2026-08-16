@@ -1,0 +1,62 @@
+{
+  "suite": "functions-udf-parameter-default",
+  "description": "A UDF parameter declared with a DEFAULT may be omitted at the call site. The default was already parsed and stored, and a stored-procedure CALL already applied it, but a FUNCTION call resolved strictly by exact parameter count - so a call that relied on defaults matched no overload, and because the caller swallows that exception it surfaced as the misleading Unknown function. Defaults compose with named arguments (an unnamed defaulted parameter takes its DEFAULT, not NULL), overload resolution still prefers the exact arity before applying defaults, a default may be an expression, an EXPLICIT NULL is passed through rather than replaced, and defaults apply to non-SQL languages too. The last two tests cover the sibling defect: a SQL body was unquoted a SECOND time at call time, so $$ 'plain' $$ became the column reference plain and failed with Column not found: PLAIN. Converted 1:1 from functions/UdfParameterDefaultTest (now retired); the class created tag() in a @BeforeEach, so each converted test creates it as its first step.",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "all-arguments-supplied-positionally", "steps": [
+      {"sql": "CREATE OR REPLACE FUNCTION tag(a INTEGER, b VARCHAR DEFAULT 'B', c VARCHAR DEFAULT 'C')\nRETURNS VARCHAR AS $$ a || '|' || b || '|' || c $$"},
+      {"sql": "SELECT tag(1, 'x', 'y')", "expect": {"value": "1|x|y"}}
+    ]},
+    {"name": "a-trailing-default-may-be-omitted", "steps": [
+      {"sql": "CREATE OR REPLACE FUNCTION tag(a INTEGER, b VARCHAR DEFAULT 'B', c VARCHAR DEFAULT 'C')\nRETURNS VARCHAR AS $$ a || '|' || b || '|' || c $$"},
+      {"sql": "SELECT tag(1, 'x')", "expect": {"value": "1|x|C"}}
+    ]},
+    {"name": "every-default-may-be-omitted", "steps": [
+      {"sql": "CREATE OR REPLACE FUNCTION tag(a INTEGER, b VARCHAR DEFAULT 'B', c VARCHAR DEFAULT 'C')\nRETURNS VARCHAR AS $$ a || '|' || b || '|' || c $$"},
+      {"sql": "SELECT tag(1)", "expect": {"value": "1|B|C"}}
+    ]},
+    {"name": "a-parameter-without-a-default-is-still-required", "steps": [
+      {"sql": "CREATE OR REPLACE FUNCTION tag(a INTEGER, b VARCHAR DEFAULT 'B', c VARCHAR DEFAULT 'C')\nRETURNS VARCHAR AS $$ a || '|' || b || '|' || c $$"},
+      {"sql": "SELECT tag()", "expect": {"error": {}}}
+    ]},
+    {"name": "too-many-arguments-are-still-rejected", "steps": [
+      {"sql": "CREATE OR REPLACE FUNCTION tag(a INTEGER, b VARCHAR DEFAULT 'B', c VARCHAR DEFAULT 'C')\nRETURNS VARCHAR AS $$ a || '|' || b || '|' || c $$"},
+      {"sql": "SELECT tag(1, 'x', 'y', 'z')", "expect": {"error": {}}}
+    ]},
+    {"name": "a-named-call-may-leave-a-defaulted-parameter-unnamed", "steps": [
+      {"sql": "CREATE OR REPLACE FUNCTION tag(a INTEGER, b VARCHAR DEFAULT 'B', c VARCHAR DEFAULT 'C')\nRETURNS VARCHAR AS $$ a || '|' || b || '|' || c $$"},
+      {"sql": "SELECT tag(1, c => 'z')", "expect": {"value": "1|B|z"}}
+    ]},
+    {"name": "named-arguments-may-be-given-out-of-order", "steps": [
+      {"sql": "CREATE OR REPLACE FUNCTION tag(a INTEGER, b VARCHAR DEFAULT 'B', c VARCHAR DEFAULT 'C')\nRETURNS VARCHAR AS $$ a || '|' || b || '|' || c $$"},
+      {"sql": "SELECT tag(1, c => 'q', b => 'p')", "expect": {"value": "1|p|q"}}
+    ]},
+    {"name": "overload-resolution-prefers-the-exact-arity-before-applying-defaults", "steps": [
+      {"sql": "CREATE OR REPLACE FUNCTION pick(a INTEGER) RETURNS VARCHAR AS $$ 'one' $$"},
+      {"sql": "CREATE OR REPLACE FUNCTION pick(a INTEGER, b INTEGER, c INTEGER DEFAULT 9) RETURNS VARCHAR AS $$ 'three:' || c $$"},
+      {"sql": "SELECT pick(1)", "expect": {"value": "one"}},
+      {"sql": "SELECT pick(1, 2)", "expect": {"value": "three:9"}},
+      {"sql": "SELECT pick(1, 2, 3)", "expect": {"value": "three:3"}}
+    ]},
+    {"name": "a-default-may-be-an-expression", "steps": [
+      {"sql": "CREATE OR REPLACE FUNCTION addup(a INTEGER, b INTEGER DEFAULT 2 + 3) RETURNS INTEGER AS $$ a + b $$"},
+      {"sql": "SELECT addup(1)", "expect": {"value": "6"}}
+    ]},
+    {"name": "an-explicit-null-is-not-replaced-by-the-default", "steps": [
+      {"sql": "CREATE OR REPLACE FUNCTION addup(a INTEGER, b INTEGER DEFAULT 2 + 3) RETURNS INTEGER AS $$ a + b $$"},
+      {"sql": "SELECT addup(1, NULL)", "expect": {"rows": [[null]]}}
+    ]},
+    {"name": "defaults-apply-to-a-non-sql-language-too", "steps": [
+      {"sql": "CREATE OR REPLACE FUNCTION jv_tag(name VARCHAR, kind VARCHAR DEFAULT 'str')\nRETURNS VARCHAR\nLANGUAGE JAVA\nHANDLER = 'Tag.h'\nAS $$\nclass Tag {\n  public static String h(String name, String kind) {\n    return name + \"|\" + kind;\n  }\n}\n$$"},
+      {"sql": "SELECT jv_tag('n')", "expect": {"value": "n|str"}}
+    ]},
+    {"name": "a-sql-body-that-is-a-string-literal-evaluates-to-that-string", "steps": [
+      {"sql": "CREATE OR REPLACE FUNCTION lit(a INTEGER) RETURNS VARCHAR AS $$ 'plain' $$"},
+      {"sql": "SELECT lit(1)", "expect": {"value": "plain"}}
+    ]},
+    {"name": "a-sql-body-may-concatenate-string-literals", "steps": [
+      {"sql": "CREATE OR REPLACE FUNCTION cat(a INTEGER) RETURNS VARCHAR AS $$ 'x' || 'y-z' $$"},
+      {"sql": "SELECT cat(1)", "expect": {"value": "xy-z"}}
+    ]}
+  ]
+}

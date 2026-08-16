@@ -1,0 +1,37 @@
+{
+  "suite": "features-flow-operator",
+  "description": "The flow operator ->>: statements chain left to right, a stage reads a PRIOR stage's result via a $n table reference (n counts backward - $1 is the immediately preceding statement, equivalent to consuming its RESULT_SCAN), and the chain's result is the LAST statement's result. SHOW results chain through SELECTs, DML row counts flow through, an out-of-range $n fails as the unresolvable generated name SQL_PIPE_n at 'error line 0 at position -1', a $n with no chain at all is an 'invalid pipe reference' at its real position, and ordinary positional $n references (VALUES + ORDER BY $1) are unaffected. Converted from features/FlowOperatorTest; its two multi-result-set introspection asserts (a chain yields ONE result set, a plain script two) stay in the trimmed Java class.",
+  "tags": ["features", "converted"],
+  "tests": [
+    {"name": "show-tables-chained-through-selects", "steps": [
+      {"sql": "CREATE TABLE flow_a (id INTEGER)"},
+      {"sql": "CREATE TABLE flow_b (id INTEGER)"},
+      {"sql": "show tables\n->> select \"name\" from $1\n->> select * from $1",
+       "expect": {"columns": ["name"], "rows": [["FLOW_A"], ["FLOW_B"]]}}
+    ]},
+    {"name": "dollar-n-counts-backward", "steps": [
+      {"sql": "select 1 as a ->> select 2 as b ->> select * from $2",
+       "expect": {"columns": ["A"], "rows": [["1"]]}}
+    ]},
+    {"name": "dml-row-counts-flow-through-the-chain",
+     "skip": {"backends": ["js", "php", "python", "ruby", "ada"], "reason": "the chained SELECT over the INSERT's status grid is shape-indistinguishable from a DML status row, which these drivers fold into a single affected-row count"},
+     "steps": [
+      {"sql": "CREATE TABLE flow_dml (id INTEGER)"},
+      {"sql": "insert into flow_dml values (1), (2) ->> select * from $1", "expect": {"value": "2"}}
+    ]},
+    {"name": "only-the-last-statements-result-is-returned", "steps": [
+      {"sql": "select 1 ->> select 2 ->> select 3", "expect": {"value": "3"}}
+    ]},
+    {"name": "out-of-range-and-out-of-chain-references-fail-clearly", "steps": [
+      {"sql": "select 1 ->> select * from $3",
+       "expect": {"error": {"messageContains": "SQL compilation error: error line 0 at position -1\ninvalid identifier 'SQL_PIPE_3'"}}},
+      {"sql": "select * from $1",
+       "expect": {"error": {"messageContains": "error line 1 at position 14"}}},
+      {"sql": "select * from $1",
+       "expect": {"error": {"messageContains": "invalid pipe reference"}}}
+    ]},
+    {"name": "positional-references-are-unaffected", "steps": [
+      {"sql": "SELECT $2 FROM (VALUES (1, 'x'), (2, 'y')) ORDER BY $1", "expect": {"value": "x"}}
+    ]}
+  ]
+}

@@ -1,0 +1,81 @@
+{
+  "suite": "ddl-parenthesized-column-item",
+  "description": "Parentheses around a select item's column reference are TRANSPARENT at any depth: the projected column keeps the source column's name, canonical type and nullability - (v), ((v)) and (t.v) all agree with v, numerics keep precision/scale, an alias still wins the name, a nullable source stays nullable, and SHOW COLUMNS' descriptor carries the column's own length. Live-verified. Converted 1:1 from ddl/ParenthesizedColumnItemTest (now retired). Plus REAL and DOUBLE PRECISION as FLOAT synonyms in CREATE TABLE and CAST, with real/precision staying usable as identifiers - converted 1:1 from ddl/RealDoublePrecisionTypeTest (now retired).",
+  "tags": ["ddl", "converted"],
+  "tests": [
+    {"name": "one-parenthesis-pair-is-transparent", "steps": [
+      {"sql": "CREATE TABLE pr_t (k NUMBER(5,1) NOT NULL, v VARCHAR(4) NOT NULL, w VARCHAR(4))"},
+      {"sql": "CREATE OR REPLACE VIEW pr_v AS SELECT v FROM pr_t"},
+      {"sql": "DESCRIBE VIEW pr_v", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"name\", \"type\", \"null?\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["V", "VARCHAR(4)", "N"]]}},
+      {"sql": "CREATE OR REPLACE VIEW pr_v AS SELECT (v) FROM pr_t"},
+      {"sql": "DESCRIBE VIEW pr_v", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"name\", \"type\", \"null?\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["V", "VARCHAR(4)", "N"]]}}
+    ]},
+    {"name": "nested-parentheses-are-transparent-too", "steps": [
+      {"sql": "CREATE TABLE pr_t (k NUMBER(5,1) NOT NULL, v VARCHAR(4) NOT NULL, w VARCHAR(4))"},
+      {"sql": "CREATE OR REPLACE VIEW pr_v AS SELECT ((v)) FROM pr_t"},
+      {"sql": "DESCRIBE VIEW pr_v"},
+      {"sql": "SELECT \"name\", \"type\", \"null?\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["V", "VARCHAR(4)", "N"]]}},
+      {"sql": "CREATE OR REPLACE VIEW pr_v AS SELECT ( v ) FROM pr_t"},
+      {"sql": "DESCRIBE VIEW pr_v"},
+      {"sql": "SELECT \"name\", \"type\", \"null?\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["V", "VARCHAR(4)", "N"]]}}
+    ]},
+    {"name": "a-qualified-reference-in-parentheses-names-the-column", "steps": [
+      {"sql": "CREATE TABLE pr_t (k NUMBER(5,1) NOT NULL, v VARCHAR(4) NOT NULL, w VARCHAR(4))"},
+      {"sql": "CREATE OR REPLACE VIEW pr_v AS SELECT (t.v) FROM pr_t t"},
+      {"sql": "DESCRIBE VIEW pr_v"},
+      {"sql": "SELECT \"name\", \"type\", \"null?\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["V", "VARCHAR(4)", "N"]]}}
+    ]},
+    {"name": "a-numeric-column-keeps-its-precision-and-scale", "steps": [
+      {"sql": "CREATE TABLE pr_t (k NUMBER(5,1) NOT NULL, v VARCHAR(4) NOT NULL, w VARCHAR(4))"},
+      {"sql": "CREATE OR REPLACE VIEW pr_v AS SELECT (k) FROM pr_t"},
+      {"sql": "DESCRIBE VIEW pr_v"},
+      {"sql": "SELECT \"name\", \"type\", \"null?\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["K", "NUMBER(5,1)", "N"]]}}
+    ]},
+    {"name": "an-alias-still-names-the-column", "steps": [
+      {"sql": "CREATE TABLE pr_t (k NUMBER(5,1) NOT NULL, v VARCHAR(4) NOT NULL, w VARCHAR(4))"},
+      {"sql": "CREATE OR REPLACE VIEW pr_v AS SELECT (v) AS pa FROM pr_t"},
+      {"sql": "DESCRIBE VIEW pr_v"},
+      {"sql": "SELECT \"name\", \"type\", \"null?\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["PA", "VARCHAR(4)", "N"]]}}
+    ]},
+    {"name": "a-nullable-column-stays-nullable", "steps": [
+      {"sql": "CREATE TABLE pr_t (k NUMBER(5,1) NOT NULL, v VARCHAR(4) NOT NULL, w VARCHAR(4))"},
+      {"sql": "CREATE OR REPLACE VIEW pr_v AS SELECT (w) FROM pr_t"},
+      {"sql": "DESCRIBE VIEW pr_v"},
+      {"sql": "SELECT \"name\", \"type\", \"null?\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["W", "VARCHAR(4)", "Y"]]}}
+    ]},
+    {"name": "the-descriptor-carries-the-columns-own-length", "steps": [
+      {"sql": "CREATE TABLE pr_t (k NUMBER(5,1) NOT NULL, v VARCHAR(4) NOT NULL, w VARCHAR(4))"},
+      {"sql": "CREATE OR REPLACE VIEW pr_v AS SELECT (v) FROM pr_t"},
+      {"sql": "SHOW COLUMNS IN VIEW test_db.test_schema.pr_v", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"data_type\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"column_name\" = 'V'",
+       "expect": {"value": "{\"type\":\"TEXT\",\"length\":4,\"byteLength\":16,\"nullable\":false,\"fixed\":false}"}}
+    ]},
+    {"name": "real-and-double-precision-column-types", "steps": [
+      {"sql": "CREATE TABLE t (a REAL, b DOUBLE PRECISION)"},
+      {"sql": "INSERT INTO t VALUES (1.5, 2.5)"},
+      {"sql": "SELECT a FROM t", "expect": {"value": "1.5"}},
+      {"sql": "SELECT b FROM t", "expect": {"value": "2.5"}}
+    ]},
+    {"name": "cast-to-real-and-double-precision", "steps": [
+      {"sql": "SELECT CAST(3 AS REAL)", "expect": {"value": "3"}},
+      {"sql": "SELECT CAST(3 AS DOUBLE PRECISION)", "expect": {"value": "3"}},
+      {"sql": "SELECT 3::REAL", "expect": {"value": "3"}}
+    ]},
+    {"name": "real-and-precision-still-usable-as-identifiers", "steps": [
+      {"sql": "CREATE TABLE m (real NUMBER, precision NUMBER)"},
+      {"sql": "INSERT INTO m VALUES (7, 8)"},
+      {"sql": "SELECT real FROM m", "expect": {"value": "7"}},
+      {"sql": "SELECT precision FROM m", "expect": {"value": "8"}}
+    ]}
+  ]
+}

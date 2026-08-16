@@ -1,0 +1,72 @@
+{
+  "suite": "scripting-return-value-typing",
+  "description": "A routine's result takes the STATIC TYPE of the expression the EXECUTED RETURN names, live-verified. A literal, an arithmetic expression and a variable DECLAREd with a type all keep their NUMBER; a name carrying no declared type - a FOR-loop counter - makes the result TEXT, as do the text-typed SQLCODE, SQLSTATE and SQLERRM. Routing the same counter through a typed variable first restores the number, and so does routing SQLCODE through one. SQLROWCOUNT is the one script-supplied name that is NUMERIC, so 'a script variable' is by itself no reason to expect either. A routine PARAMETER is a declared name and keeps its signature type. Two parts catch people out. A declared RETURNS does NOT override this: a procedure declaring RETURNS INTEGER still answers text when its RETURN names an untyped variable, so the rule is about the EXPRESSION and not the signature. And only the RETURN that RUNS counts - there is no whole-block fold, so a sibling RETURN in another branch, in a nested block, or in a handler that never fires, never changes the type of the one that executes. The last rule of all: RETURN of a name that holds nothing is REFUSED rather than answered as NULL - this test used to assert the NULL, because frostlake resolved an unknown name to nothing and handed it back, so a typo produced a plausible answer. Converted 1:1 from scripting/ReturnValueTypingTest (now retired); a TEXT result is pinned as a JSON string and a NUMBER as a JSON number, which is exactly the distinction under test.",
+  "tags": ["scripting", "converted"],
+  "tests": [
+    {"name": "a-literal-keeps-its-number", "steps": [
+      {"sql": "BEGIN RETURN 4; END", "expect": {"value": 4}}
+    ]},
+    {"name": "arithmetic-keeps-its-number", "steps": [
+      {"sql": "BEGIN RETURN 2 + 2; END", "expect": {"value": 4}}
+    ]},
+    {"name": "a-declared-variable-keeps-its-number", "steps": [
+      {"sql": "DECLARE x INTEGER; BEGIN x := 4; RETURN x; END", "expect": {"value": 4}}
+    ]},
+    {"name": "a-for-loop-counter-returns-text", "steps": [
+      {"sql": "BEGIN FOR i IN 1 TO 10 DO RETURN i; END FOR; RETURN -1; END", "expect": {"value": "1"}}
+    ]},
+    {"name": "a-counter-through-a-typed-variable-keeps-its-number", "steps": [
+      {"sql": "DECLARE x INTEGER; BEGIN FOR i IN 1 TO 10 DO IF (i = 4) THEN x := i; RETURN x; END IF; END FOR; RETURN -1; END", "expect": {"value": 4}}
+    ]},
+    {"name": "sqlcode-and-sqlstate-return-text", "steps": [
+      {"sql": "BEGIN RETURN 1 / 0; EXCEPTION WHEN OTHER THEN RETURN SQLCODE; END", "expect": {"value": "100051"}},
+      {"sql": "BEGIN RETURN 1 / 0; EXCEPTION WHEN OTHER THEN RETURN SQLSTATE; END", "expect": {"value": "22012"}}
+    ]},
+    {"name": "sqlrowcount-keeps-its-number", "steps": [
+      {"sql": "CREATE TABLE rc (n INTEGER)"},
+      {"sql": "BEGIN INSERT INTO rc VALUES (1),(2),(3); RETURN SQLROWCOUNT; END", "expect": {"value": 3}}
+    ]},
+    {"name": "sqlerrm-returns-text", "steps": [
+      {"sql": "BEGIN RETURN 1 / 0; EXCEPTION WHEN OTHER THEN RETURN SQLERRM; END", "expect": {"value": "Division by zero"}}
+    ]},
+    {"name": "a-parameter-keeps-its-declared-type", "steps": [
+      {"sql": "CREATE PROCEDURE ret_param(v INTEGER) RETURNS INTEGER LANGUAGE SQL AS $$ BEGIN RETURN v; END $$"},
+      {"sql": "CALL ret_param(7)", "expect": {"value": 7}},
+      {"sql": "CREATE PROCEDURE ret_param_text(v VARCHAR) RETURNS VARCHAR LANGUAGE SQL AS $$ BEGIN RETURN v; END $$"},
+      {"sql": "CALL ret_param_text('x')", "expect": {"value": "x"}}
+    ]},
+    {"name": "sqlcode-through-a-typed-variable-keeps-its-number", "steps": [
+      {"sql": "DECLARE x INTEGER; BEGIN RETURN 1 / 0; EXCEPTION WHEN OTHER THEN x := SQLCODE; RETURN x; END", "expect": {"value": 100051}}
+    ]},
+    {"name": "a-declared-returns-does-not-override-the-expression", "steps": [
+      {"sql": "CREATE PROCEDURE ret_counter() RETURNS INTEGER LANGUAGE SQL AS $$ BEGIN FOR i IN 1 TO 10 DO IF (i = 4) THEN RETURN i; END IF; END FOR; RETURN -1; END $$"},
+      {"sql": "CALL ret_counter()", "expect": {"value": "4"}},
+      {"sql": "CREATE PROCEDURE ret_literal() RETURNS INTEGER LANGUAGE SQL AS $$ BEGIN RETURN 4; END $$"},
+      {"sql": "CALL ret_literal()", "expect": {"value": 4}}
+    ]},
+    {"name": "an-unresolvable-name-is-refused-not-returned-as-null", "steps": [
+      {"sql": "BEGIN FOR i IN 1 TO 1 DO NULL; END FOR; RETURN missing_name; END",
+       "expect": {"error": {"messageContains": "invalid identifier"}}}
+    ]},
+    {"name": "the-type-follows-the-executed-return-not-its-siblings", "steps": [
+      {"sql": "BEGIN IF (1 = 1) THEN RETURN 4; END IF; FOR i IN 1 TO 3 DO RETURN i; END FOR; RETURN -1; END", "expect": {"value": 4}}
+    ]},
+    {"name": "an-unfired-handler-return-does-not-change-the-type", "steps": [
+      {"sql": "BEGIN RETURN 1; EXCEPTION WHEN OTHER THEN RETURN SQLCODE; END", "expect": {"value": 1}},
+      {"sql": "BEGIN RETURN 2 + 2; EXCEPTION WHEN OTHER THEN RETURN 'boom'; END", "expect": {"value": 4}}
+    ]},
+    {"name": "each-branch-keeps-its-own-type-wherever-both-appear", "steps": [
+      {"sql": "BEGIN IF (1 = 1) THEN RETURN 4; ELSE RETURN 'x'; END IF; END", "expect": {"value": 4}},
+      {"sql": "BEGIN IF (1 = 1) THEN RETURN 'x'; ELSE RETURN 4; END IF; END", "expect": {"value": "x"}},
+      {"sql": "DECLARE v VARCHAR DEFAULT 'x'; BEGIN IF (1 = 1) THEN RETURN 4; ELSE RETURN v; END IF; END", "expect": {"value": 4}},
+      {"sql": "BEGIN IF (1 = 1) THEN RETURN 4; ELSE RETURN NULL; END IF; END", "expect": {"value": 4}}
+    ]},
+    {"name": "a-nested-blocks-counter-does-not-affect-an-outer-return", "steps": [
+      {"sql": "BEGIN IF (1 = 1) THEN RETURN 4; END IF; BEGIN FOR i IN 1 TO 2 DO RETURN i; END FOR; END; RETURN -1; END", "expect": {"value": 4}}
+    ]},
+    {"name": "a-procedure-mixed-block-follows-the-executed-return-too", "steps": [
+      {"sql": "CREATE PROCEDURE ret_mixed() RETURNS INTEGER LANGUAGE SQL AS $$ BEGIN IF (1 = 1) THEN RETURN 4; END IF; FOR i IN 1 TO 3 DO RETURN i; END FOR; RETURN -1; END $$"},
+      {"sql": "CALL ret_mixed()", "expect": {"value": 4}}
+    ]}
+  ]
+}

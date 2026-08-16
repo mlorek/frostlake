@@ -56,4 +56,25 @@ public class Avg extends AggregateFunction {
     public SemiStructuredRejection semiStructuredRejection(final int position) {
         return SemiStructuredRejection.ARGUMENT_TYPES;
     }
+
+    /**
+     * A BOOLEAN, a temporal or a BINARY argument is refused at compile time at the call, in SUM's name
+     * for the bare form ("Invalid argument types for function 'SUM': (BOOLEAN)") and in AVG's own for
+     * the windowed one — live plans the bare average as a sum over a count (live-verified). A VARIANT,
+     * a FLOAT and text are taken.
+     */
+    @Override
+    public SemiStructuredRejection temporalRejection(final int position) {
+        return SemiStructuredRejection.ARGUMENT_TYPES;
+    }
+
+    @Override
+    public SemiStructuredRejection booleanRejection(final int position) {
+        return SemiStructuredRejection.ARGUMENT_TYPES;
+    }
+
+    @Override
+    public SemiStructuredRejection binaryRejection(final int position) {
+        return SemiStructuredRejection.ARGUMENT_TYPES;
+    }
 }

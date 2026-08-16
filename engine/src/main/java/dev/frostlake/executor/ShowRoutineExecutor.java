@@ -20,12 +20,15 @@ import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.FunctionRegistry;
 import dev.frostlake.functions.OperatorFunctionNames;
 import dev.frostlake.metastore.Catalog;
+import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.model.AggregationPolicy;
 import dev.frostlake.metastore.model.Contact;
+import dev.frostlake.metastore.model.Database;
 import dev.frostlake.metastore.model.FileFormat;
 import dev.frostlake.metastore.model.Function;
 import dev.frostlake.metastore.model.JoinPolicy;
 import dev.frostlake.metastore.model.MaskingPolicy;
+import dev.frostlake.metastore.model.NullHandling;
 import dev.frostlake.metastore.model.Parameter;
 import dev.frostlake.metastore.model.Procedure;
 import dev.frostlake.metastore.model.ProjectionPolicy;
@@ -37,8 +40,8 @@ import dev.frostlake.metastore.model.Tag;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
-import dev.frostlake.types.DateTimeType;
 import dev.frostlake.types.NumericType;
+import dev.frostlake.types.SqlTypeNames;
 import dev.frostlake.types.StringType;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -143,6 +146,24 @@ final class ShowRoutineExecutor {
         return new ResultSet(procedureColumns(), rows);
     }
 
+    /**
+     * SHOW PROCEDURES with no current database: the user procedures of every schema of every database, each
+     * under its own database, then the built-in catalog unless only USER procedures were asked for
+     * (live-verified).
+     */
+    public ResultSet showProceduresInAccount(final boolean userOnly) {
+        final List<Row> rows = new ArrayList<>();
+        for (final Database database : catalog.getAllDatabases()) {
+            for (final Schema schema : database.getAllSchemas()) {
+                appendUserProcedureRows(schema, database.getName(), rows);
+            }
+        }
+        if (!userOnly) {
+            appendBuiltinProcedureRows(rows);
+        }
+        return new ResultSet(procedureColumns(), rows);
+    }
+
     private void appendUserProcedureRows(final Schema schema, final String dbName, final List<Row> rows) {
         for (final Procedure proc : schema.getProcedures()) {
             final String sig = proc.getName() + buildArgSig(proc.getParameters())
@@ -179,7 +200,7 @@ final class ShowRoutineExecutor {
      */
     private List<ResultSetColumn> procedureColumns() {
         return Arrays.asList(
-            new ResultSetColumn("created_on", DateTimeType.TIMESTAMP_LTZ),
+            new ResultSetColumn("created_on", ShowResultHelpers.CREATED_ON),
             new ResultSetColumn("name", StringType.VARCHAR),
             new ResultSetColumn("schema_name", StringType.VARCHAR),
             new ResultSetColumn("is_builtin", StringType.VARCHAR),
@@ -280,6 +301,24 @@ final class ShowRoutineExecutor {
         return new ResultSet(functionColumns(), rows);
     }
 
+    /**
+     * SHOW FUNCTIONS with no current database: the user functions of every schema of every database, each
+     * under its own database, then the built-in catalog unless only USER functions were asked for
+     * (live-verified).
+     */
+    public ResultSet showFunctionsInAccount(final boolean userOnly) {
+        final List<Row> rows = new ArrayList<>();
+        for (final Database database : catalog.getAllDatabases()) {
+            for (final Schema schema : database.getAllSchemas()) {
+                appendUserFunctionRows(schema, database.getName(), rows);
+            }
+        }
+        if (!userOnly) {
+            appendBuiltinFunctionRows(rows);
+        }
+        return new ResultSet(functionColumns(), rows);
+    }
+
     private void appendUserFunctionRows(final Schema schema, final String dbName, final List<Row> rows) {
         for (final Function func : schema.getFunctions()) {
             final String sig = func.getName() + buildArgSig(func.getParameters())
@@ -295,10 +334,11 @@ final class ShowRoutineExecutor {
                 dbName,
                 func.isTableFunction() ? "Y" : "N",
                 "N", "N",
-                null, null,
+                // Live leaves secrets and external_access_integrations EMPTY, not null (live-verified).
+                "", "",
                 "N",
                 func.getLanguage(),
-                "N", "N", "N"
+                func.isMemoizable() ? "Y" : "N", "N", "N"
             )));
         }
     }
@@ -312,7 +352,7 @@ final class ShowRoutineExecutor {
      */
     private List<ResultSetColumn> functionColumns() {
         return Arrays.asList(
-            new ResultSetColumn("created_on", DateTimeType.TIMESTAMP_LTZ),
+            new ResultSetColumn("created_on", ShowResultHelpers.CREATED_ON),
             new ResultSetColumn("name", StringType.VARCHAR),
             new ResultSetColumn("schema_name", StringType.VARCHAR),
             new ResultSetColumn("is_builtin", StringType.VARCHAR),
@@ -483,7 +523,7 @@ final class ShowRoutineExecutor {
 
     private List<ResultSetColumn> tagColumns() {
         return Arrays.asList(
-            new ResultSetColumn("created_on", DateTimeType.TIMESTAMP_LTZ),
+            new ResultSetColumn("created_on", ShowResultHelpers.CREATED_ON),
             new ResultSetColumn("name", StringType.VARCHAR),
             new ResultSetColumn("database_name", StringType.VARCHAR),
             new ResultSetColumn("schema_name", StringType.VARCHAR),
@@ -519,18 +559,17 @@ final class ShowRoutineExecutor {
     }
 
     public ResultSet describeFunction(final String name) {
-        final Function fn = resolveDescribeSchema().getFunction(lastSegment(name));
+        final Schema owner = routineSchema(name);
+        final Function fn = owner == null ? null : owner.getFunction(lastSegment(name));
         if (fn == null) {
             throw new RuntimeException(SqlCompilationError.doesNotExist("Function", name));
         }
         final List<Row> rows = new ArrayList<>();
         rows.add(new Row(Arrays.asList("signature", routineSignature(fn.getParameters()))));
-        rows.add(new Row(Arrays.asList("returns", String.valueOf(fn.getReturnType()))));
+        rows.add(new Row(Arrays.asList("returns", SqlTypeNames.routineType(fn.getReturnType()))));
         rows.add(new Row(Arrays.asList("language", fn.getLanguage() != null ? fn.getLanguage() : "SQL")));
-        if (fn.getNullHandling() != null) {
+        if (!isSqlLanguage(fn.getLanguage())) {
             rows.add(new Row(Arrays.asList("null handling", fn.getNullHandling())));
-        }
-        if (fn.getVolatility() != null) {
             rows.add(new Row(Arrays.asList("volatility", fn.getVolatility())));
         }
         if (fn.getBody() != null) {
@@ -540,14 +579,21 @@ final class ShowRoutineExecutor {
     }
 
     public ResultSet describeProcedure(final String name) {
-        final Procedure proc = resolveDescribeSchema().getProcedure(lastSegment(name));
+        final Schema owner = routineSchema(name);
+        final Procedure proc = owner == null ? null : owner.getProcedure(lastSegment(name));
         if (proc == null) {
             throw new RuntimeException(SqlCompilationError.doesNotExist("Procedure", name));
         }
         final List<Row> rows = new ArrayList<>();
         rows.add(new Row(Arrays.asList("signature", routineSignature(proc.getParameters()))));
-        rows.add(new Row(Arrays.asList("returns", String.valueOf(proc.getReturnType()))));
+        rows.add(new Row(Arrays.asList("returns", SqlTypeNames.routineType(proc.getReturnType()))));
         rows.add(new Row(Arrays.asList("language", proc.getLanguage() != null ? proc.getLanguage() : "SQL")));
+        if (!isSqlLanguage(proc.getLanguage())) {
+            // A procedure declares neither, so the two rows carry the account's own defaults - which is
+            // what it answers for one written without them (live-verified on a JavaScript procedure).
+            rows.add(new Row(Arrays.asList("null handling", NullHandling.CALLED_ON_NULL_INPUT.getSqlText())));
+            rows.add(new Row(Arrays.asList("volatility", "VOLATILE")));
+        }
         if (proc.getExecuteAs() != null) {
             rows.add(new Row(Arrays.asList("execute as", proc.getExecuteAs())));
         }
@@ -682,7 +728,7 @@ final class ShowRoutineExecutor {
 
     private List<ResultSetColumn> fileFormatColumns() {
         return Arrays.asList(
-            new ResultSetColumn("created_on", DateTimeType.TIMESTAMP_LTZ),
+            new ResultSetColumn("created_on", ShowResultHelpers.CREATED_ON),
             new ResultSetColumn("name", StringType.VARCHAR),
             new ResultSetColumn("database_name", StringType.VARCHAR),
             new ResultSetColumn("schema_name", StringType.VARCHAR),
@@ -1051,7 +1097,7 @@ final class ShowRoutineExecutor {
 
     private List<ResultSetColumn> projectionPolicyColumns() {
         return Arrays.asList(
-            new ResultSetColumn("created_on", DateTimeType.TIMESTAMP_LTZ),
+            new ResultSetColumn("created_on", ShowResultHelpers.CREATED_ON),
             new ResultSetColumn("name", StringType.VARCHAR),
             new ResultSetColumn("database_name", StringType.VARCHAR),
             new ResultSetColumn("schema_name", StringType.VARCHAR),
@@ -1134,7 +1180,7 @@ final class ShowRoutineExecutor {
 
     private List<ResultSetColumn> contactColumns() {
         return Arrays.asList(
-            new ResultSetColumn("created_on", DateTimeType.TIMESTAMP_LTZ),
+            new ResultSetColumn("created_on", ShowResultHelpers.CREATED_ON),
             new ResultSetColumn("name", StringType.VARCHAR),
             new ResultSetColumn("database_name", StringType.VARCHAR),
             new ResultSetColumn("schema_name", StringType.VARCHAR),
@@ -1151,7 +1197,7 @@ final class ShowRoutineExecutor {
 
     private List<ResultSetColumn> policyColumns() {
         return Arrays.asList(
-            new ResultSetColumn("created_on", DateTimeType.TIMESTAMP_LTZ),
+            new ResultSetColumn("created_on", ShowResultHelpers.CREATED_ON),
             new ResultSetColumn("name", StringType.VARCHAR),
             new ResultSetColumn("database_name", StringType.VARCHAR),
             new ResultSetColumn("schema_name", StringType.VARCHAR),
@@ -1179,6 +1225,20 @@ final class ShowRoutineExecutor {
         return dot >= 0 ? name.substring(dot + 1) : name;
     }
 
+    /**
+     * The schema a routine name belongs to: the one it names when qualified ({@code db..f} names
+     * PUBLIC's), else the current one.
+     */
+    private Schema routineSchema(final String name) {
+        final String[] parts = catalog.withoutAccount(QualifiedName.parse(name).parts(), 3);
+        if (parts.length == 1) {
+            return resolveDescribeSchema();
+        }
+        final String db = parts.length == 3 ? parts[0] : catalog.getCurrentDatabase();
+        final Database database = db == null ? null : catalog.getDatabase(db);
+        return database == null ? null : database.getSchema(parts[parts.length - 2]);
+    }
+
     /** Current database.schema for describe lookups. */
     private Schema resolveDescribeSchema() {
         return ShowResultHelpers.resolveDescribeSchema(catalog);
@@ -1188,4 +1248,15 @@ final class ShowRoutineExecutor {
     private ResultSet propertyValueResult(final List<Row> rows) {
         return ShowResultHelpers.propertyValueResult(rows);
     }
+
+    /**
+     * Whether a routine's language is SQL, which is what decides two of its DESCRIBE rows: null handling
+     * and volatility are printed for every OTHER language and for none of SQL's own options - a
+     * MEMOIZABLE, IMMUTABLE, STRICT or SECURE SQL function answers the same four rows a plain one does
+     * (live-verified).
+     */
+    private static boolean isSqlLanguage(final String language) {
+        return language == null || "SQL".equalsIgnoreCase(language);
+    }
+
 }

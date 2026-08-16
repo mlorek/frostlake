@@ -28,17 +28,19 @@ public class Base64Decode extends BuiltInFunction {
     @Override
     public Object evaluate(final List<Object> args) {
         if (args.get(0) == null) return null;
+        final String text = args.get(0).toString();
         final byte[] decoded;
         try {
-            decoded = Base64.getDecoder().decode(args.get(0).toString());
-        } catch (final Exception e) {
-            throw new RuntimeException("Invalid BASE64 input: " + args.get(0));
+            decoded = Base64.getDecoder().decode(
+                Base64Options.toStandardAlphabet(text, Base64Options.alphabetOf(args, 1)));
+        } catch (final IllegalArgumentException notBase64) {
+            throw Base64Options.notBase64(text);
         }
-        return DecodedText.strict(decoded, args.get(0).toString());
+        return DecodedText.strict(decoded, text);
     }
 
     @Override
     public int getMinArgCount() { return 1; }
     @Override
-    public int getMaxArgCount() { return 1; }
+    public int getMaxArgCount() { return 2; }
 }

@@ -1,0 +1,33 @@
+{
+  "suite": "security-use-role",
+  "description": "USE ROLE and USE SECONDARY ROLES - switching the session's PRIMARY role, which CURRENT_ROLE() reflects, and adjusting the secondary ones, with existence validation. A role can only be ACTIVATED by a user it has been GRANTED to: live-verified, without the grant the statement fails 'Requested role ANALYST is not assigned to the executing user. Specify another role to activate.' The working spelling is GRANT ROLE <role> TO USER <user>, and live REJECTS GRANT ROLE r TO USER IDENTIFIER(CURRENT_USER()) with a syntax error at the parenthesis - so the executing user's name has to be READ FIRST and spliced into the statement, which the converted test does through a scripting block and EXECUTE IMMEDIATE rather than through host-language string building. The account is stateful across runs, so everything is created tolerantly and handed back at the end, and the session steps OFF a role before dropping it, since a session left on a dropped role has none. The system roles switch without any grant, a nonexistent role is refused, and USE SECONDARY ROLES ALL then NONE adjust the active set without error. Converted 1:1 from security/UseRoleTest (now retired).",
+  "tags": ["security", "converted"],
+  "tests": [
+    {"name": "use-role-switches-the-current-role", "steps": [
+      {"sql": "CREATE ROLE IF NOT EXISTS analyst"},
+      {"sql": "DECLARE u VARCHAR; BEGIN u := (SELECT CURRENT_USER()); EXECUTE IMMEDIATE 'CREATE USER IF NOT EXISTS \"' || :u || '\"'; EXECUTE IMMEDIATE 'GRANT ROLE analyst TO USER \"' || :u || '\"'; RETURN 'granted'; END",
+       "expect": {"value": "granted"}},
+      {"sql": "USE ROLE analyst"},
+      {"sql": "SELECT CURRENT_ROLE()", "expect": {"value": "ANALYST"}},
+      {"sql": "USE ROLE SYSADMIN"},
+      {"sql": "DECLARE u VARCHAR; BEGIN u := (SELECT CURRENT_USER()); EXECUTE IMMEDIATE 'REVOKE ROLE analyst FROM USER \"' || :u || '\"'; RETURN 'revoked'; END",
+       "expect": {"value": "revoked"}},
+      {"sql": "DROP ROLE IF EXISTS analyst"}
+    ]},
+    {"name": "a-system-role-switches", "steps": [
+      {"sql": "USE ROLE SYSADMIN"},
+      {"sql": "SELECT CURRENT_ROLE()", "expect": {"value": "SYSADMIN"}},
+      {"sql": "USE ROLE ACCOUNTADMIN"},
+      {"sql": "SELECT CURRENT_ROLE()", "expect": {"value": "ACCOUNTADMIN"}}
+    ]},
+    {"name": "a-nonexistent-role-is-refused", "steps": [
+      {"sql": "USE ROLE no_such_role", "expect": {"error": {}}}
+    ]},
+    {"name": "use-secondary-roles-all-then-none", "steps": [
+      {"sql": "CREATE ROLE IF NOT EXISTS r1"},
+      {"sql": "USE SECONDARY ROLES ALL"},
+      {"sql": "USE SECONDARY ROLES NONE"},
+      {"sql": "SELECT CURRENT_ROLE() IS NOT NULL", "expect": {"value": true}}
+    ]}
+  ]
+}

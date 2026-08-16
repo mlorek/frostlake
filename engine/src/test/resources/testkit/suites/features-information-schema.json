@@ -1,0 +1,61 @@
+{
+  "suite": "features-information-schema",
+  "description": "The core INFORMATION_SCHEMA system views: DATABASES lists created databases, SCHEMATA lists PUBLIC and the current schema with their catalog, TABLES reports BASE TABLE rows in the current schema, COLUMNS reports ordinal positions with Snowflake's canonical family names in DATA_TYPE (integer/decimal flavors -> NUMBER, character flavors -> TEXT), VIEWS carries catalog/schema/definition, the schema-qualified and fully qualified spellings both reach the views (and INFORMATION_SCHEMA exists in a fresh database), the schema and its system views cannot be dropped, and the views join to each other. Converted 1:1 from features/InformationSchemaTest (now retired; table/view placement adjusted from the JDBC harness's PUBLIC schema to the testkit's test_schema).",
+  "tags": ["features", "converted"],
+  "tests": [
+    {"name": "databases-view", "steps": [
+      {"sql": "CREATE DATABASE sample_db"},
+      {"sql": "USE DATABASE test_db"},
+      {"sql": "USE SCHEMA test_schema"},
+      {"sql": "SELECT COUNT_IF(DATABASE_NAME = 'TEST_DB'), COUNT_IF(DATABASE_NAME = 'SAMPLE_DB') FROM INFORMATION_SCHEMA.DATABASES",
+       "expect": {"rows": [["1", "1"]]}},
+      {"sql": "DROP DATABASE IF EXISTS sample_db"}
+    ]},
+    {"name": "schemata-view", "steps": [
+      {"sql": "SELECT COUNT_IF(SCHEMA_NAME = 'PUBLIC' AND CATALOG_NAME = 'TEST_DB'), COUNT_IF(SCHEMA_NAME = 'TEST_SCHEMA' AND CATALOG_NAME = 'TEST_DB') FROM INFORMATION_SCHEMA.SCHEMATA",
+       "expect": {"rows": [["1", "1"]]}}
+    ]},
+    {"name": "tables-view", "steps": [
+      {"sql": "CREATE TABLE users (id INTEGER, name VARCHAR)"},
+      {"sql": "CREATE TABLE products (id INTEGER, price DECIMAL)"},
+      {"sql": "SELECT COUNT_IF(TABLE_NAME = 'USERS' AND TABLE_TYPE = 'BASE TABLE'), COUNT_IF(TABLE_NAME = 'PRODUCTS' AND TABLE_TYPE = 'BASE TABLE'), COUNT_IF(TABLE_TYPE <> 'BASE TABLE') FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_CATALOG = 'TEST_DB' AND TABLE_SCHEMA = 'TEST_SCHEMA'",
+       "expect": {"rows": [["1", "1", "0"]]}}
+    ]},
+    {"name": "columns-view", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, salary DECIMAL)"},
+      {"sql": "SELECT TABLE_NAME, COLUMN_NAME, ORDINAL_POSITION, DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'EMPLOYEES' ORDER BY ORDINAL_POSITION",
+       "expect": {"rowCount": 3, "rows": [
+         ["EMPLOYEES", "ID", "1", "NUMBER"],
+         ["EMPLOYEES", "NAME", "2", "TEXT"],
+         ["EMPLOYEES", "SALARY", "3", "NUMBER"]], "ordered": true}}
+    ]},
+    {"name": "views-view", "steps": [
+      {"sql": "CREATE TABLE base_table (id INTEGER, value VARCHAR)"},
+      {"sql": "CREATE VIEW test_view AS SELECT * FROM base_table WHERE id > 10"},
+      {"sql": "SELECT TABLE_CATALOG, TABLE_SCHEMA, IFF(VIEW_DEFINITION IS NULL, 'null', 'set') FROM INFORMATION_SCHEMA.VIEWS WHERE TABLE_NAME = 'TEST_VIEW'",
+       "expect": {"rowCount": 1, "rows": [["TEST_DB", "TEST_SCHEMA", "set"]]}}
+    ]},
+    {"name": "qualified-access", "steps": [
+      {"sql": "SELECT COUNT(*) >= 1 FROM INFORMATION_SCHEMA.DATABASES", "expect": {"value": "true"}},
+      {"sql": "SELECT * FROM TEST_DB.INFORMATION_SCHEMA.TABLES"},
+      {"sql": "CREATE DATABASE other_db"},
+      {"sql": "USE DATABASE other_db"},
+      {"sql": "SELECT COUNT(*) >= 1 FROM INFORMATION_SCHEMA.DATABASES", "expect": {"value": "true"}},
+      {"sql": "USE DATABASE test_db"},
+      {"sql": "USE SCHEMA test_schema"},
+      {"sql": "DROP DATABASE IF EXISTS other_db"}
+    ]},
+    {"name": "information-schema-cannot-be-dropped", "steps": [
+      {"sql": "DROP SCHEMA INFORMATION_SCHEMA", "expect": {"error": {}}}
+    ]},
+    {"name": "system-views-cannot-be-dropped", "steps": [
+      {"sql": "DROP VIEW INFORMATION_SCHEMA.DATABASES", "expect": {"error": {}}},
+      {"sql": "DROP VIEW INFORMATION_SCHEMA.COLUMNS", "expect": {"error": {}}}
+    ]},
+    {"name": "information-schema-with-joins", "steps": [
+      {"sql": "CREATE TABLE orders (id INTEGER, product_id INTEGER)"},
+      {"sql": "SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES t INNER JOIN INFORMATION_SCHEMA.COLUMNS c ON t.TABLE_NAME = c.TABLE_NAME WHERE t.TABLE_NAME = 'ORDERS'",
+       "expect": {"value": "2"}}
+    ]}
+  ]
+}

@@ -1,0 +1,51 @@
+{
+  "suite": "functions-operator-forms",
+  "description": "The operator family that feeds SHOW FUNCTIONS: Snowflake gives each of these names to an OPERATOR rather than to a dispatchable function, so the listing is a curated claim and this suite re-checks the half a suite can see - that the operator behind every listed name actually evaluates. All 34 forms are exercised in one test, each of which must return a row. The names deliberately left OUT of the listing are checked too: Snowflake lists DIV but SELECT DIV(10, 3) answers \"Unsupported feature 'DIV'\" on the account and Frostlake cannot parse 10 DIV 3 either, and interval scaling (INTERVAL * n, INTERVAL / n) is unparsed - both pinned as refusals. The other half of the class's claim, that the declared name SET matches this list exactly, reads the OperatorFunctionNames Java constant and has no SQL surface, so functions/OperatorFunctionNamesTest is kept whole alongside this suite.",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "every-listed-operator-name-has-a-working-form", "steps": [
+      {"sql": "CREATE TABLE operator_rows (a INTEGER, b VARCHAR)"},
+      {"sql": "INSERT INTO operator_rows VALUES (1, 'x')"},
+      {"sql": "SELECT 1 + 2", "expect": {"rowCount": 1}},
+      {"sql": "SELECT 3 - 1", "expect": {"rowCount": 1}},
+      {"sql": "SELECT 2 * 3", "expect": {"rowCount": 1}},
+      {"sql": "SELECT 6 / 2", "expect": {"rowCount": 1}},
+      {"sql": "SELECT 7 % 3", "expect": {"rowCount": 1}},
+      {"sql": "SELECT 1 = 1", "expect": {"rowCount": 1}},
+      {"sql": "SELECT 1 != 2", "expect": {"rowCount": 1}},
+      {"sql": "SELECT 1 <> 2", "expect": {"rowCount": 1}},
+      {"sql": "SELECT 1 < 2", "expect": {"rowCount": 1}},
+      {"sql": "SELECT 1 <= 2", "expect": {"rowCount": 1}},
+      {"sql": "SELECT 2 > 1", "expect": {"rowCount": 1}},
+      {"sql": "SELECT 2 >= 1", "expect": {"rowCount": 1}},
+      {"sql": "SELECT 'a' || 'b'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT ARRAY_CONSTRUCT(1, 2)[0]", "expect": {"rowCount": 1}},
+      {"sql": "SELECT PARSE_JSON('{\"k\": 1}'):k", "expect": {"rowCount": 1}},
+      {"sql": "SELECT NULL IS NULL", "expect": {"rowCount": 1}},
+      {"sql": "SELECT 1 IS NOT NULL", "expect": {"rowCount": 1}},
+      {"sql": "SELECT TRUE AND FALSE", "expect": {"rowCount": 1}},
+      {"sql": "SELECT TRUE OR FALSE", "expect": {"rowCount": 1}},
+      {"sql": "SELECT NOT TRUE", "expect": {"rowCount": 1}},
+      {"sql": "SELECT 2 BETWEEN 1 AND 3", "expect": {"rowCount": 1}},
+      {"sql": "SELECT 1 IN (1, 2)", "expect": {"rowCount": 1}},
+      {"sql": "SELECT CASE WHEN TRUE THEN 1 ELSE 2 END", "expect": {"rowCount": 1}},
+      {"sql": "SELECT 'a' REGEXP 'a'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT 'abc' LIKE ANY ('a%', 'b%')", "expect": {"rowCount": 1}},
+      {"sql": "SELECT 'abc' LIKE ALL ('a%', '%c')", "expect": {"rowCount": 1}},
+      {"sql": "SELECT 'abc' ILIKE ANY ('A%')", "expect": {"rowCount": 1}},
+      {"sql": "SELECT COUNT(*) FROM operator_rows", "expect": {"rowCount": 1}},
+      {"sql": "SELECT OBJECT_CONSTRUCT(*) FROM operator_rows", "expect": {"rowCount": 1}},
+      {"sql": "SELECT OBJECT_CONSTRUCT_KEEP_NULL(*) FROM operator_rows", "expect": {"rowCount": 1}},
+      {"sql": "SELECT '2024-01-01'::TIMESTAMP_NTZ + INTERVAL '1 day'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT '2024-01-01'::TIMESTAMP_NTZ - INTERVAL '1 day'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT '2024-01-01'::DATE + INTERVAL '1 year'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT '2024-01-01'::DATE - INTERVAL '1 year'", "expect": {"rowCount": 1}}
+    ]},
+    {"name": "the-forms-frostlake-cannot-evaluate-stay-refused",
+     "skip": {"backends": ["snowflake"], "reason": "asserts Frostlake's grammar rather than the account's"},
+     "steps": [
+      {"sql": "SELECT 10 DIV 3", "expect": {"error": {}}},
+      {"sql": "SELECT INTERVAL '1 day' * 2", "expect": {"error": {}}}
+    ]}
+  ]
+}

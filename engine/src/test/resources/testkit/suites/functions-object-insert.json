@@ -1,0 +1,35 @@
+{
+  "suite": "functions-object-insert",
+  "description": "OBJECT_INSERT null semantics (Snowflake): a SQL NULL value OMITS the key-value pair from the result, so an already-present key is REMOVED, while a JSON null - PARSE_JSON('null') - is stored as a real null member. TRY_PARSE_JSON of a SQL NULL behaves like a SQL NULL, which is the loader pattern where an all-null aggregate must not add the key. Without the update flag, inserting an existing key errors; with it the value is replaced. A SQL NULL key leaves the object unchanged. Converted 1:1 from functions/ObjectInsertTest (now retired).",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "it-inserts-a-new-key", "steps": [
+      {"sql": "SELECT OBJECT_INSERT(OBJECT_CONSTRUCT('a', 1), 'b', 2)", "expect": {"value": "{\"a\":1,\"b\":2}"}}
+    ]},
+    {"name": "a-sql-null-value-omits-the-pair", "steps": [
+      {"sql": "SELECT OBJECT_INSERT(OBJECT_CONSTRUCT('a', 1), 'b', NULL)", "expect": {"value": "{\"a\":1}"}},
+      {"sql": "SELECT OBJECT_INSERT(OBJECT_CONSTRUCT('a', 1), 'b', NULL, TRUE)", "expect": {"value": "{\"a\":1}"}}
+    ]},
+    {"name": "a-sql-null-value-removes-an-existing-key", "steps": [
+      {"sql": "SELECT OBJECT_INSERT(OBJECT_CONSTRUCT('a', 1, 'b', 2), 'b', NULL, TRUE)",
+       "expect": {"value": "{\"a\":1}"}}
+    ]},
+    {"name": "a-json-null-value-is-stored-as-a-null-member", "steps": [
+      {"sql": "SELECT OBJECT_INSERT(OBJECT_CONSTRUCT('a', 1), 'b', PARSE_JSON('null'))",
+       "expect": {"value": "{\"a\":1,\"b\":null}"}}
+    ]},
+    {"name": "try-parse-json-of-null-behaves-like-a-sql-null", "steps": [
+      {"sql": "SELECT OBJECT_INSERT(OBJECT_CONSTRUCT('a', 1), 'b', TRY_PARSE_JSON(NULL), TRUE)",
+       "expect": {"value": "{\"a\":1}"}}
+    ]},
+    {"name": "a-duplicate-key-without-the-update-flag-errors", "steps": [
+      {"sql": "SELECT OBJECT_INSERT(OBJECT_CONSTRUCT('a', 1), 'a', 2)", "expect": {"error": {}}}
+    ]},
+    {"name": "the-update-flag-replaces-the-value", "steps": [
+      {"sql": "SELECT OBJECT_INSERT(OBJECT_CONSTRUCT('a', 1), 'a', 9, TRUE)", "expect": {"value": "{\"a\":9}"}}
+    ]},
+    {"name": "a-sql-null-key-leaves-the-object-unchanged", "steps": [
+      {"sql": "SELECT OBJECT_INSERT(OBJECT_CONSTRUCT('a', 1), NULL, 2)", "expect": {"value": "{\"a\":1}"}}
+    ]}
+  ]
+}

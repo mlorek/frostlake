@@ -20,6 +20,7 @@ import dev.frostlake.BaseDatabaseTest;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 
 /**
  * The Snowflake Scripting DML-status globals — {@code SQLROWCOUNT}, {@code SQLFOUND},
@@ -29,7 +30,8 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
  *   <li>a DML statement sets all four (the trio from its affected total, ACTIVITY_COUNT to the
  *       same number);</li>
  *   <li>EVERY other completed statement — SELECT, DDL, and TRUNCATE TABLE too — resets the trio to
- *       NULL and sets ACTIVITY_COUNT to its own result's row count (a DDL status line counts 1);</li>
+ *       NULL and sets ACTIVITY_COUNT to its own result's row count (a DDL status line counts 1), a
+ *       query whose columns carry the count names included;</li>
  *   <li>scripting-internal statements (LET, assignments, control flow) touch none of them;</li>
  *   <li>all four start NULL.</li>
  * </ul>
@@ -157,6 +159,37 @@ public class DmlStatusVariablesTest extends BaseDatabaseTest {
               LET after_ddl INT := ACTIVITY_COUNT;
               RETURN 'before=' || COALESCE(before::VARCHAR, '<null>')
                 || ' after_ddl=' || COALESCE(after_ddl::VARCHAR, '<null>');
+            END;
+            """));
+    }
+
+    @Test
+    public void aQueryNamedLikeACountGridSetsNoRowCount() {
+        engine.execute("CREATE OR REPLACE TABLE sp (i INT)");
+        assertNull(scalar("""
+            BEGIN
+              SELECT 42 AS "number of rows once";
+              RETURN SQLROWCOUNT;
+            END;
+            """));
+        assertNull(scalar("""
+            BEGIN
+              SELECT 9 AS "number of rows inserted";
+              RETURN SQLROWCOUNT;
+            END;
+            """));
+        assertEquals("2", scalar("""
+            BEGIN
+              INSERT INTO sp VALUES (1), (2);
+              RETURN SQLROWCOUNT;
+            END;
+            """));
+        // A RESULT_SCAN over a DML result is a query as well.
+        assertNull(scalar("""
+            BEGIN
+              INSERT INTO sp VALUES (3);
+              SELECT * FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()));
+              RETURN SQLROWCOUNT;
             END;
             """));
     }

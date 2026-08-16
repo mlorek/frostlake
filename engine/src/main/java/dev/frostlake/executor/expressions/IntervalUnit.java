@@ -59,6 +59,10 @@ public enum IntervalUnit {
         register(YEAR, "year", "years", "y", "yy", "yyyy", "yr", "yrs");
         register(QUARTER, "quarter", "quarters", "qtr", "qtrs", "q");
         register(MONTH, "month", "months", "mm", "mon", "mons");
+        // woy / weekofyear are units HERE — INTERVAL '1 woy' shifts by a week — but the three interval
+        // FUNCTIONS refuse them: DATEADD(woy, 1, ts) is "['WOY'] is not a valid date/time component
+        // for function DATEADD", while DATE_PART(woy, ts) answers the week number. The surfaces
+        // disagree, so the refusal lives with those functions rather than being taken out of here.
         register(WEEK, "week", "weeks", "wk", "woy", "weekofyear");
         register(DAY, "day", "days", "dd", "d", "dayofmonth");
         register(HOUR, "hour", "hours", "hh", "hr", "hrs", "h");

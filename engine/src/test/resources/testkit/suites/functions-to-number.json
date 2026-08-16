@@ -1,0 +1,33 @@
+{
+  "suite": "functions-to-number",
+  "description": "TO_NUMBER and its synonyms TO_DECIMAL / TO_NUMERIC: a (precision, scale) pair rounds the value to the requested scale, HALF_AWAY_FROM_ZERO, while a bare call defaults to NUMBER(38,0) and rounds to a whole number. Decoration in a string input - group separators, a currency symbol - is accepted ONLY when a FORMAT MODEL declares it: live-verified, TO_NUMBER('1,234.56') fails \"Numeric value '1,234.56' is not recognized\" because the comma is not stripped for free, and a (precision, scale) pair is not a format model either. A format governs PARSING only, so without an explicit (precision, scale) the result still rounds to a whole number. TRY_TO_NUMBER turns the same rejection into NULL. Converted 1:1 from functions/ToNumberTest (now retired); the scaled results are stringified so their trailing digits are part of the assertion.",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "a-plain-value-rounds-to-a-whole-number", "steps": [
+      {"sql": "SELECT TO_NUMBER(3.9)", "expect": {"value": "4"}}
+    ]},
+    {"name": "a-precision-and-scale-round-to-that-scale", "steps": [
+      {"sql": "SELECT TO_NUMBER(3.9, 38, 0)", "expect": {"value": "4"}},
+      {"sql": "SELECT '<' || TO_NUMBER(3.145, 10, 2) || '>'", "expect": {"value": "<3.15>"}}
+    ]},
+    {"name": "group-separators-need-a-format-model", "steps": [
+      {"sql": "SELECT TO_NUMBER('1,234.56')", "expect": {"error": {}}},
+      {"sql": "SELECT TO_NUMBER('1,234.56', '9,999.99')", "expect": {"value": "1235"}},
+      {"sql": "SELECT TRY_TO_NUMBER('1,234.56')", "expect": {"rows": [[null]]}}
+    ]},
+    {"name": "currency-needs-a-format-model-too", "steps": [
+      {"sql": "SELECT TO_NUMBER('$1,234.567', 10, 2)", "expect": {"error": {}}},
+      {"sql": "SELECT '<' || TO_NUMBER('$1,234.567', '$9,999.000', 10, 2) || '>'", "expect": {"value": "<1234.57>"}}
+    ]},
+    {"name": "a-format-parses-but-the-scale-still-defaults-to-zero", "steps": [
+      {"sql": "SELECT TO_NUMBER('1,234.56', '9,999.99')", "expect": {"value": "1235"}}
+    ]},
+    {"name": "a-format-with-an-explicit-precision-and-scale", "steps": [
+      {"sql": "SELECT '<' || TO_NUMBER('1,234.56', '9,999.99', 10, 2) || '>'", "expect": {"value": "<1234.56>"}}
+    ]},
+    {"name": "to-decimal-and-to-numeric-are-synonyms", "steps": [
+      {"sql": "SELECT '<' || TO_DECIMAL('3.14', 10, 2) || '>'", "expect": {"value": "<3.14>"}},
+      {"sql": "SELECT TO_NUMERIC('  99 ')", "expect": {"value": "99"}}
+    ]}
+  ]
+}

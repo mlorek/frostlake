@@ -1,0 +1,27 @@
+{
+  "suite": "functions-try-decrypt-raw",
+  "description": "TRY_DECRYPT_RAW is the lenient sibling of DECRYPT_RAW: an identical round trip on good inputs, and SQL NULL rather than an error when the ciphertext, key or tag do not line up. The three-argument form compiles but cannot authenticate, so GCM without the tag yields NULL. The leniency does NOT extend to argument TYPES: a VARCHAR where BINARY is required is a compile error even for the TRY_ spelling, not a NULL. Converted 1:1 from functions/TryDecryptRawTest (now retired); each round trip wraps ENCRYPT_RAW in a CTE so the object is produced once and its ciphertext, iv and tag members are read from it in the same statement.",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "a-round-trip-recovers-the-plaintext", "steps": [
+      {"sql": "WITH e AS (SELECT ENCRYPT_RAW(TO_BINARY('CAFEBABE', 'HEX'), TO_BINARY('000102030405060708090A0B0C0D0E0F', 'HEX'), TO_BINARY('0102030405060708090A0B0C', 'HEX')) AS o) SELECT TO_VARCHAR(TRY_DECRYPT_RAW(TO_BINARY(o:ciphertext::VARCHAR, 'HEX'), TO_BINARY('000102030405060708090A0B0C0D0E0F', 'HEX'), TO_BINARY(o:iv::VARCHAR, 'HEX'), TO_BINARY('', 'HEX'), 'AES-GCM', TO_BINARY(o:tag::VARCHAR, 'HEX')), 'HEX') FROM e",
+       "expect": {"value": "CAFEBABE"}}
+    ]},
+    {"name": "a-wrong-key-yields-null-not-an-error", "steps": [
+      {"sql": "WITH e AS (SELECT ENCRYPT_RAW(TO_BINARY('CAFEBABE', 'HEX'), TO_BINARY('000102030405060708090A0B0C0D0E0F', 'HEX'), TO_BINARY('0102030405060708090A0B0C', 'HEX')) AS o) SELECT TRY_DECRYPT_RAW(TO_BINARY(o:ciphertext::VARCHAR, 'HEX'), TO_BINARY('FF0102030405060708090A0B0C0D0EFF', 'HEX'), TO_BINARY(o:iv::VARCHAR, 'HEX'), TO_BINARY('', 'HEX'), 'AES-GCM', TO_BINARY(o:tag::VARCHAR, 'HEX')) FROM e",
+       "expect": {"rows": [[null]]}}
+    ]},
+    {"name": "the-three-argument-form-is-accepted-but-cannot-authenticate", "steps": [
+      {"sql": "WITH e AS (SELECT ENCRYPT_RAW(TO_BINARY('CAFEBABE', 'HEX'), TO_BINARY('000102030405060708090A0B0C0D0E0F', 'HEX'), TO_BINARY('0102030405060708090A0B0C', 'HEX')) AS o) SELECT TRY_DECRYPT_RAW(TO_BINARY(o:ciphertext::VARCHAR, 'HEX'), TO_BINARY('000102030405060708090A0B0C0D0E0F', 'HEX'), TO_BINARY(o:iv::VARCHAR, 'HEX')) FROM e",
+       "expect": {"rows": [[null]]}}
+    ]},
+    {"name": "a-varchar-argument-is-rejected-not-swallowed", "steps": [
+      {"sql": "SELECT TRY_DECRYPT_RAW(TO_BINARY('CAFE','HEX'), '000102030405060708090A0B0C0D0E0F', TO_BINARY('0102030405060708090A0B0C','HEX'))",
+       "expect": {"error": {"messageContains": "Invalid argument types"}}}
+    ]},
+    {"name": "garbage-ciphertext-yields-null", "steps": [
+      {"sql": "SELECT TRY_DECRYPT_RAW(TO_BINARY('DEADBEEF', 'HEX'), TO_BINARY('000102030405060708090A0B0C0D0E0F', 'HEX'), TO_BINARY('0102030405060708090A0B0C', 'HEX'), TO_BINARY('', 'HEX'), 'AES-GCM', TO_BINARY('00000000000000000000000000000000', 'HEX'))",
+       "expect": {"rows": [[null]]}}
+    ]}
+  ]
+}

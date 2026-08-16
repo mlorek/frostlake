@@ -1,0 +1,79 @@
+{
+  "suite": "ddl-show-functions",
+  "description": "SHOW FUNCTIONS lists the whole dispatchable library: built-ins beside user functions, the 14 window functions, the higher-order three, dispatch aliases (each really dispatching under its own name), operator-implemented names (||, [], IS NULL, COUNT(*), ...), SYSTEM$ functions; description defaults to the user-defined placeholder or carries the routine's comment; and the non-registry families really dispatch. Converted from ddl/ShowFunctionsTest (9 of its 11 tests; the two engine-internal ones - the registry-equality sweep and the every-name-resolves loop - stay in the trimmed Java class). DIV-absence and the SYSTEM$TYPEOF/STREAM_HAS_DATA listings are engine-only facts split into skip-snowflake tests, as the Java's assumptions gated them.",
+  "tags": ["ddl", "converted"],
+  "tests": [
+    {"name": "lists-builtins-when-no-user-functions-exist", "steps": [
+      {"sql": "SHOW FUNCTIONS"},
+      {"sql": "SELECT COUNT(*) > 100, COUNT_IF(\"is_builtin\" = 'Y') > 0 FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["true", "true"]]}},
+      {"sql": "SHOW FUNCTIONS"},
+      {"sql": "SELECT COUNT(DISTINCT UPPER(\"name\")) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE UPPER(\"name\") IN ('UPPER', 'ABS', 'SUM')",
+       "expect": {"value": "3"}}
+    ]},
+    {"name": "lists-user-functions-alongside-builtins", "steps": [
+      {"sql": "CREATE FUNCTION my_udf(x INTEGER) RETURNS INTEGER AS 'x + 1'"},
+      {"sql": "SHOW FUNCTIONS"},
+      {"sql": "SELECT MAX(IFF(UPPER(\"name\") = 'MY_UDF', \"is_builtin\", NULL)), COUNT_IF(\"is_builtin\" = 'Y') > 0 FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["N", "true"]]}}
+    ]},
+    {"name": "lists-window-functions", "steps": [
+      {"sql": "SHOW FUNCTIONS"},
+      {"sql": "SELECT COUNT(DISTINCT UPPER(\"name\")) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE UPPER(\"name\") IN ('ROW_NUMBER', 'RANK', 'DENSE_RANK', 'LAG', 'LEAD', 'FIRST_VALUE', 'LAST_VALUE', 'NTH_VALUE', 'NTILE', 'PERCENT_RANK', 'CUME_DIST', 'RATIO_TO_REPORT', 'CONDITIONAL_TRUE_EVENT', 'CONDITIONAL_CHANGE_EVENT')",
+       "expect": {"value": "14"}}
+    ]},
+    {"name": "lists-higher-order-functions", "steps": [
+      {"sql": "SHOW FUNCTIONS"},
+      {"sql": "SELECT COUNT(DISTINCT UPPER(\"name\")) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE UPPER(\"name\") IN ('TRANSFORM', 'FILTER', 'REDUCE')",
+       "expect": {"value": "3"}}
+    ]},
+    {"name": "lists-dispatch-aliases", "steps": [
+      {"sql": "SHOW FUNCTIONS"},
+      {"sql": "SELECT COUNT(DISTINCT UPPER(\"name\")) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE UPPER(\"name\") IN ('SUBSTR', 'ARRAYAGG', 'RLIKE', 'DAYOFMONTH', 'BIT_OR_AGG', 'REGEXP_EXTRACT_ALL', 'APPROXIMATE_COUNT_DISTINCT')",
+       "expect": {"value": "7"}},
+      {"sql": "SELECT SUBSTR('ABCDEF', 2, 3) AS S", "expect": {"value": "BCD"}}
+    ]},
+    {"name": "lists-operator-implemented-names", "steps": [
+      {"sql": "SHOW FUNCTIONS"},
+      {"sql": "SELECT COUNT(DISTINCT \"name\") FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" IN ('LIKE_ANY', 'LIKE_ALL', 'ILIKE_ANY', '||', '[]', ':', 'IS NULL', 'IS NOT NULL', 'COUNT(*)', 'BETWEEN', 'CASE', 'REGEXP')",
+       "expect": {"value": "12"}}
+    ]},
+    {"name": "div-is-not-listed-because-it-is-not-dispatchable",
+     "skip": {"backends": ["snowflake"], "reason": "a real account lists DIV even though it cannot run it (Java test had the same assumption); this engine's listing mirrors what it dispatches"},
+     "steps": [
+      {"sql": "SHOW FUNCTIONS"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'DIV'",
+       "expect": {"value": "0"}}
+    ]},
+    {"name": "lists-system-functions", "steps": [
+      {"sql": "SHOW FUNCTIONS"},
+      {"sql": "SELECT COUNT(DISTINCT UPPER(\"name\")) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE UPPER(\"name\") IN ('SYSTEM$WAIT', 'SYSTEM$SET_RETURN_VALUE')",
+       "expect": {"value": "2"}}
+    ]},
+    {"name": "lists-the-engine-only-system-functions",
+     "skip": {"backends": ["snowflake"], "reason": "a real account omits SYSTEM$TYPEOF and SYSTEM$STREAM_HAS_DATA from its own listing (Java test had the same assumption); this engine dispatches both"},
+     "steps": [
+      {"sql": "SHOW FUNCTIONS"},
+      {"sql": "SELECT COUNT(DISTINCT UPPER(\"name\")) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE UPPER(\"name\") IN ('SYSTEM$TYPEOF', 'SYSTEM$STREAM_HAS_DATA')",
+       "expect": {"value": "2"}}
+    ]},
+    {"name": "description-defaults-to-the-placeholder-and-otherwise-carries-the-comment", "steps": [
+      {"sql": "CREATE FUNCTION d_plain(x INTEGER) RETURNS INTEGER AS 'x + 1'"},
+      {"sql": "CREATE FUNCTION d_commented(x INTEGER) RETURNS INTEGER COMMENT = 'my fn comment' AS 'x + 2'"},
+      {"sql": "CREATE PROCEDURE d_proc() RETURNS VARCHAR LANGUAGE SQL AS BEGIN RETURN 'a'; END"},
+      {"sql": "SHOW USER FUNCTIONS LIKE 'D_PLAIN'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"description\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "user-defined function"}},
+      {"sql": "SHOW USER FUNCTIONS LIKE 'D_COMMENTED'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"description\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "my fn comment"}},
+      {"sql": "SHOW PROCEDURES LIKE 'D_PROC'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"description\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "user-defined procedure"}}
+    ]},
+    {"name": "listed-names-from-the-non-registry-families-dispatch", "steps": [
+      {"sql": "CREATE TABLE dispatch_rows (a INTEGER)"},
+      {"sql": "INSERT INTO dispatch_rows VALUES (1), (2)"},
+      {"sql": "SELECT ROW_NUMBER() OVER (ORDER BY a) AS R FROM dispatch_rows", "expect": {"rowCount": 2}},
+      {"sql": "SELECT TRANSFORM(ARRAY_CONSTRUCT(1, 2), x -> x * 2)[1]::INTEGER AS T", "expect": {"value": "4"}},
+      {"sql": "SELECT 'abc' LIKE ANY ('a%', 'z%') AS L", "expect": {"value": "true"}}
+    ]}
+  ]
+}

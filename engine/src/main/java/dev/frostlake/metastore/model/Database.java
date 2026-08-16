@@ -26,8 +26,34 @@ import java.util.concurrent.ConcurrentHashMap;
 
 public class Database extends SqlObject {
 
+    /**
+     * The DATA_RETENTION_TIME_IN_DAYS this object declares, or null when it declares none and
+     * inherits its container's (the account default is 1 at the top of the chain).
+     */
+    private Integer dataRetentionTimeInDays;
+
+    public Integer getDataRetentionTimeInDays() {
+        return dataRetentionTimeInDays;
+    }
+
+    public void setDataRetentionTimeInDays(final Integer dataRetentionTimeInDays) {
+        this.dataRetentionTimeInDays = dataRetentionTimeInDays;
+    }
+
+
     private final Map<String, Schema> schemas;
     private boolean readOnly = false;
+
+    /** TRANSIENT, as written on the CREATE; every schema inside inherits it. */
+    private boolean transientObject;
+
+    public boolean isTransientObject() {
+        return transientObject;
+    }
+
+    public void setTransientObject(final boolean value) {
+        this.transientObject = value;
+    }
 
     public Database(final String name) {
         super(name);
@@ -86,7 +112,9 @@ public class Database extends SqlObject {
     public void addSchema(final Schema schema) {
         final String upperName = schema.getName().toUpperCase();
         if (schemas.containsKey(upperName)) {
-            throw new RuntimeException("Schema already exists: " + schema.getName());
+            // Live names no KIND here — every object that finds its name taken gets the same sentence.
+            throw new RuntimeException(SqlCompilationError.of(
+                "Object '" + upperName + "' already exists."));
         }
         registerSchema(upperName, schema);
     }
@@ -103,6 +131,19 @@ public class Database extends SqlObject {
         // DROP SCHEMA ... RESTRICT drops a NON-EMPTY schema too (the callers snapshot and
         // release the contained tables' storage before this removal either way).
         schemas.remove(upperName);
+    }
+
+    /**
+     * Whether a schema of this name exists, matched ignoring case — the question {@link #getSchema}
+     * cannot answer, because it THROWS for a name that is not there rather than returning null. Two
+     * callers were written as {@code getSchema("PUBLIC") != null}, which reads like a check and is one
+     * only for databases that happen to have a PUBLIC.
+     *
+     * @param name the schema name
+     * @return whether it exists
+     */
+    public boolean hasSchema(final String name) {
+        return schemas.containsKey(name.toUpperCase());
     }
 
     /**

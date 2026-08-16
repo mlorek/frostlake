@@ -1,0 +1,41 @@
+{
+  "suite": "query-values-clause",
+  "description": "A VALUES list used as a FROM source. Its columns auto-name COLUMN1..COLUMNn - which holds even when every value is the empty string - and those names are referencable, so SELECT COLUMN1 and a WHERE over COLUMN1 both work. A table alias may be given alone or with a COLUMN alias list, and a PARTIAL alias list renames only as many columns as it names. Mixed value types are kept per column. The whole thing behaves as an ordinary relation underneath GROUP BY. The last test is the user query the class was written for, which also pins the naming of an unaliased aggregate: COUNT(*) is named by its own source text folded to upper case. Converted 1:1 from query/ValuesClauseTest (now retired); the Java asserted column counts and read cells by index, so each converted test pins the column list beside the whole row set.",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "a-values-source-with-two-columns", "steps": [
+      {"sql": "SELECT * FROM VALUES(1,2),(3,4)", "expect": {"rows": [[1,2],[3,4]], "columns": ["COLUMN1","COLUMN2"]}}
+    ]},
+    {"name": "a-values-source-with-one-column", "steps": [
+      {"sql": "SELECT * FROM VALUES(10),(20),(30)", "expect": {"rows": [[10],[20],[30]], "columns": ["COLUMN1"]}}
+    ]},
+    {"name": "a-values-source-with-mixed-types", "steps": [
+      {"sql": "SELECT * FROM VALUES(1, 'Alice'), (2, 'Bob')", "expect": {"rows": [[1,"Alice"],[2,"Bob"]], "columns": ["COLUMN1","COLUMN2"]}}
+    ]},
+    {"name": "a-values-source-with-a-table-alias", "steps": [
+      {"sql": "SELECT * FROM VALUES(1, 2), (3, 4) AS t", "expect": {"rows": [[1,2],[3,4]], "columns": ["COLUMN1","COLUMN2"]}}
+    ]},
+    {"name": "selecting-a-named-column-from-a-values-source", "steps": [
+      {"sql": "SELECT COLUMN1 FROM VALUES(1, 2), (3, 4)", "expect": {"rows": [[1],[3]], "columns": ["COLUMN1"]}}
+    ]},
+    {"name": "a-values-source-under-a-where-clause", "steps": [
+      {"sql": "SELECT * FROM VALUES(1, 2), (3, 4) WHERE COLUMN1 > 1", "expect": {"rows": [[3,4]], "columns": ["COLUMN1","COLUMN2"]}}
+    ]},
+    {"name": "a-values-source-with-column-aliases", "steps": [
+      {"sql": "SELECT i, j FROM VALUES(1, 2), (3, 4) AS t(i, j)", "expect": {"rows": [[1,2],[3,4]], "columns": ["I","J"]}}
+    ]},
+    {"name": "a-values-source-with-column-aliases-under-group-by", "steps": [
+      {"sql": "SELECT i, count(*) FROM VALUES(1, 2), (1, 2) AS t(i, j) GROUP BY i", "expect": {"rows": [[1,2]]}}
+    ]},
+    {"name": "a-values-source-with-partial-column-aliases", "steps": [
+      {"sql": "SELECT x FROM VALUES(10, 20), (30, 40) AS t(x)", "expect": {"rows": [[10],[30]], "columns": ["X"]}}
+    ]},
+    {"name": "empty-string-tuples-still-label-the-columns", "steps": [
+      {"sql": "SELECT * FROM VALUES ('', '', '', '', ''), ('', '', '', '', '')",
+       "expect": {"rows": [["","","","",""],["","","","",""]], "columns": ["COLUMN1","COLUMN2","COLUMN3","COLUMN4","COLUMN5"]}}
+    ]},
+    {"name": "the-user-query-example", "steps": [
+      {"sql": "select i, count(*) from values (1,2),(1,2) as t(i,j) group by i", "expect": {"rows": [[1,2]], "columns": ["I","COUNT(*)"]}}
+    ]}
+  ]
+}

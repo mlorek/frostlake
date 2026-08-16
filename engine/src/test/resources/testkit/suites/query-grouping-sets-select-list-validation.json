@@ -1,0 +1,68 @@
+{
+  "suite": "query-grouping-sets-select-list-validation",
+  "description": "Snowflake's select-list rule under the super-group forms, all live-verified: GROUPING SETS / ROLLUP / CUBE apply the SAME check as a plain GROUP BY, with the UNION of every grouping set as the grouped keys. A column in ANY set is legal - its rows print NULL for the sets that aggregate it away - and a column in NONE is refused with the plain form's exact sentence, positioned at the offending REFERENCE's own line and 0-based column rather than at the select-list start. The rule reaches through a GROUPING() argument, which does not launder an ungrouped column, and a FROM alias spells the refusal's qualifier. A key written as a select ALIAS or a 1-based ORDINAL resolves to the aliased or numbered select expression, for validation and for execution alike. GROUPING SETS (()) groups by nothing at all, so a bare column has nowhere to hide. Converted 1:1 from query/GroupingSetsSelectListValidationTest (now retired); the six refusals keep the full message with its embedded newline, exactly as the Java's assertEquals did.",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "a-column-outside-every-grouping-set-is-refused", "steps": [
+      {"sql": "CREATE TABLE sales (region VARCHAR, product VARCHAR, amount NUMBER)"},
+      {"sql": "INSERT INTO sales VALUES ('east','a',10),('west','b',20)"},
+      {"sql": "SELECT region, product, SUM(amount) FROM sales GROUP BY GROUPING SETS ((product))", "expect": {"error": {"messageContains": "SQL compilation error: error line 1 at position 7\n'SALES.REGION' in select clause is neither an aggregate nor in the group by clause."}}}
+    ]},
+    {"name": "the-position-is-the-offending-references-own", "steps": [
+      {"sql": "CREATE TABLE sales (region VARCHAR, product VARCHAR, amount NUMBER)"},
+      {"sql": "INSERT INTO sales VALUES ('east','a',10),('west','b',20)"},
+      {"sql": "SELECT product, region, SUM(amount) FROM sales GROUP BY GROUPING SETS ((product))", "expect": {"error": {"messageContains": "SQL compilation error: error line 1 at position 16\n'SALES.REGION' in select clause is neither an aggregate nor in the group by clause."}}}
+    ]},
+    {"name": "rollup-and-cube-apply-the-same-rule", "steps": [
+      {"sql": "CREATE TABLE sales (region VARCHAR, product VARCHAR, amount NUMBER)"},
+      {"sql": "INSERT INTO sales VALUES ('east','a',10),('west','b',20)"},
+      {"sql": "SELECT region, product, SUM(amount) FROM sales GROUP BY ROLLUP (product)", "expect": {"error": {"messageContains": "SQL compilation error: error line 1 at position 7\n'SALES.REGION' in select clause is neither an aggregate nor in the group by clause."}}},
+      {"sql": "SELECT region, product, SUM(amount) FROM sales GROUP BY CUBE (product)", "expect": {"error": {"messageContains": "SQL compilation error: error line 1 at position 7\n'SALES.REGION' in select clause is neither an aggregate nor in the group by clause."}}}
+    ]},
+    {"name": "a-grouping-function-argument-is-checked-too", "steps": [
+      {"sql": "CREATE TABLE sales (region VARCHAR, product VARCHAR, amount NUMBER)"},
+      {"sql": "INSERT INTO sales VALUES ('east','a',10),('west','b',20)"},
+      {"sql": "SELECT GROUPING(region), SUM(amount) FROM sales GROUP BY GROUPING SETS ((product))", "expect": {"error": {"messageContains": "SQL compilation error: error line 1 at position 16\n'SALES.REGION' in select clause is neither an aggregate nor in the group by clause."}}}
+    ]},
+    {"name": "a-from-alias-spells-the-refusal-qualifier", "steps": [
+      {"sql": "CREATE TABLE sales (region VARCHAR, product VARCHAR, amount NUMBER)"},
+      {"sql": "INSERT INTO sales VALUES ('east','a',10),('west','b',20)"},
+      {"sql": "SELECT s.region, product, SUM(amount) FROM sales s GROUP BY GROUPING SETS ((product))", "expect": {"error": {"messageContains": "SQL compilation error: error line 1 at position 7\n'S.REGION' in select clause is neither an aggregate nor in the group by clause."}}}
+    ]},
+    {"name": "the-refusal-carries-the-references-own-line", "steps": [
+      {"sql": "CREATE TABLE sales (region VARCHAR, product VARCHAR, amount NUMBER)"},
+      {"sql": "INSERT INTO sales VALUES ('east','a',10),('west','b',20)"},
+      {"sql": "SELECT product,\n  region, SUM(amount) FROM sales GROUP BY GROUPING SETS ((product))", "expect": {"error": {"messageContains": "SQL compilation error: error line 2 at position 2\n'SALES.REGION' in select clause is neither an aggregate nor in the group by clause."}}}
+    ]},
+    {"name": "a-column-in-any-of-the-sets-is-legal", "steps": [
+      {"sql": "CREATE TABLE sales (region VARCHAR, product VARCHAR, amount NUMBER)"},
+      {"sql": "INSERT INTO sales VALUES ('east','a',10),('west','b',20)"},
+      {"sql": "SELECT region, product, SUM(amount) FROM sales GROUP BY GROUPING SETS ((region),(product)) ORDER BY 1,2", "expect": {"rows": [["east",null,10],["west",null,20],[null,"a",10],[null,"b",20]], "ordered": true}}
+    ]},
+    {"name": "a-grouping-call-over-a-grouped-column-is-legal", "steps": [
+      {"sql": "CREATE TABLE sales (region VARCHAR, product VARCHAR, amount NUMBER)"},
+      {"sql": "INSERT INTO sales VALUES ('east','a',10),('west','b',20)"},
+      {"sql": "SELECT region, GROUPING(region), SUM(amount) FROM sales GROUP BY GROUPING SETS ((region),()) ORDER BY 2,1", "expect": {"rows": [["east",0,10],["west",0,20],[null,1,30]], "ordered": true}}
+    ]},
+    {"name": "an-expression-over-a-grouped-column-is-legal", "steps": [
+      {"sql": "CREATE TABLE sales (region VARCHAR, product VARCHAR, amount NUMBER)"},
+      {"sql": "INSERT INTO sales VALUES ('east','a',10),('west','b',20)"},
+      {"sql": "SELECT region || 'x', SUM(amount) FROM sales GROUP BY GROUPING SETS ((region)) ORDER BY 1", "expect": {"rows": [["eastx",10],["westx",20]], "ordered": true}}
+    ]},
+    {"name": "a-select-alias-is-a-legal-grouping-set-key", "steps": [
+      {"sql": "CREATE TABLE sales (region VARCHAR, product VARCHAR, amount NUMBER)"},
+      {"sql": "INSERT INTO sales VALUES ('east','a',10),('west','b',20)"},
+      {"sql": "SELECT region AS r, SUM(amount) FROM sales GROUP BY GROUPING SETS ((r)) ORDER BY 1", "expect": {"rows": [["east",10],["west",20]], "ordered": true}}
+    ]},
+    {"name": "a-select-ordinal-is-a-legal-grouping-set-key", "steps": [
+      {"sql": "CREATE TABLE sales (region VARCHAR, product VARCHAR, amount NUMBER)"},
+      {"sql": "INSERT INTO sales VALUES ('east','a',10),('west','b',20)"},
+      {"sql": "SELECT region, SUM(amount) FROM sales GROUP BY GROUPING SETS ((1)) ORDER BY 1", "expect": {"rows": [["east",10],["west",20]], "ordered": true}}
+    ]},
+    {"name": "an-all-empty-union-still-validates", "steps": [
+      {"sql": "CREATE TABLE sales (region VARCHAR, product VARCHAR, amount NUMBER)"},
+      {"sql": "INSERT INTO sales VALUES ('east','a',10),('west','b',20)"},
+      {"sql": "SELECT region, SUM(amount) FROM sales GROUP BY GROUPING SETS (())", "expect": {"error": {"messageContains": "'SALES.REGION' in select clause is neither an aggregate nor in the group by clause."}}}
+    ]}
+  ]
+}

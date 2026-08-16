@@ -1,0 +1,35 @@
+{
+  "suite": "scripting-sql-procedure-call",
+  "description": "CALL of a LANGUAGE SQL stored procedure actually EXECUTES its BEGIN...END body - parameters, control flow, loops - and returns the body's RETURN value. Previously the body's procedural statements were only logged and the call returned NULL, which is why each test here asserts a computed answer rather than that the call succeeded. Covers a no-parameter scalar return, a parameter used in the return, an IF selecting its branch both ways, a FOR loop accumulating, a DEFAULT parameter both defaulted and overridden, and a body whose SIDE EFFECT is visible afterwards. Converted 1:1 from scripting/SqlProcedureCallTest (now retired).",
+  "tags": ["scripting", "converted"],
+  "tests": [
+    {"name": "a-no-parameter-scalar-return", "steps": [
+      {"sql": "CREATE OR REPLACE PROCEDURE add_two() RETURNS INTEGER LANGUAGE SQL AS $$ BEGIN RETURN 1 + 1; END $$"},
+      {"sql": "CALL add_two()", "expect": {"value": 2}}
+    ]},
+    {"name": "a-parameter-used-in-the-return", "steps": [
+      {"sql": "CREATE OR REPLACE PROCEDURE double_it(x INTEGER) RETURNS INTEGER LANGUAGE SQL AS $$ BEGIN RETURN x * 2; END $$"},
+      {"sql": "CALL double_it(21)", "expect": {"value": 42}}
+    ]},
+    {"name": "control-flow-in-the-body-selects-a-branch", "steps": [
+      {"sql": "CREATE OR REPLACE PROCEDURE classify(n INTEGER) RETURNS VARCHAR LANGUAGE SQL AS $$ BEGIN IF (n > 0) THEN RETURN 'pos'; ELSE RETURN 'neg'; END IF; END $$"},
+      {"sql": "CALL classify(5)", "expect": {"value": "pos"}},
+      {"sql": "CALL classify(-3)", "expect": {"value": "neg"}}
+    ]},
+    {"name": "a-loop-in-the-body-accumulates-and-returns", "steps": [
+      {"sql": "CREATE OR REPLACE PROCEDURE sum_to(n INTEGER) RETURNS INTEGER LANGUAGE SQL AS $$ DECLARE s INTEGER DEFAULT 0; BEGIN FOR i IN 1 TO n DO s := s + i; END FOR; RETURN s; END $$"},
+      {"sql": "CALL sum_to(5)", "expect": {"value": 15}}
+    ]},
+    {"name": "a-default-parameter-is-bound-and-returned", "steps": [
+      {"sql": "CREATE OR REPLACE PROCEDURE greet(name VARCHAR DEFAULT 'World') RETURNS VARCHAR LANGUAGE SQL AS $$ BEGIN RETURN name; END $$"},
+      {"sql": "CALL greet()", "expect": {"value": "World"}},
+      {"sql": "CALL greet('Alice')", "expect": {"value": "Alice"}}
+    ]},
+    {"name": "body-statements-execute-as-a-side-effect", "steps": [
+      {"sql": "CREATE TABLE proc_log (v INTEGER)"},
+      {"sql": "CREATE OR REPLACE PROCEDURE log_and_return(v INTEGER) RETURNS INTEGER LANGUAGE SQL AS $$ BEGIN INSERT INTO proc_log VALUES (:v); RETURN v; END $$"},
+      {"sql": "CALL log_and_return(7)", "expect": {"value": 7}},
+      {"sql": "SELECT v FROM proc_log", "expect": {"rows": [[7]]}}
+    ]}
+  ]
+}

@@ -28,12 +28,13 @@ public class ConcatWs extends TextArgumentFunction {
     @Override
     public Object evaluate(final List<Object> args) {
         if (args.isEmpty()) return "";
-        // Snowflake: CONCAT_WS returns NULL if the separator or ANY value is NULL (it does not skip
-        // NULLs the way MySQL does).
-        if (args.get(0) == null) {
+        // Snowflake: CONCAT_WS returns NULL if ANY value is NULL (it does not skip NULLs the way MySQL
+        // does), and a NULL separator makes it NULL once there are two values to separate. A lone value
+        // never reads the separator — live-verified: CONCAT_WS(NULL, 'x') is 'x', folded or not.
+        if (args.get(0) == null && args.size() > 2) {
             return null;
         }
-        final String sep = args.get(0).toString();
+        final String sep = args.get(0) == null ? "" : args.get(0).toString();
         final StringBuilder result = new StringBuilder();
         boolean first = true;
         for (int i = 1; i < args.size(); i++) {
@@ -49,8 +50,9 @@ public class ConcatWs extends TextArgumentFunction {
         return result.toString();
     }
 
+    /** A separator and at least one value — live refuses {@code CONCAT_WS('x')}: "expected 2, got 1". */
     @Override
-    public int getMinArgCount() { return 1; }
+    public int getMinArgCount() { return 2; }
     @Override
     public int getMaxArgCount() { return Integer.MAX_VALUE; }
 }

@@ -1,0 +1,267 @@
+{
+  "suite": "features-pipes",
+  "description": "The PIPE surface - CREATE (incl. AUTO_INGEST, OR REPLACE, IF NOT EXISTS), ALTER SET PIPE_EXECUTION_PAUSED and REFRESH, DROP, SHOW / DESCRIBE PIPES, SYSTEM$PIPE_STATUS - over stages the fixture really creates, so every cell runs on any transport. A pipe whose COPY names a missing stage, a missing target table or a user stage refuses at CREATE with that object's own wording; VALIDATION_MODE and FILES have no place in a pipe definition while a table stage is fine; pause/resume cycles and multiple pipes stay independent; names are case-insensitive; and SHOW PIPES' cells (definition, kind STAGE, is_snowflake_managed, integration, error_integration, notification_channel) carry what CREATE declared. Converted 1:1 from features/PipesTest (now retired). The three tests naming a notification/error integration or an SNS topic skip the snowflake backend (the verification account has no such integrations), as does ALTER PIPE REFRESH (live reads the stage's cloud storage and answers 403 for the placeholder bucket).",
+  "tags": ["features", "converted"],
+  "tests": [
+    {"name": "create-simple-pipe", "steps": [
+      {"sql": "CREATE STAGE ps"},
+      {"sql": "CREATE TABLE target_table (id INTEGER, name VARCHAR, value DECIMAL(10,2))"},
+      {"sql": "CREATE PIPE my_pipe AS COPY INTO target_table FROM @ps FILE_FORMAT = (TYPE = 'CSV')"},
+      {"sql": "SELECT CONTAINS(SYSTEM$PIPE_STATUS('my_pipe'), 'RUNNING')", "expect": {"value": "true"}}
+    ]},
+    {"name": "create-pipe-over-missing-stage-refuses", "steps": [
+      {"sql": "CREATE STAGE ps"},
+      {"sql": "CREATE TABLE target_table (id INTEGER)"},
+      {"sql": "CREATE PIPE bad_pipe AS COPY INTO target_table FROM @no_such_stage",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nStage 'TEST_DB.TEST_SCHEMA.NO_SUCH_STAGE' does not exist or not authorized."}}}
+    ]},
+    {"name": "create-pipe-over-missing-target-table-refuses", "steps": [
+      {"sql": "CREATE STAGE ps"},
+      {"sql": "CREATE PIPE bad_pipe AS COPY INTO no_such_table FROM @ps",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nTable 'NO_SUCH_TABLE' does not exist"}}}
+    ]},
+    {"name": "create-pipe-over-user-stage-refuses", "steps": [
+      {"sql": "CREATE STAGE ps"},
+      {"sql": "CREATE TABLE target (id INTEGER)"},
+      {"sql": "CREATE PIPE user_pipe AS COPY INTO target FROM @~",
+       "expect": {"error": {"messageContains": "SQL compilation error: Stage: '~' cannot be a user stage in the pipe definition."}}}
+    ]},
+    {"name": "pipe-only-copy-options-refuse", "steps": [
+      {"sql": "CREATE STAGE ps"},
+      {"sql": "CREATE TABLE target (id INTEGER)"},
+      {"sql": "CREATE PIPE vm_pipe AS COPY INTO target FROM @ps VALIDATION_MODE = 'RETURN_ERRORS'",
+       "expect": {"error": {"messageContains": "SQL compilation error: Invalid copy option 'VALIDATION_MODE' in pipe definition."}}},
+      {"sql": "CREATE PIPE f_pipe AS COPY INTO target FROM @ps FILES = ('x.csv')",
+       "expect": {"error": {"messageContains": "SQL compilation error: Invalid copy option 'FILES' in pipe definition."}}},
+      {"sql": "CREATE PIPE table_stage_pipe AS COPY INTO target FROM @%target"},
+      {"sql": "SHOW PIPES LIKE 'table_stage_pipe'", "expect": {"rowCount": 1}}
+    ]},
+    {"name": "create-pipe-with-auto-ingest", "steps": [
+      {"sql": "CREATE STAGE ps"},
+      {"sql": "CREATE TABLE target_table (data VARIANT)"},
+      {"sql": "CREATE PIPE auto_ingest_pipe AUTO_INGEST = TRUE AS COPY INTO target_table FROM @ps FILE_FORMAT = (TYPE = 'JSON')"},
+      {"sql": "SELECT CONTAINS(SYSTEM$PIPE_STATUS('auto_ingest_pipe'), 'RUNNING')", "expect": {"value": "true"}}
+    ]},
+    {"name": "create-pipe-with-notification-channel",
+     "skip": {"backends": ["snowflake"], "reason": "names an SNS topic that would have to exist on the account for a real run to accept the statement"},
+     "steps": [
+      {"sql": "CREATE STAGE ps"},
+      {"sql": "CREATE TABLE events (event_id INTEGER, event_data VARCHAR)"},
+      {"sql": "CREATE PIPE notification_pipe AUTO_INGEST = TRUE AWS_SNS_TOPIC = 'arn:aws:sns:us-west-2:123456789012:my-topic' AS COPY INTO events FROM @ps FILE_FORMAT = (TYPE = 'JSON')"},
+      {"sql": "SHOW PIPES LIKE 'notification_pipe'"},
+      {"sql": "SELECT \"notification_channel\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"value": "arn:aws:sns:us-west-2:123456789012:my-topic"}}
+    ]},
+    {"name": "alter-pipe-pause", "steps": [
+      {"sql": "CREATE STAGE ps"},
+      {"sql": "CREATE TABLE target (id INTEGER)"},
+      {"sql": "CREATE PIPE test_pipe AS COPY INTO target FROM @ps"},
+      {"sql": "ALTER PIPE test_pipe SET PIPE_EXECUTION_PAUSED = TRUE"},
+      {"sql": "SELECT CONTAINS(SYSTEM$PIPE_STATUS('test_pipe'), 'PAUSED')", "expect": {"value": "true"}}
+    ]},
+    {"name": "alter-pipe-resume", "steps": [
+      {"sql": "CREATE STAGE ps"},
+      {"sql": "CREATE TABLE target (id INTEGER)"},
+      {"sql": "CREATE PIPE test_pipe AS COPY INTO target FROM @ps"},
+      {"sql": "ALTER PIPE test_pipe SET PIPE_EXECUTION_PAUSED = TRUE"},
+      {"sql": "ALTER PIPE test_pipe SET PIPE_EXECUTION_PAUSED = FALSE"},
+      {"sql": "SELECT CONTAINS(SYSTEM$PIPE_STATUS('test_pipe'), 'RUNNING')", "expect": {"value": "true"}}
+    ]},
+    {"name": "alter-pipe-pause-resume-cycle", "steps": [
+      {"sql": "CREATE STAGE ps"},
+      {"sql": "CREATE TABLE target (id INTEGER)"},
+      {"sql": "CREATE PIPE cycle_pipe AS COPY INTO target FROM @ps"},
+      {"sql": "ALTER PIPE cycle_pipe SET PIPE_EXECUTION_PAUSED = TRUE"},
+      {"sql": "SELECT CONTAINS(SYSTEM$PIPE_STATUS('cycle_pipe'), 'PAUSED')", "expect": {"value": "true"}},
+      {"sql": "ALTER PIPE cycle_pipe SET PIPE_EXECUTION_PAUSED = FALSE"},
+      {"sql": "SELECT CONTAINS(SYSTEM$PIPE_STATUS('cycle_pipe'), 'RUNNING')", "expect": {"value": "true"}},
+      {"sql": "ALTER PIPE cycle_pipe SET PIPE_EXECUTION_PAUSED = TRUE"},
+      {"sql": "SELECT CONTAINS(SYSTEM$PIPE_STATUS('cycle_pipe'), 'PAUSED')", "expect": {"value": "true"}},
+      {"sql": "ALTER PIPE cycle_pipe SET PIPE_EXECUTION_PAUSED = FALSE"},
+      {"sql": "SELECT CONTAINS(SYSTEM$PIPE_STATUS('cycle_pipe'), 'RUNNING')", "expect": {"value": "true"}}
+    ]},
+    {"name": "drop-pipe", "steps": [
+      {"sql": "CREATE STAGE ps"},
+      {"sql": "CREATE TABLE target (id INTEGER)"},
+      {"sql": "CREATE PIPE test_pipe AS COPY INTO target FROM @ps"},
+      {"sql": "DROP PIPE test_pipe"},
+      {"sql": "SHOW PIPES LIKE 'test_pipe'", "expect": {"rowCount": 0}}
+    ]},
+    {"name": "drop-non-existent-pipe", "steps": [
+      {"sql": "DROP PIPE non_existent_pipe", "expect": {"error": {}}}
+    ]},
+    {"name": "show-pipes", "steps": [
+      {"sql": "CREATE STAGE ps"},
+      {"sql": "CREATE STAGE ps2"},
+      {"sql": "CREATE TABLE target1 (id INTEGER)"},
+      {"sql": "CREATE TABLE target2 (id INTEGER)"},
+      {"sql": "CREATE PIPE pipe1 AS COPY INTO target1 FROM @ps"},
+      {"sql": "CREATE PIPE pipe2 AUTO_INGEST = TRUE AS COPY INTO target2 FROM @ps2"},
+      {"sql": "SHOW PIPES", "expect": {"rowCount": 2}}
+    ]},
+    {"name": "show-pipes-empty", "steps": [
+      {"sql": "SHOW PIPES", "expect": {"rowCount": 0}}
+    ]},
+    {"name": "show-pipes-after-drop", "steps": [
+      {"sql": "CREATE STAGE ps"},
+      {"sql": "CREATE TABLE target (id INTEGER)"},
+      {"sql": "CREATE PIPE temp_pipe AS COPY INTO target FROM @ps"},
+      {"sql": "SHOW PIPES", "expect": {"rowCount": 1}},
+      {"sql": "DROP PIPE temp_pipe"},
+      {"sql": "SHOW PIPES", "expect": {"rowCount": 0}}
+    ]},
+    {"name": "describe-pipe", "steps": [
+      {"sql": "CREATE STAGE ps"},
+      {"sql": "CREATE TABLE target (id INTEGER, name VARCHAR)"},
+      {"sql": "CREATE PIPE detailed_pipe AUTO_INGEST = TRUE AS COPY INTO target FROM @ps FILE_FORMAT = (TYPE = 'CSV')"},
+      {"sql": "DESCRIBE PIPE detailed_pipe", "expect": {"rowCount": 1}}
+    ]},
+    {"name": "describe-non-existent-pipe", "steps": [
+      {"sql": "DESCRIBE PIPE non_existent_pipe", "expect": {"error": {}}}
+    ]},
+    {"name": "create-pipe-duplicate-name", "steps": [
+      {"sql": "CREATE STAGE ps"},
+      {"sql": "CREATE TABLE target (id INTEGER)"},
+      {"sql": "CREATE PIPE duplicate_pipe AS COPY INTO target FROM @ps"},
+      {"sql": "CREATE PIPE duplicate_pipe AS COPY INTO target FROM @ps", "expect": {"error": {}}}
+    ]},
+    {"name": "pipe-with-complex-copy-statement", "steps": [
+      {"sql": "CREATE STAGE ps"},
+      {"sql": "CREATE TABLE sales (sale_id INTEGER, product_name VARCHAR, quantity INTEGER, price DECIMAL(10,2), sale_date DATE)"},
+      {"sql": "CREATE PIPE complex_pipe AUTO_INGEST = TRUE AS COPY INTO sales (sale_id, product_name, quantity, price, sale_date) FROM @ps FILE_FORMAT = (TYPE = 'CSV', FIELD_DELIMITER = ',', SKIP_HEADER = 1, DATE_FORMAT = 'YYYY-MM-DD') ON_ERROR = 'CONTINUE'"},
+      {"sql": "DESCRIBE PIPE complex_pipe"},
+      {"sql": "SELECT CONTAINS(\"definition\", 'COPY INTO') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "true"}}
+    ]},
+    {"name": "pipe-with-error-integration",
+     "skip": {"backends": ["snowflake"], "reason": "names an error integration that would have to exist on the account for a real run to accept the statement"},
+     "steps": [
+      {"sql": "CREATE STAGE ps"},
+      {"sql": "CREATE TABLE target (id INTEGER)"},
+      {"sql": "CREATE PIPE error_pipe AUTO_INGEST = TRUE ERROR_INTEGRATION = 'my_error_integration' AS COPY INTO target FROM @ps"},
+      {"sql": "SHOW PIPES LIKE 'error_pipe'"},
+      {"sql": "SELECT \"error_integration\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "my_error_integration"}}
+    ]},
+    {"name": "alter-non-existent-pipe", "steps": [
+      {"sql": "ALTER PIPE non_existent_pipe SET PIPE_EXECUTION_PAUSED = TRUE", "expect": {"error": {}}},
+      {"sql": "ALTER PIPE non_existent_pipe SET PIPE_EXECUTION_PAUSED = FALSE", "expect": {"error": {}}}
+    ]},
+    {"name": "pipe-status-tracking", "steps": [
+      {"sql": "CREATE STAGE ps"},
+      {"sql": "CREATE TABLE target (id INTEGER)"},
+      {"sql": "CREATE PIPE status_pipe AS COPY INTO target FROM @ps"},
+      {"sql": "SELECT CONTAINS(SYSTEM$PIPE_STATUS('status_pipe'), 'RUNNING')", "expect": {"value": "true"}},
+      {"sql": "ALTER PIPE status_pipe SET PIPE_EXECUTION_PAUSED = TRUE"},
+      {"sql": "SELECT CONTAINS(SYSTEM$PIPE_STATUS('status_pipe'), 'PAUSED')", "expect": {"value": "true"}},
+      {"sql": "ALTER PIPE status_pipe SET PIPE_EXECUTION_PAUSED = FALSE"},
+      {"sql": "SELECT CONTAINS(SYSTEM$PIPE_STATUS('status_pipe'), 'RUNNING')", "expect": {"value": "true"}}
+    ]},
+    {"name": "multiple-pipes-independence", "steps": [
+      {"sql": "CREATE STAGE ps"},
+      {"sql": "CREATE STAGE ps2"},
+      {"sql": "CREATE TABLE target1 (id INTEGER)"},
+      {"sql": "CREATE TABLE target2 (id INTEGER)"},
+      {"sql": "CREATE PIPE pipe1 AS COPY INTO target1 FROM @ps"},
+      {"sql": "CREATE PIPE pipe2 AS COPY INTO target2 FROM @ps2"},
+      {"sql": "ALTER PIPE pipe1 SET PIPE_EXECUTION_PAUSED = TRUE"},
+      {"sql": "SELECT CONTAINS(SYSTEM$PIPE_STATUS('pipe1'), 'PAUSED'), CONTAINS(SYSTEM$PIPE_STATUS('pipe2'), 'RUNNING')",
+       "expect": {"rows": [["true", "true"]]}},
+      {"sql": "ALTER PIPE pipe1 SET PIPE_EXECUTION_PAUSED = FALSE"},
+      {"sql": "ALTER PIPE pipe2 SET PIPE_EXECUTION_PAUSED = TRUE"},
+      {"sql": "SELECT CONTAINS(SYSTEM$PIPE_STATUS('pipe1'), 'RUNNING'), CONTAINS(SYSTEM$PIPE_STATUS('pipe2'), 'PAUSED')",
+       "expect": {"rows": [["true", "true"]]}}
+    ]},
+    {"name": "pipe-case-insensitivity", "steps": [
+      {"sql": "CREATE STAGE ps"},
+      {"sql": "CREATE TABLE target (id INTEGER)"},
+      {"sql": "CREATE PIPE MyPipe AS COPY INTO target FROM @ps"},
+      {"sql": "SHOW PIPES LIKE 'mypipe'", "expect": {"rowCount": 1}},
+      {"sql": "SHOW PIPES LIKE 'MYPIPE'", "expect": {"rowCount": 1}}
+    ]},
+    {"name": "alter-pipe-set-execution-paused", "steps": [
+      {"sql": "CREATE STAGE ps"},
+      {"sql": "CREATE TABLE target (id INTEGER)"},
+      {"sql": "CREATE PIPE sep_pipe AS COPY INTO target FROM @ps"},
+      {"sql": "ALTER PIPE sep_pipe SET PIPE_EXECUTION_PAUSED = TRUE"},
+      {"sql": "SELECT CONTAINS(SYSTEM$PIPE_STATUS('sep_pipe'), 'PAUSED')", "expect": {"value": "true"}},
+      {"sql": "ALTER PIPE sep_pipe SET PIPE_EXECUTION_PAUSED = FALSE"},
+      {"sql": "SELECT CONTAINS(SYSTEM$PIPE_STATUS('sep_pipe'), 'RUNNING')", "expect": {"value": "true"}}
+    ]},
+    {"name": "alter-pipe-refresh-executes-copy",
+     "skip": {"backends": ["snowflake"], "reason": "ALTER PIPE ... REFRESH makes the account read the stage's cloud storage; the URL here is a placeholder bucket the account has no credentials for, so live answers Access Denied (403)"},
+     "steps": [
+      {"sql": "CREATE TABLE refresh_target (id INTEGER, name VARCHAR)"},
+      {"sql": "CREATE STAGE refresh_stage URL='s3://bucket/data'"},
+      {"sql": "CREATE PIPE refresh_pipe AS COPY INTO refresh_target FROM @refresh_stage FILE_FORMAT = (TYPE = 'CSV')"},
+      {"sql": "ALTER PIPE refresh_pipe REFRESH"},
+      {"sql": "SELECT CONTAINS(SYSTEM$PIPE_STATUS('refresh_pipe'), 'RUNNING')", "expect": {"value": "true"}}
+    ]},
+    {"name": "system-pipe-status-reflects-state", "steps": [
+      {"sql": "CREATE STAGE ps"},
+      {"sql": "CREATE TABLE target (id INTEGER)"},
+      {"sql": "CREATE PIPE status_json_pipe AS COPY INTO target FROM @ps"},
+      {"sql": "SELECT CONTAINS(SYSTEM$PIPE_STATUS('status_json_pipe'), 'RUNNING')", "expect": {"value": "true"}},
+      {"sql": "ALTER PIPE status_json_pipe SET PIPE_EXECUTION_PAUSED = TRUE"},
+      {"sql": "SELECT CONTAINS(SYSTEM$PIPE_STATUS('status_json_pipe'), 'PAUSED')", "expect": {"value": "true"}}
+    ]},
+    {"name": "system-pipe-status-unknown-pipe-errors", "steps": [
+      {"sql": "SELECT SYSTEM$PIPE_STATUS('no_such_pipe')", "expect": {"error": {}}}
+    ]},
+    {"name": "create-or-replace-pipe", "steps": [
+      {"sql": "CREATE STAGE ps"},
+      {"sql": "CREATE STAGE ps2"},
+      {"sql": "CREATE TABLE t1 (id INTEGER)"},
+      {"sql": "CREATE TABLE t2 (id INTEGER)"},
+      {"sql": "CREATE PIPE or_replace_pipe AS COPY INTO t1 FROM @ps"},
+      {"sql": "CREATE OR REPLACE PIPE or_replace_pipe AUTO_INGEST = TRUE AS COPY INTO t2 FROM @ps2"},
+      {"sql": "DESCRIBE PIPE or_replace_pipe"},
+      {"sql": "SELECT CONTAINS(\"definition\", 't2') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "true"}}
+    ]},
+    {"name": "create-pipe-if-not-exists", "steps": [
+      {"sql": "CREATE STAGE ps"},
+      {"sql": "CREATE STAGE ps2"},
+      {"sql": "CREATE TABLE target (id INTEGER)"},
+      {"sql": "CREATE PIPE ine_pipe AS COPY INTO target FROM @ps"},
+      {"sql": "CREATE PIPE IF NOT EXISTS ine_pipe AS COPY INTO target FROM @ps2"},
+      {"sql": "DESCRIBE PIPE ine_pipe"},
+      {"sql": "SELECT CONTAINS(\"definition\", '@ps'), CONTAINS(\"definition\", '@ps2') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["true", "false"]]}}
+    ]},
+    {"name": "drop-pipe-if-exists", "steps": [
+      {"sql": "DROP PIPE IF EXISTS missing_pipe"}
+    ]},
+    {"name": "show-pipes-like", "steps": [
+      {"sql": "CREATE STAGE ps"},
+      {"sql": "CREATE STAGE ps2"},
+      {"sql": "CREATE TABLE t (id INTEGER)"},
+      {"sql": "CREATE PIPE load_alpha AS COPY INTO t FROM @ps"},
+      {"sql": "CREATE PIPE load_beta AS COPY INTO t FROM @ps"},
+      {"sql": "CREATE PIPE other_pipe AS COPY INTO t FROM @ps2"},
+      {"sql": "SHOW PIPES LIKE 'load%'", "expect": {"rowCount": 2}}
+    ]},
+    {"name": "show-pipes-column-content", "steps": [
+      {"sql": "CREATE STAGE ps"},
+      {"sql": "CREATE TABLE t (id INTEGER)"},
+      {"sql": "CREATE PIPE content_pipe AUTO_INGEST = TRUE AS COPY INTO t FROM @ps"},
+      {"sql": "SHOW PIPES LIKE 'content_pipe'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT LOWER(\"name\"), CONTAINS(\"definition\", 'COPY INTO'), \"kind\", TO_VARCHAR(\"is_snowflake_managed\") FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["content_pipe", "true", "STAGE", "false"]]}}
+    ]},
+    {"name": "create-pipe-with-integration",
+     "skip": {"backends": ["snowflake"], "reason": "names a notification integration that would have to exist on the account for a real run to accept the statement"},
+     "steps": [
+      {"sql": "CREATE STAGE ps"},
+      {"sql": "CREATE TABLE t (id INTEGER)"},
+      {"sql": "CREATE PIPE int_pipe AUTO_INGEST = TRUE INTEGRATION = 'my_notification_int' AS COPY INTO t FROM @ps"},
+      {"sql": "SHOW PIPES LIKE 'int_pipe'"},
+      {"sql": "SELECT \"integration\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "my_notification_int"}}
+    ]},
+    {"name": "describe-pipe-columnar-row", "steps": [
+      {"sql": "CREATE STAGE ps"},
+      {"sql": "CREATE TABLE t (id INTEGER, name VARCHAR)"},
+      {"sql": "CREATE PIPE desc_pipe AS COPY INTO t FROM @ps"},
+      {"sql": "DESCRIBE PIPE desc_pipe", "expect": {"rowCount": 1}},
+      {"sql": "SELECT LOWER(\"name\"), CONTAINS(\"definition\", 'COPY INTO') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["desc_pipe", "true"]]}}
+    ]}
+  ]
+}

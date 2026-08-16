@@ -117,6 +117,9 @@ final class GroupBySelectListValidator {
      */
     private boolean insideWindowCall;
 
+    /** True while HAVING is walked: its refusal is always the bracketed family (live-verified). */
+    private boolean insideHaving;
+
     /**
      * Whether this run validates IMPLICIT aggregation (an aggregate or HAVING with no GROUP BY):
      * the same walk applies with an empty key set, but the refusal is live's OTHER family —
@@ -195,6 +198,30 @@ final class GroupBySelectListValidator {
                 checkNode(itemExpr);
             } catch (final RuntimeException unexpected) {
                 return;   // never fail a query because the validator itself stumbled
+            }
+            if (rejection != null) {
+                throw new RuntimeException(rejection);
+            }
+        }
+        if (ctx.havingClause() != null) {
+            // HAVING's own columns are held to the grouping as the select list's are, and always in the
+            // bracketed family, with or without a GROUP BY: GROUP BY id HAVING v > 1 is
+            // "[G.V] is not a valid group by expression" (live-verified). Every select alias is
+            // referencable there, so none of them counts as a forward reference.
+            earlierAliases.clear();
+            laterAliases.clear();
+            for (final String alias : aliasNames) {
+                if (alias != null) {
+                    earlierAliases.add(alias.toUpperCase());
+                }
+            }
+            insideHaving = true;
+            try {
+                checkNode(ctx.havingClause().booleanExpr());
+            } catch (final RuntimeException unexpected) {
+                return;   // never fail a query because the validator itself stumbled
+            } finally {
+                insideHaving = false;
             }
             if (rejection != null) {
                 throw new RuntimeException(rejection);
@@ -292,7 +319,7 @@ final class GroupBySelectListValidator {
             // else is a path INTO a column (a VARIANT field) or a qualifier this validator cannot see.
             final String qualifier = parts[parts.length - 2];
             if (namesATable(qualifier) && namesAColumn(last) && !keyColumns.contains(last)) {
-                if (implicitAggregation || insideWindowCall) {
+                if (implicitAggregation || insideWindowCall || insideHaving) {
                     final List<String> rawParts = rawNameParts(ref);
                     rejectImplicit(spellWrittenIdentifier(rawParts.get(rawParts.size() - 2)) + "."
                         + spellWrittenIdentifier(rawParts.get(rawParts.size() - 1)));
@@ -309,7 +336,7 @@ final class GroupBySelectListValidator {
         if (namesAColumn(last)) {
             // A real column outranks a same-named alias, so it must be grouped or aggregated.
             if (!keyColumns.contains(last)) {
-                if (implicitAggregation || insideWindowCall) {
+                if (implicitAggregation || insideWindowCall || insideHaving) {
                     final List<String> rawParts = rawNameParts(ref);
                     rejectImplicit(owningNameSpelled(last) + "."
                         + spellWrittenIdentifier(rawParts.get(rawParts.size() - 1)));
@@ -379,6 +406,9 @@ final class GroupBySelectListValidator {
     private static List<String> rawNameParts(final FrostlakeParser.QualifiedNameExprContext ref) {
         final List<String> parts = new ArrayList<String>();
         parts.add(ref.qualifiedName().nameStartPart().getText());
+        if (ParseTreeText.hasEmptySchemaPart(ref.qualifiedName())) {
+            parts.add("PUBLIC");
+        }
         for (final FrostlakeParser.NamePartContext np : ref.qualifiedName().namePart()) {
             parts.add(np.getText());
         }

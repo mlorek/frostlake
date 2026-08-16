@@ -16,6 +16,7 @@
 
 package dev.frostlake.types;
 
+import dev.frostlake.executor.SessionTimestampMapping;
 import java.util.Locale;
 
 /**
@@ -47,6 +48,11 @@ public final class TimestampFlavours {
         }
         if (name.contains("TZ")) {
             return DateTimeType.TIMESTAMP_TZ;
+        }
+        // A name carrying NO flavour is the BARE TIMESTAMP spelling, and follows the session's
+        // TIMESTAMP_TYPE_MAPPING: live declares TO_TIMESTAMP(x) TIMESTAMP_LTZ(9) under that mapping.
+        if (SessionTimestampMapping.isZoned()) {
+            return new DateTimeType(SessionTimestampMapping.current(), 9, true);
         }
         return DateTimeType.TIMESTAMP_NTZ;
     }

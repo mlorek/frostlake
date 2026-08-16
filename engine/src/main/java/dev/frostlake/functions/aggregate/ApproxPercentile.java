@@ -17,6 +17,7 @@
 package dev.frostlake.functions.aggregate;
 
 import dev.frostlake.functions.AggregateFunction;
+import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.types.NumericType;
 
 import java.util.List;
@@ -40,4 +41,29 @@ public class ApproxPercentile extends AggregateFunction {
     public int getMinArgCount() { return 2; }
     @Override
     public int getMaxArgCount() { return 2; }
+
+    /**
+     * A value outside the numbers, the strings and VARIANT is refused at compile time in the
+     * accumulator's name — "Invalid argument types for function 'APPROX_PERCENTILE_ACCUMULATE':
+     * (ARRAY)" — anchored, as live anchors it, at line 0 position -1 (live-verified).
+     */
+    @Override
+    public SemiStructuredRejection semiStructuredRejection(final int position) {
+        return SemiStructuredRejection.ARGUMENT_TYPES;
+    }
+
+    @Override
+    public SemiStructuredRejection binaryRejection(final int position) {
+        return SemiStructuredRejection.ARGUMENT_TYPES;
+    }
+
+    @Override
+    public SemiStructuredRejection booleanRejection(final int position) {
+        return SemiStructuredRejection.ARGUMENT_TYPES;
+    }
+
+    @Override
+    public SemiStructuredRejection temporalRejection(final int position) {
+        return SemiStructuredRejection.ARGUMENT_TYPES;
+    }
 }

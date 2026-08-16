@@ -1,0 +1,49 @@
+{
+  "suite": "scripting-dollar-quoted",
+  "description": "Dollar-quoted string literals ($$...$$) as the body of a procedure or a function. The point of the form is that SINGLE QUOTES inside need no escaping, so a body may hold a quoted message or an OBJECT_CONSTRUCT with quoted keys and values verbatim. Covered for a procedure and a function, for a body carrying single quotes, for a MULTI-LINE body, for a body with IF / ELSEIF / ELSE and a WHILE loop (whose conditions are PARENTHESISED, as a real account requires - the bare spelling is refused at CREATE), and for a TABLE function. Traditional single-quoted bodies still work, which is the regression guard. One shape worth naming: a table UDF's body is COMPILED at CREATE, so the table it reads must already exist - live-verified, without it CREATE fails 'Object ... does not exist or not authorized'. Converted 1:1 from scripting/DollarQuotedTest (now retired); the Java scanned the SHOW PROCEDURES / SHOW FUNCTIONS ResultSet row by row through JDBC, which becomes a RESULT_SCAN over the same SHOW, and the multi-line bodies are written on one line here except where the multi-line shape IS the claim.",
+  "tags": ["scripting", "converted"],
+  "tests": [
+    {"name": "a-procedure-with-dollar-quotes", "steps": [
+      {"sql": "CREATE PROCEDURE test_proc(x INTEGER) RETURNS INTEGER AS $$DECLARE result INTEGER; BEGIN SET result = x * 2; RETURN result; END; $$"},
+      {"sql": "SHOW PROCEDURES"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'TEST_PROC'", "expect": {"value": 1}}
+    ]},
+    {"name": "a-function-with-dollar-quotes", "steps": [
+      {"sql": "CREATE FUNCTION add_ten(n INTEGER) RETURNS INTEGER AS $$n + 10$$"},
+      {"sql": "SHOW FUNCTIONS"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'ADD_TEN'", "expect": {"value": 1}},
+      {"sql": "SELECT add_ten(5)", "expect": {"value": 15}}
+    ]},
+    {"name": "dollar-quotes-carry-single-quotes-unescaped", "steps": [
+      {"sql": "CREATE PROCEDURE quote_test() RETURNS VARCHAR AS $$DECLARE msg VARCHAR; BEGIN SET msg = 'This has single quotes'; RETURN msg; END; $$"},
+      {"sql": "SHOW PROCEDURES"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'QUOTE_TEST'", "expect": {"value": 1}}
+    ]},
+    {"name": "a-multi-line-dollar-quoted-body", "steps": [
+      {"sql": "CREATE PROCEDURE multi_line_test(x INTEGER) RETURNS INTEGER AS $$\nDECLARE\n  result INTEGER;\n  temp INTEGER;\nBEGIN\n  SET temp = x * 2;\n  SET result = temp + 10;\n  RETURN result;\nEND;\n$$"},
+      {"sql": "SHOW PROCEDURES"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'MULTI_LINE_TEST'", "expect": {"value": 1}}
+    ]},
+    {"name": "traditional-single-quotes-still-work", "steps": [
+      {"sql": "CREATE FUNCTION double_value(x INTEGER) RETURNS INTEGER AS 'x * 2'"},
+      {"sql": "SHOW FUNCTIONS"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'DOUBLE_VALUE'", "expect": {"value": 1}}
+    ]},
+    {"name": "a-dollar-quoted-body-with-complex-logic", "steps": [
+      {"sql": "CREATE PROCEDURE complex_proc(n INTEGER) RETURNS VARCHAR AS $$\nDECLARE\n  result VARCHAR;\n  counter INTEGER;\nBEGIN\n  SET counter = 0;\n  IF (n > 10) THEN\n    SET result = 'Large number';\n  ELSEIF (n > 5) THEN\n    SET result = 'Medium number';\n  ELSE\n    SET result = 'Small number';\n  END IF;\n\n  WHILE (counter < n) DO\n    SET counter = counter + 1;\n  END WHILE;\n\n  RETURN result;\nEND;\n$$"},
+      {"sql": "SHOW PROCEDURES"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'COMPLEX_PROC'", "expect": {"value": 1}}
+    ]},
+    {"name": "a-dollar-quoted-body-with-object-construct", "steps": [
+      {"sql": "CREATE PROCEDURE create_object() RETURNS OBJECT AS $$\nDECLARE\n  obj OBJECT;\nBEGIN\n  SET obj = OBJECT_CONSTRUCT('name', 'John', 'age', 30);\n  RETURN obj;\nEND;\n$$"},
+      {"sql": "SHOW PROCEDURES"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'CREATE_OBJECT'", "expect": {"value": 1}}
+    ]},
+    {"name": "a-table-function-with-dollar-quotes", "steps": [
+      {"sql": "CREATE TABLE numbers (n INTEGER)"},
+      {"sql": "CREATE FUNCTION get_numbers(max_val INTEGER) RETURNS TABLE(num INTEGER, squared INTEGER) AS $$SELECT n, n*n FROM numbers WHERE n <= max_val$$"},
+      {"sql": "SHOW FUNCTIONS"},
+      {"sql": "SELECT COUNT(*) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'GET_NUMBERS'", "expect": {"value": 1}}
+    ]}
+  ]
+}

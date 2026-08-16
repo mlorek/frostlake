@@ -1,0 +1,37 @@
+{
+  "suite": "ddl-builtin-immutability",
+  "description": "Built-in functions and procedures cannot be dropped or altered - by NAMESPACE, not a guard: DROP/ALTER FUNCTION and PROCEDURE resolve schema-scoped objects only, so the refusal is the ordinary does-not-exist naming the fully qualified schema object; IF EXISTS forgives it; a user routine sharing a built-in's name creates and drops freely, the built-in untouched throughout. All live-verified. Converted 1:1 from ddl/BuiltinRoutineImmutabilityTest (now retired).",
+  "tags": ["ddl", "converted"],
+  "tests": [
+    {"name": "drop-builtin-function-is-refused-as-absent", "steps": [
+      {"sql": "DROP FUNCTION abs(NUMBER)",
+       "expect": {"error": {"messageContains": "Function 'TEST_DB.TEST_SCHEMA.ABS' does not exist or not authorized."}}},
+      {"sql": "DROP FUNCTION upper(VARCHAR)",
+       "expect": {"error": {"messageContains": "Function 'TEST_DB.TEST_SCHEMA.UPPER' does not exist or not authorized."}}},
+      {"sql": "SELECT ABS(-5)", "expect": {"value": "5"}},
+      {"sql": "SELECT UPPER('x')", "expect": {"value": "X"}}
+    ]},
+    {"name": "drop-builtin-function-if-exists-is-forgiven", "steps": [
+      {"sql": "DROP FUNCTION IF EXISTS abs(NUMBER)"},
+      {"sql": "SELECT ABS(-5)", "expect": {"value": "5"}}
+    ]},
+    {"name": "alter-builtin-function-is-refused-as-absent", "steps": [
+      {"sql": "ALTER FUNCTION abs(NUMBER) RENAME TO abs2",
+       "expect": {"error": {"messageContains": "Function 'TEST_DB.TEST_SCHEMA.ABS' does not exist or not authorized."}}},
+      {"sql": "ALTER FUNCTION abs(NUMBER) SET COMMENT = 'x'",
+       "expect": {"error": {"messageContains": "Function 'TEST_DB.TEST_SCHEMA.ABS' does not exist or not authorized."}}},
+      {"sql": "SELECT ABS(-5)", "expect": {"value": "5"}}
+    ]},
+    {"name": "drop-or-alter-builtin-procedure-is-refused-as-absent", "steps": [
+      {"sql": "DROP PROCEDURE associate_semantic_category_tags(VARCHAR, OBJECT)",
+       "expect": {"error": {"messageContains": "Procedure 'TEST_DB.TEST_SCHEMA.ASSOCIATE_SEMANTIC_CATEGORY_TAGS' does not exist or not authorized."}}},
+      {"sql": "ALTER PROCEDURE associate_semantic_category_tags(VARCHAR, OBJECT) SET COMMENT = 'x'",
+       "expect": {"error": {"messageContains": "Procedure 'TEST_DB.TEST_SCHEMA.ASSOCIATE_SEMANTIC_CATEGORY_TAGS' does not exist or not authorized."}}}
+    ]},
+    {"name": "user-function-sharing-builtin-name-is-droppable", "steps": [
+      {"sql": "CREATE FUNCTION abs(x VARCHAR) RETURNS VARCHAR AS 'x'"},
+      {"sql": "DROP FUNCTION abs(VARCHAR)"},
+      {"sql": "SELECT ABS(-5)", "expect": {"value": "5"}}
+    ]}
+  ]
+}

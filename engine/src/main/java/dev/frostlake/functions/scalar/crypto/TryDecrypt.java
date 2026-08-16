@@ -25,7 +25,7 @@ public class TryDecrypt extends BuiltInFunction {
 
     private static final Decrypt BASE = new Decrypt();
 
-    public TryDecrypt() { super("TRY_DECRYPT", BinaryType.VARBINARY); }
+    public TryDecrypt() { super("TRY_DECRYPT", BinaryType.UNSIZED); }
 
     @Override
     public Object evaluate(final List<Object> args) {

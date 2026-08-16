@@ -1,0 +1,53 @@
+{
+  "suite": "functions-to-char-numeric",
+  "description": "TO_CHAR / TO_VARCHAR numeric format model: digit placeholders (0 and 9), the group separator, decimal places with HALF_UP rounding, a leading currency sign, and the sign controls S, MI and FM. All expected values are live-verified: a result right-aligns to the template width PLUS a leading sign position, so a positive value renders a blank there; '0' placeholders zero-pad; insignificant trailing fraction digits in '9' positions render as spaces; overflow renders '#' across the template; a positive MI value renders a trailing blank; FM drops the padding; and PR - Oracle's angle-bracket element - is rejected exactly as Snowflake rejects it. Converted 1:1 from functions/ToCharTest (now retired); every result is stringified with '<' || x || '>' so the leading and trailing padding the format model produces is visible in the assertion rather than at risk of being trimmed.",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "a-currency-grouped-two-decimal-format", "steps": [
+      {"sql": "SELECT '<' || TO_CHAR(1234.5, '$9,999.00') || '>'", "expect": {"value": "< $1,234.50>"}}
+    ]},
+    {"name": "a-negative-value-gets-a-leading-minus-outside-the-currency", "steps": [
+      {"sql": "SELECT '<' || TO_CHAR(-1234.5, '$9,999.00') || '>'", "expect": {"value": "<-$1,234.50>"}}
+    ]},
+    {"name": "a-zero-placeholder-pads-integers", "steps": [
+      {"sql": "SELECT '<' || TO_CHAR(5, '0000') || '>'", "expect": {"value": "< 0005>"}}
+    ]},
+    {"name": "fill-mode-rounds-to-the-scale", "steps": [
+      {"sql": "SELECT '<' || TO_CHAR(1234.567, 'FM9,999.00') || '>'", "expect": {"value": "<1,234.57>"}}
+    ]},
+    {"name": "fewer-decimal-places", "steps": [
+      {"sql": "SELECT '<' || TO_CHAR(1234.5, '9,999.9') || '>'", "expect": {"value": "< 1,234.5>"}}
+    ]},
+    {"name": "a-trailing-minus-for-a-negative", "steps": [
+      {"sql": "SELECT '<' || TO_CHAR(-42, '9999MI') || '>'", "expect": {"value": "<  42->"}},
+      {"sql": "SELECT '<' || TO_CHAR(42, '9999MI') || '>'", "expect": {"value": "<  42 >"}}
+    ]},
+    {"name": "an-explicit-leading-sign", "steps": [
+      {"sql": "SELECT '<' || TO_CHAR(42, 'S9999') || '>'", "expect": {"value": "<  +42>"}},
+      {"sql": "SELECT '<' || TO_CHAR(-42, 'S9999') || '>'", "expect": {"value": "<  -42>"}}
+    ]},
+    {"name": "the-pr-keyword-is-rejected-like-snowflake", "steps": [
+      {"sql": "SELECT TO_CHAR(-42, '9999PR')",
+       "expect": {"error": {"messageContains": "invalid numeric format keyword: 'PR'"}}}
+    ]},
+    {"name": "plain-digits-pad-to-the-template-width-with-a-sign-slot", "steps": [
+      {"sql": "SELECT '<' || TO_CHAR(5, '9999') || '>'", "expect": {"value": "<    5>"}},
+      {"sql": "SELECT '<' || TO_CHAR(-5, '9999') || '>'", "expect": {"value": "<   -5>"}},
+      {"sql": "SELECT '<' || TO_CHAR(5, 'FM9999') || '>'", "expect": {"value": "<5>"}}
+    ]},
+    {"name": "insignificant-trailing-fraction-nines-render-as-spaces", "steps": [
+      {"sql": "SELECT '<' || TO_CHAR(0.5, '99.99') || '>'", "expect": {"value": "<  0.5 >"}},
+      {"sql": "SELECT '<' || TO_CHAR(123.456, '999.9') || '>'", "expect": {"value": "< 123.5>"}}
+    ]},
+    {"name": "overflow-renders-hashes-across-the-template", "steps": [
+      {"sql": "SELECT '<' || TO_CHAR(12345, '999') || '>'", "expect": {"value": "< ###>"}}
+    ]},
+    {"name": "the-to-varchar-synonym-applies-the-format", "steps": [
+      {"sql": "SELECT '<' || TO_VARCHAR(1234.5, '$9,999.00') || '>'", "expect": {"value": "< $1,234.50>"}}
+    ]},
+    {"name": "no-format-stringifies-verbatim", "steps": [
+      {"sql": "SELECT TO_CHAR(42)", "expect": {"value": "42"}},
+      {"sql": "SELECT TO_CHAR('hello')", "expect": {"value": "hello"}}
+    ]}
+  ]
+}

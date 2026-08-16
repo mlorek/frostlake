@@ -1,0 +1,52 @@
+{
+  "suite": "features-warehouse-reference",
+  "description": "A statement that NAMES a warehouse is refused when that warehouse is not there - live-verified, and phrased two different ways for the same missing warehouse: CREATE TASK answers \"Nonexistent warehouse NOSUCH_WH was specified.\" while CREATE DYNAMIC TABLE and CREATE CORTEX SEARCH SERVICE answer \"Warehouse 'NOSUCH_WH' does not exist.\", always upper-casing the name however the statement spelled it. An existing warehouse is accepted by all three, a statement with no WAREHOUSE clause is not a reference so nothing is checked, and CREATE USER ... DEFAULT_WAREHOUSE is a stored preference rather than a reference: live accepts one that does not exist, so checking it would make Frostlake stricter than Snowflake. Converted 1:1 from features/WarehouseReferenceTest (now retired); its @BeforeEach fixture is inlined per test and the account-level warehouse and user are dropped again.",
+  "tags": ["features", "converted"],
+  "tests": [
+    {"name": "a-task-naming-a-missing-warehouse-is-refused", "steps": [
+      {"sql": "CREATE TABLE src(id INT, body VARCHAR)"},
+      {"sql": "CREATE TASK tk WAREHOUSE = nosuch_wh SCHEDULE = '1 minute' AS SELECT 1",
+       "expect": {"error": {"messageContains": "Nonexistent warehouse NOSUCH_WH was specified."}}}
+    ]},
+    {"name": "a-dynamic-table-naming-a-missing-warehouse-is-refused", "steps": [
+      {"sql": "CREATE TABLE src(id INT, body VARCHAR)"},
+      {"sql": "CREATE DYNAMIC TABLE dt TARGET_LAG = '1 hour' WAREHOUSE = nosuch_wh AS SELECT id FROM src",
+       "expect": {"error": {"messageContains": "Warehouse 'NOSUCH_WH' does not exist."}}}
+    ]},
+    {"name": "a-cortex-search-service-naming-a-missing-warehouse-is-refused", "steps": [
+      {"sql": "CREATE TABLE src(id INT, body VARCHAR)"},
+      {"sql": "CREATE CORTEX SEARCH SERVICE svc ON body WAREHOUSE = nosuch_wh TARGET_LAG = '1 hour' AS (SELECT id, body FROM src)",
+       "expect": {"error": {"messageContains": "Warehouse 'NOSUCH_WH' does not exist."}}}
+    ]},
+    {"name": "the-refusal-upper-cases-the-name", "steps": [
+      {"sql": "CREATE TABLE src(id INT, body VARCHAR)"},
+      {"sql": "CREATE DYNAMIC TABLE dt2 TARGET_LAG = '1 hour' WAREHOUSE = MiXeD_Wh AS SELECT id FROM src",
+       "expect": {"error": {"messageContains": "'MIXED_WH'"}}}
+    ]},
+    {"name": "an-existing-warehouse-is-accepted", "steps": [
+      {"sql": "CREATE TABLE src(id INT, body VARCHAR)"},
+      {"sql": "DROP WAREHOUSE IF EXISTS present_wh"},
+      {"sql": "CREATE WAREHOUSE present_wh"},
+      {"sql": "CREATE TASK tk WAREHOUSE = present_wh SCHEDULE = '1 minute' AS SELECT 1"},
+      {"sql": "CREATE DYNAMIC TABLE dt TARGET_LAG = '1 hour' WAREHOUSE = present_wh AS SELECT id FROM src"},
+      {"sql": "DROP WAREHOUSE present_wh"}
+    ]},
+    {"name": "an-existing-warehouse-is-accepted-by-a-cortex-service",
+     "skip": {"backends": ["snowflake"], "reason": "a trial account has no Cortex, so the account's own refusal would decide this check; the Java class skipped it through LiveFeatureGate, which a JSON step cannot express"},
+     "steps": [
+      {"sql": "CREATE TABLE src(id INT, body VARCHAR)"},
+      {"sql": "DROP WAREHOUSE IF EXISTS present_wh"},
+      {"sql": "CREATE WAREHOUSE present_wh"},
+      {"sql": "CREATE CORTEX SEARCH SERVICE svc ON body WAREHOUSE = present_wh TARGET_LAG = '1 hour' AS (SELECT id, body FROM src)"},
+      {"sql": "DROP WAREHOUSE present_wh"}
+    ]},
+    {"name": "a-statement-with-no-warehouse-clause-is-unaffected", "steps": [
+      {"sql": "CREATE TASK tk2 SCHEDULE = '1 minute' AS SELECT 1"}
+    ]},
+    {"name": "a-users-default-warehouse-is-not-validated", "steps": [
+      {"sql": "DROP USER IF EXISTS u1"},
+      {"sql": "CREATE USER u1 DEFAULT_WAREHOUSE = nosuch_wh"},
+      {"sql": "DROP USER u1"}
+    ]}
+  ]
+}

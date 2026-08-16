@@ -1,0 +1,60 @@
+{
+  "suite": "query-nested-correlated",
+  "description": "Correlated EXISTS subqueries nested inside one another, where an inner subquery correlates to the MIDDLE query rather than to the outermost one. t1 {1,2,3,4} / t2 {1,2,3} / t3 {1,2} / t4 {1}: one level of EXISTS keeps 1,2,3; two levels keep 1,2 (3 survives the t2 test but has no t3 partner); three levels keep only 1. The correlation chain is what is under test - t1.i = t2.i in the middle and t2.i = t3.i in the innermost - so a flattening that lost the middle reference would answer with more rows. Converted 1:1 from query/NestedCorrelatedQueryTest (now retired); the Java asserted row COUNTS and read the first rows by index, so the converted tests pin the whole ordered row set, and the class's manual-check test - which only LOGGED each table's contents before re-running the same query - asserts those contents.",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "nested-correlated-exists", "steps": [
+      {"sql": "CREATE TABLE t1 (i INTEGER)"},
+      {"sql": "CREATE TABLE t2 (i INTEGER)"},
+      {"sql": "CREATE TABLE t3 (i INTEGER)"},
+      {"sql": "INSERT INTO t1 VALUES (1), (2), (3), (4)"},
+      {"sql": "INSERT INTO t2 VALUES (1), (2), (3)"},
+      {"sql": "INSERT INTO t3 VALUES (1), (2)"},
+      {"sql": "SELECT * FROM t1 WHERE EXISTS (SELECT * FROM t2 WHERE t1.i = t2.i AND EXISTS (SELECT * FROM t3 WHERE t2.i = t3.i)) ORDER BY i", "expect": {"rows": [[1],[2]], "ordered": true}}
+    ]},
+    {"name": "simple-correlated-exists", "steps": [
+      {"sql": "CREATE TABLE t1 (i INTEGER)"},
+      {"sql": "CREATE TABLE t2 (i INTEGER)"},
+      {"sql": "CREATE TABLE t3 (i INTEGER)"},
+      {"sql": "INSERT INTO t1 VALUES (1), (2), (3), (4)"},
+      {"sql": "INSERT INTO t2 VALUES (1), (2), (3)"},
+      {"sql": "INSERT INTO t3 VALUES (1), (2)"},
+      {"sql": "SELECT * FROM t1 WHERE EXISTS (SELECT * FROM t2 WHERE t1.i = t2.i) ORDER BY i",
+       "expect": {"rows": [[1],[2],[3]], "ordered": true}}
+    ]},
+    {"name": "double-nested-correlated-exists", "steps": [
+      {"sql": "CREATE TABLE t1 (i INTEGER)"},
+      {"sql": "CREATE TABLE t2 (i INTEGER)"},
+      {"sql": "CREATE TABLE t3 (i INTEGER)"},
+      {"sql": "INSERT INTO t1 VALUES (1), (2), (3), (4)"},
+      {"sql": "INSERT INTO t2 VALUES (1), (2), (3)"},
+      {"sql": "INSERT INTO t3 VALUES (1), (2)"},
+      {"sql": "CREATE TABLE t4 (i INTEGER)"},
+      {"sql": "INSERT INTO t4 VALUES (1)"},
+      {"sql": "SELECT * FROM t1 WHERE EXISTS (SELECT * FROM t2 WHERE t1.i = t2.i AND EXISTS (SELECT * FROM t3 WHERE t2.i = t3.i AND EXISTS (SELECT * FROM t4 WHERE t3.i = t4.i))) ORDER BY i",
+       "expect": {"rows": [[1]], "ordered": true}}
+    ]},
+    {"name": "the-nested-form-answers-two-rows-not-three", "steps": [
+      {"sql": "CREATE TABLE t1 (i INTEGER)"},
+      {"sql": "CREATE TABLE t2 (i INTEGER)"},
+      {"sql": "CREATE TABLE t3 (i INTEGER)"},
+      {"sql": "INSERT INTO t1 VALUES (1), (2), (3), (4)"},
+      {"sql": "INSERT INTO t2 VALUES (1), (2), (3)"},
+      {"sql": "INSERT INTO t3 VALUES (1), (2)"},
+      {"sql": "SELECT * FROM t1 WHERE EXISTS (SELECT * FROM t2 WHERE t1.i = t2.i AND EXISTS (SELECT * FROM t3 WHERE t2.i = t3.i)) ORDER BY i", "expect": {"rowCount": 2}},
+      {"sql": "SELECT COUNT(*) FROM (SELECT * FROM t1 WHERE EXISTS (SELECT * FROM t2 WHERE t1.i = t2.i AND EXISTS (SELECT * FROM t3 WHERE t2.i = t3.i)) ORDER BY i)", "expect": {"value": 2}}
+    ]},
+    {"name": "the-inputs-are-what-the-manual-check-assumed", "steps": [
+      {"sql": "CREATE TABLE t1 (i INTEGER)"},
+      {"sql": "CREATE TABLE t2 (i INTEGER)"},
+      {"sql": "CREATE TABLE t3 (i INTEGER)"},
+      {"sql": "INSERT INTO t1 VALUES (1), (2), (3), (4)"},
+      {"sql": "INSERT INTO t2 VALUES (1), (2), (3)"},
+      {"sql": "INSERT INTO t3 VALUES (1), (2)"},
+      {"sql": "SELECT i FROM t1 ORDER BY i", "expect": {"rows": [[1],[2],[3],[4]], "ordered": true}},
+      {"sql": "SELECT i FROM t2 ORDER BY i", "expect": {"rows": [[1],[2],[3]], "ordered": true}},
+      {"sql": "SELECT i FROM t3 ORDER BY i", "expect": {"rows": [[1],[2]], "ordered": true}},
+      {"sql": "SELECT * FROM t1 WHERE EXISTS (SELECT * FROM t2 WHERE t1.i = t2.i AND EXISTS (SELECT * FROM t3 WHERE t2.i = t3.i)) ORDER BY i", "expect": {"rows": [[1],[2]], "ordered": true}}
+    ]}
+  ]
+}

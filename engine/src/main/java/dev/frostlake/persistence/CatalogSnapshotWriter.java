@@ -17,6 +17,7 @@
 package dev.frostlake.persistence;
 
 import dev.frostlake.metastore.Catalog;
+import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.model.AggregationPolicy;
 import dev.frostlake.metastore.model.CheckConstraint;
 import dev.frostlake.metastore.model.Contact;
@@ -438,6 +439,7 @@ final class CatalogSnapshotWriter {
                     fnSnapshot.nullHandling = fn.getNullHandling();
                     fnSnapshot.volatility = fn.getVolatility();
                     fnSnapshot.secure = fn.isSecure();
+                    fnSnapshot.memoizable = fn.isMemoizable();
                     fnSnapshot.imports = new ArrayList<>(fn.getImports());
                     fnSnapshot.comment = fn.getComment();
                     fnSnapshot.owner = fn.getOwner();
@@ -674,7 +676,7 @@ final class CatalogSnapshotWriter {
     /** A table's rows as a snapshot value (each row's values defensively copied). */
     static TableDataSnapshot buildTableData(final String database, final String schema, final Table table,
                                             final StorageEngine storageEngine) {
-        final String qualifiedName = database.toUpperCase() + "." + schema.toUpperCase() + "." + table.getName().toUpperCase();
+        final String qualifiedName = QualifiedName.key(database, schema, table.getName());
         final TableStorage storage = storageEngine.getTableStorage(qualifiedName);
         final TableDataSnapshot dataSnapshot = new TableDataSnapshot();
         dataSnapshot.database = database;

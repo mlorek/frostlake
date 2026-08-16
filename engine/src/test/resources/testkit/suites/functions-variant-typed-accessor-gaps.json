@@ -1,0 +1,40 @@
+{
+  "suite": "functions-variant-typed-accessor-gaps",
+  "description": "The previously untested corners of the AS_* / IS_* variant-typed accessor families: BINARY, BOOLEAN, DECIMAL, DOUBLE, TIME and TIMESTAMP_NTZ. Each extractor returns the value only when the variant holds exactly that type - anything else is SQL NULL, never an error - and each predicate answers the same question as a boolean. The near-misses are the point: a string variant is not binary, a number variant is not a boolean, '12:30:45' as text is not a TIME, and a DATE is not a TIMESTAMP_NTZ. Converted 1:1 from functions/VariantTypedAccessorGapsTest (now retired).",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "as-binary-extracts-only-binary-variants", "steps": [
+      {"sql": "SELECT AS_BINARY(TO_VARIANT(TO_BINARY('CAFE', 'HEX'))) = TO_BINARY('CAFE', 'HEX')", "expect": {"value": "true"}},
+      {"sql": "SELECT AS_BINARY(TO_VARIANT('CAFE'))", "expect": {"rows": [[null]]}},
+      {"sql": "SELECT AS_BINARY(NULL)", "expect": {"rows": [[null]]}}
+    ]},
+    {"name": "as-boolean-extracts-only-boolean-variants", "steps": [
+      {"sql": "SELECT AS_BOOLEAN(TO_VARIANT(TRUE))", "expect": {"value": "true"}},
+      {"sql": "SELECT AS_BOOLEAN(TO_VARIANT(FALSE))", "expect": {"value": "false"}},
+      {"sql": "SELECT AS_BOOLEAN(TO_VARIANT(1))", "expect": {"rows": [[null]]}},
+      {"sql": "SELECT AS_BOOLEAN(TO_VARIANT('true'))", "expect": {"rows": [[null]]}}
+    ]},
+    {"name": "as-decimal-and-as-double-extract-numeric-variants", "steps": [
+      {"sql": "SELECT TO_VARCHAR(AS_DECIMAL(TO_VARIANT(12.34::NUMBER(10,2)), 10, 2))", "expect": {"value": "12.34"}},
+      {"sql": "SELECT TO_VARCHAR(AS_DECIMAL(TO_VARIANT(7)))", "expect": {"value": "7"}},
+      {"sql": "SELECT AS_DECIMAL(TO_VARIANT('12.34'))", "expect": {"rows": [[null]]}},
+      {"sql": "SELECT TO_VARCHAR(AS_DOUBLE(TO_VARIANT(2.5::DOUBLE)))", "expect": {"value": "2.5"}},
+      {"sql": "SELECT AS_DOUBLE(TO_VARIANT('2.5'))", "expect": {"rows": [[null]]}}
+    ]},
+    {"name": "as-time-and-as-timestamp-extract-temporal-variants", "steps": [
+      {"sql": "SELECT AS_TIME(TO_VARIANT('12:30:45'::TIME)) = '12:30:45'::TIME", "expect": {"value": "true"}},
+      {"sql": "SELECT AS_TIME(TO_VARIANT('12:30:45'))", "expect": {"rows": [[null]]}},
+      {"sql": "SELECT AS_TIMESTAMP_NTZ(TO_VARIANT('2026-01-02 03:04:05'::TIMESTAMP_NTZ)) = '2026-01-02 03:04:05'::TIMESTAMP_NTZ", "expect": {"value": "true"}},
+      {"sql": "SELECT AS_TIMESTAMP_NTZ(TO_VARIANT('2026-01-02'::DATE))", "expect": {"rows": [[null]]}}
+    ]},
+    {"name": "the-predicates-mirror-the-extractors", "steps": [
+      {"sql": "SELECT IS_BINARY(TO_VARIANT(TO_BINARY('CAFE', 'HEX')))", "expect": {"value": "true"}},
+      {"sql": "SELECT IS_BINARY(TO_VARIANT('CAFE'))", "expect": {"value": "false"}},
+      {"sql": "SELECT IS_TIME(TO_VARIANT('12:30:45'::TIME))", "expect": {"value": "true"}},
+      {"sql": "SELECT IS_TIME(TO_VARIANT('2026-01-02'::DATE))", "expect": {"value": "false"}},
+      {"sql": "SELECT IS_TIMESTAMP_NTZ(TO_VARIANT('2026-01-02 03:04:05'::TIMESTAMP_NTZ))", "expect": {"value": "true"}},
+      {"sql": "SELECT IS_TIMESTAMP_NTZ(TO_VARIANT('12:30:45'::TIME))", "expect": {"value": "false"}},
+      {"sql": "SELECT IS_TIME(NULL)", "expect": {"rows": [[null]]}}
+    ]}
+  ]
+}

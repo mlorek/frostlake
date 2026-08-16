@@ -1,0 +1,49 @@
+{
+  "suite": "query-column-write-coercion",
+  "description": "Write coercion into ARRAY columns (object/scalar wrapping, arrays pass through, NULL passes) and BOOLEAN columns (0/1, strings, non-zero numbers). Converted 1:1 from query/ArrayColumnWriteCoercionTest and BooleanColumnWriteCoercionTest (both now retired).",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "object-wrapped-into-one-element-array", "steps": [
+      {"sql": "CREATE TABLE trend1 (id NUMBER, arr ARRAY)"},
+      {"sql": "INSERT INTO trend1 SELECT 1, PARSE_JSON('{\"severity\": 4, \"n\": 100}')"},
+      {"sql": "SELECT ARRAY_SIZE(arr), arr[0]:severity::NUMBER, arr[0]:n::NUMBER FROM trend1", "expect": {"rows": [["1", "4", "100"]]}}
+    ]},
+    {"name": "existing-array-unchanged", "steps": [
+      {"sql": "CREATE TABLE trend2 (arr ARRAY)"},
+      {"sql": "INSERT INTO trend2 SELECT ARRAY_CONSTRUCT(1, 2, 3)"},
+      {"sql": "INSERT INTO trend2 SELECT PARSE_JSON('[\"a\", \"b\"]')"},
+      {"sql": "SELECT ARRAY_SIZE(arr) FROM trend2 ORDER BY 1", "expect": {"rows": [["2"], ["3"]], "ordered": true}}
+    ]},
+    {"name": "scalar-wrapped", "steps": [
+      {"sql": "CREATE TABLE trend3 (arr ARRAY)"},
+      {"sql": "INSERT INTO trend3 SELECT TO_VARIANT(7)"},
+      {"sql": "SELECT ARRAY_SIZE(arr), arr[0]::NUMBER FROM trend3", "expect": {"rows": [["1", "7"]]}}
+    ]},
+    {"name": "null-passes-through", "steps": [
+      {"sql": "CREATE TABLE trend4 (arr ARRAY)"},
+      {"sql": "INSERT INTO trend4 SELECT NULL"},
+      {"sql": "SELECT arr FROM trend4", "expect": {"value": null, "rowCount": 1}}
+    ]},
+    {"name": "number-zero-one-stored-as-boolean", "steps": [
+      {"sql": "CREATE TABLE flags (id NUMBER, ok BOOLEAN)"},
+      {"sql": "INSERT INTO flags SELECT 1, IFF(2 > 1, 1, 0)"},
+      {"sql": "INSERT INTO flags SELECT 2, IFF(1 > 2, 1, 0)"},
+      {"sql": "SELECT id, ok FROM flags ORDER BY id", "expect": {"rows": [["1", "true"], ["2", "false"]], "ordered": true}}
+    ]},
+    {"name": "stored-boolean-matches-literal-under-except", "steps": [
+      {"sql": "CREATE TABLE flags2 (id NUMBER, ok BOOLEAN)"},
+      {"sql": "INSERT INTO flags2 SELECT 1, 1"},
+      {"sql": "SELECT 1 AS id, true AS ok EXCEPT SELECT id, ok FROM flags2", "expect": {"rowCount": 0}}
+    ]},
+    {"name": "string-literals-stored-as-boolean", "steps": [
+      {"sql": "CREATE TABLE flags3 (id NUMBER, ok BOOLEAN)"},
+      {"sql": "INSERT INTO flags3 VALUES (1, 'true'), (2, 'f'), (3, 'yes'), (4, '0')"},
+      {"sql": "SELECT id, ok FROM flags3 ORDER BY id", "expect": {"rows": [["1", "true"], ["2", "false"], ["3", "true"], ["4", "false"]], "ordered": true}}
+    ]},
+    {"name": "non-zero-number-is-true", "steps": [
+      {"sql": "CREATE TABLE flags4 (ok BOOLEAN)"},
+      {"sql": "INSERT INTO flags4 SELECT -3"},
+      {"sql": "SELECT ok FROM flags4", "expect": {"value": "true"}}
+    ]}
+  ]
+}

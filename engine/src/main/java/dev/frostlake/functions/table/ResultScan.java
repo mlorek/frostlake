@@ -19,7 +19,10 @@ package dev.frostlake.functions.table;
 import dev.frostlake.executor.QueryResultCache;
 import dev.frostlake.functions.TableFunction;
 import dev.frostlake.storage.ResultSet;
+import dev.frostlake.storage.ResultSetColumn;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -56,10 +59,24 @@ public class ResultScan extends TableFunction {
 
         final ResultSet result = resultCache.getResult(queryId);
         if (result == null) {
+            // A statement that failed has an ID but never a result, and live says so in those words.
+            if (resultCache.hasFailed(queryId)) {
+                throw new RuntimeException("Query " + queryId + " has no result because it failed");
+            }
             throw new RuntimeException("Query ID not found or result no longer available: " + queryId);
         }
-
-        return result;
+        // A cached result's DECLARED types are its static types: the scan of a SHOW TABLES declares
+        // created_on TIMESTAMP_LTZ(3), the text columns VARCHAR(16777216) and rows / bytes
+        // NUMBER(38,0) on the account, and the scan of a SELECT keeps the query's own types — so
+        // SYSTEM$TYPEOF and a table built over the scan see a type rather than nothing.
+        final List<ResultSetColumn> declared = new ArrayList<>();
+        for (final ResultSetColumn column : result.getColumns()) {
+            declared.add(column.getStaticType() != null ? column
+                : new ResultSetColumn(column.getName(), column.getDataType(), column.getTableName(),
+                    column.getDataType(), column.isNullable(), column.isNullabilityKnown(),
+                    column.getValueRange()));
+        }
+        return new ResultSet(declared, result.getRows());
     }
 
     @Override

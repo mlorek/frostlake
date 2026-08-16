@@ -8,6 +8,23 @@ fix, not a regression**: SQL that Snowflake rejects and Frostlake accepted was a
 closing it can break code that relied on the leniency. Those changes are listed first in every release
 for exactly that reason.
 
+## 0.1.0 — unreleased
+
+The milestone this version is reserved for: the known-divergence backlog measured against a live
+account is cleared. Changes accumulate here as they land.
+
+### Embedding
+
+- **The published jar no longer configures logging.** `simplelogger.properties` is not packaged into `frostlake-db` any
+  more, so an application embedding it keeps its own logging setup, or slf4j-simple's default of standard error, and the
+  engine stops writing `db-engine.log` into the embedder's working directory. The console and HTTP launch scripts in
+  `data/` are unchanged — they run from `target/classes`, which still carries the file — and any run can ask for the file
+  with `-Dorg.slf4j.simpleLogger.logFile=db-engine.log`. **A process that spawns the server and pipes its output must now
+  drain that pipe, or redirect the child's output to a file**: engine logs flow to standard error, and an undrained pipe
+  stalls the engine once the operating system's buffer fills, which looks like a mid-run hang rather than a logging
+  problem. The slf4j flag alone does not remove the need, since it routes only what goes through slf4j — JVM and GraalVM
+  warnings, uncaught stack traces and out-of-memory messages reach standard error whatever slf4j is pointed at.
+
 ## 0.0.7 — 2026-08-16
 
 Every behavioural claim below was measured against a live Snowflake account, and is covered by a test

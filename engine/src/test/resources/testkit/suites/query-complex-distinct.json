@@ -1,0 +1,64 @@
+{
+  "suite": "query-complex-distinct",
+  "description": "Complex WHERE/GROUP BY/ORDER BY/LIMIT combinations and DISTINCT aggregates (COUNT/SUM/AVG DISTINCT, with GROUP BY, NULLs, multiples). Converted 1:1 from query/ComplexQueryTest and DistinctAggregateTest (both now retired; loose >=/<= row asserts pinned to the deterministic exact counts).",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "where-with-order-by-and-limit", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, department VARCHAR, salary INTEGER, age INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 'Engineering', 90000, 30), (2, 'Bob', 'Sales', 70000, 35), (3, 'Charlie', 'Engineering', 95000, 28), (4, 'Diana', 'Sales', 75000, 32), (5, 'Eve', 'Engineering', 85000, 29), (6, 'Frank', 'HR', 65000, 40)"},
+      {"sql": "SELECT * FROM employees WHERE salary > 70000 ORDER BY salary DESC LIMIT 2", "expect": {"rowCount": 2}}
+    ]},
+    {"name": "group-by-with-order-by-and-limit", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, department VARCHAR, salary INTEGER, age INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 'Engineering', 90000, 30), (2, 'Bob', 'Sales', 70000, 35), (3, 'Charlie', 'Engineering', 95000, 28), (4, 'Diana', 'Sales', 75000, 32), (5, 'Eve', 'Engineering', 85000, 29), (6, 'Frank', 'HR', 65000, 40)"},
+      {"sql": "SELECT department, COUNT(*) FROM employees GROUP BY department ORDER BY COUNT(*) DESC LIMIT 2", "expect": {"rowCount": 2}}
+    ]},
+    {"name": "where-with-group-by-and-order-by", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, department VARCHAR, salary INTEGER, age INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 'Engineering', 90000, 30), (2, 'Bob', 'Sales', 70000, 35), (3, 'Charlie', 'Engineering', 95000, 28), (4, 'Diana', 'Sales', 75000, 32), (5, 'Eve', 'Engineering', 85000, 29), (6, 'Frank', 'HR', 65000, 40)"},
+      {"sql": "SELECT department, AVG(salary), COUNT(*) FROM employees WHERE age < 35 GROUP BY department ORDER BY AVG(salary) DESC LIMIT 2", "expect": {"rowCount": 2}}
+    ]},
+    {"name": "multiple-aggregates-with-complex-conditions", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, department VARCHAR, salary INTEGER, age INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 'Engineering', 90000, 30), (2, 'Bob', 'Sales', 70000, 35), (3, 'Charlie', 'Engineering', 95000, 28), (4, 'Diana', 'Sales', 75000, 32), (5, 'Eve', 'Engineering', 85000, 29), (6, 'Frank', 'HR', 65000, 40)"},
+      {"sql": "SELECT department, COUNT(*), AVG(salary), MAX(salary), MIN(age) FROM employees WHERE salary >= 70000 GROUP BY department", "expect": {"rowCount": 2}}
+    ]},
+    {"name": "complex-where-clause", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, department VARCHAR, salary INTEGER, age INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 'Engineering', 90000, 30), (2, 'Bob', 'Sales', 70000, 35), (3, 'Charlie', 'Engineering', 95000, 28), (4, 'Diana', 'Sales', 75000, 32), (5, 'Eve', 'Engineering', 85000, 29), (6, 'Frank', 'HR', 65000, 40)"},
+      {"sql": "SELECT * FROM employees WHERE (department = 'Engineering' AND salary > 85000) OR (department = 'Sales' AND age > 30)", "expect": {"rowCount": 4}}
+    ]},
+    {"name": "join-like-query-with-multiple-tables", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, department VARCHAR, salary INTEGER, age INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 'Engineering', 90000, 30), (2, 'Bob', 'Sales', 70000, 35), (3, 'Charlie', 'Engineering', 95000, 28), (4, 'Diana', 'Sales', 75000, 32), (5, 'Eve', 'Engineering', 85000, 29), (6, 'Frank', 'HR', 65000, 40)"},
+      {"sql": "CREATE TABLE departments (name VARCHAR, location VARCHAR)"},
+      {"sql": "INSERT INTO departments VALUES ('Engineering', 'Building A'), ('Sales', 'Building B'), ('HR', 'Building C')"},
+      {"sql": "SELECT * FROM employees", "expect": {"rowCount": 6}},
+      {"sql": "SELECT * FROM departments", "expect": {"rowCount": 3}}
+    ]},
+    {"name": "count-distinct", "steps": [
+      {"sql": "SELECT COUNT(*), COUNT(DISTINCT i) FROM VALUES(1, 2), (1, 2), (2, 3) AS t(i, j)", "expect": {"rows": [["3", "2"]]}}
+    ]},
+    {"name": "count-distinct-grouped-user-query", "steps": [
+      {"sql": "select i,j, count(*), count(distinct i) from values (1,2),(1,2) as t(i,j) group by i,j", "expect": {"rows": [["1", "2", "2", "1"]]}}
+    ]},
+    {"name": "sum-distinct", "steps": [
+      {"sql": "SELECT SUM(i), SUM(DISTINCT i) FROM VALUES(1), (1), (2) AS t(i)", "expect": {"rows": [["4", "3"]]}}
+    ]},
+    {"name": "avg-distinct", "steps": [
+      {"sql": "SELECT AVG(i), AVG(DISTINCT i) FROM VALUES(1), (1), (2), (4) AS t(i)", "expect": {"rows": [["2", "2.333333"]]}}
+    ]},
+    {"name": "count-distinct-with-group-by", "steps": [
+      {"sql": "CREATE TABLE sales (category VARCHAR, product VARCHAR, amount INTEGER)"},
+      {"sql": "INSERT INTO sales VALUES ('Electronics', 'Phone', 100), ('Electronics', 'Phone', 100), ('Electronics', 'Laptop', 200), ('Clothing', 'Shirt', 50), ('Clothing', 'Shirt', 50)"},
+      {"sql": "SELECT category, COUNT(*), COUNT(DISTINCT product) FROM sales GROUP BY category ORDER BY category",
+       "expect": {"rows": [["Clothing", "2", "1"], ["Electronics", "3", "2"]], "ordered": true}}
+    ]},
+    {"name": "count-distinct-with-nulls", "steps": [
+      {"sql": "SELECT COUNT(i), COUNT(DISTINCT i) FROM VALUES(1), (1), (2), (NULL) AS t(i)", "expect": {"rows": [["3", "2"]]}}
+    ]},
+    {"name": "multiple-distinct-aggregates", "steps": [
+      {"sql": "SELECT COUNT(DISTINCT i), COUNT(DISTINCT j) FROM VALUES(1, 2), (1, 3), (2, 2) AS t(i, j)", "expect": {"rows": [["2", "2"]]}}
+    ]}
+  ]
+}

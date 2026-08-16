@@ -1,0 +1,95 @@
+{
+  "suite": "ddl-show-columns-kinds-scopes",
+  "description": "SHOW COLUMNS' relation-kind keyword is NOT a filter - bare, TABLE and VIEW spellings each resolve tables, views and materialized views alike; the keyword decides only whether a full path is demanded (VIEW always, whatever the object) and the noun in the missing-object refusal (name echoed as written, not expanded); the unnamed listing walks every relation. Plus the CONTAINER scopes: SCHEMA lists everything it holds and demands the full path BEFORE existence, DATABASE spans its schemas, ACCOUNT takes no name; container totals asserted as at-least-mine where the account may hold more. All live-verified. Converted 1:1 from ddl/ShowColumnsRelationKindTest and ShowColumnsScopeTest (both now retired).",
+  "tags": ["ddl", "converted"],
+  "tests": [
+    {"name": "the-bare-form-resolves-every-relation-kind", "steps": [
+      {"sql": "CREATE TABLE rk_base (id NUMBER, label VARCHAR(20))"},
+      {"sql": "CREATE VIEW rk_view AS SELECT id FROM rk_base"},
+      {"sql": "CREATE MATERIALIZED VIEW rk_mv AS SELECT id, label FROM rk_base"},
+      {"sql": "SHOW COLUMNS IN rk_base", "expect": {"rowCount": 2}},
+      {"sql": "SHOW COLUMNS IN rk_view", "expect": {"rowCount": 1}},
+      {"sql": "SHOW COLUMNS IN rk_mv", "expect": {"rowCount": 2}}
+    ]},
+    {"name": "the-table-spelling-resolves-a-view-and-a-materialized-view", "steps": [
+      {"sql": "CREATE TABLE rk_base (id NUMBER, label VARCHAR(20))"},
+      {"sql": "CREATE VIEW rk_view AS SELECT id FROM rk_base"},
+      {"sql": "CREATE MATERIALIZED VIEW rk_mv AS SELECT id, label FROM rk_base"},
+      {"sql": "SHOW COLUMNS IN TABLE rk_view", "expect": {"rowCount": 1}},
+      {"sql": "SHOW COLUMNS IN TABLE rk_mv", "expect": {"rowCount": 2}},
+      {"sql": "SHOW COLUMNS IN TABLE test_db.test_schema.rk_view", "expect": {"rowCount": 1}},
+      {"sql": "SHOW COLUMNS IN TABLE test_db.test_schema.rk_mv", "expect": {"rowCount": 2}}
+    ]},
+    {"name": "the-view-spelling-resolves-a-table-and-a-materialized-view", "steps": [
+      {"sql": "CREATE TABLE rk_base (id NUMBER, label VARCHAR(20))"},
+      {"sql": "CREATE VIEW rk_view AS SELECT id FROM rk_base"},
+      {"sql": "CREATE MATERIALIZED VIEW rk_mv AS SELECT id, label FROM rk_base"},
+      {"sql": "SHOW COLUMNS IN VIEW test_db.test_schema.rk_base", "expect": {"rowCount": 2}},
+      {"sql": "SHOW COLUMNS IN VIEW test_db.test_schema.rk_view", "expect": {"rowCount": 1}},
+      {"sql": "SHOW COLUMNS IN VIEW test_db.test_schema.rk_mv", "expect": {"rowCount": 2}}
+    ]},
+    {"name": "the-view-spelling-demands-the-full-search-path-whatever-the-object-is", "steps": [
+      {"sql": "CREATE TABLE rk_base (id NUMBER, label VARCHAR(20))"},
+      {"sql": "CREATE VIEW rk_view AS SELECT id FROM rk_base"},
+      {"sql": "CREATE MATERIALIZED VIEW rk_mv AS SELECT id, label FROM rk_base"},
+      {"sql": "SHOW COLUMNS IN VIEW rk_base",
+       "expect": {"error": {"messageContains": "Must specify the full search path starting from database for RK_BASE"}}},
+      {"sql": "SHOW COLUMNS IN VIEW rk_view",
+       "expect": {"error": {"messageContains": "Must specify the full search path starting from database for RK_VIEW"}}},
+      {"sql": "SHOW COLUMNS IN VIEW rk_mv",
+       "expect": {"error": {"messageContains": "Must specify the full search path starting from database for RK_MV"}}}
+    ]},
+    {"name": "the-materialized-views-row-names-itself-and-its-container", "steps": [
+      {"sql": "CREATE TABLE rk_base (id NUMBER, label VARCHAR(20))"},
+      {"sql": "CREATE MATERIALIZED VIEW rk_mv AS SELECT id, label FROM rk_base"},
+      {"sql": "SHOW COLUMNS IN TABLE test_db.test_schema.rk_mv"},
+      {"sql": "SELECT \"table_name\", \"schema_name\", \"database_name\", \"kind\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"column_name\" = 'ID'",
+       "expect": {"rows": [["RK_MV", "TEST_SCHEMA", "TEST_DB", "COLUMN"]]}}
+    ]},
+    {"name": "the-unnamed-listing-covers-all-three-kinds", "steps": [
+      {"sql": "CREATE TABLE rk_base (id NUMBER, label VARCHAR(20))"},
+      {"sql": "CREATE VIEW rk_view AS SELECT id FROM rk_base"},
+      {"sql": "CREATE MATERIALIZED VIEW rk_mv AS SELECT id, label FROM rk_base"},
+      {"sql": "SHOW COLUMNS", "expect": {"rowCount": 5}}
+    ]},
+    {"name": "the-refusal-speaks-the-named-kind-and-echoes-the-name-as-written", "steps": [
+      {"sql": "SHOW COLUMNS IN nosuch",
+       "expect": {"error": {"messageContains": "Table 'NOSUCH' does not exist or not authorized."}}},
+      {"sql": "SHOW COLUMNS IN TABLE nosuch",
+       "expect": {"error": {"messageContains": "Table 'NOSUCH' does not exist or not authorized."}}},
+      {"sql": "SHOW COLUMNS IN TABLE test_db.test_schema.nosuch",
+       "expect": {"error": {"messageContains": "Table 'TEST_DB.TEST_SCHEMA.NOSUCH' does not exist or not authorized."}}},
+      {"sql": "SHOW COLUMNS IN VIEW test_db.test_schema.nosuch",
+       "expect": {"error": {"messageContains": "View 'TEST_DB.TEST_SCHEMA.NOSUCH' does not exist or not authorized."}}}
+    ]},
+    {"name": "the-schema-scope-lists-every-relation-in-it", "steps": [
+      {"sql": "CREATE TABLE sq_a (x NUMBER, y NUMBER)"},
+      {"sql": "CREATE VIEW sq_v AS SELECT x FROM sq_a"},
+      {"sql": "SHOW COLUMNS IN SCHEMA test_db.test_schema", "expect": {"rowCount": 3}}
+    ]},
+    {"name": "the-schema-scope-demands-the-full-search-path", "steps": [
+      {"sql": "SHOW COLUMNS IN SCHEMA test_schema",
+       "expect": {"error": {"messageContains": "Must specify the full search path starting from database for TEST_SCHEMA"}}}
+    ]},
+    {"name": "qualification-is-checked-before-existence", "steps": [
+      {"sql": "SHOW COLUMNS IN SCHEMA no_such_schema",
+       "expect": {"error": {"messageContains": "Must specify the full search path starting from database for NO_SUCH_SCHEMA"}}},
+      {"sql": "SHOW COLUMNS IN SCHEMA test_db.no_such_schema",
+       "expect": {"error": {"messageContains": "Schema 'TEST_DB.NO_SUCH_SCHEMA' does not exist or not authorized."}}}
+    ]},
+    {"name": "the-database-scope-spans-its-schemas", "steps": [
+      {"sql": "CREATE TABLE sq_a (x NUMBER, y NUMBER)"},
+      {"sql": "CREATE VIEW sq_v AS SELECT x FROM sq_a"},
+      {"sql": "SHOW COLUMNS IN DATABASE test_db"},
+      {"sql": "SELECT COUNT(*) >= 3 FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "true"}},
+      {"sql": "SHOW COLUMNS IN DATABASE no_such_db",
+       "expect": {"error": {"messageContains": "Database 'NO_SUCH_DB' does not exist or not authorized."}}}
+    ]},
+    {"name": "the-account-scope-takes-no-name", "steps": [
+      {"sql": "CREATE TABLE sq_a (x NUMBER, y NUMBER)"},
+      {"sql": "CREATE VIEW sq_v AS SELECT x FROM sq_a"},
+      {"sql": "SHOW COLUMNS IN ACCOUNT"},
+      {"sql": "SELECT COUNT(*) >= 3 FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "true"}}
+    ]}
+  ]
+}

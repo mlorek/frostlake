@@ -22,10 +22,23 @@ public class WhenClause {
     // type in the same package rather than a nested one.
     final Expression condition;
     final Expression result;
+    final boolean operandMatch;
 
     public WhenClause(final Expression condition, final Expression result) {
+        this(condition, result, false);
+    }
+
+    /**
+     * A WHEN of either CASE form.
+     *
+     * @param condition    the condition, for a simple CASE the operand's equality to the WHEN value
+     * @param result       the THEN result
+     * @param operandMatch whether the condition matches a simple CASE's operand against its WHEN value
+     */
+    public WhenClause(final Expression condition, final Expression result, final boolean operandMatch) {
         this.condition = condition;
         this.result = result;
+        this.operandMatch = operandMatch;
     }
 
     public Expression getCondition() {
@@ -34,5 +47,17 @@ public class WhenClause {
 
     public Expression getResult() {
         return result;
+    }
+
+    /**
+     * Whether this WHEN belongs to a simple CASE ({@code CASE x WHEN v THEN r}), whose condition is the
+     * operand's equality to the value. The planner matches such a value as it matches a DECODE search,
+     * which it does not do for a searched CASE's condition: live settles {@code CASE n WHEN 7 THEN …} as
+     * never taken over a column holding a NULL, and leaves {@code CASE WHEN n = 7 THEN …} open.
+     *
+     * @return true for a simple CASE's WHEN
+     */
+    public boolean isOperandMatch() {
+        return operandMatch;
     }
 }

@@ -30,7 +30,10 @@ public class DateAdd extends BuiltInFunction {
     @Override
     public Object evaluate(final List<Object> args) {
         if (args.get(2) == null) return null;
-        final String unit = SharedFunctionHelpers.stripPluralS(args.get(0).toString().toUpperCase());
+        if (SharedFunctionHelpers.isComponentOnlyUnit(args.get(0))) {
+            throw SharedFunctionHelpers.notADateTimeComponent(args.get(0), "DATEADD");
+        }
+        final String unit = SharedFunctionHelpers.canonicalDateUnit(args.get(0));
         final long amount = ((Number) args.get(1)).longValue();
         // A TIME input computes on an epoch-day anchor and stays a TIME (wrapping within the
         // day) — its toString drops zero seconds, so it must never take the text-parse path.
@@ -69,7 +72,7 @@ public class DateAdd extends BuiltInFunction {
             case "NANOSECOND": case "NS": result = dt.plusNanos(amount);
             dayOrLarger = false;
             break;
-            default: throw new RuntimeException("Unsupported unit for DATEADD: " + unit);
+            default: throw SharedFunctionHelpers.notADateTimeComponent(args.get(0), "DATEADD");
         }
         // A DATE-only input keeps DATE type for a day-or-larger unit; a sub-day unit or a timestamp input
         // yields a timestamp (Snowflake semantics).
@@ -79,7 +82,7 @@ public class DateAdd extends BuiltInFunction {
         if (dayOrLarger && DateTypeHelper.isDateOnly(args.get(2))) {
             return result.toLocalDate();
         }
-        return result;
+        return SharedFunctionHelpers.sameTimestampFlavour(args.get(2), result);
     }
 
     @Override

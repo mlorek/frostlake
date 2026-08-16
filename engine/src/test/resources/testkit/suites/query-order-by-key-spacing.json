@@ -1,0 +1,68 @@
+{
+  "suite": "query-order-by-key-spacing",
+  "description": "ORDER BY keys whose SQL needs WHITESPACE between tokens - x IS NOT NULL, CAST(x AS NUMBER), x BETWEEN a AND b, CASE - must resolve. The key text used to be taken with ANTLR's getText(), which concatenates tokens with NO separator and collapsed 'x IS NOT NULL' into the identifier xISNOTNULL; the key then matched nothing and the query died with 'Column not found in ORDER BY'. Keys whose stripped form happens to stay valid - ABS(x), a+b - worked by luck, and a single-row result hid the bug because no sort runs, so every case here needs at least TWO rows. The suite covers the spaced key reached by ORDINAL, by ALIAS and written out in the ORDER BY itself, under GROUP BY, inside a guarded function call, and over a CTE on VALUES. Converted 1:1 from query/OrderByKeySpacingTest (now retired); the Java sampled individual cells by index, so the converted tests pin whole ordered row sets.",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "an-ordinal-over-an-is-not-null-key", "steps": [
+      {"sql": "CREATE TABLE ob_src (x NUMBER)"},
+      {"sql": "INSERT INTO ob_src VALUES (5), (2), (50)"},
+      {"sql": "SELECT x IS NOT NULL AS g, x FROM ob_src ORDER BY 2",
+       "expect": {"rows": [[true,2],[true,5],[true,50]], "ordered": true}}
+    ]},
+    {"name": "an-ordinal-over-a-cast-key-sorts-by-value", "steps": [
+      {"sql": "CREATE TABLE ob_src (x NUMBER)"},
+      {"sql": "INSERT INTO ob_src VALUES (5), (2), (50)"},
+      {"sql": "SELECT CAST(x AS NUMBER) AS g FROM ob_src ORDER BY 1", "expect": {"rows": [[2],[5],[50]], "ordered": true}}
+    ]},
+    {"name": "an-ordinal-over-a-cast-key-descending", "steps": [
+      {"sql": "CREATE TABLE ob_src (x NUMBER)"},
+      {"sql": "INSERT INTO ob_src VALUES (5), (2), (50)"},
+      {"sql": "SELECT CAST(x AS NUMBER) AS g FROM ob_src ORDER BY 1 DESC", "expect": {"rows": [[50],[5],[2]], "ordered": true}}
+    ]},
+    {"name": "an-ordinal-over-a-between-key", "steps": [
+      {"sql": "CREATE TABLE ob_src (x NUMBER)"},
+      {"sql": "INSERT INTO ob_src VALUES (5), (2), (50)"},
+      {"sql": "SELECT x BETWEEN 1 AND 9 AS g, x FROM ob_src ORDER BY 1, 2",
+       "expect": {"rows": [[false,50],[true,2],[true,5]], "ordered": true}}
+    ]},
+    {"name": "an-ordinal-over-a-case-key", "steps": [
+      {"sql": "CREATE TABLE ob_src (x NUMBER)"},
+      {"sql": "INSERT INTO ob_src VALUES (5), (2), (50)"},
+      {"sql": "SELECT CASE WHEN x > 10 THEN 1 ELSE 2 END AS g, x FROM ob_src ORDER BY 1, 2",
+       "expect": {"rows": [[1,50],[2,2],[2,5]], "ordered": true}}
+    ]},
+    {"name": "an-explicit-expression-key-needing-spaces", "steps": [
+      {"sql": "CREATE TABLE ob_src (x NUMBER)"},
+      {"sql": "INSERT INTO ob_src VALUES (5), (2), (50)"},
+      {"sql": "SELECT x FROM ob_src ORDER BY x BETWEEN 1 AND 9, x", "expect": {"rows": [[50],[2],[5]], "ordered": true}}
+    ]},
+    {"name": "an-alias-key-still-works", "steps": [
+      {"sql": "CREATE TABLE ob_src (x NUMBER)"},
+      {"sql": "INSERT INTO ob_src VALUES (5), (2), (50)"},
+      {"sql": "SELECT CAST(x AS NUMBER) AS g FROM ob_src ORDER BY g", "expect": {"rows": [[2],[5],[50]], "ordered": true}}
+    ]},
+    {"name": "an-ordinal-over-a-guarded-function-call", "steps": [
+      {"sql": "CREATE TABLE ob_src (x NUMBER)"},
+      {"sql": "INSERT INTO ob_src VALUES (5), (2), (50)"},
+      {"sql": "SELECT IFF(x IS NOT NULL, 100/x, -1) AS guarded FROM ob_src ORDER BY 1",
+       "expect": {"rows": [[2],[20],[50]], "ordered": true}}
+    ]},
+    {"name": "a-grouped-ordinal-over-a-spaced-key", "steps": [
+      {"sql": "CREATE TABLE ob_src (x NUMBER)"},
+      {"sql": "INSERT INTO ob_src VALUES (5), (2), (50)"},
+      {"sql": "SELECT x BETWEEN 1 AND 9 AS g, COUNT(*) AS c FROM ob_src GROUP BY 1 ORDER BY 1",
+       "expect": {"rows": [[false,1],[true,2]], "ordered": true}}
+    ]},
+    {"name": "the-plain-keys-are-unaffected", "steps": [
+      {"sql": "CREATE TABLE ob_src (x NUMBER)"},
+      {"sql": "INSERT INTO ob_src VALUES (5), (2), (50)"},
+      {"sql": "SELECT ABS(x) FROM ob_src ORDER BY 1", "expect": {"rows": [[2],[5],[50]], "ordered": true}},
+      {"sql": "SELECT x FROM ob_src ORDER BY x", "expect": {"rows": [[2],[5],[50]], "ordered": true}},
+      {"sql": "SELECT x + 1 FROM ob_src ORDER BY 1", "expect": {"rows": [[3],[6],[51]], "ordered": true}}
+    ]},
+    {"name": "a-cte-over-values-with-an-ordinal-over-a-function-call", "steps": [
+      {"sql": "WITH r AS (SELECT * FROM VALUES (3, 4), (1, 2) AS t(a, b)) SELECT ABS(a), a FROM r ORDER BY 1",
+       "expect": {"rows": [[1,1],[3,3]], "ordered": true}}
+    ]}
+  ]
+}

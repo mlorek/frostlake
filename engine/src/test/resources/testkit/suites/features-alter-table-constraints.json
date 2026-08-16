@@ -1,0 +1,154 @@
+{
+  "suite": "features-alter-table-constraints",
+  "description": "ALTER TABLE ADD/DROP constraint commands through DESCRIBE's primary key/unique key cells and the SHOW KEYS listings: plain, composite and named PRIMARY KEY/UNIQUE/FOREIGN KEY additions, composite FKs listing one row per key column with key_sequence, DROP CONSTRAINT, qualified names, IF EXISTS, mixed operations - and the referential-action rule: any action other than NO ACTION silently drops the whole foreign key (CASCADE, SET NULL, RESTRICT, on delete/update/both) while NO ACTION is kept with its rules. Converted 1:1 from features/AlterTableConstraintsTest (now retired).",
+  "tags": ["features", "converted"],
+  "tests": [
+    {"name": "alter-table-add-primary-key", "steps": [
+      {"sql": "CREATE TABLE users (id INTEGER, name VARCHAR, email VARCHAR)"},
+      {"sql": "ALTER TABLE users ADD PRIMARY KEY (id)"},
+      {"sql": "DESCRIBE TABLE users"},
+      {"sql": "SELECT MAX(IFF(\"name\" = 'ID', \"primary key\", NULL)), MAX(IFF(\"name\" = 'NAME', \"primary key\", NULL)) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["Y", "N"]]}}
+    ]},
+    {"name": "alter-table-add-composite-primary-key", "steps": [
+      {"sql": "CREATE TABLE order_items (order_id INTEGER, item_id INTEGER, quantity INTEGER)"},
+      {"sql": "ALTER TABLE order_items ADD PRIMARY KEY (order_id, item_id)"},
+      {"sql": "DESCRIBE TABLE order_items"},
+      {"sql": "SELECT MAX(IFF(\"name\" = 'ORDER_ID', \"primary key\", NULL)), MAX(IFF(\"name\" = 'ITEM_ID', \"primary key\", NULL)), MAX(IFF(\"name\" = 'QUANTITY', \"primary key\", NULL)) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["Y", "Y", "N"]]}}
+    ]},
+    {"name": "alter-table-add-named-primary-key", "steps": [
+      {"sql": "CREATE TABLE products (product_id INTEGER, name VARCHAR)"},
+      {"sql": "ALTER TABLE products ADD CONSTRAINT pk_products PRIMARY KEY (product_id)"},
+      {"sql": "SHOW PRIMARY KEYS IN TABLE products"},
+      {"sql": "SELECT MAX(IFF(\"column_name\" = 'PRODUCT_ID', \"constraint_name\", NULL)) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"value": "PK_PRODUCTS"}}
+    ]},
+    {"name": "alter-table-add-unique", "steps": [
+      {"sql": "CREATE TABLE users (id INTEGER, email VARCHAR, phone VARCHAR)"},
+      {"sql": "ALTER TABLE users ADD UNIQUE (email)"},
+      {"sql": "DESCRIBE TABLE users"},
+      {"sql": "SELECT MAX(IFF(\"name\" = 'EMAIL', \"unique key\", NULL)), MAX(IFF(\"name\" = 'PHONE', \"unique key\", NULL)) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["Y", "N"]]}}
+    ]},
+    {"name": "alter-table-add-composite-unique", "steps": [
+      {"sql": "CREATE TABLE registrations (user_id INTEGER, event_id INTEGER, timestamp VARCHAR)"},
+      {"sql": "ALTER TABLE registrations ADD UNIQUE (user_id, event_id)"},
+      {"sql": "DESCRIBE TABLE registrations"},
+      {"sql": "SELECT MAX(IFF(\"name\" = 'USER_ID', \"unique key\", NULL)), MAX(IFF(\"name\" = 'EVENT_ID', \"unique key\", NULL)), MAX(IFF(\"name\" = 'TIMESTAMP', \"unique key\", NULL)) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["Y", "Y", "N"]]}}
+    ]},
+    {"name": "alter-table-add-named-unique", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, email VARCHAR)"},
+      {"sql": "ALTER TABLE employees ADD CONSTRAINT uk_email UNIQUE (email)"},
+      {"sql": "SHOW UNIQUE KEYS IN TABLE employees"},
+      {"sql": "SELECT MAX(IFF(\"column_name\" = 'EMAIL', \"constraint_name\", NULL)) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"value": "UK_EMAIL"}}
+    ]},
+    {"name": "alter-table-add-foreign-key", "steps": [
+      {"sql": "CREATE TABLE departments (dept_id INTEGER PRIMARY KEY, name VARCHAR)"},
+      {"sql": "CREATE TABLE employees (emp_id INTEGER, name VARCHAR, dept_id INTEGER)"},
+      {"sql": "ALTER TABLE employees ADD FOREIGN KEY (dept_id) REFERENCES departments (dept_id)"},
+      {"sql": "SHOW IMPORTED KEYS IN TABLE employees"},
+      {"sql": "SELECT MAX(IFF(\"fk_column_name\" = 'DEPT_ID', \"pk_table_name\", NULL)), MAX(IFF(\"fk_column_name\" = 'DEPT_ID', \"pk_column_name\", NULL)) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["DEPARTMENTS", "DEPT_ID"]]}}
+    ]},
+    {"name": "alter-table-add-named-foreign-key", "steps": [
+      {"sql": "CREATE TABLE countries (country_id INTEGER PRIMARY KEY, name VARCHAR)"},
+      {"sql": "CREATE TABLE cities (city_id INTEGER, name VARCHAR, country_id INTEGER)"},
+      {"sql": "ALTER TABLE cities ADD CONSTRAINT fk_cities_countries FOREIGN KEY (country_id) REFERENCES countries (country_id)"},
+      {"sql": "SHOW IMPORTED KEYS IN TABLE cities"},
+      {"sql": "SELECT MAX(IFF(\"fk_column_name\" = 'COUNTRY_ID', \"fk_name\", NULL)) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"value": "FK_CITIES_COUNTRIES"}}
+    ]},
+    {"name": "alter-table-add-foreign-key-with-on-delete", "steps": [
+      {"sql": "CREATE TABLE users (user_id INTEGER PRIMARY KEY, name VARCHAR)"},
+      {"sql": "CREATE TABLE posts (post_id INTEGER, user_id INTEGER)"},
+      {"sql": "ALTER TABLE posts ADD FOREIGN KEY (user_id) REFERENCES users (user_id) ON DELETE CASCADE"},
+      {"sql": "SHOW IMPORTED KEYS IN TABLE posts", "expect": {"rowCount": 0}}
+    ]},
+    {"name": "alter-table-add-foreign-key-with-on-update", "steps": [
+      {"sql": "CREATE TABLE categories (cat_id INTEGER PRIMARY KEY, name VARCHAR)"},
+      {"sql": "CREATE TABLE products (prod_id INTEGER, cat_id INTEGER)"},
+      {"sql": "ALTER TABLE products ADD FOREIGN KEY (cat_id) REFERENCES categories (cat_id) ON UPDATE CASCADE"},
+      {"sql": "SHOW IMPORTED KEYS IN TABLE products", "expect": {"rowCount": 0}}
+    ]},
+    {"name": "alter-table-add-foreign-key-with-both-actions", "steps": [
+      {"sql": "CREATE TABLE orders (order_id INTEGER PRIMARY KEY)"},
+      {"sql": "CREATE TABLE order_items (item_id INTEGER, order_id INTEGER)"},
+      {"sql": "ALTER TABLE order_items ADD FOREIGN KEY (order_id) REFERENCES orders (order_id) ON DELETE CASCADE ON UPDATE CASCADE"},
+      {"sql": "SHOW IMPORTED KEYS IN TABLE order_items", "expect": {"rowCount": 0}}
+    ]},
+    {"name": "alter-table-add-composite-foreign-key", "steps": [
+      {"sql": "CREATE TABLE order_headers (order_id INTEGER, customer_id INTEGER, PRIMARY KEY (order_id, customer_id))"},
+      {"sql": "CREATE TABLE shipments (ship_id INTEGER, order_id INTEGER, customer_id INTEGER)"},
+      {"sql": "ALTER TABLE shipments ADD FOREIGN KEY (order_id, customer_id) REFERENCES order_headers (order_id, customer_id)"},
+      {"sql": "SHOW IMPORTED KEYS IN TABLE shipments", "expect": {"rowCount": 2}},
+      {"sql": "SELECT MAX(IFF(\"fk_column_name\" = 'ORDER_ID', \"key_sequence\", NULL)), MAX(IFF(\"fk_column_name\" = 'CUSTOMER_ID', \"key_sequence\", NULL)) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["1", "2"]]}}
+    ]},
+    {"name": "alter-table-drop-constraint", "steps": [
+      {"sql": "CREATE TABLE parent (id INTEGER PRIMARY KEY)"},
+      {"sql": "CREATE TABLE child (id INTEGER, parent_id INTEGER)"},
+      {"sql": "ALTER TABLE child ADD CONSTRAINT fk_child_parent FOREIGN KEY (parent_id) REFERENCES parent (id)"},
+      {"sql": "SHOW IMPORTED KEYS IN TABLE child", "expect": {"rowCount": 1}},
+      {"sql": "ALTER TABLE child DROP CONSTRAINT fk_child_parent"},
+      {"sql": "SHOW IMPORTED KEYS IN TABLE child", "expect": {"rowCount": 0}}
+    ]},
+    {"name": "alter-table-add-multiple-constraints", "steps": [
+      {"sql": "CREATE TABLE users (user_id INTEGER, email VARCHAR, phone VARCHAR)"},
+      {"sql": "ALTER TABLE users ADD PRIMARY KEY (user_id)"},
+      {"sql": "ALTER TABLE users ADD UNIQUE (email)"},
+      {"sql": "ALTER TABLE users ADD UNIQUE (phone)"},
+      {"sql": "DESCRIBE TABLE users"},
+      {"sql": "SELECT MAX(IFF(\"name\" = 'USER_ID', \"primary key\", NULL)), MAX(IFF(\"name\" = 'EMAIL', \"unique key\", NULL)), MAX(IFF(\"name\" = 'PHONE', \"unique key\", NULL)) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["Y", "Y", "Y"]]}}
+    ]},
+    {"name": "alter-table-constraint-with-qualified-name", "steps": [
+      {"sql": "CREATE SCHEMA analytics"},
+      {"sql": "CREATE TABLE analytics.users (id INTEGER, name VARCHAR)"},
+      {"sql": "ALTER TABLE analytics.users ADD PRIMARY KEY (id)"},
+      {"sql": "DESCRIBE TABLE analytics.users"},
+      {"sql": "SELECT MAX(IFF(\"name\" = 'ID', \"primary key\", NULL)) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "Y"}}
+    ]},
+    {"name": "alter-table-constraint-with-if-exists", "steps": [
+      {"sql": "CREATE TABLE test1 (id INTEGER)"},
+      {"sql": "ALTER TABLE IF EXISTS test1 ADD PRIMARY KEY (id)"},
+      {"sql": "DESCRIBE TABLE test1"},
+      {"sql": "SELECT MAX(IFF(\"name\" = 'ID', \"primary key\", NULL)) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "Y"}},
+      {"sql": "ALTER TABLE IF EXISTS nonexistent ADD PRIMARY KEY (id)"}
+    ]},
+    {"name": "alter-table-mixed-constraint-operations", "steps": [
+      {"sql": "CREATE TABLE teams (team_id INTEGER, name VARCHAR)"},
+      {"sql": "ALTER TABLE teams ADD COLUMN city VARCHAR"},
+      {"sql": "ALTER TABLE teams ADD PRIMARY KEY (team_id)"},
+      {"sql": "ALTER TABLE teams ADD UNIQUE (name)"},
+      {"sql": "ALTER TABLE teams CLUSTER BY (city)"},
+      {"sql": "DESCRIBE TABLE teams", "expect": {"rowCount": 3}},
+      {"sql": "SELECT MAX(IFF(\"name\" = 'TEAM_ID', \"primary key\", NULL)), MAX(IFF(\"name\" = 'NAME', \"unique key\", NULL)) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["Y", "Y"]]}},
+      {"sql": "SHOW TABLES LIKE 'teams'"},
+      {"sql": "SELECT \"cluster_by\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "LINEAR(city)"}}
+    ]},
+    {"name": "alter-table-add-foreign-key-with-set-null", "steps": [
+      {"sql": "CREATE TABLE managers (mgr_id INTEGER PRIMARY KEY)"},
+      {"sql": "CREATE TABLE employees (emp_id INTEGER, mgr_id INTEGER)"},
+      {"sql": "ALTER TABLE employees ADD FOREIGN KEY (mgr_id) REFERENCES managers (mgr_id) ON DELETE SET NULL"},
+      {"sql": "SHOW IMPORTED KEYS IN TABLE employees", "expect": {"rowCount": 0}}
+    ]},
+    {"name": "alter-table-add-foreign-key-with-restrict", "steps": [
+      {"sql": "CREATE TABLE wallets (wallet_id INTEGER PRIMARY KEY)"},
+      {"sql": "CREATE TABLE transactions (txn_id INTEGER, wallet_id INTEGER)"},
+      {"sql": "ALTER TABLE transactions ADD FOREIGN KEY (wallet_id) REFERENCES wallets (wallet_id) ON DELETE RESTRICT"},
+      {"sql": "SHOW IMPORTED KEYS IN TABLE transactions", "expect": {"rowCount": 0}}
+    ]},
+    {"name": "alter-table-add-foreign-key-with-no-action", "steps": [
+      {"sql": "CREATE TABLE vendors (vendor_id INTEGER PRIMARY KEY)"},
+      {"sql": "CREATE TABLE products (prod_id INTEGER, vendor_id INTEGER)"},
+      {"sql": "ALTER TABLE products ADD FOREIGN KEY (vendor_id) REFERENCES vendors (vendor_id) ON UPDATE NO ACTION"},
+      {"sql": "SHOW IMPORTED KEYS IN TABLE products"},
+      {"sql": "SELECT MAX(IFF(\"fk_column_name\" = 'VENDOR_ID', \"update_rule\", NULL)), MAX(IFF(\"fk_column_name\" = 'VENDOR_ID', \"delete_rule\", NULL)) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["NO ACTION", "NO ACTION"]]}}
+    ]}
+  ]
+}

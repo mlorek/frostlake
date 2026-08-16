@@ -1,0 +1,87 @@
+{
+  "suite": "functions-string-ext",
+  "description": "The extended string surface: CHARINDEX and POSITION, CHR / ASCII / UNICODE, REPEAT and SPACE including their zero cases, SPLIT_PART (an out-of-range part is the empty string, not NULL), STRTOK with and without an explicit part, CONTAINS / STARTSWITH / ENDSWITH, TRANSLATE including the delete form, the REGEXP_ shorthands, EDITDISTANCE, SOUNDEX, CONCAT_WS and CONCAT with their NULL propagation, the four length functions, the BASE64 and HEX round trips through a table column, and the digest lengths. Converted 1:1 from functions/StringFunctionsExtTest (now retired); empty-string results are stringified so they cannot be confused with SQL NULL, and the two round-trip tests seed their column with INSERT ... SELECT rather than interpolating the encoded text into the statement.",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "charindex", "steps": [{"sql": "SELECT CHARINDEX('lo', 'hello world')", "expect": {"value": "4"}}]},
+    {"name": "charindex-not-found", "steps": [{"sql": "SELECT CHARINDEX('xyz', 'hello')", "expect": {"value": "0"}}]},
+    {"name": "charindex-with-a-start", "steps": [
+      {"sql": "SELECT CHARINDEX('lo', 'hello lo world', 5)", "expect": {"value": "7"}}]},
+    {"name": "position", "steps": [{"sql": "SELECT POSITION('lo', 'hello world')", "expect": {"value": "4"}}]},
+    {"name": "chr", "steps": [{"sql": "SELECT CHR(65)", "expect": {"value": "A"}}]},
+    {"name": "ascii", "steps": [{"sql": "SELECT ASCII('Hello')", "expect": {"value": "72"}}]},
+    {"name": "unicode", "steps": [{"sql": "SELECT UNICODE('A')", "expect": {"value": "65"}}]},
+    {"name": "repeat", "steps": [{"sql": "SELECT REPEAT('abc', 3)", "expect": {"value": "abcabcabc"}}]},
+    {"name": "repeat-zero", "steps": [
+      {"sql": "SELECT '<' || REPEAT('abc', 0) || '>'", "expect": {"value": "<>"}}]},
+    {"name": "space", "steps": [{"sql": "SELECT '<' || SPACE(3) || '>'", "expect": {"value": "<   >"}}]},
+    {"name": "space-zero", "steps": [{"sql": "SELECT '<' || SPACE(0) || '>'", "expect": {"value": "<>"}}]},
+    {"name": "split-part", "steps": [{"sql": "SELECT SPLIT_PART('a.b.c', '.', 2)", "expect": {"value": "b"}}]},
+    {"name": "split-part-first", "steps": [{"sql": "SELECT SPLIT_PART('a.b.c', '.', 1)", "expect": {"value": "a"}}]},
+    {"name": "split-part-last", "steps": [{"sql": "SELECT SPLIT_PART('a.b.c', '.', 3)", "expect": {"value": "c"}}]},
+    {"name": "split-part-out-of-range", "steps": [
+      {"sql": "SELECT '<' || SPLIT_PART('a.b.c', '.', 5) || '>'", "expect": {"value": "<>"}}]},
+    {"name": "strtok", "steps": [{"sql": "SELECT STRTOK('hello world foo', ' ', 1)", "expect": {"value": "hello"}}]},
+    {"name": "strtok-second-part", "steps": [
+      {"sql": "SELECT STRTOK('hello world foo', ' ', 2)", "expect": {"value": "world"}}]},
+    {"name": "strtok-default-part", "steps": [
+      {"sql": "SELECT STRTOK('hello world')", "expect": {"value": "hello"}}]},
+    {"name": "contains-true", "steps": [
+      {"sql": "SELECT CONTAINS('hello world', 'lo wo')", "expect": {"value": "true"}}]},
+    {"name": "contains-false", "steps": [
+      {"sql": "SELECT CONTAINS('hello', 'xyz')", "expect": {"value": "false"}}]},
+    {"name": "startswith", "steps": [
+      {"sql": "SELECT STARTSWITH('hello world', 'hello'), STARTSWITH('hello world', 'world')",
+       "expect": {"rows": [["true", "false"]]}}]},
+    {"name": "endswith", "steps": [
+      {"sql": "SELECT ENDSWITH('hello world', 'world'), ENDSWITH('hello world', 'hello')",
+       "expect": {"rows": [["true", "false"]]}}]},
+    {"name": "translate", "steps": [
+      {"sql": "SELECT TRANSLATE('hello', 'eo', '30')", "expect": {"value": "h3ll0"}}]},
+    {"name": "translate-deletes-unmapped-characters", "steps": [
+      {"sql": "SELECT TRANSLATE('hello', 'eo', '')", "expect": {"value": "hll"}}]},
+    {"name": "regexp-replace", "steps": [
+      {"sql": "SELECT REGEXP_REPLACE('hello', 'el+', 'XXX')", "expect": {"value": "hXXXo"}}]},
+    {"name": "regexp-like-true", "steps": [
+      {"sql": "SELECT REGEXP_LIKE('hello123', '[a-z]+[0-9]+')", "expect": {"value": "true"}}]},
+    {"name": "regexp-like-false", "steps": [
+      {"sql": "SELECT REGEXP_LIKE('hello', '[0-9]+')", "expect": {"value": "false"}}]},
+    {"name": "regexp-substr", "steps": [
+      {"sql": "SELECT REGEXP_SUBSTR('abc123def', '[0-9]+')", "expect": {"value": "123"}}]},
+    {"name": "regexp-count", "steps": [
+      {"sql": "SELECT REGEXP_COUNT('aababcabc', 'a')", "expect": {"value": "4"}}]},
+    {"name": "editdistance-of-identical-strings", "steps": [
+      {"sql": "SELECT EDITDISTANCE('abc', 'abc')", "expect": {"value": "0"}}]},
+    {"name": "editdistance-of-different-strings", "steps": [
+      {"sql": "SELECT EDITDISTANCE('kitten', 'sitting')", "expect": {"value": "3"}}]},
+    {"name": "soundex", "steps": [
+      {"sql": "SELECT SOUNDEX('Robert'), SOUNDEX('Rupert')", "expect": {"rows": [["R163", "R163"]]}}]},
+    {"name": "concat-ws", "steps": [
+      {"sql": "SELECT CONCAT_WS(',', 'a', 'b', 'c')", "expect": {"value": "a,b,c"}}]},
+    {"name": "concat-ws-propagates-null", "steps": [
+      {"sql": "SELECT CONCAT_WS(',', 'a', NULL, 'c')", "expect": {"rows": [[null]]}}]},
+    {"name": "concat-propagates-null", "steps": [
+      {"sql": "SELECT CONCAT('a', NULL, 'c')", "expect": {"rows": [[null]]}},
+      {"sql": "SELECT CONCAT(NULL, ':', '')", "expect": {"rows": [[null]]}},
+      {"sql": "SELECT CONCAT('a', ':', 'b')", "expect": {"value": "a:b"}}]},
+    {"name": "len", "steps": [{"sql": "SELECT LEN('hello')", "expect": {"value": "5"}}]},
+    {"name": "length", "steps": [{"sql": "SELECT LENGTH('hello')", "expect": {"value": "5"}}]},
+    {"name": "octet-length", "steps": [{"sql": "SELECT OCTET_LENGTH('hello')", "expect": {"value": "5"}}]},
+    {"name": "bit-length", "steps": [{"sql": "SELECT BIT_LENGTH('hello')", "expect": {"value": "40"}}]},
+    {"name": "a-base64-round-trip-through-a-column", "steps": [
+      {"sql": "CREATE TABLE b64_test (encoded VARCHAR)"},
+      {"sql": "INSERT INTO b64_test SELECT BASE64_ENCODE('hello world')"},
+      {"sql": "SELECT IFF(encoded IS NULL, 'null', 'set') FROM b64_test", "expect": {"value": "set"}},
+      {"sql": "SELECT BASE64_DECODE_STRING(encoded) FROM b64_test", "expect": {"value": "hello world"}}]},
+    {"name": "a-hex-round-trip-through-a-column", "steps": [
+      {"sql": "SELECT HEX_ENCODE('hi')", "expect": {"value": "6869"}},
+      {"sql": "CREATE TABLE hex_test (h VARCHAR)"},
+      {"sql": "INSERT INTO hex_test SELECT HEX_ENCODE('hi')"},
+      {"sql": "SELECT HEX_DECODE_STRING(h) FROM hex_test", "expect": {"value": "hi"}}]},
+    {"name": "md5", "steps": [
+      {"sql": "SELECT LENGTH(MD5('hello'))", "expect": {"value": "32"}},
+      {"sql": "SELECT MD5('hello')", "expect": {"value": "5d41402abc4b2a76b9719d911017c592"}}]},
+    {"name": "sha2-at-256", "steps": [{"sql": "SELECT LENGTH(SHA2('hello'))", "expect": {"value": "64"}}]},
+    {"name": "sha2-at-512", "steps": [{"sql": "SELECT LENGTH(SHA2('hello', 512))", "expect": {"value": "128"}}]}
+  ]
+}

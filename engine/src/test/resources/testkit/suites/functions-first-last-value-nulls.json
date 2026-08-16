@@ -1,0 +1,45 @@
+{
+  "suite": "functions-first-last-value-nulls",
+  "description": "FIRST_VALUE / LAST_VALUE null treatment: the default is RESPECT NULLS - the first or last row's value, even when it is NULL - where the engine previously skipped NULLs unconditionally. The IGNORE NULLS modifier selects the first or last non-null value, and RESPECT NULLS is also accepted explicitly. Over the frame (1,NULL),(2,20),(3,30),(4,NULL) with a whole-partition window, every row sees first=NULL and last=NULL by default, 20 and 30 under IGNORE NULLS, and a column with no nulls behaves as a plain first and last. Converted 1:1 from functions/FirstLastValueNullsTest (now retired); its @BeforeEach fixture is inlined per test and the Java helper's read of the first output row becomes a LIMIT 1 over the same ordered query.",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "first-value-respects-nulls-by-default", "steps": [
+      {"sql": "CREATE TABLE w (id INTEGER, v INTEGER)"},
+      {"sql": "INSERT INTO w VALUES (1, NULL), (2, 20), (3, 30), (4, NULL)"},
+      {"sql": "SELECT r FROM (SELECT id, FIRST_VALUE(v) OVER (ORDER BY id ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) AS r FROM w ORDER BY id) LIMIT 1",
+       "expect": {"rows": [[null]]}}
+    ]},
+    {"name": "first-value-ignore-nulls-returns-the-first-non-null", "steps": [
+      {"sql": "CREATE TABLE w (id INTEGER, v INTEGER)"},
+      {"sql": "INSERT INTO w VALUES (1, NULL), (2, 20), (3, 30), (4, NULL)"},
+      {"sql": "SELECT r FROM (SELECT id, FIRST_VALUE(v) IGNORE NULLS OVER (ORDER BY id ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) AS r FROM w ORDER BY id) LIMIT 1",
+       "expect": {"value": "20"}}
+    ]},
+    {"name": "first-value-with-an-explicit-respect-nulls", "steps": [
+      {"sql": "CREATE TABLE w (id INTEGER, v INTEGER)"},
+      {"sql": "INSERT INTO w VALUES (1, NULL), (2, 20), (3, 30), (4, NULL)"},
+      {"sql": "SELECT r FROM (SELECT id, FIRST_VALUE(v) RESPECT NULLS OVER (ORDER BY id ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) AS r FROM w ORDER BY id) LIMIT 1",
+       "expect": {"rows": [[null]]}}
+    ]},
+    {"name": "last-value-respects-nulls-by-default", "steps": [
+      {"sql": "CREATE TABLE w (id INTEGER, v INTEGER)"},
+      {"sql": "INSERT INTO w VALUES (1, NULL), (2, 20), (3, 30), (4, NULL)"},
+      {"sql": "SELECT r FROM (SELECT id, LAST_VALUE(v) OVER (ORDER BY id ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) AS r FROM w ORDER BY id) LIMIT 1",
+       "expect": {"rows": [[null]]}}
+    ]},
+    {"name": "last-value-ignore-nulls-returns-the-last-non-null", "steps": [
+      {"sql": "CREATE TABLE w (id INTEGER, v INTEGER)"},
+      {"sql": "INSERT INTO w VALUES (1, NULL), (2, 20), (3, 30), (4, NULL)"},
+      {"sql": "SELECT r FROM (SELECT id, LAST_VALUE(v) IGNORE NULLS OVER (ORDER BY id ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) AS r FROM w ORDER BY id) LIMIT 1",
+       "expect": {"value": "30"}}
+    ]},
+    {"name": "a-column-with-no-nulls-behaves-as-plain-first-and-last", "steps": [
+      {"sql": "CREATE TABLE w (id INTEGER, v INTEGER)"},
+      {"sql": "INSERT INTO w VALUES (1, NULL), (2, 20), (3, 30), (4, NULL)"},
+      {"sql": "SELECT r FROM (SELECT id, FIRST_VALUE(id) OVER (ORDER BY id ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) AS r FROM w ORDER BY id) LIMIT 1",
+       "expect": {"value": "1"}},
+      {"sql": "SELECT r FROM (SELECT id, LAST_VALUE(id) OVER (ORDER BY id ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) AS r FROM w ORDER BY id) LIMIT 1",
+       "expect": {"value": "4"}}
+    ]}
+  ]
+}

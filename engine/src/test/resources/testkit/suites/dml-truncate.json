@@ -1,0 +1,101 @@
+{
+  "suite": "dml-truncate",
+  "description": "TRUNCATE TABLE: empties the rows and keeps the table (structure, comment), the TABLE keyword is optional, IF EXISTS makes a missing table a no-op while the plain form errors does-not-exist, qualified and fully-qualified names resolve from any database context, truncation is repeatable and reinsertable, and a 100-row table empties. Converted 1:1 from ddl/TruncateTest (trimmed: the PK-enforcement half of one test flips a storage-engine toggle with no SQL surface and stays in Java).",
+  "tags": ["dml", "converted"],
+  "tests": [
+    {"name": "truncate-table", "steps": [
+      {"sql": "CREATE TABLE users (id INTEGER, name VARCHAR)"},
+      {"sql": "INSERT INTO users VALUES (1, 'Alice'), (2, 'Bob'), (3, 'Charlie')"},
+      {"sql": "SELECT * FROM users", "expect": {"rowCount": 3}},
+      {"sql": "TRUNCATE TABLE users"},
+      {"sql": "SELECT * FROM users", "expect": {"rowCount": 0}},
+      {"sql": "SHOW TABLES"},
+      {"sql": "SELECT COUNT_IF(UPPER(\"name\") = 'USERS') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "1"}}
+    ]},
+    {"name": "truncate-table-without-table-keyword", "steps": [
+      {"sql": "CREATE TABLE products (id INTEGER, name VARCHAR)"},
+      {"sql": "INSERT INTO products VALUES (1, 'Widget'), (2, 'Gadget')"},
+      {"sql": "TRUNCATE products"},
+      {"sql": "SELECT * FROM products", "expect": {"rowCount": 0}}
+    ]},
+    {"name": "truncate-empty-table", "steps": [
+      {"sql": "CREATE TABLE empty_table (id INTEGER, value VARCHAR)"},
+      {"sql": "TRUNCATE TABLE empty_table"},
+      {"sql": "SELECT * FROM empty_table", "expect": {"rowCount": 0}}
+    ]},
+    {"name": "truncate-qualified-name", "steps": [
+      {"sql": "CREATE SCHEMA schema1"},
+      {"sql": "CREATE TABLE schema1.test_table (id INTEGER, data VARCHAR)"},
+      {"sql": "INSERT INTO schema1.test_table VALUES (1, 'Data1'), (2, 'Data2')"},
+      {"sql": "TRUNCATE TABLE schema1.test_table"},
+      {"sql": "SELECT * FROM schema1.test_table", "expect": {"rowCount": 0}}
+    ]},
+    {"name": "truncate-fully-qualified-name", "steps": [
+      {"sql": "CREATE DATABASE db1"},
+      {"sql": "USE DATABASE db1"},
+      {"sql": "CREATE SCHEMA schema1"},
+      {"sql": "CREATE TABLE schema1.test_table (id INTEGER)"},
+      {"sql": "INSERT INTO schema1.test_table VALUES (1), (2), (3)"},
+      {"sql": "CREATE DATABASE db2"},
+      {"sql": "USE DATABASE db2"},
+      {"sql": "TRUNCATE TABLE db1.schema1.test_table"},
+      {"sql": "SELECT * FROM db1.schema1.test_table", "expect": {"rowCount": 0}},
+      {"sql": "USE DATABASE test_db"},
+      {"sql": "USE SCHEMA test_schema"},
+      {"sql": "DROP DATABASE db1"},
+      {"sql": "DROP DATABASE db2"}
+    ]},
+    {"name": "truncate-if-exists", "steps": [
+      {"sql": "CREATE TABLE existing_table (id INTEGER)"},
+      {"sql": "INSERT INTO existing_table VALUES (1)"},
+      {"sql": "TRUNCATE TABLE IF EXISTS existing_table"},
+      {"sql": "SELECT * FROM existing_table", "expect": {"rowCount": 0}}
+    ]},
+    {"name": "truncate-if-exists-non-existent", "steps": [
+      {"sql": "TRUNCATE TABLE IF EXISTS non_existent_table"}
+    ]},
+    {"name": "truncate-non-existent-table", "steps": [
+      {"sql": "TRUNCATE TABLE non_existent_table", "expect": {"error": {"messageContains": "does not exist"}}}
+    ]},
+    {"name": "truncate-preserves-primary-key-structure", "steps": [
+      {"sql": "CREATE TABLE users (id INTEGER PRIMARY KEY, name VARCHAR)"},
+      {"sql": "INSERT INTO users VALUES (1, 'Alice'), (2, 'Bob')"},
+      {"sql": "TRUNCATE TABLE users"},
+      {"sql": "INSERT INTO users VALUES (1, 'NewAlice')"},
+      {"sql": "SELECT * FROM users", "expect": {"rowCount": 1}}
+    ]},
+    {"name": "truncate-and-reinsert", "steps": [
+      {"sql": "CREATE TABLE data (id INTEGER, value VARCHAR)"},
+      {"sql": "INSERT INTO data VALUES (1, 'Old')"},
+      {"sql": "TRUNCATE TABLE data"},
+      {"sql": "INSERT INTO data VALUES (2, 'New')"},
+      {"sql": "SELECT id, value FROM data", "expect": {"rows": [["2", "New"]]}}
+    ]},
+    {"name": "truncate-multiple-times", "steps": [
+      {"sql": "CREATE TABLE test_table (id INTEGER)"},
+      {"sql": "INSERT INTO test_table VALUES (0)"},
+      {"sql": "TRUNCATE TABLE test_table"},
+      {"sql": "SELECT * FROM test_table", "expect": {"rowCount": 0}},
+      {"sql": "INSERT INTO test_table VALUES (1)"},
+      {"sql": "TRUNCATE TABLE test_table"},
+      {"sql": "SELECT * FROM test_table", "expect": {"rowCount": 0}},
+      {"sql": "INSERT INTO test_table VALUES (2)"},
+      {"sql": "TRUNCATE TABLE test_table"},
+      {"sql": "SELECT * FROM test_table", "expect": {"rowCount": 0}}
+    ]},
+    {"name": "truncate-table-with-comment", "steps": [
+      {"sql": "CREATE TABLE users (id INTEGER) COMMENT = 'User table'"},
+      {"sql": "INSERT INTO users VALUES (1)"},
+      {"sql": "TRUNCATE TABLE users"},
+      {"sql": "SHOW TABLES"},
+      {"sql": "SELECT COUNT_IF(UPPER(\"name\") = 'USERS') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "1"}}
+    ]},
+    {"name": "truncate-large-table", "steps": [
+      {"sql": "CREATE TABLE large_table (id INTEGER, value VARCHAR)"},
+      {"sql": "INSERT INTO large_table VALUES (0, 'Value0'), (1, 'Value1'), (2, 'Value2'), (3, 'Value3'), (4, 'Value4'), (5, 'Value5'), (6, 'Value6'), (7, 'Value7'), (8, 'Value8'), (9, 'Value9'), (10, 'Value10'), (11, 'Value11'), (12, 'Value12'), (13, 'Value13'), (14, 'Value14'), (15, 'Value15'), (16, 'Value16'), (17, 'Value17'), (18, 'Value18'), (19, 'Value19'), (20, 'Value20'), (21, 'Value21'), (22, 'Value22'), (23, 'Value23'), (24, 'Value24'), (25, 'Value25'), (26, 'Value26'), (27, 'Value27'), (28, 'Value28'), (29, 'Value29'), (30, 'Value30'), (31, 'Value31'), (32, 'Value32'), (33, 'Value33'), (34, 'Value34'), (35, 'Value35'), (36, 'Value36'), (37, 'Value37'), (38, 'Value38'), (39, 'Value39'), (40, 'Value40'), (41, 'Value41'), (42, 'Value42'), (43, 'Value43'), (44, 'Value44'), (45, 'Value45'), (46, 'Value46'), (47, 'Value47'), (48, 'Value48'), (49, 'Value49'), (50, 'Value50'), (51, 'Value51'), (52, 'Value52'), (53, 'Value53'), (54, 'Value54'), (55, 'Value55'), (56, 'Value56'), (57, 'Value57'), (58, 'Value58'), (59, 'Value59'), (60, 'Value60'), (61, 'Value61'), (62, 'Value62'), (63, 'Value63'), (64, 'Value64'), (65, 'Value65'), (66, 'Value66'), (67, 'Value67'), (68, 'Value68'), (69, 'Value69'), (70, 'Value70'), (71, 'Value71'), (72, 'Value72'), (73, 'Value73'), (74, 'Value74'), (75, 'Value75'), (76, 'Value76'), (77, 'Value77'), (78, 'Value78'), (79, 'Value79'), (80, 'Value80'), (81, 'Value81'), (82, 'Value82'), (83, 'Value83'), (84, 'Value84'), (85, 'Value85'), (86, 'Value86'), (87, 'Value87'), (88, 'Value88'), (89, 'Value89'), (90, 'Value90'), (91, 'Value91'), (92, 'Value92'), (93, 'Value93'), (94, 'Value94'), (95, 'Value95'), (96, 'Value96'), (97, 'Value97'), (98, 'Value98'), (99, 'Value99')"},
+      {"sql": "SELECT * FROM large_table", "expect": {"rowCount": 100}},
+      {"sql": "TRUNCATE TABLE large_table"},
+      {"sql": "SELECT * FROM large_table", "expect": {"rowCount": 0}}
+    ]}
+  ]
+}

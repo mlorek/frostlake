@@ -57,6 +57,7 @@ public class JoinAndLateralTest extends BaseDatabaseTest {
     public void testInnerJoin() {
         final ResultSet rs = engine.executeQuery(
             "SELECT * FROM employees JOIN departments ON employees.dept_id = departments.dept_id"
+                + " ORDER BY employees.id"
         );
 
         // Only employees with matching departments
@@ -116,6 +117,7 @@ public class JoinAndLateralTest extends BaseDatabaseTest {
         // LATERAL allows the subquery to reference columns from the left table
         final ResultSet rs = engine.executeQuery(
             "SELECT * FROM employees e, LATERAL (SELECT dept_name FROM departments d WHERE d.dept_id = e.dept_id) dept"
+                + " ORDER BY e.id"
         );
 
         assertEquals(3, rs.getRowCount(), "LATERAL subquery should execute for each employee row");

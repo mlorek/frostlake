@@ -46,7 +46,7 @@ public class DataMetricReferencesTest extends BaseDatabaseTest {
     private ResultSet references(final String columns) {
         return engine.executeQuery("SELECT " + columns + " FROM TABLE("
             + "INFORMATION_SCHEMA.DATA_METRIC_FUNCTION_REFERENCES("
-            + "REF_ENTITY_NAME => 'DR_T', REF_ENTITY_DOMAIN => 'TABLE'))");
+            + "REF_ENTITY_NAME => 'DR_T', REF_ENTITY_DOMAIN => 'TABLE')) ORDER BY METRIC_NAME");
     }
 
     private String cellsOf(final ResultSet rs, final Row row) {

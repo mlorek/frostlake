@@ -103,10 +103,16 @@ public class DatabaseStatement implements Statement {
         }
     }
 
+    /** The count this statement declares to the server: its own parameter, else the session's. */
+    private Integer desiredMultiCount() {
+        return statementMultiCount != null
+            ? statementMultiCount : Integer.valueOf(connection.getMultiStatementCount());
+    }
+
     public ResultSet executeQuery(final String sql) throws SQLException {
         checkClosed();
         applyMultiStatementGate(sql);
-        final SqlResponse response = httpClient.execute(sql);
+        final SqlResponse response = httpClient.execute(sql, desiredMultiCount());
         pendingResultData = response.getResultSets() != null ? response.getResultSets() : new ArrayList<>();
         resultDataIndex = 0;
 
@@ -123,7 +129,7 @@ public class DatabaseStatement implements Statement {
     public int executeUpdate(final String sql) throws SQLException {
         checkClosed();
         applyMultiStatementGate(sql);
-        final SqlResponse response = httpClient.execute(sql);
+        final SqlResponse response = httpClient.execute(sql, desiredMultiCount());
         updateContextFromSql(sql);
 
         // DML statements report their affected-row count as a Snowflake-style result set
@@ -133,10 +139,27 @@ public class DatabaseStatement implements Statement {
         return updateCount;
     }
 
-    /** Sum every "number of rows …" column in the response's result sets (first row each). */
+    /**
+     * The affected-row total of a response: the servers' own marks when it sends them — every result's
+     * updateCount, -1 for anything but a DML count grid — and, from a server predating the field, the
+     * sum of every "number of rows …" column (first row each).
+     */
     private long extractRowsAffected(final SqlResponse response) {
         if (response.getResultSets() == null) {
             return 0;
+        }
+        long marked = 0;
+        boolean anyMarked = false;
+        for (final ResultSetData data : response.getResultSets()) {
+            if (data.getUpdateCount() != null) {
+                anyMarked = true;
+                if (data.getUpdateCount().longValue() >= 0) {
+                    marked += data.getUpdateCount().longValue();
+                }
+            }
+        }
+        if (anyMarked) {
+            return marked;
         }
         long total = 0;
         for (final ResultSetData data : response.getResultSets()) {
@@ -231,7 +254,7 @@ public class DatabaseStatement implements Statement {
     public boolean execute(final String sql) throws SQLException {
         checkClosed();
         applyMultiStatementGate(sql);
-        final SqlResponse response = httpClient.execute(sql);
+        final SqlResponse response = httpClient.execute(sql, desiredMultiCount());
         updateContextFromSql(sql);
         pendingResultData = response.getResultSets() != null ? response.getResultSets() : new ArrayList<>();
         resultDataIndex = 0;

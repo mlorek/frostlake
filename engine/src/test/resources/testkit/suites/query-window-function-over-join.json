@@ -1,0 +1,47 @@
+{
+  "suite": "query-window-function-over-join",
+  "description": "Window functions and QUALIFY must resolve their PARTITION BY, ORDER BY and argument columns over the rows of a JOIN. The window stage evaluates those expressions against the MERGED join table, so an alias-qualified column (f.cid) only resolves with the join's alias context - without it every row collapsed into a single partition and ROW_NUMBER() came out NULL, which breaks the very common latest-row-per-key pattern QUALIFY ROW_NUMBER() OVER (PARTITION BY key ORDER BY ts DESC) = 1. Pinned with that pattern after a LEFT JOIN, with the same window in the SELECT list so the per-partition numbering is visible, with an UNQUALIFIED key that exists in only one side, and with an aggregate window partitioning after the join. The single-table path rides along as the guard that nothing changed where there is no alias context. Converted 1:1 from query/WindowFunctionOverJoinTest (now retired).",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "qualify-row-number-latest-per-key-after-a-left-join", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE f (cid VARCHAR, ed DATE, val INT)"},
+      {"sql": "CREATE OR REPLACE TABLE dim (cid VARCHAR, ind INT)"},
+      {"sql": "INSERT INTO f VALUES ('c1', '2026-01-03', 10), ('c1', '2026-01-01', 7), ('c2', '2026-01-02', 20), ('c2', '2026-01-01', 5), ('c3', '2026-01-03', 30)"},
+      {"sql": "INSERT INTO dim VALUES ('c1', 100), ('c2', 200)"},
+      {"sql": "SELECT f.cid FROM f LEFT JOIN dim d ON f.cid = d.cid QUALIFY ROW_NUMBER() OVER (PARTITION BY f.cid ORDER BY f.ed DESC) = 1 ORDER BY f.cid",
+       "expect": {"rows": [["c1"],["c2"],["c3"]], "ordered": true}}
+    ]},
+    {"name": "row-number-in-the-select-list-after-a-join-partitions", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE f (cid VARCHAR, ed DATE, val INT)"},
+      {"sql": "CREATE OR REPLACE TABLE dim (cid VARCHAR, ind INT)"},
+      {"sql": "INSERT INTO f VALUES ('c1', '2026-01-03', 10), ('c1', '2026-01-01', 7), ('c2', '2026-01-02', 20), ('c2', '2026-01-01', 5), ('c3', '2026-01-03', 30)"},
+      {"sql": "INSERT INTO dim VALUES ('c1', 100), ('c2', 200)"},
+      {"sql": "SELECT f.cid || ':' || ROW_NUMBER() OVER (PARTITION BY f.cid ORDER BY f.ed DESC) FROM f LEFT JOIN dim d ON f.cid = d.cid ORDER BY 1",
+       "expect": {"rows": [["c1:1"],["c1:2"],["c2:1"],["c2:2"],["c3:1"]], "ordered": true}}
+    ]},
+    {"name": "an-unqualified-partition-column-resolves-after-a-join", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE f (cid VARCHAR, ed DATE, val INT)"},
+      {"sql": "CREATE OR REPLACE TABLE dim (cid VARCHAR, ind INT)"},
+      {"sql": "INSERT INTO f VALUES ('c1', '2026-01-03', 10), ('c1', '2026-01-01', 7), ('c2', '2026-01-02', 20), ('c2', '2026-01-01', 5), ('c3', '2026-01-03', 30)"},
+      {"sql": "INSERT INTO dim VALUES ('c1', 100), ('c2', 200)"},
+      {"sql": "SELECT f.cid FROM f LEFT JOIN dim d ON f.cid = d.cid QUALIFY ROW_NUMBER() OVER (PARTITION BY f.cid ORDER BY ed DESC) = 1 ORDER BY f.cid",
+       "expect": {"rows": [["c1"],["c2"],["c3"]], "ordered": true}}
+    ]},
+    {"name": "an-aggregate-window-partitions-after-a-join", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE f (cid VARCHAR, ed DATE, val INT)"},
+      {"sql": "CREATE OR REPLACE TABLE dim (cid VARCHAR, ind INT)"},
+      {"sql": "INSERT INTO f VALUES ('c1', '2026-01-03', 10), ('c1', '2026-01-01', 7), ('c2', '2026-01-02', 20), ('c2', '2026-01-01', 5), ('c3', '2026-01-03', 30)"},
+      {"sql": "INSERT INTO dim VALUES ('c1', 100), ('c2', 200)"},
+      {"sql": "SELECT DISTINCT SUM(f.val) OVER (PARTITION BY f.cid) FROM f LEFT JOIN dim d ON f.cid = d.cid ORDER BY 1",
+       "expect": {"rows": [[17],[25],[30]], "ordered": true}}
+    ]},
+    {"name": "qualify-is-unaffected-without-a-join", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE f (cid VARCHAR, ed DATE, val INT)"},
+      {"sql": "CREATE OR REPLACE TABLE dim (cid VARCHAR, ind INT)"},
+      {"sql": "INSERT INTO f VALUES ('c1', '2026-01-03', 10), ('c1', '2026-01-01', 7), ('c2', '2026-01-02', 20), ('c2', '2026-01-01', 5), ('c3', '2026-01-03', 30)"},
+      {"sql": "INSERT INTO dim VALUES ('c1', 100), ('c2', 200)"},
+      {"sql": "SELECT cid FROM f QUALIFY ROW_NUMBER() OVER (PARTITION BY cid ORDER BY ed DESC) = 1 ORDER BY cid",
+       "expect": {"rows": [["c1"],["c2"],["c3"]], "ordered": true}}
+    ]}
+  ]
+}

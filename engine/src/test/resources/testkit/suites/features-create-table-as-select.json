@@ -1,0 +1,128 @@
+{
+  "suite": "features-create-table-as-select",
+  "description": "CREATE TABLE AS SELECT (CTAS) with OR REPLACE and TEMP/TEMPORARY through the SQL surface - the SHOW TABLES kind cell (TABLE / TEMPORARY / TRANSIENT), comment and cluster_by cells, DESCRIBE TABLE rows for the created columns, and the query results themselves: basic CTAS, literals, OR REPLACE swapping the definition and data, the TEMP and TEMPORARY spellings plain and with AS SELECT, WHERE/JOIN/GROUP BY sources, repeated OR REPLACE TEMP, TRANSIENT vs TEMP kinds, COMMENT, and CLUSTER BY on a TEMP CTAS. Converted 1:1 from features/CreateTableAsSelectTest (now retired).",
+  "tags": ["features", "converted"],
+  "tests": [
+    {"name": "basic-create-table-as-select", "steps": [
+      {"sql": "CREATE TABLE source (id INTEGER, name VARCHAR)"},
+      {"sql": "INSERT INTO source VALUES (1, 'Alice')"},
+      {"sql": "INSERT INTO source VALUES (2, 'Bob')"},
+      {"sql": "CREATE TABLE target AS SELECT id, name FROM source"},
+      {"sql": "DESCRIBE TABLE target", "expect": {"rowCount": 2}},
+      {"sql": "SELECT COUNT_IF(\"name\" = 'ID'), COUNT_IF(\"name\" = 'NAME') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["1", "1"]]}},
+      {"sql": "SELECT * FROM target", "expect": {"rowCount": 2}}
+    ]},
+    {"name": "create-table-as-select-with-literals", "steps": [
+      {"sql": "CREATE TABLE tbl AS SELECT 1 as c, 2 as d"},
+      {"sql": "DESCRIBE TABLE tbl", "expect": {"rowCount": 2}},
+      {"sql": "SELECT COUNT_IF(\"name\" = 'C'), COUNT_IF(\"name\" = 'D') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["1", "1"]]}},
+      {"sql": "SELECT * FROM tbl", "expect": {"rows": [["1", "2"]]}}
+    ]},
+    {"name": "create-or-replace-table", "steps": [
+      {"sql": "CREATE TABLE test (id INTEGER, name VARCHAR)"},
+      {"sql": "INSERT INTO test VALUES (1, 'First')"},
+      {"sql": "SELECT * FROM test", "expect": {"rowCount": 1}},
+      {"sql": "CREATE OR REPLACE TABLE test (id INTEGER, value VARCHAR)"},
+      {"sql": "INSERT INTO test VALUES (2, 'Second')"},
+      {"sql": "DESCRIBE TABLE test", "expect": {"rowCount": 2}},
+      {"sql": "SELECT COUNT_IF(\"name\" = 'VALUE') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "1"}},
+      {"sql": "SELECT * FROM test", "expect": {"rows": [["2", "Second"]]}}
+    ]},
+    {"name": "create-or-replace-temp-table-as-select", "steps": [
+      {"sql": "CREATE OR REPLACE TEMP TABLE tbl AS SELECT 1 as c, 2 as d"},
+      {"sql": "SHOW TABLES LIKE 'tbl'"},
+      {"sql": "SELECT \"kind\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "TEMPORARY"}},
+      {"sql": "DESCRIBE TABLE tbl", "expect": {"rowCount": 2}},
+      {"sql": "SELECT * FROM tbl", "expect": {"rowCount": 1}}
+    ]},
+    {"name": "create-temp-table", "steps": [
+      {"sql": "CREATE TEMP TABLE temp_tbl (id INTEGER, name VARCHAR)"},
+      {"sql": "SHOW TABLES LIKE 'temp_tbl'"},
+      {"sql": "SELECT \"kind\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "TEMPORARY"}}
+    ]},
+    {"name": "create-temporary-table", "steps": [
+      {"sql": "CREATE TEMPORARY TABLE temp_tbl (id INTEGER, name VARCHAR)"},
+      {"sql": "SHOW TABLES LIKE 'temp_tbl'"},
+      {"sql": "SELECT \"kind\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "TEMPORARY"}}
+    ]},
+    {"name": "create-temp-table-as-select", "steps": [
+      {"sql": "CREATE TABLE source (id INTEGER, value VARCHAR)"},
+      {"sql": "INSERT INTO source VALUES (1, 'test')"},
+      {"sql": "CREATE TEMP TABLE temp_target AS SELECT * FROM source"},
+      {"sql": "SHOW TABLES LIKE 'temp_target'"},
+      {"sql": "SELECT \"kind\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "TEMPORARY"}},
+      {"sql": "SELECT * FROM temp_target", "expect": {"rowCount": 1}}
+    ]},
+    {"name": "create-temporary-table-as-select", "steps": [
+      {"sql": "CREATE TEMPORARY TABLE temp_tbl AS SELECT 10 as x, 20 as y"},
+      {"sql": "SHOW TABLES LIKE 'temp_tbl'"},
+      {"sql": "SELECT \"kind\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "TEMPORARY"}},
+      {"sql": "SELECT * FROM temp_tbl", "expect": {"rows": [["10", "20"]]}}
+    ]},
+    {"name": "create-or-replace-table-as-select", "steps": [
+      {"sql": "CREATE TABLE tbl AS SELECT 1 as a"},
+      {"sql": "SELECT * FROM tbl", "expect": {"rowCount": 1}},
+      {"sql": "CREATE OR REPLACE TABLE tbl AS SELECT 2 as b, 3 as c"},
+      {"sql": "DESCRIBE TABLE tbl", "expect": {"rowCount": 2}},
+      {"sql": "SELECT * FROM tbl", "expect": {"rows": [["2", "3"]]}}
+    ]},
+    {"name": "create-table-as-select-with-where-clause", "steps": [
+      {"sql": "CREATE TABLE source (id INTEGER, status VARCHAR)"},
+      {"sql": "INSERT INTO source VALUES (1, 'active')"},
+      {"sql": "INSERT INTO source VALUES (2, 'inactive')"},
+      {"sql": "INSERT INTO source VALUES (3, 'active')"},
+      {"sql": "CREATE TABLE filtered AS SELECT id FROM source WHERE status = 'active'"},
+      {"sql": "SELECT * FROM filtered", "expect": {"rowCount": 2}}
+    ]},
+    {"name": "create-table-as-select-with-join", "steps": [
+      {"sql": "CREATE TABLE users (id INTEGER, name VARCHAR)"},
+      {"sql": "CREATE TABLE orders (order_id INTEGER, user_id INTEGER)"},
+      {"sql": "INSERT INTO users VALUES (1, 'Alice')"},
+      {"sql": "INSERT INTO orders VALUES (100, 1)"},
+      {"sql": "CREATE TABLE joined AS SELECT u.name, o.order_id FROM users u JOIN orders o ON u.id = o.user_id"},
+      {"sql": "DESCRIBE TABLE joined", "expect": {"rowCount": 2}},
+      {"sql": "SELECT * FROM joined", "expect": {"rowCount": 1}}
+    ]},
+    {"name": "create-table-as-select-with-aggregation", "steps": [
+      {"sql": "CREATE TABLE sales (product VARCHAR, amount INTEGER)"},
+      {"sql": "INSERT INTO sales VALUES ('Widget', 100)"},
+      {"sql": "INSERT INTO sales VALUES ('Widget', 150)"},
+      {"sql": "INSERT INTO sales VALUES ('Gadget', 200)"},
+      {"sql": "CREATE TABLE summary AS SELECT product, SUM(amount) as total FROM sales GROUP BY product"},
+      {"sql": "DESCRIBE TABLE summary", "expect": {"rowCount": 2}},
+      {"sql": "SELECT * FROM summary", "expect": {"rowCount": 2}}
+    ]},
+    {"name": "create-or-replace-temp-table-multiple-times", "steps": [
+      {"sql": "CREATE OR REPLACE TEMP TABLE tbl AS SELECT 1 as x"},
+      {"sql": "SELECT * FROM tbl", "expect": {"rowCount": 1}},
+      {"sql": "CREATE OR REPLACE TEMP TABLE tbl AS SELECT 2 as y"},
+      {"sql": "SELECT * FROM tbl", "expect": {"rows": [["2"]]}},
+      {"sql": "SHOW TABLES LIKE 'tbl'"},
+      {"sql": "SELECT \"kind\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "TEMPORARY"}}
+    ]},
+    {"name": "create-transient-vs-temp-table", "steps": [
+      {"sql": "CREATE TRANSIENT TABLE trans_tbl (id INTEGER)"},
+      {"sql": "CREATE TEMP TABLE temp_tbl (id INTEGER)"},
+      {"sql": "SHOW TABLES LIKE 'trans_tbl'"},
+      {"sql": "SELECT \"kind\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "TRANSIENT"}},
+      {"sql": "SHOW TABLES LIKE 'temp_tbl'"},
+      {"sql": "SELECT \"kind\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "TEMPORARY"}}
+    ]},
+    {"name": "create-or-replace-with-comment", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE tbl (id INTEGER) COMMENT = 'Test table'"},
+      {"sql": "SHOW TABLES LIKE 'tbl'"},
+      {"sql": "SELECT \"comment\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "Test table"}}
+    ]},
+    {"name": "create-temp-table-as-select-with-cluster-by", "steps": [
+      {"sql": "CREATE TABLE source (id INTEGER, region VARCHAR)"},
+      {"sql": "INSERT INTO source VALUES (1, 'US')"},
+      {"sql": "INSERT INTO source VALUES (2, 'EU')"},
+      {"sql": "CREATE TEMP TABLE clustered CLUSTER BY (region) AS SELECT * FROM source"},
+      {"sql": "SHOW TABLES LIKE 'clustered'"},
+      {"sql": "SELECT \"kind\", \"cluster_by\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["TEMPORARY", "LINEAR(region)"]]}}
+    ]}
+  ]
+}

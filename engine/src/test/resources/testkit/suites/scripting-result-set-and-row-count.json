@@ -1,0 +1,30 @@
+{
+  "suite": "scripting-result-set-and-row-count",
+  "description": "Snowflake Scripting RESULTSET and cursor plumbing: SQLROWCOUNT after a DML (an INSERT of three rows and a DELETE of two), RESULTSET_FROM_CURSOR over an OPENed cursor returned as a table, and the rs := (SELECT ...) RESULTSET assignment form iterated with FOR. Converted 1:1 from scripting/ScriptResultSetAndRowCountTest (now retired); the RESULTSET_FROM_CURSOR test asserted only a row COUNT, so the converted step pins the four rows.",
+  "tags": ["scripting", "converted"],
+  "tests": [
+    {"name": "sqlrowcount-reflects-the-last-dml", "steps": [
+      {"sql": "CREATE TABLE invoices (id NUMBER, price NUMBER)"},
+      {"sql": "INSERT INTO invoices VALUES (1, 10), (2, 20), (3, 30), (4, 40), (5, 50)"},
+      {"sql": "CREATE TABLE t (a NUMBER)"},
+      {"sql": "BEGIN INSERT INTO t VALUES (100), (200), (300); RETURN SQLROWCOUNT; END;", "expect": {"value": 3}}
+    ]},
+    {"name": "sqlrowcount-after-a-delete", "steps": [
+      {"sql": "CREATE TABLE invoices (id NUMBER, price NUMBER)"},
+      {"sql": "INSERT INTO invoices VALUES (1, 10), (2, 20), (3, 30), (4, 40), (5, 50)"},
+      {"sql": "BEGIN DELETE FROM invoices WHERE price < 30; RETURN SQLROWCOUNT; END;", "expect": {"value": 2}}
+    ]},
+    {"name": "resultset-from-cursor", "steps": [
+      {"sql": "CREATE TABLE invoices (id NUMBER, price NUMBER)"},
+      {"sql": "INSERT INTO invoices VALUES (1, 10), (2, 20), (3, 30), (4, 40), (5, 50)"},
+      {"sql": "DECLARE c1 CURSOR FOR SELECT price FROM invoices WHERE price > 15; BEGIN OPEN c1; RETURN TABLE(RESULTSET_FROM_CURSOR(c1)); END;",
+       "expect": {"rows": [[20],[30],[40],[50]]}}
+    ]},
+    {"name": "a-resultset-assigned-from-a-select", "steps": [
+      {"sql": "CREATE TABLE invoices (id NUMBER, price NUMBER)"},
+      {"sql": "INSERT INTO invoices VALUES (1, 10), (2, 20), (3, 30), (4, 40), (5, 50)"},
+      {"sql": "DECLARE rs RESULTSET; BEGIN LET total INTEGER := 0; rs := (SELECT price FROM invoices); FOR r IN rs DO total := total + r.price; END FOR; RETURN total; END;",
+       "expect": {"value": 150}}
+    ]}
+  ]
+}

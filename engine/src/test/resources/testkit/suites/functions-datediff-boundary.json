@@ -1,0 +1,48 @@
+{
+  "suite": "functions-datediff-boundary",
+  "description": "DATEDIFF counts unit BOUNDARIES crossed, not elapsed whole units (Snowflake semantics): both operands are truncated to the unit before differencing, so 23:00 to 01:00 the next day is one DAY even though only two hours elapsed, and 01:00 to 23:00 the next day is also one. Covers the same-day zero, the negative direction, HOUR / MINUTE / SECOND boundaries, a QUARTER boundary crossed two months apart, the Monday-start WEEK boundary, and MONTH / YEAR boundaries one day apart. Converted 1:1 from functions/DateDiffBoundaryTest (now retired).",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "a-day-boundary-crossed-within-two-hours", "steps": [
+      {"sql": "SELECT DATEDIFF(DAY, '2026-07-26 23:00:00'::TIMESTAMP, '2026-07-27 01:00:00'::TIMESTAMP)",
+       "expect": {"value": "1"}}
+    ]},
+    {"name": "a-day-is-not-double-counted-over-a-long-elapsed-time", "steps": [
+      {"sql": "SELECT DATEDIFF(DAY, '2026-07-26 01:00:00'::TIMESTAMP, '2026-07-27 23:00:00'::TIMESTAMP)",
+       "expect": {"value": "1"}}
+    ]},
+    {"name": "the-same-day-is-zero", "steps": [
+      {"sql": "SELECT DATEDIFF(DAY, '2026-07-26 00:00:00'::TIMESTAMP, '2026-07-26 23:59:59'::TIMESTAMP)",
+       "expect": {"value": "0"}}
+    ]},
+    {"name": "it-is-negative-when-the-end-precedes-the-start", "steps": [
+      {"sql": "SELECT DATEDIFF(DAY, '2026-07-27 01:00:00'::TIMESTAMP, '2026-07-26 23:00:00'::TIMESTAMP)",
+       "expect": {"value": "-1"}}
+    ]},
+    {"name": "the-hour-boundary", "steps": [
+      {"sql": "SELECT DATEDIFF(HOUR, '2026-07-26 10:59:00'::TIMESTAMP, '2026-07-26 11:01:00'::TIMESTAMP)",
+       "expect": {"value": "1"}},
+      {"sql": "SELECT DATEDIFF(HOUR, '2026-07-26 10:01:00'::TIMESTAMP, '2026-07-26 10:59:00'::TIMESTAMP)",
+       "expect": {"value": "0"}}
+    ]},
+    {"name": "the-minute-and-second-boundaries", "steps": [
+      {"sql": "SELECT DATEDIFF(MINUTE, '2026-07-26 10:00:59'::TIMESTAMP, '2026-07-26 10:01:01'::TIMESTAMP)",
+       "expect": {"value": "1"}},
+      {"sql": "SELECT DATEDIFF(SECOND, '2026-07-26 10:00:00.900'::TIMESTAMP, '2026-07-26 10:00:01.100'::TIMESTAMP)",
+       "expect": {"value": "1"}}
+    ]},
+    {"name": "a-quarter-boundary-under-three-months", "steps": [
+      {"sql": "SELECT DATEDIFF(QUARTER, '2026-02-15'::DATE, '2026-04-15'::DATE)", "expect": {"value": "1"}},
+      {"sql": "SELECT DATEDIFF(QUARTER, '2026-01-01'::DATE, '2026-03-31'::DATE)", "expect": {"value": "0"}},
+      {"sql": "SELECT DATEDIFF(QUARTER, '2025-11-30'::DATE, '2026-10-01'::DATE)", "expect": {"value": "4"}}
+    ]},
+    {"name": "the-week-boundary-starts-on-monday", "steps": [
+      {"sql": "SELECT DATEDIFF(WEEK, '2026-07-25'::DATE, '2026-07-27'::DATE)", "expect": {"value": "1"}},
+      {"sql": "SELECT DATEDIFF(WEEK, '2026-07-20'::DATE, '2026-07-26'::DATE)", "expect": {"value": "0"}}
+    ]},
+    {"name": "the-month-and-year-boundaries", "steps": [
+      {"sql": "SELECT DATEDIFF(MONTH, '2026-01-31'::DATE, '2026-02-01'::DATE)", "expect": {"value": "1"}},
+      {"sql": "SELECT DATEDIFF(YEAR, '2025-12-31'::DATE, '2026-01-01'::DATE)", "expect": {"value": "1"}}
+    ]}
+  ]
+}

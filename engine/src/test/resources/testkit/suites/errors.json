@@ -1,0 +1,60 @@
+{
+  "suite": "errors",
+  "description": "Failure behaviour: syntax errors, missing objects, invalid identifiers, arithmetic errors. Error code / SQLSTATE checks apply only on backends that report them (ERROR_CODE capability).",
+  "tags": ["errors"],
+  "tests": [
+    {
+      "name": "syntax-error",
+      "steps": [
+        {"sql": "SELECT FROM WHERE", "expect": {"error": {"messageContains": "syntax error", "sqlState": "42000", "code": "001003"}}}
+      ]
+    },
+    {
+      "name": "unknown-table",
+      "steps": [
+        {"sql": "SELECT * FROM no_such_table", "expect": {"error": {"messageContains": "does not exist"}}}
+      ]
+    },
+    {
+      "name": "invalid-identifier",
+      "steps": [
+        {"sql": "CREATE TABLE t (id INTEGER)"},
+        {"sql": "SELECT wrong_col FROM t", "expect": {"error": {"messageContains": "invalid identifier"}}}
+      ]
+    },
+    {
+      "name": "division-by-zero",
+      "steps": [
+        {"sql": "SELECT 1/0", "expect": {"error": {"messageContains": "division by zero"}}},
+        {"sql": "SELECT DIV0(1, 0)", "expect": {"value": "0"}}
+      ]
+    },
+    {
+      "name": "duplicate-column-in-create",
+      "skip": {"backends": ["engine","jdbc","http"], "reason": "known gap: frostlake accepts duplicate column names (GAPS.md)"},
+      "steps": [
+        {"sql": "CREATE TABLE dup (a INTEGER, a INTEGER)", "expect": {"error": {"messageContains": "duplicate"}}}
+      ]
+    },
+    {
+      "name": "insert-arity-mismatch",
+      "steps": [
+        {"sql": "CREATE TABLE t (a INTEGER, b INTEGER)"},
+        {"sql": "INSERT INTO t VALUES (1)", "expect": {"error": {}}}
+      ]
+    },
+    {
+      "name": "cast-failure-and-try-cast",
+      "steps": [
+        {"sql": "SELECT CAST('abc' AS INTEGER)", "expect": {"error": {}}},
+        {"sql": "SELECT TRY_CAST('abc' AS INTEGER)", "expect": {"value": null}}
+      ]
+    },
+    {
+      "name": "use-missing-schema",
+      "steps": [
+        {"sql": "USE SCHEMA does_not_exist_s", "expect": {"error": {"messageContains": "does not exist"}}}
+      ]
+    }
+  ]
+}

@@ -22,6 +22,8 @@ public class DeclareStatement extends Statement {
     private final String variableName;
     private final Object defaultValue;
     private final DataType declaredType;
+    private int initializerLine = -1;
+    private int initializerPosition = -1;
 
     public DeclareStatement(final String variableName, final Object defaultValue) {
         this(variableName, defaultValue, null);
@@ -45,5 +47,19 @@ public class DeclareStatement extends Statement {
     /** The variable's declared type, or null when the declaration didn't carry one. */
     public DataType getDeclaredType() {
         return declaredType;
+    }
+
+    /** Where the initialiser expression stood, so a coercion fault can anchor on it. */
+    public void setInitializerAt(final int line, final int position) {
+        this.initializerLine = line;
+        this.initializerPosition = position;
+    }
+
+    public int getInitializerLine() {
+        return initializerLine;
+    }
+
+    public int getInitializerPosition() {
+        return initializerPosition;
     }
 }

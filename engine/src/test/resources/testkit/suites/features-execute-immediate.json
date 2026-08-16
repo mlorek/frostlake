@@ -1,0 +1,90 @@
+{
+  "suite": "features-execute-immediate",
+  "description": "EXECUTE IMMEDIATE of literals, session variables and $$ scripting blocks (including a cursor over information_schema.table_constraints). Converted 1:1 from features/ExecuteImmediateTest and ExecuteImmediateCursorConstraintsTest (both now retired).",
+  "tags": ["features", "converted"],
+  "tests": [
+    {
+      "name": "execute-immediate-simple-insert",
+      "steps": [
+        {"sql": "CREATE TABLE products (id INTEGER, name VARCHAR, price INTEGER)"},
+        {"sql": "INSERT INTO products VALUES (1, 'Laptop', 1200)"},
+        {"sql": "EXECUTE IMMEDIATE 'INSERT INTO products VALUES (2, ''Mouse'', 25)'"},
+        {"sql": "SELECT * FROM products WHERE id = 2", "expect": {"rows": [["2", "Mouse", "25"]]}}
+      ]
+    },
+    {
+      "name": "execute-immediate-create-table",
+      "steps": [
+        {"sql": "EXECUTE IMMEDIATE 'CREATE TABLE orders (order_id INTEGER, customer_name VARCHAR)'"},
+        {"sql": "INSERT INTO orders VALUES (1, 'Alice')"},
+        {"sql": "SELECT * FROM orders", "expect": {"rows": [["1", "Alice"]]}}
+      ]
+    },
+    {
+      "name": "execute-immediate-select",
+      "steps": [
+        {"sql": "CREATE TABLE products (id INTEGER, name VARCHAR, price INTEGER)"},
+        {"sql": "INSERT INTO products VALUES (1, 'Mouse', 25)"},
+        {"sql": "INSERT INTO products VALUES (2, 'Keyboard', 75)"},
+        {"sql": "EXECUTE IMMEDIATE 'SELECT * FROM products WHERE price > 50'", "expect": {"rows": [["2", "Keyboard", "75"]]}}
+      ]
+    },
+    {
+      "name": "execute-immediate-update",
+      "steps": [
+        {"sql": "CREATE TABLE products (id INTEGER, name VARCHAR, price INTEGER)"},
+        {"sql": "INSERT INTO products VALUES (1, 'Monitor', 300)"},
+        {"sql": "SELECT price FROM products WHERE id = 1", "expect": {"value": "300"}},
+        {"sql": "EXECUTE IMMEDIATE 'UPDATE products SET price = 350 WHERE id = 1'"},
+        {"sql": "SELECT price FROM products WHERE id = 1", "expect": {"value": "350"}}
+      ]
+    },
+    {
+      "name": "execute-immediate-delete",
+      "steps": [
+        {"sql": "CREATE TABLE products (id INTEGER, name VARCHAR, price INTEGER)"},
+        {"sql": "INSERT INTO products VALUES (1, 'Tablet', 400)"},
+        {"sql": "INSERT INTO products VALUES (2, 'Phone', 800)"},
+        {"sql": "EXECUTE IMMEDIATE 'DELETE FROM products WHERE price < 500'"},
+        {"sql": "SELECT * FROM products", "expect": {"rows": [["2", "Phone", "800"]]}}
+      ]
+    },
+    {
+      "name": "execute-immediate-multiple-statements",
+      "steps": [
+        {"sql": "EXECUTE IMMEDIATE 'CREATE TABLE temp_data (id INTEGER, value VARCHAR)'"},
+        {"sql": "EXECUTE IMMEDIATE 'INSERT INTO temp_data VALUES (1, ''test'')'"},
+        {"sql": "SELECT * FROM temp_data", "expect": {"rows": [["1", "test"]]}}
+      ]
+    },
+    {
+      "name": "execute-immediate-with-variable",
+      "steps": [
+        {"sql": "CREATE TABLE products (id INTEGER, name VARCHAR, price INTEGER)"},
+        {"sql": "SET my_sql = 'INSERT INTO products VALUES (100, ''Variable Insert'', 999)'"},
+        {"sql": "EXECUTE IMMEDIATE $my_sql"},
+        {"sql": "SELECT * FROM products WHERE id = 100", "expect": {"rows": [["100", "Variable Insert", "999"]]}},
+        {"sql": "EXECUTE IMMEDIATE my_sql", "expect": {"error": {}}}
+      ]
+    },
+    {
+      "name": "execute-immediate-complex-query",
+      "steps": [
+        {"sql": "CREATE TABLE products (id INTEGER, name VARCHAR, price INTEGER)"},
+        {"sql": "INSERT INTO products VALUES (1, 'Item A', 100)"},
+        {"sql": "INSERT INTO products VALUES (2, 'Item B', 200)"},
+        {"sql": "INSERT INTO products VALUES (3, 'Item C', 150)"},
+        {"sql": "EXECUTE IMMEDIATE 'SELECT * FROM products WHERE price >= 100 ORDER BY price DESC LIMIT 2'",
+         "expect": {"rows": [["2", "Item B", "200"], ["3", "Item C", "150"]], "ordered": true}}
+      ]
+    },
+    {
+      "name": "execute-immediate-cursor-over-table-constraints",
+      "steps": [
+        {"sql": "CREATE SCHEMA s1"},
+        {"sql": "CREATE TABLE s1.t2 (c1 INTEGER)"},
+        {"sql": "EXECUTE IMMEDIATE $$\nDECLARE res ARRAY DEFAULT [];\nBEGIN\n    LET fks CURSOR FOR\n        SELECT constraint_name, table_schema, table_name, constraint_type\n        FROM information_schema.table_constraints\n        WHERE table_schema = 's1'\n            AND table_name = 't2';\n    FOR rec IN fks DO\n        res := ARRAY_APPEND(res, 'Found constraint: ' || rec.constraint_name);\n    END FOR;\n    RETURN res;\nEND;\n$$;"}
+      ]
+    }
+  ]
+}

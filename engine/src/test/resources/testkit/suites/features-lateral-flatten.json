@@ -1,0 +1,26 @@
+{
+  "suite": "features-lateral-flatten",
+  "description": "LATERAL FLATTEN comma shorthand works; the JOIN ... ON form is rejected. Converted 1:1 from features/LateralFlattenTest.java (now retired).",
+  "tags": ["features", "converted"],
+  "tests": [
+    {
+      "name": "lateral-flatten-shorthand",
+      "steps": [
+        {"sql": "CREATE TABLE events (id INTEGER, tags VARIANT)"},
+        {"sql": "INSERT INTO events SELECT 1, PARSE_JSON('[\"a\",\"b\",\"c\"]')"},
+        {"sql": "INSERT INTO events SELECT 2, PARSE_JSON('[\"x\",\"y\"]')"},
+        {"sql": "SELECT e.id, f.value FROM events e, LATERAL FLATTEN(INPUT => e.tags) f ORDER BY e.id, f.value", "expect": {"rowCount": 5}}
+      ]
+    },
+    {
+      "name": "lateral-flatten-join-syntax-rejected",
+      "steps": [
+        {"sql": "CREATE TABLE events (id INTEGER, tags VARIANT)"},
+        {"sql": "INSERT INTO events SELECT 1, PARSE_JSON('[\"a\",\"b\",\"c\"]')"},
+        {"sql": "INSERT INTO events SELECT 2, PARSE_JSON('[\"x\",\"y\"]')"},
+        {"sql": "SELECT e.id, f.value FROM events e JOIN LATERAL FLATTEN(INPUT => e.tags) f ON TRUE", "expect": {"error": {}}},
+        {"sql": "SELECT e.id, f.value FROM events e, LATERAL FLATTEN(INPUT => e.tags) f ORDER BY e.id, f.value", "expect": {"rowCount": 5}}
+      ]
+    }
+  ]
+}

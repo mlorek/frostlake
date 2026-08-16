@@ -34,7 +34,7 @@ import javax.crypto.spec.SecretKeySpec;
  * BINARY, matching Snowflake's return type.
  */
 public class Encrypt extends BuiltInFunction {
-    public Encrypt() { super("ENCRYPT", BinaryType.VARBINARY); }
+    public Encrypt() { super("ENCRYPT", BinaryType.UNSIZED); }
 
     @Override
     public Object evaluate(final List<Object> args) {

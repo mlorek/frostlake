@@ -1,0 +1,65 @@
+{
+  "suite": "query-minus-set-operator",
+  "description": "MINUS is Snowflake's synonym for the EXCEPT set operator, and it de-duplicates: set1 carries (3,'C') TWICE and the result of MINUS is DISTINCT. It is reversible - the other direction gives set2's own rows. ALL applies only to UNION, so MINUS ALL is 'Unsupported feature', live-verified. The reservedness split between the two spellings is the other half: MINUS is a RESERVED word, refused in every identifier position like UNION and INTERSECT, while EXCEPT is UNRESERVED and freely usable as an alias with or without AS, as a table name and as a column name - and must still parse as the set operator immediately after an EXCEPT alias. Reservedness applies to the bare word only, so a QUOTED \"minus\" is an ordinary identifier that keeps its case. Converted 1:1 from query/MinusSetOperatorTest (now retired).",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "minus-behaves-like-except", "steps": [
+      {"sql": "CREATE TABLE set1 (id INT, value VARCHAR)"},
+      {"sql": "INSERT INTO set1 VALUES (1, 'A'), (2, 'B'), (3, 'C'), (3, 'C'), (4, 'D')"},
+      {"sql": "CREATE TABLE set2 (id INT, value VARCHAR)"},
+      {"sql": "INSERT INTO set2 VALUES (3, 'C'), (4, 'D'), (5, 'E'), (6, 'F')"},
+      {"sql": "SELECT id, value FROM set1 MINUS SELECT id, value FROM set2 ORDER BY id", "expect": {"rows": [[1,"A"],[2,"B"]], "ordered": true}}
+    ]},
+    {"name": "minus-all-is-rejected", "steps": [
+      {"sql": "CREATE TABLE set1 (id INT, value VARCHAR)"},
+      {"sql": "INSERT INTO set1 VALUES (1, 'A'), (2, 'B'), (3, 'C'), (3, 'C'), (4, 'D')"},
+      {"sql": "CREATE TABLE set2 (id INT, value VARCHAR)"},
+      {"sql": "INSERT INTO set2 VALUES (3, 'C'), (4, 'D'), (5, 'E'), (6, 'F')"},
+      {"sql": "SELECT id, value FROM set1 MINUS ALL SELECT id, value FROM set2", "expect": {"error": {"messageContains": "Unsupported feature"}}}
+    ]},
+    {"name": "minus-is-reversible", "steps": [
+      {"sql": "CREATE TABLE set1 (id INT, value VARCHAR)"},
+      {"sql": "INSERT INTO set1 VALUES (1, 'A'), (2, 'B'), (3, 'C'), (3, 'C'), (4, 'D')"},
+      {"sql": "CREATE TABLE set2 (id INT, value VARCHAR)"},
+      {"sql": "INSERT INTO set2 VALUES (3, 'C'), (4, 'D'), (5, 'E'), (6, 'F')"},
+      {"sql": "SELECT id, value FROM set2 MINUS SELECT id, value FROM set1 ORDER BY id", "expect": {"rows": [[5,"E"],[6,"F"]], "ordered": true}}
+    ]},
+    {"name": "minus-is-refused-as-an-alias", "steps": [
+      {"sql": "CREATE TABLE set1 (id INT, value VARCHAR)"},
+      {"sql": "INSERT INTO set1 VALUES (1, 'A'), (2, 'B'), (3, 'C'), (3, 'C'), (4, 'D')"},
+      {"sql": "CREATE TABLE set2 (id INT, value VARCHAR)"},
+      {"sql": "INSERT INTO set2 VALUES (3, 'C'), (4, 'D'), (5, 'E'), (6, 'F')"},
+      {"sql": "SELECT id AS minus FROM set1 WHERE id = 1", "expect": {"error": {"messageContains": "syntax error"}}}
+    ]},
+    {"name": "minus-is-refused-as-a-table-and-a-column-name", "steps": [
+      {"sql": "CREATE TABLE minus (i INT)", "expect": {"error": {}}},
+      {"sql": "CREATE TABLE tminus (minus INT)", "expect": {"error": {}}}
+    ]},
+    {"name": "a-quoted-minus-works-as-an-identifier", "steps": [
+      {"sql": "CREATE TABLE set1 (id INT, value VARCHAR)"},
+      {"sql": "INSERT INTO set1 VALUES (1, 'A'), (2, 'B'), (3, 'C'), (3, 'C'), (4, 'D')"},
+      {"sql": "CREATE TABLE set2 (id INT, value VARCHAR)"},
+      {"sql": "INSERT INTO set2 VALUES (3, 'C'), (4, 'D'), (5, 'E'), (6, 'F')"},
+      {"sql": "SELECT id AS \"minus\" FROM set1 WHERE id = 1", "expect": {"rows": [[1]], "columns": ["minus"]}}
+    ]},
+    {"name": "except-is-usable-as-an-identifier", "steps": [
+      {"sql": "CREATE TABLE set1 (id INT, value VARCHAR)"},
+      {"sql": "INSERT INTO set1 VALUES (1, 'A'), (2, 'B'), (3, 'C'), (3, 'C'), (4, 'D')"},
+      {"sql": "CREATE TABLE set2 (id INT, value VARCHAR)"},
+      {"sql": "INSERT INTO set2 VALUES (3, 'C'), (4, 'D'), (5, 'E'), (6, 'F')"},
+      {"sql": "SELECT id AS except FROM set1 WHERE id = 1", "expect": {"rows": [[1]], "columns": ["EXCEPT"]}},
+      {"sql": "SELECT 1 except", "expect": {"rows": [[1]], "columns": ["EXCEPT"]}},
+      {"sql": "CREATE TABLE except (i INT)"},
+      {"sql": "INSERT INTO except VALUES (7)"},
+      {"sql": "SELECT except.i FROM except except", "expect": {"rows": [[7]]}},
+      {"sql": "DROP TABLE except"},
+      {"sql": "CREATE TABLE texcept (except INT)"},
+      {"sql": "INSERT INTO texcept VALUES (8)"},
+      {"sql": "SELECT except FROM texcept", "expect": {"rows": [[8]]}},
+      {"sql": "DROP TABLE texcept"}
+    ]},
+    {"name": "an-except-alias-then-the-except-set-operator", "steps": [
+      {"sql": "SELECT 1 AS except EXCEPT SELECT 2", "expect": {"rows": [[1]]}}
+    ]}
+  ]
+}

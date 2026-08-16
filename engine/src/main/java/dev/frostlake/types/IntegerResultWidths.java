@@ -23,17 +23,26 @@ package dev.frostlake.types;
  * and the account distinguishes five widths, every one of them measured here rather than reasoned:
  *
  * <pre>
- *   2   MONTH DAY DAYOFMONTH DAYOFWEEK DAYOFWEEKISO WEEK WEEKISO QUARTER HOUR MINUTE SECOND
- *   4   YEAR DAYOFYEAR YEAROFWEEK
- *   9   CHARINDEX POSITION ARRAY_SIZE ARRAY_POSITION DATEDIFF TIMESTAMPDIFF
- *   18  LENGTH LEN OCTET_LENGTH REGEXP_INSTR REGEXP_COUNT COUNT ROW_NUMBER RANK DENSE_RANK NTILE
+ *   2   MONTH DAY DAYOFMONTH DAYOFWEEK DAYOFWEEKISO WEEK WEEKISO WEEKOFYEAR QUARTER
+ *       HOUR MINUTE SECOND
+ *   4   YEAR DAYOFYEAR YEAROFWEEK YEAROFWEEKISO ASCII JAROWINKLER_SIMILARITY
+ *   9   CHARINDEX POSITION ARRAY_SIZE ARRAY_POSITION DATEDIFF TIMESTAMPDIFF EDITDISTANCE
+ *   18  LENGTH LEN OCTET_LENGTH RTRIMMED_LENGTH UNICODE REGEXP_INSTR REGEXP_COUNT
+ *       COUNT ROW_NUMBER RANK DENSE_RANK NTILE
  *   19  BIT_LENGTH HASH
+ *   37  FACTORIAL
+ *   38  BITAND BITOR BITXOR BITNOT BITSHIFTLEFT BITSHIFTRIGHT BITCOUNT GETBIT AS_INTEGER
  * </pre>
  *
  * <p>The widths track what the value can BE — two digits for a month, nine for a position in a string,
  * eighteen for a row count, nineteen for a signed 64-bit hash — but do not derive them from that story:
- * DAYOFYEAR is four where DAYOFWEEK is two, and BIT_LENGTH is nineteen where OCTET_LENGTH is eighteen.
- * Measure the function, then add it.
+ * DAYOFYEAR is four where DAYOFWEEK is two, BIT_LENGTH is nineteen where OCTET_LENGTH is eighteen,
+ * ASCII is four where UNICODE is eighteen though both name a code point, and FACTORIAL stops one digit
+ * short of the widest NUMBER. Measure the function, then add it.
+ *
+ * <p>This table is for functions whose width is a CONSTANT. The ones that derive it from their input —
+ * the rounding family, whose precision follows the argument's, and SIGN, which passes an approximate
+ * straight through — do not belong here.
  */
 public final class IntegerResultWidths {
 
@@ -51,6 +60,8 @@ public final class IntegerResultWidths {
 
     /** A bit length or a hash, which need the extra digit a signed 64-bit value can reach. */
     public static final NumericType WIDE_COUNTER = new NumericType("NUMBER", 19, 0);
+    /** A factorial, which stops one digit short of the widest NUMBER. */
+    public static final NumericType FACTORIAL = new NumericType("NUMBER", 37, 0);
 
     /** The widest NUMBER, which a difference counted in fractions of a second needs. */
     public static final NumericType WIDEST = new NumericType("NUMBER", 38, 0);

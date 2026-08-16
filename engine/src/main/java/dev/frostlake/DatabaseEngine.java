@@ -105,6 +105,7 @@ public class DatabaseEngine {
             udfRuntime.configure(config);
         }
         this.catalog = new Catalog();
+        this.catalog.setAccountLocator(config.getAccountId());
         this.storageEngine = new StorageEngine();
         this.storageEngine.setEnforcePrimaryKey(config.isEnforcePrimaryKey());
         this.storageEngine.setEnforceUniqueKey(config.isEnforceUniqueKey());
@@ -778,8 +779,12 @@ public class DatabaseEngine {
         return config;
     }
 
-    /** Bind the session's JSON_INDENT so displayed variants use its width for this statement. */
-    private void bindJsonIndent() {
+    /**
+     * Bind the session's JSON_INDENT so displayed variants use its width for this statement. The HTTP
+     * wire binds it again while it renders a statement's rows, which happens after the statement's own
+     * scope has closed; the caller clears it with {@link VariantJsonFormat#clearSessionScope}.
+     */
+    public void bindJsonIndent() {
         final Object indent = securityManager != null
             ? securityManager.getSessionContext().getSessionParameter("JSON_INDENT") : null;
         if (indent == null) {

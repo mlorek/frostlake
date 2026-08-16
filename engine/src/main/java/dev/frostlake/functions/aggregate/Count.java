@@ -37,9 +37,18 @@ public class Count extends AggregateFunction {
     }
 
     @Override
-    public int getMinArgCount() { return 0; }
+    public int getMinArgCount() {
+        // One argument at least: a star that expands to nothing is "not enough arguments for
+        // function [COUNT()], expected 1, got 0" (live-verified); the bare COUNT(*) never reaches
+        // the arity rule with its list — it counts rows.
+        return 1;
+    }
 
     @Override
-    public int getMaxArgCount() { return 1; }
+    public int getMaxArgCount() {
+        // COUNT is genuinely variadic: COUNT(a, b) and COUNT(a, b, c) run (live-verified), counting
+        // rows where EVERY listed expression is non-null, so no upper bound is declared.
+        return Integer.MAX_VALUE;
+    }
 
 }

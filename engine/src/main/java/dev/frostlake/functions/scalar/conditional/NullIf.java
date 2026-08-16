@@ -16,7 +16,10 @@
 
 package dev.frostlake.functions.scalar.conditional;
 
+import dev.frostlake.executor.expressions.CollationSpec;
+import dev.frostlake.executor.expressions.ExpressionArithmetic;
 import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.functions.CollationMatching;
 import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.types.VariantType;
 
@@ -36,13 +39,31 @@ public class NullIf extends BuiltInFunction {
         return SemiStructuredRejection.ARGUMENT_TYPES;
     }
 
+    /**
+     * {@code NULLIF(a, b)} is {@code CASE WHEN a = b THEN NULL ELSE a END}, so it decides equality the
+     * way the {@code =} operator does — by VALUE, across the type families. Deciding it with
+     * {@link Object#equals} instead made the answer depend on a runtime class the SQL cannot see:
+     * {@code NULLIF(1.00, 1)} handed back 1.00 because a BigDecimal is not a Long, and the same split
+     * hid every mixed-family pair — a boolean beside a number, a numeric string beside a number, a
+     * DATE beside a TIMESTAMP at the same instant. A NULL on either side is never compared: SQL NULL
+     * is not equal to anything, so the first argument stands.
+     */
     @Override
     public Object evaluate(final List<Object> args) {
         final Object val1 = args.get(0);
         final Object val2 = args.get(1);
         if (val1 == null || val2 == null) return val1;
-        if (val1.equals(val2)) return null;
+        if (ExpressionArithmetic.equals(val1, val2)) return null;
         return val1;
+    }
+
+    /** Under a collation the two are compared by its rules, so a case-blind pair answers NULL. */
+    @Override
+    public Object evaluate(final List<Object> args, final CollationSpec collation) {
+        if (collation == null || args.get(0) == null || args.get(1) == null) {
+            return evaluate(args);
+        }
+        return CollationMatching.equalUnder(collation, args.get(0), args.get(1)) ? null : args.get(0);
     }
 
     @Override

@@ -579,6 +579,258 @@ public class ScriptingUdfBodyTest extends BaseDatabaseTest {
 
     // ---------------------------------------------------------------- helpers
 
+    // ---------------------------------------------------------------- a query or expression body, and its semicolon
+
+    /**
+     * Live: a QUERY body is a SQL UDF only WITHOUT a terminating semicolon. With one the account reads a
+     * Snowscript UDF, where a query is no statement - a CTE, a parenthesised query, a single-quoted body, a
+     * doubled semicolon and a trailing comment are all the same refusal.
+     */
+    @Test
+    public void aTerminatedQueryBodyIsReadAsASnowscriptUdf() {
+        assertUnsupportedStatement("query statement",
+            "CREATE OR REPLACE FUNCTION f_t1() RETURNS NUMBER AS $$ SELECT 1; $$");
+        assertUnsupportedStatement("query statement",
+            "CREATE OR REPLACE FUNCTION f_t2() RETURNS NUMBER AS $$ WITH c AS (SELECT 1 AS a) SELECT a FROM c; $$");
+        assertUnsupportedStatement("query statement",
+            "CREATE OR REPLACE FUNCTION f_t3() RETURNS NUMBER AS $$ SELECT 1 ; $$");
+        assertUnsupportedStatement("query statement",
+            "CREATE OR REPLACE FUNCTION f_t4() RETURNS NUMBER AS $$ (SELECT 1); $$");
+        assertUnsupportedStatement("query statement",
+            "CREATE OR REPLACE FUNCTION f_t5() RETURNS NUMBER AS 'SELECT 1;'");
+        assertUnsupportedStatement("query statement",
+            "CREATE OR REPLACE FUNCTION f_t6() RETURNS NUMBER AS $$ SELECT 1; -- c $$");
+        assertUnsupportedStatement("query statement",
+            "CREATE OR REPLACE FUNCTION f_t7() RETURNS NUMBER AS $$  SELECT 1;$$");
+        assertUnsupportedStatement("query statement",
+            "CREATE OR REPLACE FUNCTION f_t8() RETURNS NUMBER AS $$ SELECT 1;; $$");
+    }
+
+    /** Live: a body of more than one statement is refused by COUNT, whatever the statements are. */
+    @Test
+    public void aBodyOfSeveralStatementsIsRefusedByCount() {
+        assertRefusedWith("Actual statement count 2 did not match the desired statement count 1.",
+            "CREATE OR REPLACE FUNCTION f_c2() RETURNS NUMBER AS $$ SELECT 1; SELECT 2; $$");
+        assertRefusedWith("Actual statement count 3 did not match the desired statement count 1.",
+            "CREATE OR REPLACE FUNCTION f_c3() RETURNS NUMBER AS $$ SELECT 1; SELECT 2; SELECT 3; $$");
+        engine.execute("CREATE OR REPLACE TABLE cnt_t (v INT)");
+        assertRefusedWith("Actual statement count 2 did not match the desired statement count 1.",
+            "CREATE OR REPLACE FUNCTION f_c4() RETURNS NUMBER AS $$ SELECT 1; INSERT INTO cnt_t VALUES (1); $$");
+    }
+
+    /**
+     * Live: a semicolon after an EXPRESSION body is a syntax error AT that semicolon - the first one when
+     * there are several - numbered one past its offset in the body.
+     */
+    @Test
+    public void aStraySemicolonAfterAnExpressionIsASyntaxError() {
+        assertRefusedWith(udfSyntax(3, ";"), "CREATE OR REPLACE FUNCTION f_e1() RETURNS NUMBER AS $$ 1; $$");
+        assertRefusedWith(udfSyntax(2, ";"), "CREATE OR REPLACE FUNCTION f_e2() RETURNS NUMBER AS $$1;$$");
+        assertRefusedWith(udfSyntax(4, ";"), "CREATE OR REPLACE FUNCTION f_e3() RETURNS NUMBER AS $$  1;$$");
+        assertRefusedWith(udfSyntax(2, ";"), "CREATE OR REPLACE FUNCTION f_e4() RETURNS NUMBER AS '1;'");
+        assertRefusedWith(udfSyntax(7, ";"), "CREATE OR REPLACE FUNCTION f_e5() RETURNS NUMBER AS $$ 1 + 1; $$");
+        assertRefusedWith(udfSyntax(2, ";"), "CREATE OR REPLACE FUNCTION f_e6() RETURNS NUMBER AS $$ ; $$");
+        assertRefusedWith(udfSyntax(3, ";"), "CREATE OR REPLACE FUNCTION f_e7() RETURNS NUMBER AS $$ 1; 2; $$");
+    }
+
+    /**
+     * Live: a TABLE function has no Snowscript form, so a terminated body, or one of several statements, is
+     * a syntax error at the body's first word.
+     */
+    @Test
+    public void aTerminatedTableFunctionBodyIsASyntaxErrorAtItsFirstWord() {
+        assertRefusedWith(udfSyntax(2, "SELECT"),
+            "CREATE OR REPLACE FUNCTION f_tf1() RETURNS TABLE (a NUMBER) AS $$ SELECT 1; $$");
+        assertRefusedWith(udfSyntax(1, "SELECT"),
+            "CREATE OR REPLACE FUNCTION f_tf2() RETURNS TABLE (a NUMBER) AS $$SELECT 1;$$");
+        assertRefusedWith(udfSyntax(4, "SELECT"),
+            "CREATE OR REPLACE FUNCTION f_tf3() RETURNS TABLE (a NUMBER) AS $$   SELECT 1; $$");
+        assertRefusedWith(udfSyntax(2, "SELECT"),
+            "CREATE OR REPLACE FUNCTION f_tf4() RETURNS TABLE (a NUMBER) AS $$ SELECT 1; SELECT 2; $$");
+    }
+
+    /**
+     * Live: a semicolon that is not the body's last spoken token terminates nothing - inside a string,
+     * inside a block comment - and a body without one is created as ever.
+     */
+    @Test
+    public void aSemicolonThatTerminatesNothingIsIgnored() {
+        engine.execute("CREATE OR REPLACE FUNCTION f_n1() RETURNS VARCHAR AS $$ 'a;b' $$");
+        engine.execute("CREATE OR REPLACE FUNCTION f_n2() RETURNS NUMBER AS $$ SELECT 1 /* x; */ $$");
+        engine.execute("CREATE OR REPLACE FUNCTION f_n3() RETURNS TABLE (a NUMBER) AS $$ SELECT 1 $$");
+        engine.execute("CREATE OR REPLACE FUNCTION f_n4() RETURNS NUMBER AS $$ 1 $$");
+        assertEquals(1, intResult("SELECT f_n4()"));
+        assertEquals(1, intResult("SELECT f_n2()"));
+    }
+
+    /**
+     * Live: a body that ends INSIDE a line comment cannot be framed - the closing character live frames
+     * it with falls in the comment - so a query body is a syntax error at its first word, whether the
+     * comment holds a semicolon or not, and the function is not created. A statement count and a
+     * terminating semicolon still win. Where the body holds a parenthesis live stacks its parser's
+     * recovery lines after the first one; the first line is the one asserted.
+     */
+    @Test
+    public void aQueryBodyEndingInALineCommentIsASyntaxErrorAtItsFirstWord() {
+        assertRefusedWith(udfSyntax(2, "SELECT"),
+            "CREATE OR REPLACE FUNCTION f_lc1() RETURNS NUMBER AS $$ SELECT 1 -- c; $$");
+        assertRefusedWith(udfSyntax(2, "SELECT"),
+            "CREATE OR REPLACE FUNCTION f_lc2() RETURNS NUMBER AS $$ SELECT 1 -- c $$");
+        assertRefusedWith("Unknown function F_LC2", "SELECT f_lc2()");
+        assertRefusedWith(udfSyntax(2, "SELECT"),
+            "CREATE OR REPLACE FUNCTION f_lc3() RETURNS NUMBER AS $$ SELECT 1\n-- c; $$");
+        assertRefusedWith(udfSyntax(2, "SELECT"),
+            "CREATE OR REPLACE FUNCTION f_lc4() RETURNS NUMBER AS $$ SELECT 1 -- ; $$");
+        assertRefusedWith(udfSyntax(2, "SELECT"),
+            "CREATE OR REPLACE FUNCTION f_lc5() RETURNS NUMBER AS $$ SELECT 1 --; $$");
+        assertRefusedWith(udfSyntax(1, "SELECT"),
+            "CREATE OR REPLACE FUNCTION f_lc6() RETURNS NUMBER AS $$SELECT 1 -- c$$");
+        assertRefusedWith(udfSyntax(3, "SELECT"),
+            "CREATE OR REPLACE FUNCTION f_lc7() RETURNS NUMBER AS $$  SELECT 1 -- c$$");
+        assertRefusedWith(udfSyntax(2, 0, "SELECT"),
+            "CREATE OR REPLACE FUNCTION f_lc8() RETURNS NUMBER AS $$\nSELECT 1 -- c$$");
+        assertRefusedWith(udfSyntax(1, "SELECT"),
+            "CREATE OR REPLACE FUNCTION f_lc9() RETURNS NUMBER AS 'SELECT 1 -- c'");
+        assertRefusedWith(udfSyntax(1, "SELECT"),
+            "CREATE OR REPLACE FUNCTION f_lc10() RETURNS NUMBER AS $$SELECT 1 UNION SELECT 2 -- c$$");
+        assertRefusedWith(udfSyntax(1, "SELECT"),
+            "CREATE OR REPLACE FUNCTION f_lc11() RETURNS NUMBER AS $$SELECT 1 /* a */ -- c$$");
+        assertRefusedWith(udfSyntax(13, "SELECT"),
+            "CREATE OR REPLACE FUNCTION f_lc12() RETURNS NUMBER AS $$ /* lead */ SELECT 1 -- c $$");
+        assertRefusedWith(udfSyntax(2, 0, "SELECT"),
+            "CREATE OR REPLACE FUNCTION f_lc13() RETURNS NUMBER AS $$ -- lead\nSELECT 1 -- c $$");
+        assertRefusedWith(udfSyntax(1, "SELECT"),
+            "CREATE OR REPLACE FUNCTION f_lc14() RETURNS NUMBER AS $$SELECT 1 --$$");
+        assertRefusedWith(udfSyntax(1, "SELECT"),
+            "CREATE OR REPLACE FUNCTION f_lc15() RETURNS NUMBER AS $$SELECT 1 -- c\n-- d$$");
+        assertRefusedWith(udfSyntax(1, "WITH"),
+            "CREATE OR REPLACE FUNCTION f_lc16() RETURNS NUMBER AS $$WITH x AS (SELECT 1 AS a) SELECT a FROM x -- c$$");
+        assertRefusedWith(udfSyntax(2, "WITH"),
+            "CREATE OR REPLACE FUNCTION f_lc17() RETURNS NUMBER AS $$ WITH x AS ( SELECT 1 AS a ) SELECT a FROM x -- c $$");
+        assertRefusedWith(udfSyntax(1, "SELECT"),
+            "CREATE OR REPLACE FUNCTION f_lc18() RETURNS NUMBER AS $$SELECT ABS(1) -- c$$");
+        assertRefusedWith("Actual statement count 2 did not match the desired statement count 1.",
+            "CREATE OR REPLACE FUNCTION f_lc19() RETURNS NUMBER AS $$SELECT 1; SELECT 2 -- c$$");
+    }
+
+    /** Live: a TABLE function's body that ends inside a line comment is refused the same way. */
+    @Test
+    public void aTableFunctionBodyEndingInALineCommentIsASyntaxErrorAtItsFirstWord() {
+        assertRefusedWith(udfSyntax(2, "SELECT"),
+            "CREATE OR REPLACE FUNCTION f_tlc1() RETURNS TABLE (a NUMBER) AS $$ SELECT 1 -- c; $$");
+        assertRefusedWith(udfSyntax(2, "SELECT"),
+            "CREATE OR REPLACE FUNCTION f_tlc2() RETURNS TABLE (a NUMBER) AS $$ SELECT 1 -- c $$");
+        assertRefusedWith(udfSyntax(3, 2, "SELECT"),
+            "CREATE OR REPLACE FUNCTION f_tlc3() RETURNS TABLE (a NUMBER) AS $$\n\n  SELECT 1 AS a -- c$$");
+        assertRefusedWith(udfSyntax(1, "WITH"),
+            "CREATE OR REPLACE FUNCTION f_tlc4() RETURNS TABLE (a NUMBER) AS $$WITH x AS (SELECT 1 AS a) SELECT a FROM x -- c$$");
+        engine.execute("CREATE OR REPLACE FUNCTION f_tlc5() RETURNS TABLE (a NUMBER) AS $$ SELECT 1 -- c\n $$");
+    }
+
+    /**
+     * Live: a body that opens with a parenthesised group reads the group as an expression and must end
+     * right after it - the refusal names the token past the group, or the end of the body when a line
+     * comment swallowed the frame's closing character.
+     */
+    @Test
+    public void aParenthesisedBodyEndsAfterItsFirstGroup() {
+        assertRefusedWith(udfSyntax(17, "<EOF>"),
+            "CREATE OR REPLACE FUNCTION f_pg1() RETURNS NUMBER AS $$(SELECT 1) -- c$$");
+        assertRefusedWith(udfSyntax(2, 5, "<EOF>"),
+            "CREATE OR REPLACE FUNCTION f_pg2() RETURNS NUMBER AS $$(SELECT 1)\n-- c$$");
+        assertRefusedWith(udfSyntax(18, "<EOF>"),
+            "CREATE OR REPLACE FUNCTION f_pg3() RETURNS NUMBER AS $$ (SELECT 1) -- c$$");
+        assertRefusedWith(udfSyntax(19, "<EOF>"),
+            "CREATE OR REPLACE FUNCTION f_pg4() RETURNS NUMBER AS $$((SELECT 1)) -- c$$");
+        assertRefusedWith(udfSyntax(12, "UNION"),
+            "CREATE OR REPLACE FUNCTION f_pg5() RETURNS NUMBER AS $$(SELECT 1) UNION (SELECT 2) -- c$$");
+        assertRefusedWith(udfSyntax(22, "<EOF>"),
+            "CREATE OR REPLACE FUNCTION f_pg6() RETURNS TABLE (a NUMBER) AS $$(SELECT 1 AS a) -- c$$");
+        assertRefusedWith(udfSyntax(16, ";"),
+            "CREATE OR REPLACE FUNCTION f_pg7() RETURNS TABLE (a NUMBER) AS $$(SELECT 1 AS a);$$");
+        assertRefusedWith(udfSyntax(18, "UNION"),
+            "CREATE OR REPLACE FUNCTION f_pg8() RETURNS TABLE (a NUMBER) AS $$ (SELECT 1 AS a) UNION ALL (SELECT 2) -- c$$");
+        engine.execute("CREATE OR REPLACE FUNCTION f_pg9() RETURNS TABLE (a NUMBER) AS $$(SELECT 1 AS a)$$");
+    }
+
+    /**
+     * Live: an EXPRESSION body that ends inside a line comment is refused at its end - one past its last
+     * line's length, and one further on the first line.
+     */
+    @Test
+    public void anExpressionBodyEndingInALineCommentIsASyntaxErrorAtItsEnd() {
+        assertRefusedWith(udfSyntax(11, "<EOF>"),
+            "CREATE OR REPLACE FUNCTION f_le1() RETURNS NUMBER AS $$ 1 -- c; $$");
+        assertRefusedWith(udfSyntax(10, "<EOF>"),
+            "CREATE OR REPLACE FUNCTION f_le2() RETURNS NUMBER AS $$ 1 -- c $$");
+        assertRefusedWith(udfSyntax(8, "<EOF>"),
+            "CREATE OR REPLACE FUNCTION f_le3() RETURNS NUMBER AS $$1 -- c$$");
+        assertRefusedWith(udfSyntax(2, 5, "<EOF>"),
+            "CREATE OR REPLACE FUNCTION f_le4() RETURNS NUMBER AS $$1\n-- c$$");
+        assertRefusedWith(udfSyntax(2, 7, "<EOF>"),
+            "CREATE OR REPLACE FUNCTION f_le5() RETURNS NUMBER AS $$1 + 1\n  -- c$$");
+        assertRefusedWith(udfSyntax(3, 5, "<EOF>"),
+            "CREATE OR REPLACE FUNCTION f_le6() RETURNS NUMBER AS $$1\n-- c\n-- d$$");
+        assertRefusedWith(udfSyntax(13, "<EOF>"),
+            "CREATE OR REPLACE FUNCTION f_le7() RETURNS NUMBER AS $$ABS(1) -- c$$");
+        assertRefusedWith(udfSyntax(16, "<EOF>"),
+            "CREATE OR REPLACE FUNCTION f_le8() RETURNS NUMBER AS $$(1) + (2) -- c$$");
+        assertRefusedWith(udfSyntax(6, "<EOF>"),
+            "CREATE OR REPLACE FUNCTION f_le9() RETURNS NUMBER AS $$1 --$$");
+        assertRefusedWith(udfSyntax(16, "<EOF>"),
+            "CREATE OR REPLACE FUNCTION f_le10() RETURNS NUMBER AS $$1 /* x */ -- c$$");
+        assertRefusedWith(udfSyntax(12, "<EOF>"),
+            "CREATE OR REPLACE FUNCTION f_le11() RETURNS VARCHAR AS $$ 'x' -- c $$");
+        assertRefusedWith(udfSyntax(8, "<EOF>"),
+            "CREATE OR REPLACE FUNCTION f_le12(a NUMBER) RETURNS NUMBER AS $$a -- c$$");
+    }
+
+    /** Live: a line comment followed by a line break, a block comment and a block body frame as ever. */
+    @Test
+    public void aCommentThatEndsBeforeTheBodyDoesLeavesTheFunctionAlone() {
+        engine.execute("CREATE OR REPLACE FUNCTION f_lh1() RETURNS NUMBER AS $$ 1 -- c\n $$");
+        assertEquals(1, intResult("SELECT f_lh1()"));
+        engine.execute("CREATE OR REPLACE FUNCTION f_lh2() RETURNS NUMBER AS $$ SELECT 1 -- c\n + 1 $$");
+        assertEquals(2, intResult("SELECT f_lh2()"));
+        engine.execute("CREATE OR REPLACE FUNCTION f_lh3() RETURNS NUMBER AS $$ SELECT 1 /* x */ $$");
+        assertEquals(1, intResult("SELECT f_lh3()"));
+        engine.execute("CREATE OR REPLACE FUNCTION f_lh4() RETURNS NUMBER AS $$ BEGIN RETURN 1; END -- c $$");
+        assertEquals(1, intResult("SELECT f_lh4()"));
+        engine.execute("CREATE OR REPLACE FUNCTION f_lh5() RETURNS NUMBER AS $$ BEGIN RETURN 1; END; -- c $$");
+    }
+
+    /** Live: a refusal on a later line of the body is numbered at its offset in that line. */
+    @Test
+    public void aRefusalOnALaterLineIsNumberedWithinThatLine() {
+        assertRefusedWith(udfSyntax(2, 0, ";"),
+            "CREATE OR REPLACE FUNCTION f_ll1() RETURNS NUMBER AS $$1\n;$$");
+        assertRefusedWith(udfSyntax(2, 2, ";"),
+            "CREATE OR REPLACE FUNCTION f_ll2() RETURNS NUMBER AS $$  1\n  ;$$");
+        assertRefusedWith(udfSyntax(2, 0, "SELECT"),
+            "CREATE OR REPLACE FUNCTION f_ll3() RETURNS TABLE (a NUMBER) AS $$\nSELECT 1;$$");
+    }
+
+    /** Live's body syntax error on the body's first line. */
+    private static String udfSyntax(final int position, final String token) {
+        return udfSyntax(1, position, token);
+    }
+
+    /** Live's body syntax error on a line of the body. */
+    private static String udfSyntax(final int line, final int position, final String token) {
+        return "Compilation of SQL UDF failed: SQL compilation error:\nsyntax error line " + line + " at position "
+            + position + " unexpected '" + token + "'.";
+    }
+
+    private void assertRefusedWith(final String expected, final String ddl) {
+        final RuntimeException failure = assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.execute(ddl);
+            }
+        });
+        assertTrue(failure.getMessage().contains(expected), failure.getMessage());
+    }
+
     private int intResult(final String sql) {
         final ResultSet result = engine.executeQuery(sql);
         assertNotNull(result);

@@ -17,6 +17,7 @@
 package dev.frostlake.functions.scalar.semistructured;
 
 import dev.frostlake.functions.VariantAccessorFunction;
+import dev.frostlake.functions.scalar.ArrayFunctionHelper;
 import dev.frostlake.types.ArrayType;
 import dev.frostlake.values.VariantUndefined;
 import dev.frostlake.values.VariantValue;
@@ -53,10 +54,11 @@ public class ArrayAppend extends VariantAccessorFunction {
                 array.add(VariantUndefined.node());
             } else if (value instanceof Boolean) {
                 array.add((Boolean) value);
-            } else if (value instanceof Long || value instanceof Integer) {
-                array.add(((Number) value).longValue());
             } else if (value instanceof Number) {
-                array.add(((Number) value).doubleValue());
+                // Numbers go through the shared conversion so an appended element normalises like a
+                // constructed one — live ARRAY_APPEND(ARRAY_CONSTRUCT(), 1.00) is [1], not [1.0]. Routing
+                // every Number through doubleValue() also rounded a NUMBER(38,0) past double precision.
+                array.add(ArrayFunctionHelper.toNode(MAPPER, value));
             } else {
                 final String s = value.toString().trim();
                 if ((s.startsWith("[") || s.startsWith("{")) && !s.isEmpty()) {

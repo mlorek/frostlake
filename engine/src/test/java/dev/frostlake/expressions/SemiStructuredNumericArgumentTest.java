@@ -103,25 +103,25 @@ public class SemiStructuredNumericArgumentTest extends BaseDatabaseTest {
      */
     @Test
     public void sumAndAvgRejectSemiStructured() {
-        assertFails("SELECT SUM(o) FROM snt", SUM_OBJECT);
-        assertFails("SELECT SUM(a) FROM snt",
+        assertFails("SELECT SUM(o) FROM snt ORDER BY 1", SUM_OBJECT);
+        assertFails("SELECT SUM(a) FROM snt ORDER BY 1",
             "Invalid argument types for function 'SUM': (ARRAY)");
-        assertFails("SELECT AVG(o) FROM snt",
+        assertFails("SELECT AVG(o) FROM snt ORDER BY 1",
             "Invalid argument types for function 'SUM': (OBJECT)");
-        assertFails("SELECT AVG(a) FROM snt",
+        assertFails("SELECT AVG(a) FROM snt ORDER BY 1",
             "Invalid argument types for function 'SUM': (ARRAY)");
     }
 
     /** The DISTINCT and windowed forms reject identically on live. */
     @Test
     public void theDistinctAndWindowedFormsRejectToo() {
-        assertFails("SELECT SUM(DISTINCT o) FROM snt", SUM_OBJECT);
-        assertFails("SELECT AVG(DISTINCT o) FROM snt",
+        assertFails("SELECT SUM(DISTINCT o) FROM snt ORDER BY 1", SUM_OBJECT);
+        assertFails("SELECT AVG(DISTINCT o) FROM snt ORDER BY 1",
             "Invalid argument types for function 'AVG': (OBJECT)");
-        assertFails("SELECT SUM(o) OVER (PARTITION BY id) FROM snt", SUM_OBJECT);
-        assertFails("SELECT AVG(o) OVER (PARTITION BY id) FROM snt",
+        assertFails("SELECT SUM(o) OVER (PARTITION BY id) FROM snt ORDER BY 1", SUM_OBJECT);
+        assertFails("SELECT AVG(o) OVER (PARTITION BY id) FROM snt ORDER BY 1",
             "Invalid argument types for function 'AVG': (OBJECT)");
-        assertFails("SELECT STDDEV(o) OVER (PARTITION BY id) FROM snt", MOMENT_OBJECT);
+        assertFails("SELECT STDDEV(o) OVER (PARTITION BY id) FROM snt ORDER BY 1", MOMENT_OBJECT);
     }
 
     /**
@@ -132,7 +132,7 @@ public class SemiStructuredNumericArgumentTest extends BaseDatabaseTest {
      */
     @Test
     public void avgReportsTheSumItDesugarsInto() {
-        assertFails("SELECT AVG(o) FROM snt",
+        assertFails("SELECT AVG(o) FROM snt ORDER BY 1",
             "Invalid argument types for function 'SUM': (OBJECT)");
     }
 
@@ -149,13 +149,13 @@ public class SemiStructuredNumericArgumentTest extends BaseDatabaseTest {
     /** The bitwise aggregates read their input as an integer, and refuse the same way. */
     @Test
     public void theBitwiseAggregatesRejectSemiStructured() {
-        assertFails("SELECT BITAND_AGG(o) FROM snt",
+        assertFails("SELECT BITAND_AGG(o) FROM snt ORDER BY 1",
             "Invalid argument types for function 'BITAND_AGG': (OBJECT)");
-        assertFails("SELECT BITOR_AGG(o) FROM snt",
+        assertFails("SELECT BITOR_AGG(o) FROM snt ORDER BY 1",
             "Invalid argument types for function 'BITOR_AGG': (OBJECT)");
-        assertFails("SELECT BITXOR_AGG(o) FROM snt",
+        assertFails("SELECT BITXOR_AGG(o) FROM snt ORDER BY 1",
             "Invalid argument types for function 'BITXOR_AGG': (OBJECT)");
-        assertFails("SELECT BITOR_AGG(a) FROM snt",
+        assertFails("SELECT BITOR_AGG(a) FROM snt ORDER BY 1",
             "Invalid argument types for function 'BITOR_AGG': (ARRAY)");
     }
 
@@ -169,10 +169,10 @@ public class SemiStructuredNumericArgumentTest extends BaseDatabaseTest {
      */
     @Test
     public void medianUsesTheIncompatibleTypesShape() {
-        assertFails("SELECT MEDIAN(o) FROM snt", MEDIAN_OBJECT);
-        assertFails("SELECT MEDIAN(a) FROM snt", "incompatible types: [ARRAY] and [NUMBER(9,0)]");
+        assertFails("SELECT MEDIAN(o) FROM snt ORDER BY 1", MEDIAN_OBJECT);
+        assertFails("SELECT MEDIAN(a) FROM snt ORDER BY 1", "incompatible types: [ARRAY] and [NUMBER(9,0)]");
         assertFails("SELECT MEDIAN(o) FROM snt GROUP BY id", MEDIAN_OBJECT);
-        assertFails("SELECT MEDIAN(o) OVER (PARTITION BY id) FROM snt", MEDIAN_OBJECT);
+        assertFails("SELECT MEDIAN(o) OVER (PARTITION BY id) FROM snt ORDER BY 1", MEDIAN_OBJECT);
     }
 
     /** The percentiles take their value through WITHIN GROUP, and refuse it with the same sentence. */
@@ -203,27 +203,27 @@ public class SemiStructuredNumericArgumentTest extends BaseDatabaseTest {
      */
     @Test
     public void theMomentAggregatesReportTheirInternalMultiplication() {
-        assertFails("SELECT STDDEV(o) FROM snt", MOMENT_OBJECT);
-        assertFails("SELECT STDDEV_POP(o) FROM snt", MOMENT_OBJECT);
-        assertFails("SELECT STDDEV_SAMP(o) FROM snt", MOMENT_OBJECT);
-        assertFails("SELECT VARIANCE(o) FROM snt", MOMENT_OBJECT);
-        assertFails("SELECT VARIANCE_POP(o) FROM snt", MOMENT_OBJECT);
-        assertFails("SELECT VARIANCE_SAMP(o) FROM snt", MOMENT_OBJECT);
-        assertFails("SELECT VAR_POP(o) FROM snt", MOMENT_OBJECT);
-        assertFails("SELECT VAR_SAMP(o) FROM snt", MOMENT_OBJECT);
-        assertFails("SELECT SKEW(o) FROM snt", MOMENT_OBJECT);
-        assertFails("SELECT KURTOSIS(o) FROM snt", MOMENT_OBJECT);
-        assertFails("SELECT REGR_R2(o, n) FROM snt", MOMENT_OBJECT);
+        assertFails("SELECT STDDEV(o) FROM snt ORDER BY 1", MOMENT_OBJECT);
+        assertFails("SELECT STDDEV_POP(o) FROM snt ORDER BY 1", MOMENT_OBJECT);
+        assertFails("SELECT STDDEV_SAMP(o) FROM snt ORDER BY 1", MOMENT_OBJECT);
+        assertFails("SELECT VARIANCE(o) FROM snt ORDER BY 1", MOMENT_OBJECT);
+        assertFails("SELECT VARIANCE_POP(o) FROM snt ORDER BY 1", MOMENT_OBJECT);
+        assertFails("SELECT VARIANCE_SAMP(o) FROM snt ORDER BY 1", MOMENT_OBJECT);
+        assertFails("SELECT VAR_POP(o) FROM snt ORDER BY 1", MOMENT_OBJECT);
+        assertFails("SELECT VAR_SAMP(o) FROM snt ORDER BY 1", MOMENT_OBJECT);
+        assertFails("SELECT SKEW(o) FROM snt ORDER BY 1", MOMENT_OBJECT);
+        assertFails("SELECT KURTOSIS(o) FROM snt ORDER BY 1", MOMENT_OBJECT);
+        assertFails("SELECT REGR_R2(o, n) FROM snt ORDER BY 1", MOMENT_OBJECT);
     }
 
     /** Over an ARRAY column both operands name ARRAY — the offending type, not the position's. */
     @Test
     public void theMomentAggregatesNameTheOffendingTypeOnBothSides() {
-        assertFails("SELECT STDDEV(a) FROM snt",
+        assertFails("SELECT STDDEV(a) FROM snt ORDER BY 1",
             "Invalid argument types for function '*': (ARRAY, ARRAY)");
-        assertFails("SELECT VARIANCE(a) FROM snt",
+        assertFails("SELECT VARIANCE(a) FROM snt ORDER BY 1",
             "Invalid argument types for function '*': (ARRAY, ARRAY)");
-        assertFails("SELECT REGR_R2(n, o) FROM snt", MOMENT_OBJECT);
+        assertFails("SELECT REGR_R2(n, o) FROM snt ORDER BY 1", MOMENT_OBJECT);
     }
 
     // ── The numeric scalar family ────────────────────────────────────────────
@@ -231,41 +231,41 @@ public class SemiStructuredNumericArgumentTest extends BaseDatabaseTest {
     /** Each one live-verified over an OBJECT column; a semi-structured value coerces to no number. */
     @Test
     public void theNumericScalarsRejectSemiStructured() {
-        assertFails("SELECT ABS(o) FROM snt", "Invalid argument types for function 'ABS': (OBJECT)");
-        assertFails("SELECT CEIL(o) FROM snt", "Invalid argument types for function 'CEIL': (OBJECT)");
-        assertFails("SELECT FLOOR(o) FROM snt",
+        assertFails("SELECT ABS(o) FROM snt ORDER BY 1", "Invalid argument types for function 'ABS': (OBJECT)");
+        assertFails("SELECT CEIL(o) FROM snt ORDER BY 1", "Invalid argument types for function 'CEIL': (OBJECT)");
+        assertFails("SELECT FLOOR(o) FROM snt ORDER BY 1",
             "Invalid argument types for function 'FLOOR': (OBJECT)");
-        assertFails("SELECT ROUND(o) FROM snt",
+        assertFails("SELECT ROUND(o) FROM snt ORDER BY 1",
             "Invalid argument types for function 'ROUND': (OBJECT)");
-        assertFails("SELECT SQRT(o) FROM snt", "Invalid argument types for function 'SQRT': (OBJECT)");
-        assertFails("SELECT EXP(o) FROM snt", "Invalid argument types for function 'EXP': (OBJECT)");
-        assertFails("SELECT LN(o) FROM snt", "Invalid argument types for function 'LN': (OBJECT)");
-        assertFails("SELECT SIGN(o) FROM snt", "Invalid argument types for function 'SIGN': (OBJECT)");
-        assertFails("SELECT SQUARE(o) FROM snt",
+        assertFails("SELECT SQRT(o) FROM snt ORDER BY 1", "Invalid argument types for function 'SQRT': (OBJECT)");
+        assertFails("SELECT EXP(o) FROM snt ORDER BY 1", "Invalid argument types for function 'EXP': (OBJECT)");
+        assertFails("SELECT LN(o) FROM snt ORDER BY 1", "Invalid argument types for function 'LN': (OBJECT)");
+        assertFails("SELECT SIGN(o) FROM snt ORDER BY 1", "Invalid argument types for function 'SIGN': (OBJECT)");
+        assertFails("SELECT SQUARE(o) FROM snt ORDER BY 1",
             "Invalid argument types for function 'SQUARE': (OBJECT)");
-        assertFails("SELECT FACTORIAL(o) FROM snt",
+        assertFails("SELECT FACTORIAL(o) FROM snt ORDER BY 1",
             "Invalid argument types for function 'FACTORIAL': (OBJECT)");
-        assertFails("SELECT DEGREES(o) FROM snt",
+        assertFails("SELECT DEGREES(o) FROM snt ORDER BY 1",
             "Invalid argument types for function 'DEGREES': (OBJECT)");
-        assertFails("SELECT ZEROIFNULL(o) FROM snt",
+        assertFails("SELECT ZEROIFNULL(o) FROM snt ORDER BY 1",
             "Invalid argument types for function 'ZEROIFNULL': (OBJECT)");
-        assertFails("SELECT ABS(a) FROM snt", "Invalid argument types for function 'ABS': (ARRAY)");
+        assertFails("SELECT ABS(a) FROM snt ORDER BY 1", "Invalid argument types for function 'ABS': (ARRAY)");
     }
 
     /** The trigonometric and bitwise scalars behave the same way. */
     @Test
     public void theTrigonometricAndBitwiseScalarsRejectSemiStructured() {
-        assertFails("SELECT ACOS(o) FROM snt", "Invalid argument types for function 'ACOS': (OBJECT)");
-        assertFails("SELECT ASIN(a) FROM snt", "Invalid argument types for function 'ASIN': (ARRAY)");
-        assertFails("SELECT COS(o) FROM snt", "Invalid argument types for function 'COS': (OBJECT)");
-        assertFails("SELECT TANH(o) FROM snt", "Invalid argument types for function 'TANH': (OBJECT)");
-        assertFails("SELECT BITNOT(o) FROM snt",
+        assertFails("SELECT ACOS(o) FROM snt ORDER BY 1", "Invalid argument types for function 'ACOS': (OBJECT)");
+        assertFails("SELECT ASIN(a) FROM snt ORDER BY 1", "Invalid argument types for function 'ASIN': (ARRAY)");
+        assertFails("SELECT COS(o) FROM snt ORDER BY 1", "Invalid argument types for function 'COS': (OBJECT)");
+        assertFails("SELECT TANH(o) FROM snt ORDER BY 1", "Invalid argument types for function 'TANH': (OBJECT)");
+        assertFails("SELECT BITNOT(o) FROM snt ORDER BY 1",
             "Invalid argument types for function 'BITNOT': (OBJECT)");
-        assertFails("SELECT BITAND(o, 1) FROM snt",
+        assertFails("SELECT BITAND(o, 1) FROM snt ORDER BY 1",
             "Invalid argument types for function 'BITAND': (OBJECT, NUMBER(1,0))");
-        assertFails("SELECT BITSHIFTLEFT(o, 1) FROM snt",
+        assertFails("SELECT BITSHIFTLEFT(o, 1) FROM snt ORDER BY 1",
             "Invalid argument types for function 'BITSHIFTLEFT': (OBJECT, NUMBER(1,0))");
-        assertFails("SELECT GETBIT(o, 1) FROM snt",
+        assertFails("SELECT GETBIT(o, 1) FROM snt ORDER BY 1",
             "Invalid argument types for function 'GETBIT': (OBJECT, NUMBER(1,0))");
     }
 
@@ -275,24 +275,24 @@ public class SemiStructuredNumericArgumentTest extends BaseDatabaseTest {
      */
     @Test
     public void everyArgumentPositionRefusesSemiStructured() {
-        assertFails("SELECT ROUND(n, o) FROM snt",
+        assertFails("SELECT ROUND(n, o) FROM snt ORDER BY 1",
             "Invalid argument types for function 'ROUND': (NUMBER(38,0), OBJECT)");
-        assertFails("SELECT ATAN2(1, o) FROM snt",
+        assertFails("SELECT ATAN2(1, o) FROM snt ORDER BY 1",
             "Invalid argument types for function 'ATAN2': (NUMBER(1,0), OBJECT)");
-        assertFails("SELECT LOG(2, o) FROM snt",
+        assertFails("SELECT LOG(2, o) FROM snt ORDER BY 1",
             "Invalid argument types for function 'LOG': (NUMBER(1,0), OBJECT)");
-        assertFails("SELECT POWER(2, o) FROM snt",
+        assertFails("SELECT POWER(2, o) FROM snt ORDER BY 1",
             "Invalid argument types for function 'POWER': (NUMBER(1,0), OBJECT)");
-        assertFails("SELECT MOD(2, o) FROM snt",
+        assertFails("SELECT MOD(2, o) FROM snt ORDER BY 1",
             "Invalid argument types for function 'MOD': (NUMBER(1,0), OBJECT)");
-        assertFails("SELECT DIV0(2, o) FROM snt",
+        assertFails("SELECT DIV0(2, o) FROM snt ORDER BY 1",
             "Invalid argument types for function 'DIV0': (NUMBER(1,0), OBJECT)");
-        assertFails("SELECT GETBIT(n, o) FROM snt",
+        assertFails("SELECT GETBIT(n, o) FROM snt ORDER BY 1",
             "Invalid argument types for function 'GETBIT': (NUMBER(38,0), OBJECT)");
-        assertFails("SELECT WIDTH_BUCKET(1, o, 10, 3) FROM snt",
+        assertFails("SELECT WIDTH_BUCKET(1, o, 10, 3) FROM snt ORDER BY 1",
             "Invalid argument types for function 'WIDTH_BUCKET':"
                 + " (NUMBER(1,0), OBJECT, NUMBER(2,0), NUMBER(1,0))");
-        assertFails("SELECT HAVERSINE(1, 2, 3, o) FROM snt",
+        assertFails("SELECT HAVERSINE(1, 2, 3, o) FROM snt ORDER BY 1",
             "Invalid argument types for function 'HAVERSINE':"
                 + " (NUMBER(1,0), NUMBER(1,0), NUMBER(1,0), OBJECT)");
     }
@@ -306,43 +306,43 @@ public class SemiStructuredNumericArgumentTest extends BaseDatabaseTest {
      */
     @Test
     public void theArithmeticOperatorsRejectSemiStructured() {
-        assertFails("SELECT o + 1 FROM snt",
+        assertFails("SELECT o + 1 FROM snt ORDER BY 1",
             "Invalid argument types for function '+': (OBJECT, NUMBER(1,0))");
-        assertFails("SELECT 1 + o FROM snt",
+        assertFails("SELECT 1 + o FROM snt ORDER BY 1",
             "Invalid argument types for function '+': (NUMBER(1,0), OBJECT)");
-        assertFails("SELECT o - 1 FROM snt",
+        assertFails("SELECT o - 1 FROM snt ORDER BY 1",
             "Invalid argument types for function '-': (OBJECT, NUMBER(1,0))");
-        assertFails("SELECT o * 2 FROM snt",
+        assertFails("SELECT o * 2 FROM snt ORDER BY 1",
             "Invalid argument types for function '*': (OBJECT, NUMBER(1,0))");
-        assertFails("SELECT o / 2 FROM snt",
+        assertFails("SELECT o / 2 FROM snt ORDER BY 1",
             "Invalid argument types for function '/': (OBJECT, NUMBER(1,0))");
-        assertFails("SELECT o % 2 FROM snt",
+        assertFails("SELECT o % 2 FROM snt ORDER BY 1",
             "Invalid argument types for function '%': (OBJECT, NUMBER(1,0))");
-        assertFails("SELECT o + o FROM snt",
+        assertFails("SELECT o + o FROM snt ORDER BY 1",
             "Invalid argument types for function '+': (OBJECT, OBJECT)");
-        assertFails("SELECT a + 1 FROM snt",
+        assertFails("SELECT a + 1 FROM snt ORDER BY 1",
             "Invalid argument types for function '+': (ARRAY, NUMBER(1,0))");
-        assertFails("SELECT o + n FROM snt",
+        assertFails("SELECT o + n FROM snt ORDER BY 1",
             "Invalid argument types for function '+': (OBJECT, NUMBER(38,0))");
-        assertFails("SELECT d + o FROM snt",
+        assertFails("SELECT d + o FROM snt ORDER BY 1",
             "Invalid argument types for function '+': (DATE, OBJECT)");
-        assertFails("SELECT s + o FROM snt",
+        assertFails("SELECT s + o FROM snt ORDER BY 1",
             "Invalid argument types for function '+': (VARCHAR(16777216), OBJECT)");
     }
 
     /** Unary minus reports itself as 'NEGATE' live, not as '-'. */
     @Test
     public void unaryMinusReportsItselfAsNegate() {
-        assertFails("SELECT -o FROM snt", "Invalid argument types for function 'NEGATE': (OBJECT)");
-        assertFails("SELECT -a FROM snt", "Invalid argument types for function 'NEGATE': (ARRAY)");
+        assertFails("SELECT -o FROM snt ORDER BY 1", "Invalid argument types for function 'NEGATE': (OBJECT)");
+        assertFails("SELECT -a FROM snt ORDER BY 1", "Invalid argument types for function 'NEGATE': (ARRAY)");
     }
 
     /** Nested inside a larger expression, live still names the operator. */
     @Test
     public void theOperatorRuleFiresInsideALargerExpression() {
-        assertFails("SELECT SUM(o + 1) FROM snt",
+        assertFails("SELECT SUM(o + 1) FROM snt ORDER BY 1",
             "Invalid argument types for function '+': (OBJECT, NUMBER(1,0))");
-        assertFails("SELECT ABS(o * 2) FROM snt",
+        assertFails("SELECT ABS(o * 2) FROM snt ORDER BY 1",
             "Invalid argument types for function '*': (OBJECT, NUMBER(1,0))");
     }
 
@@ -392,20 +392,20 @@ public class SemiStructuredNumericArgumentTest extends BaseDatabaseTest {
      */
     @Test
     public void aVariantIsNeverRejectedAtCompileTimeEvenHoldingAnObject() {
-        assertAccepted("SELECT SUM(v) FROM snt", 1);
-        assertAccepted("SELECT AVG(v) FROM snt", 1);
-        assertAccepted("SELECT MEDIAN(v) FROM snt", 1);
-        assertAccepted("SELECT STDDEV(v) FROM snt", 1);
-        assertAccepted("SELECT BITOR_AGG(v) FROM snt", 1);
-        assertAccepted("SELECT v + 1 FROM snt", 2);
-        assertAccepted("SELECT ABS(v) FROM snt", 2);
-        assertAccepted("SELECT ROUND(v, 1) FROM snt", 2);
-        assertNotAnArgumentTypeError("SELECT SUM(vo) FROM snt");
-        assertNotAnArgumentTypeError("SELECT AVG(vo) FROM snt");
-        assertNotAnArgumentTypeError("SELECT MEDIAN(vo) FROM snt");
-        assertNotAnArgumentTypeError("SELECT STDDEV(vo) FROM snt");
-        assertNotAnArgumentTypeError("SELECT vo + 1 FROM snt");
-        assertNotAnArgumentTypeError("SELECT ABS(vo) FROM snt");
+        assertAccepted("SELECT SUM(v) FROM snt ORDER BY 1", 1);
+        assertAccepted("SELECT AVG(v) FROM snt ORDER BY 1", 1);
+        assertAccepted("SELECT MEDIAN(v) FROM snt ORDER BY 1", 1);
+        assertAccepted("SELECT STDDEV(v) FROM snt ORDER BY 1", 1);
+        assertAccepted("SELECT BITOR_AGG(v) FROM snt ORDER BY 1", 1);
+        assertAccepted("SELECT v + 1 FROM snt ORDER BY 1", 2);
+        assertAccepted("SELECT ABS(v) FROM snt ORDER BY 1", 2);
+        assertAccepted("SELECT ROUND(v, 1) FROM snt ORDER BY 1", 2);
+        assertNotAnArgumentTypeError("SELECT SUM(vo) FROM snt ORDER BY 1");
+        assertNotAnArgumentTypeError("SELECT AVG(vo) FROM snt ORDER BY 1");
+        assertNotAnArgumentTypeError("SELECT MEDIAN(vo) FROM snt ORDER BY 1");
+        assertNotAnArgumentTypeError("SELECT STDDEV(vo) FROM snt ORDER BY 1");
+        assertNotAnArgumentTypeError("SELECT vo + 1 FROM snt ORDER BY 1");
+        assertNotAnArgumentTypeError("SELECT ABS(vo) FROM snt ORDER BY 1");
     }
 
     /**
@@ -414,28 +414,28 @@ public class SemiStructuredNumericArgumentTest extends BaseDatabaseTest {
      */
     @Test
     public void castingToVariantLiftsTheCompileTimeRejection() {
-        assertNotAnArgumentTypeError("SELECT SUM(o::VARIANT) FROM snt");
-        assertNotAnArgumentTypeError("SELECT SUM(TO_VARIANT(o)) FROM snt");
-        assertNotAnArgumentTypeError("SELECT ABS(o::VARIANT) FROM snt");
+        assertNotAnArgumentTypeError("SELECT SUM(o::VARIANT) FROM snt ORDER BY 1");
+        assertNotAnArgumentTypeError("SELECT SUM(TO_VARIANT(o)) FROM snt ORDER BY 1");
+        assertNotAnArgumentTypeError("SELECT ABS(o::VARIANT) FROM snt ORDER BY 1");
     }
 
     /** And the same value cast the other way — to OBJECT — IS refused, in all three shapes. */
     @Test
     public void castingAVariantToObjectBringsTheRejectionBack() {
-        assertFails("SELECT SUM(v::OBJECT) FROM snt", SUM_OBJECT);
-        assertFails("SELECT MEDIAN(v::OBJECT) FROM snt", MEDIAN_OBJECT);
-        assertFails("SELECT STDDEV(v::OBJECT) FROM snt", MOMENT_OBJECT);
-        assertFails("SELECT v::OBJECT + 1 FROM snt",
+        assertFails("SELECT SUM(v::OBJECT) FROM snt ORDER BY 1", SUM_OBJECT);
+        assertFails("SELECT MEDIAN(v::OBJECT) FROM snt ORDER BY 1", MEDIAN_OBJECT);
+        assertFails("SELECT STDDEV(v::OBJECT) FROM snt ORDER BY 1", MOMENT_OBJECT);
+        assertFails("SELECT v::OBJECT + 1 FROM snt ORDER BY 1",
             "Invalid argument types for function '+': (OBJECT, NUMBER(1,0))");
     }
 
     /** A path or index read yields VARIANT, so it sums and rounds fine — live-verified. */
     @Test
     public void readingIntoTheValueYieldsAVariantThatIsAccepted() {
-        assertAccepted("SELECT SUM(a[0]) FROM snt", 1);
-        assertAccepted("SELECT ABS(a[0]) FROM snt", 2);
-        assertAccepted("SELECT a[0] + 1 FROM snt", 2);
-        assertAccepted("SELECT MEDIAN(a[0]) FROM snt", 1);
+        assertAccepted("SELECT SUM(a[0]) FROM snt ORDER BY 1", 1);
+        assertAccepted("SELECT ABS(a[0]) FROM snt ORDER BY 1", 2);
+        assertAccepted("SELECT a[0] + 1 FROM snt ORDER BY 1", 2);
+        assertAccepted("SELECT MEDIAN(a[0]) FROM snt ORDER BY 1", 1);
     }
 
     // ── The bound: the rest of the surface is untouched ──────────────────────
@@ -443,16 +443,16 @@ public class SemiStructuredNumericArgumentTest extends BaseDatabaseTest {
     /** Live accepts every one of these over an OBJECT column — they are not numeric positions. */
     @Test
     public void theAcceptedAggregatesAreUntouched() {
-        assertAccepted("SELECT ANY_VALUE(o) FROM snt", 1);
-        assertAccepted("SELECT OBJECT_AGG(s, o) FROM snt", 1);
-        assertAccepted("SELECT HASH_AGG(o) FROM snt", 1);
-        assertAccepted("SELECT MAX_BY(o, n) FROM snt", 1);
-        assertAccepted("SELECT MIN_BY(o, n) FROM snt", 1);
-        assertAccepted("SELECT APPROX_COUNT_DISTINCT(o) FROM snt", 1);
-        assertAccepted("SELECT ARRAY_AGG(o) FROM snt", 1);
-        assertAccepted("SELECT ARRAY_UNIQUE_AGG(o) FROM snt", 1);
-        assertAccepted("SELECT COUNT(o) FROM snt", 1);
-        assertAccepted("SELECT COUNT(DISTINCT o) FROM snt", 1);
+        assertAccepted("SELECT ANY_VALUE(o) FROM snt ORDER BY 1", 1);
+        assertAccepted("SELECT OBJECT_AGG(s, o) FROM snt ORDER BY 1", 1);
+        assertAccepted("SELECT HASH_AGG(o) FROM snt ORDER BY 1", 1);
+        assertAccepted("SELECT MAX_BY(o, n) FROM snt ORDER BY 1", 1);
+        assertAccepted("SELECT MIN_BY(o, n) FROM snt ORDER BY 1", 1);
+        assertAccepted("SELECT APPROX_COUNT_DISTINCT(o) FROM snt ORDER BY 1", 1);
+        assertAccepted("SELECT ARRAY_AGG(o) FROM snt ORDER BY 1", 1);
+        assertAccepted("SELECT ARRAY_UNIQUE_AGG(o) FROM snt ORDER BY 1", 1);
+        assertAccepted("SELECT COUNT(o) FROM snt ORDER BY 1", 1);
+        assertAccepted("SELECT COUNT(DISTINCT o) FROM snt ORDER BY 1", 1);
     }
 
     /** Grouping, sorting, partitioning, DISTINCT, comparison and set operations all still take one. */
@@ -461,31 +461,31 @@ public class SemiStructuredNumericArgumentTest extends BaseDatabaseTest {
         assertAccepted("SELECT COUNT(*) FROM snt GROUP BY o", 2);
         assertAccepted("SELECT SUM(n) FROM snt GROUP BY o", 2);
         assertAccepted("SELECT id FROM snt ORDER BY o", 2);
-        assertAccepted("SELECT SUM(n) OVER (PARTITION BY o) FROM snt", 2);
-        assertAccepted("SELECT DISTINCT o FROM snt", 2);
+        assertAccepted("SELECT SUM(n) OVER (PARTITION BY o) FROM snt ORDER BY 1", 2);
+        assertAccepted("SELECT DISTINCT o FROM snt ORDER BY 1", 2);
         assertAccepted("SELECT id FROM snt WHERE o = o", 2);
-        assertAccepted("SELECT o FROM snt UNION SELECT o FROM snt", 2);
+        assertAccepted("SELECT o FROM snt UNION SELECT o FROM snt ORDER BY 1", 2);
     }
 
     /** Ordinary arithmetic is untouched — NUMBER, DOUBLE, DATE and an untyped NULL all still add. */
     @Test
     public void ordinaryArithmeticStillWorks() {
-        assertAccepted("SELECT n + 1, n - 1, n * 2, n / 2, n % 3, -n FROM snt", 2);
-        assertAccepted("SELECT f + 1 FROM snt", 2);
-        assertAccepted("SELECT d + 1 FROM snt", 2);
-        assertAccepted("SELECT NULL + 1 FROM snt", 2);
-        assertAccepted("SELECT v + v FROM snt", 2);
+        assertAccepted("SELECT n + 1, n - 1, n * 2, n / 2, n % 3, -n FROM snt ORDER BY 1", 2);
+        assertAccepted("SELECT f + 1 FROM snt ORDER BY 1", 2);
+        assertAccepted("SELECT d + 1 FROM snt ORDER BY 1", 2);
+        assertAccepted("SELECT NULL + 1 FROM snt ORDER BY 1", 2);
+        assertAccepted("SELECT v + v FROM snt ORDER BY 1", 2);
     }
 
     /** And the ordinary numeric functions and aggregates, over every type live coerces. */
     @Test
     public void theOrdinaryNumericSurfaceStillWorks() {
-        assertAccepted("SELECT ABS(n), CEIL(f), SQRT(n), POWER(n, 2), MOD(n, 3) FROM snt", 2);
-        assertAccepted("SELECT ROUND(f, 1) FROM snt", 2);
-        assertAccepted("SELECT ABS(NULL) FROM snt", 2);
-        assertAccepted("SELECT SUM(n), AVG(n), MEDIAN(n), STDDEV(n), VARIANCE(n) FROM snt", 1);
+        assertAccepted("SELECT ABS(n), CEIL(f), SQRT(n), POWER(n, 2), MOD(n, 3) FROM snt ORDER BY 1", 2);
+        assertAccepted("SELECT ROUND(f, 1) FROM snt ORDER BY 1", 2);
+        assertAccepted("SELECT ABS(NULL) FROM snt ORDER BY 1", 2);
+        assertAccepted("SELECT SUM(n), AVG(n), MEDIAN(n), STDDEV(n), VARIANCE(n) FROM snt ORDER BY 1", 1);
         assertAccepted("SELECT PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY n) FROM snt", 1);
-        assertAccepted("SELECT BITOR_AGG(n) FROM snt", 1);
+        assertAccepted("SELECT BITOR_AGG(n) FROM snt ORDER BY 1", 1);
     }
 
     /**
@@ -494,23 +494,23 @@ public class SemiStructuredNumericArgumentTest extends BaseDatabaseTest {
      */
     @Test
     public void explicitConversionsStayAccepted() {
-        assertFirstValue("SELECT CAST(o AS VARCHAR) FROM snt", "{\"k\":\"v1\"}");
-        assertFirstValue("SELECT TO_VARCHAR(o) FROM snt", "{\"k\":\"v1\"}");
-        assertFirstValue("SELECT TO_CHAR(o) FROM snt", "{\"k\":\"v1\"}");
-        assertAccepted("SELECT LENGTH(TO_VARCHAR(o)) + 1 FROM snt", 2);
-        assertAccepted("SELECT SUM(ARRAY_SIZE(a)) FROM snt", 1);
+        assertFirstValue("SELECT CAST(o AS VARCHAR) FROM snt ORDER BY 1", "{\"k\":\"v1\"}");
+        assertFirstValue("SELECT TO_VARCHAR(o) FROM snt ORDER BY 1", "{\"k\":\"v1\"}");
+        assertFirstValue("SELECT TO_CHAR(o) FROM snt ORDER BY 1", "{\"k\":\"v1\"}");
+        assertAccepted("SELECT LENGTH(TO_VARCHAR(o)) + 1 FROM snt ORDER BY 1", 2);
+        assertAccepted("SELECT SUM(ARRAY_SIZE(a)) FROM snt ORDER BY 1", 1);
     }
 
     /** The semi-structured surface proper is untouched. */
     @Test
     public void theSemiStructuredAwareFunctionsAreUntouched() {
-        assertAccepted("SELECT ARRAY_SIZE(a) FROM snt", 2);
-        assertAccepted("SELECT OBJECT_KEYS(o) FROM snt", 2);
-        assertAccepted("SELECT TYPEOF(o) FROM snt", 2);
-        assertAccepted("SELECT COALESCE(o, o) FROM snt", 2);
-        assertAccepted("SELECT GREATEST(o, o) FROM snt", 2);
-        assertAccepted("SELECT HASH(o) FROM snt", 2);
-        assertAccepted("SELECT OBJECT_INSERT(o, 'j', 2) FROM snt", 2);
+        assertAccepted("SELECT ARRAY_SIZE(a) FROM snt ORDER BY 1", 2);
+        assertAccepted("SELECT OBJECT_KEYS(o) FROM snt ORDER BY 1", 2);
+        assertAccepted("SELECT TYPEOF(o) FROM snt ORDER BY 1", 2);
+        assertAccepted("SELECT COALESCE(o, o) FROM snt ORDER BY 1", 2);
+        assertAccepted("SELECT GREATEST(o, o) FROM snt ORDER BY 1", 2);
+        assertAccepted("SELECT HASH(o) FROM snt ORDER BY 1", 2);
+        assertAccepted("SELECT OBJECT_INSERT(o, 'j', 2) FROM snt ORDER BY 1", 2);
     }
 
     // ── The bound: the declared type is read through wrappers ────────────────
@@ -522,24 +522,24 @@ public class SemiStructuredNumericArgumentTest extends BaseDatabaseTest {
      */
     @Test
     public void theDeclaredTypeIsReadThroughConditionalsAndDerivedColumns() {
-        assertFails("SELECT SUM(IFF(TRUE, o, o)) FROM snt", SUM_OBJECT);
-        assertFails("SELECT SUM(COALESCE(o, o)) FROM snt", SUM_OBJECT);
-        assertFails("SELECT SUM(CASE WHEN TRUE THEN o ELSE o END) FROM snt", SUM_OBJECT);
+        assertFails("SELECT SUM(IFF(TRUE, o, o)) FROM snt ORDER BY 1", SUM_OBJECT);
+        assertFails("SELECT SUM(COALESCE(o, o)) FROM snt ORDER BY 1", SUM_OBJECT);
+        assertFails("SELECT SUM(CASE WHEN TRUE THEN o ELSE o END) FROM snt ORDER BY 1", SUM_OBJECT);
         assertFails("SELECT SUM(x) FROM (SELECT o AS x FROM snt)", SUM_OBJECT);
         assertFails("WITH c AS (SELECT o AS x FROM snt) SELECT SUM(x) FROM c", SUM_OBJECT);
-        assertFails("SELECT STDDEV(IFF(TRUE, o, o)) FROM snt", MOMENT_OBJECT);
-        assertFails("SELECT MEDIAN(IFF(TRUE, o, o)) FROM snt", MEDIAN_OBJECT);
+        assertFails("SELECT STDDEV(IFF(TRUE, o, o)) FROM snt ORDER BY 1", MOMENT_OBJECT);
+        assertFails("SELECT MEDIAN(IFF(TRUE, o, o)) FROM snt ORDER BY 1", MEDIAN_OBJECT);
     }
 
     /** The producing functions declare their own type, so live rejects those results too. */
     @Test
     public void theSemiStructuredProducersAreRejectedAsArguments() {
-        assertFails("SELECT SUM(OBJECT_CONSTRUCT('k', 1)) FROM snt", SUM_OBJECT);
-        assertFails("SELECT SUM(ARRAY_CONSTRUCT(1)) FROM snt",
+        assertFails("SELECT SUM(OBJECT_CONSTRUCT('k', 1)) FROM snt ORDER BY 1", SUM_OBJECT);
+        assertFails("SELECT SUM(ARRAY_CONSTRUCT(1)) FROM snt ORDER BY 1",
             "Invalid argument types for function 'SUM': (ARRAY)");
-        assertFails("SELECT SUM(ARRAY_AGG(n)) FROM snt",
+        assertFails("SELECT SUM(ARRAY_AGG(n)) FROM snt ORDER BY 1",
             "Invalid argument types for function 'SUM': (ARRAY)");
-        assertFails("SELECT ABS(OBJECT_KEYS(o)) FROM snt",
+        assertFails("SELECT ABS(OBJECT_KEYS(o)) FROM snt ORDER BY 1",
             "Invalid argument types for function 'ABS': (ARRAY)");
     }
 

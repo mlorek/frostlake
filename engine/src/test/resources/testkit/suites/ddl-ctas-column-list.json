@@ -1,0 +1,34 @@
+{
+  "suite": "ddl-ctas-column-list",
+  "description": "CTAS column-list renaming, converted 1:1 from ddl/CtasColumnListTest.java (now retired); the shared setupTest fixture became per-test setup steps.",
+  "tags": ["ddl", "converted"],
+  "tests": [
+    {
+      "name": "ctas-renames-columns-via-list",
+      "steps": [
+        {"sql": "CREATE TABLE src (name VARCHAR, amount1 NUMBER, amount2 NUMBER)"},
+        {"sql": "INSERT INTO src VALUES ('a', 10, 5), ('b', 20, 7)"},
+        {"sql": "CREATE TABLE t (nm, summary_amount) AS SELECT name, amount1 + amount2 FROM src ORDER BY name"},
+        {"sql": "SELECT nm, summary_amount FROM t ORDER BY nm", "expect": {"rows": [["a", "15"], ["b", "27"]], "ordered": true}}
+      ]
+    },
+    {
+      "name": "ctas-column-names-reflected-in-schema",
+      "steps": [
+        {"sql": "CREATE TABLE src (name VARCHAR, amount1 NUMBER, amount2 NUMBER)"},
+        {"sql": "INSERT INTO src VALUES ('a', 10, 5), ('b', 20, 7)"},
+        {"sql": "CREATE TABLE t2 (x, y) AS SELECT name, amount1 FROM src"},
+        {"sql": "SELECT * FROM t2", "expect": {"columns": ["X", "Y"]}}
+      ]
+    },
+    {
+      "name": "ctas-without-column-list-still-works",
+      "steps": [
+        {"sql": "CREATE TABLE src (name VARCHAR, amount1 NUMBER, amount2 NUMBER)"},
+        {"sql": "INSERT INTO src VALUES ('a', 10, 5), ('b', 20, 7)"},
+        {"sql": "CREATE TABLE t3 AS SELECT name, amount1 FROM src"},
+        {"sql": "SELECT name, amount1 FROM t3", "expect": {"rowCount": 2}}
+      ]
+    }
+  ]
+}

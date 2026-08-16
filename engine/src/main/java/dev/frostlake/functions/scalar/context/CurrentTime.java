@@ -31,8 +31,8 @@ public class CurrentTime extends BuiltInFunction {
 
     @Override
     public int getMinArgCount() { return 0; }
-    // Snowflake accepts an optional fractional-seconds precision argument (CURRENT_TIMESTAMP(3));
-    // the engine renders full precision regardless, so the argument is accepted and ignored.
+    // Snowflake accepts an optional fractional-seconds precision argument (CURRENT_TIME(3)): the call's
+    // static type carries it (TIME(3)), while the value keeps full precision.
     @Override
     public int getMaxArgCount() { return 1; }
 }

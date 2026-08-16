@@ -16,12 +16,14 @@
 
 package dev.frostlake.functions.aggregate;
 
-import dev.frostlake.functions.AggregateFunction;
 import dev.frostlake.types.BooleanType;
+import dev.frostlake.values.VariantValue;
+import tools.jackson.databind.JsonNode;
 
 import java.util.List;
+import java.util.Locale;
 
-public class BoolOrAgg extends AggregateFunction {
+public class BoolOrAgg extends BooleanAggregate {
     public BoolOrAgg() { super("BOOLOR_AGG", new BooleanType()); }
 
     @Override
@@ -38,9 +40,26 @@ public class BoolOrAgg extends AggregateFunction {
 static boolean isTruthy(final Object v) {
         if (v instanceof Boolean) return (Boolean) v;
         if (v instanceof Number) return ((Number) v).doubleValue() != 0;
+        if (v instanceof VariantValue) {
+            // A VARIANT member is read as a boolean only when it IS one: BOOLOR_AGG over a VARIANT
+            // holding 1 is "Failed to cast variant value 1 to BOOLEAN" on the account, at row time.
+            final JsonNode member = ((VariantValue) v).node();
+            if (member != null && member.isBoolean()) {
+                return member.booleanValue();
+            }
+            throw new RuntimeException("Failed to cast variant value " + ((VariantValue) v).text() + " to BOOLEAN");
+        }
         if (v instanceof String) {
-            final String s = ((String) v).trim().toUpperCase();
-            return s.equals("TRUE") || s.equals("1");
+            // A text reads through TO_BOOLEAN's forms and nothing else: 'x' is "Boolean value 'x' is
+            // not recognized" (live-verified, row time, no prefix).
+            final String s = ((String) v).trim().toLowerCase(Locale.ROOT);
+            if (s.equals("true") || s.equals("t") || s.equals("yes") || s.equals("y") || s.equals("on") || s.equals("1")) {
+                return true;
+            }
+            if (s.equals("false") || s.equals("f") || s.equals("no") || s.equals("n") || s.equals("off") || s.equals("0")) {
+                return false;
+            }
+            throw new RuntimeException("Boolean value '" + v + "' is not recognized");
         }
         return false;
     }

@@ -24,7 +24,6 @@ import dev.frostlake.security.SecurityManager;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
-import dev.frostlake.types.DateTimeType;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.types.StringType;
 import java.util.ArrayList;
@@ -51,7 +50,7 @@ final class ShowSecurityExecutor {
     public ResultSet showUsers() {
         final List<ResultSetColumn> columns = Arrays.asList(
             new ResultSetColumn("name", StringType.VARCHAR),
-            new ResultSetColumn("created_on", DateTimeType.TIMESTAMP_LTZ),
+            new ResultSetColumn("created_on", ShowResultHelpers.CREATED_ON),
             new ResultSetColumn("login_name", StringType.VARCHAR),
             new ResultSetColumn("display_name", StringType.VARCHAR),
             new ResultSetColumn("first_name", StringType.VARCHAR),
@@ -72,8 +71,8 @@ final class ShowSecurityExecutor {
             new ResultSetColumn("mins_to_bypass_mfa", StringType.VARCHAR),
             new ResultSetColumn("owner", StringType.VARCHAR),
             new ResultSetColumn("last_success_login", StringType.VARCHAR),
-            new ResultSetColumn("expires_at_time", DateTimeType.TIMESTAMP_LTZ),
-            new ResultSetColumn("locked_until_time", DateTimeType.TIMESTAMP_LTZ),
+            new ResultSetColumn("expires_at_time", ShowResultHelpers.CREATED_ON),
+            new ResultSetColumn("locked_until_time", ShowResultHelpers.CREATED_ON),
             new ResultSetColumn("has_password", StringType.VARCHAR),
             new ResultSetColumn("has_rsa_public_key", StringType.VARCHAR),
             new ResultSetColumn("type", StringType.VARCHAR),
@@ -116,7 +115,7 @@ final class ShowSecurityExecutor {
 
     public ResultSet showRoles() {
         final List<ResultSetColumn> columns = Arrays.asList(
-            new ResultSetColumn("created_on", DateTimeType.TIMESTAMP_LTZ),
+            new ResultSetColumn("created_on", ShowResultHelpers.CREATED_ON),
             new ResultSetColumn("name", StringType.VARCHAR),
             new ResultSetColumn("is_default", StringType.VARCHAR),
             new ResultSetColumn("is_current", StringType.VARCHAR),
@@ -224,7 +223,7 @@ final class ShowSecurityExecutor {
 
     public ResultSet showGrantsOnObject(final String objectType, final String objectName) {
         final List<ResultSetColumn> columns = Arrays.asList(
-            new ResultSetColumn("created_on", DateTimeType.TIMESTAMP_LTZ),
+            new ResultSetColumn("created_on", ShowResultHelpers.CREATED_ON),
             new ResultSetColumn("privilege", StringType.VARCHAR),
             new ResultSetColumn("granted_on", StringType.VARCHAR),
             new ResultSetColumn("name", StringType.VARCHAR),
@@ -284,7 +283,7 @@ final class ShowSecurityExecutor {
     public ResultSet showGrantsOfRole(final String roleName) {
         final Role role = catalog.getRole(roleName);
         final List<ResultSetColumn> columns = Arrays.asList(
-            new ResultSetColumn("created_on", DateTimeType.TIMESTAMP_LTZ),
+            new ResultSetColumn("created_on", ShowResultHelpers.CREATED_ON),
             new ResultSetColumn("role", StringType.VARCHAR),
             new ResultSetColumn("granted_to", StringType.VARCHAR),
             new ResultSetColumn("grantee_name", StringType.VARCHAR),
@@ -315,7 +314,7 @@ final class ShowSecurityExecutor {
      */
     public ResultSet showGrantsForCurrentUser() {
         final List<ResultSetColumn> columns = Arrays.asList(
-            new ResultSetColumn("created_on", DateTimeType.TIMESTAMP_LTZ),
+            new ResultSetColumn("created_on", ShowResultHelpers.CREATED_ON),
             new ResultSetColumn("privilege", StringType.VARCHAR),
             new ResultSetColumn("granted_on", StringType.VARCHAR),
             new ResultSetColumn("name", StringType.VARCHAR),
@@ -346,7 +345,7 @@ final class ShowSecurityExecutor {
 
     public ResultSet showGrantsTo(final String targetType, final String targetName) {
         final List<ResultSetColumn> columns = Arrays.asList(
-            new ResultSetColumn("created_on", DateTimeType.TIMESTAMP_LTZ),
+            new ResultSetColumn("created_on", ShowResultHelpers.CREATED_ON),
             new ResultSetColumn("privilege", StringType.VARCHAR),
             new ResultSetColumn("granted_on", StringType.VARCHAR),
             new ResultSetColumn("name", StringType.VARCHAR),

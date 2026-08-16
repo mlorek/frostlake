@@ -1,0 +1,73 @@
+{
+  "suite": "scripting-nested-begin-end-block",
+  "description": "Nested BEGIN...END blocks with their own DECLARE sections. An inner block sees the OUTER block's variables, and a variable DECLAREd for a nested block is SCOPED to it - so a same-named inner declaration SHADOWS the outer one inside that block and the outer value is back in force after it, which is the case the suite pins with 5 / 20 / 5. Several variables may share one DECLARE section, a nested block may carry its own EXCEPTION handler so an error inside it is caught there and the outer block continues, a block needs no DECLARE at all, a cursor DECLAREd in the outer block is usable from an inner one (and its FETCHed value may initialise an inner variable), and three levels nest the same way. The second half is RETURN from a nested block, which used to be SWALLOWED - the nested-block handler consumed the return and wrapped it into a result the enclosing block discarded, so the procedure returned nothing and the CALL result had zero rows. Pinned from a plain nested block, from one with its own DECLARE returning a computed value, from a nested block inside an EXCEPTION HANDLER, from three levels deep, and with the statement that follows the nested block, which must NOT run because the RETURN stopped the enclosing block too. Converted 1:1 from scripting/NestedBeginEndBlockTest (now retired); the blocks are written on one line here, which drops one explanatory -- comment and nothing else.",
+  "tags": ["scripting", "converted"],
+  "tests": [
+    {"name": "a-simple-block-with-a-declare", "steps": [
+      {"sql": "CREATE TABLE results (value INTEGER)"},
+      {"sql": "DECLARE x INTEGER := 10; BEGIN INSERT INTO results VALUES (:x); END;"},
+      {"sql": "SELECT value FROM results", "expect": {"rows": [[10]]}}
+    ]},
+    {"name": "nested-blocks-with-declares", "steps": [
+      {"sql": "CREATE TABLE results (value INTEGER)"},
+      {"sql": "DECLARE x INTEGER := 5; BEGIN INSERT INTO results VALUES (:x); DECLARE y INTEGER := 10; BEGIN INSERT INTO results VALUES (:y); INSERT INTO results VALUES (:x); END; INSERT INTO results VALUES (:x); END;"},
+      {"sql": "SELECT value FROM results ORDER BY value", "expect": {"rows": [[5],[5],[5],[10]], "ordered": true}}
+    ]},
+    {"name": "an-inner-declaration-shadows-only-inside-its-block", "steps": [
+      {"sql": "CREATE TABLE results (value INTEGER)"},
+      {"sql": "DECLARE x INTEGER := 5; BEGIN INSERT INTO results VALUES (:x); DECLARE x INTEGER := 20; BEGIN INSERT INTO results VALUES (:x); END; INSERT INTO results VALUES (:x); END;"},
+      {"sql": "SELECT value FROM results ORDER BY value", "expect": {"rows": [[5],[5],[20]], "ordered": true}}
+    ]},
+    {"name": "several-variables-in-one-declare-section", "steps": [
+      {"sql": "CREATE TABLE results (id INTEGER, value INTEGER)"},
+      {"sql": "DECLARE x INTEGER := 1; y INTEGER := 2; z INTEGER := 3; BEGIN INSERT INTO results VALUES (:x, :y); INSERT INTO results VALUES (:y, :z); INSERT INTO results VALUES (:z, :x); END;"},
+      {"sql": "SELECT id, value FROM results ORDER BY id", "expect": {"rows": [[1,2],[2,3],[3,1]], "ordered": true}}
+    ]},
+    {"name": "a-nested-block-carries-its-own-exception-handler", "steps": [
+      {"sql": "CREATE TABLE results (value INTEGER)"},
+      {"sql": "DECLARE x INTEGER := 100; BEGIN INSERT INTO results VALUES (:x); DECLARE y INTEGER := 200; BEGIN INSERT INTO results VALUES (:y); INSERT INTO nonexistent_table VALUES (1); EXCEPTION WHEN OTHER THEN INSERT INTO results VALUES (999); END; INSERT INTO results VALUES (:x); END;"},
+      {"sql": "SELECT value FROM results ORDER BY value", "expect": {"rows": [[100],[100],[200],[999]], "ordered": true}}
+    ]},
+    {"name": "a-block-without-a-declare", "steps": [
+      {"sql": "CREATE TABLE results (value INTEGER)"},
+      {"sql": "BEGIN BEGIN INSERT INTO results VALUES (42); END;", "expect": {"error": {"messageContains": "unexpected '<EOF>'"}}},
+      {"sql": "BEGIN BEGIN INSERT INTO results VALUES (42); END; END;"},
+      {"sql": "SELECT value FROM results", "expect": {"rows": [[42]]}},
+      {"sql": "COMMIT"}
+    ]},
+    {"name": "a-cursor-declared-outside-is-usable-inside", "steps": [
+      {"sql": "CREATE TABLE source (id INTEGER, name VARCHAR)"},
+      {"sql": "INSERT INTO source VALUES (1, 'Alice'), (2, 'Bob')"},
+      {"sql": "CREATE TABLE results (id INTEGER, name VARCHAR)"},
+      {"sql": "DECLARE cur1 CURSOR FOR SELECT id, name FROM source; rec_id INTEGER; rec_name VARCHAR; BEGIN OPEN cur1; FETCH cur1 INTO rec_id, rec_name; DECLARE x INTEGER := rec_id; BEGIN INSERT INTO results VALUES (:x, :rec_name); END; CLOSE cur1; END;"},
+      {"sql": "SELECT id, name FROM results", "expect": {"rows": [[1,"Alice"]]}}
+    ]},
+    {"name": "three-level-nesting", "steps": [
+      {"sql": "CREATE TABLE results (level INTEGER, value INTEGER)"},
+      {"sql": "DECLARE a INTEGER := 1; BEGIN INSERT INTO results VALUES (1, :a); DECLARE b INTEGER := 2; BEGIN INSERT INTO results VALUES (2, :b); DECLARE c INTEGER := 3; BEGIN INSERT INTO results VALUES (3, :c); INSERT INTO results VALUES (3, :a); END; END; END;"},
+      {"sql": "SELECT level, value FROM results ORDER BY level, value", "expect": {"rows": [[1,1],[2,2],[3,1],[3,3]], "ordered": true}}
+    ]},
+    {"name": "return-from-a-nested-block", "steps": [
+      {"sql": "CREATE OR REPLACE PROCEDURE p_nested_ret() RETURNS STRING LANGUAGE SQL AS $$ BEGIN BEGIN RETURN 'inner'; END; END $$"},
+      {"sql": "CALL p_nested_ret()", "expect": {"value": "inner"}}
+    ]},
+    {"name": "return-of-a-computed-value-from-a-nested-block-with-its-own-declare", "steps": [
+      {"sql": "CREATE OR REPLACE PROCEDURE p_nested_decl_ret() RETURNS STRING LANGUAGE SQL AS $$ BEGIN DECLARE a STRING := 'x'; BEGIN a := a || 'y'; RETURN :a; END; END $$"},
+      {"sql": "CALL p_nested_decl_ret()", "expect": {"value": "xy"}}
+    ]},
+    {"name": "return-from-a-nested-block-inside-an-exception-handler", "steps": [
+      {"sql": "CREATE OR REPLACE PROCEDURE p_handler_ret() RETURNS STRING LANGUAGE SQL AS $$ DECLARE ex EXCEPTION (-20002, 'boom'); BEGIN RAISE ex; EXCEPTION WHEN OTHER THEN DECLARE msg STRING := 'caught'; BEGIN RETURN :msg; END; END $$"},
+      {"sql": "CALL p_handler_ret()", "expect": {"value": "caught"}}
+    ]},
+    {"name": "return-from-a-three-level-deep-nested-block", "steps": [
+      {"sql": "CREATE OR REPLACE PROCEDURE p_deep_ret() RETURNS INTEGER LANGUAGE SQL AS $$ BEGIN BEGIN BEGIN RETURN 42; END; END; END $$"},
+      {"sql": "CALL p_deep_ret()", "expect": {"value": 42}}
+    ]},
+    {"name": "statements-after-a-nested-return-do-not-run", "steps": [
+      {"sql": "CREATE TABLE after_ret (v INTEGER)"},
+      {"sql": "CREATE OR REPLACE PROCEDURE p_stop() RETURNS STRING LANGUAGE SQL AS $$ BEGIN BEGIN RETURN 'done'; END; INSERT INTO after_ret VALUES (1); END $$"},
+      {"sql": "CALL p_stop()", "expect": {"value": "done"}},
+      {"sql": "SELECT COUNT(*) FROM after_ret", "expect": {"value": 0}}
+    ]}
+  ]
+}

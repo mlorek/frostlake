@@ -21,6 +21,8 @@ import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.types.IntegerResultWidths;
 
 import java.time.LocalDateTime;
+import java.time.OffsetDateTime;
+import java.time.ZonedDateTime;
 import java.time.temporal.ChronoUnit;
 import java.util.List;
 
@@ -34,12 +36,42 @@ public class DateDiff extends BuiltInFunction {
             : SharedFunctionHelpers.toLocalDateTime(v);
     }
 
+    /**
+     * The same wall clock moved to UTC when the value carries an offset — how the SUB-DAY units reach
+     * the instant.
+     *
+     * <p>★ THE TWO HALVES OF DATEDIFF COUNT DIFFERENT THINGS. Day-and-larger units count WALL-CLOCK
+     * boundaries, so two values a calendar month apart are one month apart whatever their offsets;
+     * hour-and-smaller count the INSTANT. Across a daylight-saving change the two disagree by an hour,
+     * and that is the cell that proves it: January to June in America/Los_Angeles is 3648 hours by the
+     * clock and 3647 by the world, and live answers 3647.
+     *
+     * @param source the value as it arrived, which is where any offset is
+     * @param wall the wall clock already read out of it
+     * @return the wall clock in UTC, or unchanged when the value carries no offset
+     */
+    private static LocalDateTime atUtc(final Object source, final LocalDateTime wall) {
+        if (source instanceof ZonedDateTime) {
+            return wall.minusSeconds(((ZonedDateTime) source).getOffset().getTotalSeconds());
+        }
+        if (source instanceof OffsetDateTime) {
+            return wall.minusSeconds(((OffsetDateTime) source).getOffset().getTotalSeconds());
+        }
+        return wall;
+    }
+
     @Override
     public Object evaluate(final List<Object> args) {
         if (args.get(1) == null || args.get(2) == null) return null;
-        final String unit = SharedFunctionHelpers.stripPluralS(args.get(0).toString().toUpperCase());
+        if (SharedFunctionHelpers.isComponentOnlyUnit(args.get(0))) {
+            throw SharedFunctionHelpers.notADateTimeComponent(args.get(0), "DATEDIFF");
+        }
+        final String unit = SharedFunctionHelpers.canonicalDateUnit(args.get(0));
         final LocalDateTime start = anchored(args.get(1));
         final LocalDateTime end   = anchored(args.get(2));
+        // The sub-day units below use these instead — see atUtc.
+        final LocalDateTime startAt = atUtc(args.get(1), start);
+        final LocalDateTime endAt   = atUtc(args.get(2), end);
         // Snowflake DATEDIFF counts unit BOUNDARIES crossed, not elapsed whole units: both operands are
         // truncated to the unit first, so DATEDIFF(DAY, '23:00', '01:00 next day') = 1 and
         // DATEDIFF(HOUR, 10:59, 11:01) = 1. Weeks start on Monday (default WEEK_START).
@@ -57,16 +89,18 @@ public class DateDiff extends BuiltInFunction {
             case "DAY": case "DD": case "D":
                 return end.toLocalDate().toEpochDay() - start.toLocalDate().toEpochDay();
             case "HOUR": case "H": case "HH":
-                return ChronoUnit.HOURS.between(start.truncatedTo(ChronoUnit.HOURS), end.truncatedTo(ChronoUnit.HOURS));
+                return ChronoUnit.HOURS.between(startAt.truncatedTo(ChronoUnit.HOURS), endAt.truncatedTo(ChronoUnit.HOURS));
             case "MINUTE": case "MIN": case "MI":
-                return ChronoUnit.MINUTES.between(start.truncatedTo(ChronoUnit.MINUTES), end.truncatedTo(ChronoUnit.MINUTES));
+                return ChronoUnit.MINUTES.between(startAt.truncatedTo(ChronoUnit.MINUTES), endAt.truncatedTo(ChronoUnit.MINUTES));
             case "SECOND": case "SEC": case "S":
-                return ChronoUnit.SECONDS.between(start.truncatedTo(ChronoUnit.SECONDS), end.truncatedTo(ChronoUnit.SECONDS));
+                return ChronoUnit.SECONDS.between(startAt.truncatedTo(ChronoUnit.SECONDS), endAt.truncatedTo(ChronoUnit.SECONDS));
             case "MILLISECOND": case "MS":
-                return ChronoUnit.MILLIS.between(start.truncatedTo(ChronoUnit.MILLIS), end.truncatedTo(ChronoUnit.MILLIS));
+                return ChronoUnit.MILLIS.between(startAt.truncatedTo(ChronoUnit.MILLIS), endAt.truncatedTo(ChronoUnit.MILLIS));
             case "MICROSECOND": case "US":
-                return ChronoUnit.MICROS.between(start.truncatedTo(ChronoUnit.MICROS), end.truncatedTo(ChronoUnit.MICROS));
-            default: throw new RuntimeException("Unsupported unit for DATEDIFF: " + unit);
+                return ChronoUnit.MICROS.between(startAt.truncatedTo(ChronoUnit.MICROS), endAt.truncatedTo(ChronoUnit.MICROS));
+            case "NANOSECOND":
+                return ChronoUnit.NANOS.between(startAt, endAt);
+            default: throw SharedFunctionHelpers.notADateTimeComponent(args.get(0), "DATEDIFF");
         }
     }
 

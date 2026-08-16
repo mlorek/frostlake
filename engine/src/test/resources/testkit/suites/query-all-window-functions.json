@@ -1,0 +1,36 @@
+{
+  "suite": "query-all-window-functions",
+  "description": "The ranking and offset window functions used together over one five-row employee fixture: ROW_NUMBER, RANK, DENSE_RANK, LAG and LEAD, all ordered by salary DESC. The tie between the two 95000 rows is what separates the three ranking functions - the lowest row reads ROW_NUMBER 5, RANK 5 and DENSE_RANK 4 - and the two ends of the order are what pin LAG and LEAD, which are NULL there unless a default is supplied. LAG / LEAD are exercised at offsets 1 and 2, with and without a default, and a non-zero default (999999) proves the default is the caller's value rather than a fixed sentinel. Converted 1:1 from query/AllWindowFunctionsTest (now retired); the Java scanned the result rows for a named employee, which each converted test states as a subquery filtered by that name - the same row, selected rather than searched. Every value pinned here is tie-safe: the two 95000 rows are interchangeable, so no assertion depends on which of them the engine orders first.",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "all-the-window-functions-together", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, department VARCHAR, salary INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1,'Alice','Engineering',100000),(2,'Bob','Engineering',95000),(3,'Charlie','Engineering',95000),(4,'David','Sales',85000),(5,'Eve','Sales',90000)"},
+      {"sql": "SELECT name, ROW_NUMBER() OVER (ORDER BY salary DESC) AS row_num, RANK() OVER (ORDER BY salary DESC) AS rnk, DENSE_RANK() OVER (ORDER BY salary DESC) AS dense_rnk, LAG(salary) OVER (ORDER BY salary DESC) AS prev_salary, LEAD(salary) OVER (ORDER BY salary DESC) AS next_salary FROM employees", "expect": {"rowCount": 5}},
+      {"sql": "SELECT salary, row_num, rnk, dense_rnk, prev_salary, next_salary FROM (SELECT name, salary, ROW_NUMBER() OVER (ORDER BY salary DESC) AS row_num, RANK() OVER (ORDER BY salary DESC) AS rnk, DENSE_RANK() OVER (ORDER BY salary DESC) AS dense_rnk, LAG(salary) OVER (ORDER BY salary DESC) AS prev_salary, LEAD(salary) OVER (ORDER BY salary DESC) AS next_salary FROM employees) WHERE name = 'Alice'", "expect": {"rows": [[100000, 1, 1, 1, null, 95000]]}},
+      {"sql": "SELECT salary, row_num, rnk, dense_rnk, prev_salary, next_salary FROM (SELECT name, salary, ROW_NUMBER() OVER (ORDER BY salary DESC) AS row_num, RANK() OVER (ORDER BY salary DESC) AS rnk, DENSE_RANK() OVER (ORDER BY salary DESC) AS dense_rnk, LAG(salary) OVER (ORDER BY salary DESC) AS prev_salary, LEAD(salary) OVER (ORDER BY salary DESC) AS next_salary FROM employees) WHERE name = 'David'", "expect": {"rows": [[85000, 5, 5, 4, 90000, null]]}}
+    ]},
+    {"name": "lag-and-lead-with-offsets", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, department VARCHAR, salary INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1,'Alice','Engineering',100000),(2,'Bob','Engineering',95000),(3,'Charlie','Engineering',95000),(4,'David','Sales',85000),(5,'Eve','Sales',90000)"},
+      {"sql": "SELECT name, LAG(salary,1) OVER (ORDER BY salary DESC) AS lag1, LAG(salary,2) OVER (ORDER BY salary DESC) AS lag2, LEAD(salary,1) OVER (ORDER BY salary DESC) AS lead1, LEAD(salary,2) OVER (ORDER BY salary DESC) AS lead2 FROM employees", "expect": {"rowCount": 5}},
+      {"sql": "SELECT lag1, lag2, lead1, lead2 FROM (SELECT name, LAG(salary,1) OVER (ORDER BY salary DESC) AS lag1, LAG(salary,2) OVER (ORDER BY salary DESC) AS lag2, LEAD(salary,1) OVER (ORDER BY salary DESC) AS lead1, LEAD(salary,2) OVER (ORDER BY salary DESC) AS lead2 FROM employees) WHERE name = 'Alice'", "expect": {"rows": [[null, null, 95000, 95000]]}},
+      {"sql": "SELECT lag1, lag2, lead1, lead2 FROM (SELECT name, LAG(salary,1) OVER (ORDER BY salary DESC) AS lag1, LAG(salary,2) OVER (ORDER BY salary DESC) AS lag2, LEAD(salary,1) OVER (ORDER BY salary DESC) AS lead1, LEAD(salary,2) OVER (ORDER BY salary DESC) AS lead2 FROM employees) WHERE name = 'David'", "expect": {"rows": [[90000, 95000, null, null]]}}
+    ]},
+    {"name": "lag-and-lead-with-defaults", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, department VARCHAR, salary INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1,'Alice','Engineering',100000),(2,'Bob','Engineering',95000),(3,'Charlie','Engineering',95000),(4,'David','Sales',85000),(5,'Eve','Sales',90000)"},
+      {"sql": "SELECT name, LAG(salary,1,0) OVER (ORDER BY salary DESC) AS prev_salary, LEAD(salary,1,0) OVER (ORDER BY salary DESC) AS next_salary FROM employees", "expect": {"rowCount": 5}},
+      {"sql": "SELECT prev_salary FROM (SELECT name, LAG(salary,1,0) OVER (ORDER BY salary DESC) AS prev_salary FROM employees) WHERE name = 'Alice'", "expect": {"value": "0"}},
+      {"sql": "SELECT next_salary FROM (SELECT name, LEAD(salary,1,0) OVER (ORDER BY salary DESC) AS next_salary FROM employees) WHERE name = 'David'", "expect": {"value": "0"}}
+    ]},
+    {"name": "comparing-the-current-row-with-the-previous-and-next", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, department VARCHAR, salary INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1,'Alice','Engineering',100000),(2,'Bob','Engineering',95000),(3,'Charlie','Engineering',95000),(4,'David','Sales',85000),(5,'Eve','Sales',90000)"},
+      {"sql": "SELECT name, LAG(salary,1,999999) OVER (ORDER BY salary DESC) AS prev_salary, LEAD(salary,1,0) OVER (ORDER BY salary DESC) AS next_salary FROM employees", "expect": {"rowCount": 5}},
+      {"sql": "SELECT salary, prev_salary, next_salary FROM (SELECT name, salary, LAG(salary,1,999999) OVER (ORDER BY salary DESC) AS prev_salary, LEAD(salary,1,0) OVER (ORDER BY salary DESC) AS next_salary FROM employees) WHERE name = 'Alice'", "expect": {"rows": [[100000, 999999, 95000]]}},
+      {"sql": "SELECT salary, prev_salary, next_salary FROM (SELECT name, salary, LAG(salary,1,999999) OVER (ORDER BY salary DESC) AS prev_salary, LEAD(salary,1,0) OVER (ORDER BY salary DESC) AS next_salary FROM employees) WHERE name = 'David'", "expect": {"rows": [[85000, 90000, 0]]}},
+      {"sql": "SELECT salary, prev_salary, next_salary FROM (SELECT name, salary, LAG(salary,1,999999) OVER (ORDER BY salary DESC) AS prev_salary, LEAD(salary,1,0) OVER (ORDER BY salary DESC) AS next_salary FROM employees) WHERE name = 'Eve'", "expect": {"rows": [[90000, 95000, 85000]]}}
+    ]}
+  ]
+}

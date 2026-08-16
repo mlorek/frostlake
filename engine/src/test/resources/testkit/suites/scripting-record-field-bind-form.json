@@ -1,0 +1,29 @@
+{
+  "suite": "scripting-record-field-bind-form",
+  "description": "A cursor loop RECORD cannot be bound into EMBEDDED SQL by name. Live-verified inside FOR r IN c DO ... END FOR: :r.price is a SYNTAX ERROR at the dot, a bare r.price is invalid identifier 'R.PRICE', a bare r is invalid identifier 'R', and :r alone is 'Bind variable :r not set.'. Frostlake used to substitute only the :r part of :r.price and leave NULL.price in the SQL, so the documented-looking spelling silently inserted NULL instead of the field value - which is why the decisive assertion here is that NOTHING WAS WRITTEN, not merely that an error was raised. The idiom Snowflake does support is copying the field into a variable first and binding THAT, which sums to 30. The field itself reads fine in a procedural EXPRESSION, because an expression is not embedded SQL. And the regression guard that goes with all of it: src:a.b inside a loop body is a semi-structured PATH, not :a followed by .b. Converted 1:1 from scripting/RecordFieldBindFormTest (now retired); the Java walked the whole cause chain to find the message, which messageContains covers directly.",
+  "tags": ["scripting", "converted"],
+  "tests": [
+    {"name": "a-dotted-bind-variable-is-rejected-rather-than-silently-null", "steps": [
+      {"sql": "CREATE TABLE bind_out (v INTEGER)"},
+      {"sql": "DECLARE c CURSOR FOR SELECT 10 AS price UNION ALL SELECT 20; BEGIN FOR r IN c DO INSERT INTO bind_out VALUES (:r.price); END FOR; RETURN 1; END",
+       "expect": {"error": {"messageContains": "unexpected '.'"}}},
+      {"sql": "SELECT COUNT(*) FROM bind_out", "expect": {"value": 0}}
+    ]},
+    {"name": "copying-the-field-into-a-variable-and-binding-that-works", "steps": [
+      {"sql": "CREATE TABLE bind_ok (v INTEGER)"},
+      {"sql": "DECLARE c CURSOR FOR SELECT 10 AS price UNION ALL SELECT 20; pv INTEGER; BEGIN FOR r IN c DO pv := r.price; INSERT INTO bind_ok VALUES (:pv); END FOR; RETURN 1; END"},
+      {"sql": "SELECT v FROM bind_ok ORDER BY v", "expect": {"rows": [[10],[20]], "ordered": true}}
+    ]},
+    {"name": "the-field-still-reads-in-a-procedural-expression", "steps": [
+      {"sql": "DECLARE c CURSOR FOR SELECT 10 AS price; n INTEGER DEFAULT 0; BEGIN FOR r IN c DO n := r.price + 1; END FOR; RETURN n; END",
+       "expect": {"value": 11}}
+    ]},
+    {"name": "a-variant-path-colon-is-not-a-bind-variable", "steps": [
+      {"sql": "CREATE TABLE bind_variant (src VARIANT)"},
+      {"sql": "INSERT INTO bind_variant SELECT PARSE_JSON('{\"a\":{\"b\":7}}')"},
+      {"sql": "CREATE TABLE bind_variant_out (v INTEGER)"},
+      {"sql": "DECLARE c CURSOR FOR SELECT 1 AS n; BEGIN FOR r IN c DO INSERT INTO bind_variant_out SELECT src:a.b FROM bind_variant; END FOR; RETURN 1; END"},
+      {"sql": "SELECT v FROM bind_variant_out", "expect": {"rows": [[7]]}}
+    ]}
+  ]
+}

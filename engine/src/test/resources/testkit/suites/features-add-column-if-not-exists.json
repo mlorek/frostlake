@@ -1,0 +1,109 @@
+{
+  "suite": "features-add-column-if-not-exists",
+  "description": "ALTER TABLE ... ADD COLUMN IF NOT EXISTS through the SQL surface: adding an already-present column is forgiven leaving the existing column and its TYPE untouched (case-insensitively, idempotently, in mixed sequences with the unforgiving form), works with qualified names, ALTER TABLE IF EXISTS (a missing table a clean no-op), data-bearing tables, complex and parameterized types. Converted 1:1 from features/AddColumnIfNotExistsTest (now retired).",
+  "tags": ["features", "converted"],
+  "tests": [
+    {"name": "add-column-without-if-not-exists", "steps": [
+      {"sql": "CREATE TABLE users (id INTEGER, name VARCHAR)"},
+      {"sql": "ALTER TABLE users ADD COLUMN age INTEGER"},
+      {"sql": "DESCRIBE TABLE users", "expect": {"rowCount": 3}},
+      {"sql": "SELECT COUNT_IF(\"name\" = 'AGE') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "1"}}
+    ]},
+    {"name": "add-column-without-if-not-exists-on-existing-column", "steps": [
+      {"sql": "CREATE TABLE users (id INTEGER, name VARCHAR)"},
+      {"sql": "ALTER TABLE users ADD COLUMN name VARCHAR", "expect": {"error": {}}}
+    ]},
+    {"name": "add-column-if-not-exists-on-new-column", "steps": [
+      {"sql": "CREATE TABLE products (id INTEGER, name VARCHAR)"},
+      {"sql": "ALTER TABLE products ADD COLUMN IF NOT EXISTS price INTEGER"},
+      {"sql": "DESCRIBE TABLE products", "expect": {"rowCount": 3}},
+      {"sql": "SELECT COUNT_IF(\"name\" = 'PRICE') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "1"}}
+    ]},
+    {"name": "add-column-if-not-exists-on-existing-column", "steps": [
+      {"sql": "CREATE TABLE products (id INTEGER, name VARCHAR, price INTEGER)"},
+      {"sql": "ALTER TABLE products ADD COLUMN IF NOT EXISTS price INTEGER"},
+      {"sql": "DESCRIBE TABLE products", "expect": {"rowCount": 3}}
+    ]},
+    {"name": "add-column-if-not-exists-with-different-type", "steps": [
+      {"sql": "CREATE TABLE items (id INTEGER, name VARCHAR)"},
+      {"sql": "ALTER TABLE items ADD COLUMN IF NOT EXISTS name INTEGER"},
+      {"sql": "DESCRIBE TABLE items", "expect": {"rowCount": 2}},
+      {"sql": "SELECT COUNT_IF(\"name\" = 'NAME' AND STARTSWITH(\"type\", 'VARCHAR')) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "1"}}
+    ]},
+    {"name": "add-multiple-columns-if-not-exists", "steps": [
+      {"sql": "CREATE TABLE orders (id INTEGER, customer_id INTEGER)"},
+      {"sql": "ALTER TABLE orders ADD COLUMN IF NOT EXISTS status VARCHAR"},
+      {"sql": "ALTER TABLE orders ADD COLUMN IF NOT EXISTS status VARCHAR"},
+      {"sql": "ALTER TABLE orders ADD COLUMN IF NOT EXISTS total INTEGER"},
+      {"sql": "DESCRIBE TABLE orders", "expect": {"rowCount": 4}},
+      {"sql": "SELECT COUNT_IF(\"name\" = 'STATUS'), COUNT_IF(\"name\" = 'TOTAL') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"rows": [["1", "1"]]}}
+    ]},
+    {"name": "add-column-if-not-exists-with-qualified-name", "steps": [
+      {"sql": "CREATE SCHEMA add_col_schema"},
+      {"sql": "CREATE TABLE add_col_schema.customers (id INTEGER, name VARCHAR)"},
+      {"sql": "ALTER TABLE add_col_schema.customers ADD COLUMN IF NOT EXISTS email VARCHAR"},
+      {"sql": "DESCRIBE TABLE add_col_schema.customers", "expect": {"rowCount": 3}},
+      {"sql": "SELECT COUNT_IF(\"name\" = 'EMAIL') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "1"}}
+    ]},
+    {"name": "add-column-if-not-exists-with-alter-table-if-exists", "steps": [
+      {"sql": "CREATE TABLE test_table (id INTEGER)"},
+      {"sql": "ALTER TABLE IF EXISTS test_table ADD COLUMN IF NOT EXISTS col1 VARCHAR"},
+      {"sql": "DESCRIBE TABLE test_table", "expect": {"rowCount": 2}},
+      {"sql": "SELECT COUNT_IF(\"name\" = 'COL1') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "1"}}
+    ]},
+    {"name": "add-column-if-not-exists-on-non-existent-table-with-table-if-exists", "steps": [
+      {"sql": "ALTER TABLE IF EXISTS non_existent ADD COLUMN IF NOT EXISTS col1 VARCHAR"}
+    ]},
+    {"name": "add-column-if-not-exists-with-data", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice')"},
+      {"sql": "INSERT INTO employees VALUES (2, 'Bob')"},
+      {"sql": "ALTER TABLE employees ADD COLUMN IF NOT EXISTS salary INTEGER"},
+      {"sql": "SELECT * FROM employees", "expect": {"rowCount": 2}},
+      {"sql": "DESCRIBE TABLE employees", "expect": {"rowCount": 3}}
+    ]},
+    {"name": "add-column-if-not-exists-idempotent", "steps": [
+      {"sql": "CREATE TABLE config (id INTEGER)"},
+      {"sql": "ALTER TABLE config ADD COLUMN IF NOT EXISTS setting VARCHAR"},
+      {"sql": "ALTER TABLE config ADD COLUMN IF NOT EXISTS setting VARCHAR"},
+      {"sql": "ALTER TABLE config ADD COLUMN IF NOT EXISTS setting VARCHAR"},
+      {"sql": "ALTER TABLE config ADD COLUMN IF NOT EXISTS setting VARCHAR"},
+      {"sql": "ALTER TABLE config ADD COLUMN IF NOT EXISTS setting VARCHAR"},
+      {"sql": "DESCRIBE TABLE config", "expect": {"rowCount": 2}}
+    ]},
+    {"name": "add-column-if-not-exists-case-insensitive", "steps": [
+      {"sql": "CREATE TABLE test_table (id INTEGER, Name VARCHAR)"},
+      {"sql": "ALTER TABLE test_table ADD COLUMN IF NOT EXISTS name VARCHAR"},
+      {"sql": "DESCRIBE TABLE test_table", "expect": {"rowCount": 2}}
+    ]},
+    {"name": "add-column-if-not-exists-with-complex-data-type", "steps": [
+      {"sql": "CREATE TABLE events (id INTEGER)"},
+      {"sql": "ALTER TABLE events ADD COLUMN IF NOT EXISTS event_time TIMESTAMP_LTZ"},
+      {"sql": "DESCRIBE TABLE events", "expect": {"rowCount": 2}},
+      {"sql": "SELECT COUNT_IF(\"name\" = 'EVENT_TIME') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "1"}}
+    ]},
+    {"name": "add-column-if-not-exists-with-type-parameters", "steps": [
+      {"sql": "CREATE TABLE documents (id INTEGER)"},
+      {"sql": "ALTER TABLE documents ADD COLUMN IF NOT EXISTS content VARCHAR(16777216)"},
+      {"sql": "DESCRIBE TABLE documents", "expect": {"rowCount": 2}},
+      {"sql": "SELECT COUNT_IF(\"name\" = 'CONTENT' AND STARTSWITH(\"type\", 'VARCHAR')) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "1"}}
+    ]},
+    {"name": "mixed-add-column-with-and-without-if-not-exists", "steps": [
+      {"sql": "CREATE TABLE mixed (id INTEGER)"},
+      {"sql": "ALTER TABLE mixed ADD COLUMN col1 VARCHAR"},
+      {"sql": "ALTER TABLE mixed ADD COLUMN IF NOT EXISTS col2 INTEGER"},
+      {"sql": "ALTER TABLE mixed ADD COLUMN IF NOT EXISTS col1 VARCHAR"},
+      {"sql": "ALTER TABLE mixed ADD COLUMN col2 INTEGER", "expect": {"error": {}}},
+      {"sql": "DESCRIBE TABLE mixed", "expect": {"rowCount": 3}}
+    ]},
+    {"name": "add-column-if-not-exists-real-world-example", "steps": [
+      {"sql": "CREATE SCHEMA BASE"},
+      {"sql": "CREATE TABLE BASE.DIM_PRODUCT (PRODUCT_ID INTEGER, PRODUCT_NAME VARCHAR)"},
+      {"sql": "ALTER TABLE IF EXISTS BASE.DIM_PRODUCT ADD COLUMN IF NOT EXISTS PRODUCT_URL VARCHAR(16777216)"},
+      {"sql": "DESCRIBE TABLE BASE.DIM_PRODUCT", "expect": {"rowCount": 3}},
+      {"sql": "SELECT COUNT_IF(\"name\" = 'PRODUCT_URL' AND LENGTH(\"type\") > 0) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "1"}},
+      {"sql": "ALTER TABLE IF EXISTS BASE.DIM_PRODUCT ADD COLUMN IF NOT EXISTS PRODUCT_URL VARCHAR(16777216)"},
+      {"sql": "DESCRIBE TABLE BASE.DIM_PRODUCT", "expect": {"rowCount": 3}}
+    ]}
+  ]
+}

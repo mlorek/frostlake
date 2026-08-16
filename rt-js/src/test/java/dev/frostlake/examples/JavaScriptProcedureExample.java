@@ -167,7 +167,7 @@ public final class JavaScriptProcedureExample {
                 LANGUAGE JAVASCRIPT
                 AS
                 $$
-                    var cmd = "SELECT COUNT(*) as cnt, SUM(amount) as total FROM sales WHERE amount > " + min_amount;
+                    var cmd = "SELECT COUNT(*) as cnt, SUM(amount) as total FROM sales WHERE amount > " + MIN_AMOUNT;
                     var rs = snowflake.execute({sqlText: cmd});
 
                     if (rs.next()) {
@@ -237,11 +237,11 @@ public final class JavaScriptProcedureExample {
                         success: false,
                         data: null,
                         error: null,
-                        table: table_name
+                        table: TABLE_NAME
                     };
 
                     try {
-                        var cmd = "SELECT COUNT(*) as cnt FROM " + table_name;
+                        var cmd = "SELECT COUNT(*) as cnt FROM " + TABLE_NAME;
                         var rs = snowflake.execute({sqlText: cmd});
 
                         if (rs.next()) {

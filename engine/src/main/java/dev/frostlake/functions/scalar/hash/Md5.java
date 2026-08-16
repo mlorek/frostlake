@@ -17,6 +17,7 @@
 package dev.frostlake.functions.scalar.hash;
 
 import dev.frostlake.functions.BuiltInFunction;
+import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.types.StringType;
 
@@ -36,6 +37,12 @@ public class Md5 extends BuiltInFunction {
         if (args.get(0) == null) return null;
         return SharedFunctionHelpers.toHex(
             SharedFunctionHelpers.digest("MD5", SharedFunctionHelpers.toUtf8(args.get(0))));
+    }
+
+    /** A VECTOR is refused by its argument type, in every position (live-verified). */
+    @Override
+    public SemiStructuredRejection vectorRejection(final int position) {
+        return SemiStructuredRejection.ARGUMENT_TYPES;
     }
 
     @Override

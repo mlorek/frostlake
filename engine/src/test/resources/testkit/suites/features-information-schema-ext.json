@@ -1,0 +1,114 @@
+{
+  "suite": "features-information-schema-ext",
+  "description": "The extended INFORMATION_SCHEMA surface: DATABASES/SCHEMATA carry IS_TRANSIENT / LAST_ALTERED / RETENTION_TIME (not RETENTION_TIME_DAYS), TABLES carries owner/type/bytes with YES/NO transient flags, COLUMNS carries NUMERIC_PRECISION and IS_IDENTITY, VIEWS carries owner and options, PROCEDURES and FUNCTIONS report language/signature (table-ness carried by DATA_TYPE 'TABLE (...)' - no IS_TABLE_FUNCTION column), SEQUENCES reports start values, TABLE_CONSTRAINTS / REFERENTIAL_CONSTRAINTS / role and privilege views are queryable, STREAMS/TASKS/TAGS/TAG_REFERENCES are NOT views (does-not-exist, the objects list via SHOW), PIPES reports pipes, and the views are scoped to the current database. Converted 1:1 from features/InformationSchemaExtTest (now retired).",
+  "tags": ["features", "converted"],
+  "tests": [
+    {"name": "databases-has-new-columns", "steps": [
+      {"sql": "SELECT COUNT(*) >= 1 FROM (SELECT DATABASE_NAME, IS_TRANSIENT, LAST_ALTERED FROM INFORMATION_SCHEMA.DATABASES)",
+       "expect": {"value": "true"}}
+    ]},
+    {"name": "schemata-has-new-columns", "steps": [
+      {"sql": "SELECT COUNT(*) >= 1 FROM (SELECT SCHEMA_NAME, IS_TRANSIENT, IS_MANAGED_ACCESS, RETENTION_TIME, OWNER_ROLE_TYPE FROM INFORMATION_SCHEMA.SCHEMATA)",
+       "expect": {"value": "true"}}
+    ]},
+    {"name": "tables-has-owner-and-type", "steps": [
+      {"sql": "CREATE TABLE t1 (id INTEGER)"},
+      {"sql": "SELECT COUNT(*) >= 1 FROM (SELECT TABLE_NAME, TABLE_OWNER, TABLE_TYPE, BYTES, LAST_ALTERED FROM INFORMATION_SCHEMA.TABLES)",
+       "expect": {"value": "true"}}
+    ]},
+    {"name": "tables-transient-flag", "steps": [
+      {"sql": "CREATE TRANSIENT TABLE trans_t (id INTEGER)"},
+      {"sql": "SELECT IS_TRANSIENT FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = 'TRANS_T'",
+       "expect": {"rowCount": 1, "rows": [["YES"]]}}
+    ]},
+    {"name": "columns-has-numeric-precision", "steps": [
+      {"sql": "CREATE TABLE nums (id INTEGER, val FLOAT)"},
+      {"sql": "SELECT COUNT(*) >= 2 FROM (SELECT COLUMN_NAME, DATA_TYPE, NUMERIC_PRECISION, IS_IDENTITY FROM INFORMATION_SCHEMA.COLUMNS)",
+       "expect": {"value": "true"}}
+    ]},
+    {"name": "columns-identity-flag", "steps": [
+      {"sql": "CREATE TABLE auto_t (id INTEGER AUTOINCREMENT, name VARCHAR)"},
+      {"sql": "SELECT COUNT(*) >= 2 FROM (SELECT COLUMN_NAME, IS_IDENTITY FROM INFORMATION_SCHEMA.COLUMNS)",
+       "expect": {"value": "true"}}
+    ]},
+    {"name": "views-has-owner-and-options", "steps": [
+      {"sql": "CREATE TABLE base (id INTEGER)"},
+      {"sql": "CREATE VIEW v1 AS SELECT * FROM base"},
+      {"sql": "SELECT COUNT(*) >= 1 FROM (SELECT TABLE_NAME, TABLE_OWNER, CHECK_OPTION, IS_UPDATABLE FROM INFORMATION_SCHEMA.VIEWS)",
+       "expect": {"value": "true"}}
+    ]},
+    {"name": "procedures-view", "steps": [
+      {"sql": "CREATE PROCEDURE greet(name VARCHAR) RETURNS VARCHAR LANGUAGE SQL AS $$\n    BEGIN RETURN 'Hello'; END\n$$"},
+      {"sql": "SELECT PROCEDURE_NAME, PROCEDURE_LANGUAGE FROM INFORMATION_SCHEMA.PROCEDURES",
+       "expect": {"rowCount": 1, "rows": [["GREET", "SQL"]]}},
+      {"sql": "SELECT ARGUMENT_SIGNATURE, DATA_TYPE FROM INFORMATION_SCHEMA.PROCEDURES", "expect": {"rowCount": 1}}
+    ]},
+    {"name": "functions-view", "steps": [
+      {"sql": "CREATE FUNCTION add_one(n INTEGER) RETURNS INTEGER AS $$ SELECT 1 $$"},
+      {"sql": "SELECT FUNCTION_NAME, STARTSWITH(DATA_TYPE, 'TABLE') FROM INFORMATION_SCHEMA.FUNCTIONS",
+       "expect": {"rowCount": 1, "rows": [["ADD_ONE", "false"]]}},
+      {"sql": "SELECT FUNCTION_LANGUAGE, ARGUMENT_SIGNATURE FROM INFORMATION_SCHEMA.FUNCTIONS", "expect": {"rowCount": 1}}
+    ]},
+    {"name": "functions-view-table-function", "steps": [
+      {"sql": "CREATE FUNCTION rows_fn() RETURNS TABLE(v VARCHAR) AS $$ SELECT 'a' $$"},
+      {"sql": "SELECT STARTSWITH(DATA_TYPE, 'TABLE (') FROM INFORMATION_SCHEMA.FUNCTIONS",
+       "expect": {"rowCount": 1, "rows": [["true"]]}}
+    ]},
+    {"name": "sequences-view", "steps": [
+      {"sql": "CREATE SEQUENCE seq1 START 10 INCREMENT 5"},
+      {"sql": "SELECT SEQUENCE_NAME, TO_NUMBER(START_VALUE) FROM INFORMATION_SCHEMA.SEQUENCES",
+       "expect": {"rowCount": 1, "rows": [["SEQ1", "10"]]}}
+    ]},
+    {"name": "table-constraints-view", "steps": [
+      {"sql": "CREATE TABLE ct (id INTEGER PRIMARY KEY, val VARCHAR UNIQUE)"},
+      {"sql": "SELECT COUNT(*) >= 2 FROM (SELECT CONSTRAINT_NAME, CONSTRAINT_TYPE FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS)",
+       "expect": {"value": "true"}}
+    ]},
+    {"name": "referential-constraints-view", "steps": [
+      {"sql": "SELECT CONSTRAINT_NAME, MATCH_OPTION, UPDATE_RULE, DELETE_RULE FROM INFORMATION_SCHEMA.REFERENTIAL_CONSTRAINTS"}
+    ]},
+    {"name": "enabled-roles-view", "steps": [
+      {"sql": "SELECT COUNT(*) >= 1 FROM (SELECT ROLE_NAME, ROLE_OWNER FROM INFORMATION_SCHEMA.ENABLED_ROLES)",
+       "expect": {"value": "true"}}
+    ]},
+    {"name": "applicable-roles-view", "steps": [
+      {"sql": "SELECT GRANTEE, ROLE_NAME, IS_GRANTABLE FROM INFORMATION_SCHEMA.APPLICABLE_ROLES"}
+    ]},
+    {"name": "table-privileges-view", "steps": [
+      {"sql": "SELECT GRANTOR, GRANTEE, TABLE_NAME, PRIVILEGE_TYPE FROM INFORMATION_SCHEMA.TABLE_PRIVILEGES"}
+    ]},
+    {"name": "object-privileges-view", "steps": [
+      {"sql": "SELECT OBJECT_NAME, OBJECT_TYPE, PRIVILEGE_TYPE FROM INFORMATION_SCHEMA.OBJECT_PRIVILEGES"}
+    ]},
+    {"name": "usage-privileges-view", "steps": [
+      {"sql": "SELECT OBJECT_NAME, PRIVILEGE_TYPE FROM INFORMATION_SCHEMA.USAGE_PRIVILEGES"}
+    ]},
+    {"name": "streams-tasks-and-tags-are-not-information-schema-views", "steps": [
+      {"sql": "CREATE TABLE src (id INTEGER)"},
+      {"sql": "CREATE STREAM s1 ON TABLE src"},
+      {"sql": "CREATE TAG env ALLOWED_VALUES 'prod', 'dev'"},
+      {"sql": "SELECT * FROM INFORMATION_SCHEMA.STREAMS", "expect": {"error": {"messageContains": "does not exist"}}},
+      {"sql": "SELECT * FROM INFORMATION_SCHEMA.TASKS", "expect": {"error": {"messageContains": "does not exist"}}},
+      {"sql": "SELECT * FROM INFORMATION_SCHEMA.TAGS", "expect": {"error": {"messageContains": "does not exist"}}},
+      {"sql": "SELECT * FROM INFORMATION_SCHEMA.TAG_REFERENCES", "expect": {"error": {"messageContains": "does not exist"}}},
+      {"sql": "SHOW STREAMS", "expect": {"rowCount": 1}}
+    ]},
+    {"name": "pipes-view", "steps": [
+      {"sql": "CREATE STAGE my_stage URL='s3://my-bucket/data'"},
+      {"sql": "CREATE TABLE load_target (id INTEGER, name VARCHAR)"},
+      {"sql": "CREATE PIPE p1 AS COPY INTO load_target FROM @my_stage"},
+      {"sql": "SELECT PIPE_NAME, IS_AUTOINGEST_ENABLED FROM INFORMATION_SCHEMA.PIPES", "expect": {"rowCount": 1}},
+      {"sql": "SELECT PIPE_NAME FROM INFORMATION_SCHEMA.PIPES", "expect": {"value": "P1"}}
+    ]},
+    {"name": "views-scoped-to-current-database", "steps": [
+      {"sql": "CREATE TABLE t_local (id INTEGER)"},
+      {"sql": "CREATE DATABASE other_db"},
+      {"sql": "USE DATABASE other_db"},
+      {"sql": "CREATE TABLE t_other (id INTEGER)"},
+      {"sql": "USE DATABASE test_db"},
+      {"sql": "USE SCHEMA test_schema"},
+      {"sql": "SELECT COUNT_IF(TABLE_NAME = 'T_OTHER') FROM INFORMATION_SCHEMA.TABLES", "expect": {"value": "0"}},
+      {"sql": "DROP DATABASE IF EXISTS other_db"}
+    ]}
+  ]
+}

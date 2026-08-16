@@ -1,0 +1,98 @@
+{
+  "suite": "ddl-identifier-exactness",
+  "description": "Identifier resolution is EXACT: bare references fold to upper case, quoted ones stay verbatim, and the resolved name must match the stored one exactly on every leg (database, schema, table, column, SHOW scope) - each leg refused under the kind live names it by; a quoted reference does not reach a folded name; a runtime STRING name (IDENTIFIER('t'), TABLE('t'), GET_DDL) folds like a reference; and a missing SHOW scope is reported per KIND (six generic kinds answer the bare object sentence, ten naming kinds spell the schema). All live-measured. Converted 1:1 from ddl/IdentifierResolutionExactnessTest (now retired). The quoted mixedDb database is account-level and dropped at test end.",
+  "tags": ["ddl", "converted"],
+  "tests": [
+    {"name": "a-quoted-database-keeps-its-name", "steps": [
+      {"sql": "CREATE OR REPLACE DATABASE \"mixedDb\""},
+      {"sql": "SHOW DATABASES LIKE 'mixedDb'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"name\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "mixedDb"}},
+      {"sql": "USE DATABASE test_db"},
+      {"sql": "DROP DATABASE IF EXISTS \"mixedDb\""}
+    ]},
+    {"name": "the-fully-quoted-reference-resolves", "steps": [
+      {"sql": "CREATE OR REPLACE DATABASE \"mixedDb\""},
+      {"sql": "USE DATABASE \"mixedDb\""},
+      {"sql": "CREATE SCHEMA \"mixedSch\""},
+      {"sql": "CREATE TABLE \"mixedSch\".\"mixedTbl\" (\"mixedCol\" INTEGER)"},
+      {"sql": "SELECT * FROM \"mixedDb\".\"mixedSch\".\"mixedTbl\"", "expect": {"rowCount": 0}},
+      {"sql": "USE DATABASE test_db"},
+      {"sql": "DROP DATABASE IF EXISTS \"mixedDb\""}
+    ]},
+    {"name": "each-leg-is-matched-exactly", "steps": [
+      {"sql": "CREATE OR REPLACE DATABASE \"mixedDb\""},
+      {"sql": "USE DATABASE \"mixedDb\""},
+      {"sql": "CREATE SCHEMA \"mixedSch\""},
+      {"sql": "CREATE TABLE \"mixedSch\".\"mixedTbl\" (\"mixedCol\" INTEGER)"},
+      {"sql": "SELECT * FROM mixedDb.\"mixedSch\".\"mixedTbl\"",
+       "expect": {"error": {"messageContains": "Database 'MIXEDDB' does not exist or not authorized."}}},
+      {"sql": "SELECT * FROM \"mixedDb\".mixedSch.\"mixedTbl\"",
+       "expect": {"error": {"messageContains": "MIXEDSCH' does not exist or not authorized."}}},
+      {"sql": "SELECT * FROM \"mixedDb\".\"mixedSch\".mixedTbl",
+       "expect": {"error": {"messageContains": "MIXEDTBL' does not exist or not authorized."}}},
+      {"sql": "SELECT mixedCol FROM \"mixedDb\".\"mixedSch\".\"mixedTbl\"",
+       "expect": {"error": {"messageContains": "invalid identifier 'MIXEDCOL'"}}},
+      {"sql": "USE DATABASE test_db"},
+      {"sql": "DROP DATABASE IF EXISTS \"mixedDb\""}
+    ]},
+    {"name": "a-quoted-reference-does-not-reach-a-folded-name", "steps": [
+      {"sql": "CREATE TABLE plain (a INTEGER)"},
+      {"sql": "SELECT * FROM plain", "expect": {"rowCount": 0}},
+      {"sql": "SELECT * FROM \"plain\"",
+       "expect": {"error": {"messageContains": "does not exist or not authorized."}}}
+    ]},
+    {"name": "the-show-scope-is-matched-exactly", "steps": [
+      {"sql": "CREATE OR REPLACE DATABASE \"mixedDb\""},
+      {"sql": "USE DATABASE \"mixedDb\""},
+      {"sql": "CREATE SCHEMA \"mixedSch\""},
+      {"sql": "CREATE TABLE \"mixedSch\".\"mixedTbl\" (\"mixedCol\" INTEGER)"},
+      {"sql": "SHOW TABLES IN SCHEMA \"mixedDb\".\"mixedSch\"", "expect": {"rowCount": 1}},
+      {"sql": "SHOW TABLES IN SCHEMA \"mixedDb\".mixedSch",
+       "expect": {"error": {"messageContains": "does not exist"}}},
+      {"sql": "USE DATABASE test_db"},
+      {"sql": "DROP DATABASE IF EXISTS \"mixedDb\""}
+    ]},
+    {"name": "a-name-given-as-a-string-folds-like-a-reference", "steps": [
+      {"sql": "CREATE TABLE plain (a INTEGER)"},
+      {"sql": "INSERT INTO plain VALUES (1)"},
+      {"sql": "SELECT * FROM IDENTIFIER('plain')", "expect": {"rowCount": 1}},
+      {"sql": "SELECT * FROM IDENTIFIER('PLAIN')", "expect": {"rowCount": 1}},
+      {"sql": "SELECT * FROM TABLE('plain')", "expect": {"rowCount": 1}},
+      {"sql": "SELECT CONTAINS(UPPER(GET_DDL('TABLE', 'plain')), 'PLAIN')", "expect": {"value": "true"}}
+    ]},
+    {"name": "a-missing-show-scope-is-reported-per-kind", "steps": [
+      {"sql": "SHOW TABLES IN SCHEMA test_db.nosuchschema",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nObject does not exist, or operation cannot be performed."}}},
+      {"sql": "SHOW VIEWS IN SCHEMA test_db.nosuchschema",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nObject does not exist, or operation cannot be performed."}}},
+      {"sql": "SHOW STAGES IN SCHEMA test_db.nosuchschema",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nObject does not exist, or operation cannot be performed."}}},
+      {"sql": "SHOW FILE FORMATS IN SCHEMA test_db.nosuchschema",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nObject does not exist, or operation cannot be performed."}}},
+      {"sql": "SHOW DYNAMIC TABLES IN SCHEMA test_db.nosuchschema",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nObject does not exist, or operation cannot be performed."}}},
+      {"sql": "SHOW OBJECTS IN SCHEMA test_db.nosuchschema",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nObject does not exist, or operation cannot be performed."}}},
+      {"sql": "SHOW PIPES IN SCHEMA test_db.nosuchschema",
+       "expect": {"error": {"messageContains": "Schema 'TEST_DB.NOSUCHSCHEMA' does not exist or not authorized."}}},
+      {"sql": "SHOW STREAMS IN SCHEMA test_db.nosuchschema",
+       "expect": {"error": {"messageContains": "Schema 'TEST_DB.NOSUCHSCHEMA' does not exist or not authorized."}}},
+      {"sql": "SHOW TASKS IN SCHEMA test_db.nosuchschema",
+       "expect": {"error": {"messageContains": "Schema 'TEST_DB.NOSUCHSCHEMA' does not exist or not authorized."}}},
+      {"sql": "SHOW SEQUENCES IN SCHEMA test_db.nosuchschema",
+       "expect": {"error": {"messageContains": "Schema 'TEST_DB.NOSUCHSCHEMA' does not exist or not authorized."}}},
+      {"sql": "SHOW TAGS IN SCHEMA test_db.nosuchschema",
+       "expect": {"error": {"messageContains": "Schema 'TEST_DB.NOSUCHSCHEMA' does not exist or not authorized."}}},
+      {"sql": "SHOW MASKING POLICIES IN SCHEMA test_db.nosuchschema",
+       "expect": {"error": {"messageContains": "Schema 'TEST_DB.NOSUCHSCHEMA' does not exist or not authorized."}}},
+      {"sql": "SHOW ROW ACCESS POLICIES IN SCHEMA test_db.nosuchschema",
+       "expect": {"error": {"messageContains": "Schema 'TEST_DB.NOSUCHSCHEMA' does not exist or not authorized."}}},
+      {"sql": "SHOW MATERIALIZED VIEWS IN SCHEMA test_db.nosuchschema",
+       "expect": {"error": {"messageContains": "Schema 'TEST_DB.NOSUCHSCHEMA' does not exist or not authorized."}}},
+      {"sql": "SHOW PROCEDURES IN SCHEMA test_db.nosuchschema",
+       "expect": {"error": {"messageContains": "Schema 'TEST_DB.NOSUCHSCHEMA' does not exist or not authorized."}}},
+      {"sql": "SHOW FUNCTIONS IN SCHEMA test_db.nosuchschema",
+       "expect": {"error": {"messageContains": "Schema 'TEST_DB.NOSUCHSCHEMA' does not exist or not authorized."}}}
+    ]}
+  ]
+}

@@ -1,0 +1,73 @@
+{
+  "suite": "ddl-function-type-parameters",
+  "description": "CREATE FUNCTION with parameterized argument types - VARCHAR(n), DECIMAL(p,s), TIMESTAMP(p), CHAR(n), NUMBER(p)/NUMBER(p,s), mixed lists, OR REPLACE with the same signature, schema-qualified names - each verified to exist via SHOW USER FUNCTIONS, then dropped by its signature. A routine's signature is stored under its CANONICAL type FAMILY (live-verified): DROP f(VARCHAR) drops a CHAR(10) parameter, DROP f(NUMBER) a DECIMAL one. Converted 1:1 from ddl/CreateFunctionWithTypeParametersTest (now retired; it ran over JDBC but was pure SQL).",
+  "tags": ["ddl", "functions", "converted"],
+  "tests": [
+    {"name": "create-function-with-varchar-parameter", "steps": [
+      {"sql": "CREATE FUNCTION greet(name VARCHAR(100)) RETURNS VARCHAR LANGUAGE SQL AS 'name'"},
+      {"sql": "SHOW USER FUNCTIONS LIKE 'greet'", "expect": {"rowCount": 1}},
+      {"sql": "DROP FUNCTION greet(VARCHAR)"}
+    ]},
+    {"name": "create-function-with-decimal-parameter", "steps": [
+      {"sql": "CREATE FUNCTION calculate_tax(amount DECIMAL(10, 2)) RETURNS DECIMAL LANGUAGE SQL AS 'amount'"},
+      {"sql": "SHOW USER FUNCTIONS LIKE 'calculate_tax'", "expect": {"rowCount": 1}},
+      {"sql": "DROP FUNCTION calculate_tax(DECIMAL)"}
+    ]},
+    {"name": "create-function-with-timestamp-parameter", "steps": [
+      {"sql": "CREATE FUNCTION format_time(ts TIMESTAMP(9)) RETURNS VARCHAR LANGUAGE SQL AS 'ts::VARCHAR'"},
+      {"sql": "SHOW USER FUNCTIONS LIKE 'format_time'", "expect": {"rowCount": 1}},
+      {"sql": "DROP FUNCTION format_time(TIMESTAMP)"}
+    ]},
+    {"name": "create-function-with-multiple-typed-parameters", "steps": [
+      {"sql": "CREATE FUNCTION format_record(id INTEGER, name VARCHAR(50), amount DECIMAL(10, 2)) RETURNS VARCHAR LANGUAGE SQL AS 'name'"},
+      {"sql": "SHOW USER FUNCTIONS LIKE 'format_record'", "expect": {"rowCount": 1}},
+      {"sql": "DROP FUNCTION format_record(INTEGER, VARCHAR, DECIMAL)"}
+    ]},
+    {"name": "create-function-mixed-parameters", "steps": [
+      {"sql": "CREATE FUNCTION process_data(id INTEGER, description VARCHAR(255), count INTEGER, price DECIMAL(8, 2)) RETURNS VARCHAR LANGUAGE SQL AS 'description'"},
+      {"sql": "SHOW USER FUNCTIONS LIKE 'process_data'", "expect": {"rowCount": 1}},
+      {"sql": "DROP FUNCTION process_data(INTEGER, VARCHAR, INTEGER, DECIMAL)"}
+    ]},
+    {"name": "create-function-with-char-parameter-drops-by-family", "steps": [
+      {"sql": "CREATE FUNCTION validate_code(code CHAR(10)) RETURNS INTEGER LANGUAGE SQL AS '1'"},
+      {"sql": "SHOW USER FUNCTIONS LIKE 'validate_code'", "expect": {"rowCount": 1}},
+      {"sql": "DROP FUNCTION validate_code(VARCHAR)"}
+    ]},
+    {"name": "create-function-with-number-parameter", "steps": [
+      {"sql": "CREATE FUNCTION compute_total(value NUMBER(12)) RETURNS NUMBER LANGUAGE SQL AS 'value'"},
+      {"sql": "SHOW USER FUNCTIONS LIKE 'compute_total'", "expect": {"rowCount": 1}},
+      {"sql": "DROP FUNCTION compute_total(NUMBER)"}
+    ]},
+    {"name": "create-function-with-number-precision-scale", "steps": [
+      {"sql": "CREATE FUNCTION calculate_interest(principal NUMBER(15, 2), rate NUMBER(5, 4)) RETURNS NUMBER LANGUAGE SQL AS 'principal'"},
+      {"sql": "SHOW USER FUNCTIONS LIKE 'calculate_interest'", "expect": {"rowCount": 1}},
+      {"sql": "DROP FUNCTION calculate_interest(NUMBER, NUMBER)"}
+    ]},
+    {"name": "create-or-replace-function-with-typed-parameters", "steps": [
+      {"sql": "CREATE FUNCTION update_record(id INTEGER, data VARCHAR(200)) RETURNS VARCHAR LANGUAGE SQL AS 'data'"},
+      {"sql": "CREATE OR REPLACE FUNCTION update_record(id INTEGER, data VARCHAR(200)) RETURNS VARCHAR LANGUAGE SQL AS 'data'"},
+      {"sql": "SHOW USER FUNCTIONS LIKE 'update_record'", "expect": {"rowCount": 1}},
+      {"sql": "DROP FUNCTION update_record(INTEGER, VARCHAR)"}
+    ]},
+    {"name": "create-function-with-all-typed-parameters", "steps": [
+      {"sql": "CREATE FUNCTION full_typed(str VARCHAR(100), dec DECIMAL(10, 2), num NUMBER(15, 3), ch CHAR(5)) RETURNS VARCHAR LANGUAGE SQL AS 'str'"},
+      {"sql": "SHOW USER FUNCTIONS LIKE 'full_typed'", "expect": {"rowCount": 1}},
+      {"sql": "DROP FUNCTION full_typed(VARCHAR, NUMBER, NUMBER, VARCHAR)"}
+    ]},
+    {"name": "drop-function-with-typed-parameters-match", "steps": [
+      {"sql": "CREATE FUNCTION typed_func(amount DECIMAL(10, 2)) RETURNS DECIMAL LANGUAGE SQL AS 'amount'"},
+      {"sql": "SHOW USER FUNCTIONS LIKE 'typed_func'", "expect": {"rowCount": 1}},
+      {"sql": "DROP FUNCTION typed_func(DECIMAL)"},
+      {"sql": "SHOW USER FUNCTIONS LIKE 'typed_func'", "expect": {"rowCount": 0}},
+      {"sql": "CREATE FUNCTION typed_func(amount DECIMAL(10, 2)) RETURNS DECIMAL LANGUAGE SQL AS 'amount'"},
+      {"sql": "SHOW USER FUNCTIONS LIKE 'typed_func'", "expect": {"rowCount": 1}},
+      {"sql": "DROP FUNCTION typed_func(DECIMAL)"}
+    ]},
+    {"name": "create-function-schema-qualified-with-typed-parameters", "steps": [
+      {"sql": "CREATE SCHEMA func_schema"},
+      {"sql": "CREATE FUNCTION func_schema.process(name VARCHAR(100), value DECIMAL(8, 2)) RETURNS VARCHAR LANGUAGE SQL AS 'name'"},
+      {"sql": "SHOW USER FUNCTIONS LIKE 'process' IN SCHEMA func_schema", "expect": {"rowCount": 1}},
+      {"sql": "DROP FUNCTION func_schema.process(VARCHAR, DECIMAL)"}
+    ]}
+  ]
+}

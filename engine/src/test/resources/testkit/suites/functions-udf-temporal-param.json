@@ -1,0 +1,18 @@
+{
+  "suite": "functions-udf-temporal-param",
+  "description": "SQL-UDF argument binding follows the DECLARED parameter types, as Snowflake does: a date-flavoured value passed to a TIMESTAMP_NTZ parameter is a TIMESTAMP inside the body, so VARIANT/OBJECT output renders it in full timestamp text ('2026-01-03 00:00:00.000'), never java.time's T-separated form nor date-only text, and DATEADD over it stays in the timestamp domain. Also covers Snowflake's no-underscore TIMESTAMPNTZ cast alias, which appears in real bodies. Converted 1:1 from functions/UdfTemporalParamTest (now retired).",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "a-timestamp-parameter-renders-in-full-form-inside-object-output", "steps": [
+      {"sql": "CREATE FUNCTION wrap_ts(ts TIMESTAMP_NTZ(9)) RETURNS OBJECT LANGUAGE SQL AS\n$$ SELECT OBJECT_CONSTRUCT('at', ts) $$"},
+      {"sql": "SELECT wrap_ts('2026-01-03'::DATE) AS r", "expect": {"value": "{\"at\":\"2026-01-03 00:00:00.000\"}"}}
+    ]},
+    {"name": "date-arithmetic-over-a-timestamp-parameter-stays-in-the-timestamp-domain", "steps": [
+      {"sql": "CREATE FUNCTION expiry(ts TIMESTAMP_NTZ(9)) RETURNS OBJECT LANGUAGE SQL AS\n$$ SELECT OBJECT_CONSTRUCT('until', DATEADD(DAY, 90, ts)) $$"},
+      {"sql": "SELECT expiry('2026-01-03'::DATE) AS r", "expect": {"value": "{\"until\":\"2026-04-03 00:00:00.000\"}"}}
+    ]},
+    {"name": "the-no-underscore-timestamp-alias-casts-to-timestamp", "steps": [
+      {"sql": "SELECT OBJECT_CONSTRUCT('a', '9999-12-31'::TIMESTAMPNTZ) AS r", "expect": {"value": "{\"a\":\"9999-12-31 00:00:00.000\"}"}}
+    ]}
+  ]
+}

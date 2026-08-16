@@ -1,0 +1,66 @@
+{
+  "suite": "expr-spread-operator",
+  "description": "The ** spread operator - argument SPLATTING, not an array feature: it splices constant-array elements into array literals (one level deep, keeping nesting and mixed types, empty arrays contributing nothing) and into ANY function's argument list (ARRAY_APPEND gets two arguments, GREATEST orders them, OBJECT_CONSTRUCT pairs them); the operand must be a CONSTANT array (a literal or ARRAY_CONSTRUCT call) - a runtime expression, column, scalar, string or OBJECT is refused with the spread-argument-with-non-constant-array-input wording, and object-literal / bare / qualified row spreads are syntax errors; plain array and object literals are untouched. Converted 1:1 from expressions/SpreadOperatorTest (now retired).",
+  "tags": ["expressions", "converted"],
+  "tests": [
+    {"name": "array-literal-spread-splices-elements", "steps": [
+      {"sql": "SELECT [** [1, 2], ** [3, 4]]", "expect": {"value": "[1,2,3,4]"}},
+      {"sql": "SELECT [1, 2, ** [3, 4]]", "expect": {"value": "[1,2,3,4]"}},
+      {"sql": "SELECT [** [1, 2], 3]", "expect": {"value": "[1,2,3]"}},
+      {"sql": "SELECT [0, ** [1, 2], 3, ** [4], 5]", "expect": {"value": "[0,1,2,3,4,5]"}},
+      {"sql": "SELECT [** [1, 2]]", "expect": {"value": "[1,2]"}}
+    ]},
+    {"name": "spread-of-empty-array-contributes-nothing", "steps": [
+      {"sql": "SELECT [** []]", "expect": {"value": "[]"}},
+      {"sql": "SELECT [** [], 7]", "expect": {"value": "[7]"}}
+    ]},
+    {"name": "spread-is-one-level-deep-and-keeps-nesting", "steps": [
+      {"sql": "SELECT [** [1, [2, 3]]]", "expect": {"value": "[1,[2,3]]"}}
+    ]},
+    {"name": "spread-keeps-mixed-element-types", "steps": [
+      {"sql": "SELECT [** ['a', 1, TRUE]]", "expect": {"value": "[\"a\",1,true]"}}
+    ]},
+    {"name": "array-construct-call-is-a-constant-operand", "steps": [
+      {"sql": "SELECT [** ARRAY_CONSTRUCT(1, 2), 3]", "expect": {"value": "[1,2,3]"}}
+    ]},
+    {"name": "spread-as-function-arguments-splats-them", "steps": [
+      {"sql": "SELECT ARRAY_CONSTRUCT(** [3, 4])", "expect": {"value": "[3,4]"}},
+      {"sql": "SELECT ARRAY_CONSTRUCT(1, ** [2, 3], 4)", "expect": {"value": "[1,2,3,4]"}},
+      {"sql": "SELECT ARRAY_CONSTRUCT(** [1], ** [2])", "expect": {"value": "[1,2]"}}
+    ]},
+    {"name": "spread-splats-arguments-of-ordinary-functions", "steps": [
+      {"sql": "SELECT ARRAY_APPEND(** [[1, 2], 3])", "expect": {"value": "[1,2,3]"}},
+      {"sql": "SELECT GREATEST(** [1, 5, 3])", "expect": {"value": "5"}},
+      {"sql": "SELECT CONCAT(** ['a', 'b'])", "expect": {"value": "ab"}},
+      {"sql": "SELECT OBJECT_CONSTRUCT('a', 1, ** ['b', 2])", "expect": {"value": "{\"a\":1,\"b\":2}"}}
+    ]},
+    {"name": "spliced-array-behaves-like-any-other-array", "steps": [
+      {"sql": "SELECT ARRAY_SIZE([** [1, 2], 3])", "expect": {"value": "3"}},
+      {"sql": "SELECT ([** [1, 2], 3])[0]", "expect": {"value": "1"}}
+    ]},
+    {"name": "non-constant-operand-is-rejected", "steps": [
+      {"sql": "SELECT [** PARSE_JSON('[1,2]'), 3]", "expect": {"error": {"messageContains": "spread argument with non-constant array input"}}},
+      {"sql": "CREATE TABLE sp_a (a ARRAY)"},
+      {"sql": "INSERT INTO sp_a SELECT [10, 20]"},
+      {"sql": "SELECT [** a, 99] FROM sp_a", "expect": {"error": {"messageContains": "spread argument with non-constant array input"}}},
+      {"sql": "SELECT ARRAY_CONSTRUCT(** a, 99) FROM sp_a", "expect": {"error": {"messageContains": "spread argument with non-constant array input"}}}
+    ]},
+    {"name": "non-array-operand-is-rejected", "steps": [
+      {"sql": "SELECT [** 5]", "expect": {"error": {"messageContains": "spread argument with non-constant array input"}}},
+      {"sql": "SELECT [** 'ab']", "expect": {"error": {"messageContains": "spread argument with non-constant array input"}}},
+      {"sql": "SELECT [** OBJECT_CONSTRUCT('k', 'v')]", "expect": {"error": {"messageContains": "spread argument with non-constant array input"}}}
+    ]},
+    {"name": "object-literal-spread-and-bare-row-spread-stay-rejected", "steps": [
+      {"sql": "SELECT {'a': 1, ** {'b': 2}}", "expect": {"error": {}}},
+      {"sql": "SELECT ** 5", "expect": {"error": {}}},
+      {"sql": "CREATE TABLE sp_r (a INTEGER, b INTEGER)"},
+      {"sql": "INSERT INTO sp_r VALUES (1, 2)"},
+      {"sql": "SELECT sp_r.** FROM sp_r", "expect": {"error": {}}},
+      {"sql": "SELECT ** sp_r FROM sp_r", "expect": {"error": {}}}
+    ]},
+    {"name": "plain-array-and-object-literals-still-work", "steps": [
+      {"sql": "SELECT [3, 4]", "expect": {"value": "[3,4]"}},
+      {"sql": "SELECT {'a': 1, 'b': 2}", "expect": {"value": "{\"a\":1,\"b\":2}"}}
+    ]}
+  ]
+}

@@ -1,0 +1,54 @@
+{
+  "suite": "parser-empty-sql-statement",
+  "description": "A submission carrying no statement at all is refused with ONE sentence, whatever the reason it is empty - a lone semicolon, several of them, whitespace, newlines, a line comment, a block comment, or a comment and a semicolon together: 'SQL compilation error: Empty SQL statement.' Live-verified; the account answers every one of these with error 900 / SQLSTATE 42601, not with a syntax error at the stray token. The check reads the LEXER, not the text, so a semicolon inside a string literal never counts as a statement - only a real token does, which is why SELECT ';' is a perfectly ordinary query and SELECT 1;; is one statement crowded by separators. Converted 1:1 from parser/EmptySqlStatementTest (now retired).",
+  "tags": ["parser", "converted"],
+  "tests": [
+    {"name": "a-lone-semicolon-is-an-empty-statement",
+     "steps": [
+      {"sql": ";", "expect": {"error": {"messageContains": "SQL compilation error:\nEmpty SQL statement."}}}
+    ]},
+    {"name": "several-semicolons-are-still-empty",
+     "steps": [
+      {"sql": ";;", "expect": {"error": {"messageContains": "SQL compilation error:\nEmpty SQL statement."}}}
+    ]},
+    {"name": "whitespace-only-is-empty",
+     "steps": [
+      {"sql": "   ", "expect": {"error": {"messageContains": "SQL compilation error:\nEmpty SQL statement."}}}
+    ]},
+    {"name": "newlines-only-are-empty",
+     "steps": [
+      {"sql": "\n\n", "expect": {"error": {"messageContains": "SQL compilation error:\nEmpty SQL statement."}}}
+    ]},
+    {"name": "a-line-comment-only-is-empty",
+     "steps": [
+      {"sql": "-- nothing here", "expect": {"error": {"messageContains": "SQL compilation error:\nEmpty SQL statement."}}}
+    ]},
+    {"name": "a-block-comment-only-is-empty",
+     "steps": [
+      {"sql": "/* nothing */", "expect": {"error": {"messageContains": "SQL compilation error:\nEmpty SQL statement."}}}
+    ]},
+    {"name": "a-comment-followed-by-a-semicolon-is-empty",
+     "steps": [
+      {"sql": "-- c\n;", "expect": {"error": {"messageContains": "SQL compilation error:\nEmpty SQL statement."}}}
+    ]},
+    {"name": "a-semicolon-followed-by-a-comment-is-empty",
+     "steps": [
+      {"sql": "; -- c", "expect": {"error": {"messageContains": "SQL compilation error:\nEmpty SQL statement."}}}
+    ]},
+    {"name": "whitespace-around-a-semicolon-is-empty",
+     "steps": [
+      {"sql": "  ;  ", "expect": {"error": {"messageContains": "SQL compilation error:\nEmpty SQL statement."}}}
+    ]},
+    {"name": "the-empty-string-is-empty-too",
+     "skip": {"backends": ["snowflake"], "reason": "transport divergence: the Snowflake JDBC driver refuses an empty statement client-side (Invalid SQL text:, error 200021 / SQLSTATE 03000), so the account's own sentence never comes back; asserted on the other transports, against the rule the other nine cells measure."},
+     "steps": [
+      {"sql": "", "expect": {"error": {"messageContains": "SQL compilation error:\nEmpty SQL statement."}}}
+    ]},
+    {"name": "a-real-statement-is-not-empty", "steps": [
+      {"sql": "SELECT 1;;", "expect": {"value": "1"}}
+    ]},
+    {"name": "a-semicolon-inside-a-literal-does-not-make-it-empty", "steps": [
+      {"sql": "SELECT ';'", "expect": {"value": ";"}}
+    ]}
+  ]
+}

@@ -42,7 +42,7 @@ public class ParsingEdgeCasesTest extends BaseDatabaseTest {
     @Test
     public void testSelectStar() {
         logger.info("Testing SELECT *");
-        final ResultSet result = engine.executeQuery("SELECT * FROM test");
+        final ResultSet result = engine.executeQuery("SELECT * FROM test ORDER BY 1");
         assertEquals(2, result.getRowCount());
         assertEquals(3, result.getColumnCount());
     }
@@ -50,12 +50,12 @@ public class ParsingEdgeCasesTest extends BaseDatabaseTest {
     @Test
     public void testSelectWithParentheses() {
         logger.info("Testing SELECT with parentheses");
-        final ResultSet parenColumn = engine.executeQuery("SELECT (id) FROM test");
+        final ResultSet parenColumn = engine.executeQuery("SELECT (id) FROM test ORDER BY 1");
         assertEquals(2, parenColumn.getRowCount());
         assertEquals(1, parenColumn.getColumnCount());
         assertEquals(1L, ((Number) parenColumn.getRows().get(0).getValue(0)).longValue());
 
-        final ResultSet parenExpr = engine.executeQuery("SELECT (id + 1) FROM test");
+        final ResultSet parenExpr = engine.executeQuery("SELECT (id + 1) FROM test ORDER BY 1");
         assertEquals(2, parenExpr.getRowCount());
         assertEquals(2L, ((Number) parenExpr.getRows().get(0).getValue(0)).longValue());
         assertEquals(3L, ((Number) parenExpr.getRows().get(1).getValue(0)).longValue());
@@ -64,11 +64,11 @@ public class ParsingEdgeCasesTest extends BaseDatabaseTest {
     @Test
     public void testSelectWithMultipleParentheses() {
         logger.info("Testing SELECT with nested parentheses");
-        final ResultSet nested = engine.executeQuery("SELECT ((id)) FROM test");
+        final ResultSet nested = engine.executeQuery("SELECT ((id)) FROM test ORDER BY 1");
         assertEquals(2, nested.getRowCount());
         assertEquals(1L, ((Number) nested.getRows().get(0).getValue(0)).longValue());
 
-        final ResultSet nestedExpr = engine.executeQuery("SELECT ((id + 1) * 2) FROM test");
+        final ResultSet nestedExpr = engine.executeQuery("SELECT ((id + 1) * 2) FROM test ORDER BY 1");
         assertEquals(2, nestedExpr.getRowCount());
         // (1 + 1) * 2 = 4, (2 + 1) * 2 = 6
         assertEquals(4L, ((Number) nestedExpr.getRows().get(0).getValue(0)).longValue());
@@ -80,6 +80,7 @@ public class ParsingEdgeCasesTest extends BaseDatabaseTest {
         logger.info("Testing SELECT with CASE");
         final ResultSet result = engine.executeQuery("""
             SELECT CASE WHEN id = 1 THEN 'one' ELSE 'other' END FROM test
+            ORDER BY id
             """);
         assertEquals(2, result.getRowCount());
         assertEquals("one", result.getRows().get(0).getValue(0));
@@ -154,7 +155,7 @@ public class ParsingEdgeCasesTest extends BaseDatabaseTest {
     public void testInsertSelect() {
         logger.info("Testing INSERT SELECT");
         engine.execute("CREATE TABLE target (id INTEGER, name VARCHAR, value DOUBLE)");
-        engine.execute("INSERT INTO target SELECT * FROM test");
+        engine.execute("INSERT INTO target SELECT * FROM test ORDER BY 1");
 
         final ResultSet result = engine.executeQuery("SELECT * FROM target ORDER BY id");
         assertEquals(2, result.getRowCount());
@@ -192,7 +193,7 @@ public class ParsingEdgeCasesTest extends BaseDatabaseTest {
     @Test
     public void testSelectDistinct() {
         logger.info("Testing SELECT DISTINCT");
-        final ResultSet result = engine.executeQuery("SELECT DISTINCT name FROM test");
+        final ResultSet result = engine.executeQuery("SELECT DISTINCT name FROM test ORDER BY 1");
         // Names 'A' and 'B' are already distinct.
         assertEquals(2, result.getRowCount());
         assertEquals(1, result.getColumnCount());
@@ -208,7 +209,7 @@ public class ParsingEdgeCasesTest extends BaseDatabaseTest {
     @Test
     public void testSelectWithTop() {
         logger.info("Testing SELECT with TOP");
-        final ResultSet result = engine.executeQuery("SELECT TOP 1 * FROM test");
+        final ResultSet result = engine.executeQuery("SELECT TOP 1 * FROM test ORDER BY 1");
         assertEquals(1, result.getRowCount());
         assertEquals(3, result.getColumnCount());
     }

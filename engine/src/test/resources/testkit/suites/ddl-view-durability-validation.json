@@ -1,0 +1,115 @@
+{
+  "suite": "ddl-view-durability-validation",
+  "description": "CREATE (OR REPLACE) VIEW validation and durability: a failed replacement leaves the existing view (and materialized view) standing - the replacement is validated in full before anything is dropped; the body compiles FIRST (an unnamable+uncompilable body reports the compilation failure); the column checks speak for compilable bodies (Missing column specification / Invalid column definition list); a declared list names an unnamable item; body compile failures refuse CREATE with the select's own error (missing table/column, unknown function); a refused CREATE leaves nothing behind; and SHOW VIEWS lists created views. Converted 1:1 from ddl/CreateOrReplaceViewDurabilityTest, CreateViewBodyValidationTest and CreateViewTest (all now retired).",
+  "tags": ["ddl", "views", "converted"],
+  "tests": [
+    {"name": "a-failed-replacement-leaves-the-original-standing", "steps": [
+      {"sql": "CREATE TABLE cd_t (k NUMBER, s VARCHAR(4))"},
+      {"sql": "INSERT INTO cd_t VALUES (1, 'a')"},
+      {"sql": "CREATE OR REPLACE VIEW cd_v AS SELECT k AS original FROM cd_t"},
+      {"sql": "CREATE OR REPLACE VIEW cd_v AS SELECT k + 1 FROM cd_t", "expect": {"error": {}}},
+      {"sql": "SELECT * FROM cd_v", "expect": {"columns": ["original"]}},
+      {"sql": "CREATE OR REPLACE VIEW cd_v AS SELECT k AS original FROM cd_t"},
+      {"sql": "CREATE OR REPLACE VIEW cd_v AS SELECT no_such_fn(k) AS x FROM cd_t", "expect": {"error": {}}},
+      {"sql": "SELECT * FROM cd_v", "expect": {"columns": ["original"]}},
+      {"sql": "CREATE OR REPLACE VIEW cd_v AS SELECT k AS original FROM cd_t"},
+      {"sql": "CREATE OR REPLACE VIEW cd_v (a, b) AS SELECT k FROM cd_t", "expect": {"error": {}}},
+      {"sql": "SELECT * FROM cd_v", "expect": {"columns": ["original"]}},
+      {"sql": "CREATE OR REPLACE VIEW cd_v AS SELECT k AS original FROM cd_t"},
+      {"sql": "CREATE OR REPLACE VIEW cd_v AS SELECT k AS x FROM no_such_table", "expect": {"error": {}}},
+      {"sql": "SELECT * FROM cd_v", "expect": {"columns": ["original"]}},
+      {"sql": "CREATE OR REPLACE VIEW cd_v AS SELECT k AS original FROM cd_t"},
+      {"sql": "CREATE OR REPLACE VIEW cd_v AS SELECT no_such_col AS x FROM cd_t", "expect": {"error": {}}},
+      {"sql": "SELECT * FROM cd_v", "expect": {"columns": ["original"]}}
+    ]},
+    {"name": "a-failed-materialized-replacement-leaves-the-original-standing", "steps": [
+      {"sql": "CREATE TABLE cd_t (k NUMBER, s VARCHAR(4))"},
+      {"sql": "INSERT INTO cd_t VALUES (1, 'a')"},
+      {"sql": "CREATE OR REPLACE MATERIALIZED VIEW cd_mv AS SELECT k AS original FROM cd_t"},
+      {"sql": "CREATE OR REPLACE MATERIALIZED VIEW cd_mv AS SELECT no_such_fn(k) AS x FROM cd_t", "expect": {"error": {}}},
+      {"sql": "SELECT * FROM cd_mv", "expect": {"columns": ["original"]}},
+      {"sql": "CREATE OR REPLACE MATERIALIZED VIEW cd_mv AS SELECT k AS original FROM cd_t"},
+      {"sql": "CREATE OR REPLACE MATERIALIZED VIEW cd_mv AS SELECT k AS x FROM no_such_table", "expect": {"error": {}}},
+      {"sql": "SELECT * FROM cd_mv", "expect": {"columns": ["original"]}},
+      {"sql": "CREATE OR REPLACE MATERIALIZED VIEW cd_mv AS SELECT k AS original FROM cd_t"},
+      {"sql": "CREATE OR REPLACE MATERIALIZED VIEW cd_mv AS SELECT no_such_col AS x FROM cd_t", "expect": {"error": {}}},
+      {"sql": "SELECT * FROM cd_mv", "expect": {"columns": ["original"]}}
+    ]},
+    {"name": "a-valid-replacement-still-replaces", "steps": [
+      {"sql": "CREATE TABLE cd_t (k NUMBER, s VARCHAR(4))"},
+      {"sql": "INSERT INTO cd_t VALUES (1, 'a')"},
+      {"sql": "CREATE OR REPLACE VIEW cd_v AS SELECT k AS original FROM cd_t"},
+      {"sql": "CREATE OR REPLACE VIEW cd_v AS SELECT s AS replaced FROM cd_t"},
+      {"sql": "SELECT * FROM cd_v", "expect": {"columns": ["replaced"]}}
+    ]},
+    {"name": "the-body-compiles-before-either-column-check", "steps": [
+      {"sql": "CREATE TABLE cd_t (k NUMBER, s VARCHAR(4))"},
+      {"sql": "CREATE VIEW cd_a AS SELECT no_such_fn(k) FROM cd_t",
+       "expect": {"error": {"messageContains": "Unknown function NO_SUCH_FN."}}},
+      {"sql": "CREATE VIEW cd_b (a, b) AS SELECT no_such_fn(k) FROM cd_t",
+       "expect": {"error": {"messageContains": "Unknown function NO_SUCH_FN."}}}
+    ]},
+    {"name": "the-column-checks-still-speak-for-a-compilable-body", "steps": [
+      {"sql": "CREATE TABLE cd_t (k NUMBER, s VARCHAR(4))"},
+      {"sql": "CREATE VIEW cd_c AS SELECT k + 1 FROM cd_t",
+       "expect": {"error": {"messageContains": "Missing column specification"}}},
+      {"sql": "CREATE VIEW cd_d (a, b) AS SELECT k FROM cd_t",
+       "expect": {"error": {"messageContains": "Invalid column definition list"}}}
+    ]},
+    {"name": "a-declared-list-names-an-unnamable-item", "steps": [
+      {"sql": "CREATE TABLE cd_t (k NUMBER, s VARCHAR(4))"},
+      {"sql": "CREATE VIEW cd_e (a) AS SELECT k + 1 FROM cd_t"},
+      {"sql": "SELECT * FROM cd_e", "expect": {"columns": ["a"]}}
+    ]},
+    {"name": "a-missing-table-is-refused", "steps": [
+      {"sql": "CREATE TABLE bv_t (k NUMBER, w VARCHAR(4))"},
+      {"sql": "CREATE VIEW bv_v AS SELECT * FROM no_such_table",
+       "expect": {"error": {"messageContains": "does not exist or not authorized."}}}
+    ]},
+    {"name": "a-missing-column-is-refused", "steps": [
+      {"sql": "CREATE TABLE bv_t (k NUMBER, w VARCHAR(4))"},
+      {"sql": "CREATE VIEW bv_v AS SELECT no_such_col FROM bv_t",
+       "expect": {"error": {"messageContains": "invalid identifier 'NO_SUCH_COL'"}}}
+    ]},
+    {"name": "a-mismatched-column-list-is-refused", "steps": [
+      {"sql": "CREATE TABLE bv_t (k NUMBER, w VARCHAR(4))"},
+      {"sql": "CREATE VIEW bv_v (a) AS SELECT k, w FROM bv_t",
+       "expect": {"error": {"messageContains": "Invalid column definition list"}}}
+    ]},
+    {"name": "a-compilable-body-is-accepted", "steps": [
+      {"sql": "CREATE TABLE bv_t (k NUMBER, w VARCHAR(4))"},
+      {"sql": "CREATE VIEW bv_ok AS SELECT k, w FROM bv_t"},
+      {"sql": "DESCRIBE VIEW bv_ok", "expect": {"rowCount": 2}}
+    ]},
+    {"name": "a-refused-create-leaves-nothing-behind", "steps": [
+      {"sql": "CREATE TABLE bv_t (k NUMBER, w VARCHAR(4))"},
+      {"sql": "CREATE VIEW bv_gone AS SELECT * FROM no_such_table", "expect": {"error": {}}},
+      {"sql": "SELECT * FROM bv_gone", "expect": {"error": {"messageContains": "BV_GONE"}}}
+    ]},
+    {"name": "create-simple-view", "steps": [
+      {"sql": "CREATE TABLE users (id INTEGER, username VARCHAR)"},
+      {"sql": "CREATE VIEW active_users AS SELECT * FROM users"},
+      {"sql": "SHOW VIEWS LIKE 'active_users'", "expect": {"rowCount": 1}}
+    ]},
+    {"name": "create-view-with-filter", "steps": [
+      {"sql": "CREATE TABLE users (id INTEGER, name VARCHAR, age INTEGER)"},
+      {"sql": "INSERT INTO users VALUES (1, 'Alice', 30), (2, 'Bob', 20)"},
+      {"sql": "CREATE VIEW adult_users AS SELECT * FROM users WHERE age >= 21"},
+      {"sql": "SHOW VIEWS LIKE 'adult_users'", "expect": {"rowCount": 1}}
+    ]},
+    {"name": "query-view", "steps": [
+      {"sql": "CREATE TABLE products (id INTEGER, name VARCHAR, price INTEGER)"},
+      {"sql": "INSERT INTO products VALUES (1, 'Widget', 100), (2, 'Gadget', 200)"},
+      {"sql": "CREATE VIEW expensive_products AS SELECT * FROM products WHERE price > 150"},
+      {"sql": "SELECT * FROM expensive_products", "expect": {"rowCount": 1}}
+    ]},
+    {"name": "create-view-with-aggregation-needs-an-alias", "steps": [
+      {"sql": "CREATE TABLE sales (id INTEGER, product VARCHAR, amount INTEGER)"},
+      {"sql": "INSERT INTO sales VALUES (1, 'Widget', 100), (2, 'Widget', 150), (3, 'Gadget', 200)"},
+      {"sql": "CREATE VIEW product_totals AS SELECT product, SUM(amount) FROM sales GROUP BY product",
+       "expect": {"error": {"messageContains": "Missing column specification"}}},
+      {"sql": "CREATE VIEW product_totals AS SELECT product, SUM(amount) AS total FROM sales GROUP BY product"},
+      {"sql": "SHOW VIEWS LIKE 'product_totals'", "expect": {"rowCount": 1}}
+    ]}
+  ]
+}

@@ -31,9 +31,9 @@ public class ValuesClauseTest extends BaseDatabaseTest {
 
     @Test
     public void testSelectFromValuesTwoColumns() {
-        logger.info("Testing SELECT * FROM VALUES with two columns");
+        logger.info("Testing SELECT * FROM VALUES with two columns ORDER BY 1");
 
-        final ResultSet rs = engine.executeQuery("SELECT * FROM VALUES(1,2),(3,4)");
+        final ResultSet rs = engine.executeQuery("SELECT * FROM VALUES(1,2),(3,4) ORDER BY 1");
 
         assertNotNull(rs, "Result set should not be null");
         assertEquals(2, rs.getRowCount(), "Should return 2 rows");
@@ -60,9 +60,9 @@ public class ValuesClauseTest extends BaseDatabaseTest {
 
     @Test
     public void testSelectFromValuesSingleColumn() {
-        logger.info("Testing SELECT * FROM VALUES with single column");
+        logger.info("Testing SELECT * FROM VALUES with single column ORDER BY 1");
 
-        final ResultSet rs = engine.executeQuery("SELECT * FROM VALUES(10),(20),(30)");
+        final ResultSet rs = engine.executeQuery("SELECT * FROM VALUES(10),(20),(30) ORDER BY 1");
 
         assertNotNull(rs, "Result set should not be null");
         assertEquals(3, rs.getRowCount(), "Should return 3 rows");
@@ -77,9 +77,9 @@ public class ValuesClauseTest extends BaseDatabaseTest {
 
     @Test
     public void testSelectFromValuesMixedTypes() {
-        logger.info("Testing SELECT * FROM VALUES with mixed types");
+        logger.info("Testing SELECT * FROM VALUES with mixed types ORDER BY 1");
 
-        final ResultSet rs = engine.executeQuery("SELECT * FROM VALUES(1, 'Alice'), (2, 'Bob')");
+        final ResultSet rs = engine.executeQuery("SELECT * FROM VALUES(1, 'Alice'), (2, 'Bob') ORDER BY 1");
 
         assertNotNull(rs, "Result set should not be null");
         assertEquals(2, rs.getRowCount(), "Should return 2 rows");
@@ -96,9 +96,9 @@ public class ValuesClauseTest extends BaseDatabaseTest {
 
     @Test
     public void testSelectFromValuesWithAlias() {
-        logger.info("Testing SELECT * FROM VALUES with table alias");
+        logger.info("Testing SELECT * FROM VALUES with table alias ORDER BY 1");
 
-        final ResultSet rs = engine.executeQuery("SELECT * FROM VALUES(1, 2), (3, 4) AS t");
+        final ResultSet rs = engine.executeQuery("SELECT * FROM VALUES(1, 2), (3, 4) AS t ORDER BY 1");
 
         assertNotNull(rs, "Result set should not be null");
         assertEquals(2, rs.getRowCount(), "Should return 2 rows");
@@ -107,9 +107,9 @@ public class ValuesClauseTest extends BaseDatabaseTest {
 
     @Test
     public void testSelectSpecificColumnsFromValues() {
-        logger.info("Testing SELECT specific columns FROM VALUES");
+        logger.info("Testing SELECT specific columns FROM VALUES ORDER BY 1");
 
-        final ResultSet rs = engine.executeQuery("SELECT COLUMN1 FROM VALUES(1, 2), (3, 4)");
+        final ResultSet rs = engine.executeQuery("SELECT COLUMN1 FROM VALUES(1, 2), (3, 4) ORDER BY 1");
 
         assertNotNull(rs, "Result set should not be null");
         assertEquals(2, rs.getRowCount(), "Should return 2 rows");
@@ -121,9 +121,9 @@ public class ValuesClauseTest extends BaseDatabaseTest {
 
     @Test
     public void testSelectFromValuesWithWhere() {
-        logger.info("Testing SELECT FROM VALUES with WHERE clause");
+        logger.info("Testing SELECT FROM VALUES with WHERE clause ORDER BY 1");
 
-        final ResultSet rs = engine.executeQuery("SELECT * FROM VALUES(1, 2), (3, 4) WHERE COLUMN1 > 1");
+        final ResultSet rs = engine.executeQuery("SELECT * FROM VALUES(1, 2), (3, 4) WHERE COLUMN1 > 1 ORDER BY 1");
 
         assertNotNull(rs, "Result set should not be null");
         assertEquals(1, rs.getRowCount(), "Should return 1 row after filtering");
@@ -135,9 +135,9 @@ public class ValuesClauseTest extends BaseDatabaseTest {
 
     @Test
     public void testSelectFromValuesWithColumnAliases() {
-        logger.info("Testing SELECT FROM VALUES with column aliases");
+        logger.info("Testing SELECT FROM VALUES with column aliases ORDER BY 1");
 
-        final ResultSet rs = engine.executeQuery("SELECT i, j FROM VALUES(1, 2), (3, 4) AS t(i, j)");
+        final ResultSet rs = engine.executeQuery("SELECT i, j FROM VALUES(1, 2), (3, 4) AS t(i, j) ORDER BY 1");
 
         assertNotNull(rs, "Result set should not be null");
         assertEquals(2, rs.getRowCount(), "Should return 2 rows");
@@ -156,9 +156,9 @@ public class ValuesClauseTest extends BaseDatabaseTest {
 
     @Test
     public void testSelectFromValuesWithColumnAliasesAndGroupBy() {
-        logger.info("Testing SELECT FROM VALUES with column aliases and GROUP BY");
+        logger.info("Testing SELECT FROM VALUES with column aliases and GROUP BY ORDER BY 1");
 
-        final ResultSet rs = engine.executeQuery("SELECT i, count(*) FROM VALUES(1, 2), (1, 2) AS t(i, j) GROUP BY i");
+        final ResultSet rs = engine.executeQuery("SELECT i, count(*) FROM VALUES(1, 2), (1, 2) AS t(i, j) GROUP BY i ORDER BY 1");
 
         assertNotNull(rs, "Result set should not be null");
         assertEquals(1, rs.getRowCount(), "Should return 1 row after grouping");
@@ -171,10 +171,10 @@ public class ValuesClauseTest extends BaseDatabaseTest {
 
     @Test
     public void testSelectFromValuesWithPartialColumnAliases() {
-        logger.info("Testing SELECT FROM VALUES with partial column aliases");
+        logger.info("Testing SELECT FROM VALUES with partial column aliases ORDER BY 1");
 
         // Only provide alias for first column
-        final ResultSet rs = engine.executeQuery("SELECT x FROM VALUES(10, 20), (30, 40) AS t(x)");
+        final ResultSet rs = engine.executeQuery("SELECT x FROM VALUES(10, 20), (30, 40) AS t(x) ORDER BY 1");
 
         assertNotNull(rs, "Result set should not be null");
         assertEquals(2, rs.getRowCount(), "Should return 2 rows");
@@ -187,11 +187,11 @@ public class ValuesClauseTest extends BaseDatabaseTest {
 
     @Test
     public void testSelectStarFromValuesEmptyStringsLabelsColumns() {
-        logger.info("Testing SELECT * FROM VALUES with empty-string tuples labels COLUMN1..n");
+        logger.info("Testing SELECT * FROM VALUES with empty-string tuples labels COLUMN1..n ORDER BY 1");
 
         // The reported query: empty-string values still auto-name the columns COLUMN1..COLUMNn.
         final ResultSet rs = engine.executeQuery(
-            "SELECT * FROM VALUES ('', '', '', '', ''), ('', '', '', '', '')");
+            "SELECT * FROM VALUES ('', '', '', '', ''), ('', '', '', '', '') ORDER BY 1");
 
         assertNotNull(rs, "Result set should not be null");
         assertEquals(2, rs.getRowCount(), "Should return 2 rows");

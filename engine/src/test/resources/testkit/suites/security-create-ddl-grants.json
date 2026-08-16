@@ -1,0 +1,36 @@
+{
+  "suite": "security-create-ddl-grants",
+  "description": "The MULTI-WORD GRANT fix and the SYSTEM-user bypass. GRANT CREATE VIEW / CREATE STREAM / CREATE MASKING POLICY used to throw at GRANT time ('No enum constant ...CREATEVIEW') because the privilege text was concatenated without a separator; multi-word privileges now map to their enum names, so the grants succeed. The same concatenation bug broke the account-level ones, and an account-level privilege NAMES ITS SCOPE - live-verified, the bare 'GRANT CREATE DATABASE TO ROLE r' is a syntax error on a real account (unexpected 'TO') while 'GRANT CREATE DATABASE ON ACCOUNT TO ROLE r' succeeds. The SYSTEM user bypasses the CREATE checks entirely, which is the regression guard the rest of the suite depends on. Converted from security/CreateDdlPrivilegeEnforcementTest, which is KEPT (trimmed) for the twelve tests that need to switch the session USER away from SYSTEM - see the task note.",
+  "tags": ["security", "converted"],
+  "tests": [
+    {"name": "a-multi-word-object-privilege-grant-no-longer-throws", "steps": [
+      {"sql": "CREATE DATABASE IF NOT EXISTS db"},
+      {"sql": "USE DATABASE db"},
+      {"sql": "USE SCHEMA PUBLIC"},
+      {"sql": "CREATE ROLE IF NOT EXISTS app_role"},
+      {"sql": "GRANT CREATE VIEW ON SCHEMA PUBLIC TO ROLE app_role"},
+      {"sql": "GRANT CREATE STREAM ON SCHEMA PUBLIC TO ROLE app_role"},
+      {"sql": "GRANT CREATE MASKING POLICY ON SCHEMA PUBLIC TO ROLE app_role"}
+    ]},
+    {"name": "a-multi-word-global-privilege-grant-no-longer-throws", "steps": [
+      {"sql": "CREATE ROLE IF NOT EXISTS app_role"},
+      {"sql": "GRANT CREATE DATABASE ON ACCOUNT TO ROLE app_role"},
+      {"sql": "GRANT MONITOR USAGE ON ACCOUNT TO ROLE app_role"}
+    ]},
+    {"name": "the-system-user-bypasses-the-create-checks", "steps": [
+      {"sql": "CREATE DATABASE IF NOT EXISTS db"},
+      {"sql": "USE DATABASE db"},
+      {"sql": "USE SCHEMA PUBLIC"},
+      {"sql": "CREATE OR REPLACE TABLE base (id INTEGER)"},
+      {"sql": "CREATE OR REPLACE VIEW sysv AS SELECT 1 AS x"},
+      {"sql": "CREATE OR REPLACE STREAM sysstrm ON TABLE base"},
+      {"sql": "CREATE SEQUENCE IF NOT EXISTS sysseq START = 1 INCREMENT = 1"},
+      {"sql": "CREATE OR REPLACE FUNCTION sysf(x INTEGER) RETURNS INTEGER AS 'x + 1'"},
+      {"sql": "CREATE TAG IF NOT EXISTS systag"},
+      {"sql": "CREATE SCHEMA IF NOT EXISTS syssch"},
+      {"sql": "USE SCHEMA PUBLIC"},
+      {"sql": "SELECT sysf(41)", "expect": {"value": 42}},
+      {"sql": "SELECT x FROM sysv", "expect": {"rows": [[1]]}}
+    ]}
+  ]
+}

@@ -1,0 +1,76 @@
+{
+  "suite": "ddl-keyword-columns-join-words",
+  "description": "INNER, JOIN, LEFT and CROSS are live-legal unquoted column names everywhere a name goes - definitions, bare and qualified references, WHERE, GROUP BY, ORDER BY, aggregate arguments, UPDATE SET targets - while CASE works in a definition and after a dot but a BARE leading case is live's syntax error; a table may be NAMED inner but not read bare in FROM (the join grammar owns that spot); and join parsing itself is untouched. All live-measured. Converted 1:1 from ddl/KeywordColumnNamesTest (now retired). Plus the missing-relation naming matrix: bare names stay bare for SELECT/UPDATE/DELETE (Object) and INSERT (Table), TRUNCATE and DROP expand a bare name fully, partial qualification always expands, and missing schema/database sentences (schema carries its database, database stands alone). Converted 1:1 from ddl/MissingRelationNamingTest (now retired).",
+  "tags": ["ddl", "converted"],
+  "tests": [
+    {"name": "keyword-columns-read-bare-in-every-clause", "steps": [
+      {"sql": "CREATE TABLE kw (inner INTEGER, join INTEGER, case INTEGER, left INTEGER, cross INTEGER)"},
+      {"sql": "INSERT INTO kw (inner, join, case, left, cross) VALUES (1, 2, 3, 4, 5)"},
+      {"sql": "SELECT inner FROM kw", "expect": {"value": "1"}},
+      {"sql": "SELECT join FROM kw", "expect": {"value": "2"}},
+      {"sql": "SELECT left FROM kw", "expect": {"value": "4"}},
+      {"sql": "SELECT cross FROM kw", "expect": {"value": "5"}},
+      {"sql": "SELECT 1 FROM kw WHERE inner = 1 AND join = 2", "expect": {"value": "1"}},
+      {"sql": "SELECT inner FROM kw ORDER BY inner", "expect": {"value": "1"}},
+      {"sql": "SELECT inner FROM kw GROUP BY inner", "expect": {"value": "1"}},
+      {"sql": "SELECT SUM(join) FROM kw", "expect": {"value": "2"}}
+    ]},
+    {"name": "case-reads-qualified-only", "steps": [
+      {"sql": "CREATE TABLE kw (inner INTEGER, join INTEGER, case INTEGER, left INTEGER, cross INTEGER)"},
+      {"sql": "INSERT INTO kw (inner, join, case, left, cross) VALUES (1, 2, 3, 4, 5)"},
+      {"sql": "SELECT kw.case FROM kw", "expect": {"value": "3"}},
+      {"sql": "SELECT case FROM kw", "expect": {"error": {}}},
+      {"sql": "SELECT CASE WHEN 1 = 1 THEN 'y' ELSE 'n' END", "expect": {"value": "y"}}
+    ]},
+    {"name": "keyword-columns-write-through-update", "steps": [
+      {"sql": "CREATE TABLE kw (inner INTEGER, join INTEGER, case INTEGER, left INTEGER, cross INTEGER)"},
+      {"sql": "INSERT INTO kw (inner, join, case, left, cross) VALUES (1, 2, 3, 4, 5)"},
+      {"sql": "UPDATE kw SET inner = 10 WHERE inner = 1"},
+      {"sql": "SELECT inner FROM kw", "expect": {"value": "10"}}
+    ]},
+    {"name": "a-table-may-be-named-inner-but-not-read-bare-in-from", "steps": [
+      {"sql": "CREATE TABLE inner (a INTEGER)"},
+      {"sql": "SELECT a FROM inner", "expect": {"error": {}}}
+    ]},
+    {"name": "join-parsing-is-untouched", "steps": [
+      {"sql": "CREATE TABLE ja (k INTEGER)"},
+      {"sql": "INSERT INTO ja VALUES (1), (2)"},
+      {"sql": "CREATE TABLE jb (k INTEGER)"},
+      {"sql": "INSERT INTO jb VALUES (1)"},
+      {"sql": "SELECT COUNT(*) FROM ja LEFT JOIN jb ON ja.k = jb.k", "expect": {"value": "2"}},
+      {"sql": "SELECT COUNT(*) FROM ja INNER JOIN jb ON ja.k = jb.k", "expect": {"value": "1"}},
+      {"sql": "SELECT COUNT(*) FROM ja CROSS JOIN jb", "expect": {"value": "2"}},
+      {"sql": "SELECT COUNT(*) FROM ja JOIN jb ON ja.k = jb.k", "expect": {"value": "1"}}
+    ]},
+    {"name": "a-bare-name-stays-bare-for-a-read", "steps": [
+      {"sql": "SELECT * FROM nope",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nObject 'NOPE' does not exist or not authorized."}}},
+      {"sql": "UPDATE nope SET k = 1",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nObject 'NOPE' does not exist or not authorized."}}},
+      {"sql": "DELETE FROM nope",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nObject 'NOPE' does not exist or not authorized."}}}
+    ]},
+    {"name": "a-partially-qualified-name-is-expanded", "steps": [
+      {"sql": "SELECT * FROM test_schema.nope",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nObject 'TEST_DB.TEST_SCHEMA.NOPE' does not exist or not authorized."}}},
+      {"sql": "SELECT * FROM test_db.test_schema.nope",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nObject 'TEST_DB.TEST_SCHEMA.NOPE' does not exist or not authorized."}}}
+    ]},
+    {"name": "insert-says-table", "steps": [
+      {"sql": "INSERT INTO nope VALUES (1)",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nTable 'NOPE' does not exist or not authorized."}}}
+    ]},
+    {"name": "truncate-and-drop-expand-a-bare-name", "steps": [
+      {"sql": "TRUNCATE TABLE nope",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nTable 'TEST_DB.TEST_SCHEMA.NOPE' does not exist or not authorized."}}},
+      {"sql": "DROP TABLE nope",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nTable 'TEST_DB.TEST_SCHEMA.NOPE' does not exist or not authorized."}}}
+    ]},
+    {"name": "a-missing-container-has-its-own-sentence", "steps": [
+      {"sql": "SELECT * FROM nosuchschema.nope",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nSchema 'TEST_DB.NOSUCHSCHEMA' does not exist or not authorized."}}},
+      {"sql": "SELECT * FROM nosuchdb.public.nope",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nDatabase 'NOSUCHDB' does not exist or not authorized."}}}
+    ]}
+  ]
+}

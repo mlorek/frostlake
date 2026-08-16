@@ -17,6 +17,7 @@
 package dev.frostlake.functions.aggregate;
 
 import dev.frostlake.functions.AggregateFunction;
+import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.types.NumericType;
 
 import java.util.List;
@@ -35,4 +36,29 @@ public class RegrSxx extends AggregateFunction {
     public int getMinArgCount() { return 2; }
     @Override
     public int getMaxArgCount() { return 2; }
+
+    /**
+     * Only the X — the SECOND argument — is squared, so only it is refused outside the numbers, the
+     * strings and VARIANT, as the DOUBLE conversion live plans under a null guard on the Y
+     * (live-verified). See {@link SemiStructuredRejection#DOUBLE_CONVERSION_PARAMETER}.
+     */
+    @Override
+    public SemiStructuredRejection semiStructuredRejection(final int position) {
+        return position == 1 ? SemiStructuredRejection.DOUBLE_CONVERSION_PARAMETER : SemiStructuredRejection.NONE;
+    }
+
+    @Override
+    public SemiStructuredRejection binaryRejection(final int position) {
+        return position == 1 ? SemiStructuredRejection.DOUBLE_CONVERSION_PARAMETER : SemiStructuredRejection.NONE;
+    }
+
+    @Override
+    public SemiStructuredRejection booleanRejection(final int position) {
+        return position == 1 ? SemiStructuredRejection.DOUBLE_CONVERSION_PARAMETER : SemiStructuredRejection.NONE;
+    }
+
+    @Override
+    public SemiStructuredRejection temporalRejection(final int position) {
+        return position == 1 ? SemiStructuredRejection.DOUBLE_CONVERSION_PARAMETER : SemiStructuredRejection.NONE;
+    }
 }

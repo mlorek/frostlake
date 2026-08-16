@@ -1,0 +1,44 @@
+{
+  "suite": "query-grouped-star-projection",
+  "description": "A star under GROUP BY expands to its columns, each held to the grouped-select rule (live-verified): the fully-grouped shapes return COMPLETE rows - one value per expanded column, readable cell by cell - while a star covering an UNGROUPED column refuses with the standard sentence at the SENTINEL position, line 0 position -1, because nobody wrote the expanded reference. A qualified star names its qualifier in that sentence rather than the table. GROUP BY ALL with a star groups every column, so nothing can be ungrouped. Converted 1:1 from query/GroupedStarProjectionTest (now retired); the Java flattened every cell into one list, which the converted tests state as ordered row sets.",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "a-grouped-star-alone-returns-full-rows", "steps": [
+      {"sql": "CREATE TABLE gstar_orders (city VARCHAR, qty INTEGER)"},
+      {"sql": "INSERT INTO gstar_orders VALUES ('Berlin', 1), ('Berlin', 2), ('Oslo', 5)"},
+      {"sql": "SELECT * FROM gstar_orders GROUP BY city, qty ORDER BY city, qty", "expect": {"rows": [["Berlin",1],["Berlin",2],["Oslo",5]], "ordered": true, "columns": ["CITY","QTY"]}}
+    ]},
+    {"name": "a-grouped-star-with-an-aggregate-returns-full-rows", "steps": [
+      {"sql": "CREATE TABLE gstar_orders (city VARCHAR, qty INTEGER)"},
+      {"sql": "INSERT INTO gstar_orders VALUES ('Berlin', 1), ('Berlin', 2), ('Oslo', 5)"},
+      {"sql": "SELECT *, COUNT(1) AS n FROM gstar_orders GROUP BY city, qty ORDER BY city, qty", "expect": {"rows": [["Berlin",1,1],["Berlin",2,1],["Oslo",5,1]], "ordered": true, "columns": ["CITY","QTY","N"]}}
+    ]},
+    {"name": "a-grouped-star-with-a-window-returns-full-rows", "steps": [
+      {"sql": "CREATE TABLE gstar_orders (city VARCHAR, qty INTEGER)"},
+      {"sql": "INSERT INTO gstar_orders VALUES ('Berlin', 1), ('Berlin', 2), ('Oslo', 5)"},
+      {"sql": "SELECT *, COUNT(1) OVER () AS n FROM gstar_orders GROUP BY city, qty ORDER BY city, qty", "expect": {"rows": [["Berlin",1,3],["Berlin",2,3],["Oslo",5,3]], "ordered": true, "columns": ["CITY","QTY","N"]}}
+    ]},
+    {"name": "a-grouped-qualified-star-with-a-window-returns-full-rows", "steps": [
+      {"sql": "CREATE TABLE gstar_orders (city VARCHAR, qty INTEGER)"},
+      {"sql": "INSERT INTO gstar_orders VALUES ('Berlin', 1), ('Berlin', 2), ('Oslo', 5)"},
+      {"sql": "SELECT t.*, COUNT(1) OVER () AS n FROM gstar_orders t GROUP BY city, qty ORDER BY city, qty", "expect": {"rows": [["Berlin",1,3],["Berlin",2,3],["Oslo",5,3]], "ordered": true, "columns": ["CITY","QTY","N"]}}
+    ]},
+    {"name": "a-grouped-star-over-an-ungrouped-column-is-rejected-at-the-sentinel-position", "steps": [
+      {"sql": "CREATE TABLE gstar_wide (city VARCHAR, qty INTEGER, price INTEGER)"},
+      {"sql": "INSERT INTO gstar_wide VALUES ('Berlin', 1, 10)"},
+      {"sql": "SELECT *, COUNT(1) OVER () AS n FROM gstar_wide GROUP BY city, qty", "expect": {"error": {"messageContains": "error line 0 at position -1"}}},
+      {"sql": "SELECT *, COUNT(1) OVER () AS n FROM gstar_wide GROUP BY city, qty", "expect": {"error": {"messageContains": "'GSTAR_WIDE.PRICE' in select clause is neither an aggregate nor in the group by clause."}}}
+    ]},
+    {"name": "a-grouped-qualified-star-over-an-ungrouped-column-names-the-qualifier", "steps": [
+      {"sql": "CREATE TABLE gstar_wide (city VARCHAR, qty INTEGER, price INTEGER)"},
+      {"sql": "INSERT INTO gstar_wide VALUES ('Berlin', 1, 10)"},
+      {"sql": "SELECT t.*, COUNT(1) OVER () AS n FROM gstar_wide t GROUP BY city, qty", "expect": {"error": {"messageContains": "error line 0 at position -1"}}},
+      {"sql": "SELECT t.*, COUNT(1) OVER () AS n FROM gstar_wide t GROUP BY city, qty", "expect": {"error": {"messageContains": "'T.PRICE' in select clause is neither an aggregate nor in the group by clause."}}}
+    ]},
+    {"name": "group-by-all-with-a-star-groups-every-column", "steps": [
+      {"sql": "CREATE TABLE gstar_orders (city VARCHAR, qty INTEGER)"},
+      {"sql": "INSERT INTO gstar_orders VALUES ('Berlin', 1), ('Berlin', 2), ('Oslo', 5)"},
+      {"sql": "SELECT *, COUNT(1) AS n FROM gstar_orders GROUP BY ALL ORDER BY city, qty", "expect": {"rows": [["Berlin",1,1],["Berlin",2,1],["Oslo",5,1]], "ordered": true, "columns": ["CITY","QTY","N"]}}
+    ]}
+  ]
+}

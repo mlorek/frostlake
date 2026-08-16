@@ -1,0 +1,97 @@
+{
+  "suite": "features-object-tagging",
+  "description": "Applying object tags via ALTER <object> SET TAG / UNSET TAG across the applicable object types (database, schema, table, column, view, warehouse), plus ALLOWED_VALUES enforcement and the tag-must-exist requirement - asserted through the SQL surface, SYSTEM$GET_TAG. A view answers under the TABLE domain (the VIEW domain is refused, naming TABLE as the domain for all table-like objects), several tags set in one statement, tag lookup keyed by the canonical upper-cased name, and TAG_REFERENCES is a table FUNCTION on a real account rather than a readable view. Converted 1:1 from features/ObjectTaggingTest (now retired). Each test creates its own tags and objects, and drops the account-level warehouse it made.",
+  "tags": ["features", "converted"],
+  "tests": [
+    {"name": "set-and-unset-tag-on-table", "steps": [
+      {"sql": "CREATE TAG cost_center"},
+      {"sql": "CREATE TABLE t (id INTEGER, name VARCHAR)"},
+      {"sql": "ALTER TABLE t SET TAG cost_center = 'engineering'"},
+      {"sql": "SELECT SYSTEM$GET_TAG('cost_center', 't', 'TABLE')", "expect": {"value": "engineering"}},
+      {"sql": "ALTER TABLE t UNSET TAG cost_center"},
+      {"sql": "SELECT SYSTEM$GET_TAG('cost_center', 't', 'TABLE')", "expect": {"rows": [["NULL"]]}}
+    ]},
+    {"name": "set-and-unset-tag-on-column", "steps": [
+      {"sql": "CREATE TAG cost_center"},
+      {"sql": "CREATE TABLE t (id INTEGER, name VARCHAR)"},
+      {"sql": "ALTER TABLE t ALTER COLUMN name SET TAG cost_center = 'pii'"},
+      {"sql": "SELECT SYSTEM$GET_TAG('cost_center', 't.name', 'COLUMN')", "expect": {"value": "pii"}},
+      {"sql": "ALTER TABLE t ALTER COLUMN name UNSET TAG cost_center"},
+      {"sql": "SELECT SYSTEM$GET_TAG('cost_center', 't.name', 'COLUMN')", "expect": {"rows": [["NULL"]]}}
+    ]},
+    {"name": "set-tag-on-view", "steps": [
+      {"sql": "CREATE TAG cost_center"},
+      {"sql": "CREATE TABLE t (id INTEGER, name VARCHAR)"},
+      {"sql": "CREATE VIEW v AS SELECT id FROM t"},
+      {"sql": "ALTER VIEW v SET TAG cost_center = 'analytics'"},
+      {"sql": "SELECT SYSTEM$GET_TAG('cost_center', 'v', 'TABLE')", "expect": {"value": "analytics"}}
+    ]},
+    {"name": "view-domain-is-refused", "steps": [
+      {"sql": "CREATE TAG cost_center"},
+      {"sql": "CREATE TABLE t (id INTEGER, name VARCHAR)"},
+      {"sql": "CREATE VIEW v AS SELECT id FROM t"},
+      {"sql": "ALTER VIEW v SET TAG cost_center = 'analytics'"},
+      {"sql": "SELECT SYSTEM$GET_TAG('cost_center', 'v', 'VIEW')",
+       "expect": {"error": {"messageContains": "Invalid value VIEW for argument OBJECT_TYPE. Please use object type TABLE for all kinds of table-like objects."}}}
+    ]},
+    {"name": "set-tag-on-schema", "steps": [
+      {"sql": "CREATE TAG cost_center"},
+      {"sql": "ALTER SCHEMA test_schema SET TAG cost_center = 'shared'"},
+      {"sql": "SELECT SYSTEM$GET_TAG('cost_center', 'test_schema', 'SCHEMA')", "expect": {"value": "shared"}}
+    ]},
+    {"name": "set-tag-on-database", "steps": [
+      {"sql": "CREATE TAG cost_center"},
+      {"sql": "ALTER DATABASE test_db SET TAG cost_center = 'corp'"},
+      {"sql": "SELECT SYSTEM$GET_TAG('cost_center', 'test_db', 'DATABASE')", "expect": {"value": "corp"}}
+    ]},
+    {"name": "set-tag-on-warehouse", "steps": [
+      {"sql": "CREATE TAG cost_center"},
+      {"sql": "CREATE WAREHOUSE IF NOT EXISTS wh WITH WAREHOUSE_SIZE = 'SMALL' AUTO_SUSPEND = 60 INITIALLY_SUSPENDED = TRUE"},
+      {"sql": "ALTER WAREHOUSE wh SET TAG cost_center = 'etl'"},
+      {"sql": "SELECT SYSTEM$GET_TAG('cost_center', 'wh', 'WAREHOUSE')", "expect": {"value": "etl"}},
+      {"sql": "DROP WAREHOUSE IF EXISTS wh"}
+    ]},
+    {"name": "multiple-tags-in-one-statement", "steps": [
+      {"sql": "CREATE TAG cost_center"},
+      {"sql": "CREATE TAG sensitivity ALLOWED_VALUES 'PUBLIC', 'CONFIDENTIAL'"},
+      {"sql": "CREATE TABLE t (id INTEGER, name VARCHAR)"},
+      {"sql": "ALTER TABLE t SET TAG cost_center = 'eng', sensitivity = 'PUBLIC'"},
+      {"sql": "SELECT SYSTEM$GET_TAG('cost_center', 't', 'TABLE')", "expect": {"value": "eng"}},
+      {"sql": "SELECT SYSTEM$GET_TAG('sensitivity', 't', 'TABLE')", "expect": {"value": "PUBLIC"}}
+    ]},
+    {"name": "tag-lookup-is-case-insensitive", "steps": [
+      {"sql": "CREATE TAG cost_center"},
+      {"sql": "CREATE TABLE t (id INTEGER, name VARCHAR)"},
+      {"sql": "ALTER TABLE t SET TAG cost_center = 'eng'"},
+      {"sql": "SELECT SYSTEM$GET_TAG('COST_CENTER', 't', 'TABLE')", "expect": {"value": "eng"}}
+    ]},
+    {"name": "allowed-values-enforced", "steps": [
+      {"sql": "CREATE TAG sensitivity ALLOWED_VALUES 'PUBLIC', 'CONFIDENTIAL'"},
+      {"sql": "CREATE TABLE t (id INTEGER, name VARCHAR)"},
+      {"sql": "ALTER TABLE t SET TAG sensitivity = 'SECRET'", "expect": {"error": {}}}
+    ]},
+    {"name": "set-undefined-tag-fails", "steps": [
+      {"sql": "CREATE TABLE t (id INTEGER, name VARCHAR)"},
+      {"sql": "ALTER TABLE t SET TAG no_such_tag = 'x'", "expect": {"error": {}}}
+    ]},
+    {"name": "system-get-tag-reads-value", "steps": [
+      {"sql": "CREATE TAG cost_center"},
+      {"sql": "CREATE TAG sensitivity ALLOWED_VALUES 'PUBLIC', 'CONFIDENTIAL'"},
+      {"sql": "CREATE TABLE t (id INTEGER, name VARCHAR)"},
+      {"sql": "ALTER TABLE t SET TAG cost_center = 'engineering'"},
+      {"sql": "ALTER TABLE t ALTER COLUMN name SET TAG cost_center = 'pii'"},
+      {"sql": "SELECT SYSTEM$GET_TAG('cost_center', 't', 'TABLE')", "expect": {"value": "engineering"}},
+      {"sql": "SELECT SYSTEM$GET_TAG('cost_center', 't.name', 'COLUMN')", "expect": {"value": "pii"}},
+      {"sql": "SELECT SYSTEM$GET_TAG('sensitivity', 't', 'TABLE')", "expect": {"rows": [["NULL"]]}}
+    ]},
+    {"name": "tag-references-is-not-a-view-and-tags-read-back-through-get-tag", "steps": [
+      {"sql": "CREATE TAG cost_center"},
+      {"sql": "CREATE TABLE t (id INTEGER, name VARCHAR)"},
+      {"sql": "ALTER TABLE t SET TAG cost_center = 'engineering'"},
+      {"sql": "ALTER TABLE t ALTER COLUMN name SET TAG cost_center = 'pii'"},
+      {"sql": "SELECT * FROM information_schema.tag_references", "expect": {"error": {"messageContains": "does not exist"}}},
+      {"sql": "SELECT SYSTEM$GET_TAG('cost_center', 't', 'TABLE')", "expect": {"value": "engineering"}},
+      {"sql": "SELECT SYSTEM$GET_TAG('cost_center', 't.name', 'COLUMN')", "expect": {"value": "pii"}}
+    ]}
+  ]
+}

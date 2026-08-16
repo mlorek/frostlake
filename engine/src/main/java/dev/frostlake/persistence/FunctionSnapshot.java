@@ -36,6 +36,7 @@ public class FunctionSnapshot implements Serializable {
     public String nullHandling;
     public String volatility;
     public boolean secure;
+    public boolean memoizable;
     public List<String> imports = new ArrayList<>();
     public String comment;
     public String owner;

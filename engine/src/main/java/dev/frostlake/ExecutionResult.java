@@ -17,7 +17,6 @@
 package dev.frostlake;
 
 import dev.frostlake.storage.ResultSet;
-import dev.frostlake.storage.ResultSetColumn;
 import java.util.List;
 
 /**
@@ -57,9 +56,9 @@ public class ExecutionResult {
     }
 
     /**
-     * The total affected-row count reported by DML result sets in this execution — the sum of every
-     * column named "number of rows …" (inserted / updated / deleted) in each result's first row.
-     * Zero when no DML count result is present (DDL, SELECT, …).
+     * The total affected-row count this execution's DML statements report — each count grid marked by
+     * the statement that built it, so a query whose columns merely carry the count names
+     * ("number of rows inserted") counts nothing. Zero when no DML ran (DDL, SELECT, …).
      */
     public long getRowsAffected() {
         if (resultSets == null) {
@@ -67,18 +66,8 @@ public class ExecutionResult {
         }
         long total = 0;
         for (final ResultSet rs : resultSets) {
-            if (rs.getRowCount() == 0) {
-                continue;
-            }
-            final List<ResultSetColumn> columns = rs.getColumns();
-            for (int i = 0; i < columns.size(); i++) {
-                final String name = columns.get(i).getName();
-                if (name != null && name.toLowerCase().startsWith("number of rows")) {
-                    final Object value = rs.getRows().get(0).getValue(i);
-                    if (value instanceof Number) {
-                        total += ((Number) value).longValue();
-                    }
-                }
+            if (rs.getUpdateCount() != null) {
+                total += rs.getUpdateCount().longValue();
             }
         }
         return total;

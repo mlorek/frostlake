@@ -101,7 +101,7 @@ final class ShowPipelineExecutor {
 
     public ResultSet showStreams(final String databaseNameOverride, final String schemaName) {
         final List<ResultSetColumn> columns = Arrays.asList(
-            new ResultSetColumn("created_on", DateTimeType.TIMESTAMP_LTZ),
+            new ResultSetColumn("created_on", ShowResultHelpers.CREATED_ON),
             new ResultSetColumn("name", StringType.VARCHAR),
             new ResultSetColumn("database_name", StringType.VARCHAR),
             new ResultSetColumn("schema_name", StringType.VARCHAR),
@@ -168,7 +168,7 @@ final class ShowPipelineExecutor {
      */
     private List<ResultSetColumn> taskColumns() {
         return Arrays.asList(
-            new ResultSetColumn("created_on", DateTimeType.TIMESTAMP_LTZ),
+            new ResultSetColumn("created_on", ShowResultHelpers.CREATED_ON),
             new ResultSetColumn("name", StringType.VARCHAR),
             new ResultSetColumn("id", StringType.VARCHAR),
             new ResultSetColumn("database_name", StringType.VARCHAR),
@@ -183,8 +183,8 @@ final class ShowPipelineExecutor {
             new ResultSetColumn("condition", StringType.VARCHAR),
             new ResultSetColumn("allow_overlapping_execution", StringType.VARCHAR),
             new ResultSetColumn("error_integration", StringType.VARCHAR),
-            new ResultSetColumn("last_committed_on", DateTimeType.TIMESTAMP_LTZ),
-            new ResultSetColumn("last_suspended_on", DateTimeType.TIMESTAMP_LTZ),
+            new ResultSetColumn("last_committed_on", ShowResultHelpers.CREATED_ON),
+            new ResultSetColumn("last_suspended_on", ShowResultHelpers.CREATED_ON),
             new ResultSetColumn("owner_role_type", StringType.VARCHAR),
             new ResultSetColumn("config", StringType.VARCHAR),
             new ResultSetColumn("task_relations", StringType.VARCHAR),
@@ -338,7 +338,7 @@ final class ShowPipelineExecutor {
 
     private List<ResultSetColumn> pipeColumns() {
         return Arrays.asList(
-            new ResultSetColumn("created_on", DateTimeType.TIMESTAMP_LTZ),
+            new ResultSetColumn("created_on", ShowResultHelpers.CREATED_ON),
             new ResultSetColumn("name", StringType.VARCHAR),
             new ResultSetColumn("database_name", StringType.VARCHAR),
             new ResultSetColumn("schema_name", StringType.VARCHAR),
@@ -450,7 +450,7 @@ final class ShowPipelineExecutor {
             new ResultSetColumn("schema_name", StringType.VARCHAR),
             new ResultSetColumn("next_value", NumericType.BIGINT),
             new ResultSetColumn("interval", NumericType.BIGINT),
-            new ResultSetColumn("created_on", DateTimeType.TIMESTAMP_LTZ),
+            new ResultSetColumn("created_on", ShowResultHelpers.CREATED_ON),
             new ResultSetColumn("owner", StringType.VARCHAR),
             new ResultSetColumn("comment", StringType.VARCHAR),
             new ResultSetColumn("owner_role_type", StringType.VARCHAR),
@@ -518,7 +518,7 @@ final class ShowPipelineExecutor {
             new ResultSetColumn("schema_name", StringType.VARCHAR),
             new ResultSetColumn("next_value", NumericType.BIGINT),
             new ResultSetColumn("interval", NumericType.BIGINT),
-            new ResultSetColumn("created_on", DateTimeType.TIMESTAMP_LTZ),
+            new ResultSetColumn("created_on", ShowResultHelpers.CREATED_ON),
             new ResultSetColumn("owner", StringType.VARCHAR),
             new ResultSetColumn("comment", StringType.VARCHAR),
             new ResultSetColumn("owner_role_type", StringType.VARCHAR),
@@ -531,15 +531,17 @@ final class ShowPipelineExecutor {
         final Sequence sequence = schema.getSequence(sequenceName);
 
         final List<Row> rows = new ArrayList<>();
+        // The same ten cells SHOW SEQUENCES prints for the one sequence — the creation instant and
+        // the empty-string comment included; live fills both here exactly as it does there.
         rows.add(new Row(Arrays.asList(
             sequence.getName(),
             dbName, scName,
             sequence.getCurrentValueRaw() + sequence.getIncrement(), // the next value NEXTVAL would serve
             sequence.getIncrement(),
-            null,                                                    // created_on — not modeled
+            ShowResultHelpers.createdOn(sequence.getCreatedTime()),
             sequence.getOwner(),
-            sequence.getComment(),
-            "ROLE",
+            ShowResultHelpers.text(sequence.getComment()),
+            ShowResultHelpers.OWNER_ROLE_TYPE,
             sequence.isOrder() ? "Y" : "N"
         )));
 
@@ -655,7 +657,7 @@ final class ShowPipelineExecutor {
 
     private List<ResultSetColumn> cortexSearchServiceColumns() {
         return Arrays.asList(
-            new ResultSetColumn("created_on", DateTimeType.TIMESTAMP_LTZ),
+            new ResultSetColumn("created_on", ShowResultHelpers.CREATED_ON),
             new ResultSetColumn("name", StringType.VARCHAR),
             new ResultSetColumn("database_name", StringType.VARCHAR),
             new ResultSetColumn("schema_name", StringType.VARCHAR),
@@ -748,7 +750,7 @@ final class ShowPipelineExecutor {
     /** SHOW DYNAMIC TABLES in live's column order — the definition column is named {@code text}. */
     private List<ResultSetColumn> dynamicTableColumns() {
         return Arrays.asList(
-            new ResultSetColumn("created_on", DateTimeType.TIMESTAMP_LTZ),
+            new ResultSetColumn("created_on", ShowResultHelpers.CREATED_ON),
             new ResultSetColumn("name", StringType.VARCHAR),
             new ResultSetColumn("database_name", StringType.VARCHAR),
             new ResultSetColumn("schema_name", StringType.VARCHAR),
@@ -790,7 +792,7 @@ final class ShowPipelineExecutor {
     public ResultSet describeDynamicTable(final String tableName, final ResultSetProvider projection) {
         final String dbName = catalog.getCurrentDatabase();
         final String scName = catalog.getCurrentSchema();
-        catalog.getDatabase(dbName).getSchema(scName).getDynamicTable(tableName.toUpperCase());
+        catalog.getDatabase(dbName).getSchema(scName).getDynamicTable(tableName);
 
         final List<ResultSetColumn> columns = Arrays.asList(
             new ResultSetColumn("name", StringType.VARCHAR),

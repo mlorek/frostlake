@@ -1,0 +1,37 @@
+{
+  "suite": "query-select-star-modifiers",
+  "description": "The Snowflake SELECT * column-list modifiers over a three-column fixture: EXCLUDE drops the listed columns and accepts a single column with or without parentheses; RENAME changes the OUTPUT NAME and leaves the value alone; REPLACE swaps the VALUE and keeps the name; ILIKE keeps only the columns whose names match the pattern; and a plain star is unaffected by any of it. Converted 1:1 from query/SelectStarModifiersTest (now retired); the Java asserted the column COUNT and sampled a name or two, so the converted tests pin both the full column list and the row, which is what separates RENAME from REPLACE.",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "exclude-drops-the-listed-columns", "steps": [
+      {"sql": "CREATE TABLE sm (aa INTEGER, ab INTEGER, bc INTEGER)"},
+      {"sql": "INSERT INTO sm VALUES (1, 2, 3)"},
+      {"sql": "SELECT * EXCLUDE (ab) FROM sm", "expect": {"rows": [[1,3]], "columns": ["AA","BC"]}}
+    ]},
+    {"name": "exclude-accepts-a-single-column-without-parentheses", "steps": [
+      {"sql": "CREATE TABLE sm (aa INTEGER, ab INTEGER, bc INTEGER)"},
+      {"sql": "INSERT INTO sm VALUES (1, 2, 3)"},
+      {"sql": "SELECT * EXCLUDE ab FROM sm", "expect": {"rows": [[1,3]], "columns": ["AA","BC"]}}
+    ]},
+    {"name": "rename-changes-the-output-name-not-the-value", "steps": [
+      {"sql": "CREATE TABLE sm (aa INTEGER, ab INTEGER, bc INTEGER)"},
+      {"sql": "INSERT INTO sm VALUES (1, 2, 3)"},
+      {"sql": "SELECT * RENAME (aa AS x) FROM sm", "expect": {"rows": [[1,2,3]], "columns": ["X","AB","BC"]}}
+    ]},
+    {"name": "replace-swaps-the-value-keeping-the-name", "steps": [
+      {"sql": "CREATE TABLE sm (aa INTEGER, ab INTEGER, bc INTEGER)"},
+      {"sql": "INSERT INTO sm VALUES (1, 2, 3)"},
+      {"sql": "SELECT * REPLACE (aa + 100 AS aa) FROM sm", "expect": {"rows": [[101,2,3]], "columns": ["AA","AB","BC"]}}
+    ]},
+    {"name": "ilike-keeps-only-the-matching-columns", "steps": [
+      {"sql": "CREATE TABLE sm (aa INTEGER, ab INTEGER, bc INTEGER)"},
+      {"sql": "INSERT INTO sm VALUES (1, 2, 3)"},
+      {"sql": "SELECT * ILIKE 'a%' FROM sm", "expect": {"rows": [[1,2]], "columns": ["AA","AB"]}}
+    ]},
+    {"name": "a-plain-star-is-unaffected", "steps": [
+      {"sql": "CREATE TABLE sm (aa INTEGER, ab INTEGER, bc INTEGER)"},
+      {"sql": "INSERT INTO sm VALUES (1, 2, 3)"},
+      {"sql": "SELECT * FROM sm", "expect": {"rows": [[1,2,3]], "columns": ["AA","AB","BC"]}}
+    ]}
+  ]
+}

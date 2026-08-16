@@ -1,0 +1,104 @@
+{
+  "suite": "query-set-operation-arm-fold",
+  "description": "A set operation DECLARES the type its arms fold to, not the type of the arm that happens to be written FIRST. Frostlake computed the fold and then reported the leading arm anyway, so v UNION w claimed VARCHAR(5) over a column that returns a nine-character string. A string arm takes the widest declared width from either side; a number takes the widest INTEGER PART beside the widest SCALE - so NUMBER(10,2) with NUMBER(5,4) is NUMBER(12,4), never the max-precision NUMBER(10,4) that could not hold the values; an approximate number swallows an exact one from either side; a temporal arm widens DATE into any timestamp and unzoned into local. The arms fold by NEARLY the rule a conditional's BRANCHES use, and the two are measured together for that reason - but they are NOT the same rule, and three cells prove it: COALESCE(v, bo) and COALESCE(v, NULL) widen to the unbounded conversion width (which INFORMATION_SCHEMA reads as the 16777216 a column can declare) where v UNION bo and v UNION NULL keep VARCHAR(5), and COALESCE(n, bo) folds to BOOLEAN where n UNION bo is refused outright on a live account. So the unknown-length widening belongs to BRANCHES alone: an ARM keeps the width it declares. A trailing NULL arm contributes nothing, and three arms fold as one chain rather than pairwise-then-forgotten. Converted 1:1 from query/SetOperationArmFoldTest (now retired); the Java read the declared type through the engine's Java DataType API, which has no SQL surface, so each converted claim materialises the query as a VIEW and reads its INFORMATION_SCHEMA.COLUMNS row - the instrument that carries an expression's DECLARED type, though it stops a string at 16777216 as CTAS and DESCRIBE do. TEXT plus CHARACTER_MAXIMUM_LENGTH renders as VARCHAR(n) and BINARY plus CHARACTER_OCTET_LENGTH as BINARY(n), reproducing the Java helper's rendering. Not pinned, because the Java did not pin it either: a TIMESTAMP_TZ arriving SECOND after an unzoned or local timestamp is refused outright on a live account rather than folded, and frostlake does not yet raise that refusal.",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "a-string-arm-takes-the-widest-width", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE sf (i INT, n NUMBER(10,2), m NUMBER(5,4), f FLOAT, v VARCHAR(5), w VARCHAR(9), d DATE, ts TIMESTAMP_NTZ, tl TIMESTAMP_LTZ, tz TIMESTAMP_TZ, tm TIME, bo BOOLEAN, bn BINARY(5))"},
+      {"sql": "INSERT INTO sf SELECT 1, 2.50, 0.5, 3.5, 'ab', 'cdefg', '2020-01-01', '2020-01-01 10:00:00', '2020-01-01 10:00:00', '2020-01-01 10:00:00', '10:00:00', TRUE, TO_BINARY('AB')"},
+      {"sql": "CREATE OR REPLACE VIEW vw01 AS SELECT v AS c1 FROM sf UNION SELECT w FROM sf"},
+      {"sql": "CREATE OR REPLACE VIEW vw02 AS SELECT w AS c1 FROM sf UNION SELECT v FROM sf"},
+      {"sql": "CREATE OR REPLACE VIEW vw03 AS SELECT v AS c1 FROM sf UNION ALL SELECT w FROM sf"},
+      {"sql": "CREATE OR REPLACE VIEW vw04 AS SELECT v AS c1 FROM sf INTERSECT SELECT w FROM sf"},
+      {"sql": "CREATE OR REPLACE VIEW vw05 AS SELECT v AS c1 FROM sf EXCEPT SELECT w FROM sf"},
+      {"sql": "SELECT table_name, CASE data_type WHEN 'TEXT' THEN 'VARCHAR(' || character_maximum_length || ')' WHEN 'NUMBER' THEN 'NUMBER(' || numeric_precision || ',' || numeric_scale || ')' WHEN 'BINARY' THEN 'BINARY(' || character_octet_length || ')' ELSE data_type END FROM information_schema.columns WHERE table_name LIKE 'VW%' ORDER BY table_name",
+       "expect": {"rows": [["VW01","VARCHAR(9)"],["VW02","VARCHAR(9)"],["VW03","VARCHAR(9)"],["VW04","VARCHAR(9)"],["VW05","VARCHAR(9)"]], "ordered": true}}
+    ]},
+    {"name": "a-numeric-arm-takes-the-supertype", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE sf (i INT, n NUMBER(10,2), m NUMBER(5,4), f FLOAT, v VARCHAR(5), w VARCHAR(9), d DATE, ts TIMESTAMP_NTZ, tl TIMESTAMP_LTZ, tz TIMESTAMP_TZ, tm TIME, bo BOOLEAN, bn BINARY(5))"},
+      {"sql": "INSERT INTO sf SELECT 1, 2.50, 0.5, 3.5, 'ab', 'cdefg', '2020-01-01', '2020-01-01 10:00:00', '2020-01-01 10:00:00', '2020-01-01 10:00:00', '10:00:00', TRUE, TO_BINARY('AB')"},
+      {"sql": "CREATE OR REPLACE VIEW vw01 AS SELECT i AS c1 FROM sf UNION SELECT n FROM sf"},
+      {"sql": "CREATE OR REPLACE VIEW vw02 AS SELECT n AS c1 FROM sf UNION SELECT i FROM sf"},
+      {"sql": "CREATE OR REPLACE VIEW vw03 AS SELECT n AS c1 FROM sf UNION SELECT m FROM sf"},
+      {"sql": "CREATE OR REPLACE VIEW vw04 AS SELECT n AS c1 FROM sf EXCEPT SELECT m FROM sf"},
+      {"sql": "SELECT table_name, CASE data_type WHEN 'TEXT' THEN 'VARCHAR(' || character_maximum_length || ')' WHEN 'NUMBER' THEN 'NUMBER(' || numeric_precision || ',' || numeric_scale || ')' WHEN 'BINARY' THEN 'BINARY(' || character_octet_length || ')' ELSE data_type END FROM information_schema.columns WHERE table_name LIKE 'VW%' ORDER BY table_name",
+       "expect": {"rows": [["VW01","NUMBER(38,2)"],["VW02","NUMBER(38,2)"],["VW03","NUMBER(12,4)"],["VW04","NUMBER(12,4)"]], "ordered": true}}
+    ]},
+    {"name": "an-approximate-arm-swallows-an-exact-one", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE sf (i INT, n NUMBER(10,2), m NUMBER(5,4), f FLOAT, v VARCHAR(5), w VARCHAR(9), d DATE, ts TIMESTAMP_NTZ, tl TIMESTAMP_LTZ, tz TIMESTAMP_TZ, tm TIME, bo BOOLEAN, bn BINARY(5))"},
+      {"sql": "INSERT INTO sf SELECT 1, 2.50, 0.5, 3.5, 'ab', 'cdefg', '2020-01-01', '2020-01-01 10:00:00', '2020-01-01 10:00:00', '2020-01-01 10:00:00', '10:00:00', TRUE, TO_BINARY('AB')"},
+      {"sql": "CREATE OR REPLACE VIEW vw01 AS SELECT n AS c1 FROM sf UNION SELECT f FROM sf"},
+      {"sql": "CREATE OR REPLACE VIEW vw02 AS SELECT f AS c1 FROM sf UNION SELECT n FROM sf"},
+      {"sql": "CREATE OR REPLACE VIEW vw03 AS SELECT i AS c1 FROM sf UNION ALL SELECT f FROM sf"},
+      {"sql": "CREATE OR REPLACE VIEW vw04 AS SELECT n AS c1 FROM sf INTERSECT SELECT f FROM sf"},
+      {"sql": "SELECT table_name, CASE data_type WHEN 'TEXT' THEN 'VARCHAR(' || character_maximum_length || ')' WHEN 'NUMBER' THEN 'NUMBER(' || numeric_precision || ',' || numeric_scale || ')' WHEN 'BINARY' THEN 'BINARY(' || character_octet_length || ')' ELSE data_type END FROM information_schema.columns WHERE table_name LIKE 'VW%' ORDER BY table_name",
+       "expect": {"rows": [["VW01","FLOAT"],["VW02","FLOAT"],["VW03","FLOAT"],["VW04","FLOAT"]], "ordered": true}}
+    ]},
+    {"name": "a-temporal-arm-widens", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE sf (i INT, n NUMBER(10,2), m NUMBER(5,4), f FLOAT, v VARCHAR(5), w VARCHAR(9), d DATE, ts TIMESTAMP_NTZ, tl TIMESTAMP_LTZ, tz TIMESTAMP_TZ, tm TIME, bo BOOLEAN, bn BINARY(5))"},
+      {"sql": "INSERT INTO sf SELECT 1, 2.50, 0.5, 3.5, 'ab', 'cdefg', '2020-01-01', '2020-01-01 10:00:00', '2020-01-01 10:00:00', '2020-01-01 10:00:00', '10:00:00', TRUE, TO_BINARY('AB')"},
+      {"sql": "CREATE OR REPLACE VIEW vw01 AS SELECT d AS c1 FROM sf UNION SELECT ts FROM sf"},
+      {"sql": "CREATE OR REPLACE VIEW vw02 AS SELECT ts AS c1 FROM sf UNION SELECT d FROM sf"},
+      {"sql": "CREATE OR REPLACE VIEW vw03 AS SELECT d AS c1 FROM sf UNION SELECT tl FROM sf"},
+      {"sql": "CREATE OR REPLACE VIEW vw04 AS SELECT d AS c1 FROM sf UNION SELECT tz FROM sf"},
+      {"sql": "CREATE OR REPLACE VIEW vw05 AS SELECT ts AS c1 FROM sf UNION SELECT tl FROM sf"},
+      {"sql": "CREATE OR REPLACE VIEW vw06 AS SELECT tl AS c1 FROM sf UNION SELECT ts FROM sf"},
+      {"sql": "CREATE OR REPLACE VIEW vw07 AS SELECT ts AS c1 FROM sf EXCEPT SELECT tl FROM sf"},
+      {"sql": "CREATE OR REPLACE VIEW vw08 AS SELECT tz AS c1 FROM sf UNION ALL SELECT tl FROM sf"},
+      {"sql": "CREATE OR REPLACE VIEW vw09 AS SELECT tz AS c1 FROM sf UNION SELECT ts FROM sf"},
+      {"sql": "CREATE OR REPLACE VIEW vw10 AS SELECT tz AS c1 FROM sf UNION SELECT d FROM sf"},
+      {"sql": "SELECT table_name, CASE data_type WHEN 'TEXT' THEN 'VARCHAR(' || character_maximum_length || ')' WHEN 'NUMBER' THEN 'NUMBER(' || numeric_precision || ',' || numeric_scale || ')' WHEN 'BINARY' THEN 'BINARY(' || character_octet_length || ')' ELSE data_type END FROM information_schema.columns WHERE table_name LIKE 'VW%' ORDER BY table_name",
+       "expect": {"rows": [["VW01","TIMESTAMP_NTZ"],["VW02","TIMESTAMP_NTZ"],["VW03","TIMESTAMP_LTZ"],["VW04","TIMESTAMP_TZ"],["VW05","TIMESTAMP_LTZ"],["VW06","TIMESTAMP_LTZ"],["VW07","TIMESTAMP_LTZ"],["VW08","TIMESTAMP_TZ"],["VW09","TIMESTAMP_TZ"],["VW10","TIMESTAMP_TZ"]], "ordered": true}}
+    ]},
+    {"name": "a-temporal-branch-takes-the-wider-either-way", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE sf (i INT, n NUMBER(10,2), m NUMBER(5,4), f FLOAT, v VARCHAR(5), w VARCHAR(9), d DATE, ts TIMESTAMP_NTZ, tl TIMESTAMP_LTZ, tz TIMESTAMP_TZ, tm TIME, bo BOOLEAN, bn BINARY(5))"},
+      {"sql": "INSERT INTO sf SELECT 1, 2.50, 0.5, 3.5, 'ab', 'cdefg', '2020-01-01', '2020-01-01 10:00:00', '2020-01-01 10:00:00', '2020-01-01 10:00:00', '10:00:00', TRUE, TO_BINARY('AB')"},
+      {"sql": "CREATE OR REPLACE VIEW vw01 AS SELECT COALESCE(tl, tz) AS c1 FROM sf"},
+      {"sql": "CREATE OR REPLACE VIEW vw02 AS SELECT COALESCE(ts, tz) AS c1 FROM sf"},
+      {"sql": "CREATE OR REPLACE VIEW vw03 AS SELECT COALESCE(tz, tl) AS c1 FROM sf"},
+      {"sql": "CREATE OR REPLACE VIEW vw04 AS SELECT COALESCE(ts, tl) AS c1 FROM sf"},
+      {"sql": "SELECT table_name, CASE data_type WHEN 'TEXT' THEN 'VARCHAR(' || character_maximum_length || ')' WHEN 'NUMBER' THEN 'NUMBER(' || numeric_precision || ',' || numeric_scale || ')' WHEN 'BINARY' THEN 'BINARY(' || character_octet_length || ')' ELSE data_type END FROM information_schema.columns WHERE table_name LIKE 'VW%' ORDER BY table_name",
+       "expect": {"rows": [["VW01","TIMESTAMP_TZ"],["VW02","TIMESTAMP_TZ"],["VW03","TIMESTAMP_TZ"],["VW04","TIMESTAMP_LTZ"]], "ordered": true}}
+    ]},
+    {"name": "a-leading-boolean-arm-wins", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE sf (i INT, n NUMBER(10,2), m NUMBER(5,4), f FLOAT, v VARCHAR(5), w VARCHAR(9), d DATE, ts TIMESTAMP_NTZ, tl TIMESTAMP_LTZ, tz TIMESTAMP_TZ, tm TIME, bo BOOLEAN, bn BINARY(5))"},
+      {"sql": "INSERT INTO sf SELECT 1, 2.50, 0.5, 3.5, 'ab', 'cdefg', '2020-01-01', '2020-01-01 10:00:00', '2020-01-01 10:00:00', '2020-01-01 10:00:00', '10:00:00', TRUE, TO_BINARY('AB')"},
+      {"sql": "CREATE OR REPLACE VIEW vw01 AS SELECT bo AS c1 FROM sf UNION SELECT n FROM sf"},
+      {"sql": "CREATE OR REPLACE VIEW vw02 AS SELECT bo AS c1 FROM sf UNION ALL SELECT i FROM sf"},
+      {"sql": "CREATE OR REPLACE VIEW vw03 AS SELECT bo AS c1 FROM sf INTERSECT SELECT n FROM sf"},
+      {"sql": "SELECT table_name, CASE data_type WHEN 'TEXT' THEN 'VARCHAR(' || character_maximum_length || ')' WHEN 'NUMBER' THEN 'NUMBER(' || numeric_precision || ',' || numeric_scale || ')' WHEN 'BINARY' THEN 'BINARY(' || character_octet_length || ')' ELSE data_type END FROM information_schema.columns WHERE table_name LIKE 'VW%' ORDER BY table_name",
+       "expect": {"rows": [["VW01","BOOLEAN"],["VW02","BOOLEAN"],["VW03","BOOLEAN"]], "ordered": true}}
+    ]},
+    {"name": "an-arm-keeps-its-width-where-a-branch-widens", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE sf (i INT, n NUMBER(10,2), m NUMBER(5,4), f FLOAT, v VARCHAR(5), w VARCHAR(9), d DATE, ts TIMESTAMP_NTZ, tl TIMESTAMP_LTZ, tz TIMESTAMP_TZ, tm TIME, bo BOOLEAN, bn BINARY(5))"},
+      {"sql": "INSERT INTO sf SELECT 1, 2.50, 0.5, 3.5, 'ab', 'cdefg', '2020-01-01', '2020-01-01 10:00:00', '2020-01-01 10:00:00', '2020-01-01 10:00:00', '10:00:00', TRUE, TO_BINARY('AB')"},
+      {"sql": "CREATE OR REPLACE VIEW vw01 AS SELECT v AS c1 FROM sf UNION SELECT bo FROM sf"},
+      {"sql": "CREATE OR REPLACE VIEW vw02 AS SELECT v AS c1 FROM sf UNION SELECT NULL FROM sf"},
+      {"sql": "CREATE OR REPLACE VIEW vw03 AS SELECT v AS c1 FROM sf EXCEPT SELECT NULL FROM sf"},
+      {"sql": "CREATE OR REPLACE VIEW vw04 AS SELECT COALESCE(v, bo) AS c1 FROM sf"},
+      {"sql": "CREATE OR REPLACE VIEW vw05 AS SELECT COALESCE(v, NULL) AS c1 FROM sf"},
+      {"sql": "CREATE OR REPLACE VIEW vw06 AS SELECT COALESCE(n, bo) AS c1 FROM sf"},
+      {"sql": "SELECT table_name, CASE data_type WHEN 'TEXT' THEN 'VARCHAR(' || character_maximum_length || ')' WHEN 'NUMBER' THEN 'NUMBER(' || numeric_precision || ',' || numeric_scale || ')' WHEN 'BINARY' THEN 'BINARY(' || character_octet_length || ')' ELSE data_type END FROM information_schema.columns WHERE table_name LIKE 'VW%' ORDER BY table_name",
+       "expect": {"rows": [["VW01","VARCHAR(5)"],["VW02","VARCHAR(5)"],["VW03","VARCHAR(5)"],["VW04","VARCHAR(16777216)"],["VW05","VARCHAR(16777216)"],["VW06","BOOLEAN"]], "ordered": true}}
+    ]},
+    {"name": "a-trailing-null-arm-contributes-nothing", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE sf (i INT, n NUMBER(10,2), m NUMBER(5,4), f FLOAT, v VARCHAR(5), w VARCHAR(9), d DATE, ts TIMESTAMP_NTZ, tl TIMESTAMP_LTZ, tz TIMESTAMP_TZ, tm TIME, bo BOOLEAN, bn BINARY(5))"},
+      {"sql": "INSERT INTO sf SELECT 1, 2.50, 0.5, 3.5, 'ab', 'cdefg', '2020-01-01', '2020-01-01 10:00:00', '2020-01-01 10:00:00', '2020-01-01 10:00:00', '10:00:00', TRUE, TO_BINARY('AB')"},
+      {"sql": "CREATE OR REPLACE VIEW vw01 AS SELECT i AS c1 FROM sf UNION SELECT NULL FROM sf"},
+      {"sql": "CREATE OR REPLACE VIEW vw02 AS SELECT n AS c1 FROM sf UNION SELECT NULL FROM sf"},
+      {"sql": "CREATE OR REPLACE VIEW vw03 AS SELECT d AS c1 FROM sf UNION SELECT NULL FROM sf"},
+      {"sql": "SELECT table_name, CASE data_type WHEN 'TEXT' THEN 'VARCHAR(' || character_maximum_length || ')' WHEN 'NUMBER' THEN 'NUMBER(' || numeric_precision || ',' || numeric_scale || ')' WHEN 'BINARY' THEN 'BINARY(' || character_octet_length || ')' ELSE data_type END FROM information_schema.columns WHERE table_name LIKE 'VW%' ORDER BY table_name",
+       "expect": {"rows": [["VW01","NUMBER(38,0)"],["VW02","NUMBER(10,2)"],["VW03","DATE"]], "ordered": true}}
+    ]},
+    {"name": "three-arms-fold-as-one-chain", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE sf (i INT, n NUMBER(10,2), m NUMBER(5,4), f FLOAT, v VARCHAR(5), w VARCHAR(9), d DATE, ts TIMESTAMP_NTZ, tl TIMESTAMP_LTZ, tz TIMESTAMP_TZ, tm TIME, bo BOOLEAN, bn BINARY(5))"},
+      {"sql": "INSERT INTO sf SELECT 1, 2.50, 0.5, 3.5, 'ab', 'cdefg', '2020-01-01', '2020-01-01 10:00:00', '2020-01-01 10:00:00', '2020-01-01 10:00:00', '10:00:00', TRUE, TO_BINARY('AB')"},
+      {"sql": "CREATE OR REPLACE VIEW vw01 AS SELECT v AS c1 FROM sf UNION SELECT w FROM sf UNION SELECT v FROM sf"},
+      {"sql": "CREATE OR REPLACE VIEW vw02 AS SELECT i AS c1 FROM sf UNION SELECT n FROM sf UNION SELECT i FROM sf"},
+      {"sql": "CREATE OR REPLACE VIEW vw03 AS SELECT i AS c1 FROM sf UNION SELECT n FROM sf UNION SELECT f FROM sf"},
+      {"sql": "CREATE OR REPLACE VIEW vw04 AS SELECT d AS c1 FROM sf UNION SELECT ts FROM sf UNION SELECT tl FROM sf"},
+      {"sql": "SELECT table_name, CASE data_type WHEN 'TEXT' THEN 'VARCHAR(' || character_maximum_length || ')' WHEN 'NUMBER' THEN 'NUMBER(' || numeric_precision || ',' || numeric_scale || ')' WHEN 'BINARY' THEN 'BINARY(' || character_octet_length || ')' ELSE data_type END FROM information_schema.columns WHERE table_name LIKE 'VW%' ORDER BY table_name",
+       "expect": {"rows": [["VW01","VARCHAR(9)"],["VW02","NUMBER(38,2)"],["VW03","FLOAT"],["VW04","TIMESTAMP_LTZ"]], "ordered": true}}
+    ]}
+  ]
+}

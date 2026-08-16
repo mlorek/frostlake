@@ -35,8 +35,19 @@ import java.util.List;
  * for VECTOR_TRUNC should be less than or equal to the dimension of the provided vector (3).", and a
  * column / an expression / a non-integral literal are all "needs to be constant". Those checks live in
  * the expression layer, where the STATIC types are known.
+ *
+ * <p>A dimension of {@code -1} is the one negative the account compiles: the statement is accepted,
+ * over an empty table it answers no rows, and each row it does read fails with the account's internal
+ * error, the incident number that sentence carries on the account being left out here.
  */
 public class VectorTrunc extends BuiltInFunction {
+
+    /** The negative dimension that compiles and then fails on every row it is asked of. */
+    public static final int ROW_FAILING_DIMENSION = -1;
+
+    /** How each row fails under {@link #ROW_FAILING_DIMENSION}. */
+    private static final String ROW_FAILURE =
+        "SQL execution internal error:\nProcessing aborted due to error 300010:2086363262.";
 
     public VectorTrunc() {
         super("VECTOR_TRUNC", new VectorType(VectorElementType.FLOAT, 1));
@@ -49,6 +60,9 @@ public class VectorTrunc extends BuiltInFunction {
             return null;
         }
         final int requested = ((Number) args.get(1)).intValue();
+        if (requested == ROW_FAILING_DIMENSION) {
+            throw new RuntimeException(ROW_FAILURE);
+        }
         if (requested < 0 || requested > source.dimension()) {
             throw new RuntimeException("Requested truncation dimension " + requested + " for " + getName()
                 + " should be less than or equal to the dimension of the provided vector ("

@@ -17,6 +17,7 @@
 package dev.frostlake.executor.operators;
 
 import dev.frostlake.executor.ExpressionEvaluator;
+import dev.frostlake.executor.ProjectionSlot;
 import dev.frostlake.executor.expressions.Expression;
 import dev.frostlake.executor.expressions.ExpressionSource;
 import dev.frostlake.executor.expressions.RowOrdinal;
@@ -172,6 +173,11 @@ public class ProjectOperator implements Operator {
                     final SourcePosition displaced = ExpressionSource.beginNested(originOf(i));
                     try {
                         value = evaluateExpression(parsedExpressions.get(i), row);
+                    } catch (final RuntimeException failed) {
+                        // Note which item this was on the way out, so a DML wrapping this query can
+                        // name the target column the projection was feeding — see ProjectionSlot.
+                        ProjectionSlot.failedAt(i);
+                        throw failed;
                     } finally {
                         ExpressionSource.end(displaced);
                     }

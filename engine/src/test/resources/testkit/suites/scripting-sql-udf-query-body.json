@@ -1,0 +1,19 @@
+{
+  "suite": "scripting-sql-udf-query-body",
+  "description": "A SQL-UDF body is classified as a QUERY versus a bare scalar EXPRESSION by PARSING it - is it a queryStatement? - and not by a startsWith('SELECT') string prefix. So a WITH ... SELECT CTE body is recognised as a query, where the old prefix check fell through to expression evaluation and failed. A plain SELECT body and an expression body ride along as the two controls. Converted 1:1 from scripting/SqlUdfQueryBodyTest (now retired).",
+  "tags": ["scripting", "converted"],
+  "tests": [
+    {"name": "a-select-body-executes-as-a-query", "steps": [
+      {"sql": "CREATE FUNCTION sel_one() RETURNS INTEGER AS 'SELECT 1'"},
+      {"sql": "SELECT sel_one()", "expect": {"value": 1}}
+    ]},
+    {"name": "a-with-cte-body-executes-as-a-query", "steps": [
+      {"sql": "CREATE FUNCTION cte_five() RETURNS INTEGER AS 'WITH c AS (SELECT 5 AS v) SELECT v FROM c'"},
+      {"sql": "SELECT cte_five()", "expect": {"value": 5}}
+    ]},
+    {"name": "an-expression-body-still-evaluates-as-an-expression", "steps": [
+      {"sql": "CREATE FUNCTION dbl(x INTEGER) RETURNS INTEGER AS 'x * 2'"},
+      {"sql": "SELECT dbl(21)", "expect": {"value": 42}}
+    ]}
+  ]
+}

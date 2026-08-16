@@ -1,0 +1,25 @@
+{
+  "suite": "functions-add-months",
+  "description": "ADD_MONTHS preserves end-of-month (Snowflake): when the input is the last day of its month the result is the last day of the target month, so ADD_MONTHS('2016-02-29', 1) is 2016-03-31 rather than the plain 2016-03-29, and the rule holds for negative offsets too. A non-month-end date is shifted normally. The result TYPE follows the input (live-verified): a VARCHAR input is implicitly cast to TIMESTAMP_NTZ - its rendered text carries a time-of-day - while a DATE input stays DATE and renders as a bare date. Converted 1:1 from functions/AddMonthsTest (now retired); the Java class asserted LocalDateTime vs LocalDate objects, a distinction the converted suite keeps by reading TO_VARCHAR of the result.",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "a-non-month-end-date-shifts-normally", "steps": [
+      {"sql": "SELECT TO_VARCHAR(ADD_MONTHS('2016-01-15', 1))", "expect": {"value": "2016-02-15 00:00:00.000"}}
+    ]},
+    {"name": "end-of-month-goes-to-the-end-of-a-longer-month", "steps": [
+      {"sql": "SELECT TO_VARCHAR(ADD_MONTHS('2016-02-29', 1))", "expect": {"value": "2016-03-31 00:00:00.000"}}
+    ]},
+    {"name": "end-of-month-goes-to-the-end-of-a-shorter-month", "steps": [
+      {"sql": "SELECT TO_VARCHAR(ADD_MONTHS('2016-03-31', 1))", "expect": {"value": "2016-04-30 00:00:00.000"}}
+    ]},
+    {"name": "january-31-lands-on-a-leap-february", "steps": [
+      {"sql": "SELECT TO_VARCHAR(ADD_MONTHS('2016-01-31', 1))", "expect": {"value": "2016-02-29 00:00:00.000"}}
+    ]},
+    {"name": "negative-months-preserve-end-of-month", "steps": [
+      {"sql": "SELECT TO_VARCHAR(ADD_MONTHS('2016-02-29', -1))", "expect": {"value": "2016-01-31 00:00:00.000"}}
+    ]},
+    {"name": "a-date-input-stays-a-date", "steps": [
+      {"sql": "SELECT TO_VARCHAR(ADD_MONTHS('2016-01-31'::DATE, 1))", "expect": {"value": "2016-02-29"}}
+    ]}
+  ]
+}

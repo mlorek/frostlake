@@ -1,0 +1,51 @@
+{
+  "suite": "functions-sysdate",
+  "description": "SYSDATE() in every position: projection, INSERT, WHERE, comparisons vs fixed past timestamps, subqueries, CTAS. Converted 1:1 from functions/SysdateTest.java (now retired); not-null / type asserts on the non-deterministic value became SQL IS NOT NULL checks.",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "sysdate-returns-timestamp", "steps": [
+      {"sql": "SELECT SYSDATE() IS NOT NULL AS current_time_present", "expect": {"value": "true"}}
+    ]},
+    {"name": "sysdate-as-alias", "steps": [
+      {"sql": "SELECT SYSDATE() AS ts", "expect": {"rowCount": 1, "columns": ["TS"]}}
+    ]},
+    {"name": "sysdate-in-insert", "steps": [
+      {"sql": "CREATE TABLE audit_log (id INTEGER, created_at TIMESTAMP_NTZ)"},
+      {"sql": "INSERT INTO audit_log VALUES (1, SYSDATE())"},
+      {"sql": "SELECT created_at IS NOT NULL FROM audit_log WHERE id = 1", "expect": {"value": "true"}}
+    ]},
+    {"name": "sysdate-in-where-clause", "steps": [
+      {"sql": "CREATE TABLE events (id INTEGER, event_time TIMESTAMP_NTZ)"},
+      {"sql": "INSERT INTO events VALUES (1, TO_TIMESTAMP_NTZ('2020-01-01 00:00:00'))"},
+      {"sql": "INSERT INTO events VALUES (2, DATEADD(second, -1, SYSDATE()))"},
+      {"sql": "SELECT id FROM events WHERE event_time < SYSDATE() ORDER BY id", "expect": {"rows": [["1"], ["2"]], "ordered": true}}
+    ]},
+    {"name": "sysdate-comparison", "steps": [
+      {"sql": "SELECT SYSDATE() > TO_TIMESTAMP_NTZ('2020-01-01 00:00:00') AS is_after", "expect": {"value": "true"}}
+    ]},
+    {"name": "multiple-sysdate-calls", "steps": [
+      {"sql": "SELECT SYSDATE() IS NOT NULL AS ts1, SYSDATE() IS NOT NULL AS ts2", "expect": {"rows": [["true", "true"]]}}
+    ]},
+    {"name": "sysdate-in-default-value", "steps": [
+      {"sql": "CREATE TABLE logs (id INTEGER, log_time TIMESTAMP_NTZ)"},
+      {"sql": "INSERT INTO logs (id, log_time) VALUES (1, SYSDATE())"},
+      {"sql": "INSERT INTO logs (id, log_time) VALUES (2, SYSDATE())"},
+      {"sql": "SELECT COUNT(*) AS cnt FROM logs WHERE log_time IS NOT NULL", "expect": {"value": "2"}}
+    ]},
+    {"name": "sysdate-with-date-arithmetic", "steps": [
+      {"sql": "CREATE TABLE task_list (id INTEGER, due_date TIMESTAMP_NTZ)"},
+      {"sql": "INSERT INTO task_list VALUES (1, SYSDATE())"},
+      {"sql": "SELECT id FROM task_list WHERE due_date <= SYSDATE()", "expect": {"rows": [["1"]]}}
+    ]},
+    {"name": "sysdate-in-subquery", "steps": [
+      {"sql": "CREATE TABLE orders (id INTEGER, order_date TIMESTAMP_NTZ)"},
+      {"sql": "INSERT INTO orders VALUES (1, TO_TIMESTAMP_NTZ('2024-01-01 10:00:00'))"},
+      {"sql": "INSERT INTO orders VALUES (2, TO_TIMESTAMP_NTZ('2024-06-01 10:00:00'))"},
+      {"sql": "SELECT id FROM orders WHERE order_date < (SELECT SYSDATE()) ORDER BY id", "expect": {"rows": [["1"], ["2"]], "ordered": true}}
+    ]},
+    {"name": "sysdate-in-create-table-as-select", "steps": [
+      {"sql": "CREATE TABLE snapshot AS SELECT 1 AS id, SYSDATE() AS snapshot_time"},
+      {"sql": "SELECT snapshot_time IS NOT NULL FROM snapshot", "expect": {"value": "true"}}
+    ]}
+  ]
+}

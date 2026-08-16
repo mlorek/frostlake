@@ -1,0 +1,19 @@
+{
+  "suite": "scripting-typed-declare-params",
+  "description": "A Snowflake Scripting variable may be DECLAREd or LET with a PARAMETRISED type such as NUMBER(38,2) or VARCHAR(20). Previously the DECLARE / LET grammar accepted only a bare type name, so the precision, scale or length parenthesis failed to parse. The scale is not decoration: NUMBER(10,2) ROUNDS an assigned 3.14159 to 3.14, which is the cell that shows the parameters reached the type rather than merely parsing. Converted 1:1 from scripting/ScriptTypedDeclareParamsTest (now retired); the numeric readings are taken through ::VARCHAR so the rendered SCALE is visible and reads the same on every transport.",
+  "tags": ["scripting", "converted"],
+  "tests": [
+    {"name": "declare-a-number-with-precision-and-scale", "steps": [
+      {"sql": "DECLARE profit NUMBER(38, 2) DEFAULT 0.0; BEGIN RETURN profit::VARCHAR; END;", "expect": {"value": "0.00"}}
+    ]},
+    {"name": "let-a-number-with-precision-and-scale", "steps": [
+      {"sql": "BEGIN LET p NUMBER(38, 2) := 12.5; RETURN p::VARCHAR; END;", "expect": {"value": "12.50"}}
+    ]},
+    {"name": "a-declared-scale-coerces-the-assigned-value", "steps": [
+      {"sql": "DECLARE amt NUMBER(10, 2); BEGIN amt := 3.14159; RETURN amt::VARCHAR; END;", "expect": {"value": "3.14"}}
+    ]},
+    {"name": "declare-a-varchar-with-a-length", "steps": [
+      {"sql": "DECLARE name VARCHAR(20) := 'Alice'; BEGIN RETURN name; END;", "expect": {"value": "Alice"}}
+    ]}
+  ]
+}

@@ -1,0 +1,86 @@
+{
+  "suite": "ddl-drop-procedure-with-parameters",
+  "description": "DROP PROCEDURE signature requirements and matching, converted 1:1 from ddl/DropProcedureWithParametersTest.java (now retired).",
+  "tags": ["ddl", "converted"],
+  "tests": [
+    {
+      "name": "drop-procedure-requires-the-signature",
+      "steps": [
+        {"sql": "CREATE PROCEDURE increment_proc(x INTEGER) RETURNS INTEGER LANGUAGE SQL AS 'BEGIN RETURN x + 1; END'"},
+        {"sql": "DROP PROCEDURE increment_proc", "expect": {"error": {}}},
+        {"sql": "DROP PROCEDURE increment_proc(INTEGER)"},
+        {"sql": "CALL increment_proc(5)", "expect": {"error": {}}}
+      ]
+    },
+    {
+      "name": "drop-procedure-with-parameters",
+      "steps": [
+        {"sql": "CREATE PROCEDURE sum_proc(a INTEGER, b INTEGER) RETURNS INTEGER LANGUAGE SQL AS 'BEGIN RETURN a + b; END'"},
+        {"sql": "DROP PROCEDURE sum_proc(INTEGER, INTEGER)"},
+        {"sql": "CALL sum_proc(10, 20)", "expect": {"error": {}}}
+      ]
+    },
+    {
+      "name": "drop-procedure-with-empty-parameters",
+      "steps": [
+        {"sql": "CREATE PROCEDURE no_args_proc() RETURNS INTEGER LANGUAGE SQL AS 'BEGIN RETURN 100; END'"},
+        {"sql": "DROP PROCEDURE no_args_proc()"},
+        {"sql": "CALL no_args_proc()", "expect": {"error": {}}}
+      ]
+    },
+    {
+      "name": "drop-procedure-parameter-mismatch",
+      "steps": [
+        {"sql": "CREATE PROCEDURE calc_proc(x INTEGER, y INTEGER) RETURNS INTEGER LANGUAGE SQL AS 'BEGIN RETURN 42; END'"},
+        {"sql": "DROP PROCEDURE calc_proc(VARCHAR, INTEGER)", "expect": {"error": {}}}
+      ]
+    },
+    {
+      "name": "drop-procedure-parameter-count-mismatch",
+      "steps": [
+        {"sql": "CREATE PROCEDURE three_arg_proc(a INTEGER, b INTEGER, c INTEGER) RETURNS INTEGER LANGUAGE SQL AS 'BEGIN RETURN 100; END'"},
+        {"sql": "DROP PROCEDURE three_arg_proc(INTEGER, INTEGER)", "expect": {"error": {}}}
+      ]
+    },
+    {
+      "name": "drop-procedure-with-varchar-parameter",
+      "steps": [
+        {"sql": "CREATE PROCEDURE string_proc(text VARCHAR) RETURNS VARCHAR LANGUAGE SQL AS 'BEGIN RETURN text; END'"},
+        {"sql": "DROP PROCEDURE string_proc(VARCHAR)"},
+        {"sql": "CALL string_proc('hello')", "expect": {"error": {}}}
+      ]
+    },
+    {
+      "name": "drop-procedure-if-exists",
+      "steps": [
+        {"sql": "CREATE PROCEDURE test_proc(x INTEGER) RETURNS INTEGER LANGUAGE SQL AS 'BEGIN RETURN x * 2; END'"},
+        {"sql": "DROP PROCEDURE IF EXISTS test_proc(INTEGER)"},
+        {"sql": "DROP PROCEDURE IF EXISTS test_proc(INTEGER)"}
+      ]
+    },
+    {
+      "name": "drop-procedure-mixed-data-types",
+      "steps": [
+        {"sql": "CREATE PROCEDURE mixed_proc(id INTEGER, name VARCHAR, count INTEGER) RETURNS VARCHAR LANGUAGE SQL AS 'BEGIN RETURN name; END'"},
+        {"sql": "DROP PROCEDURE mixed_proc(INTEGER, VARCHAR, INTEGER)"},
+        {"sql": "CALL mixed_proc(1, 'test', 10)", "expect": {"error": {}}}
+      ]
+    },
+    {
+      "name": "drop-procedure-schema-qualified",
+      "steps": [
+        {"sql": "CREATE SCHEMA proc_schema"},
+        {"sql": "CREATE PROCEDURE proc_schema.double_value(x INTEGER) RETURNS INTEGER LANGUAGE SQL AS 'BEGIN RETURN x * 2; END'"},
+        {"sql": "DROP PROCEDURE proc_schema.double_value(INTEGER)"},
+        {"sql": "CALL proc_schema.double_value(7)", "expect": {"error": {}}}
+      ]
+    },
+    {
+      "name": "drop-non-existent-procedure-with-parameters",
+      "steps": [
+        {"sql": "DROP PROCEDURE missing_proc(INTEGER, VARCHAR)", "expect": {"error": {}}},
+        {"sql": "DROP PROCEDURE IF EXISTS missing_proc(INTEGER, VARCHAR)"}
+      ]
+    }
+  ]
+}

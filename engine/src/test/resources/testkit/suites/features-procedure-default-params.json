@@ -1,0 +1,31 @@
+{
+  "suite": "features-procedure-default-params",
+  "description": "Procedure parameters with DEFAULT values: an INTEGER or VARCHAR default lets the parameter be omitted at CALL, a mix of required and defaulted parameters accepts both the short and the full call, omitting a REQUIRED parameter is refused, and a defaulted parameter still shows up in SHOW PROCEDURES' arguments signature. Converted 1:1 from features/ProcedureDefaultParamsTest (now retired).",
+  "tags": ["features", "converted"],
+  "tests": [
+    {"name": "procedure-default-integer-param", "steps": [
+      {"sql": "CREATE OR REPLACE PROCEDURE add_rows(n INTEGER DEFAULT 1) RETURNS VARCHAR LANGUAGE SQL AS $$ BEGIN RETURN 'ok'; END $$"},
+      {"sql": "CALL add_rows()"}
+    ]},
+    {"name": "procedure-default-string-param", "steps": [
+      {"sql": "CREATE OR REPLACE PROCEDURE greet(name VARCHAR DEFAULT 'World') RETURNS VARCHAR LANGUAGE SQL AS $$ BEGIN RETURN 'hello'; END $$"},
+      {"sql": "CALL greet()"},
+      {"sql": "CALL greet('Alice')"}
+    ]},
+    {"name": "mixed-default-and-required", "steps": [
+      {"sql": "CREATE OR REPLACE PROCEDURE compute(x INTEGER, y INTEGER DEFAULT 10) RETURNS INTEGER LANGUAGE SQL AS $$ BEGIN RETURN x; END $$"},
+      {"sql": "CALL compute(5)"},
+      {"sql": "CALL compute(5, 20)"}
+    ]},
+    {"name": "missing-required-param-throws", "steps": [
+      {"sql": "CREATE OR REPLACE PROCEDURE strict_proc(x INTEGER) RETURNS INTEGER LANGUAGE SQL AS $$ BEGIN RETURN x; END $$"},
+      {"sql": "CALL strict_proc()", "expect": {"error": {}}}
+    ]},
+    {"name": "default-param-visible-in-show-procedures", "steps": [
+      {"sql": "CREATE OR REPLACE PROCEDURE with_default(i INTEGER DEFAULT 0) RETURNS INTEGER LANGUAGE SQL AS $$ BEGIN RETURN i; END $$"},
+      {"sql": "SHOW PROCEDURES"},
+      {"sql": "SELECT CONTAINS(MAX(IFF(\"name\" = 'WITH_DEFAULT', \"arguments\", NULL)), 'WITH_DEFAULT') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"value": "true"}}
+    ]}
+  ]
+}

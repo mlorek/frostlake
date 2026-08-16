@@ -1,0 +1,47 @@
+{
+  "suite": "functions-to-xml",
+  "description": "TO_XML renders compact XML for XML-shaped variants - attributes sorted by name, entities re-escaped - and uses Snowflake's SnowflakeData type scheme for everything else, all live-verified: an OBJECT nests its members with their own type attributes, an ARRAY uses e elements, a JSON null renders as a self-closing element carrying xsi:nil, and an XML value nested inside a JSON object renders with type XML. A NULL input is NULL, and a VARCHAR argument is refused at compile time. Converted 1:1 from functions/ToXmlTest (now retired).",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "xml-variants-render-compact-xml", "steps": [
+      {"sql": "SELECT TO_XML(PARSE_XML('<a attr=\"1\"><b>x</b><c>2</c></a>'))",
+       "expect": {"value": "<a attr=\"1\"><b>x</b><c>2</c></a>"}},
+      {"sql": "SELECT TO_XML(PARSE_XML('<a>text<b>1</b>tail</a>'))",
+       "expect": {"value": "<a>text<b>1</b>tail</a>"}},
+      {"sql": "SELECT TO_XML(PARSE_XML('<a/>'))", "expect": {"value": "<a></a>"}},
+      {"sql": "SELECT TO_XML(PARSE_XML('<a z=\"1\" b=\"2\"/>'))",
+       "expect": {"value": "<a b=\"2\" z=\"1\"></a>"}},
+      {"sql": "SELECT TO_XML(PARSE_XML('<a>&lt;&amp;&gt;</a>'))",
+       "expect": {"value": "<a>&lt;&amp;&gt;</a>"}}
+    ]},
+    {"name": "json-variants-use-the-snowflake-data-scheme", "steps": [
+      {"sql": "SELECT TO_XML(PARSE_JSON('{\"a\":1,\"b\":[1,2],\"c\":\"x\"}'))",
+       "expect": {"value": "<SnowflakeData type=\"OBJECT\"><a type=\"INTEGER\">1</a><b type=\"ARRAY\"><e type=\"INTEGER\">1</e><e type=\"INTEGER\">2</e></b><c type=\"VARCHAR\">x</c></SnowflakeData>"}},
+      {"sql": "SELECT TO_XML(PARSE_JSON('[1,2]'))",
+       "expect": {"value": "<SnowflakeData type=\"ARRAY\"><e type=\"INTEGER\">1</e><e type=\"INTEGER\">2</e></SnowflakeData>"}},
+      {"sql": "SELECT TO_XML(PARSE_JSON('\"str\"'))",
+       "expect": {"value": "<SnowflakeData type=\"VARCHAR\">str</SnowflakeData>"}},
+      {"sql": "SELECT TO_XML(PARSE_JSON('1'))",
+       "expect": {"value": "<SnowflakeData type=\"INTEGER\">1</SnowflakeData>"}},
+      {"sql": "SELECT TO_XML(PARSE_JSON('null'))",
+       "expect": {"value": "<SnowflakeData type=\"NULL_VALUE\" xsi:nil=\"true\"/>"}},
+      {"sql": "SELECT TO_XML(TO_VARIANT(3.14))",
+       "expect": {"value": "<SnowflakeData type=\"DECIMAL\">3.14</SnowflakeData>"}},
+      {"sql": "SELECT TO_XML(TO_VARIANT(TRUE))",
+       "expect": {"value": "<SnowflakeData type=\"BOOLEAN\">true</SnowflakeData>"}},
+      {"sql": "SELECT TO_XML(PARSE_JSON('{\"a\":{\"b\":1}}'))",
+       "expect": {"value": "<SnowflakeData type=\"OBJECT\"><a type=\"OBJECT\"><b type=\"INTEGER\">1</b></a></SnowflakeData>"}},
+      {"sql": "SELECT TO_XML(PARSE_JSON('{\"a\":null}'))",
+       "expect": {"value": "<SnowflakeData type=\"OBJECT\"><a type=\"NULL_VALUE\" xsi:nil=\"true\"/></SnowflakeData>"}}
+    ]},
+    {"name": "xml-nested-inside-json-renders-with-type-xml", "steps": [
+      {"sql": "SELECT TO_XML(OBJECT_CONSTRUCT('k', PARSE_XML('<a>1</a>')))",
+       "expect": {"value": "<SnowflakeData type=\"OBJECT\"><k type=\"XML\"><a>1</a></k></SnowflakeData>"}}
+    ]},
+    {"name": "a-null-input-and-a-varchar-rejection", "steps": [
+      {"sql": "SELECT TO_XML(NULL)", "expect": {"rows": [[null]]}},
+      {"sql": "SELECT TO_XML('plain')",
+       "expect": {"error": {"messageContains": "Invalid argument types for function 'TO_XML'"}}}
+    ]}
+  ]
+}

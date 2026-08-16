@@ -1,0 +1,19 @@
+{
+  "suite": "functions-div0null",
+  "description": "DIV0NULL(a, b) divides normally and answers 0 for a zero divisor, and unlike DIV0 it also answers 0 when the divisor is NULL. A NULL dividend with a normal, non-zero divisor still yields NULL. Converted 1:1 from functions/Div0NullTest (now retired).",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "normal-division", "steps": [
+      {"sql": "SELECT DIV0NULL(10, 2)", "expect": {"value": "5"}}
+    ]},
+    {"name": "dividing-by-zero-returns-zero", "steps": [
+      {"sql": "SELECT DIV0NULL(10, 0)", "expect": {"value": "0"}}
+    ]},
+    {"name": "a-null-divisor-returns-zero", "steps": [
+      {"sql": "SELECT DIV0NULL(10, NULL)", "expect": {"value": "0"}}
+    ]},
+    {"name": "a-null-dividend-returns-null", "steps": [
+      {"sql": "SELECT DIV0NULL(NULL, 5)", "expect": {"rows": [[null]]}}
+    ]}
+  ]
+}

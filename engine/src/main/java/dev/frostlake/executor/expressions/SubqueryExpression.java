@@ -21,6 +21,7 @@ package dev.frostlake.executor.expressions;
  */
 public class SubqueryExpression implements Expression {
     private final String subquery;  // SQL text of the subquery
+    private SourcePosition position;
 
     public SubqueryExpression(final String subquery) {
         this.subquery = subquery;
@@ -28,6 +29,20 @@ public class SubqueryExpression implements Expression {
 
     public String getSubquery() {
         return subquery;
+    }
+
+    /**
+     * Where the subquery's own SELECT begins in the statement — what a refusal of the subquery's shape
+     * is anchored on.
+     *
+     * @return the position, or null
+     */
+    public SourcePosition getPosition() {
+        return position;
+    }
+
+    public void setPosition(final SourcePosition position) {
+        this.position = position;
     }
 
     @Override

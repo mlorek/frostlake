@@ -60,6 +60,7 @@ public class NestedCorrelatedQueryTest extends BaseDatabaseTest {
                         WHERE t2.i = t3.i
                     )
             )
+            ORDER BY i
             """;
 
         final ResultSet result = engine.executeQuery(query);

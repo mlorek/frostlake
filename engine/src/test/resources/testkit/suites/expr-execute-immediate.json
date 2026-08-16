@@ -1,0 +1,45 @@
+{
+  "suite": "expr-execute-immediate",
+  "description": "EXECUTE IMMEDIATE as a STATEMENT, live-verified: not an expression (SELECT EXECUTE IMMEDIATE is a syntax error); at session level the SQL source must be a string literal, $$..$$ literal or variable (a || concatenation is a syntax error) and USING is refused (a non-name argument is a syntax error at its own position); both restrictions lift inside a scripting block where the source may be any expression and USING binds ? placeholders; the statement returns the inner query's result set, empty results included. Converted 1:1 from expressions/ExecuteImmediateExpressionTest (now retired).",
+  "tags": ["expressions", "converted"],
+  "tests": [
+    {"name": "literal-sql-returns-scalar", "steps": [
+      {"sql": "EXECUTE IMMEDIATE 'SELECT 1'", "expect": {"value": "1"}}
+    ]},
+    {"name": "dynamic-query-returns-aggregate", "steps": [
+      {"sql": "CREATE TABLE t (id INTEGER, v INTEGER)"},
+      {"sql": "INSERT INTO t VALUES (1, 10), (2, 20), (3, 30)"},
+      {"sql": "EXECUTE IMMEDIATE 'SELECT SUM(v) FROM t'", "expect": {"value": "60"}}
+    ]},
+    {"name": "top-level-using-clause-is-rejected", "steps": [
+      {"sql": "CREATE TABLE t (id INTEGER, v INTEGER)"},
+      {"sql": "INSERT INTO t VALUES (1, 10), (2, 20), (3, 30)"},
+      {"sql": "EXECUTE IMMEDIATE 'SELECT v FROM t WHERE id = ?' USING (2)",
+       "expect": {"error": {"messageContains": "syntax error line 1 at position 56 unexpected '2'."}}}
+    ]},
+    {"name": "top-level-sql-source-must-be-a-literal-or-variable", "steps": [
+      {"sql": "CREATE TABLE t (id INTEGER, v INTEGER)"},
+      {"sql": "INSERT INTO t VALUES (1, 10), (2, 20), (3, 30)"},
+      {"sql": "EXECUTE IMMEDIATE 'SELECT v FROM t WHERE id = ' || '3'",
+       "expect": {"error": {"messageContains": "unexpected '||'"}}},
+      {"sql": "EXECUTE IMMEDIATE 'SELECT v FROM t WHERE id = 3'", "expect": {"value": "30"}},
+      {"sql": "EXECUTE IMMEDIATE $$SELECT v FROM t WHERE id = 3$$", "expect": {"value": "30"}},
+      {"sql": "SET stmt = 'SELECT v FROM t WHERE id = 3'"},
+      {"sql": "EXECUTE IMMEDIATE $stmt", "expect": {"value": "30"}}
+    ]},
+    {"name": "in-block-source-and-using-stay-legal", "steps": [
+      {"sql": "CREATE TABLE t (id INTEGER, v INTEGER)"},
+      {"sql": "INSERT INTO t VALUES (1, 10), (2, 20), (3, 30)"},
+      {"sql": "DECLARE s VARCHAR;\nBEGIN\n  s := 'SELECT v FROM t WHERE id = ' || '3';\n  EXECUTE IMMEDIATE s;\n  RETURN 30;\nEND;", "expect": {"value": "30"}},
+      {"sql": "DECLARE\n  res RESULTSET;\n  v INTEGER DEFAULT 2;\nBEGIN\n  res := (EXECUTE IMMEDIATE 'SELECT id FROM t WHERE id = ?' USING (v));\n  RETURN 2;\nEND;", "expect": {"value": "2"}}
+    ]},
+    {"name": "empty-result-yields-no-rows", "steps": [
+      {"sql": "CREATE TABLE t (id INTEGER, v INTEGER)"},
+      {"sql": "INSERT INTO t VALUES (1, 10), (2, 20), (3, 30)"},
+      {"sql": "EXECUTE IMMEDIATE 'SELECT v FROM t WHERE id = 99'", "expect": {"rowCount": 0}}
+    ]},
+    {"name": "select-embedded-form-is-rejected", "steps": [
+      {"sql": "SELECT EXECUTE IMMEDIATE 'SELECT 1'", "expect": {"error": {}}}
+    ]}
+  ]
+}

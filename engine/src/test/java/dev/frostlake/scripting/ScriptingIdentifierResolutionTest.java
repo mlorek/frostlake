@@ -139,7 +139,7 @@ public class ScriptingIdentifierResolutionTest extends BaseDatabaseTest {
 
     @Test
     public void aCursorRecordFieldResolves() {
-        assertEquals("a", block("DECLARE c CURSOR FOR SELECT id, nm FROM t;"
+        assertEquals("a", block("DECLARE c CURSOR FOR SELECT id, nm FROM t ORDER BY id;"
             + " BEGIN FOR r IN c DO RETURN r.nm; END FOR; RETURN 'none'; END"));
     }
 

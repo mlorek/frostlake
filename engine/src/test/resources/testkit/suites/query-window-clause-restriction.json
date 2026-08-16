@@ -1,0 +1,44 @@
+{
+  "suite": "query-window-clause-restriction",
+  "description": "A window function may be written in the SELECT list, in QUALIFY and in ORDER BY, and NOWHERE ELSE. Frostlake used to EVALUATE one in HAVING, in a GROUP BY key and in a join's ON condition - the GROUP BY case even returned a plausible-looking answer - where live refuses all three at compile time. The sentence depends on the clause, which is itself informative: WHERE, GROUP BY and ON get 'Window function [CALL] appears outside of SELECT, QUALIFY, and ORDER BY clauses.', while HAVING gets the GROUPED validation wording instead, so live evidently sees the window there as an expression the grouping does not carry rather than as a misplaced window - and that holds with a GROUP BY clause and without one, and whether the window stands alone or sits inside a larger expression. The clauses that MAY carry one still do, an aggregate in HAVING is untouched, and a window belonging to a NESTED query is untouched wherever that query sits, because its own SELECT list is one of the three places a window belongs. Live re-prints the call canonicalised where frostlake prints it as written, so these assert the sentence AROUND the brackets. Converted 1:1 from query/WindowClauseRestrictionTest (now retired).",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "where-cannot-carry-a-window", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE g (a INT, b INT)"},
+      {"sql": "INSERT INTO g VALUES (3, 10), (1, 20), (2, 30)"},
+      {"sql": "SELECT a FROM g WHERE ROW_NUMBER() OVER (ORDER BY a) = 1", "expect": {"error": {"messageContains": "appears outside of SELECT, QUALIFY, and ORDER BY clauses."}}}
+    ]},
+    {"name": "a-group-by-key-cannot-carry-a-window", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE g (a INT, b INT)"},
+      {"sql": "INSERT INTO g VALUES (3, 10), (1, 20), (2, 30)"},
+      {"sql": "SELECT COUNT(*) FROM g GROUP BY ROW_NUMBER() OVER (ORDER BY a)", "expect": {"error": {"messageContains": "appears outside of SELECT, QUALIFY, and ORDER BY clauses."}}},
+      {"sql": "SELECT COUNT(*) FROM g GROUP BY ROW_NUMBER() OVER (ORDER BY a) + 1", "expect": {"error": {"messageContains": "appears outside of SELECT, QUALIFY, and ORDER BY clauses."}}}
+    ]},
+    {"name": "a-join-condition-cannot-carry-a-window", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE g (a INT, b INT)"},
+      {"sql": "INSERT INTO g VALUES (3, 10), (1, 20), (2, 30)"},
+      {"sql": "SELECT g.a FROM g JOIN g g2 ON ROW_NUMBER() OVER (ORDER BY g.a) = g2.a", "expect": {"error": {"messageContains": "appears outside of SELECT, QUALIFY, and ORDER BY clauses."}}}
+    ]},
+    {"name": "having-refuses-it-as-an-ungrouped-expression", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE g (a INT, b INT)"},
+      {"sql": "INSERT INTO g VALUES (3, 10), (1, 20), (2, 30)"},
+      {"sql": "SELECT COUNT(*) FROM g GROUP BY a HAVING ROW_NUMBER() OVER (ORDER BY a) = 1", "expect": {"error": {"messageContains": "is not a valid group by expression"}}},
+      {"sql": "SELECT COUNT(*) FROM g HAVING ROW_NUMBER() OVER (ORDER BY 1) = 1", "expect": {"error": {"messageContains": "is not a valid group by expression"}}},
+      {"sql": "SELECT COUNT(*) FROM g GROUP BY a HAVING ROW_NUMBER() OVER (ORDER BY a) + 1 > 1", "expect": {"error": {"messageContains": "is not a valid group by expression"}}}
+    ]},
+    {"name": "the-allowed-clauses-still-carry-one", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE g (a INT, b INT)"},
+      {"sql": "INSERT INTO g VALUES (3, 10), (1, 20), (2, 30)"},
+      {"sql": "SELECT a FROM g QUALIFY ROW_NUMBER() OVER (ORDER BY a) = 1", "expect": {"rows": [[1]]}},
+      {"sql": "SELECT COUNT(*) FROM g GROUP BY a HAVING SUM(b) > 0", "expect": {"rows": [[1],[1],[1]]}},
+      {"sql": "SELECT a FROM g ORDER BY ROW_NUMBER() OVER (ORDER BY b)", "expect": {"rows": [[3],[1],[2]], "ordered": true}}
+    ]},
+    {"name": "a-nested-querys-window-is-untouched", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE g (a INT, b INT)"},
+      {"sql": "INSERT INTO g VALUES (3, 10), (1, 20), (2, 30)"},
+      {"sql": "SELECT a FROM g WHERE a IN (SELECT ROW_NUMBER() OVER (ORDER BY b) FROM g)", "expect": {"rows": [[3],[1],[2]]}},
+      {"sql": "SELECT x.r FROM (SELECT ROW_NUMBER() OVER (ORDER BY b) r FROM g) x ORDER BY 1", "expect": {"rows": [[1],[2],[3]], "ordered": true}},
+      {"sql": "WITH c AS (SELECT ROW_NUMBER() OVER (ORDER BY b) r FROM g) SELECT r FROM c ORDER BY 1", "expect": {"rows": [[1],[2],[3]], "ordered": true}}
+    ]}
+  ]
+}

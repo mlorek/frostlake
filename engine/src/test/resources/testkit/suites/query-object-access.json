@@ -1,0 +1,44 @@
+{
+  "suite": "query-object-access",
+  "description": "The colon path operator over a VARIANT: a simple member, several members in one SELECT list, a NESTED path (data:address:city), a path used as a WHERE predicate where the variant number compares against a SQL number, and a path qualified by the table's alias. The path source must be a VARIANT (or OBJECT / ARRAY): colon access over a column DECLARED VARCHAR is refused, the same way it is a compile-time error on a live account, so the fixture stores VARIANT and the reads unwrap with ::VARCHAR, since a bare variant string displays QUOTED. Converted 1:1 from query/ObjectAccessTest (now retired).",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "simple-property-access", "steps": [
+      {"sql": "CREATE TABLE json_data (id INTEGER, data VARIANT)"},
+      {"sql": "INSERT INTO json_data SELECT 1, PARSE_JSON('{\"name\": \"Alice\", \"age\": 30, \"address\": {\"city\": \"NYC\", \"zip\": \"10001\"}}')"},
+      {"sql": "INSERT INTO json_data SELECT 2, PARSE_JSON('{\"name\": \"Bob\", \"age\": 25, \"address\": {\"city\": \"LA\", \"zip\": \"90001\"}}')"},
+      {"sql": "SELECT data:name::VARCHAR FROM json_data WHERE id = 1", "expect": {"rows": [["Alice"]]}}
+    ]},
+    {"name": "multiple-properties-in-one-select-list", "steps": [
+      {"sql": "CREATE TABLE json_data (id INTEGER, data VARIANT)"},
+      {"sql": "INSERT INTO json_data SELECT 1, PARSE_JSON('{\"name\": \"Alice\", \"age\": 30, \"address\": {\"city\": \"NYC\", \"zip\": \"10001\"}}')"},
+      {"sql": "INSERT INTO json_data SELECT 2, PARSE_JSON('{\"name\": \"Bob\", \"age\": 25, \"address\": {\"city\": \"LA\", \"zip\": \"90001\"}}')"},
+      {"sql": "SELECT data:name::VARCHAR AS name, data:age AS age FROM json_data WHERE id = 1",
+       "expect": {"rows": [["Alice", 30]], "columns": ["NAME", "AGE"]}}
+    ]},
+    {"name": "nested-property-access", "steps": [
+      {"sql": "CREATE TABLE json_data (id INTEGER, data VARIANT)"},
+      {"sql": "INSERT INTO json_data SELECT 1, PARSE_JSON('{\"name\": \"Alice\", \"age\": 30, \"address\": {\"city\": \"NYC\", \"zip\": \"10001\"}}')"},
+      {"sql": "INSERT INTO json_data SELECT 2, PARSE_JSON('{\"name\": \"Bob\", \"age\": 25, \"address\": {\"city\": \"LA\", \"zip\": \"90001\"}}')"},
+      {"sql": "SELECT data:address:city::VARCHAR FROM json_data WHERE id = 1", "expect": {"rows": [["NYC"]]}}
+    ]},
+    {"name": "property-access-in-where", "steps": [
+      {"sql": "CREATE TABLE json_data (id INTEGER, data VARIANT)"},
+      {"sql": "INSERT INTO json_data SELECT 1, PARSE_JSON('{\"name\": \"Alice\", \"age\": 30, \"address\": {\"city\": \"NYC\", \"zip\": \"10001\"}}')"},
+      {"sql": "INSERT INTO json_data SELECT 2, PARSE_JSON('{\"name\": \"Bob\", \"age\": 25, \"address\": {\"city\": \"LA\", \"zip\": \"90001\"}}')"},
+      {"sql": "SELECT id, data:name::VARCHAR FROM json_data WHERE data:age > 28", "expect": {"rows": [[1, "Alice"]]}}
+    ]},
+    {"name": "property-access-through-a-table-alias", "steps": [
+      {"sql": "CREATE TABLE json_data (id INTEGER, data VARIANT)"},
+      {"sql": "INSERT INTO json_data SELECT 1, PARSE_JSON('{\"name\": \"Alice\", \"age\": 30, \"address\": {\"city\": \"NYC\", \"zip\": \"10001\"}}')"},
+      {"sql": "INSERT INTO json_data SELECT 2, PARSE_JSON('{\"name\": \"Bob\", \"age\": 25, \"address\": {\"city\": \"LA\", \"zip\": \"90001\"}}')"},
+      {"sql": "SELECT j.data:name::VARCHAR, j.data:address:city::VARCHAR FROM json_data j WHERE j.id = 2",
+       "expect": {"rows": [["Bob", "LA"]]}}
+    ]},
+    {"name": "property-access-over-a-declared-varchar-column-is-rejected", "steps": [
+      {"sql": "CREATE TABLE json_text (id INTEGER, data VARCHAR)"},
+      {"sql": "SELECT data:name FROM json_text",
+       "expect": {"error": {"messageContains": "Invalid argument types for function 'GET'"}}}
+    ]}
+  ]
+}

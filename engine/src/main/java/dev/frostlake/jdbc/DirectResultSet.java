@@ -20,8 +20,10 @@ import dev.frostlake.DatabaseEngine;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.types.DataType;
+import dev.frostlake.types.NumericType;
 import dev.frostlake.values.BinaryValue;
-import dev.frostlake.values.TemporalText;
+import dev.frostlake.values.ClientValueText;
+import dev.frostlake.values.VariantJsonText;
 import dev.frostlake.values.VariantValue;
 
 import java.io.InputStream;
@@ -134,13 +136,13 @@ public class DirectResultSet implements java.sql.ResultSet {
     @Override
     public String getString(final int columnIndex) throws SQLException {
         checkClosed();
-        return TemporalText.render(readValue(columnIndex), declaredType(columnIndex - 1));
+        return ClientValueText.render(readValue(columnIndex), declaredType(columnIndex - 1));
     }
 
     @Override
     public String getString(final String columnLabel) throws SQLException {
         checkClosed();
-        return TemporalText.render(readValue(columnLabel), declaredType(indexOf(columnLabel)));
+        return ClientValueText.render(readValue(columnLabel), declaredType(indexOf(columnLabel)));
     }
 
     /** The declared type of a 0-based column, or null when the index is out of range. */
@@ -185,23 +187,36 @@ public class DirectResultSet implements java.sql.ResultSet {
     @Override
     public Object getObject(final int columnIndex) throws SQLException {
         checkClosed();
-        return unwrapEngineValue(engineResultSet.getValue(columnIndex - 1));
+        return unwrapEngineValue(engineResultSet.getValue(columnIndex - 1), declaredType(columnIndex - 1));
     }
 
     @Override
     public Object getObject(final String columnLabel) throws SQLException {
         checkClosed();
-        return unwrapEngineValue(engineResultSet.getValue(columnLabel));
+        return unwrapEngineValue(engineResultSet.getValue(columnLabel), declaredType(indexOf(columnLabel)));
     }
 
-    /** Map engine-internal value objects to their JDBC-visible form (BINARY cells become byte[]). */
-    private Object unwrapEngineValue(final Object value) {
+    /**
+     * Map engine-internal value objects to their JDBC-visible form (BINARY cells become byte[]). An
+     * APPROXIMATE column's value is a Double whatever carrier the engine holds it in — the JDBC contract
+     * for FLOAT and DOUBLE, and what the account's driver hands back — so an expression the engine
+     * computed exactly still reaches the client as the double its declared type promises.
+     */
+    private Object unwrapEngineValue(final Object value, final DataType declared) {
         if (value instanceof BinaryValue) {
             return ((BinaryValue) value).bytes();
         }
         if (value instanceof VariantValue) {
-            // Snowflake's JDBC driver surfaces VARIANT/OBJECT/ARRAY as their JSON text.
-            return ((VariantValue) value).text();
+            // Snowflake's JDBC driver surfaces VARIANT/OBJECT/ARRAY as their JSON text, a DOUBLE in the
+            // fifteen-decimal form: the text the HTTP transport carries for the same cell.
+            return VariantJsonText.clientTextOf((VariantValue) value);
+        }
+        if (value instanceof String && VariantJsonText.isSemiStructured(declared)) {
+            // A string read out of a VARIANT is its JSON text too, quotes included, as getString spells it.
+            return VariantJsonText.unwrappedStringText((String) value);
+        }
+        if (value instanceof Number && !(value instanceof Double) && NumericType.isApproximate(declared)) {
+            return Double.valueOf(((Number) value).doubleValue());
         }
         return value;
     }

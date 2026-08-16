@@ -1,0 +1,73 @@
+{
+  "suite": "features-tasks",
+  "description": "TASK DDL and execution asserted through the SQL surface - SHOW TASKS cells (state is spelled lower-case started/suspended; the schedule text distinguishes an interval from a CRON expression; definition carries the body) and each task body's side effects. Covers CREATE with an interval and with USING CRON, ALTER TASK RESUME / SUSPEND, DROP, EXECUTE TASK running the body once, a task created over a stream neither consuming the stream nor starting itself, and a CALL-bodied task executing its procedure. Converted 1:1 from features/TasksTest (now retired). The two execution-result tests keep the class's live exemption as skip snowflake: live EXECUTE TASK is asynchronous, so a shared session cannot await the body's side effects.",
+  "tags": ["features", "converted"],
+  "tests": [
+    {"name": "create-a-task-with-an-interval-schedule", "steps": [
+      {"sql": "CREATE TASK daily_cleanup\nWAREHOUSE = 'COMPUTE_WH'\nSCHEDULE = '60 MINUTES'\nAS DELETE FROM logs WHERE timestamp < '2024-01-01'"},
+      {"sql": "SHOW TASKS LIKE 'daily_cleanup'"},
+      {"sql": "SELECT \"schedule\", \"state\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'DAILY_CLEANUP'",
+       "expect": {"rows": [["60 MINUTES", "suspended"]]}}
+    ]},
+    {"name": "create-a-task-with-a-cron-schedule", "steps": [
+      {"sql": "CREATE TASK hourly_job\nWAREHOUSE = 'COMPUTE_WH'\nSCHEDULE = 'USING CRON 0 * * * * UTC'\nAS INSERT INTO summary SELECT * FROM staging"},
+      {"sql": "SHOW TASKS LIKE 'hourly_job'"},
+      {"sql": "SELECT STARTSWITH(\"schedule\", 'USING CRON') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'HOURLY_JOB'",
+       "expect": {"value": "true"}}
+    ]},
+    {"name": "alter-task-resume", "steps": [
+      {"sql": "CREATE TASK test_task\nWAREHOUSE = 'COMPUTE_WH'\nSCHEDULE = '5 MINUTES'\nAS SELECT 1"},
+      {"sql": "ALTER TASK test_task RESUME"},
+      {"sql": "SHOW TASKS LIKE 'test_task'"},
+      {"sql": "SELECT \"state\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'TEST_TASK'",
+       "expect": {"value": "started"}}
+    ]},
+    {"name": "alter-task-suspend", "steps": [
+      {"sql": "CREATE TASK test_task\nWAREHOUSE = 'COMPUTE_WH'\nSCHEDULE = '5 MINUTES'\nAS SELECT 1"},
+      {"sql": "ALTER TASK test_task RESUME"},
+      {"sql": "ALTER TASK test_task SUSPEND"},
+      {"sql": "SHOW TASKS LIKE 'test_task'"},
+      {"sql": "SELECT \"state\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'TEST_TASK'",
+       "expect": {"value": "suspended"}}
+    ]},
+    {"name": "drop-task", "steps": [
+      {"sql": "CREATE TASK test_task\nWAREHOUSE = 'COMPUTE_WH'\nSCHEDULE = '5 MINUTES'\nAS SELECT 1"},
+      {"sql": "DROP TASK test_task"},
+      {"sql": "SHOW TASKS LIKE 'test_task'", "expect": {"rowCount": 0}}
+    ]},
+    {"name": "execute-task-runs-the-body-once",
+     "skip": {"backends": ["snowflake"], "reason": "live EXECUTE TASK is asynchronous - the shared session cannot await the task body's side effects, so execution results are asserted embedded only"},
+     "steps": [
+      {"sql": "CREATE TABLE task_log (execution_time VARCHAR, message VARCHAR)"},
+      {"sql": "CREATE TASK test_task\nWAREHOUSE = 'COMPUTE_WH'\nSCHEDULE = '1 MINUTES'\nAS INSERT INTO task_log VALUES ('2024-01-01', 'Task executed')"},
+      {"sql": "ALTER TASK test_task RESUME"},
+      {"sql": "EXECUTE TASK test_task"},
+      {"sql": "SELECT COUNT(*) FROM task_log", "expect": {"value": "1"}}
+    ]},
+    {"name": "creating-a-task-over-a-stream-neither-consumes-it-nor-starts-the-task", "steps": [
+      {"sql": "CREATE TABLE orders (id INTEGER, amount INTEGER, status VARCHAR)"},
+      {"sql": "CREATE STREAM order_stream ON TABLE orders"},
+      {"sql": "CREATE TABLE order_summary (total_orders INTEGER, total_amount INTEGER)"},
+      {"sql": "INSERT INTO orders VALUES (1, 100, 'pending'), (2, 200, 'completed')"},
+      {"sql": "SELECT COUNT(*) FROM order_stream", "expect": {"value": "2"}},
+      {"sql": "CREATE TASK process_orders\nWAREHOUSE = 'COMPUTE_WH'\nSCHEDULE = '5 MINUTES'\nAS INSERT INTO order_summary SELECT COUNT(*), SUM(amount) FROM orders"},
+      {"sql": "SELECT COUNT(*) FROM order_stream", "expect": {"value": "2"}},
+      {"sql": "SHOW TASKS LIKE 'process_orders'"},
+      {"sql": "SELECT \"state\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'PROCESS_ORDERS'",
+       "expect": {"value": "suspended"}}
+    ]},
+    {"name": "a-call-bodied-task-executes-its-procedure",
+     "skip": {"backends": ["snowflake"], "reason": "live EXECUTE TASK is asynchronous - the shared session cannot await the task body's side effects, so execution results are asserted embedded only"},
+     "steps": [
+      {"sql": "CREATE TABLE ran_marker (v VARCHAR)"},
+      {"sql": "CREATE OR REPLACE PROCEDURE refresh_data() RETURNS VARCHAR LANGUAGE SQL AS\nBEGIN INSERT INTO ran_marker VALUES ('ran'); RETURN 'ok'; END"},
+      {"sql": "CREATE OR REPLACE TASK refresh_task\nSCHEDULE = 'USING CRON 0 0 * * * UTC'\nUSER_TASK_MANAGED_INITIAL_WAREHOUSE_SIZE = 'XSMALL'\nAS\nCALL refresh_data()"},
+      {"sql": "SHOW TASKS LIKE 'refresh_task'"},
+      {"sql": "SELECT CONTAINS(UPPER(\"definition\"), 'CALL') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'REFRESH_TASK'",
+       "expect": {"value": "true"}},
+      {"sql": "ALTER TASK refresh_task RESUME"},
+      {"sql": "EXECUTE TASK refresh_task"},
+      {"sql": "SELECT COUNT(*) FROM ran_marker", "expect": {"value": "1"}}
+    ]}
+  ]
+}

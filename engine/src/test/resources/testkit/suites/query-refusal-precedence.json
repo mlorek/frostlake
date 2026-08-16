@@ -1,0 +1,40 @@
+{
+  "suite": "query-refusal-precedence",
+  "description": "When a statement carries MORE THAN ONE problem, live reports them in an order fixed by KIND, not by which item happens to come first: syntax error > invalid identifier > unknown function > argument type / arity / semi-structured. Frostlake reported whichever the plan-time walk reached first, so writing the same two problems in the other order changed the answer; the select list is now walked ONCE PER KIND - column references, then call names, then everything else - which is what makes the order independent of position. Every pairing here is therefore asserted BOTH WAYS ROUND. The last test is the guard that the ordering hides nothing: each of the outranked refusals still fires on its own, with its own sentence. Converted 1:1 from query/RefusalPrecedenceTest (now retired).",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "an-unknown-name-outranks-an-argument-type", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE t (a INT, b BINARY(4), v VARCHAR(5), o OBJECT)"},
+      {"sql": "INSERT INTO t SELECT 1, TO_BINARY('AB'), 'x', OBJECT_CONSTRUCT('k', 1)"},
+      {"sql": "SELECT nosuchfn(1), OBJECT_CONSTRUCT(a, 1) FROM t", "expect": {"error": {"messageContains": "Unknown function NOSUCHFN."}}},
+      {"sql": "SELECT OBJECT_CONSTRUCT(a, 1), nosuchfn(1) FROM t", "expect": {"error": {"messageContains": "Unknown function NOSUCHFN."}}}
+    ]},
+    {"name": "an-unknown-name-outranks-incomparable-operands", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE t (a INT, b BINARY(4), v VARCHAR(5), o OBJECT)"},
+      {"sql": "INSERT INTO t SELECT 1, TO_BINARY('AB'), 'x', OBJECT_CONSTRUCT('k', 1)"},
+      {"sql": "SELECT nosuchfn(1), GREATEST(b, v) FROM t", "expect": {"error": {"messageContains": "Unknown function NOSUCHFN."}}},
+      {"sql": "SELECT GREATEST(b, v), nosuchfn(1) FROM t", "expect": {"error": {"messageContains": "Unknown function NOSUCHFN."}}}
+    ]},
+    {"name": "an-unknown-name-outranks-arity-and-semi-structured", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE t (a INT, b BINARY(4), v VARCHAR(5), o OBJECT)"},
+      {"sql": "INSERT INTO t SELECT 1, TO_BINARY('AB'), 'x', OBJECT_CONSTRUCT('k', 1)"},
+      {"sql": "SELECT nosuchfn(1), ABS(1, 2) FROM t", "expect": {"error": {"messageContains": "Unknown function NOSUCHFN."}}},
+      {"sql": "SELECT ABS(1, 2), nosuchfn(1) FROM t", "expect": {"error": {"messageContains": "Unknown function NOSUCHFN."}}},
+      {"sql": "SELECT nosuchfn(1), o || 'x' FROM t", "expect": {"error": {"messageContains": "Unknown function NOSUCHFN."}}}
+    ]},
+    {"name": "an-invalid-identifier-outranks-the-unknown-name", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE t (a INT, b BINARY(4), v VARCHAR(5), o OBJECT)"},
+      {"sql": "INSERT INTO t SELECT 1, TO_BINARY('AB'), 'x', OBJECT_CONSTRUCT('k', 1)"},
+      {"sql": "SELECT nosuchfn(1), nosuchcol, OBJECT_CONSTRUCT(a, 1) FROM t", "expect": {"error": {"messageContains": "invalid identifier 'NOSUCHCOL'"}}},
+      {"sql": "SELECT nosuchcol, nosuchfn(1) FROM t", "expect": {"error": {"messageContains": "invalid identifier 'NOSUCHCOL'"}}}
+    ]},
+    {"name": "each-outranked-refusal-still-fires-alone", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE t (a INT, b BINARY(4), v VARCHAR(5), o OBJECT)"},
+      {"sql": "INSERT INTO t SELECT 1, TO_BINARY('AB'), 'x', OBJECT_CONSTRUCT('k', 1)"},
+      {"sql": "SELECT ABS(1, 2) FROM t", "expect": {"error": {"messageContains": "too many arguments"}}},
+      {"sql": "SELECT OBJECT_CONSTRUCT(a, 1) FROM t", "expect": {"error": {"messageContains": "does not support NUMBER(38,0) argument type"}}},
+      {"sql": "SELECT GREATEST(b, v) FROM t", "expect": {"error": {"messageContains": "Can not convert parameter"}}},
+      {"sql": "SELECT o || 'x' FROM t", "expect": {"error": {"messageContains": "Invalid argument type"}}}
+    ]}
+  ]
+}

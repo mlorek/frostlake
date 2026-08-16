@@ -21,8 +21,11 @@ import dev.frostlake.functions.TableFunction;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
+import dev.frostlake.types.LengthlessStringType;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.types.StringType;
+import dev.frostlake.types.VariantType;
+import dev.frostlake.values.DecimalOriginNode;
 import dev.frostlake.values.VariantUndefined;
 import dev.frostlake.values.VariantValue;
 import tools.jackson.databind.JsonNode;
@@ -116,13 +119,16 @@ public class Flatten extends TableFunction {
                 ? FlattenMode.fromString(namedArgs.get("MODE").toString()) : FlattenMode.BOTH;
 
         // Create result columns
+        // The output columns' DECLARED types, as the account declares them — SEQ and INDEX
+        // NUMBER(38,0), KEY and PATH a VARCHAR the plan spells bare, VALUE and THIS VARIANT — so
+        // SYSTEM$TYPEOF, a table built over them and every type-based rule see a type (live-verified).
         final List<ResultSetColumn> columns = new ArrayList<>();
-        columns.add(new ResultSetColumn("SEQ", NumericType.INTEGER));
-        columns.add(new ResultSetColumn("KEY", StringType.VARCHAR));
-        columns.add(new ResultSetColumn("PATH", StringType.VARCHAR));
-        columns.add(new ResultSetColumn("INDEX", NumericType.INTEGER));
-        columns.add(new ResultSetColumn("VALUE", StringType.VARCHAR));
-        columns.add(new ResultSetColumn("THIS", StringType.VARCHAR));
+        columns.add(new ResultSetColumn("SEQ", NumericType.INTEGER, null, new NumericType("NUMBER", 38, 0)));
+        columns.add(new ResultSetColumn("KEY", StringType.VARCHAR, null, new LengthlessStringType()));
+        columns.add(new ResultSetColumn("PATH", StringType.VARCHAR, null, new LengthlessStringType()));
+        columns.add(new ResultSetColumn("INDEX", NumericType.INTEGER, null, new NumericType("NUMBER", 38, 0)));
+        columns.add(new ResultSetColumn("VALUE", VariantType.VARIANT, null, VariantType.VARIANT));
+        columns.add(new ResultSetColumn("THIS", VariantType.VARIANT, null, VariantType.VARIANT));
 
         final List<Row> rows = new ArrayList<>();
 
@@ -350,6 +356,10 @@ public class Flatten extends TableFunction {
         }
         if (node.isLong() || node.isInt()) {
             return node.asLong();
+        }
+        // A whole DECIMAL out of a scaled NUMBER stays a VARIANT, since only its node knows the kind.
+        if (node instanceof DecimalOriginNode) {
+            return VariantValue.ofNode(node);
         }
         if (node.isBigInteger() || node.isBigDecimal()) {
             return node.decimalValue();

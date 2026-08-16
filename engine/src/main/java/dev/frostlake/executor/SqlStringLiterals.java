@@ -112,7 +112,55 @@ public final class SqlStringLiterals {
                 sb.append(c);
             }
         }
-        return sb.toString();
+        final String decoded = sb.toString();
+        rejectUnpairedSurrogate(decoded);
+        return decoded;
+    }
+
+    /**
+     * Refuses a decoded literal holding an UNPAIRED surrogate. A {@code \\uD800} escape builds half of
+     * a character, and live will not have it — the refusal comes from the READER, so it fires wherever
+     * the literal is written and names the literal's own place in the statement rather than the call
+     * around it. Two sentences, one per half, live-verified:
+     *
+     * <pre>
+     *   '\\uD800'   Invalid Unicode string literal; high surrogate '\\uD800' must be followed by a low
+     *               surrogate ('\\uDC00'-'\\uDFFF').
+     *   '\\uDC00'   Invalid Unicode string literal; low surrogate '\\uDC00' must be preceded by a high
+     *               surrogate ('\\uD800'-'\\uDBFF').
+     * </pre>
+     *
+     * <p>The FIRST offending code unit decides, scanning left to right: {@code '\\uDC00\\uD800'} is two
+     * unpaired halves and reports the LOW one. The echo is always four UPPER-case hex digits whatever
+     * case was written, and it is the offending unit's own value — {@code '\\ud8Ff'} reports
+     * {@code '\\uD8FF'}.
+     *
+     * <p>A correctly paired surrogate is untouched, which is what keeps an emoji working, and a
+     * DOLLAR-QUOTED string never reaches here at all because that reader processes no escapes.
+     *
+     * @param decoded the decoded text
+     */
+    private static void rejectUnpairedSurrogate(final String decoded) {
+        for (int i = 0; i < decoded.length(); i++) {
+            final char c = decoded.charAt(i);
+            if (Character.isHighSurrogate(c)) {
+                if (i + 1 < decoded.length() && Character.isLowSurrogate(decoded.charAt(i + 1))) {
+                    i++;
+                    continue;
+                }
+                throw new RuntimeException("Invalid Unicode string literal; high surrogate '"
+                    + escapeOf(c) + "' must be followed by a low surrogate ('\\uDC00'-'\\uDFFF').");
+            }
+            if (Character.isLowSurrogate(c)) {
+                throw new RuntimeException("Invalid Unicode string literal; low surrogate '"
+                    + escapeOf(c) + "' must be preceded by a high surrogate ('\\uD800'-'\\uDBFF').");
+            }
+        }
+    }
+
+    /** One code unit as live echoes it: a \\u escape with four UPPER-case hex digits. */
+    private static String escapeOf(final char c) {
+        return String.format("\\u%04X", (int) c);
     }
 
     /**

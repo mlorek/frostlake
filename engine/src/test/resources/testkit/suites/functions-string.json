@@ -1,0 +1,107 @@
+{
+  "suite": "functions-string",
+  "description": "LTRIM / RTRIM / REVERSE / INITCAP / LPAD / RPAD incl. NULL propagation and combinations. Converted 1:1 from functions/StringFunctionsTest.java (now retired).",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "ltrim", "steps": [
+      {"sql": "CREATE TABLE test_strings (id INTEGER, text VARCHAR)"},
+      {"sql": "INSERT INTO test_strings VALUES (1, '  hello  ')"},
+      {"sql": "SELECT LTRIM(text) as trimmed FROM test_strings WHERE id = 1", "expect": {"value": "hello  "}}
+    ]},
+    {"name": "ltrim-no-spaces", "steps": [
+      {"sql": "CREATE TABLE test_strings (id INTEGER, text VARCHAR)"},
+      {"sql": "INSERT INTO test_strings VALUES (2, 'world')"},
+      {"sql": "SELECT LTRIM(text) as trimmed FROM test_strings WHERE id = 2", "expect": {"value": "world"}}
+    ]},
+    {"name": "ltrim-null", "steps": [
+      {"sql": "CREATE TABLE test_strings (id INTEGER, text VARCHAR)"},
+      {"sql": "INSERT INTO test_strings VALUES (5, NULL)"},
+      {"sql": "SELECT LTRIM(text) as trimmed FROM test_strings WHERE id = 5", "expect": {"value": null, "rowCount": 1}}
+    ]},
+    {"name": "rtrim", "steps": [
+      {"sql": "CREATE TABLE test_strings (id INTEGER, text VARCHAR)"},
+      {"sql": "INSERT INTO test_strings VALUES (1, '  hello  ')"},
+      {"sql": "SELECT RTRIM(text) as trimmed FROM test_strings WHERE id = 1", "expect": {"value": "  hello"}}
+    ]},
+    {"name": "rtrim-no-spaces", "steps": [
+      {"sql": "CREATE TABLE test_strings (id INTEGER, text VARCHAR)"},
+      {"sql": "INSERT INTO test_strings VALUES (2, 'world')"},
+      {"sql": "SELECT RTRIM(text) as trimmed FROM test_strings WHERE id = 2", "expect": {"value": "world"}}
+    ]},
+    {"name": "reverse", "steps": [
+      {"sql": "CREATE TABLE test_strings (id INTEGER, text VARCHAR)"},
+      {"sql": "INSERT INTO test_strings VALUES (2, 'world')"},
+      {"sql": "SELECT REVERSE(text) as reversed FROM test_strings WHERE id = 2", "expect": {"value": "dlrow"}}
+    ]},
+    {"name": "reverse-null", "steps": [
+      {"sql": "CREATE TABLE test_strings (id INTEGER, text VARCHAR)"},
+      {"sql": "INSERT INTO test_strings VALUES (5, NULL)"},
+      {"sql": "SELECT REVERSE(text) as reversed FROM test_strings WHERE id = 5", "expect": {"value": null, "rowCount": 1}}
+    ]},
+    {"name": "initcap", "steps": [
+      {"sql": "CREATE TABLE test_strings (id INTEGER, text VARCHAR)"},
+      {"sql": "INSERT INTO test_strings VALUES (4, 'test data')"},
+      {"sql": "SELECT INITCAP(text) as capitalized FROM test_strings WHERE id = 4", "expect": {"value": "Test Data"}}
+    ]},
+    {"name": "initcap-all-caps", "steps": [
+      {"sql": "CREATE TABLE test_strings (id INTEGER, text VARCHAR)"},
+      {"sql": "INSERT INTO test_strings VALUES (3, 'SNOWFLAKE')"},
+      {"sql": "SELECT INITCAP(text) as capitalized FROM test_strings WHERE id = 3", "expect": {"value": "Snowflake"}}
+    ]},
+    {"name": "initcap-null", "steps": [
+      {"sql": "CREATE TABLE test_strings (id INTEGER, text VARCHAR)"},
+      {"sql": "INSERT INTO test_strings VALUES (5, NULL)"},
+      {"sql": "SELECT INITCAP(text) as capitalized FROM test_strings WHERE id = 5", "expect": {"value": null, "rowCount": 1}}
+    ]},
+    {"name": "lpad", "steps": [
+      {"sql": "CREATE TABLE test_strings (id INTEGER, text VARCHAR)"},
+      {"sql": "INSERT INTO test_strings VALUES (2, 'world')"},
+      {"sql": "SELECT LPAD(text, 10) as padded FROM test_strings WHERE id = 2", "expect": {"value": "     world"}}
+    ]},
+    {"name": "lpad-with-char", "steps": [
+      {"sql": "CREATE TABLE test_strings (id INTEGER, text VARCHAR)"},
+      {"sql": "INSERT INTO test_strings VALUES (2, 'world')"},
+      {"sql": "SELECT LPAD(text, 10, '*') as padded FROM test_strings WHERE id = 2", "expect": {"value": "*****world"}}
+    ]},
+    {"name": "lpad-truncates-longer-input", "steps": [
+      {"sql": "CREATE TABLE test_strings (id INTEGER, text VARCHAR)"},
+      {"sql": "INSERT INTO test_strings VALUES (2, 'world')"},
+      {"sql": "SELECT LPAD(text, 3, '*') as padded FROM test_strings WHERE id = 2", "expect": {"value": "wor"}}
+    ]},
+    {"name": "lpad-with-string", "steps": [
+      {"sql": "CREATE TABLE test_strings (id INTEGER, text VARCHAR)"},
+      {"sql": "INSERT INTO test_strings VALUES (2, 'world')"},
+      {"sql": "SELECT LPAD(text, 10, 'ab') as padded FROM test_strings WHERE id = 2", "expect": {"value": "ababaworld"}}
+    ]},
+    {"name": "rpad", "steps": [
+      {"sql": "CREATE TABLE test_strings (id INTEGER, text VARCHAR)"},
+      {"sql": "INSERT INTO test_strings VALUES (2, 'world')"},
+      {"sql": "SELECT RPAD(text, 10) as padded FROM test_strings WHERE id = 2", "expect": {"value": "world     "}}
+    ]},
+    {"name": "rpad-with-char", "steps": [
+      {"sql": "CREATE TABLE test_strings (id INTEGER, text VARCHAR)"},
+      {"sql": "INSERT INTO test_strings VALUES (2, 'world')"},
+      {"sql": "SELECT RPAD(text, 10, '*') as padded FROM test_strings WHERE id = 2", "expect": {"value": "world*****"}}
+    ]},
+    {"name": "rpad-truncates-longer-input", "steps": [
+      {"sql": "CREATE TABLE test_strings (id INTEGER, text VARCHAR)"},
+      {"sql": "INSERT INTO test_strings VALUES (2, 'world')"},
+      {"sql": "SELECT RPAD(text, 3, '*') as padded FROM test_strings WHERE id = 2", "expect": {"value": "wor"}}
+    ]},
+    {"name": "rpad-with-string", "steps": [
+      {"sql": "CREATE TABLE test_strings (id INTEGER, text VARCHAR)"},
+      {"sql": "INSERT INTO test_strings VALUES (2, 'world')"},
+      {"sql": "SELECT RPAD(text, 10, 'ab') as padded FROM test_strings WHERE id = 2", "expect": {"value": "worldababa"}}
+    ]},
+    {"name": "trim-combined", "steps": [
+      {"sql": "CREATE TABLE test_strings (id INTEGER, text VARCHAR)"},
+      {"sql": "INSERT INTO test_strings VALUES (1, '  hello  ')"},
+      {"sql": "SELECT LTRIM(RTRIM(text)) as trimmed FROM test_strings WHERE id = 1", "expect": {"value": "hello"}}
+    ]},
+    {"name": "reverse-upper", "steps": [
+      {"sql": "CREATE TABLE test_strings (id INTEGER, text VARCHAR)"},
+      {"sql": "INSERT INTO test_strings VALUES (2, 'world')"},
+      {"sql": "SELECT REVERSE(UPPER(text)) as result FROM test_strings WHERE id = 2", "expect": {"value": "DLROW"}}
+    ]}
+  ]
+}

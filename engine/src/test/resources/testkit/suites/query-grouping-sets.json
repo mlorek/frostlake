@@ -1,0 +1,68 @@
+{
+  "suite": "query-grouping-sets",
+  "description": "The super-group forms over a four-row two-by-two fixture. ROLLUP(region, product) expands to (region,product), (region) and (), giving 4 detail rows, 2 subtotals and 1 grand total; CUBE adds the (product) sets for 9 rows; and GROUPING SETS((region,product),(region),()) is exactly ROLLUP written out. GROUPING SETS(()) alone is the grand total. A column appearing in NO grouping set and not aggregated does not compile - the same rule as a plain GROUP BY, live-verified - and dropping it leaves the product-level grouping. GROUPING(region) is 0 on a detail row and 1 on the grand total, COUNT aggregates per set, and HAVING filters the produced rows whatever set they came from. Converted 1:1 from query/GroupingSetsTest (now retired); the Java asserted a row COUNT and then LOOPED looking for one row - the grand total, or the product-A subtotal - so a wrong subtotal elsewhere would have passed. Every converted test states the whole ordered row set.",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "rollup-over-two-columns", "steps": [
+      {"sql": "CREATE TABLE sales (region VARCHAR, product VARCHAR, amount DOUBLE)"},
+      {"sql": "INSERT INTO sales VALUES ('East','A',100),('East','B',200),('West','A',150),('West','B',300)"},
+      {"sql": "SELECT region, product, SUM(amount) FROM sales GROUP BY ROLLUP(region, product) ORDER BY region NULLS LAST, product NULLS LAST", "expect": {"rows": [["East","A",100],["East","B",200],["East",null,300],["West","A",150],["West","B",300],["West",null,450],[null,null,750]], "ordered": true}}
+    ]},
+    {"name": "rollup-over-one-column", "steps": [
+      {"sql": "CREATE TABLE sales (region VARCHAR, product VARCHAR, amount DOUBLE)"},
+      {"sql": "INSERT INTO sales VALUES ('East','A',100),('East','B',200),('West','A',150),('West','B',300)"},
+      {"sql": "SELECT region, SUM(amount) FROM sales GROUP BY ROLLUP(region) ORDER BY region NULLS LAST", "expect": {"rows": [["East",300],["West",450],[null,750]], "ordered": true}}
+    ]},
+    {"name": "the-rollup-subtotals-are-correct", "steps": [
+      {"sql": "CREATE TABLE sales (region VARCHAR, product VARCHAR, amount DOUBLE)"},
+      {"sql": "INSERT INTO sales VALUES ('East','A',100),('East','B',200),('West','A',150),('West','B',300)"},
+      {"sql": "SELECT SUM(total) FROM (SELECT region, product, SUM(amount) AS total FROM sales GROUP BY ROLLUP(region, product)) WHERE region = 'East' AND product IS NULL", "expect": {"rows": [[300]]}}
+    ]},
+    {"name": "cube-over-two-columns", "steps": [
+      {"sql": "CREATE TABLE sales (region VARCHAR, product VARCHAR, amount DOUBLE)"},
+      {"sql": "INSERT INTO sales VALUES ('East','A',100),('East','B',200),('West','A',150),('West','B',300)"},
+      {"sql": "SELECT region, product, SUM(amount) FROM sales GROUP BY CUBE(region, product) ORDER BY region NULLS LAST, product NULLS LAST", "expect": {"rows": [["East","A",100],["East","B",200],["East",null,300],["West","A",150],["West","B",300],["West",null,450],[null,"A",250],[null,"B",500],[null,null,750]], "ordered": true}}
+    ]},
+    {"name": "the-cube-grand-total", "steps": [
+      {"sql": "CREATE TABLE sales (region VARCHAR, product VARCHAR, amount DOUBLE)"},
+      {"sql": "INSERT INTO sales VALUES ('East','A',100),('East','B',200),('West','A',150),('West','B',300)"},
+      {"sql": "SELECT SUM(t) FROM (SELECT region, product, SUM(amount) AS t FROM sales GROUP BY CUBE(region, product)) WHERE region IS NULL AND product IS NULL", "expect": {"rows": [[750]]}}
+    ]},
+    {"name": "explicit-grouping-sets-match-rollup", "steps": [
+      {"sql": "CREATE TABLE sales (region VARCHAR, product VARCHAR, amount DOUBLE)"},
+      {"sql": "INSERT INTO sales VALUES ('East','A',100),('East','B',200),('West','A',150),('West','B',300)"},
+      {"sql": "SELECT region, product, SUM(amount) FROM sales GROUP BY GROUPING SETS((region, product), (region), ()) ORDER BY region NULLS LAST, product NULLS LAST", "expect": {"rows": [["East","A",100],["East","B",200],["East",null,300],["West","A",150],["West","B",300],["West",null,450],[null,null,750]], "ordered": true}}
+    ]},
+    {"name": "a-product-only-grouping-set", "steps": [
+      {"sql": "CREATE TABLE sales (region VARCHAR, product VARCHAR, amount DOUBLE)"},
+      {"sql": "INSERT INTO sales VALUES ('East','A',100),('East','B',200),('West','A',150),('West','B',300)"},
+      {"sql": "SELECT region, product, SUM(amount) FROM sales GROUP BY GROUPING SETS((product))", "expect": {"error": {"messageContains": "'SALES.REGION' in select clause is neither an aggregate nor in the group by clause."}}},
+      {"sql": "SELECT product, SUM(amount) FROM sales GROUP BY GROUPING SETS((product)) ORDER BY product", "expect": {"rows": [["A",250],["B",500]], "ordered": true}}
+    ]},
+    {"name": "the-empty-grouping-set-is-the-grand-total", "steps": [
+      {"sql": "CREATE TABLE sales (region VARCHAR, product VARCHAR, amount DOUBLE)"},
+      {"sql": "INSERT INTO sales VALUES ('East','A',100),('East','B',200),('West','A',150),('West','B',300)"},
+      {"sql": "SELECT SUM(amount) FROM sales GROUP BY GROUPING SETS(())", "expect": {"rows": [[750]]}}
+    ]},
+    {"name": "two-distinct-grouping-sets", "steps": [
+      {"sql": "CREATE TABLE sales (region VARCHAR, product VARCHAR, amount DOUBLE)"},
+      {"sql": "INSERT INTO sales VALUES ('East','A',100),('East','B',200),('West','A',150),('West','B',300)"},
+      {"sql": "SELECT region, product, SUM(amount) FROM sales GROUP BY GROUPING SETS((region), (product)) ORDER BY region NULLS LAST, product NULLS LAST", "expect": {"rows": [["East",null,300],["West",null,450],[null,"A",250],[null,"B",500]], "ordered": true}}
+    ]},
+    {"name": "the-grouping-function-over-a-rollup", "steps": [
+      {"sql": "CREATE TABLE sales (region VARCHAR, product VARCHAR, amount DOUBLE)"},
+      {"sql": "INSERT INTO sales VALUES ('East','A',100),('East','B',200),('West','A',150),('West','B',300)"},
+      {"sql": "SELECT region, SUM(amount), GROUPING(region) FROM sales GROUP BY ROLLUP(region) ORDER BY region NULLS LAST", "expect": {"rows": [["East",300,0],["West",450,0],[null,750,1]], "ordered": true}}
+    ]},
+    {"name": "rollup-with-a-count-aggregation", "steps": [
+      {"sql": "CREATE TABLE sales (region VARCHAR, product VARCHAR, amount DOUBLE)"},
+      {"sql": "INSERT INTO sales VALUES ('East','A',100),('East','B',200),('West','A',150),('West','B',300)"},
+      {"sql": "SELECT region, COUNT(*) FROM sales GROUP BY ROLLUP(region) ORDER BY region NULLS LAST", "expect": {"rows": [["East",2],["West",2],[null,4]], "ordered": true}}
+    ]},
+    {"name": "cube-with-having", "steps": [
+      {"sql": "CREATE TABLE sales (region VARCHAR, product VARCHAR, amount DOUBLE)"},
+      {"sql": "INSERT INTO sales VALUES ('East','A',100),('East','B',200),('West','A',150),('West','B',300)"},
+      {"sql": "SELECT region, SUM(amount) FROM sales GROUP BY CUBE(region) HAVING SUM(amount) > 400 ORDER BY region NULLS LAST", "expect": {"rows": [["West",450],[null,750]], "ordered": true}}
+    ]}
+  ]
+}

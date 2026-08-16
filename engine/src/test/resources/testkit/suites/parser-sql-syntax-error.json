@@ -1,0 +1,62 @@
+{
+  "suite": "parser-sql-syntax-error",
+  "description": "SQL syntax error detection over malformed statement shapes - each cell refuses on every transport with live's 'syntax error' wording somewhere in the message. Deliberately asserted at that level and no finer: exact wording and positions are pinned in parser/SyntaxErrorShapeTest, which owns them, so over-pinning here would duplicate that class. One cell is NOT a syntax error and says so: WHERE is allowed without FROM, so 'SELECT name WHERE age > 18' parses and then fails resolving the identifier, which the suite asserts as a refusal of any kind rather than a syntax one. Converted from parser/SqlSyntaxErrorTest; that class is trimmed to the one test that reads the typed SqlSyntaxException API (getFailedSql / getSyntaxErrors), which exists only on the plain embedded engine and has no SQL surface.",
+  "tags": ["parser", "converted"],
+  "tests": [
+    {"name": "an-invalid-select-keyword-is-a-syntax-error", "steps": [
+      {"sql": "SELECT * FORM users", "expect": {"error": {"messageContains": "syntax error"}}}
+    ]},
+    {"name": "a-missing-from-clause-fails-resolving-the-identifier", "steps": [
+      {"sql": "SELECT name WHERE age > 18", "expect": {"error": {}}}
+    ]},
+    {"name": "an-incomplete-where-clause-is-a-syntax-error", "steps": [
+      {"sql": "SELECT * FROM users WHERE", "expect": {"error": {"messageContains": "syntax error"}}}
+    ]},
+    {"name": "an-insert-without-into-is-a-syntax-error", "steps": [
+      {"sql": "INSERT users VALUES (1, 'Alice')", "expect": {"error": {"messageContains": "syntax error"}}}
+    ]},
+    {"name": "an-unclosed-parenthesis-is-a-syntax-error", "steps": [
+      {"sql": "SELECT * FROM users WHERE (age > 18", "expect": {"error": {"messageContains": "syntax error"}}}
+    ]},
+    {"name": "an-invalid-identifier-in-order-by-is-a-syntax-error", "steps": [
+      {"sql": "SELECT * FROM users ORDER BY 123abc", "expect": {"error": {"messageContains": "syntax error"}}}
+    ]},
+    {"name": "multiple-syntax-errors-still-refuse", "steps": [
+      {"sql": "SELECT * FORM users WERE age > 18", "expect": {"error": {"messageContains": "syntax error"}}}
+    ]},
+    {"name": "a-create-table-missing-a-comma-is-a-syntax-error", "steps": [
+      {"sql": "CREATE TABLE users (id INT name VARCHAR)", "expect": {"error": {"messageContains": "syntax error"}}}
+    ]},
+    {"name": "an-update-without-set-is-a-syntax-error", "steps": [
+      {"sql": "UPDATE users age = 25 WHERE id = 1", "expect": {"error": {"messageContains": "syntax error"}}}
+    ]},
+    {"name": "a-delete-without-from-is-a-syntax-error", "steps": [
+      {"sql": "DELETE users WHERE id = 1", "expect": {"error": {"messageContains": "syntax error"}}}
+    ]},
+    {"name": "a-valid-query-does-not-throw", "steps": [
+      {"sql": "CREATE TABLE test_table (id INTEGER, name VARCHAR)"},
+      {"sql": "INSERT INTO test_table VALUES (1, 'Alice')"},
+      {"sql": "SELECT * FROM test_table WHERE id = 1", "expect": {"rowCount": 1}},
+      {"sql": "UPDATE test_table SET name = 'Bob' WHERE id = 1"},
+      {"sql": "SELECT name FROM test_table WHERE id = 1", "expect": {"value": "Bob"}},
+      {"sql": "DELETE FROM test_table WHERE id = 1"},
+      {"sql": "SELECT COUNT(*) FROM test_table", "expect": {"value": "0"}}
+    ]},
+    {"name": "a-misspelled-select-reports-the-unexpected-token", "steps": [
+      {"sql": "SELEKT * FROM users", "expect": {"error": {"messageContains": "syntax error"}}}
+    ]},
+    {"name": "a-join-without-on-is-a-syntax-error", "steps": [
+      {"sql": "SELECT u.name, o.amount\nFROM users u\nJOIN orders o u.id = o.user_id\nWHERE o.amount > 100\n", "expect": {"error": {"messageContains": "syntax error"}}}
+    ]},
+    {"name": "an-aggregate-with-an-invalid-keyword-is-a-syntax-error", "steps": [
+      {"sql": "SELECT COUNT(*) FORM users", "expect": {"error": {"messageContains": "syntax error"}}}
+    ]},
+    {"name": "a-group-without-by-is-a-syntax-error", "steps": [
+      {"sql": "SELECT age FROM users GROUP age", "expect": {"error": {"messageContains": "syntax error"}}}
+    ]},
+    {"name": "a-partially-valid-script-is-refused-as-a-whole",
+     "steps": [
+      {"sql": "CREATE TABLE test (id INTEGER);\nSELEKT * FROM test\n", "expect": {"error": {"messageContains": "syntax error"}}}
+    ]}
+  ]
+}

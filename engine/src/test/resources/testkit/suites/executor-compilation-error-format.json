@@ -1,0 +1,128 @@
+{
+  "suite": "executor-compilation-error-format",
+  "description": "The compilation-error format, measured on a real account: the detail begins on a SECOND line after the SQL compilation error: prefix, a source position stays on the FIRST line, nothing wraps or re-describes a failure (no handler preambles), DDL spells a missing name in full while queries/DML echo what the writer wrote, SELECT/UPDATE/DELETE report a missing Object while INSERT/DESCRIBE report a Table, resolution reports the outermost missing level, an unresolvable column is an invalid identifier anchored at the identifier's own 0-based offset (qualifier kept, whole-reference start), and DROP COLUMN / RENAME COLUMN / COMMENT ON COLUMN carry their own wording. Converted 1:1 from executor/SqlCompilationErrorFormatTest (trimmed: two unit tests of the SqlCompilationError helper class stay in Java).",
+  "tags": ["executor", "converted"],
+  "tests": [
+    {"name": "no-raised-message-joins-the-prefix-with-a-space", "steps": [
+      {"sql": "CREATE TABLE err_src (a INTEGER, b INTEGER)"},
+      {"sql": "SELECT a, b FROM err_src GROUP BY a",
+       "expect": {"error": {"messageContains": "SQL compilation error: error line 1 at position 10\n'ERR_SRC.B' in select clause is neither an aggregate nor in the group by clause."}}},
+      {"sql": "SELECT MAX(OBJECT_CONSTRUCT('k', 1)) FROM err_src",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nFunction MAX does not support OBJECT argument type"}}},
+      {"sql": "SELECT 1::FILE",
+       "expect": {"error": {"messageContains": "SQL compilation error:\ninvalid type [CAST(1 AS FILE)] for parameter 'TO_FILE'"}}}
+    ]},
+    {"name": "an-invalid-type-matches-live-exactly", "steps": [
+      {"sql": "SELECT 1::FILE",
+       "expect": {"error": {"messageContains": "SQL compilation error:\ninvalid type [CAST(1 AS FILE)] for parameter 'TO_FILE'"}}}
+    ]},
+    {"name": "a-group-by-rejection-puts-the-position-on-line-one", "steps": [
+      {"sql": "CREATE TABLE gb_src (a INTEGER, b INTEGER)"},
+      {"sql": "SELECT a, b FROM gb_src GROUP BY a",
+       "expect": {"error": {"messageContains": "SQL compilation error: error line 1 at position 10\n'GB_SRC.B' in select clause is neither an aggregate nor in the group by clause."}}}
+    ]},
+    {"name": "a-missing-object-matches-live-and-carries-no-preamble", "steps": [
+      {"sql": "DROP VIEW nosuchview_x",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nView 'TEST_DB.TEST_SCHEMA.NOSUCHVIEW_X' does not exist or not authorized."}}},
+      {"sql": "DROP TABLE nosuchtable_x",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nTable 'TEST_DB.TEST_SCHEMA.NOSUCHTABLE_X' does not exist or not authorized."}}},
+      {"sql": "DROP SCHEMA nosuchschema_x",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nSchema 'TEST_DB.NOSUCHSCHEMA_X' does not exist or not authorized."}}},
+      {"sql": "DROP STREAM nosuchstream_x",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nStream 'TEST_DB.TEST_SCHEMA.NOSUCHSTREAM_X' does not exist or not authorized."}}}
+    ]},
+    {"name": "a-missing-from-clause-name-is-an-object-not-a-table", "steps": [
+      {"sql": "SELECT 1 FROM nosuchtable_y",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nObject 'NOSUCHTABLE_Y' does not exist or not authorized."}}},
+      {"sql": "DESCRIBE TABLE nosuchtable_y",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nTable 'NOSUCHTABLE_Y' does not exist or not authorized."}}},
+      {"sql": "INSERT INTO nosuchtable_y VALUES (1)",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nTable 'NOSUCHTABLE_Y' does not exist or not authorized."}}}
+    ]},
+    {"name": "no-handler-prefixes-the-statement-kind", "steps": [
+      {"sql": "DROP TABLE nosuchtable_z",
+       "expect": {"error": {"messageContains": "SQL compilation error:"}}},
+      {"sql": "SELECT 1 FROM nosuchtable_z",
+       "expect": {"error": {"messageContains": "SQL compilation error:"}}},
+      {"sql": "INSERT INTO nosuchtable_z VALUES (1)",
+       "expect": {"error": {"messageContains": "SQL compilation error:"}}},
+      {"sql": "TRUNCATE TABLE nosuchtable_z",
+       "expect": {"error": {"messageContains": "SQL compilation error:"}}},
+      {"sql": "ALTER TABLE nosuchtable_z ADD COLUMN c INTEGER",
+       "expect": {"error": {"messageContains": "SQL compilation error:"}}}
+    ]},
+    {"name": "ddl-spells-the-name-in-full-and-dml-echoes-what-was-written", "steps": [
+      {"sql": "DROP TABLE nosuch_q",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nTable 'TEST_DB.TEST_SCHEMA.NOSUCH_Q' does not exist or not authorized."}}},
+      {"sql": "TRUNCATE TABLE nosuch_q",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nTable 'TEST_DB.TEST_SCHEMA.NOSUCH_Q' does not exist or not authorized."}}},
+      {"sql": "ALTER TABLE nosuch_q ADD COLUMN c INTEGER",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nTable 'TEST_DB.TEST_SCHEMA.NOSUCH_Q' does not exist or not authorized."}}},
+      {"sql": "INSERT INTO nosuch_q VALUES (1)",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nTable 'NOSUCH_Q' does not exist or not authorized."}}},
+      {"sql": "DESCRIBE TABLE nosuch_q",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nTable 'NOSUCH_Q' does not exist or not authorized."}}}
+    ]},
+    {"name": "the-query-family-reports-an-object", "steps": [
+      {"sql": "SELECT 1 FROM nosuch_r",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nObject 'NOSUCH_R' does not exist or not authorized."}}},
+      {"sql": "UPDATE nosuch_r SET c = 1",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nObject 'NOSUCH_R' does not exist or not authorized."}}},
+      {"sql": "DELETE FROM nosuch_r",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nObject 'NOSUCH_R' does not exist or not authorized."}}}
+    ]},
+    {"name": "a-written-qualifier-is-expanded-in-full", "steps": [
+      {"sql": "SELECT 1 FROM test_schema.nosuch_s",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nObject 'TEST_DB.TEST_SCHEMA.NOSUCH_S' does not exist or not authorized."}}},
+      {"sql": "INSERT INTO test_schema.nosuch_s VALUES (1)",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nTable 'TEST_DB.TEST_SCHEMA.NOSUCH_S' does not exist or not authorized."}}}
+    ]},
+    {"name": "the-outermost-missing-level-is-reported", "steps": [
+      {"sql": "DROP TABLE nosuchschema.nosuch_t",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nSchema 'TEST_DB.NOSUCHSCHEMA' does not exist or not authorized."}}},
+      {"sql": "DROP TABLE nosuchdb.s.nosuch_t",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nDatabase 'NOSUCHDB' does not exist or not authorized."}}}
+    ]},
+    {"name": "an-unresolvable-column-is-an-invalid-identifier", "steps": [
+      {"sql": "CREATE TABLE col_src (a INTEGER, b INTEGER)"},
+      {"sql": "INSERT INTO col_src VALUES (1, 2)"},
+      {"sql": "SELECT nosuchcol FROM col_src",
+       "expect": {"error": {"messageContains": "SQL compilation error: error line 1 at position 7\ninvalid identifier 'NOSUCHCOL'"}}},
+      {"sql": "SELECT a FROM col_src WHERE nosuchcol = 1",
+       "expect": {"error": {"messageContains": "SQL compilation error: error line 1 at position 28\ninvalid identifier 'NOSUCHCOL'"}}},
+      {"sql": "UPDATE col_src SET nosuchcol = 1",
+       "expect": {"error": {"messageContains": "SQL compilation error: error line 1 at position 19\ninvalid identifier 'NOSUCHCOL'"}}},
+      {"sql": "ALTER TABLE col_src ADD PRIMARY KEY (nosuchcol)",
+       "expect": {"error": {"messageContains": "SQL compilation error: error line 1 at position 37\ninvalid identifier 'NOSUCHCOL'"}}},
+      {"sql": "UPDATE col_src SET a = nosuchcol",
+       "expect": {"error": {"messageContains": "SQL compilation error: error line 1 at position 23\ninvalid identifier 'NOSUCHCOL'"}}},
+      {"sql": "ALTER TABLE col_src ADD CONSTRAINT ck UNIQUE (nosuchcol)",
+       "expect": {"error": {"messageContains": "SQL compilation error: error line 1 at position 46\ninvalid identifier 'NOSUCHCOL'"}}},
+      {"sql": "UPDATE col_src SET a = 1 WHERE nosuchcol = 2",
+       "expect": {"error": {"messageContains": "SQL compilation error: error line 1 at position 31\ninvalid identifier 'NOSUCHCOL'"}}},
+      {"sql": "DELETE FROM col_src WHERE nosuchcol = 1",
+       "expect": {"error": {"messageContains": "SQL compilation error: error line 1 at position 26\ninvalid identifier 'NOSUCHCOL'"}}},
+      {"sql": "INSERT INTO col_src (nosuchcol) VALUES (1)",
+       "expect": {"error": {"messageContains": "SQL compilation error: error line 1 at position 21\ninvalid identifier 'NOSUCHCOL'"}}}
+    ]},
+    {"name": "a-qualified-column-keeps-its-qualifier", "steps": [
+      {"sql": "CREATE TABLE qual_src (a INTEGER)"},
+      {"sql": "INSERT INTO qual_src VALUES (1)"},
+      {"sql": "SELECT qual_src.nosuchcol FROM qual_src",
+       "expect": {"error": {"messageContains": "SQL compilation error: error line 1 at position 7\ninvalid identifier 'QUAL_SRC.NOSUCHCOL'"}}},
+      {"sql": "SELECT x.nosuchcol FROM qual_src x",
+       "expect": {"error": {"messageContains": "SQL compilation error: error line 1 at position 7\ninvalid identifier 'X.NOSUCHCOL'"}}},
+      {"sql": "SELECT a FROM qual_src WHERE qual_src.nosuchcol = 1",
+       "expect": {"error": {"messageContains": "SQL compilation error: error line 1 at position 29\ninvalid identifier 'QUAL_SRC.NOSUCHCOL'"}}}
+    ]},
+    {"name": "drop-column-and-rename-column-have-their-own-wording", "steps": [
+      {"sql": "CREATE TABLE alt_src (a INTEGER)"},
+      {"sql": "ALTER TABLE alt_src DROP COLUMN nosuchcol",
+       "expect": {"error": {"messageContains": "SQL compilation error:\ncolumn 'NOSUCHCOL' does not exist"}}},
+      {"sql": "ALTER TABLE alt_src RENAME COLUMN nosuchcol TO z",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nObject 'NOSUCHCOL' does not exist or not authorized."}}},
+      {"sql": "COMMENT ON COLUMN alt_src.nosuchcol IS 'c'",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nObject 'NOSUCHCOL' does not exist or not authorized."}}}
+    ]}
+  ]
+}

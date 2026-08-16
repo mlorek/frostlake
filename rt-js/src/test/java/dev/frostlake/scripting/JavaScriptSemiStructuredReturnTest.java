@@ -50,8 +50,16 @@ public class JavaScriptSemiStructuredReturnTest extends BaseDatabaseTest {
             LANGUAGE JAVASCRIPT
             AS $$ return 'plain'; $$""");
 
-        assertEquals("\"plain\"",
+        // Live-verified: the value IS a variant string — TYPEOF says VARCHAR and TO_JSON writes the
+        // quoted JSON — and reading it WHOLE shows its CONTENT, with no quotes.
+        assertEquals("plain",
             String.valueOf(engine.executeQuery(
                 "SELECT js_word()").getRows().get(0).getValue(0)));
+        assertEquals("VARCHAR",
+            String.valueOf(engine.executeQuery(
+                "SELECT TYPEOF(js_word())").getRows().get(0).getValue(0)));
+        assertEquals("\"plain\"",
+            String.valueOf(engine.executeQuery(
+                "SELECT TO_JSON(js_word())").getRows().get(0).getValue(0)));
     }
 }

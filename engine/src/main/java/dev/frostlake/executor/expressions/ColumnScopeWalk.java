@@ -16,6 +16,9 @@
 
 package dev.frostlake.executor.expressions;
 
+import java.util.List;
+import java.util.Locale;
+
 /**
  * Refuses every column reference that resolves to nothing, and judges nothing else — the FIRST phase
  * of the plan-time walk, ahead of unknown function names and ahead of every argument-type check,
@@ -48,12 +51,28 @@ final class ColumnScopeWalk extends AstPrinterVisitor {
     }
 
     @Override
-    public String visitFunctionCall(final FunctionCallExpression expr) {
+    public String visitFunctionCall(final FunctionCallExpression written) {
+        // A star beside other arguments names columns, which is what the walk resolves.
+        final FunctionCallExpression expr = context.splicedStarArguments(written);
         // A call's ARGUMENTS are where the date/time-unit barewords are exempt, so the phase has to
         // descend in argument position the way the combined walk does.
         final boolean enclosing = context.beginFunctionArgumentScope();
         try {
-            return super.visitFunctionCall(expr);
+            final int slot = DateTimeUnitSlot.positionIn(
+                expr.getFunctionName().toUpperCase(Locale.ROOT));
+            if (slot < 0) {
+                return super.visitFunctionCall(expr);
+            }
+            // A unit SLOT holds a NAME, so there is no reference in it to resolve. Walking it would
+            // refuse DATEADD(zz, …) as an invalid identifier, where live reports the word as a bad
+            // date/time component instead — a different sentence, from a later phase.
+            final List<Expression> args = expr.getArguments();
+            for (int i = 0; i < args.size(); i++) {
+                if (i != slot) {
+                    args.get(i).accept(this);
+                }
+            }
+            return "";
         } finally {
             context.endFunctionArgumentScope(enclosing);
         }

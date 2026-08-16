@@ -1,0 +1,32 @@
+{
+  "suite": "ddl-create-schema",
+  "description": "CREATE SCHEMA visibility, activation and qualified table creation, converted from ddl/CreateSchemaTest.java (now retired). The SQL-surface asserts (SHOW ... LIKE) replace the engine.showTables() accessor, so the suite also runs cleanly against a live account.",
+  "tags": ["ddl", "converted"],
+  "tests": [
+    {
+      "name": "create-schema-is-listed",
+      "steps": [
+        {"sql": "CREATE SCHEMA new_schema"},
+        {"sql": "SHOW SCHEMAS LIKE 'new_schema'", "expect": {"rowCount": 1}}
+      ]
+    },
+    {
+      "name": "create-schema-in-current-database-and-use",
+      "steps": [
+        {"sql": "CREATE SCHEMA another_schema"},
+        {"sql": "USE SCHEMA another_schema"},
+        {"sql": "SHOW SCHEMAS LIKE 'another_schema'", "expect": {"rowCount": 1}},
+        {"sql": "SELECT CURRENT_SCHEMA()", "expect": {"value": "ANOTHER_SCHEMA"}}
+      ]
+    },
+    {
+      "name": "create-table-in-new-schema",
+      "steps": [
+        {"sql": "CREATE SCHEMA other_schema"},
+        {"sql": "CREATE TABLE other_schema.users (id INTEGER, name VARCHAR)"},
+        {"sql": "USE SCHEMA other_schema"},
+        {"sql": "SHOW TABLES LIKE 'users'", "expect": {"rowCount": 1}}
+      ]
+    }
+  ]
+}

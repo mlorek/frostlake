@@ -17,9 +17,13 @@
 package dev.frostlake.functions.scalar;
 
 import dev.frostlake.values.BinaryValue;
+import dev.frostlake.values.DecimalOriginNode;
+import dev.frostlake.values.FloatOriginNode;
 import dev.frostlake.values.TypedScalarNode;
+import dev.frostlake.values.TypedVectorNode;
 import dev.frostlake.values.VariantUndefined;
 import dev.frostlake.values.VariantValue;
+import dev.frostlake.values.VectorValue;
 
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
@@ -33,6 +37,8 @@ import java.math.BigInteger;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
+import java.time.OffsetDateTime;
+import java.time.ZonedDateTime;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Iterator;
@@ -60,6 +66,12 @@ public final class ArrayFunctionHelper {
     /** Parse value as ArrayNode, or return null. */
     public static ArrayNode parseArray(final Object value) {
         final JsonNode node = parseNode(value);
+        // A VECTOR member is array-shaped but is not an ARRAY, and the array accessors do not reach
+        // into one: live answers NULL to ARRAY_SIZE over it. Refusing it here rather than at each
+        // accessor keeps the whole family consistent with the element-access rule.
+        if (TypedVectorNode.vectorValueOf(node) != null) {
+            return null;
+        }
         return (node != null && node.isArray()) ? (ArrayNode) node : null;
     }
 
@@ -85,15 +97,26 @@ public final class ArrayFunctionHelper {
             return mapper.getNodeFactory().numberNode(((Number) value).longValue());
         // NUMBER(38,0) values exceed both long and double precision — embed them exactly, never via
         // doubleValue() (which turned 21000000006420544706 into 21000000006420546000).
-        if (value instanceof BigDecimal) return mapper.getNodeFactory().numberNode((BigDecimal) value);
+        if (value instanceof BigDecimal) return exactNumberNode(mapper, (BigDecimal) value);
         if (value instanceof BigInteger) return mapper.getNodeFactory().numberNode((BigInteger) value);
-        if (value instanceof Number) return mapper.getNodeFactory().numberNode(((Number) value).doubleValue());
-        if (value instanceof LocalDate || value instanceof LocalDateTime || value instanceof LocalTime) {
+        // A FLOAT keeps its origin, which only its text conversion reads — see FloatOriginNode.
+        if (value instanceof Number) return new FloatOriginNode(((Number) value).doubleValue());
+        if (value instanceof LocalDate || value instanceof LocalDateTime
+                || value instanceof LocalTime || value instanceof OffsetDateTime
+                || value instanceof ZonedDateTime) {
             // A temporal embedded in a VARIANT keeps Snowflake's default output text (space + FF3), not
             // java.time's T-separated form — and, in a container, its own type: live reports
             // TYPEOF(OBJECT_CONSTRUCT('d', <date>):d) as DATE, not VARCHAR. TypedScalarNode carries the
             // typed value alongside that exact text, so the JSON stays byte-identical.
-            return new TypedScalarNode(SharedFunctionHelpers.textOf(value), value);
+            return new TypedScalarNode(value instanceof LocalDate
+                ? SharedFunctionHelpers.variantDateText((LocalDate) value) : SharedFunctionHelpers.textOf(value),
+                value);
+        }
+        if (value instanceof VectorValue) {
+            // A VECTOR embeds as an ARRAY of its elements at FULL precision — not the six-decimal
+            // display text, and not as a string. Frostlake wrote the display form quoted, so every
+            // consumer read a VARCHAR back and no path expression over it could work.
+            return new TypedVectorNode((VectorValue) value);
         }
         if (value instanceof BinaryValue) {
             // A BINARY embedded in a VARIANT becomes its hex text, Snowflake's JSON rendering of binary,
@@ -198,10 +221,35 @@ public final class ArrayFunctionHelper {
         if (node.isTextual()) return node.asText();
         if (node.isBoolean()) return node.asBoolean();
         if (node.isLong() || node.isInt()) return node.asLong();
+        // A whole DECIMAL out of a scaled NUMBER stays a VARIANT — see JsonPathExtractor.
+        if (node instanceof DecimalOriginNode) return VariantValue.ofNode(node);
         if (node.isBigInteger() || node.isBigDecimal()) return node.decimalValue();
         if (node.isNumber()) return node.asDouble();
         // Object or array: a typed semi-structured value carrying the node's JSON text.
         return VariantValue.ofNode(node);
+    }
+
+    /**
+     * An exact DECIMAL entering a container loses its SCALE, the normalisation live applies to every
+     * semi-structured value: ARRAY_CONSTRUCT(1.00) is [1] whose element TYPEOF is INTEGER, and
+     * ARRAY_CONSTRUCT(2.50) is [2.5]. Normalising HERE — at the one point where a SQL value becomes a node
+     * — covers every constructor at once; OBJECT_CONSTRUCT only reached the same shape because it
+     * re-canonicalises its whole result at the end, which is why the two containers used to disagree.
+     *
+     * <p>The KIND keeps the scale, though: a whole value out of a scaled NUMBER (3.00 from a NUMBER(10,2))
+     * is still DECIMAL, a {@link DecimalOriginNode}. The literal 1.00 is a NUMBER(1,0) to begin with.
+     *
+     * <p>The value is never widened to a double on the way: NUMBER(38,0) exceeds double precision.
+     */
+    private static JsonNode exactNumberNode(final ObjectMapper mapper, final BigDecimal value) {
+        final BigDecimal stripped = value.stripTrailingZeros();
+        if (stripped.scale() <= 0) {
+            if (value.scale() > 0) {
+                return new DecimalOriginNode(stripped.setScale(0));
+            }
+            return mapper.getNodeFactory().numberNode(stripped.toBigInteger());
+        }
+        return mapper.getNodeFactory().numberNode(stripped);
     }
 
     /**
@@ -229,6 +277,12 @@ public final class ArrayFunctionHelper {
             }
             return out;
         }
+        // ★ A VECTOR member is array-SHAPED, so it must be recognised before the array branch, which
+        // would copy its elements into a plain array and lose the one thing that makes it a vector.
+        // Its elements are already in their final form; canonicalising them would re-round the text.
+        if (TypedVectorNode.vectorValueOf(node) != null) {
+            return node;
+        }
         if (node.isArray()) {
             final ArrayNode out = MAPPER.createArrayNode();
             for (final JsonNode element : node) {
@@ -237,26 +291,42 @@ public final class ArrayFunctionHelper {
             return out;
         }
         if (node.isNumber() && !node.isIntegralNumber()) {
-            // Live-verified number families: a SCIENTIFIC-notation JSON literal is DOUBLE (TYPEOF of
-            // PARSE_JSON('1e5') and ('1.5e2') is DOUBLE) while a PLAIN fraction is DECIMAL with
-            // trailing zeros stripped (PARSE_JSON('1.5') is DECIMAL, '1.50' descales to 1.5, '1.0'
-            // to INTEGER); a programmatic double (a ::DOUBLE cast) keeps the DOUBLE family. After
-            // BigDecimal parsing the notation is only PARTLY recoverable: a negative scale means a
-            // positive exponent, and >15 significant digits is double-provenance in practice (a
-            // float widened to double, e.g. 8.999999761581421e-01 — the loader-hash shape that must
-            // keep Snowflake's 10-significant-digit FLOAT::VARCHAR rendering). A short negative
-            // exponent ('8.99e-1') is indistinguishable from its plain spelling and lands DECIMAL.
-            if (node.isBigDecimal()
-                    && (node.decimalValue().scale() < 0
-                        || (node.decimalValue().scale() > 0 && node.decimalValue().precision() > 15))) {
+            // A NON-FINITE double is already canonical, and has to be answered before anything reaches for
+            // a BigDecimal: neither NaN nor an infinity has one. Only a value that IS a double is checked,
+            // so a plainly written decimal too large for a double still canonicalizes as a decimal.
+            if ((node.isDouble() || node.isFloat()) && !Double.isFinite(node.doubleValue())) {
+                return node;
+            }
+            // Live-verified number families: a SCIENTIFIC-notation JSON literal is DOUBLE whatever its
+            // exponent (TYPEOF of PARSE_JSON('1e5'), ('1.5e2') and ('1.0e0') alike) while a PLAIN
+            // fraction is DECIMAL with trailing zeros stripped (PARSE_JSON('1.5') is DECIMAL, '1.50'
+            // descales to 1.5, '1.0' to INTEGER); a programmatic double (a ::DOUBLE cast) keeps the
+            // DOUBLE family. The notation itself is read off the document text before this ever runs —
+            // see JsonNumberNotation — so an exponent-written float arrives already in the DOUBLE
+            // family and the only thing left to recover here is a NEGATIVE scale, which a value
+            // reaching this from somewhere other than the JSON reader may still carry.
+            if (node.isBigDecimal() && node.decimalValue().scale() < 0) {
                 return MAPPER.getNodeFactory().numberNode(node.decimalValue().doubleValue());
+            }
+            // The DOUBLE family survives being whole — live keeps OBJECT_CONSTRUCT('k', 1.0::FLOAT) as
+            // {"k":1.0} with TYPEOF DOUBLE, where demoting it to the integer 1 lost the family outright.
+            // Only an exact DECIMAL descales into an integer, which is checked after. The double is
+            // taken OFF THE NODE, never through a BigDecimal round-trip: BigDecimal has no negative
+            // zero, so -0e0 through one forgot its sign where a real account keeps it.
+            if (node instanceof FloatOriginNode) {
+                return node;
+            }
+            // A whole DECIMAL out of a scaled NUMBER keeps its kind the same way; its text is already
+            // descaled.
+            if (node instanceof DecimalOriginNode) {
+                return node;
+            }
+            if (node.isDouble() || node.isFloat()) {
+                return MAPPER.getNodeFactory().numberNode(node.doubleValue());
             }
             final BigDecimal stripped = new BigDecimal(node.asText()).stripTrailingZeros();
             if (stripped.scale() <= 0) {
                 return MAPPER.getNodeFactory().numberNode(stripped.toBigInteger());
-            }
-            if (node.isDouble() || node.isFloat()) {
-                return MAPPER.getNodeFactory().numberNode(stripped.doubleValue());
             }
             return MAPPER.getNodeFactory().numberNode(stripped);
         }

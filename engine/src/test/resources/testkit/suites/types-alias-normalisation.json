@@ -1,0 +1,48 @@
+{
+  "suite": "types-alias-normalisation",
+  "description": "A type alias does not survive the catalog: INT/INTEGER/BIGINT/SMALLINT/TINYINT/BYTEINT are NUMBER(38,0), DECIMAL/NUMERIC keep their parameters as NUMBER, STRING/TEXT/CHAR/CHARACTER/NVARCHAR are VARCHAR, DOUBLE/REAL are FLOAT, DATETIME is TIMESTAMP_NTZ, and DESCRIBE agrees with the result column alias for alias. The result-column surface is read through a CTAS-over-the-column + DESCRIBE proxy (the CTAS inherits the resolved catalog type, so a catalog that kept the alias would fail these pins). Converted 1:1 from ddl/TypeAliasNormalisationTest (now retired).",
+  "tags": ["types", "converted"],
+  "tests": [
+    {"name": "every-integer-alias-is-number", "steps": [
+      {"sql": "CREATE TABLE ia (a INT, b INTEGER, c BIGINT, d SMALLINT, e TINYINT, f BYTEINT)"},
+      {"sql": "CREATE TABLE ia_probe AS SELECT * FROM ia"},
+      {"sql": "DESCRIBE TABLE ia_probe"},
+      {"sql": "SELECT \"name\", \"type\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["A", "NUMBER(38,0)"], ["B", "NUMBER(38,0)"], ["C", "NUMBER(38,0)"], ["D", "NUMBER(38,0)"], ["E", "NUMBER(38,0)"], ["F", "NUMBER(38,0)"]]}}
+    ]},
+    {"name": "decimal-and-numeric-are-number", "steps": [
+      {"sql": "CREATE TABLE dn (a DECIMAL(10,2), b NUMERIC(10,2), c NUMBER(10,2))"},
+      {"sql": "CREATE TABLE dn_probe AS SELECT * FROM dn"},
+      {"sql": "DESCRIBE TABLE dn_probe"},
+      {"sql": "SELECT \"name\", \"type\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["A", "NUMBER(10,2)"], ["B", "NUMBER(10,2)"], ["C", "NUMBER(10,2)"]]}}
+    ]},
+    {"name": "every-character-alias-is-varchar", "steps": [
+      {"sql": "CREATE TABLE ca (a STRING, b TEXT, c VARCHAR(5), d CHAR(3), e CHARACTER(3), f NVARCHAR(4))"},
+      {"sql": "CREATE TABLE ca_probe AS SELECT * FROM ca"},
+      {"sql": "DESCRIBE TABLE ca_probe"},
+      {"sql": "SELECT \"name\", \"type\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["A", "VARCHAR(16777216)"], ["B", "VARCHAR(16777216)"], ["C", "VARCHAR(5)"], ["D", "VARCHAR(3)"], ["E", "VARCHAR(3)"], ["F", "VARCHAR(4)"]]}}
+    ]},
+    {"name": "double-and-real-are-float", "steps": [
+      {"sql": "CREATE TABLE fl (a DOUBLE, b REAL, c FLOAT)"},
+      {"sql": "CREATE TABLE fl_probe AS SELECT * FROM fl"},
+      {"sql": "DESCRIBE TABLE fl_probe"},
+      {"sql": "SELECT \"name\", \"type\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["A", "FLOAT"], ["B", "FLOAT"], ["C", "FLOAT"]]}}
+    ]},
+    {"name": "datetime-is-a-timestamp-and-boolean-is-itself", "steps": [
+      {"sql": "CREATE TABLE db_t (a DATETIME, b BOOLEAN)"},
+      {"sql": "CREATE TABLE db_probe AS SELECT * FROM db_t"},
+      {"sql": "DESCRIBE TABLE db_probe"},
+      {"sql": "SELECT \"name\", \"type\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["A", "TIMESTAMP_NTZ(9)"], ["B", "BOOLEAN"]]}}
+    ]},
+    {"name": "describe-agrees-with-the-result-column", "steps": [
+      {"sql": "CREATE TABLE da (a INT, b BIGINT, c DECIMAL(10,2), d CHAR(3), e STRING, f DOUBLE)"},
+      {"sql": "DESCRIBE TABLE da"},
+      {"sql": "SELECT \"name\", \"type\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["A", "NUMBER(38,0)"], ["B", "NUMBER(38,0)"], ["C", "NUMBER(10,2)"], ["D", "VARCHAR(3)"], ["E", "VARCHAR(16777216)"], ["F", "FLOAT"]]}}
+    ]}
+  ]
+}

@@ -1,0 +1,65 @@
+{
+  "suite": "query-qualified-reference",
+  "description": "A dotted column reference is checked PART BY PART, however many parts it has. Frostlake asked the question only of a SINGLE-part qualifier - the comment said multi-part ones resolve further down - so test_schema.nosuchtable.a found the column by name alone and answered a row. Every part must match: two, three and four parts all read the column when they do, and a wrong COLUMN or a wrong TABLE part is refused at every length with the whole path named in the message. An ALIAS REPLACES the table's name, however many parts precede it, so kw.a and test_schema.kw.a are both invalid once the FROM carries an alias. The qualifier must be a contiguous right-SUFFIX of the relation's full name, so SKIPPING a level (test_db.kw.a, leaving out the schema) is refused as firmly as naming the wrong one. And it is the relation's OWN name that counts, not the schema currently in use: a table in other_schema is qualified by other_schema even while test_schema is current. A keyword after the dots is a name like any other. Converted 1:1 from query/QualifiedReferenceTest (now retired); the Java flattened newlines out of the message before matching, so the converted steps pin the position and the identifier across a REAL newline.",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "every-matching-part-reads-the-column", "steps": [
+      {"sql": "CREATE TABLE kw (a INT, b INT)"},
+      {"sql": "INSERT INTO kw VALUES (1, 2)"},
+      {"sql": "SELECT kw.a FROM kw", "expect": {"value": 1}},
+      {"sql": "SELECT test_schema.kw.a FROM kw", "expect": {"value": 1}},
+      {"sql": "SELECT test_db.test_schema.kw.a FROM kw", "expect": {"value": 1}},
+      {"sql": "SELECT t.a FROM kw t", "expect": {"value": 1}}
+    ]},
+    {"name": "a-wrong-column-is-refused-at-every-length", "steps": [
+      {"sql": "CREATE TABLE kw (a INT, b INT)"},
+      {"sql": "INSERT INTO kw VALUES (1, 2)"},
+      {"sql": "SELECT kw.nosuchcol FROM kw",
+       "expect": {"error": {"messageContains": "error line 1 at position 7\ninvalid identifier 'KW.NOSUCHCOL'"}}},
+      {"sql": "SELECT test_schema.kw.nosuchcol FROM kw",
+       "expect": {"error": {"messageContains": "error line 1 at position 7\ninvalid identifier 'TEST_SCHEMA.KW.NOSUCHCOL'"}}},
+      {"sql": "SELECT test_db.test_schema.kw.nosuchcol FROM kw",
+       "expect": {"error": {"messageContains": "invalid identifier 'TEST_DB.TEST_SCHEMA.KW.NOSUCHCOL'"}}}
+    ]},
+    {"name": "a-wrong-table-part-is-refused", "steps": [
+      {"sql": "CREATE TABLE kw (a INT, b INT)"},
+      {"sql": "INSERT INTO kw VALUES (1, 2)"},
+      {"sql": "SELECT test_schema.nosuchtable.a FROM kw",
+       "expect": {"error": {"messageContains": "error line 1 at position 7\ninvalid identifier 'TEST_SCHEMA.NOSUCHTABLE.A'"}}}
+    ]},
+    {"name": "an-alias-replaces-the-qualified-name-too", "steps": [
+      {"sql": "CREATE TABLE kw (a INT, b INT)"},
+      {"sql": "INSERT INTO kw VALUES (1, 2)"},
+      {"sql": "SELECT kw.a FROM kw t", "expect": {"error": {"messageContains": "invalid identifier 'KW.A'"}}},
+      {"sql": "SELECT test_schema.kw.a FROM kw t",
+       "expect": {"error": {"messageContains": "error line 1 at position 7\ninvalid identifier 'TEST_SCHEMA.KW.A'"}}}
+    ]},
+    {"name": "the-qualifier-must-be-a-suffix-of-the-full-name", "steps": [
+      {"sql": "CREATE TABLE kw (a INT, b INT)"},
+      {"sql": "INSERT INTO kw VALUES (1, 2)"},
+      {"sql": "SELECT test_db.test_schema.kw.a FROM kw", "expect": {"value": 1}},
+      {"sql": "SELECT nosuchschema.kw.a FROM kw",
+       "expect": {"error": {"messageContains": "error line 1 at position 7\ninvalid identifier 'NOSUCHSCHEMA.KW.A'"}}},
+      {"sql": "SELECT test_db.kw.a FROM kw",
+       "expect": {"error": {"messageContains": "error line 1 at position 7\ninvalid identifier 'TEST_DB.KW.A'"}}}
+    ]},
+    {"name": "a-cross-schema-relation-is-qualified-by-its-own-name", "steps": [
+      {"sql": "CREATE TABLE kw (a INT, b INT)"},
+      {"sql": "INSERT INTO kw VALUES (1, 2)"},
+      {"sql": "CREATE SCHEMA IF NOT EXISTS other_schema"},
+      {"sql": "CREATE OR REPLACE TABLE other_schema.t (a INT)"},
+      {"sql": "INSERT INTO other_schema.t VALUES (2)"},
+      {"sql": "USE SCHEMA test_schema"},
+      {"sql": "SELECT t.a FROM other_schema.t", "expect": {"value": 2}},
+      {"sql": "SELECT other_schema.t.a FROM other_schema.t", "expect": {"value": 2}},
+      {"sql": "SELECT test_db.other_schema.t.a FROM other_schema.t", "expect": {"value": 2}},
+      {"sql": "SELECT test_schema.t.a FROM other_schema.t", "expect": {"error": {"messageContains": "invalid identifier 'TEST_SCHEMA.T.A'"}}},
+      {"sql": "SELECT other_schema.t.a FROM other_schema.t x", "expect": {"error": {"messageContains": "invalid identifier 'OTHER_SCHEMA.T.A'"}}}
+    ]},
+    {"name": "a-keyword-part-is-refused-by-name", "steps": [
+      {"sql": "CREATE TABLE kw (a INT, b INT)"},
+      {"sql": "INSERT INTO kw VALUES (1, 2)"},
+      {"sql": "SELECT test_schema.kw.case FROM kw", "expect": {"error": {"messageContains": "invalid identifier 'TEST_SCHEMA.KW.CASE'"}}}
+    ]}
+  ]
+}

@@ -54,7 +54,8 @@ public class PolicyReferencesTest extends BaseDatabaseTest {
         return engine.executeQuery("SELECT POLICY_NAME, POLICY_KIND, REF_ENTITY_NAME,"
             + " REF_ENTITY_DOMAIN, REF_COLUMN_NAME, REF_ARG_COLUMN_NAMES, POLICY_STATUS"
             + " FROM TABLE(INFORMATION_SCHEMA.POLICY_REFERENCES("
-            + "REF_ENTITY_NAME => 'PR_T', REF_ENTITY_DOMAIN => 'TABLE'))");
+            + "REF_ENTITY_NAME => 'PR_T', REF_ENTITY_DOMAIN => 'TABLE'))"
+            + " ORDER BY POLICY_NAME");
     }
 
     private String cellsOf(final ResultSet rs, final Row row) {

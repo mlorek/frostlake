@@ -1,0 +1,83 @@
+{
+  "suite": "features-serverless-task",
+  "description": "Serverless-only task options: USER_TASK_MANAGED_INITIAL_WAREHOUSE_SIZE and SERVERLESS_TASK_MAX_STATEMENT_SIZE are refused on a task that names a WAREHOUSE (at CREATE and at ALTER), TARGET_COMPLETION_INTERVAL has its own sentence naming the task in full, while USER_TASK_MINIMUM_TRIGGER_INTERVAL_IN_SECONDS is legal on a warehouse task. The rule does not fire on warehouse assignment or UNSET; a serverless task accepts every option in either spelling and lists no warehouse; and the stored settings come back through SHOW PARAMETERS IN TASK (TASK level for what the task set, a blank level and the default for what it left alone) while TARGET_COMPLETION_INTERVAL is a SHOW TASKS column rather than a parameter. Converted 1:1 from features/ServerlessTaskTest (now retired). Each test creates its own sink table and warehouse and drops the account-level warehouse.",
+  "tags": ["features", "converted"],
+  "tests": [
+    {"name": "serverless-only-options-are-refused-on-a-warehouse-task", "steps": [
+      {"sql": "CREATE TABLE srv_sink (v INTEGER)"},
+      {"sql": "CREATE WAREHOUSE srv_wh"},
+      {"sql": "CREATE TASK m1 WAREHOUSE = srv_wh USER_TASK_MANAGED_INITIAL_WAREHOUSE_SIZE = 'XSMALL' SCHEDULE = '60 MINUTE' AS INSERT INTO srv_sink VALUES (1)",
+       "expect": {"error": {"messageContains": "Cannot set USER_TASK_MANAGED_INITIAL_WAREHOUSE_SIZE on a non-serverless task."}}},
+      {"sql": "CREATE TASK m2 WAREHOUSE = srv_wh SERVERLESS_TASK_MAX_STATEMENT_SIZE = 'MEDIUM' SCHEDULE = '60 MINUTE' AS INSERT INTO srv_sink VALUES (1)",
+       "expect": {"error": {"messageContains": "Cannot set SERVERLESS_TASK_MAX_STATEMENT_SIZE on a non-serverless task."}}},
+      {"sql": "DROP WAREHOUSE IF EXISTS srv_wh"}
+    ]},
+    {"name": "target-completion-interval-names-the-task-in-its-rejection", "steps": [
+      {"sql": "CREATE TABLE srv_sink (v INTEGER)"},
+      {"sql": "CREATE WAREHOUSE srv_wh"},
+      {"sql": "CREATE TASK m3 WAREHOUSE = srv_wh TARGET_COMPLETION_INTERVAL = '30 MINUTE' SCHEDULE = '60 MINUTE' AS INSERT INTO srv_sink VALUES (1)",
+       "expect": {"error": {"messageContains": "TARGET_COMPLETION_INTERVAL is only allowed for serverless Tasks. TEST_DB.TEST_SCHEMA.M3 is not a serverless task."}}},
+      {"sql": "DROP WAREHOUSE IF EXISTS srv_wh"}
+    ]},
+    {"name": "minimum-trigger-interval-is-legal-on-a-warehouse-task", "steps": [
+      {"sql": "CREATE TABLE srv_sink (v INTEGER)"},
+      {"sql": "CREATE WAREHOUSE srv_wh"},
+      {"sql": "CREATE TASK m4 WAREHOUSE = srv_wh USER_TASK_MINIMUM_TRIGGER_INTERVAL_IN_SECONDS = 15 SCHEDULE = '60 MINUTE' AS INSERT INTO srv_sink VALUES (1)"},
+      {"sql": "SHOW TASKS", "expect": {"rowCount": 1}},
+      {"sql": "DROP WAREHOUSE IF EXISTS srv_wh"}
+    ]},
+    {"name": "alter-setting-a-serverless-option-on-a-warehouse-task-is-refused", "steps": [
+      {"sql": "CREATE TABLE srv_sink (v INTEGER)"},
+      {"sql": "CREATE WAREHOUSE srv_wh"},
+      {"sql": "CREATE TASK wh_task WAREHOUSE = srv_wh SCHEDULE = '60 MINUTE' AS INSERT INTO srv_sink VALUES (1)"},
+      {"sql": "ALTER TASK wh_task SET USER_TASK_MANAGED_INITIAL_WAREHOUSE_SIZE = 'XSMALL'",
+       "expect": {"error": {"messageContains": "Cannot set USER_TASK_MANAGED_INITIAL_WAREHOUSE_SIZE on a non-serverless task."}}},
+      {"sql": "ALTER TASK wh_task SET SERVERLESS_TASK_MAX_STATEMENT_SIZE = 'MEDIUM'",
+       "expect": {"error": {"messageContains": "Cannot set SERVERLESS_TASK_MAX_STATEMENT_SIZE on a non-serverless task."}}},
+      {"sql": "DROP WAREHOUSE IF EXISTS srv_wh"}
+    ]},
+    {"name": "the-rule-does-not-fire-on-warehouse-assignment-or-unset", "steps": [
+      {"sql": "CREATE TABLE srv_sink (v INTEGER)"},
+      {"sql": "CREATE WAREHOUSE srv_wh"},
+      {"sql": "CREATE TASK srv_task SCHEDULE = '60 MINUTE' AS INSERT INTO srv_sink VALUES (1)"},
+      {"sql": "ALTER TASK srv_task SET USER_TASK_MANAGED_INITIAL_WAREHOUSE_SIZE = 'XSMALL'"},
+      {"sql": "ALTER TASK srv_task SET WAREHOUSE = srv_wh"},
+      {"sql": "CREATE TASK wh_task2 WAREHOUSE = srv_wh SCHEDULE = '60 MINUTE' AS INSERT INTO srv_sink VALUES (1)"},
+      {"sql": "ALTER TASK wh_task2 UNSET WAREHOUSE"},
+      {"sql": "DROP WAREHOUSE IF EXISTS srv_wh"}
+    ]},
+    {"name": "a-serverless-task-accepts-every-option-and-runs", "steps": [
+      {"sql": "CREATE TABLE srv_sink (v INTEGER)"},
+      {"sql": "CREATE TASK srv_full USER_TASK_MANAGED_INITIAL_WAREHOUSE_SIZE = 'XSMALL' SERVERLESS_TASK_MAX_STATEMENT_SIZE = 'MEDIUM' TARGET_COMPLETION_INTERVAL = '30 MINUTE' USER_TASK_MINIMUM_TRIGGER_INTERVAL_IN_SECONDS = 15 SCHEDULE = '60 MINUTE' AS INSERT INTO srv_sink VALUES (1)"},
+      {"sql": "CREATE TASK srv_bare SERVERLESS_TASK_MAX_STATEMENT_SIZE = MEDIUM SCHEDULE = '60 MINUTE' AS INSERT INTO srv_sink VALUES (1)"},
+      {"sql": "SHOW TASKS LIKE 'SRV_FULL'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT IFF(\"warehouse\" IS NULL OR \"warehouse\" = '', 'none', 'set') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"value": "none"}}
+    ]},
+    {"name": "a-serverless-task-runs-its-body",
+     "skip": {"backends": ["snowflake"], "reason": "EXECUTE TASK is asynchronous on a real account - the body completes after the statement returns, so an immediate row count would be timing-dependent"},
+     "steps": [
+      {"sql": "CREATE TABLE srv_sink (v INTEGER)"},
+      {"sql": "CREATE TASK srv_run USER_TASK_MANAGED_INITIAL_WAREHOUSE_SIZE = 'XSMALL' SCHEDULE = '60 MINUTE' AS INSERT INTO srv_sink VALUES (1)"},
+      {"sql": "EXECUTE TASK srv_run"},
+      {"sql": "SELECT COUNT(*) FROM srv_sink", "expect": {"value": "1"}}
+    ]},
+    {"name": "the-stored-serverless-settings-come-back-through-show-parameters", "steps": [
+      {"sql": "CREATE TABLE srv_sink (v INTEGER)"},
+      {"sql": "CREATE TASK srv_full USER_TASK_MANAGED_INITIAL_WAREHOUSE_SIZE = 'XSMALL' SERVERLESS_TASK_MAX_STATEMENT_SIZE = 'MEDIUM' TARGET_COMPLETION_INTERVAL = '30 MINUTE' SCHEDULE = '60 MINUTE' AS INSERT INTO srv_sink VALUES (1)"},
+      {"sql": "SHOW PARAMETERS IN TASK srv_full"},
+      {"sql": "SELECT MAX(IFF(\"key\" = 'USER_TASK_MANAGED_INITIAL_WAREHOUSE_SIZE', \"value\", NULL)), MAX(IFF(\"key\" = 'USER_TASK_MANAGED_INITIAL_WAREHOUSE_SIZE', \"level\", NULL)), MAX(IFF(\"key\" = 'SERVERLESS_TASK_MAX_STATEMENT_SIZE', \"value\", NULL)), MAX(IFF(\"key\" = 'SERVERLESS_TASK_MAX_STATEMENT_SIZE', \"level\", NULL)), MAX(IFF(\"key\" = 'SUSPEND_TASK_AFTER_NUM_FAILURES', \"value\", NULL)), '<' || MAX(IFF(\"key\" = 'SUSPEND_TASK_AFTER_NUM_FAILURES', \"level\", NULL)) || '>' FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["XSMALL", "TASK", "MEDIUM", "TASK", "10", "<>"]]}},
+      {"sql": "SHOW TASKS LIKE 'SRV_FULL'"},
+      {"sql": "SELECT \"target_completion_interval\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "30 MINUTE"}}
+    ]},
+    {"name": "execute-task-returns-live-status-row",
+     "skip": {"backends": ["snowflake"], "reason": "the status row is the console surface - over JDBC a real account hands back no result set at all for EXECUTE TASK"},
+     "steps": [
+      {"sql": "CREATE TABLE srv_sink (v INTEGER)"},
+      {"sql": "CREATE TASK status_task SCHEDULE = '60 MINUTE' AS INSERT INTO srv_sink VALUES (1)"},
+      {"sql": "EXECUTE TASK status_task",
+       "expect": {"columns": ["status"], "rows": [["Task STATUS_TASK is scheduled to run immediately."]]}}
+    ]}
+  ]
+}

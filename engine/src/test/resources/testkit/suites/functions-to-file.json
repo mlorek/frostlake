@@ -1,0 +1,101 @@
+{
+  "suite": "functions-to-file",
+  "description": "TO_FILE - building a FILE value. Every expectation was measured against live Snowflake. The stage-path tests read REAL file metadata (size, mtime, MD5 and the extension's content type) from a stage, so they prove the descriptor is not synthesised from the path text: the 24-byte hello.txt reports ETAG b7dddf722cfdc51710087d369f8d9e6b, which the account's own file of exactly these bytes reported and which equalled the md5 column of LIST. CONTENT_TYPE comes from the file NAME's extension and never from its bytes, and the classification follows the content type, so the names decide the categories too. TO_FILE VALIDATES existence - a missing file and a DIRECTORY both fail with Snowflake's own 'Remote file ... was not found.' wording, quoting the path exactly as the caller wrote it. The two-argument form joins with a single slash and does nothing else: no @ is added and no doubled separator is collapsed. The metadata-object form validates STRUCTURE but does not resolve the file; exactly CONTENT_TYPE, SIZE, LAST_MODIFIED and ETAG are required, while RELATIVE_PATH is reported by the IDENTITY rule instead. Converted 1:1 from functions/file/ToFileTest (now retired); the Java staged its fixtures from Java, and the converted tests stage them in pure SQL with COPY INTO ... SINGLE = TRUE, which reproduces them byte for byte - measured: the 24-byte hello.txt comes back with the recorded ETAG unchanged.",
+  "tags": ["functions", "file", "converted"],
+  "tests": [
+    {"name": "it-builds-a-descriptor-from-a-real-staged-file", "steps": [
+      {"sql": "CREATE STAGE st"},
+      {"sql": "CREATE TABLE src (a VARCHAR)"},
+      {"sql": "INSERT INTO src VALUES ('hello world'),('second line')"},
+      {"sql": "COPY INTO @st/hello.txt FROM src FILE_FORMAT = (TYPE = 'CSV' COMPRESSION = NONE) SINGLE = TRUE OVERWRITE = TRUE"},
+      {"sql": "SELECT FL_GET_RELATIVE_PATH(TO_FILE('@st/hello.txt'))", "expect": {"value": "hello.txt"}},
+      {"sql": "SELECT FL_GET_CONTENT_TYPE(TO_FILE('@st/hello.txt'))", "expect": {"value": "text/plain"}},
+      {"sql": "SELECT FL_GET_SIZE(TO_FILE('@st/hello.txt'))", "expect": {"value": "24"}},
+      {"sql": "SELECT FL_GET_ETAG(TO_FILE('@st/hello.txt'))", "expect": {"value": "b7dddf722cfdc51710087d369f8d9e6b"}},
+      {"sql": "SELECT FL_GET_ETAG(TO_FILE('@st/hello.txt')) = MD5('hello world' || CHR(10) || 'second line' || CHR(10))", "expect": {"value": "true"}},
+      {"sql": "SELECT FL_GET_STAGE(TO_FILE('@st/hello.txt'))", "expect": {"value": "@TEST_DB.TEST_SCHEMA.ST"}}
+    ]},
+    {"name": "the-content-type-comes-from-the-extension-not-the-bytes", "steps": [
+      {"sql": "CREATE STAGE st"},
+      {"sql": "CREATE TABLE src (a VARCHAR)"},
+      {"sql": "INSERT INTO src VALUES ('this is not a png it is plain text')"},
+      {"sql": "COPY INTO @st/png_named.txt FROM src FILE_FORMAT = (TYPE = 'CSV' COMPRESSION = NONE) SINGLE = TRUE OVERWRITE = TRUE"},
+      {"sql": "COPY INTO @st/text_named.png FROM src FILE_FORMAT = (TYPE = 'CSV' COMPRESSION = NONE) SINGLE = TRUE OVERWRITE = TRUE"},
+      {"sql": "SELECT FL_GET_CONTENT_TYPE(TO_FILE('@st/png_named.txt'))", "expect": {"value": "text/plain"}},
+      {"sql": "SELECT FL_GET_CONTENT_TYPE(TO_FILE('@st/text_named.png'))", "expect": {"value": "image/png"}},
+      {"sql": "SELECT FL_GET_FILE_TYPE(TO_FILE('@st/png_named.txt'))", "expect": {"value": "document"}},
+      {"sql": "SELECT FL_GET_FILE_TYPE(TO_FILE('@st/text_named.png'))", "expect": {"value": "image"}},
+      {"sql": "SELECT FL_GET_ETAG(TO_FILE('@st/png_named.txt')) = FL_GET_ETAG(TO_FILE('@st/text_named.png'))", "expect": {"value": "true"}}
+    ]},
+    {"name": "a-file-without-an-extension-is-octet-stream", "steps": [
+      {"sql": "CREATE STAGE st"},
+      {"sql": "CREATE TABLE src (a VARCHAR)"},
+      {"sql": "INSERT INTO src VALUES ('no extension here')"},
+      {"sql": "COPY INTO @st/noext FROM src FILE_FORMAT = (TYPE = 'CSV' COMPRESSION = NONE) SINGLE = TRUE OVERWRITE = TRUE"},
+      {"sql": "SELECT FL_GET_CONTENT_TYPE(TO_FILE('@st/noext'))", "expect": {"value": "application/octet-stream"}},
+      {"sql": "SELECT FL_GET_FILE_TYPE(TO_FILE('@st/noext'))", "expect": {"value": "unknown"}}
+    ]},
+    {"name": "a-sub-directory-is-kept-in-the-relative-path", "steps": [
+      {"sql": "CREATE STAGE st"},
+      {"sql": "CREATE TABLE src (a VARCHAR)"},
+      {"sql": "INSERT INTO src VALUES ('nested file')"},
+      {"sql": "COPY INTO @st/sub/nested.txt FROM src FILE_FORMAT = (TYPE = 'CSV' COMPRESSION = NONE) SINGLE = TRUE OVERWRITE = TRUE"},
+      {"sql": "SELECT FL_GET_RELATIVE_PATH(TO_FILE('@st/sub/nested.txt'))", "expect": {"value": "sub/nested.txt"}},
+      {"sql": "SELECT FL_GET_CONTENT_TYPE(TO_FILE('@st/sub/nested.txt'))", "expect": {"value": "text/plain"}}
+    ]},
+    {"name": "a-missing-file-raises-snowflakes-not-found-error", "steps": [
+      {"sql": "CREATE STAGE st"},
+      {"sql": "SELECT TO_FILE('@st/missing.txt')", "expect": {"error": {"messageContains": "Remote file '@st/missing.txt' was not found."}}},
+      {"sql": "SELECT TO_FILE('@st/missing.txt')", "expect": {"error": {"messageContains": "There are several potential causes."}}}
+    ]},
+    {"name": "a-directory-is-not-a-file", "steps": [
+      {"sql": "CREATE STAGE st"},
+      {"sql": "CREATE TABLE src (a VARCHAR)"},
+      {"sql": "INSERT INTO src VALUES ('nested file')"},
+      {"sql": "COPY INTO @st/sub/nested.txt FROM src FILE_FORMAT = (TYPE = 'CSV' COMPRESSION = NONE) SINGLE = TRUE OVERWRITE = TRUE"},
+      {"sql": "SELECT TO_FILE('@st/sub')", "expect": {"error": {"messageContains": "Remote file '@st/sub' was not found."}}},
+      {"sql": "SELECT TO_FILE('@st/')", "expect": {"error": {"messageContains": "Remote file '@st/' was not found."}}}
+    ]},
+    {"name": "the-two-argument-form-joins-with-a-slash", "steps": [
+      {"sql": "CREATE STAGE st"},
+      {"sql": "CREATE TABLE src (a VARCHAR)"},
+      {"sql": "INSERT INTO src VALUES ('hello world'),('second line')"},
+      {"sql": "COPY INTO @st/hello.txt FROM src FILE_FORMAT = (TYPE = 'CSV' COMPRESSION = NONE) SINGLE = TRUE OVERWRITE = TRUE"},
+      {"sql": "SELECT FL_GET_RELATIVE_PATH(TO_FILE('@st', 'hello.txt'))", "expect": {"value": "hello.txt"}},
+      {"sql": "SELECT TO_FILE('@st', '/hello.txt')", "expect": {"error": {"messageContains": "'@st//hello.txt'"}}},
+      {"sql": "SELECT TO_FILE('st', 'hello.txt')", "expect": {"error": {"messageContains": "'st/hello.txt'"}}}
+    ]},
+    {"name": "a-qualified-stage-name-resolves", "steps": [
+      {"sql": "CREATE STAGE st"},
+      {"sql": "CREATE TABLE src (a VARCHAR)"},
+      {"sql": "INSERT INTO src VALUES ('hello world'),('second line')"},
+      {"sql": "COPY INTO @st/hello.txt FROM src FILE_FORMAT = (TYPE = 'CSV' COMPRESSION = NONE) SINGLE = TRUE OVERWRITE = TRUE"},
+      {"sql": "SELECT FL_GET_STAGE(TO_FILE('@test_db.test_schema.st/hello.txt'))", "expect": {"value": "@TEST_DB.TEST_SCHEMA.ST"}},
+      {"sql": "SELECT FL_GET_STAGE(TO_FILE('@test_schema.st/hello.txt'))", "expect": {"value": "@TEST_DB.TEST_SCHEMA.ST"}}
+    ]},
+    {"name": "null-in-null-out", "steps": [
+      {"sql": "SELECT TO_FILE(NULL)", "expect": {"rows": [[null]]}}
+    ]},
+    {"name": "a-metadata-object-is-accepted-without-resolving-the-file", "steps": [
+      {"sql": "SELECT FL_GET_RELATIVE_PATH(TRY_TO_FILE(OBJECT_CONSTRUCT('CONTENT_TYPE', 'text/plain', 'ETAG', 'b7dddf722cfdc51710087d369f8d9e6b', 'LAST_MODIFIED', 'Mon, 03 Aug 2026 11:24:13 GMT', 'RELATIVE_PATH', 'hello.txt', 'SIZE', 24, 'STAGE', '@PROBE135_DB.S.SSE')))", "expect": {"value": "hello.txt"}},
+      {"sql": "SELECT FL_GET_SIZE(TRY_TO_FILE(OBJECT_CONSTRUCT('CONTENT_TYPE', 'text/plain', 'ETAG', 'b7dddf722cfdc51710087d369f8d9e6b', 'LAST_MODIFIED', 'Mon, 03 Aug 2026 11:24:13 GMT', 'RELATIVE_PATH', 'hello.txt', 'SIZE', 24, 'STAGE', '@PROBE135_DB.S.SSE')))", "expect": {"value": "24"}},
+      {"sql": "SELECT FL_GET_STAGE(TRY_TO_FILE(OBJECT_CONSTRUCT('CONTENT_TYPE', 'text/plain', 'ETAG', 'b7dddf722cfdc51710087d369f8d9e6b', 'LAST_MODIFIED', 'Mon, 03 Aug 2026 11:24:13 GMT', 'RELATIVE_PATH', 'hello.txt', 'SIZE', 24, 'STAGE', '@PROBE135_DB.S.SSE')))", "expect": {"value": "@PROBE135_DB.S.SSE"}}
+    ]},
+    {"name": "an-unknown-metadata-field-is-rejected-by-name", "steps": [
+      {"sql": "SELECT TO_FILE(OBJECT_CONSTRUCT('STAGE', '@D.S.ST', 'RELATIVE_PATH', 'x.txt', 'SIZE', 1, 'LAST_MODIFIED', 'Mon, 03 Aug 2026 11:24:13 GMT', 'CONTENT_TYPE', 'text/plain', 'ETAG', 'e1', 'A', 1))", "expect": {"error": {"messageContains": "Invalid file metadata field A."}}}
+    ]},
+    {"name": "the-missing-required-fields-are-listed", "steps": [
+      {"sql": "SELECT TO_FILE(OBJECT_CONSTRUCT('RELATIVE_PATH', 'hello.txt', 'SIZE', 24))", "expect": {"error": {"messageContains": "Invalid file metadata. Missing required fields:"}}},
+      {"sql": "SELECT TO_FILE(OBJECT_CONSTRUCT('RELATIVE_PATH', 'hello.txt', 'SIZE', 24))", "expect": {"error": {"messageContains": "LAST_MODIFIED"}}},
+      {"sql": "SELECT TO_FILE(OBJECT_CONSTRUCT('RELATIVE_PATH', 'hello.txt', 'SIZE', 24))", "expect": {"error": {"messageContains": "CONTENT_TYPE"}}},
+      {"sql": "SELECT TO_FILE(OBJECT_CONSTRUCT('RELATIVE_PATH', 'hello.txt', 'SIZE', 24))", "expect": {"error": {"messageContains": "ETAG"}}}
+    ]},
+    {"name": "a-metadata-object-must-carry-an-identity", "steps": [
+      {"sql": "SELECT TO_FILE(OBJECT_CONSTRUCT('RELATIVE_PATH', 'x.txt', 'SIZE', 1, 'LAST_MODIFIED', 'Mon, 03 Aug 2026 11:24:13 GMT', 'CONTENT_TYPE', 'image/png', 'ETAG', 'e1'))", "expect": {"error": {"messageContains": "Invalid file metadata. Must provide (STAGE and RELATIVE_PATH), SCOPED_FILE_URL, or STAGE_FILE_URL."}}},
+      {"sql": "SELECT TO_FILE(OBJECT_CONSTRUCT('STAGE', '@D.S.ST', 'SIZE', 7, 'LAST_MODIFIED', 'Mon, 03 Aug 2026 11:24:13 GMT', 'CONTENT_TYPE', 'text/plain', 'ETAG', 'e1'))", "expect": {"error": {"messageContains": "Invalid file metadata. Must provide (STAGE and RELATIVE_PATH), SCOPED_FILE_URL, or STAGE_FILE_URL."}}}
+    ]},
+    {"name": "a-number-argument-is-not-castable-to-file", "steps": [
+      {"sql": "SELECT FL_GET_SIZE(42)", "expect": {"error": {"messageContains": "Unsupported cast to FILE."}}}
+    ]}
+  ]
+}

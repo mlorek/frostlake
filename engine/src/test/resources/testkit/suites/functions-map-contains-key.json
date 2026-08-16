@@ -1,0 +1,28 @@
+{
+  "suite": "functions-map-contains-key",
+  "description": "MAP_CONTAINS_KEY(key, map) - the one member of the family whose MAP is the SECOND argument, every expectation measured live. A missing key is FALSE rather than NULL, including over an empty map, while a NULL on either side is NULL rather than false. It reads a MAP column, and a plain OBJECT in the map position is refused with an argument list naming BOTH arguments so the offending position is visible in context. Converted 1:1 from functions/MapContainsKeyTest (now retired).",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "it-finds-a-present-key", "steps": [
+      {"sql": "SELECT MAP_CONTAINS_KEY('a', OBJECT_CONSTRUCT('a',1)::MAP(VARCHAR,INT))", "expect": {"value": "true"}}
+    ]},
+    {"name": "a-missing-key-is-false-not-null", "steps": [
+      {"sql": "SELECT MAP_CONTAINS_KEY('z', OBJECT_CONSTRUCT('a',1)::MAP(VARCHAR,INT))", "expect": {"value": "false"}},
+      {"sql": "SELECT MAP_CONTAINS_KEY('a', OBJECT_CONSTRUCT()::MAP(VARCHAR,INT))", "expect": {"value": "false"}}
+    ]},
+    {"name": "a-null-on-either-side-is-null-not-false", "steps": [
+      {"sql": "SELECT MAP_CONTAINS_KEY(NULL, OBJECT_CONSTRUCT('a',1)::MAP(VARCHAR,INT))", "expect": {"rows": [[null]]}},
+      {"sql": "SELECT MAP_CONTAINS_KEY('a', NULL::MAP(VARCHAR,INT))", "expect": {"rows": [[null]]}}
+    ]},
+    {"name": "it-reads-a-map-column", "steps": [
+      {"sql": "CREATE TABLE mck (m MAP(VARCHAR,INT))"},
+      {"sql": "INSERT INTO mck SELECT OBJECT_CONSTRUCT('z',1,'a',2)::MAP(VARCHAR,INT)"},
+      {"sql": "SELECT MAP_CONTAINS_KEY('z', m) FROM mck", "expect": {"value": "true"}},
+      {"sql": "SELECT MAP_CONTAINS_KEY('q', m) FROM mck", "expect": {"value": "false"}}
+    ]},
+    {"name": "a-plain-object-is-refused-in-the-map-position", "steps": [
+      {"sql": "SELECT MAP_CONTAINS_KEY('a', OBJECT_CONSTRUCT('a',1))",
+       "expect": {"error": {"messageContains": "Invalid argument types for function 'MAP_CONTAINS_KEY'"}}}
+    ]}
+  ]
+}

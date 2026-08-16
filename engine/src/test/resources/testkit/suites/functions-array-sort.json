@@ -1,0 +1,40 @@
+{
+  "suite": "functions-array-sort",
+  "description": "ARRAY_SORT(array [, sort_ascending [, nulls_first]]). Ascending by default, descending when sort_ascending is FALSE. The two kinds of null behave differently, all live-verified: a SQL NULL array ELEMENT is the VARIANT undefined, and nulls_first (default FALSE for ascending order) moves it, so ARRAY_SORT([2,NULL,1]) is [1,2,undefined] while the same call with TRUE, TRUE is [undefined,1,2]. A JSON null is a VALUE ranked above every other variant type and nulls_first does NOT move it - ARRAY_SORT(PARSE_JSON('[2,null,1]')) is [1,2,null] with or without nulls_first, and descending is [null,2,1]. With both present the order is [1,2,null,undefined]. The ranking is by variant type, not lexical: ARRAY_SORT(['z', PARSE_JSON('null')]) is [\"z\",null], which a text comparison of \"null\" would have put first, and a number sorts below an object which sorts below a JSON null. Converted 1:1 from functions/ArraySortTest (now retired); the array cells are read through TO_JSON so the assertion is on the array's JSON text rather than on a transport's own rendering of an ARRAY cell.",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "ascending-by-default", "steps": [
+      {"sql": "SELECT TO_JSON(ARRAY_SORT(ARRAY_CONSTRUCT(3, 1, 2)))", "expect": {"value": "[1,2,3]"}}
+    ]},
+    {"name": "descending-when-not-ascending", "steps": [
+      {"sql": "SELECT TO_JSON(ARRAY_SORT(ARRAY_CONSTRUCT(3, 1, 2), FALSE))", "expect": {"value": "[3,2,1]"}}
+    ]},
+    {"name": "undefined-sorts-last-when-ascending", "steps": [
+      {"sql": "SELECT TO_JSON(ARRAY_SORT(ARRAY_CONSTRUCT(2, NULL, 1)))", "expect": {"value": "[1,2,undefined]"}}
+    ]},
+    {"name": "undefined-sorts-first-when-nulls-first-is-requested", "steps": [
+      {"sql": "SELECT TO_JSON(ARRAY_SORT(ARRAY_CONSTRUCT(2, NULL, 1), TRUE, TRUE))",
+       "expect": {"value": "[undefined,1,2]"}},
+      {"sql": "SELECT TO_JSON(ARRAY_SORT(ARRAY_CONSTRUCT(2, NULL, 1), FALSE, FALSE))",
+       "expect": {"value": "[2,1,undefined]"}}
+    ]},
+    {"name": "a-json-null-sorts-as-a-value-and-ignores-nulls-first", "steps": [
+      {"sql": "SELECT TO_JSON(ARRAY_SORT(PARSE_JSON('[2,null,1]')))", "expect": {"value": "[1,2,null]"}},
+      {"sql": "SELECT TO_JSON(ARRAY_SORT(PARSE_JSON('[2,null,1]'), TRUE, TRUE))", "expect": {"value": "[1,2,null]"}},
+      {"sql": "SELECT TO_JSON(ARRAY_SORT(PARSE_JSON('[2,null,1]'), FALSE))", "expect": {"value": "[null,2,1]"}},
+      {"sql": "SELECT TO_JSON(ARRAY_SORT(ARRAY_CONSTRUCT(2, NULL, PARSE_JSON('null'), 1)))",
+       "expect": {"value": "[1,2,null,undefined]"}},
+      {"sql": "SELECT TO_JSON(ARRAY_SORT(ARRAY_CONSTRUCT(2, NULL, PARSE_JSON('null'), 1), TRUE, TRUE))",
+       "expect": {"value": "[undefined,1,2,null]"}}
+    ]},
+    {"name": "a-json-null-ranks-above-strings-and-objects", "steps": [
+      {"sql": "SELECT TO_JSON(ARRAY_SORT(ARRAY_CONSTRUCT('z', PARSE_JSON('null'))))",
+       "expect": {"value": "[\"z\",null]"}},
+      {"sql": "SELECT TO_JSON(ARRAY_SORT(ARRAY_CONSTRUCT(OBJECT_CONSTRUCT('a', 1), 1, PARSE_JSON('null'))))",
+       "expect": {"value": "[1,{\"a\":1},null]"}}
+    ]},
+    {"name": "a-null-input-is-null", "steps": [
+      {"sql": "SELECT ARRAY_SORT(NULL)", "expect": {"rows": [[null]]}}
+    ]}
+  ]
+}

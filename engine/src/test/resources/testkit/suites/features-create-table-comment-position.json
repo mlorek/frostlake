@@ -1,0 +1,111 @@
+{
+  "suite": "features-create-table-comment-position",
+  "description": "The COMMENT clause's positions in CREATE TABLE - immediately after the table name or at the statement's end - through the SQL surface: the comment and cluster_by cells of SHOW TABLES (an unset comment reads as the empty string) and DESCRIBE TABLE row counts. Both positions work alone and alongside CLUSTER BY (in either order before the column list), a SECOND comment clause is refused as duplicate property 'COMMENT' (creating nothing), IF NOT EXISTS and qualified names carry it, CLONE inherits the source comment unless the clone states its own (either position), and special characters and JSON-shaped comments survive. Converted 1:1 from features/CreateTableCommentPositionTest (now retired).",
+  "tags": ["features", "converted"],
+  "tests": [
+    {"name": "comment-after-table-name", "steps": [
+      {"sql": "CREATE TABLE test1 COMMENT = 'Table comment' (id INTEGER, name VARCHAR)"},
+      {"sql": "SHOW TABLES LIKE 'test1'"},
+      {"sql": "SELECT \"comment\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "Table comment"}}
+    ]},
+    {"name": "comment-at-end", "steps": [
+      {"sql": "CREATE TABLE test2 (id INTEGER, name VARCHAR) COMMENT = 'End comment'"},
+      {"sql": "SHOW TABLES LIKE 'test2'"},
+      {"sql": "SELECT \"comment\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "End comment"}}
+    ]},
+    {"name": "comment-after-table-name-with-cluster-by", "steps": [
+      {"sql": "CREATE TABLE test3 COMMENT = 'Clustered table' (id INTEGER, date DATE) CLUSTER BY (date)"},
+      {"sql": "SHOW TABLES LIKE 'test3'"},
+      {"sql": "SELECT \"comment\", \"cluster_by\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["Clustered table", "LINEAR(date)"]]}}
+    ]},
+    {"name": "comment-at-end-with-cluster-by", "steps": [
+      {"sql": "CREATE TABLE test4 (id INTEGER, date DATE) CLUSTER BY (date) COMMENT = 'Clustered at end'"},
+      {"sql": "SHOW TABLES LIKE 'test4'"},
+      {"sql": "SELECT \"comment\", \"cluster_by\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["Clustered at end", "LINEAR(date)"]]}}
+    ]},
+    {"name": "comment-after-table-name-before-cluster-by", "steps": [
+      {"sql": "CREATE TABLE test5 COMMENT = 'Comment first' (id INTEGER, date DATE) CLUSTER BY (date)"},
+      {"sql": "SHOW TABLES LIKE 'test5'"},
+      {"sql": "SELECT \"comment\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "Comment first"}}
+    ]},
+    {"name": "two-comment-clauses-are-refused", "steps": [
+      {"sql": "CREATE TABLE test6 COMMENT = 'First position' (id INTEGER) COMMENT = 'Second position'",
+       "expect": {"error": {"messageContains": "duplicate property 'COMMENT'"}}},
+      {"sql": "SHOW TABLES LIKE 'test6'", "expect": {"rowCount": 0}}
+    ]},
+    {"name": "comment-after-table-name-with-if-not-exists", "steps": [
+      {"sql": "CREATE TABLE IF NOT EXISTS test7 COMMENT = 'With IF NOT EXISTS' (id INTEGER, name VARCHAR)"},
+      {"sql": "SHOW TABLES LIKE 'test7'"},
+      {"sql": "SELECT \"comment\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "With IF NOT EXISTS"}}
+    ]},
+    {"name": "comment-after-table-name-with-qualified-name", "steps": [
+      {"sql": "CREATE SCHEMA comment_pos_schema"},
+      {"sql": "USE SCHEMA test_schema"},
+      {"sql": "CREATE TABLE comment_pos_schema.test8 COMMENT = 'Qualified name' (id INTEGER)"},
+      {"sql": "SHOW TABLES LIKE 'test8' IN SCHEMA comment_pos_schema"},
+      {"sql": "SELECT \"comment\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "Qualified name"}}
+    ]},
+    {"name": "comment-after-table-name-with-multiple-columns", "steps": [
+      {"sql": "CREATE TABLE test9 COMMENT = 'Multi column table' (id INTEGER, name VARCHAR, email VARCHAR, created_at TIMESTAMP)"},
+      {"sql": "SHOW TABLES LIKE 'test9'"},
+      {"sql": "SELECT \"comment\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "Multi column table"}},
+      {"sql": "DESCRIBE TABLE test9", "expect": {"rowCount": 4}}
+    ]},
+    {"name": "no-comment-specified", "steps": [
+      {"sql": "CREATE TABLE test10 (id INTEGER, name VARCHAR)"},
+      {"sql": "SHOW TABLES LIKE 'test10'"},
+      {"sql": "SELECT '<' || \"comment\" || '>' FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "<>"}}
+    ]},
+    {"name": "comment-after-table-name-with-clone", "steps": [
+      {"sql": "CREATE TABLE source (id INTEGER, name VARCHAR) COMMENT = 'Source table'"},
+      {"sql": "CREATE TABLE test11 COMMENT = 'Cloned with comment' CLONE source"},
+      {"sql": "SHOW TABLES LIKE 'source'"},
+      {"sql": "SELECT \"comment\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "Source table"}},
+      {"sql": "SHOW TABLES LIKE 'test11'"},
+      {"sql": "SELECT \"comment\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "Cloned with comment"}}
+    ]},
+    {"name": "clone-without-comment-inherits-source-comment", "steps": [
+      {"sql": "CREATE TABLE source2 (id INTEGER) COMMENT = 'Original comment'"},
+      {"sql": "CREATE TABLE test12 CLONE source2"},
+      {"sql": "SHOW TABLES LIKE 'test12'"},
+      {"sql": "SELECT \"comment\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "Original comment"}}
+    ]},
+    {"name": "comment-at-end-with-clone", "steps": [
+      {"sql": "CREATE TABLE source3 (id INTEGER) COMMENT = 'Source'"},
+      {"sql": "CREATE TABLE test13 CLONE source3 COMMENT = 'New comment at end'"},
+      {"sql": "SHOW TABLES LIKE 'test13'"},
+      {"sql": "SELECT \"comment\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "New comment at end"}}
+    ]},
+    {"name": "comment-with-special-characters", "steps": [
+      {"sql": "CREATE TABLE test14 COMMENT = 'Comment with \"quotes\" and \\'apostrophes\\'' (id INTEGER)"},
+      {"sql": "SHOW TABLES LIKE 'test14'"},
+      {"sql": "SELECT \"comment\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"value": "Comment with \"quotes\" and 'apostrophes'"}}
+    ]},
+    {"name": "comment-after-table-name-with-column-constraints", "steps": [
+      {"sql": "CREATE TABLE test15 COMMENT = 'Table with constraints' (id INTEGER PRIMARY KEY, email VARCHAR UNIQUE, name VARCHAR NOT NULL)"},
+      {"sql": "SHOW TABLES LIKE 'test15'"},
+      {"sql": "SELECT \"comment\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "Table with constraints"}}
+    ]},
+    {"name": "comment-after-table-name-with-default-values", "steps": [
+      {"sql": "CREATE TABLE test16 COMMENT = 'Table with defaults' (id INTEGER DEFAULT 0, status VARCHAR DEFAULT 'active', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"},
+      {"sql": "SHOW TABLES LIKE 'test16'"},
+      {"sql": "SELECT \"comment\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "Table with defaults"}}
+    ]},
+    {"name": "cluster-by-then-comment-before-columns", "steps": [
+      {"sql": "CREATE TABLE test17 CLUSTER BY (date) COMMENT = 'Cluster then comment' (id INTEGER, date DATE)"},
+      {"sql": "SHOW TABLES LIKE 'test17'"},
+      {"sql": "SELECT \"comment\", \"cluster_by\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["Cluster then comment", "LINEAR(date)"]]}}
+    ]},
+    {"name": "cluster-by-then-json-comment-before-columns-multi-key", "steps": [
+      {"sql": "CREATE TABLE IF NOT EXISTS test18 CLUSTER BY (EFFECTIVE_DATE, GROUP_TYPE, RECORD_ID) COMMENT = '{\"ver\": \"1.00.00\", \"doc\": \"derived KPI metric benchmarks.\"}' (METRIC_NAME VARCHAR NOT NULL, EFFECTIVE_DATE DATE NOT NULL, GROUP_TYPE VARCHAR NOT NULL, RECORD_ID VARCHAR NOT NULL)"},
+      {"sql": "SHOW TABLES LIKE 'test18'"},
+      {"sql": "SELECT \"comment\", \"cluster_by\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["{\"ver\": \"1.00.00\", \"doc\": \"derived KPI metric benchmarks.\"}", "LINEAR(EFFECTIVE_DATE, GROUP_TYPE, RECORD_ID)"]]}},
+      {"sql": "DESCRIBE TABLE test18", "expect": {"rowCount": 4}}
+    ]}
+  ]
+}

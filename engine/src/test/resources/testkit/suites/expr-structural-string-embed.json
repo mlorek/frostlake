@@ -1,0 +1,48 @@
+{
+  "suite": "expr-structural-string-embed",
+  "description": "A STRING whose content merely LOOKS like JSON structure ('[]', '{\"a\":1}') travels as the quoted carrier after a variant path access, and re-embedding it (OBJECT_AGG, ARRAY_AGG, OBJECT_CONSTRUCT, object literals) must restore the plain STRING member rather than double-encoding; the string 'null' stays a string member (IS_NULL_VALUE false, TYPEOF VARCHAR) while a real JSON null embeds as null; and the carrier itself keeps casting cleanly (::VARCHAR decodes, ::ARRAY wraps with TO_ARRAY semantics). Converted 1:1 from expressions/StructuralStringEmbedTest (now retired).",
+  "tags": ["expressions", "converted"],
+  "tests": [
+    {"name": "object-agg-keeps-structural-looking-string-as-string", "steps": [
+      {"sql": "CREATE TABLE props (doc VARIANT)"},
+      {"sql": "INSERT INTO props SELECT PARSE_JSON('[{\"attribute_name\":\"assigned_plans\",\"attribute_value\":\"[]\"},{\"attribute_name\":\"account_name\",\"attribute_value\":\"CS-x\"},{\"attribute_name\":\"quirk\",\"attribute_value\":\"{\\\\\"a\\\\\":1}\"}]')"},
+      {"sql": "SELECT OBJECT_AGG(value:attribute_name, value:attribute_value)::VARCHAR FROM props, TABLE(FLATTEN(doc))",
+       "expect": {"value": "{\"account_name\":\"CS-x\",\"assigned_plans\":\"[]\",\"quirk\":\"{\\\"a\\\":1}\"}"}}
+    ]},
+    {"name": "array-agg-keeps-structural-looking-string-as-string", "steps": [
+      {"sql": "CREATE TABLE props (doc VARIANT)"},
+      {"sql": "INSERT INTO props SELECT PARSE_JSON('[{\"attribute_name\":\"assigned_plans\",\"attribute_value\":\"[]\"},{\"attribute_name\":\"account_name\",\"attribute_value\":\"CS-x\"},{\"attribute_name\":\"quirk\",\"attribute_value\":\"{\\\\\"a\\\\\":1}\"}]')"},
+      {"sql": "SELECT ARRAY_AGG(value:attribute_value)::VARCHAR FROM props, TABLE(FLATTEN(doc)) WHERE value:attribute_name = 'assigned_plans'",
+       "expect": {"value": "[\"[]\"]"}}
+    ]},
+    {"name": "object-construct-keeps-structural-looking-string-as-string", "steps": [
+      {"sql": "CREATE TABLE props (doc VARIANT)"},
+      {"sql": "INSERT INTO props SELECT PARSE_JSON('[{\"attribute_name\":\"assigned_plans\",\"attribute_value\":\"[]\"},{\"attribute_name\":\"account_name\",\"attribute_value\":\"CS-x\"},{\"attribute_name\":\"quirk\",\"attribute_value\":\"{\\\\\"a\\\\\":1}\"}]')"},
+      {"sql": "SELECT OBJECT_CONSTRUCT('plans', value:attribute_value)::VARCHAR FROM props, TABLE(FLATTEN(doc)) WHERE value:attribute_name = 'assigned_plans'",
+       "expect": {"value": "{\"plans\":\"[]\"}"}}
+    ]},
+    {"name": "object-literal-keeps-structural-looking-string-as-string", "steps": [
+      {"sql": "CREATE TABLE props (doc VARIANT)"},
+      {"sql": "INSERT INTO props SELECT PARSE_JSON('[{\"attribute_name\":\"assigned_plans\",\"attribute_value\":\"[]\"},{\"attribute_name\":\"account_name\",\"attribute_value\":\"CS-x\"},{\"attribute_name\":\"quirk\",\"attribute_value\":\"{\\\\\"a\\\\\":1}\"}]')"},
+      {"sql": "CREATE TABLE one AS SELECT value:attribute_value AS v FROM props, TABLE(FLATTEN(doc)) WHERE value:attribute_name = 'assigned_plans'"},
+      {"sql": "SELECT {'plans': v}::VARCHAR FROM one", "expect": {"value": "{\"plans\":\"[]\"}"}}
+    ]},
+    {"name": "string-null-stays-a-string-when-embedded", "steps": [
+      {"sql": "CREATE TABLE nul (doc VARIANT)"},
+      {"sql": "INSERT INTO nul SELECT PARSE_JSON('{\"str_null\":\"null\",\"real_null\":null}')"},
+      {"sql": "SELECT OBJECT_AGG('lastlogin', doc:str_null)::VARCHAR FROM nul", "expect": {"value": "{\"lastlogin\":\"null\"}"}},
+      {"sql": "SELECT OBJECT_AGG('k', doc:real_null)::VARCHAR FROM nul", "expect": {"value": "{\"k\":null}"}},
+      {"sql": "SELECT doc:str_null::VARCHAR FROM nul", "expect": {"value": "null"}},
+      {"sql": "SELECT doc:real_null::VARCHAR FROM nul", "expect": {"rows": [["NULL"]]}},
+      {"sql": "SELECT IS_NULL_VALUE(doc:str_null) FROM nul", "expect": {"value": "false"}},
+      {"sql": "SELECT IS_NULL_VALUE(doc:real_null) FROM nul", "expect": {"value": "true"}},
+      {"sql": "SELECT TYPEOF(doc:str_null) FROM nul", "expect": {"value": "VARCHAR"}}
+    ]},
+    {"name": "path-access-round-trip-still-casts-cleanly", "steps": [
+      {"sql": "CREATE TABLE props (doc VARIANT)"},
+      {"sql": "INSERT INTO props SELECT PARSE_JSON('[{\"attribute_name\":\"assigned_plans\",\"attribute_value\":\"[]\"},{\"attribute_name\":\"account_name\",\"attribute_value\":\"CS-x\"},{\"attribute_name\":\"quirk\",\"attribute_value\":\"{\\\\\"a\\\\\":1}\"}]')"},
+      {"sql": "SELECT value:attribute_value::VARCHAR FROM props, TABLE(FLATTEN(doc)) WHERE value:attribute_name = 'assigned_plans'", "expect": {"value": "[]"}},
+      {"sql": "SELECT value:attribute_value::ARRAY::VARCHAR FROM props, TABLE(FLATTEN(doc)) WHERE value:attribute_name = 'assigned_plans'", "expect": {"value": "[\"[]\"]"}}
+    ]}
+  ]
+}

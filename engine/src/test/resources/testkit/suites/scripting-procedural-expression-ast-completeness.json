@@ -1,0 +1,42 @@
+{
+  "suite": "scripting-procedural-expression-ast-completeness",
+  "description": "Procedural expressions that use constructs the lightweight procedural builder does not model directly - CASE, BETWEEN, IN, LIKE - are evaluated through the FULL query AST (the SqlScalarExpression bridge) rather than degrading to their SOURCE TEXT. These exercise the IF-condition path, which is where the removed text fallback lived: before the migration the condition became a LiteralExpression of its own source text, a non-empty and therefore TRUTHY string, so EVERY IF would have been taken regardless of the actual predicate - which is why each construct is pinned in both directions where it has them. The second half is the same fallback in a DECLARE INITIALISER: an initialiser that is a VARIANT PATH over a procedural variable ran a bare 'SELECT o:result:code' that could not see the scripting variable o, so the variable silently held the literal text instead of the extracted value. Pinned as a bare path, a path with a cast, and a path inside a concatenation. The last test is the shape that motivated it all: an exception handler builds a dynamic RAISE whose message is CONCATENATED from stats variant paths and then EXECUTE IMMEDIATEs it, so the paths must be evaluated and not literal. Converted 1:1 from scripting/ProceduralExpressionAstCompletenessTest (now retired).",
+  "tags": ["scripting", "converted"],
+  "tests": [
+    {"name": "between-true", "steps": [
+      {"sql": "BEGIN IF (5 BETWEEN 1 AND 10) THEN RETURN 1; END IF; RETURN 0; END", "expect": {"value": 1}}
+    ]},
+    {"name": "between-false", "steps": [
+      {"sql": "BEGIN IF (50 BETWEEN 1 AND 10) THEN RETURN 1; END IF; RETURN 0; END", "expect": {"value": 0}}
+    ]},
+    {"name": "in-list-true", "steps": [
+      {"sql": "BEGIN IF (2 IN (1, 2, 3)) THEN RETURN 1; END IF; RETURN 0; END", "expect": {"value": 1}}
+    ]},
+    {"name": "in-list-false", "steps": [
+      {"sql": "BEGIN IF (9 IN (1, 2, 3)) THEN RETURN 1; END IF; RETURN 0; END", "expect": {"value": 0}}
+    ]},
+    {"name": "like-true", "steps": [
+      {"sql": "BEGIN IF ('abc' LIKE 'a%') THEN RETURN 1; END IF; RETURN 0; END", "expect": {"value": 1}}
+    ]},
+    {"name": "a-case-expression-as-the-condition", "steps": [
+      {"sql": "BEGIN IF (CASE WHEN 1 = 1 THEN TRUE ELSE FALSE END) THEN RETURN 1; END IF; RETURN 0; END", "expect": {"value": 1}}
+    ]},
+    {"name": "a-declare-initialiser-from-a-variant-path", "steps": [
+      {"sql": "CREATE OR REPLACE PROCEDURE p_di(o OBJECT) RETURNS STRING LANGUAGE SQL AS $$ DECLARE r STRING := o:result:code; BEGIN RETURN :r::STRING; END $$"},
+      {"sql": "CALL p_di(OBJECT_CONSTRUCT('result', OBJECT_CONSTRUCT('code', 'XYZ')))", "expect": {"value": "XYZ"}}
+    ]},
+    {"name": "a-declare-initialiser-from-a-variant-path-with-a-cast", "steps": [
+      {"sql": "CREATE OR REPLACE PROCEDURE p_di(o OBJECT) RETURNS STRING LANGUAGE SQL AS $$ DECLARE r STRING := o:result:code::string; BEGIN RETURN :r::STRING; END $$"},
+      {"sql": "CALL p_di(OBJECT_CONSTRUCT('result', OBJECT_CONSTRUCT('code', 'XYZ')))", "expect": {"value": "XYZ"}}
+    ]},
+    {"name": "a-declare-initialiser-from-a-concat-with-a-variant-path", "steps": [
+      {"sql": "CREATE OR REPLACE PROCEDURE p_di(o OBJECT) RETURNS STRING LANGUAGE SQL AS $$ DECLARE r STRING := 'v=' || o:result:code; BEGIN RETURN :r::STRING; END $$"},
+      {"sql": "CALL p_di(OBJECT_CONSTRUCT('result', OBJECT_CONSTRUCT('code', 'XYZ')))", "expect": {"value": "v=XYZ"}}
+    ]},
+    {"name": "a-dynamic-raise-built-from-stats-variant-paths", "steps": [
+      {"sql": "CREATE OR REPLACE PROCEDURE assert_like(stats OBJECT) RETURNS OBJECT LANGUAGE SQL AS $$ DECLARE ex_assert EXCEPTION (-20002, 'SP call failed'); BEGIN IF (stats:result:err_code != 0) THEN RAISE ex_assert; END IF; RETURN stats; EXCEPTION WHEN OTHER THEN DECLARE ERR_MSG STRING := stats:result:sql_err_msg; ERR_CODE STRING := stats:result:err_code; STMT VARCHAR := 'DECLARE E EXCEPTION (-20003, ''Inner: ' || ERR_MSG || ' code=' || ERR_CODE || '''); BEGIN RAISE E; END;'; BEGIN EXECUTE IMMEDIATE :STMT; END; END $$"},
+      {"sql": "CALL assert_like(OBJECT_CONSTRUCT('result', OBJECT_CONSTRUCT('err_code', 5, 'sql_err_msg', 'boom')))",
+       "expect": {"error": {"messageContains": "Inner: boom code=5"}}}
+    ]}
+  ]
+}

@@ -1,0 +1,90 @@
+{
+  "suite": "scripting-declare-let",
+  "description": "DECLARE sections before BEGIN (single, multiple, uninitialized, DEFAULT, cursor with OPEN/FETCH/CLOSE, nested DECLARE...BEGIN, exception handler alongside DECLARE) and LET / := / SET := assignment semantics across nested scopes. Converted 1:1 from scripting/DeclareBeforeBeginTest, LetAndAssignmentTest and SimpleNestedBlockTest (all now retired).",
+  "tags": ["scripting", "converted"],
+  "tests": [
+    {"name": "declare-before-begin", "steps": [
+      {"sql": "CREATE TABLE results (value INTEGER)"},
+      {"sql": "DECLARE x INTEGER := 100;\nBEGIN\n    INSERT INTO results VALUES (:x);\nEND;"},
+      {"sql": "SELECT * FROM results", "expect": {"rows": [["100"]]}}
+    ]},
+    {"name": "multiple-declares-before-begin", "steps": [
+      {"sql": "CREATE TABLE results (a INTEGER, b INTEGER, c INTEGER)"},
+      {"sql": "DECLARE\n    x INTEGER := 1;\n    y INTEGER := 2;\n    z INTEGER := 3;\nBEGIN\n    INSERT INTO results VALUES (:x, :y, :z);\nEND;"},
+      {"sql": "SELECT * FROM results", "expect": {"rows": [["1", "2", "3"]]}}
+    ]},
+    {"name": "two-separate-declare-begin-blocks", "steps": [
+      {"sql": "CREATE TABLE results (level INTEGER, value INTEGER)"},
+      {"sql": "DECLARE outer INTEGER := 1;\nBEGIN\n    INSERT INTO results VALUES (1, :outer);\nEND;"},
+      {"sql": "DECLARE value2 INTEGER := 2;\nBEGIN\n    INSERT INTO results VALUES (2, :value2);\nEND;"},
+      {"sql": "SELECT * FROM results ORDER BY level, value", "expect": {"rows": [["1", "1"], ["2", "2"]], "ordered": true}}
+    ]},
+    {"name": "declare-cursor-open-fetch-close", "steps": [
+      {"sql": "CREATE TABLE source (id INTEGER, name VARCHAR)"},
+      {"sql": "INSERT INTO source VALUES (1, 'Alice'), (2, 'Bob')"},
+      {"sql": "CREATE TABLE results (id INTEGER, name VARCHAR)"},
+      {"sql": "DECLARE\n    cur CURSOR FOR SELECT id, name FROM source;\n    rec_id INTEGER;\n    rec_name VARCHAR;\nBEGIN\n    OPEN cur;\n    FETCH cur INTO rec_id, rec_name;\n    INSERT INTO results VALUES (:rec_id, :rec_name);\n    CLOSE cur;\nEND;"},
+      {"sql": "SELECT * FROM results", "expect": {"rows": [["1", "Alice"]]}}
+    ]},
+    {"name": "nested-declare-begin-with-let", "steps": [
+      {"sql": "CREATE TABLE results (value INTEGER)"},
+      {"sql": "DECLARE i INTEGER := 1;\nBEGIN\n    DECLARE j INTEGER := 2;\n    BEGIN\n        LET k INTEGER := 3;\n        i := i + j + k;\n        INSERT INTO results VALUES (:i);\n    END;\nEND;"},
+      {"sql": "SELECT * FROM results", "expect": {"rows": [["6"]]}}
+    ]},
+    {"name": "exception-handler-alongside-declare", "steps": [
+      {"sql": "CREATE TABLE results (value INTEGER)"},
+      {"sql": "DECLARE x INTEGER := 42;\nBEGIN\n    INSERT INTO results VALUES (:x);\n    INSERT INTO nonexistent_table VALUES (1);\nEXCEPTION\n    WHEN OTHER THEN\n        INSERT INTO results VALUES (999);\nEND;"},
+      {"sql": "SELECT * FROM results ORDER BY value", "expect": {"rows": [["42"], ["999"]], "ordered": true}}
+    ]},
+    {"name": "let-statement", "steps": [
+      {"sql": "CREATE TABLE results (value INTEGER)"},
+      {"sql": "BEGIN\n    LET x INTEGER := 42;\n    INSERT INTO results VALUES (:x);\nEND;"},
+      {"sql": "SELECT * FROM results", "expect": {"rows": [["42"]]}}
+    ]},
+    {"name": "assignment-operator", "steps": [
+      {"sql": "CREATE TABLE results (value INTEGER)"},
+      {"sql": "DECLARE x INTEGER := 10;\nBEGIN\n    x := 20;\n    INSERT INTO results VALUES (:x);\nEND;"},
+      {"sql": "SELECT * FROM results", "expect": {"rows": [["20"]]}}
+    ]},
+    {"name": "set-with-colon-equals", "steps": [
+      {"sql": "CREATE TABLE results (value INTEGER)"},
+      {"sql": "DECLARE x INTEGER := 10;\nBEGIN\n    SET x := 30;\n    INSERT INTO results VALUES (:x);\nEND;"},
+      {"sql": "SELECT * FROM results", "expect": {"rows": [["30"]]}}
+    ]},
+    {"name": "nested-blocks-with-let-and-assignment", "steps": [
+      {"sql": "CREATE TABLE results (value INTEGER)"},
+      {"sql": "DECLARE i INTEGER := 1;\nBEGIN\n    DECLARE j INTEGER := 2;\n    BEGIN\n        LET k INTEGER := 3;\n        i := i + j + k;\n        INSERT INTO results VALUES (:i);\n    END;\nEND;"},
+      {"sql": "SELECT * FROM results", "expect": {"rows": [["6"]]}}
+    ]},
+    {"name": "multiple-assignments", "steps": [
+      {"sql": "CREATE TABLE results (id INTEGER, value INTEGER)"},
+      {"sql": "DECLARE\n    x INTEGER := 5;\n    y INTEGER := 10;\nBEGIN\n    x := x + 1;\n    y := y * 2;\n    INSERT INTO results VALUES (:x, :y);\nEND;"},
+      {"sql": "SELECT * FROM results", "expect": {"rows": [["6", "20"]]}}
+    ]},
+    {"name": "let-shadows-outer-variable-in-nested-scope", "steps": [
+      {"sql": "CREATE TABLE results (value INTEGER)"},
+      {"sql": "DECLARE x INTEGER := 1;\nBEGIN\n    INSERT INTO results VALUES (:x);\n    BEGIN\n        LET x INTEGER := 100;\n        INSERT INTO results VALUES (:x);\n    END;\nEND;"},
+      {"sql": "SELECT * FROM results ORDER BY value", "expect": {"rows": [["1"], ["100"]], "ordered": true}}
+    ]},
+    {"name": "mixed-declare-let-and-assignments", "steps": [
+      {"sql": "CREATE TABLE results (value INTEGER)"},
+      {"sql": "DECLARE a INTEGER := 1;\nBEGIN\n    DECLARE b INTEGER := 2;\n    BEGIN\n        LET c INTEGER := 3;\n        a := a + b;\n        b := b + c;\n        c := a + b + c;\n        INSERT INTO results VALUES (:c);\n    END;\nEND;"},
+      {"sql": "SELECT * FROM results", "expect": {"rows": [["11"]]}}
+    ]},
+    {"name": "complex-expression-in-assignment", "steps": [
+      {"sql": "CREATE TABLE results (value INTEGER)"},
+      {"sql": "DECLARE\n    x INTEGER := 10;\n    y INTEGER := 5;\nBEGIN\n    LET result INTEGER := 0;\n    result := (x + y) * 2 - 10;\n    INSERT INTO results VALUES (:result);\nEND;"},
+      {"sql": "SELECT * FROM results", "expect": {"rows": [["20"]]}}
+    ]},
+    {"name": "uninitialized-declare-then-assign", "steps": [
+      {"sql": "CREATE TABLE results (value INTEGER)"},
+      {"sql": "DECLARE x INTEGER;\nBEGIN\n    x := 10;\n    INSERT INTO results VALUES (:x);\nEND;"},
+      {"sql": "SELECT * FROM results", "expect": {"rows": [["10"]]}}
+    ]},
+    {"name": "declare-with-default-keyword", "steps": [
+      {"sql": "CREATE TABLE results (value INTEGER)"},
+      {"sql": "DECLARE x INTEGER DEFAULT 20;\nBEGIN\n    INSERT INTO results VALUES (:x);\nEND;"},
+      {"sql": "SELECT * FROM results", "expect": {"rows": [["20"]]}}
+    ]}
+  ]
+}

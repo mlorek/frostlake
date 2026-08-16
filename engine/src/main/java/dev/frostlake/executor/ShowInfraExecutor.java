@@ -27,12 +27,11 @@ import dev.frostlake.metastore.model.WarehouseState;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
-import dev.frostlake.types.DateTimeType;
 import dev.frostlake.types.NumericType;
 import dev.frostlake.types.StringType;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
-import java.time.LocalDateTime;
+import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -77,9 +76,9 @@ final class ShowInfraExecutor {
             new ResultSetColumn("provisioning", StringType.VARCHAR),
             new ResultSetColumn("quiescing", StringType.VARCHAR),
             new ResultSetColumn("other", StringType.VARCHAR),
-            new ResultSetColumn("created_on", DateTimeType.TIMESTAMP_LTZ),
-            new ResultSetColumn("resumed_on", DateTimeType.TIMESTAMP_LTZ),
-            new ResultSetColumn("updated_on", DateTimeType.TIMESTAMP_LTZ),
+            new ResultSetColumn("created_on", ShowResultHelpers.CREATED_ON),
+            new ResultSetColumn("resumed_on", ShowResultHelpers.CREATED_ON),
+            new ResultSetColumn("updated_on", ShowResultHelpers.CREATED_ON),
             new ResultSetColumn("owner", StringType.VARCHAR),
             new ResultSetColumn("comment", StringType.VARCHAR),
             new ResultSetColumn("enable_query_acceleration", StringType.VARCHAR),
@@ -102,8 +101,8 @@ final class ShowInfraExecutor {
         final String currentWarehouse = catalog.getCurrentWarehouse();
         final List<Row> rows = new ArrayList<>();
         for (final Warehouse wh : catalog.getAllWarehouses()) {
-            final LocalDateTime created = ShowResultHelpers.createdOn(wh.getCreatedAt());
-            final LocalDateTime lastChange = wh.getLastStateChange() != null
+            final OffsetDateTime created = ShowResultHelpers.createdOn(wh.getCreatedAt());
+            final OffsetDateTime lastChange = wh.getLastStateChange() != null
                 ? ShowResultHelpers.createdOn(wh.getLastStateChange()) : created;
             final boolean running = wh.getState() == WarehouseState.STARTED;
             rows.add(new Row(Arrays.asList(
@@ -197,7 +196,7 @@ final class ShowInfraExecutor {
 
     private List<ResultSetColumn> stageColumns() {
         return Arrays.asList(
-            new ResultSetColumn("created_on", DateTimeType.TIMESTAMP_LTZ),
+            new ResultSetColumn("created_on", ShowResultHelpers.CREATED_ON),
             new ResultSetColumn("name", StringType.VARCHAR),
             new ResultSetColumn("database_name", StringType.VARCHAR),
             new ResultSetColumn("schema_name", StringType.VARCHAR),
@@ -242,9 +241,9 @@ final class ShowInfraExecutor {
             new ResultSetColumn("active_nodes", NumericType.NUMBER),
             new ResultSetColumn("idle_nodes", NumericType.NUMBER),
             new ResultSetColumn("target_nodes", NumericType.NUMBER),
-            new ResultSetColumn("created_on", DateTimeType.TIMESTAMP_LTZ),
-            new ResultSetColumn("resumed_on", DateTimeType.TIMESTAMP_LTZ),
-            new ResultSetColumn("updated_on", DateTimeType.TIMESTAMP_LTZ),
+            new ResultSetColumn("created_on", ShowResultHelpers.CREATED_ON),
+            new ResultSetColumn("resumed_on", ShowResultHelpers.CREATED_ON),
+            new ResultSetColumn("updated_on", ShowResultHelpers.CREATED_ON),
             new ResultSetColumn("owner", StringType.VARCHAR),
             new ResultSetColumn("comment", StringType.VARCHAR),
             new ResultSetColumn("is_exclusive", StringType.VARCHAR),
@@ -278,9 +277,9 @@ final class ShowInfraExecutor {
             new ResultSetColumn("active_nodes", NumericType.NUMBER),
             new ResultSetColumn("idle_nodes", NumericType.NUMBER),
             new ResultSetColumn("target_nodes", NumericType.NUMBER),
-            new ResultSetColumn("created_on", DateTimeType.TIMESTAMP_LTZ),
-            new ResultSetColumn("resumed_on", DateTimeType.TIMESTAMP_LTZ),
-            new ResultSetColumn("updated_on", DateTimeType.TIMESTAMP_LTZ),
+            new ResultSetColumn("created_on", ShowResultHelpers.CREATED_ON),
+            new ResultSetColumn("resumed_on", ShowResultHelpers.CREATED_ON),
+            new ResultSetColumn("updated_on", ShowResultHelpers.CREATED_ON),
             new ResultSetColumn("owner", StringType.VARCHAR),
             new ResultSetColumn("comment", StringType.VARCHAR),
             new ResultSetColumn("is_exclusive", StringType.VARCHAR),
@@ -376,7 +375,7 @@ final class ShowInfraExecutor {
 
     public ResultSet describeWarehouse(final String warehouseName) {
         final List<ResultSetColumn> columns = Arrays.asList(
-            new ResultSetColumn("created_on", DateTimeType.TIMESTAMP_LTZ),
+            new ResultSetColumn("created_on", ShowResultHelpers.CREATED_ON),
             new ResultSetColumn("name", StringType.VARCHAR),
             new ResultSetColumn("kind", StringType.VARCHAR)
         );

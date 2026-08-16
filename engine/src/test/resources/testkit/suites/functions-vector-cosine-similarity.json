@@ -1,0 +1,38 @@
+{
+  "suite": "functions-vector-cosine-similarity",
+  "description": "VECTOR_COSINE_SIMILARITY - every expectation measured on a real Snowflake account. A vector against itself is exactly 1.0, not 0.9999999999999999, and the [1,2,3]/[4,5,6] pair is 0.9746318461970762. INT operands do not change the answer: the VECTOR(INT,3) pair returns the identical double. The distinguishing property of the family is that float32 ELEMENTS feed float64 ARITHMETIC - over [0.1,0.2,0.3] and [0.4,0.5,0.6] the account returns 0.9746318467275483, the value obtained by widening the float32 elements and accumulating in float64, where the exact-decimal answer would be 0.9746318461970762. A zero-magnitude operand is NaN rather than an error: the divide by zero is not guarded. A TYPED NULL operand gives SQL NULL, while a dimension mismatch, mixed element types, a plain ARRAY and an untyped NULL are all compile errors naming both argument types - and because the check is COMPILE-time it fires over an empty table too. Converted 1:1 from functions/vector/VectorCosineSimilarityTest (now retired). The Java's assertFloat64 compared Java doubles; each converted case pins the full rendered double AND asserts equality against the literal in SQL, so neither a display truncation nor a widened comparison can hide a wrong answer. NaN is read through TO_VARCHAR, and the Java's assertRejected, which only asserted that something threw, becomes the exact live message.",
+  "tags": ["functions", "vector", "converted"],
+  "tests": [
+    {"name": "the-similarity-of-known-vectors", "steps": [
+      {"sql": "SELECT VECTOR_COSINE_SIMILARITY([1,2,3]::VECTOR(FLOAT,3), [1,2,3]::VECTOR(FLOAT,3))", "expect": {"value": "1.0"}},
+      {"sql": "SELECT VECTOR_COSINE_SIMILARITY([1,2,3]::VECTOR(FLOAT,3), [4,5,6]::VECTOR(FLOAT,3))", "expect": {"value": "0.9746318461970762"}},
+      {"sql": "SELECT VECTOR_COSINE_SIMILARITY([1,2,3]::VECTOR(FLOAT,3), [4,5,6]::VECTOR(FLOAT,3)) = 0.9746318461970762", "expect": {"value": "true"}}
+    ]},
+    {"name": "int-vectors-give-the-same-float-result", "steps": [
+      {"sql": "SELECT VECTOR_COSINE_SIMILARITY([1,2,3]::VECTOR(INT,3), [4,5,6]::VECTOR(INT,3))", "expect": {"value": "0.9746318461970762"}},
+      {"sql": "SELECT VECTOR_COSINE_SIMILARITY([1,2,3]::VECTOR(INT,3), [4,5,6]::VECTOR(INT,3)) = VECTOR_COSINE_SIMILARITY([1,2,3]::VECTOR(FLOAT,3), [4,5,6]::VECTOR(FLOAT,3))", "expect": {"value": "true"}},
+      {"sql": "SELECT VECTOR_COSINE_SIMILARITY([3,4,0]::VECTOR(INT,3), [3,4,0]::VECTOR(INT,3))", "expect": {"value": "1.0"}}
+    ]},
+    {"name": "float32-elements-feed-float64-arithmetic", "steps": [
+      {"sql": "SELECT VECTOR_COSINE_SIMILARITY([0.1,0.2,0.3]::VECTOR(FLOAT,3), [0.4,0.5,0.6]::VECTOR(FLOAT,3))", "expect": {"value": "0.9746318467275483"}},
+      {"sql": "SELECT VECTOR_COSINE_SIMILARITY([0.1,0.2,0.3]::VECTOR(FLOAT,3), [0.4,0.5,0.6]::VECTOR(FLOAT,3)) = 0.9746318467275483", "expect": {"value": "true"}},
+      {"sql": "SELECT VECTOR_COSINE_SIMILARITY([0.1,0.2,0.3]::VECTOR(FLOAT,3), [0.4,0.5,0.6]::VECTOR(FLOAT,3)) = 0.9746318461970762", "expect": {"value": "false"}}
+    ]},
+    {"name": "a-zero-vector-is-nan-rather-than-an-error", "steps": [
+      {"sql": "SELECT TO_VARCHAR(VECTOR_COSINE_SIMILARITY([0,0,0]::VECTOR(FLOAT,3), [1,2,3]::VECTOR(FLOAT,3)))", "expect": {"value": "NaN"}}
+    ]},
+    {"name": "a-typed-null-yields-sql-null", "steps": [
+      {"sql": "SELECT VECTOR_COSINE_SIMILARITY(NULL::VECTOR(FLOAT,3), [1,2,3]::VECTOR(FLOAT,3))", "expect": {"rows": [[null]]}}
+    ]},
+    {"name": "mismatched-or-non-vector-arguments-are-rejected", "steps": [
+      {"sql": "SELECT VECTOR_COSINE_SIMILARITY([1,2]::VECTOR(FLOAT,2), [1,2,3]::VECTOR(FLOAT,3))", "expect": {"error": {"messageContains": "Invalid argument types for function 'VECTOR_COSINE_SIMILARITY': (VECTOR(FLOAT, 2), VECTOR(FLOAT, 3))"}}},
+      {"sql": "SELECT VECTOR_COSINE_SIMILARITY([1,2,3]::VECTOR(FLOAT,3), [1,2,3]::VECTOR(INT,3))", "expect": {"error": {"messageContains": "Invalid argument types for function 'VECTOR_COSINE_SIMILARITY': (VECTOR(FLOAT, 3), VECTOR(INT, 3))"}}},
+      {"sql": "SELECT VECTOR_COSINE_SIMILARITY([1,2,3], [1,2,3]::VECTOR(FLOAT,3))", "expect": {"error": {"messageContains": "Invalid argument types for function 'VECTOR_COSINE_SIMILARITY': (ARRAY, VECTOR(FLOAT, 3))"}}},
+      {"sql": "SELECT VECTOR_COSINE_SIMILARITY([1,2,3]::VECTOR(FLOAT,3), NULL)", "expect": {"error": {"messageContains": "Invalid argument types for function 'VECTOR_COSINE_SIMILARITY': (VECTOR(FLOAT, 3), NULL)"}}}
+    ]},
+    {"name": "argument-types-are-checked-over-zero-rows", "steps": [
+      {"sql": "CREATE TABLE cos_empty (v VECTOR(FLOAT,3))"},
+      {"sql": "SELECT VECTOR_COSINE_SIMILARITY(v, [1,2]::VECTOR(FLOAT,2)) FROM cos_empty", "expect": {"error": {"messageContains": "Invalid argument types for function 'VECTOR_COSINE_SIMILARITY': (VECTOR(FLOAT, 3), VECTOR(FLOAT, 2))"}}}
+    ]}
+  ]
+}

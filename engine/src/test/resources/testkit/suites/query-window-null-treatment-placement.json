@@ -1,0 +1,33 @@
+{
+  "suite": "query-window-null-treatment-placement",
+  "description": "Null-treatment PLACEMENT for the window value functions. IGNORE NULLS / RESPECT NULLS may sit INSIDE the argument parens - FIRST_VALUE(x IGNORE NULLS) OVER ... - as well as between the call and OVER, which is the position that already worked. NTH_VALUE additionally takes FROM FIRST / FROM LAST, counting from the partition END. Their window specification REQUIRES an ORDER BY, which Snowflake rejects it without, and the default frame is the WHOLE partition - which is why even the FIRST row sees every value and IGNORE NULLS can reach past the leading NULL to answer 'b'. The last test is the parser guard that goes with FROM LAST: a real table NAMED first must not be eaten by the FROM FIRST modifier. Converted 1:1 from query/WindowNullTreatmentPlacementTest (now retired).",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "null-treatment-inside-the-argument-parens", "steps": [
+      {"sql": "CREATE TABLE w (id INTEGER, grp INTEGER, v VARCHAR)"},
+      {"sql": "INSERT INTO w VALUES (1, 1, NULL), (2, 1, 'b'), (3, 1, 'c')"},
+      {"sql": "SELECT FIRST_VALUE(v IGNORE NULLS) OVER (PARTITION BY grp ORDER BY id) FROM w LIMIT 1", "expect": {"value": "b"}},
+      {"sql": "SELECT FIRST_VALUE(v RESPECT NULLS) OVER (PARTITION BY grp ORDER BY id) FROM w LIMIT 1", "expect": {"rows": [[null]]}},
+      {"sql": "SELECT FIRST_VALUE(v) IGNORE NULLS OVER (PARTITION BY grp ORDER BY id) FROM w LIMIT 1", "expect": {"value": "b"}}
+    ]},
+    {"name": "nth-value-from-last-counts-backwards", "steps": [
+      {"sql": "CREATE TABLE w (id INTEGER, grp INTEGER, v VARCHAR)"},
+      {"sql": "INSERT INTO w VALUES (1, 1, NULL), (2, 1, 'b'), (3, 1, 'c')"},
+      {"sql": "SELECT NTH_VALUE(v, 2) FROM LAST RESPECT NULLS OVER (PARTITION BY grp ORDER BY id) FROM w LIMIT 1", "expect": {"value": "b"}},
+      {"sql": "SELECT NTH_VALUE(v, 2) FROM LAST IGNORE NULLS OVER (PARTITION BY grp ORDER BY id) FROM w LIMIT 1", "expect": {"value": "b"}},
+      {"sql": "SELECT NTH_VALUE(v, 2) FROM FIRST IGNORE NULLS OVER (PARTITION BY grp ORDER BY id) FROM w LIMIT 1", "expect": {"value": "c"}},
+      {"sql": "SELECT NTH_VALUE(v, 2) OVER (PARTITION BY grp ORDER BY id) FROM w LIMIT 1", "expect": {"value": "b"}}
+    ]},
+    {"name": "value-window-functions-require-an-order-by", "steps": [
+      {"sql": "CREATE TABLE w (id INTEGER, grp INTEGER, v VARCHAR)"},
+      {"sql": "INSERT INTO w VALUES (1, 1, NULL), (2, 1, 'b'), (3, 1, 'c')"},
+      {"sql": "SELECT FIRST_VALUE(v) OVER (PARTITION BY grp) FROM w",
+       "expect": {"error": {"messageContains": "requires ORDER BY in window specification"}}}
+    ]},
+    {"name": "a-table-named-first-is-still-a-plain-from-source", "steps": [
+      {"sql": "CREATE TABLE first (n INTEGER)"},
+      {"sql": "INSERT INTO first VALUES (7)"},
+      {"sql": "SELECT MAX(n) FROM first", "expect": {"value": 7}}
+    ]}
+  ]
+}

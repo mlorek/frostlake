@@ -21,6 +21,13 @@ import dev.frostlake.types.NumericType;
 
 import java.util.List;
 
+/**
+ * ZEROIFNULL refuses more DECLARED families than its numeric-argument neighbours: a SQL BOOLEAN,
+ * every temporal flavour and a BINARY are each a compile-time argument-type error — positioned at
+ * the call, the family named with its parameters ((BOOLEAN), (DATE), (TIME(9)), (TIMESTAMP_NTZ(9)),
+ * (BINARY(67108864))) — while NUMBER, FLOAT, VARCHAR and VARIANT convert, a VARIANT even when it
+ * holds the same boolean that is refused declared (all live-verified).
+ */
 public class ZeroIfNull extends NumericArgumentFunction {
     public ZeroIfNull() { super("ZEROIFNULL", NumericType.NUMBER); }
 

@@ -16,8 +16,13 @@
 
 package dev.frostlake.executor.commands;
 
+import dev.frostlake.executor.ConditionalDdlOutcome;
 import dev.frostlake.executor.QueryExecutor;
+import dev.frostlake.executor.SqlCompilationError;
+import dev.frostlake.executor.TransientRetentionLimit;
 import dev.frostlake.metastore.Catalog;
+import dev.frostlake.metastore.NoCurrentDatabaseRefusal;
+import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.model.ContainerType;
 import dev.frostlake.metastore.model.Database;
 import dev.frostlake.metastore.model.Privilege;
@@ -68,8 +73,7 @@ public class CreateNamespaceHandler implements CommandHandler {
     private void releaseSchemaStorage(final String databaseName, final Schema schema) {
         final StorageEngine storage = queryExecutor.getStorageEngine();
         for (final Table table : schema.getTables()) {
-            final String fqn = databaseName.toUpperCase() + "." + schema.getName().toUpperCase()
-                + "." + table.getName().toUpperCase();
+            final String fqn = QualifiedName.key(databaseName, schema.getName(), table.getName());
             if (storage.hasTable(fqn)) {
                 storage.dropTable(fqn);
                 queryExecutor.getTransactionManager().discardBufferedWritesFor(fqn);
@@ -105,6 +109,26 @@ public class CreateNamespaceHandler implements CommandHandler {
             }
 
             final Database db = catalog.getDatabase(dbName);
+            if (ctx.DATA_RETENTION_TIME_IN_DAYS() != null && ctx.INTEGER_LITERAL() != null) {
+                final String written = (ctx.MINUS() != null ? "-" : "")
+                    + ctx.INTEGER_LITERAL().getText();
+                if (written.startsWith("-")) {
+                    throw new RuntimeException(SqlCompilationError.invalidValueForParameter(
+                        written, "DATA_RETENTION_TIME_IN_DAYS"));
+                }
+                TransientRetentionLimit.requireWithinAccountLimit(written);
+                TransientRetentionLimit.requireWithinTransientLimit(
+                    ctx.TRANSIENT() != null, written);
+                db.setDataRetentionTimeInDays(Integer.valueOf(written));
+            }
+            if (ctx.TRANSIENT() != null) {
+                db.setTransientObject(true);
+                // PUBLIC is created with the database, so it exists before the modifier is read and
+                // has to be marked here. Live reports it TRANSIENT like every other schema inside.
+                for (final Schema inherited : db.getAllSchemas()) {
+                    inherited.setTransientObject(true);
+                }
+            }
             final String comment = ddl.extractCommentFromList(ctx.commentClause());
             if (comment != null) db.setComment(comment);
             // Snowflake activates a newly created database: it becomes the session's current
@@ -118,8 +142,11 @@ public class CreateNamespaceHandler implements CommandHandler {
     }
 
     public Object handleCreateSchema(final FrostlakeParser.CreateStatementContext ctx, final boolean ifNotExists) {
+        rejectUnsupportedSchemaModifier(ctx);
         final String schemaName = getText(ctx.qualifiedName(0));
-        final String[] parts = qualifiedNameParts(ctx.qualifiedName(0));
+        // A schema name has at most two parts (db..s counts three): live refuses a longer one with its
+        // generic sentence, IF NOT EXISTS or not, and reads a leading locator of this account.
+        final String[] parts = catalog.withoutAccount(qualifiedNameParts(ctx.qualifiedName(0)), 2);
         // A schema is contained by a database; creating one needs CREATE SCHEMA on that database.
         final String containerDb = parts.length == 2 ? parts[0] : catalog.getCurrentDatabase();
         if (containerDb != null) {
@@ -142,6 +169,21 @@ public class CreateNamespaceHandler implements CommandHandler {
             } catch (final RuntimeException ignored) {}
         }
         try {
+            final String containerName = parts.length == 2 ? parts[0] : catalog.getCurrentDatabase();
+            // A SCHEMA answers existence FIRST: over an existing schema, IF NOT EXISTS succeeds before any
+            // option is judged (an invalid retention over an existing schema is "already exists" on the
+            // account).
+            if (ifNotExists && ctx.or_replace() == null && ctx.CLONE() == null && containerName != null
+                    && catalog.getDatabase(containerName).hasSchema(parts.length == 2 ? parts[1] : parts[0])) {
+                ConditionalDdlOutcome.createSkipped();
+                return null;
+            }
+            final Database container = containerName == null ? null : catalog.getDatabase(containerName);
+            final boolean transientSchema = ctx.TRANSIENT() != null
+                || (container != null && container.isTransientObject());
+            // Over a NEW name the options are judged before anything is made, so a refused CREATE leaves no
+            // schema behind.
+            final Integer retention = requestedRetention(ctx, transientSchema);
             final Schema schema;
 
             if (ctx.CLONE() != null) {
@@ -155,7 +197,7 @@ public class CreateNamespaceHandler implements CommandHandler {
 
                 if (parts.length == 1) {
                     if (catalog.getCurrentDatabase() == null) {
-                        throw new RuntimeException("No database selected");
+                        throw NoCurrentDatabaseRefusal.forStatement();
                     }
                     final Database db = catalog.getDatabase(catalog.getCurrentDatabase());
 
@@ -196,7 +238,7 @@ public class CreateNamespaceHandler implements CommandHandler {
             } else {
                 if (parts.length == 1) {
                     if (catalog.getCurrentDatabase() == null) {
-                        throw new RuntimeException("No database selected");
+                        throw NoCurrentDatabaseRefusal.forStatement();
                     }
                     schema = new Schema(parts[0]);
                     catalog.getDatabase(catalog.getCurrentDatabase()).addSchema(schema);
@@ -211,6 +253,10 @@ public class CreateNamespaceHandler implements CommandHandler {
                 logger.trace("Created schema: {}", schemaName);
             }
 
+            schema.setTransientObject(transientSchema);
+            if (retention != null) {
+                schema.setDataRetentionTimeInDays(retention);
+            }
             final String comment = ddl.extractCommentFromList(ctx.commentClause());
             if (comment != null) {
                 schema.setComment(comment);
@@ -229,4 +275,46 @@ public class CreateNamespaceHandler implements CommandHandler {
         return null;
     }
 
+    /**
+     * The retention a CREATE SCHEMA asks for, judged up front: a negative value, one past the account's
+     * limit, or one a transient schema cannot keep is refused. Null when the clause is absent.
+     */
+    private static Integer requestedRetention(final FrostlakeParser.CreateStatementContext ctx,
+            final boolean transientSchema) {
+        if (ctx.DATA_RETENTION_TIME_IN_DAYS() == null || ctx.INTEGER_LITERAL() == null) {
+            return null;
+        }
+        final String written = (ctx.MINUS() != null ? "-" : "") + ctx.INTEGER_LITERAL().getText();
+        if (written.startsWith("-")) {
+            throw new RuntimeException(SqlCompilationError.invalidValueForParameter(
+                written, "DATA_RETENTION_TIME_IN_DAYS"));
+        }
+        TransientRetentionLimit.requireWithinAccountLimit(written);
+        TransientRetentionLimit.requireWithinTransientLimit(transientSchema, written);
+        return Integer.valueOf(written);
+    }
+
+    /**
+     * TEMPORARY, TEMP and VOLATILE PARSE before SCHEMA and are then refused — live's own shape.
+     *
+     * <p>The distinction matters because the two outcomes are told apart by their wording: a spelling
+     * the grammar does not know dies as a syntax error naming the token that could not follow, while
+     * these three produce a sentence that QUOTES THE PAIR — proof the words were read and the feature,
+     * not the syntax, is what is missing. It carries no compilation prefix, unlike almost every other
+     * refusal. LOCAL and GLOBAL sit on the far side of that line: they are syntax errors here, so the
+     * grammar deliberately does not accept them before SCHEMA.
+     */
+    private void rejectUnsupportedSchemaModifier(final FrostlakeParser.CreateStatementContext ctx) {
+        final String word;
+        if (ctx.TEMPORARY() != null) {
+            word = "TEMPORARY";
+        } else if (ctx.TEMP() != null) {
+            word = "TEMP";
+        } else if (ctx.VOLATILE() != null) {
+            word = "VOLATILE";
+        } else {
+            return;
+        }
+        throw new RuntimeException("Unsupported feature '" + word + " SCHEMA'.");
+    }
 }

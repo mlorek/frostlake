@@ -16,6 +16,7 @@
 
 package dev.frostlake.functions.aggregate;
 
+import dev.frostlake.executor.ValueComparisons;
 import dev.frostlake.functions.AggregateFunction;
 
 /** Accumulator for {@link Min}. */
@@ -26,7 +27,7 @@ public class MinAccumulator implements AggregateFunction.Accumulator {
     @SuppressWarnings("unchecked")
     public void accumulate(final Object value) {
         if (value != null && value instanceof Comparable) {
-            if (min == null || ((Comparable) value).compareTo(min) < 0) {
+            if (min == null || ValueComparisons.compareForExtreme(value, min) < 0) {
                 min = (Comparable) value;
             }
         }
@@ -42,7 +43,7 @@ public class MinAccumulator implements AggregateFunction.Accumulator {
     @SuppressWarnings("unchecked")
     public void merge(final AggregateFunction.Accumulator other) {
         final Comparable otherMin = ((MinAccumulator) other).min;
-        if (otherMin != null && (min == null || otherMin.compareTo(min) < 0)) {
+        if (otherMin != null && (min == null || ValueComparisons.compareForExtreme(otherMin, min) < 0)) {
             min = otherMin;
         }
     }

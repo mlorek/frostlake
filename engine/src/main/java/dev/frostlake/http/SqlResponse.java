@@ -30,6 +30,10 @@ public class SqlResponse {
     private String errorMessage;
     private List<ResultSetData> resultSets;
     private long executionTimeMs;
+    // True when the server had to start the session this request ran in: no sessionId was sent, or the
+    // one sent named no live session (idle-expired, released, or from before a restart). The context a
+    // client set up earlier — USE, variables, ALTER SESSION — is then gone.
+    private boolean newSession;
 
     public SqlResponse() {
         this.resultSets = new ArrayList<>();
@@ -102,6 +106,14 @@ public class SqlResponse {
 
     public void setExecutionTimeMs(final long executionTimeMs) {
         this.executionTimeMs = executionTimeMs;
+    }
+
+    public boolean isNewSession() {
+        return newSession;
+    }
+
+    public void setNewSession(final boolean newSession) {
+        this.newSession = newSession;
     }
 
 }

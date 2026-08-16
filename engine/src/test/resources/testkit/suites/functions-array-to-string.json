@@ -1,0 +1,42 @@
+{
+  "suite": "functions-array-to-string",
+  "description": "ARRAY_TO_STRING semantics, aligned with Snowflake: a NULL array or a NULL separator returns NULL (so it falls through COALESCE), and an empty array joins to the empty string. The two array nulls behave differently, both live-verified. An undefined element - what a SQL NULL becomes inside ARRAY_CONSTRUCT - is ABSENT, so it joins as an empty segment and keeps its separators. A JSON null is a VALUE of type NULL_VALUE with no string cast, so it fails the whole call with \"Failed to cast variant value from array to string\", independent of the null's position and of the separator. Only TOP-LEVEL elements are cast: a null nested inside an object or an inner array rides along in that element's JSON text and joins fine. Converted 1:1 from functions/ArrayToStringTest (now retired).",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "elements-join-with-the-separator", "steps": [
+      {"sql": "SELECT ARRAY_TO_STRING(ARRAY_CONSTRUCT('a', 'b'), ',')", "expect": {"value": "a,b"}},
+      {"sql": "SELECT '<' || ARRAY_TO_STRING(ARRAY_CONSTRUCT(), ',') || '>'", "expect": {"value": "<>"}}
+    ]},
+    {"name": "a-null-separator-returns-null", "steps": [
+      {"sql": "SELECT ARRAY_TO_STRING(ARRAY_CONSTRUCT('a', 'b'), NULL)", "expect": {"rows": [[null]]}},
+      {"sql": "SELECT ARRAY_TO_STRING(ARRAY_CONSTRUCT(), NULL)", "expect": {"rows": [[null]]}}
+    ]},
+    {"name": "a-null-array-returns-null", "steps": [
+      {"sql": "SELECT ARRAY_TO_STRING(NULL, ',')", "expect": {"rows": [[null]]}}
+    ]},
+    {"name": "a-null-separator-falls-through-coalesce", "steps": [
+      {"sql": "SELECT COALESCE(ARRAY_TO_STRING(ARRAY_CONSTRUCT(), NULL), 'fallback')",
+       "expect": {"value": "fallback"}}
+    ]},
+    {"name": "undefined-elements-become-empty-segments", "steps": [
+      {"sql": "SELECT ARRAY_TO_STRING(ARRAY_CONSTRUCT('a', NULL, 'b'), ',')", "expect": {"value": "a,,b"}},
+      {"sql": "SELECT ARRAY_TO_STRING(ARRAY_CONSTRUCT(TRUE, 1, -1.2), ',')", "expect": {"value": "true,1,-1.2"}},
+      {"sql": "SELECT '<' || ARRAY_TO_STRING(ARRAY_CONSTRUCT(NULL), ',') || '>'", "expect": {"value": "<>"}}
+    ]},
+    {"name": "a-json-null-element-fails-the-cast", "steps": [
+      {"sql": "SELECT ARRAY_TO_STRING(PARSE_JSON('[1,null,2]'), '|')",
+       "expect": {"error": {"messageContains": "Failed to cast variant value from array to string"}}},
+      {"sql": "SELECT ARRAY_TO_STRING(PARSE_JSON('[null]'), '|')",
+       "expect": {"error": {"messageContains": "Failed to cast variant value from array to string"}}},
+      {"sql": "SELECT ARRAY_TO_STRING(PARSE_JSON('[null,1]'), '|')",
+       "expect": {"error": {"messageContains": "Failed to cast variant value from array to string"}}},
+      {"sql": "SELECT ARRAY_TO_STRING(PARSE_JSON('[1,null]'), '')",
+       "expect": {"error": {"messageContains": "Failed to cast variant value from array to string"}}}
+    ]},
+    {"name": "a-null-nested-inside-an-element-still-joins", "steps": [
+      {"sql": "SELECT ARRAY_TO_STRING(PARSE_JSON('[{\"a\":null}]'), '|')", "expect": {"value": "{\"a\":null}"}},
+      {"sql": "SELECT ARRAY_TO_STRING(PARSE_JSON('[[null]]'), '|')", "expect": {"value": "[null]"}},
+      {"sql": "SELECT ARRAY_TO_STRING(PARSE_JSON('[{\"a\":1},[2]]'), '|')", "expect": {"value": "{\"a\":1}|[2]"}}
+    ]}
+  ]
+}

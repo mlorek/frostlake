@@ -1,0 +1,25 @@
+{
+  "suite": "features-begin-transaction-syntax",
+  "description": "BEGIN / BEGIN TRANSACTION spelling variants (case, semicolons, whitespace, newlines, repetition) all parse and open a transaction. Converted 1:1 from features/BeginTransactionSyntaxTest.java (now retired); each test ends with ROLLBACK so the shared session never leaks an open transaction.",
+  "tags": ["features", "converted"],
+  "tests": [
+    {"name": "begin-syntax", "steps": [{"sql": "BEGIN"}, {"sql": "ROLLBACK"}]},
+    {"name": "begin-transaction-syntax", "steps": [{"sql": "BEGIN TRANSACTION"}, {"sql": "ROLLBACK"}]},
+    {"name": "begin-with-semicolon", "steps": [{"sql": "BEGIN;"}, {"sql": "ROLLBACK"}]},
+    {"name": "begin-transaction-with-semicolon", "steps": [{"sql": "BEGIN TRANSACTION;"}, {"sql": "ROLLBACK"}]},
+    {"name": "multiple-begin-statements", "steps": [
+      {"sql": "BEGIN"}, {"sql": "BEGIN TRANSACTION"}, {"sql": "BEGIN;"}, {"sql": "BEGIN TRANSACTION;"}, {"sql": "ROLLBACK"}
+    ]},
+    {"name": "begin-upper-case", "steps": [{"sql": "BEGIN"}, {"sql": "ROLLBACK"}]},
+    {"name": "begin-transaction-upper-case", "steps": [{"sql": "BEGIN TRANSACTION"}, {"sql": "ROLLBACK"}]},
+    {"name": "begin-lower-case", "steps": [{"sql": "begin"}, {"sql": "ROLLBACK"}]},
+    {"name": "begin-transaction-lower-case", "steps": [{"sql": "begin transaction"}, {"sql": "ROLLBACK"}]},
+    {"name": "begin-mixed-case", "steps": [{"sql": "Begin"}, {"sql": "ROLLBACK"}]},
+    {"name": "begin-transaction-mixed-case", "steps": [{"sql": "Begin Transaction"}, {"sql": "ROLLBACK"}]},
+    {"name": "begin-with-whitespace", "steps": [{"sql": "  BEGIN  "}, {"sql": "ROLLBACK"}]},
+    {"name": "begin-transaction-with-whitespace", "steps": [{"sql": "  BEGIN   TRANSACTION  "}, {"sql": "ROLLBACK"}]},
+    {"name": "begin-sequential-calls", "steps": [{"sql": "BEGIN"}, {"sql": "BEGIN TRANSACTION"}, {"sql": "ROLLBACK"}]},
+    {"name": "begin-with-newlines", "steps": [{"sql": "\nBEGIN\n"}, {"sql": "ROLLBACK"}]},
+    {"name": "begin-transaction-with-newlines", "steps": [{"sql": "\nBEGIN TRANSACTION\n"}, {"sql": "ROLLBACK"}]}
+  ]
+}

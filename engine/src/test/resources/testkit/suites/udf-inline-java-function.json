@@ -1,0 +1,55 @@
+{
+  "suite": "udf-inline-java-function",
+  "description": "CREATE FUNCTION ... LANGUAGE JAVA with the handler class written INLINE between dollar quotes, then called from SQL. Pinned across the shapes a scalar Java UDF is used in: no arguments, a STRING argument, an INTEGER argument, several arguments at once, a BOOLEAN return driving a WHERE clause, a two-argument call in a SELECT list over a table, a handler with real control flow (an iterative factorial), a handler returning null so the SQL value is NULL, two independent functions selected side by side, and a Java UDF nested inside a built-in (UPPER). Converted 1:1 from udf/InlineJavaFunctionTest (now retired), a JDBC test whose statements are all plain SQL.",
+  "tags": ["udf", "converted"],
+  "tests": [
+    {"name": "an-inline-java-function-with-no-arguments", "steps": [
+      {"sql": "CREATE OR REPLACE FUNCTION jfn()\nRETURNS STRING\nLANGUAGE JAVA\nHANDLER = 'JavaFn.fn'\nAS $$\nclass JavaFn{\n  public static String fn(){\n    return \"hello\";\n  }\n}\n$$"},
+      {"sql": "SELECT jfn()", "expect": {"value": "hello"}}
+    ]},
+    {"name": "a-java-function-with-a-string-parameter", "steps": [
+      {"sql": "CREATE OR REPLACE FUNCTION greet(name STRING)\nRETURNS STRING\nLANGUAGE JAVA\nHANDLER = 'Greeter.greet'\nAS $$\nclass Greeter {\n  public static String greet(String name) {\n    return \"Hello, \" + name;\n  }\n}\n$$"},
+      {"sql": "SELECT greet('World')", "expect": {"value": "Hello, World"}}
+    ]},
+    {"name": "a-java-function-with-an-integer-parameter", "steps": [
+      {"sql": "CREATE OR REPLACE FUNCTION double_value(x INTEGER)\nRETURNS INTEGER\nLANGUAGE JAVA\nHANDLER = 'Math.doubleValue'\nAS $$\nclass Math {\n  public static int doubleValue(int x) {\n    return x * 2;\n  }\n}\n$$"},
+      {"sql": "SELECT double_value(5)", "expect": {"value": 10}}
+    ]},
+    {"name": "a-java-function-with-multiple-parameters", "steps": [
+      {"sql": "CREATE OR REPLACE FUNCTION add_numbers(a INTEGER, b INTEGER)\nRETURNS INTEGER\nLANGUAGE JAVA\nHANDLER = 'Calculator.add'\nAS $$\nclass Calculator {\n  public static int add(int a, int b) {\n    return a + b;\n  }\n}\n$$"},
+      {"sql": "SELECT add_numbers(10, 20)", "expect": {"value": 30}}
+    ]},
+    {"name": "a-java-function-in-a-where-clause", "steps": [
+      {"sql": "CREATE OR REPLACE FUNCTION is_even(n INTEGER)\nRETURNS BOOLEAN\nLANGUAGE JAVA\nHANDLER = 'NumberUtils.isEven'\nAS $$\nclass NumberUtils {\n  public static boolean isEven(int n) {\n    return n % 2 == 0;\n  }\n}\n$$"},
+      {"sql": "CREATE TABLE numbers (id INTEGER, value INTEGER)"},
+      {"sql": "INSERT INTO numbers VALUES (1, 10)"},
+      {"sql": "INSERT INTO numbers VALUES (2, 15)"},
+      {"sql": "INSERT INTO numbers VALUES (3, 20)"},
+      {"sql": "SELECT id, value FROM numbers WHERE is_even(value) ORDER BY id", "expect": {"rows": [[1, 10], [3, 20]], "ordered": true}}
+    ]},
+    {"name": "a-java-function-in-a-select-list", "steps": [
+      {"sql": "CREATE OR REPLACE FUNCTION format_name(firstname STRING, lastname STRING)\nRETURNS STRING\nLANGUAGE JAVA\nHANDLER = 'Formatter.formatName'\nAS $$\nclass Formatter {\n  public static String formatName(String firstname, String lastname) {\n    return lastname + \", \" + firstname;\n  }\n}\n$$"},
+      {"sql": "CREATE TABLE people (first_name STRING, last_name STRING)"},
+      {"sql": "INSERT INTO people VALUES ('John', 'Doe')"},
+      {"sql": "INSERT INTO people VALUES ('Jane', 'Smith')"},
+      {"sql": "SELECT format_name(first_name, last_name) AS formatted FROM people ORDER BY last_name", "expect": {"rows": [["Doe, John"], ["Smith, Jane"]], "ordered": true}}
+    ]},
+    {"name": "a-java-function-with-real-control-flow", "steps": [
+      {"sql": "CREATE OR REPLACE FUNCTION factorial(n INTEGER)\nRETURNS INTEGER\nLANGUAGE JAVA\nHANDLER = 'MathUtils.factorial'\nAS $$\nclass MathUtils {\n  public static int factorial(int n) {\n    if (n <= 1) {\n      return 1;\n    }\n    int result = 1;\n    for (int i = 2; i <= n; i++) {\n      result *= i;\n    }\n    return result;\n  }\n}\n$$"},
+      {"sql": "SELECT factorial(5)", "expect": {"value": 120}}
+    ]},
+    {"name": "a-java-function-returning-null", "steps": [
+      {"sql": "CREATE OR REPLACE FUNCTION get_nullable()\nRETURNS STRING\nLANGUAGE JAVA\nHANDLER = 'NullHandler.getNullable'\nAS $$\nclass NullHandler {\n  public static String getNullable() {\n    return null;\n  }\n}\n$$"},
+      {"sql": "SELECT get_nullable()", "expect": {"value": null}}
+    ]},
+    {"name": "two-java-functions-side-by-side", "steps": [
+      {"sql": "CREATE OR REPLACE FUNCTION func1()\nRETURNS STRING\nLANGUAGE JAVA\nHANDLER = 'Class1.method1'\nAS $$\nclass Class1 {\n  public static String method1() {\n    return \"function1\";\n  }\n}\n$$"},
+      {"sql": "CREATE OR REPLACE FUNCTION func2()\nRETURNS STRING\nLANGUAGE JAVA\nHANDLER = 'Class2.method2'\nAS $$\nclass Class2 {\n  public static String method2() {\n    return \"function2\";\n  }\n}\n$$"},
+      {"sql": "SELECT func1(), func2()", "expect": {"rows": [["function1", "function2"]]}}
+    ]},
+    {"name": "a-java-function-nested-inside-a-built-in", "steps": [
+      {"sql": "CREATE OR REPLACE FUNCTION add_prefix(text STRING)\nRETURNS STRING\nLANGUAGE JAVA\nHANDLER = 'StringUtils.addPrefix'\nAS $$\nclass StringUtils {\n  public static String addPrefix(String text) {\n    return \"PREFIX_\" + text;\n  }\n}\n$$"},
+      {"sql": "SELECT UPPER(add_prefix('test'))", "expect": {"value": "PREFIX_TEST"}}
+    ]}
+  ]
+}

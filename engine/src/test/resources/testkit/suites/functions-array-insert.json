@@ -1,0 +1,19 @@
+{
+  "suite": "functions-array-insert",
+  "description": "ARRAY_INSERT(array, pos, element) - a 0-based insert that shifts later elements right, appends when pos equals the array size, counts from the end for a negative pos (-1 inserts before the last element), and answers NULL for a NULL array. Converted 1:1 from functions/ArrayInsertTest (now retired); the array cells are read through TO_JSON so the assertion is on the array's JSON text rather than on a transport's own rendering of an ARRAY cell.",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "it-inserts-at-the-index", "steps": [
+      {"sql": "SELECT TO_JSON(ARRAY_INSERT(ARRAY_CONSTRUCT(0, 1, 2, 3), 2, 9))", "expect": {"value": "[0,1,9,2,3]"}}
+    ]},
+    {"name": "it-appends-when-pos-equals-the-size", "steps": [
+      {"sql": "SELECT TO_JSON(ARRAY_INSERT(ARRAY_CONSTRUCT(1, 2, 3), 3, 9))", "expect": {"value": "[1,2,3,9]"}}
+    ]},
+    {"name": "a-negative-pos-counts-from-the-end", "steps": [
+      {"sql": "SELECT TO_JSON(ARRAY_INSERT(ARRAY_CONSTRUCT(0, 1, 2, 3), -1, 9))", "expect": {"value": "[0,1,2,9,3]"}}
+    ]},
+    {"name": "a-null-array-is-null", "steps": [
+      {"sql": "SELECT ARRAY_INSERT(NULL, 0, 9)", "expect": {"rows": [[null]]}}
+    ]}
+  ]
+}

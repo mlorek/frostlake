@@ -1,0 +1,91 @@
+{
+  "suite": "expressions-ilike",
+  "description": "ILIKE case-insensitive matching: wildcards, underscore, NOT ILIKE, NULL handling, LIKE contrast. Converted 1:1 from expressions/IlikeTest.java (now retired).",
+  "tags": ["expressions", "converted"],
+  "tests": [
+    {
+      "name": "basic-ilike",
+      "steps": [
+        {"sql": "CREATE TABLE products (id INTEGER, name VARCHAR)"},
+        {"sql": "INSERT INTO products VALUES (1, 'Apple')"},
+        {"sql": "INSERT INTO products VALUES (2, 'BANANA')"},
+        {"sql": "INSERT INTO products VALUES (3, 'cherry')"},
+        {"sql": "INSERT INTO products VALUES (4, 'Grape')"},
+        {"sql": "SELECT name FROM products WHERE name ILIKE 'apple' ORDER BY id", "expect": {"rows": [["Apple"]], "ordered": true}}
+      ]
+    },
+    {
+      "name": "ilike-with-wildcards",
+      "steps": [
+        {"sql": "CREATE TABLE items (id INTEGER, description VARCHAR)"},
+        {"sql": "INSERT INTO items VALUES (1, 'Red Apple')"},
+        {"sql": "INSERT INTO items VALUES (2, 'GREEN BANANA')"},
+        {"sql": "INSERT INTO items VALUES (3, 'yellow lemon')"},
+        {"sql": "INSERT INTO items VALUES (4, 'Blue Grape')"},
+        {"sql": "SELECT description FROM items WHERE description ILIKE '%apple%' ORDER BY id", "expect": {"rows": [["Red Apple"]], "ordered": true}},
+        {"sql": "SELECT description FROM items WHERE description ILIKE 'green%' ORDER BY id", "expect": {"rows": [["GREEN BANANA"]], "ordered": true}}
+      ]
+    },
+    {
+      "name": "ilike-with-underscore",
+      "steps": [
+        {"sql": "CREATE TABLE codes (id INTEGER, code VARCHAR)"},
+        {"sql": "INSERT INTO codes VALUES (1, 'A123')"},
+        {"sql": "INSERT INTO codes VALUES (2, 'a456')"},
+        {"sql": "INSERT INTO codes VALUES (3, 'B789')"},
+        {"sql": "SELECT code FROM codes WHERE code ILIKE 'a___' ORDER BY id", "expect": {"rows": [["A123"], ["a456"]], "ordered": true}}
+      ]
+    },
+    {
+      "name": "ilike-vs-like",
+      "steps": [
+        {"sql": "CREATE TABLE words (id INTEGER, word VARCHAR)"},
+        {"sql": "INSERT INTO words VALUES (1, 'Hello')"},
+        {"sql": "INSERT INTO words VALUES (2, 'HELLO')"},
+        {"sql": "INSERT INTO words VALUES (3, 'hello')"},
+        {"sql": "SELECT COUNT(*) FROM words WHERE word LIKE 'Hello'", "expect": {"value": "1"}},
+        {"sql": "SELECT COUNT(*) FROM words WHERE word ILIKE 'Hello'", "expect": {"value": "3"}}
+      ]
+    },
+    {
+      "name": "not-ilike",
+      "steps": [
+        {"sql": "CREATE TABLE status_table (id INTEGER, status VARCHAR)"},
+        {"sql": "INSERT INTO status_table VALUES (1, 'Active')"},
+        {"sql": "INSERT INTO status_table VALUES (2, 'INACTIVE')"},
+        {"sql": "INSERT INTO status_table VALUES (3, 'Pending')"},
+        {"sql": "SELECT status FROM status_table WHERE status NOT ILIKE 'active' ORDER BY id", "expect": {"rows": [["INACTIVE"], ["Pending"]], "ordered": true}}
+      ]
+    },
+    {
+      "name": "ilike-with-null-values",
+      "steps": [
+        {"sql": "CREATE TABLE nullable_data (id INTEGER, value VARCHAR)"},
+        {"sql": "INSERT INTO nullable_data VALUES (1, 'Test')"},
+        {"sql": "INSERT INTO nullable_data VALUES (2, NULL)"},
+        {"sql": "INSERT INTO nullable_data VALUES (3, 'DATA')"},
+        {"sql": "SELECT id FROM nullable_data WHERE value ILIKE '%test%' ORDER BY id", "expect": {"rows": [["1"]], "ordered": true}}
+      ]
+    },
+    {
+      "name": "ilike-complex-pattern",
+      "steps": [
+        {"sql": "CREATE TABLE emails (id INTEGER, email VARCHAR)"},
+        {"sql": "INSERT INTO emails VALUES (1, 'user@EXAMPLE.com')"},
+        {"sql": "INSERT INTO emails VALUES (2, 'admin@TEST.ORG')"},
+        {"sql": "INSERT INTO emails VALUES (3, 'info@example.com')"},
+        {"sql": "SELECT email FROM emails WHERE email ILIKE '%@example.com' ORDER BY id", "expect": {"rows": [["user@EXAMPLE.com"], ["info@example.com"]], "ordered": true}}
+      ]
+    },
+    {
+      "name": "ilike-in-where-clause",
+      "steps": [
+        {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, department VARCHAR)"},
+        {"sql": "INSERT INTO employees VALUES (1, 'John DOE', 'Engineering')"},
+        {"sql": "INSERT INTO employees VALUES (2, 'Jane Smith', 'ENGINEERING')"},
+        {"sql": "INSERT INTO employees VALUES (3, 'Bob Wilson', 'Sales')"},
+        {"sql": "SELECT name FROM employees WHERE name ILIKE '%doe%' OR department ILIKE 'engineering' ORDER BY id", "expect": {"rows": [["John DOE"], ["Jane Smith"]], "ordered": true}}
+      ]
+    }
+  ]
+}

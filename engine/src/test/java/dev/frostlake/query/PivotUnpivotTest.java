@@ -193,7 +193,7 @@ public class PivotUnpivotTest extends BaseDatabaseTest {
 
         // Pivot: transform quarters into columns
         final ResultSet result = engine.executeQuery(
-            "SELECT * FROM sales PIVOT (SUM(amount) FOR quarter IN ('Q1', 'Q2', 'Q3'))"
+            "SELECT * FROM sales PIVOT (SUM(amount) FOR quarter IN ('Q1', 'Q2', 'Q3')) ORDER BY 1"
         );
 
         // Should have 2 rows (products A and B)
@@ -233,7 +233,7 @@ public class PivotUnpivotTest extends BaseDatabaseTest {
             """);
 
         final ResultSet result = engine.executeQuery(
-            "SELECT * FROM orders PIVOT (COUNT(order_id) FOR status IN ('pending', 'complete'))"
+            "SELECT * FROM orders PIVOT (COUNT(order_id) FOR status IN ('pending', 'complete')) ORDER BY 1"
         );
 
         assertEquals(2, result.getRowCount());
@@ -257,7 +257,7 @@ public class PivotUnpivotTest extends BaseDatabaseTest {
         engine.execute("INSERT INTO revenue VALUES ('West', 'Jan', 900), ('West', 'Feb', 1100)");
 
         final ResultSet result = engine.executeQuery(
-            "SELECT * FROM revenue PIVOT (SUM(sales) FOR month IN ('Jan' AS January, 'Feb' AS February))"
+            "SELECT * FROM revenue PIVOT (SUM(sales) FOR month IN ('Jan' AS January, 'Feb' AS February)) ORDER BY 1"
         );
 
         assertEquals(2, result.getRowCount());
@@ -302,7 +302,7 @@ public class PivotUnpivotTest extends BaseDatabaseTest {
 
         // Unpivot: transform quarter columns into rows
         final ResultSet result = engine.executeQuery(
-            "SELECT * FROM quarterly_sales UNPIVOT (amount FOR quarter IN (Q1, Q2, Q3))"
+            "SELECT * FROM quarterly_sales UNPIVOT (amount FOR quarter IN (Q1, Q2, Q3)) ORDER BY 1"
         );
 
         // Should have 6 rows (2 products × 3 quarters)
@@ -348,7 +348,7 @@ public class PivotUnpivotTest extends BaseDatabaseTest {
         engine.execute("INSERT INTO data VALUES ('West', 'Gadget', 200, 220)");
 
         final ResultSet result = engine.executeQuery(
-            "SELECT * FROM data UNPIVOT (sales FOR month IN (jan, feb))"
+            "SELECT * FROM data UNPIVOT (sales FOR month IN (jan, feb)) ORDER BY 1"
         );
 
         // Should have 4 rows (2 regions × 2 months)
@@ -383,7 +383,7 @@ public class PivotUnpivotTest extends BaseDatabaseTest {
         // Pivot then unpivot should give us back similar structure
         engine.execute("CREATE TABLE pivoted (product VARCHAR, Q1 INTEGER, Q2 INTEGER)");
         final ResultSet pivotResult = engine.executeQuery(
-            "SELECT * FROM original PIVOT (SUM(amount) FOR quarter IN ('Q1', 'Q2'))"
+            "SELECT * FROM original PIVOT (SUM(amount) FOR quarter IN ('Q1', 'Q2')) ORDER BY 1"
         );
 
         // Insert pivoted data
@@ -396,7 +396,7 @@ public class PivotUnpivotTest extends BaseDatabaseTest {
 
         // Now unpivot
         final ResultSet unpivotResult = engine.executeQuery(
-            "SELECT * FROM pivoted UNPIVOT (amount FOR quarter IN (Q1, Q2))"
+            "SELECT * FROM pivoted UNPIVOT (amount FOR quarter IN (Q1, Q2)) ORDER BY 1"
         );
 
         // Should have 4 rows again

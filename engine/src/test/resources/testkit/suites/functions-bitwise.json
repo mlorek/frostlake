@@ -1,0 +1,30 @@
+{
+  "suite": "functions-bitwise",
+  "description": "The bitwise scalar family - BITAND, BITOR, BITXOR, BITNOT, BITSHIFTLEFT, BITSHIFTRIGHT - covering the core values, negatives in two's complement (BITNOT(0) is -1 and BITAND(-4, 7) is 4), NULL propagating through every form, nested calls composing, and use over columns inside aggregation. Converted 1:1 from functions/BitwiseFunctionsTest (now retired).",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "the-core-values", "steps": [
+      {"sql": "SELECT BITAND(12, 10), BITOR(12, 10), BITXOR(12, 10), BITSHIFTLEFT(1, 4), BITSHIFTRIGHT(16, 2)",
+       "expect": {"rows": [["8", "14", "6", "16", "4"]]}}
+    ]},
+    {"name": "twos-complement-negatives", "steps": [
+      {"sql": "SELECT BITNOT(0), BITNOT(5), BITAND(-4, 7), BITSHIFTLEFT(-1, 1)",
+       "expect": {"rows": [["-1", "-6", "4", "-2"]]}}
+    ]},
+    {"name": "null-propagates-through-every-form", "steps": [
+      {"sql": "SELECT BITAND(NULL, 7)", "expect": {"rows": [[null]]}},
+      {"sql": "SELECT BITNOT(NULL)", "expect": {"rows": [[null]]}},
+      {"sql": "SELECT BITSHIFTLEFT(NULL, 2)", "expect": {"rows": [[null]]}}
+    ]},
+    {"name": "nested-calls-compose", "steps": [
+      {"sql": "SELECT BITAND(BITOR(4, 1), BITXOR(7, 2))", "expect": {"value": "5"}},
+      {"sql": "SELECT BITNOT(BITSHIFTLEFT(BITAND(BITOR(4, 1), BITXOR(7, 2)), 1))", "expect": {"value": "-11"}}
+    ]},
+    {"name": "over-columns-inside-aggregation", "steps": [
+      {"sql": "CREATE TABLE bits (n INTEGER)"},
+      {"sql": "INSERT INTO bits VALUES (1), (2), (3), (4), (5)"},
+      {"sql": "SELECT SUM(BITAND(n, 1)) FROM bits", "expect": {"value": "3"}},
+      {"sql": "SELECT SUM(BITSHIFTLEFT(1, n)) FROM bits", "expect": {"value": "62"}}
+    ]}
+  ]
+}

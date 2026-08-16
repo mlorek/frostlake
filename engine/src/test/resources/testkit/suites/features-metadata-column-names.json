@@ -1,0 +1,59 @@
+{
+  "suite": "features-metadata-column-names",
+  "description": "Metadata output uses plenty of names that are also keywords, and callers read those listings back through TABLE(RESULT_SCAN(LAST_QUERY_ID())) by selecting columns by name - so each name has to survive in that position. Every keyword-shaped metadata column name a real account accepts unquoted is usable as an identifier; INCREMENT and ROWS stay RESERVED as they are live (bare refused, quoted works); SHOW listings name their columns in lower case so the read-back takes quoted spellings; and INFORMATION_SCHEMA names its columns upper case so the bare form reaches them. Converted 1:1 from features/MetadataColumnNamesTest (now retired).",
+  "tags": ["features", "converted"],
+  "tests": [
+    {"name": "keyword-shaped-column-names-are-usable-as-identifiers", "steps": [
+      {"sql": "SELECT ALLOWED_VALUES FROM (SELECT 1 AS ALLOWED_VALUES)", "expect": {"value": "1"}},
+      {"sql": "SELECT AUTOINCREMENT FROM (SELECT 1 AS AUTOINCREMENT)", "expect": {"value": "1"}},
+      {"sql": "SELECT AUTO_RESUME FROM (SELECT 1 AS AUTO_RESUME)", "expect": {"value": "1"}},
+      {"sql": "SELECT AUTO_SUSPEND FROM (SELECT 1 AS AUTO_SUSPEND)", "expect": {"value": "1"}},
+      {"sql": "SELECT COMPRESSION FROM (SELECT 1 AS COMPRESSION)", "expect": {"value": "1"}},
+      {"sql": "SELECT DATE_FORMAT FROM (SELECT 1 AS DATE_FORMAT)", "expect": {"value": "1"}},
+      {"sql": "SELECT DEFAULT_ROLE FROM (SELECT 1 AS DEFAULT_ROLE)", "expect": {"value": "1"}},
+      {"sql": "SELECT ERROR_INTEGRATION FROM (SELECT 1 AS ERROR_INTEGRATION)", "expect": {"value": "1"}},
+      {"sql": "SELECT ESCAPE FROM (SELECT 1 AS ESCAPE)", "expect": {"value": "1"}},
+      {"sql": "SELECT FIELD_DELIMITER FROM (SELECT 1 AS FIELD_DELIMITER)", "expect": {"value": "1"}},
+      {"sql": "SELECT HANDLER FROM (SELECT 1 AS HANDLER)", "expect": {"value": "1"}},
+      {"sql": "SELECT INTEGRATION FROM (SELECT 1 AS INTEGRATION)", "expect": {"value": "1"}},
+      {"sql": "SELECT INTERVAL FROM (SELECT 1 AS INTERVAL)", "expect": {"value": "1"}},
+      {"sql": "SELECT LANGUAGE FROM (SELECT 1 AS LANGUAGE)", "expect": {"value": "1"}},
+      {"sql": "SELECT MAX_CLUSTER_COUNT FROM (SELECT 1 AS MAX_CLUSTER_COUNT)", "expect": {"value": "1"}},
+      {"sql": "SELECT MIN_CLUSTER_COUNT FROM (SELECT 1 AS MIN_CLUSTER_COUNT)", "expect": {"value": "1"}},
+      {"sql": "SELECT RECORD_DELIMITER FROM (SELECT 1 AS RECORD_DELIMITER)", "expect": {"value": "1"}},
+      {"sql": "SELECT RELY FROM (SELECT 1 AS RELY)", "expect": {"value": "1"}},
+      {"sql": "SELECT RESOURCE_MONITOR FROM (SELECT 1 AS RESOURCE_MONITOR)", "expect": {"value": "1"}},
+      {"sql": "SELECT RUNTIME_VERSION FROM (SELECT 1 AS RUNTIME_VERSION)", "expect": {"value": "1"}},
+      {"sql": "SELECT SCHEDULE FROM (SELECT 1 AS SCHEDULE)", "expect": {"value": "1"}},
+      {"sql": "SELECT SKIP_HEADER FROM (SELECT 1 AS SKIP_HEADER)", "expect": {"value": "1"}},
+      {"sql": "SELECT WAREHOUSE FROM (SELECT 1 AS WAREHOUSE)", "expect": {"value": "1"}}
+    ]},
+    {"name": "names-live-reserves-stay-reserved", "steps": [
+      {"sql": "SELECT INCREMENT FROM (SELECT 1 AS \"INCREMENT\")", "expect": {"error": {}}},
+      {"sql": "SELECT \"INCREMENT\" FROM (SELECT 1 AS \"INCREMENT\")", "expect": {"value": "1"}},
+      {"sql": "SELECT ROWS FROM (SELECT 1 AS \"ROWS\")", "expect": {"error": {}}},
+      {"sql": "SELECT \"ROWS\" FROM (SELECT 1 AS \"ROWS\")", "expect": {"value": "1"}}
+    ]},
+    {"name": "show-columns-are-selectable-by-name-through-result-scan", "steps": [
+      {"sql": "CREATE WAREHOUSE name_probe_wh WAREHOUSE_SIZE = XSMALL"},
+      {"sql": "SHOW WAREHOUSES LIKE 'NAME_PROBE_WH'"},
+      {"sql": "SELECT \"auto_suspend\", \"auto_resume\", \"min_cluster_count\", \"max_cluster_count\", \"resource_monitor\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rowCount": 1}},
+      {"sql": "CREATE TABLE sched_sink (k INTEGER)"},
+      {"sql": "CREATE TASK name_probe_task WAREHOUSE = name_probe_wh SCHEDULE = '60 MINUTE' AS INSERT INTO sched_sink VALUES (1)"},
+      {"sql": "SHOW TASKS LIKE 'NAME_PROBE_TASK'"},
+      {"sql": "SELECT \"schedule\", \"warehouse\", \"error_integration\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rowCount": 1}},
+      {"sql": "SHOW TASKS LIKE 'NAME_PROBE_TASK'"},
+      {"sql": "SELECT \"schedule\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "60 MINUTE"}},
+      {"sql": "DROP TASK IF EXISTS name_probe_task"},
+      {"sql": "DROP WAREHOUSE IF EXISTS name_probe_wh"}
+    ]},
+    {"name": "information-schema-columns-are-selectable-by-name", "steps": [
+      {"sql": "CREATE FUNCTION name_probe_fn(x INTEGER) RETURNS INTEGER AS $$ SELECT x $$"},
+      {"sql": "SELECT handler, runtime_version FROM INFORMATION_SCHEMA.FUNCTIONS"},
+      {"sql": "SELECT rely FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS"},
+      {"sql": "SELECT \"INCREMENT\" FROM INFORMATION_SCHEMA.SEQUENCES"}
+    ]}
+  ]
+}

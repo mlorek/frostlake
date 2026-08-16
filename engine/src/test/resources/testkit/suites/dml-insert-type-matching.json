@@ -1,0 +1,59 @@
+{
+  "suite": "dml-insert-type-matching",
+  "description": "Snowflake's compile-time INSERT ... SELECT type matching, live-verified: an incompatible source type is refused before any row is written - even under WHERE FALSE - as Expression type does not match column data type, expecting <target> but got <source> for column <name> with both types parameterized; containers never cross families; TIME into TIMESTAMP has its own incompatible-types sentence; while VARCHAR still reaches numbers/temporals at row time and other implicit conversions stay untouched. Converted 1:1 from dml/InsertTypeMatchingTest (now retired).",
+  "tags": ["dml", "converted"],
+  "tests": [
+    {"name": "varchar-literal-refused-into-variant", "steps": [
+      {"sql": "CREATE TABLE t_var (c VARIANT)"},
+      {"sql": "INSERT INTO t_var SELECT 'abc'",
+       "expect": {"error": {"messageContains": "Expression type does not match column data type, expecting VARIANT but got VARCHAR(3) for column C"}}}
+    ]},
+    {"name": "refusal-fires-before-any-row-exists", "steps": [
+      {"sql": "CREATE TABLE t_var (c VARIANT)"},
+      {"sql": "INSERT INTO t_var SELECT 'abc' WHERE FALSE",
+       "expect": {"error": {"messageContains": "expecting VARIANT but got VARCHAR(3) for column C"}}}
+    ]},
+    {"name": "number-literal-refused-into-date", "steps": [
+      {"sql": "CREATE TABLE t_dt (c DATE)"},
+      {"sql": "INSERT INTO t_dt SELECT 42",
+       "expect": {"error": {"messageContains": "expecting DATE but got NUMBER(2,0) for column C"}}}
+    ]},
+    {"name": "boolean-refused-into-number", "steps": [
+      {"sql": "CREATE TABLE t_num (c NUMBER(10,2))"},
+      {"sql": "INSERT INTO t_num SELECT TRUE",
+       "expect": {"error": {"messageContains": "expecting NUMBER(10,2) but got BOOLEAN for column C"}}}
+    ]},
+    {"name": "date-refused-into-number", "steps": [
+      {"sql": "CREATE TABLE t_num (c NUMBER(10,2))"},
+      {"sql": "INSERT INTO t_num SELECT CURRENT_DATE()",
+       "expect": {"error": {"messageContains": "expecting NUMBER(10,2) but got DATE for column C"}}}
+    ]},
+    {"name": "containers-never-cross-families", "steps": [
+      {"sql": "CREATE TABLE t_arr (c ARRAY)"},
+      {"sql": "CREATE TABLE t_obj (c OBJECT)"},
+      {"sql": "INSERT INTO t_obj SELECT ARRAY_CONSTRUCT(1)",
+       "expect": {"error": {"messageContains": "expecting OBJECT but got ARRAY for column C"}}},
+      {"sql": "INSERT INTO t_arr SELECT OBJECT_CONSTRUCT('a', 1)",
+       "expect": {"error": {"messageContains": "expecting ARRAY but got OBJECT for column C"}}}
+    ]},
+    {"name": "time-into-timestamp-has-its-own-sentence", "steps": [
+      {"sql": "CREATE TABLE t_ts (c TIMESTAMP_NTZ)"},
+      {"sql": "INSERT INTO t_ts SELECT TO_TIME('12:00:00')",
+       "expect": {"error": {"messageContains": "incompatible types: [TIME(9)] and [TIMESTAMP_NTZ(9)]"}}}
+    ]},
+    {"name": "implicit-conversions-still-reach-row-time", "steps": [
+      {"sql": "CREATE TABLE t_num (c NUMBER(10,2))"},
+      {"sql": "CREATE TABLE t_vc (c VARCHAR(10))"},
+      {"sql": "CREATE TABLE t_dt (c DATE)"},
+      {"sql": "CREATE TABLE t_ts (c TIMESTAMP_NTZ)"},
+      {"sql": "CREATE TABLE t_var (c VARIANT)"},
+      {"sql": "INSERT INTO t_num SELECT '42'"},
+      {"sql": "INSERT INTO t_var SELECT 42"},
+      {"sql": "INSERT INTO t_vc SELECT 42"},
+      {"sql": "INSERT INTO t_ts SELECT CURRENT_DATE()"},
+      {"sql": "INSERT INTO t_dt SELECT TO_TIMESTAMP_NTZ('2020-01-01 00:00:00')"},
+      {"sql": "INSERT INTO t_vc SELECT PARSE_JSON('\"s\"')"},
+      {"sql": "SELECT COUNT(*) FROM t_num", "expect": {"value": "1"}}
+    ]}
+  ]
+}

@@ -1,0 +1,33 @@
+{
+  "suite": "dml-variant-column-write",
+  "description": "VARIANT column writes: cast strings vs PARSE_JSON equivalence, extracted-path storage, VARIANT-into-VARCHAR unquoting. Converted 1:1 from dml/VariantColumnWriteTest.java (now retired).",
+  "tags": ["dml", "converted"],
+  "tests": [
+    {
+      "name": "cast-string-compares-equal-to-parsed-one",
+      "steps": [
+        {"sql": "CREATE TABLE vw2 (v VARIANT)"},
+        {"sql": "INSERT INTO vw2 SELECT 'abc123'::VARIANT"},
+        {"sql": "INSERT INTO vw2 SELECT PARSE_JSON('\"abc123\"')"},
+        {"sql": "SELECT COUNT(DISTINCT v) FROM vw2", "expect": {"value": "1"}},
+        {"sql": "SELECT v::VARCHAR FROM vw2 LIMIT 1", "expect": {"value": "abc123"}}
+      ]
+    },
+    {
+      "name": "extracted-path-value-stores-as-variant-string",
+      "steps": [
+        {"sql": "CREATE TABLE vw3 (v VARIANT)"},
+        {"sql": "INSERT INTO vw3 SELECT PARSE_JSON('{\"id\": \"prov-1\"}'):id::VARIANT"},
+        {"sql": "SELECT COUNT(*) FROM vw3 WHERE v = PARSE_JSON('\"prov-1\"')", "expect": {"value": "1"}}
+      ]
+    },
+    {
+      "name": "variant-string-into-varchar-unquotes",
+      "steps": [
+        {"sql": "CREATE TABLE vw4 (s VARCHAR)"},
+        {"sql": "INSERT INTO vw4 SELECT PARSE_JSON('{\"n\": \"Theodore\"}'):n::VARIANT"},
+        {"sql": "SELECT s FROM vw4", "expect": {"value": "Theodore"}}
+      ]
+    }
+  ]
+}

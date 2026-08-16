@@ -26,7 +26,7 @@ import java.io.Serializable;
  * Runtime value of the SQL semi-structured family (VARIANT / OBJECT / ARRAY): canonical JSON text
  * plus a lazily parsed tree.
  *
- * <p>Equality, ordering, hashing and {@link #toString()} are all over the canonical text — the
+ * <p>Equality, ordering and hashing are all over the canonical text — the
  * engine has always compared semi-structured values by their canonical JSON text (GROUP BY,
  * DISTINCT, joins, set operators), and this class preserves exactly those semantics while letting
  * strictly-typed callers (TYPEOF, GET, TO_JSON) know the value really is semi-structured rather
@@ -41,6 +41,7 @@ public final class VariantValue implements Comparable<VariantValue>, Serializabl
 
     private final String text;
     private transient JsonNode node;
+    private transient String comparisonKey;
 
     private VariantValue(final String text) {
         this.text = text;
@@ -53,7 +54,7 @@ public final class VariantValue implements Comparable<VariantValue>, Serializabl
 
     /** Wraps a parsed tree, rendering its (compact) JSON text once. */
     public static VariantValue ofNode(final JsonNode node) {
-        final VariantValue v = new VariantValue(node.toString());
+        final VariantValue v = new VariantValue(VariantText.canonical(node));
         v.node = node;
         return v;
     }
@@ -94,9 +95,33 @@ public final class VariantValue implements Comparable<VariantValue>, Serializabl
         if (XmlVariants.mightBeXmlText(text) && XmlVariants.isXmlElement(node())) {
             return XmlVariants.compactXml(node());
         }
-        // Everything else displays at the session's JSON_INDENT. Equality, ordering and hashing all
-        // stay on the canonical compact text, which is what text() returns.
-        return VariantJsonFormat.render(node(), text);
+        // A variant holding a STRING displays its CONTENT when read as a whole value — live prints
+        // cdefg, not "cdefg", and LENGTH counts 5 — while a container member keeps its JSON quotes.
+        // The display is genuinely ambiguous with a value that LOOKS structural and live accepts
+        // that: TYPEOF and variant comparison separate them, never the rendering. Comparisons,
+        // hashing and every JSON-consuming subsystem read text(), which keeps the quoted canonical.
+        if (node().isTextual()) {
+            return node().asText();
+        }
+        // Everything else displays at the session's JSON_INDENT, a DOUBLE inside a container in the
+        // account's fifteen-decimal form. A whole-value number keeps its own spelling here, the same
+        // reading a whole-value string gets above; the client surfaces (the driver's getString and the
+        // HTTP wire) spell it the account's way themselves. Equality, ordering and hashing all stay on
+        // the canonical compact text, which is what text() returns.
+        final JsonNode tree = node();
+        final String displayed = tree.isArray() || tree.isObject() ? VariantJsonText.displayTextOf(this) : null;
+        return VariantJsonFormat.render(tree, displayed != null ? displayed : text);
+    }
+
+    /**
+     * The key two variants share exactly when they compare equal — numbers by value whatever their
+     * notation, objects whatever their key order — see {@link VariantOrder#comparisonKey}.
+     */
+    public String comparisonKey() {
+        if (comparisonKey == null) {
+            comparisonKey = VariantOrder.comparisonKey(node());
+        }
+        return comparisonKey;
     }
 
     @Override
@@ -107,16 +132,18 @@ public final class VariantValue implements Comparable<VariantValue>, Serializabl
         if (!(other instanceof VariantValue)) {
             return false;
         }
-        return text.equals(((VariantValue) other).text);
+        final VariantValue that = (VariantValue) other;
+        return text.equals(that.text) || comparisonKey().equals(that.comparisonKey());
     }
 
     @Override
     public int hashCode() {
-        return text.hashCode();
+        return comparisonKey().hashCode();
     }
 
+    /** The account's VARIANT order — by kind, then within the kind; see {@link VariantOrder}. */
     @Override
     public int compareTo(final VariantValue other) {
-        return text.compareTo(other.text);
+        return VariantOrder.compare(node(), other.node());
     }
 }

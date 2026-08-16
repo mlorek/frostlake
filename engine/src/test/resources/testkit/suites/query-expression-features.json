@@ -1,0 +1,116 @@
+{
+  "suite": "query-expression-features",
+  "description": "IS [NOT] NULL, LIKE/ILIKE (+wildcards, NOT, ESCAPE), || concatenation (incl. NULL propagation), NOT operator, combined predicates. Converted 1:1 from query/ExpressionFeaturesTest.java (now retired).",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "is-null", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, email VARCHAR, salary INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'John Doe', 'john@example.com', 50000), (2, 'Jane Smith', NULL, 60000), (3, 'Bob Wilson', 'bob@test.org', NULL), (4, 'Alice Brown', NULL, NULL)"},
+      {"sql": "SELECT name FROM employees WHERE email IS NULL", "expect": {"rows": [["Jane Smith"], ["Alice Brown"]]}}
+    ]},
+    {"name": "is-not-null", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, email VARCHAR, salary INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'John Doe', 'john@example.com', 50000), (2, 'Jane Smith', NULL, 60000), (3, 'Bob Wilson', 'bob@test.org', NULL), (4, 'Alice Brown', NULL, NULL)"},
+      {"sql": "SELECT name FROM employees WHERE email IS NOT NULL", "expect": {"rows": [["John Doe"], ["Bob Wilson"]]}}
+    ]},
+    {"name": "is-null-in-select", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, email VARCHAR, salary INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'John Doe', 'john@example.com', 50000), (2, 'Jane Smith', NULL, 60000), (3, 'Bob Wilson', 'bob@test.org', NULL), (4, 'Alice Brown', NULL, NULL)"},
+      {"sql": "SELECT name, email IS NULL as has_no_email FROM employees ORDER BY id",
+       "expect": {"rows": [["John Doe", "false"], ["Jane Smith", "true"], ["Bob Wilson", "false"], ["Alice Brown", "true"]], "ordered": true}}
+    ]},
+    {"name": "like-simple-pattern", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, email VARCHAR, salary INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'John Doe', 'john@example.com', 50000), (3, 'Bob Wilson', 'bob@test.org', NULL)"},
+      {"sql": "SELECT name FROM employees WHERE email LIKE '%@example.com'", "expect": {"rows": [["John Doe"]]}}
+    ]},
+    {"name": "like-wildcards", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, email VARCHAR, salary INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'John Doe', 'john@example.com', 50000), (2, 'Jane Smith', NULL, 60000)"},
+      {"sql": "SELECT name FROM employees WHERE name LIKE 'J___ ___'", "expect": {"rows": [["John Doe"]]}}
+    ]},
+    {"name": "like-multiple-wildcards", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, email VARCHAR, salary INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'John Doe', 'john@example.com', 50000), (2, 'Jane Smith', NULL, 60000), (3, 'Bob Wilson', 'bob@test.org', NULL)"},
+      {"sql": "SELECT name FROM employees WHERE email LIKE '%@%'", "expect": {"rowCount": 2}}
+    ]},
+    {"name": "not-like", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, email VARCHAR, salary INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'John Doe', 'john@example.com', 50000), (3, 'Bob Wilson', 'bob@test.org', NULL)"},
+      {"sql": "SELECT name FROM employees WHERE email NOT LIKE '%@example.com' AND email IS NOT NULL", "expect": {"rows": [["Bob Wilson"]]}}
+    ]},
+    {"name": "ilike-case-insensitive", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, email VARCHAR, salary INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'John Doe', 'john@example.com', 50000), (2, 'Jane Smith', NULL, 60000)"},
+      {"sql": "SELECT name FROM employees WHERE name ILIKE 'JOHN%'", "expect": {"rows": [["John Doe"]]}}
+    ]},
+    {"name": "ilike-vs-like", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, email VARCHAR, salary INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (4, 'Alice Brown', NULL, NULL)"},
+      {"sql": "SELECT name FROM employees WHERE name ILIKE 'ALICE%'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT name FROM employees WHERE name LIKE 'ALICE%'", "expect": {"rowCount": 0}}
+    ]},
+    {"name": "not-ilike", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, email VARCHAR, salary INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'John Doe', 'john@example.com', 50000), (2, 'Jane Smith', NULL, 60000), (3, 'Bob Wilson', 'bob@test.org', NULL), (4, 'Alice Brown', NULL, NULL)"},
+      {"sql": "SELECT name FROM employees WHERE name NOT ILIKE 'john%'", "expect": {"rowCount": 3}}
+    ]},
+    {"name": "concatenation-operator", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, email VARCHAR, salary INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'John Doe', 'john@example.com', 50000)"},
+      {"sql": "SELECT name || ' - ' || 'Employee' as full_name FROM employees WHERE id = 1", "expect": {"value": "John Doe - Employee"}}
+    ]},
+    {"name": "concatenation-multiple", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, email VARCHAR, salary INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'John Doe', 'john@example.com', 50000)"},
+      {"sql": "SELECT 'ID: ' || id || ', Name: ' || name as info FROM employees WHERE id = 1", "expect": {"value": "ID: 1, Name: John Doe"}}
+    ]},
+    {"name": "concatenation-with-null", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, email VARCHAR, salary INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (2, 'Jane Smith', NULL, 60000)"},
+      {"sql": "SELECT name || email as concat FROM employees WHERE id = 2", "expect": {"value": null, "rowCount": 1}}
+    ]},
+    {"name": "not-operator", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, email VARCHAR, salary INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'John Doe', 'john@example.com', 50000), (2, 'Jane Smith', NULL, 60000), (3, 'Bob Wilson', 'bob@test.org', NULL), (4, 'Alice Brown', NULL, NULL)"},
+      {"sql": "SELECT name FROM employees WHERE NOT (salary > 55000) ORDER BY id", "expect": {"rows": [["John Doe"]], "ordered": true}}
+    ]},
+    {"name": "not-with-is-null", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, email VARCHAR, salary INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'John Doe', 'john@example.com', 50000), (2, 'Jane Smith', NULL, 60000), (3, 'Bob Wilson', 'bob@test.org', NULL), (4, 'Alice Brown', NULL, NULL)"},
+      {"sql": "SELECT name FROM employees WHERE NOT (email IS NULL)", "expect": {"rowCount": 2}}
+    ]},
+    {"name": "not-with-comparison", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, email VARCHAR, salary INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'John Doe', 'john@example.com', 50000), (2, 'Jane Smith', NULL, 60000), (3, 'Bob Wilson', 'bob@test.org', NULL), (4, 'Alice Brown', NULL, NULL)"},
+      {"sql": "SELECT name FROM employees WHERE NOT id = 1 AND NOT id = 2", "expect": {"rowCount": 2}}
+    ]},
+    {"name": "combined-expressions", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, email VARCHAR, salary INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'John Doe', 'john@example.com', 50000), (3, 'Bob Wilson', 'bob@test.org', NULL)"},
+      {"sql": "SELECT name || ' <' || email || '>' as contact FROM employees WHERE email IS NOT NULL AND email LIKE '%@example.com'",
+       "expect": {"value": "John Doe <john@example.com>"}}
+    ]},
+    {"name": "like-escape-clause", "steps": [
+      {"sql": "CREATE TABLE patterns (id INTEGER, text VARCHAR)"},
+      {"sql": "INSERT INTO patterns VALUES (1, '50% off'), (2, '50 dollars'), (3, '100% guaranteed')"},
+      {"sql": "SELECT text FROM patterns WHERE text LIKE '%\\\\%%' ESCAPE '\\\\'", "expect": {"rowCount": 2}}
+    ]},
+    {"name": "complex-where-clause", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, email VARCHAR, salary INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'John Doe', 'john@example.com', 50000), (2, 'Jane Smith', NULL, 60000), (3, 'Bob Wilson', 'bob@test.org', NULL), (4, 'Alice Brown', NULL, NULL)"},
+      {"sql": "SELECT name FROM employees WHERE (salary IS NULL OR salary > 55000) AND name NOT LIKE '%Doe'", "expect": {"rowCount": 3}}
+    ]},
+    {"name": "is-null-with-and", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, email VARCHAR, salary INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'John Doe', 'john@example.com', 50000), (2, 'Jane Smith', NULL, 60000), (3, 'Bob Wilson', 'bob@test.org', NULL), (4, 'Alice Brown', NULL, NULL)"},
+      {"sql": "SELECT name FROM employees WHERE email IS NULL AND salary IS NULL", "expect": {"rows": [["Alice Brown"]]}}
+    ]},
+    {"name": "like-in-select-expression", "steps": [
+      {"sql": "CREATE TABLE employees (id INTEGER, name VARCHAR, email VARCHAR, salary INTEGER)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'John Doe', 'john@example.com', 50000), (2, 'Jane Smith', NULL, 60000), (3, 'Bob Wilson', 'bob@test.org', NULL), (4, 'Alice Brown', NULL, NULL)"},
+      {"sql": "SELECT name, name LIKE 'J%' as starts_with_j FROM employees ORDER BY id",
+       "expect": {"rows": [["John Doe", "true"], ["Jane Smith", "true"], ["Bob Wilson", "false"], ["Alice Brown", "false"]], "ordered": true}}
+    ]}
+  ]
+}

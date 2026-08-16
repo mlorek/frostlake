@@ -62,6 +62,9 @@ public final class PythonExecutor {
                 bindArgument(parameter, pName.toLowerCase(), arguments.get(i));
             }
 
+            // A FUNCTION body may import snowflake.snowpark exactly like a procedure body; the
+            // shim install is idempotent per thread.
+            PythonProcedureExecutor.installSnowparkShim();
             PythonRuntime.eval(buildCode(function, parameters));
 
             final Object javaResult = PythonRuntime.toJava(PythonRuntime.global("__result"));
@@ -101,6 +104,9 @@ public final class PythonExecutor {
      */
     static void compilePythonFunction(final Function function) {
         try {
+            // The body's module-level snowpark imports must resolve at CREATE exactly as they do at
+            // execution; without the shim the compile refused every function importing snowpark.
+            PythonProcedureExecutor.installSnowparkShim();
             PythonRuntime.eval(dedent(function.getBody()));
         } catch (final Exception e) {
             // Same discipline as execution: a failed eval may hold a Python-level lock, and reusing the

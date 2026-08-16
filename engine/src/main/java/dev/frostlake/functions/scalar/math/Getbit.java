@@ -17,7 +17,7 @@
 package dev.frostlake.functions.scalar.math;
 
 import dev.frostlake.functions.NumericArgumentFunction;
-import dev.frostlake.types.NumericType;
+import dev.frostlake.types.IntegerResultWidths;
 
 import java.math.BigInteger;
 import java.util.List;
@@ -29,7 +29,7 @@ import java.util.List;
  * a negative position is an error. Uses {@link BigInteger#testBit} so positions well past 64 bits are safe.
  */
 public class Getbit extends NumericArgumentFunction {
-    public Getbit() { super("GETBIT", NumericType.INTEGER); }
+    public Getbit() { super("GETBIT", IntegerResultWidths.WIDEST); }
 
     @Override
     public Object evaluate(final List<Object> args) {

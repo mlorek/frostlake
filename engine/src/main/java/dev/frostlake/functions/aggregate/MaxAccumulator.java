@@ -16,6 +16,7 @@
 
 package dev.frostlake.functions.aggregate;
 
+import dev.frostlake.executor.ValueComparisons;
 import dev.frostlake.functions.AggregateFunction;
 
 /** Accumulator for {@link Max}. */
@@ -26,7 +27,7 @@ public class MaxAccumulator implements AggregateFunction.Accumulator {
     @SuppressWarnings("unchecked")
     public void accumulate(final Object value) {
         if (value != null && value instanceof Comparable) {
-            if (max == null || ((Comparable) value).compareTo(max) > 0) {
+            if (max == null || ValueComparisons.compareForExtreme(value, max) > 0) {
                 max = (Comparable) value;
             }
         }
@@ -42,7 +43,7 @@ public class MaxAccumulator implements AggregateFunction.Accumulator {
     @SuppressWarnings("unchecked")
     public void merge(final AggregateFunction.Accumulator other) {
         final Comparable otherMax = ((MaxAccumulator) other).max;
-        if (otherMax != null && (max == null || otherMax.compareTo(max) > 0)) {
+        if (otherMax != null && (max == null || ValueComparisons.compareForExtreme(otherMax, max) > 0)) {
             max = otherMax;
         }
     }

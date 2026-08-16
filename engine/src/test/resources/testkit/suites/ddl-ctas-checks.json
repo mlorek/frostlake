@@ -1,0 +1,113 @@
+{
+  "suite": "ddl-ctas-checks",
+  "description": "CTAS validation in live's order - the BODY compiles before either column check (a statement both unnamable and uncompilable reports the body's own refusal, including the positioned invalid-argument-types error), wrong column counts refuse as Invalid column definition list in both list spellings, the legal forms stay legal - plus the full Missing column specification rule for CTAS and CREATE VIEW: unaliased literals/functions/expressions refused before the source runs, while (parenthesized, qualified, quoted-name) column references, aliased expressions, star items, explicit lists, and set operations all name themselves. Converted 1:1 from ddl/CtasCheckOrderTest and CtasMissingColumnSpecificationTest (both now retired).",
+  "tags": ["ddl", "converted"],
+  "tests": [
+    {"name": "each-check-alone-reports-itself", "steps": [
+      {"sql": "CREATE TABLE ss (o OBJECT, s VARCHAR(10), n NUMBER)"},
+      {"sql": "INSERT INTO ss SELECT OBJECT_CONSTRUCT('k', 1), 'abc', 1"},
+      {"sql": "CREATE TABLE c1 AS SELECT UPPER(s) FROM ss",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nMissing column specification"}}},
+      {"sql": "CREATE TABLE c2 AS SELECT UPPER(o) AS c FROM ss",
+       "expect": {"error": {"messageContains": "error line 1 at position 26\nInvalid argument types for function 'UPPER'"}}}
+    ]},
+    {"name": "the-body-wins-over-the-naming-check", "steps": [
+      {"sql": "CREATE TABLE ss (o OBJECT, s VARCHAR(10), n NUMBER)"},
+      {"sql": "INSERT INTO ss SELECT OBJECT_CONSTRUCT('k', 1), 'abc', 1"},
+      {"sql": "CREATE TABLE c3 AS SELECT UPPER(o) FROM ss",
+       "expect": {"error": {"messageContains": "error line 1 at position 26\nInvalid argument types for function 'UPPER'"}}},
+      {"sql": "CREATE TABLE c7 AS SELECT nosuchfn(s) FROM ss",
+       "expect": {"error": {"messageContains": "Unknown function NOSUCHFN."}}},
+      {"sql": "CREATE TABLE c8 AS SELECT x FROM nosuchtable",
+       "expect": {"error": {"messageContains": "Object 'NOSUCHTABLE' does not exist"}}}
+    ]},
+    {"name": "a-wrong-column-count-is-refused", "steps": [
+      {"sql": "CREATE TABLE ss (o OBJECT, s VARCHAR(10), n NUMBER)"},
+      {"sql": "CREATE TABLE c4 (a, b) AS SELECT s AS c FROM ss",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nInvalid column definition list"}}},
+      {"sql": "CREATE TABLE c12 (a INT, b INT) AS SELECT s AS c FROM ss",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nInvalid column definition list"}}}
+    ]},
+    {"name": "the-body-wins-over-the-count-check", "steps": [
+      {"sql": "CREATE TABLE ss (o OBJECT, s VARCHAR(10), n NUMBER)"},
+      {"sql": "CREATE TABLE c5 (a, b) AS SELECT UPPER(o) AS c FROM ss",
+       "expect": {"error": {"messageContains": "error line 1 at position 33\nInvalid argument types for function 'UPPER'"}}},
+      {"sql": "CREATE TABLE c14 (a INT, b INT) AS SELECT UPPER(o) AS c FROM ss",
+       "expect": {"error": {"messageContains": "error line 1 at position 42\nInvalid argument types for function 'UPPER'"}}}
+    ]},
+    {"name": "the-legal-forms-are-untouched", "steps": [
+      {"sql": "CREATE TABLE ss (o OBJECT, s VARCHAR(10), n NUMBER)"},
+      {"sql": "INSERT INTO ss SELECT OBJECT_CONSTRUCT('k', 1), 'abc', 1"},
+      {"sql": "CREATE TABLE c9 AS SELECT * FROM ss"},
+      {"sql": "CREATE TABLE c11 AS SELECT s FROM ss"},
+      {"sql": "CREATE TABLE c13 (a VARCHAR) AS SELECT s AS c FROM ss"},
+      {"sql": "CREATE TABLE c15 (a, b, c) AS SELECT o, s, n FROM ss"}
+    ]},
+    {"name": "a-literal-is-unnamable-but-a-column-is-not", "steps": [
+      {"sql": "CREATE TABLE ss (o OBJECT, s VARCHAR(10), n NUMBER)"},
+      {"sql": "INSERT INTO ss SELECT OBJECT_CONSTRUCT('k', 1), 'abc', 1"},
+      {"sql": "CREATE TABLE c10 AS SELECT 1 FROM ss",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nMissing column specification"}}},
+      {"sql": "CREATE TABLE c16 AS SELECT n FROM ss"}
+    ]},
+    {"name": "a-ctas-over-an-unaliased-literal-is-refused", "steps": [
+      {"sql": "CREATE OR REPLACE TABLE t1 AS SELECT 1",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nMissing column specification"}}}
+    ]},
+    {"name": "a-ctas-over-an-unaliased-function-call-is-refused", "steps": [
+      {"sql": "CREATE TABLE sales (region VARCHAR, product VARCHAR, amount NUMBER)"},
+      {"sql": "CREATE OR REPLACE TABLE t6 AS SELECT count(*) FROM sales",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nMissing column specification"}}}
+    ]},
+    {"name": "a-view-over-an-unaliased-expression-is-refused", "steps": [
+      {"sql": "CREATE TABLE sales (region VARCHAR, product VARCHAR, amount NUMBER)"},
+      {"sql": "CREATE OR REPLACE VIEW vw1 AS SELECT amount + 1 FROM sales",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nMissing column specification"}}},
+      {"sql": "CREATE OR REPLACE VIEW vw2 AS SELECT 1",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nMissing column specification"}}}
+    ]},
+    {"name": "a-parenthesized-column-reference-is-accepted", "steps": [
+      {"sql": "CREATE TABLE sales (region VARCHAR, product VARCHAR, amount NUMBER)"},
+      {"sql": "INSERT INTO sales VALUES ('east','a',10),('west','b',20)"},
+      {"sql": "CREATE OR REPLACE TABLE t2 AS SELECT (amount) FROM sales"},
+      {"sql": "SELECT * FROM t2", "expect": {"columns": ["amount"]}}
+    ]},
+    {"name": "a-qualified-column-reference-is-accepted", "steps": [
+      {"sql": "CREATE TABLE sales (region VARCHAR, product VARCHAR, amount NUMBER)"},
+      {"sql": "INSERT INTO sales VALUES ('east','a',10),('west','b',20)"},
+      {"sql": "CREATE OR REPLACE TABLE t3 AS SELECT s.amount FROM sales s"},
+      {"sql": "SELECT COUNT(*) FROM t3", "expect": {"value": "2"}}
+    ]},
+    {"name": "a-column-reference-with-an-unquotable-name-is-accepted", "steps": [
+      {"sql": "CREATE TABLE bw (\"A B\" INT)"},
+      {"sql": "CREATE OR REPLACE TABLE t4 AS SELECT \"A B\" FROM bw"},
+      {"sql": "SELECT * FROM t4", "expect": {"columns": ["A B"]}}
+    ]},
+    {"name": "an-aliased-expression-is-accepted", "steps": [
+      {"sql": "CREATE TABLE sales (region VARCHAR, product VARCHAR, amount NUMBER)"},
+      {"sql": "INSERT INTO sales VALUES ('east','a',10),('west','b',20)"},
+      {"sql": "CREATE OR REPLACE TABLE t5 AS SELECT amount + 1 AS x FROM sales"},
+      {"sql": "SELECT * FROM t5", "expect": {"columns": ["x"]}}
+    ]},
+    {"name": "a-star-item-is-accepted", "steps": [
+      {"sql": "CREATE TABLE sales (region VARCHAR, product VARCHAR, amount NUMBER)"},
+      {"sql": "INSERT INTO sales VALUES ('east','a',10),('west','b',20)"},
+      {"sql": "CREATE OR REPLACE TABLE t7 AS SELECT * FROM sales"},
+      {"sql": "SELECT COUNT(*) FROM t7", "expect": {"value": "2"}}
+    ]},
+    {"name": "an-explicit-column-list-supplies-the-missing-names", "steps": [
+      {"sql": "CREATE TABLE sales (region VARCHAR, product VARCHAR, amount NUMBER)"},
+      {"sql": "INSERT INTO sales VALUES ('east','a',10),('west','b',20)"},
+      {"sql": "CREATE OR REPLACE TABLE t8 (total) AS SELECT amount + 1 FROM sales"},
+      {"sql": "SELECT * FROM t8", "expect": {"columns": ["total"]}}
+    ]},
+    {"name": "a-ctas-over-a-union-of-unaliased-literals-is-accepted", "steps": [
+      {"sql": "CREATE TABLE sales (region VARCHAR, product VARCHAR, amount NUMBER)"},
+      {"sql": "INSERT INTO sales VALUES ('east','a',10),('west','b',20)"},
+      {"sql": "CREATE OR REPLACE TABLE tu1 AS SELECT 1 FROM sales WHERE FALSE UNION ALL SELECT 1 FROM sales WHERE FALSE"},
+      {"sql": "SELECT * FROM tu1", "expect": {"columns": ["1"]}},
+      {"sql": "CREATE OR REPLACE TABLE tu2 AS SELECT 1 UNION ALL SELECT 2"},
+      {"sql": "SELECT * FROM tu2", "expect": {"rowCount": 2}}
+    ]}
+  ]
+}

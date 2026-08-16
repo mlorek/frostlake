@@ -1,0 +1,28 @@
+{
+  "suite": "transaction-insert-deferred-apply",
+  "description": "INSERT wired through the deferred-apply write set. An autocommit INSERT is applied at statement end; inside an explicit transaction the INSERT is visible to the transaction ITSELF through the read overlay (read-your-writes), a ROLLBACK discards it so it never reaches the base store, and a COMMIT applies every buffered insert at once. Converted 1:1 from transaction/InsertDeferredApplyTest (now retired); the Java built its own engine with transaction.deferredApply=true and toggled setAutoCommit, both of which the testkit backend supplies through the default engine plus an explicit BEGIN.",
+  "tags": ["transaction", "converted"],
+  "tests": [
+    {"name": "an-autocommit-insert-is-applied", "steps": [
+      {"sql": "CREATE TABLE t (id INTEGER, v VARCHAR)"},
+      {"sql": "INSERT INTO t VALUES (1, 'a')"},
+      {"sql": "SELECT COUNT(*) FROM t", "expect": {"value": 1}}
+    ]},
+    {"name": "a-rollback-discards-a-buffered-insert", "steps": [
+      {"sql": "CREATE TABLE t (id INTEGER, v VARCHAR)"},
+      {"sql": "BEGIN"},
+      {"sql": "INSERT INTO t VALUES (1, 'a')"},
+      {"sql": "SELECT COUNT(*) FROM t", "expect": {"value": 1}},
+      {"sql": "ROLLBACK"},
+      {"sql": "SELECT COUNT(*) FROM t", "expect": {"value": 0}}
+    ]},
+    {"name": "a-commit-applies-the-buffered-inserts", "steps": [
+      {"sql": "CREATE TABLE t (id INTEGER, v VARCHAR)"},
+      {"sql": "BEGIN"},
+      {"sql": "INSERT INTO t VALUES (1, 'a')"},
+      {"sql": "INSERT INTO t VALUES (2, 'b')"},
+      {"sql": "COMMIT"},
+      {"sql": "SELECT COUNT(*) FROM t", "expect": {"value": 2}}
+    ]}
+  ]
+}

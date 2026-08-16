@@ -1,0 +1,13 @@
+{
+  "suite": "functions-to-varchar",
+  "description": "TO_VARCHAR is a registered synonym of TO_CHAR, where it used to resolve to \"unknown function\". Converted 1:1 from functions/ToVarcharTest (now retired); the Java compared two separate query results, which the converted test does inside one statement.",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "a-number-becomes-its-text", "steps": [
+      {"sql": "SELECT TO_VARCHAR(42)", "expect": {"value": "42"}}
+    ]},
+    {"name": "it-behaves-like-to-char", "steps": [
+      {"sql": "SELECT TO_CHAR('hello') = TO_VARCHAR('hello')", "expect": {"value": "true"}}
+    ]}
+  ]
+}

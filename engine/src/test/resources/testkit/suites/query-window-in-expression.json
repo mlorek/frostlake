@@ -1,0 +1,31 @@
+{
+  "suite": "query-window-in-expression",
+  "description": "A window function may appear NESTED inside a larger expression - revenue - LAG(revenue) OVER (...), 100 * RATIO_TO_REPORT(x) OVER (...), or as an argument to another function - not only as a whole SELECT item. This previously threw 'window function (OVER) not ported', because the surrounding expression was AST-evaluated without the window path being triggered. Pinned with the window on the right of a subtraction, under a multiplication, inside a function call, and as a whole select item, which is the regression guard for the shape that already worked. Converted 1:1 from query/WindowInExpressionTest (now retired).",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "a-window-subtracted-from-a-column", "steps": [
+      {"sql": "CREATE TABLE sales (yr NUMBER, revenue NUMBER)"},
+      {"sql": "INSERT INTO sales VALUES (2020, 100), (2021, 150), (2022, 250)"},
+      {"sql": "SELECT yr, revenue - LAG(revenue, 1, 0) OVER (ORDER BY yr) AS diff FROM sales ORDER BY yr",
+       "expect": {"rows": [[2020,100],[2021,50],[2022,100]], "ordered": true}}
+    ]},
+    {"name": "a-scaled-ratio-to-report", "steps": [
+      {"sql": "CREATE TABLE sales (yr NUMBER, revenue NUMBER)"},
+      {"sql": "INSERT INTO sales VALUES (2020, 100), (2021, 150), (2022, 250)"},
+      {"sql": "SELECT yr, 100 * RATIO_TO_REPORT(revenue) OVER () AS pct FROM sales ORDER BY yr",
+       "expect": {"rows": [[2020,20],[2021,30],[2022,50]], "ordered": true}}
+    ]},
+    {"name": "a-bare-window-still-works", "steps": [
+      {"sql": "CREATE TABLE sales (yr NUMBER, revenue NUMBER)"},
+      {"sql": "INSERT INTO sales VALUES (2020, 100), (2021, 150), (2022, 250)"},
+      {"sql": "SELECT yr, ROW_NUMBER() OVER (ORDER BY yr) AS rn FROM sales ORDER BY yr",
+       "expect": {"rows": [[2020,1],[2021,2],[2022,3]], "ordered": true}}
+    ]},
+    {"name": "a-window-inside-a-function-call", "steps": [
+      {"sql": "CREATE TABLE sales (yr NUMBER, revenue NUMBER)"},
+      {"sql": "INSERT INTO sales VALUES (2020, 100), (2021, 150), (2022, 250)"},
+      {"sql": "SELECT yr, ABS(LAG(revenue, 1, 0) OVER (ORDER BY yr) - revenue) AS d FROM sales ORDER BY yr",
+       "expect": {"rows": [[2020,100],[2021,50],[2022,100]], "ordered": true}}
+    ]}
+  ]
+}

@@ -1,0 +1,34 @@
+{
+  "suite": "features-from-dual",
+  "description": "SELECT <expr> FROM DUAL - the legacy one-row pseudo-table: constants and expressions evaluate against its single row, the spelling is case-insensitive, SELECT * yields exactly one nullable column named COLUMN1 holding NULL, catalog commands (SHOW TABLES, INFORMATION_SCHEMA.TABLES) never advertise it, and a user table named DUAL does not shadow the pseudo-table - a bare unquoted FROM DUAL is ALWAYS the pseudo-table, and only the QUOTED spelling reaches the real table. Converted 1:1 from features/FromDualTest (now retired).",
+  "tags": ["features", "converted"],
+  "tests": [
+    {"name": "select-constant-from-dual", "steps": [
+      {"sql": "SELECT 42 AS n FROM DUAL", "expect": {"rowCount": 1, "rows": [["42"]]}}
+    ]},
+    {"name": "select-expression-from-dual", "steps": [
+      {"sql": "SELECT UPPER('abc') || '_' || (1 + 2) AS v FROM DUAL", "expect": {"rowCount": 1, "rows": [["ABC_3"]]}}
+    ]},
+    {"name": "dual-is-case-insensitive", "steps": [
+      {"sql": "SELECT 1 FROM dual", "expect": {"rowCount": 1}}
+    ]},
+    {"name": "dual-shape-is-single-null-column", "steps": [
+      {"sql": "SELECT * FROM DUAL", "expect": {"columns": ["COLUMN1"], "rows": [["NULL"]]}}
+    ]},
+    {"name": "dual-is-not-advertised-by-catalog-commands", "steps": [
+      {"sql": "CREATE TABLE realtab (id INTEGER)"},
+      {"sql": "SHOW TABLES"},
+      {"sql": "SELECT COUNT_IF(\"name\" = 'DUAL'), COUNT_IF(\"name\" = 'REALTAB') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["0", "1"]]}},
+      {"sql": "SELECT COUNT_IF(UPPER(table_name) = 'DUAL'), COUNT_IF(UPPER(table_name) = 'REALTAB') >= 1 FROM INFORMATION_SCHEMA.TABLES",
+       "expect": {"rows": [["0", "true"]]}}
+    ]},
+    {"name": "user-dual-table-does-not-shadow-pseudo-table", "steps": [
+      {"sql": "CREATE TABLE DUAL (x INTEGER)"},
+      {"sql": "INSERT INTO DUAL VALUES (7), (8)"},
+      {"sql": "SELECT * FROM DUAL", "expect": {"columns": ["COLUMN1"], "rows": [["NULL"]]}},
+      {"sql": "SELECT * FROM \"DUAL\" ORDER BY x",
+       "expect": {"columns": ["X"], "rows": [["7"], ["8"]], "ordered": true}}
+    ]}
+  ]
+}

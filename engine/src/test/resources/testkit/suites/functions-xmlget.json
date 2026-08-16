@@ -1,0 +1,35 @@
+{
+  "suite": "functions-xmlget",
+  "description": "XMLGET(xml, tag [, instance]) returns the 0-based instance-th DIRECT CHILD element with the given tag, and NULL when the tag is absent, the instance is out of range or negative, the content is scalar rather than elements, or the value is not XML at all - a plain JSON object is not an XML element. Matching is case-SENSITIVE. All live-verified against Snowflake. A VARCHAR first argument is a compile-time rejection, not a NULL. Converted 1:1 from functions/XmlGetTest (now retired); every XML render is read through ::VARCHAR, because a bare XML-shaped VARIANT cell is re-serialised as its JSON object model over the HTTP transport, while the cast renders identically on all three.",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "it-returns-the-first-match-by-default-and-by-instance", "steps": [
+      {"sql": "SELECT XMLGET(PARSE_XML('<a><b>1</b><c>2</c><b>3</b></a>'), 'b')::VARCHAR", "expect": {"value": "<b>1</b>"}},
+      {"sql": "SELECT XMLGET(PARSE_XML('<a><b>1</b><c>2</c><b>3</b></a>'), 'b', 1)::VARCHAR", "expect": {"value": "<b>3</b>"}},
+      {"sql": "SELECT XMLGET(PARSE_XML('<a><b>1</b><c>2</c><b>3</b></a>'), 'b', 2)", "expect": {"rows": [[null]]}},
+      {"sql": "SELECT TYPEOF(XMLGET(PARSE_XML('<a><b>1</b><c>2</c><b>3</b></a>'), 'b'))", "expect": {"value": "XML"}}
+    ]},
+    {"name": "a-missing-tag-a-case-mismatch-and-a-negative-instance-are-null", "steps": [
+      {"sql": "SELECT XMLGET(PARSE_XML('<a><b>1</b><c>2</c><b>3</b></a>'), 'zz')", "expect": {"rows": [[null]]}},
+      {"sql": "SELECT XMLGET(PARSE_XML('<a><B>1</B></a>'), 'b')", "expect": {"rows": [[null]]}},
+      {"sql": "SELECT XMLGET(PARSE_XML('<a><b>1</b></a>'), 'b', -1)", "expect": {"rows": [[null]]}},
+      {"sql": "SELECT XMLGET(PARSE_XML('<a>txt</a>'), 'b')", "expect": {"rows": [[null]]}}
+    ]},
+    {"name": "non-xml-and-null-inputs-are-null", "steps": [
+      {"sql": "SELECT XMLGET(NULL, 'b')", "expect": {"rows": [[null]]}},
+      {"sql": "SELECT XMLGET(PARSE_JSON('{\"b\":1}'), 'b')", "expect": {"rows": [[null]]}}
+    ]},
+    {"name": "single-children-attributes-mixed-content-and-nesting", "steps": [
+      {"sql": "SELECT XMLGET(PARSE_XML('<a><b>1</b></a>'), 'b')::VARCHAR", "expect": {"value": "<b>1</b>"}},
+      {"sql": "SELECT XMLGET(PARSE_XML('<a><b x=\"9\">1</b></a>'), 'b')::VARCHAR", "expect": {"value": "<b x=\"9\">1</b>"}},
+      {"sql": "SELECT XMLGET(PARSE_XML('<a>x<b>1</b>y</a>'), 'b')::VARCHAR", "expect": {"value": "<b>1</b>"}},
+      {"sql": "SELECT XMLGET(XMLGET(PARSE_XML('<a><b><c>5</c></b></a>'), 'b'), 'c')::VARCHAR", "expect": {"value": "<c>5</c>"}}
+    ]},
+    {"name": "content-extracts-through-the-path-syntax", "steps": [
+      {"sql": "SELECT XMLGET(PARSE_XML('<a><b>1</b></a>'), 'b'):\"$\"::VARCHAR", "expect": {"value": "1"}}
+    ]},
+    {"name": "a-varchar-first-argument-is-rejected-at-compile-time", "steps": [
+      {"sql": "SELECT XMLGET('<a><b>1</b></a>', 'b')", "expect": {"error": {"messageContains": "Invalid argument types for function 'XMLGET'"}}}
+    ]}
+  ]
+}

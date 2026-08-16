@@ -27,6 +27,8 @@ public class BinaryOperationExpression implements Expression {
     private final Expression escape;
     /** Where the OPERATOR token itself sits — see {@link #getPosition()}. Null when unknown. */
     private SourcePosition position;
+    /** Whether this is the equality a simple CASE builds from its subject and one WHEN value. */
+    private boolean simpleCaseTest;
 
     public BinaryOperationExpression(final Expression left, final BinaryOperator operator, final Expression right) {
         this(left, operator, right, null);
@@ -55,6 +57,22 @@ public class BinaryOperationExpression implements Expression {
 
     public void setPosition(final SourcePosition position) {
         this.position = position;
+    }
+
+    /**
+     * Whether this is the equality a simple CASE builds — {@code CASE x WHEN v} tests {@code x = v}, the
+     * subject on the left. Two collations that disagree there are named subject first, where a written
+     * comparison names its right side first (live-verified).
+     *
+     * @return true for a simple CASE's WHEN test
+     */
+    public boolean isSimpleCaseTest() {
+        return simpleCaseTest;
+    }
+
+    /** Mark this equality as a simple CASE's WHEN test — see {@link #isSimpleCaseTest()}. */
+    public void markSimpleCaseTest() {
+        this.simpleCaseTest = true;
     }
 
     public Expression getLeft() {

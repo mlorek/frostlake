@@ -1,0 +1,86 @@
+{
+  "suite": "features-variant-strictness",
+  "description": "Strictness of the semi-structured function family over typed runtime values, matching live Snowflake: TYPEOF / GET / GET_PATH / TO_JSON reject VARCHAR, BINARY and temporal arguments - literal, column, or expression, at plan time so an empty table rejects too - while NUMBER and BOOLEAN implicitly coerce to VARIANT. TYPEOF reports the EXACT inner type of a typed variant: a variant string \"123\" is VARCHAR, never sniffed into INTEGER; a plain JSON fraction is DECIMAL while scientific notation is DOUBLE. Temporal strictness covers VARCHAR expressions and bare string constants alike, with the cast as the portable form. Converted from features/VariantStrictnessTest (now retired). The Java helper anchored each refusal on the parameterised argument-type list, e.g. \"Invalid argument types for function 'TYPEOF': (VARCHAR(1))\", which JSON expresses as two steps running the same SQL - one pinning the function-name phrase, one pinning the type prefix.",
+  "tags": ["features", "converted"],
+  "tests": [
+    {"name": "typeof-rejects-literals-and-non-variant-columns", "steps": [
+      {"sql": "SELECT TYPEOF('x')", "expect": {"error": {"messageContains": "Invalid argument types for function"}}},
+      {"sql": "SELECT TYPEOF('x')", "expect": {"error": {"messageContains": "(VARCHAR("}}},
+      {"sql": "SELECT TYPEOF(123)", "expect": {"value": "INTEGER"}},
+      {"sql": "SELECT TYPEOF(TRUE)", "expect": {"value": "BOOLEAN"}},
+      {"sql": "CREATE TABLE vst_t (s VARCHAR, n NUMBER, v VARIANT)"},
+      {"sql": "INSERT INTO vst_t SELECT 'x', 1, PARSE_JSON('{}')"},
+      {"sql": "SELECT TYPEOF(s) FROM vst_t", "expect": {"error": {"messageContains": "(VARCHAR("}}},
+      {"sql": "SELECT TYPEOF(n) FROM vst_t", "expect": {"value": "INTEGER"}},
+      {"sql": "SELECT TYPEOF(NULL)", "expect": {"rows": [[null]]}}
+    ]},
+    {"name": "typeof-reports-the-exact-inner-type", "steps": [
+      {"sql": "SELECT TYPEOF(PARSE_JSON('{\"a\":1}'))", "expect": {"value": "OBJECT"}},
+      {"sql": "SELECT TYPEOF(PARSE_JSON('[1,2]'))", "expect": {"value": "ARRAY"}},
+      {"sql": "SELECT TYPEOF(PARSE_JSON('\"txt\"'))", "expect": {"value": "VARCHAR"}},
+      {"sql": "SELECT TYPEOF(PARSE_JSON('\"123\"'))", "expect": {"value": "VARCHAR"}},
+      {"sql": "SELECT TYPEOF(PARSE_JSON('123'))", "expect": {"value": "INTEGER"}},
+      {"sql": "SELECT TYPEOF(PARSE_JSON('1.5'))", "expect": {"value": "DECIMAL"}},
+      {"sql": "SELECT TYPEOF(PARSE_JSON('1.5e2'))", "expect": {"value": "DOUBLE"}},
+      {"sql": "SELECT TYPEOF(PARSE_JSON('true'))", "expect": {"value": "BOOLEAN"}},
+      {"sql": "SELECT TYPEOF(PARSE_JSON('null'))", "expect": {"value": "NULL_VALUE"}}
+    ]},
+    {"name": "typeof-works-over-variant-columns-and-paths", "steps": [
+      {"sql": "CREATE TABLE vst_v (v VARIANT)"},
+      {"sql": "INSERT INTO vst_v SELECT PARSE_JSON('{\"o\":{\"k\":1},\"s\":\"abc\",\"n\":7}')"},
+      {"sql": "SELECT TYPEOF(v) FROM vst_v", "expect": {"value": "OBJECT"}},
+      {"sql": "SELECT TYPEOF(v:o) FROM vst_v", "expect": {"value": "OBJECT"}},
+      {"sql": "SELECT TYPEOF(v:s) FROM vst_v", "expect": {"value": "VARCHAR"}},
+      {"sql": "SELECT TYPEOF(v:n) FROM vst_v", "expect": {"value": "INTEGER"}}
+    ]},
+    {"name": "get-rejects-non-variant-first-arguments", "steps": [
+      {"sql": "SELECT GET('{\"a\":1}', 'a')", "expect": {"error": {"messageContains": "Invalid argument types for function"}}},
+      {"sql": "SELECT GET('{\"a\":1}', 'a')", "expect": {"error": {"messageContains": "(VARCHAR("}}},
+      {"sql": "CREATE TABLE vst_g (s VARCHAR, v VARIANT)"},
+      {"sql": "INSERT INTO vst_g SELECT 'x', PARSE_JSON('{\"a\":41}')"},
+      {"sql": "SELECT GET(s, 'a') FROM vst_g", "expect": {"error": {"messageContains": "(VARCHAR("}}},
+      {"sql": "SELECT GET_PATH(s, 'a') FROM vst_g", "expect": {"error": {}}},
+      {"sql": "SELECT GET(v, 'a') FROM vst_g", "expect": {"value": "41"}}
+    ]},
+    {"name": "get-path-refuses-a-non-variant-first-argument-by-argument-types",
+     "skip": {"backends": ["snowflake"], "reason": "the account currently raises an incident (SQL execution internal error: Processing aborted due to error 300010) for GET_PATH over a non-variant first argument instead of its documented refusal; that is a live defect the engine deliberately does not emulate, so only the fact of a rejection is asserted on live - see get-rejects-non-variant-first-arguments"},
+     "steps": [
+      {"sql": "CREATE TABLE vst_g (s VARCHAR, v VARIANT)"},
+      {"sql": "INSERT INTO vst_g SELECT 'x', PARSE_JSON('{\"a\":41}')"},
+      {"sql": "SELECT GET_PATH(s, 'a') FROM vst_g", "expect": {"error": {"messageContains": "Invalid argument types for function"}}},
+      {"sql": "SELECT GET_PATH(s, 'a') FROM vst_g", "expect": {"error": {"messageContains": "(VARCHAR("}}}
+    ]},
+    {"name": "to-json-rejects-non-variant-arguments", "steps": [
+      {"sql": "SELECT TO_JSON('abc')", "expect": {"error": {"messageContains": "Invalid argument types for function"}}},
+      {"sql": "SELECT TO_JSON('abc')", "expect": {"error": {"messageContains": "(VARCHAR("}}},
+      {"sql": "CREATE TABLE vst_j (s VARCHAR, v VARIANT)"},
+      {"sql": "INSERT INTO vst_j SELECT 'x', PARSE_JSON('{\"a\":1}')"},
+      {"sql": "SELECT TO_JSON(s) FROM vst_j", "expect": {"error": {"messageContains": "(VARCHAR("}}},
+      {"sql": "SELECT TO_JSON(v) FROM vst_j", "expect": {"value": "{\"a\":1}"}}
+    ]},
+    {"name": "typeof-rejects-binary-and-temporal-expressions", "steps": [
+      {"sql": "SELECT TYPEOF(TO_BINARY('AB12'))", "expect": {"error": {"messageContains": "Invalid argument types for function"}}},
+      {"sql": "SELECT TYPEOF(TO_BINARY('AB12'))", "expect": {"error": {"messageContains": "(BINARY("}}},
+      {"sql": "CREATE TABLE vst_d (d DATE, v VARIANT)"},
+      {"sql": "INSERT INTO vst_d SELECT '2026-01-01', PARSE_JSON('1')"},
+      {"sql": "SELECT TYPEOF(d) FROM vst_d", "expect": {"error": {"messageContains": "Invalid argument types for function"}}},
+      {"sql": "SELECT TYPEOF(d) FROM vst_d", "expect": {"error": {"messageContains": "(DATE"}}}
+    ]},
+    {"name": "strictness-fires-at-plan-time-and-through-expressions", "steps": [
+      {"sql": "CREATE TABLE vst_empty (s VARCHAR, v VARIANT)"},
+      {"sql": "SELECT TYPEOF(s) FROM vst_empty", "expect": {"error": {"messageContains": "(VARCHAR("}}},
+      {"sql": "SELECT TO_JSON(s) FROM vst_empty", "expect": {"error": {"messageContains": "(VARCHAR("}}},
+      {"sql": "SELECT TYPEOF(UPPER(s)) FROM vst_empty", "expect": {"error": {"messageContains": "(VARCHAR("}}},
+      {"sql": "SELECT TYPEOF(v::VARCHAR) FROM vst_empty", "expect": {"error": {"messageContains": "(VARCHAR("}}},
+      {"sql": "SELECT TYPEOF(v) FROM vst_empty", "expect": {"rowCount": 0}},
+      {"sql": "SELECT TYPEOF(v:field) FROM vst_empty", "expect": {"rowCount": 0}}
+    ]},
+    {"name": "temporal-strictness-covers-varchar-expressions", "steps": [
+      {"sql": "CREATE TABLE vst_tmp (s VARCHAR)"},
+      {"sql": "SELECT DATE_TRUNC('month', UPPER(s)) FROM vst_tmp",
+       "expect": {"error": {"messageContains": "does not support VARCHAR("}}},
+      {"sql": "SELECT DATE_TRUNC('month', '2024-04-08')", "expect": {"error": {}}},
+      {"sql": "SELECT TO_VARCHAR(DATE_TRUNC('month', '2024-04-08'::DATE))", "expect": {"value": "2024-04-01"}}
+    ]}
+  ]
+}

@@ -1,0 +1,77 @@
+{
+  "suite": "features-identity",
+  "description": "IDENTITY columns (auto-increment with custom start/increment) through the SQL surface: the DESCRIBE TABLE default cell spells the generator (IDENTITY START n INCREMENT m) and the generated values read back with ordered queries. Snowflake guarantees identity values are unique and ascending, NOT gap-free - exact values are asserted only WITHIN one multi-row INSERT (contiguous); across statements the tests pin the seed row and uniqueness (COUNT(*) = COUNT(DISTINCT id)). An explicitly inserted value does not advance the generator, AUTOINCREMENT is the same feature, and the counter persists across intervening queries. Converted 1:1 from features/IdentityTest (now retired).",
+  "tags": ["features", "converted"],
+  "tests": [
+    {"name": "simple-identity", "steps": [
+      {"sql": "CREATE TABLE test_identity (id INTEGER IDENTITY, name VARCHAR)"},
+      {"sql": "DESCRIBE TABLE test_identity"},
+      {"sql": "SELECT CONTAINS(MAX(IFF(\"name\" = 'ID', \"default\", NULL)), 'IDENTITY START 1 INCREMENT 1') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"value": "true"}}
+    ]},
+    {"name": "identity-with-start-and-increment", "steps": [
+      {"sql": "CREATE TABLE test_identity_custom (id INTEGER IDENTITY(100, 5), name VARCHAR)"},
+      {"sql": "DESCRIBE TABLE test_identity_custom"},
+      {"sql": "SELECT CONTAINS(MAX(IFF(\"name\" = 'ID', \"default\", NULL)), 'IDENTITY START 100 INCREMENT 5') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"value": "true"}}
+    ]},
+    {"name": "identity-auto-insert", "steps": [
+      {"sql": "CREATE TABLE test_identity (id INTEGER IDENTITY, name VARCHAR)"},
+      {"sql": "INSERT INTO test_identity (name) VALUES ('Alice')"},
+      {"sql": "INSERT INTO test_identity (name) VALUES ('Bob')"},
+      {"sql": "INSERT INTO test_identity (name) VALUES ('Charlie')"},
+      {"sql": "SELECT * FROM test_identity", "expect": {"rowCount": 3}},
+      {"sql": "SELECT id, name FROM test_identity ORDER BY id LIMIT 1", "expect": {"rows": [["1", "Alice"]]}},
+      {"sql": "SELECT DISTINCT name FROM test_identity WHERE name IN ('Bob', 'Charlie')", "expect": {"rowCount": 2}},
+      {"sql": "SELECT COUNT(*), COUNT(DISTINCT id) FROM test_identity", "expect": {"rows": [["3", "3"]]}}
+    ]},
+    {"name": "identity-custom-auto-insert", "steps": [
+      {"sql": "CREATE TABLE test_identity_custom (id INTEGER IDENTITY(100, 5), name VARCHAR)"},
+      {"sql": "INSERT INTO test_identity_custom (name) VALUES ('Alice')"},
+      {"sql": "INSERT INTO test_identity_custom (name) VALUES ('Bob')"},
+      {"sql": "INSERT INTO test_identity_custom (name) VALUES ('Charlie')"},
+      {"sql": "SELECT * FROM test_identity_custom", "expect": {"rowCount": 3}},
+      {"sql": "SELECT id FROM test_identity_custom ORDER BY id LIMIT 1", "expect": {"value": "100"}},
+      {"sql": "SELECT COUNT(*), COUNT(DISTINCT id) FROM test_identity_custom", "expect": {"rows": [["3", "3"]]}}
+    ]},
+    {"name": "identity-with-explicit-value", "steps": [
+      {"sql": "CREATE TABLE test_identity_explicit (id INTEGER IDENTITY, name VARCHAR)"},
+      {"sql": "INSERT INTO test_identity_explicit (id, name) VALUES (50, 'Explicit')"},
+      {"sql": "INSERT INTO test_identity_explicit (name) VALUES ('Auto')"},
+      {"sql": "SELECT id, name FROM test_identity_explicit ORDER BY id",
+       "expect": {"rowCount": 2, "rows": [["1", "Auto"], ["50", "Explicit"]], "ordered": true}}
+    ]},
+    {"name": "identity-large-increment", "steps": [
+      {"sql": "CREATE TABLE test_identity_large (id INTEGER IDENTITY(1000, 1000), name VARCHAR)"},
+      {"sql": "INSERT INTO test_identity_large (name) VALUES ('A')"},
+      {"sql": "INSERT INTO test_identity_large (name) VALUES ('B')"},
+      {"sql": "SELECT * FROM test_identity_large", "expect": {"rowCount": 2}},
+      {"sql": "SELECT id FROM test_identity_large ORDER BY id LIMIT 1", "expect": {"value": "1000"}},
+      {"sql": "SELECT COUNT(*), COUNT(DISTINCT id) FROM test_identity_large", "expect": {"rows": [["2", "2"]]}}
+    ]},
+    {"name": "autoincrement-backward-compatibility", "steps": [
+      {"sql": "CREATE TABLE test_autoincrement (id INTEGER AUTOINCREMENT, name VARCHAR)"},
+      {"sql": "INSERT INTO test_autoincrement (name) VALUES ('Test1')"},
+      {"sql": "INSERT INTO test_autoincrement (name) VALUES ('Test2')"},
+      {"sql": "SELECT * FROM test_autoincrement", "expect": {"rowCount": 2}},
+      {"sql": "SELECT id FROM test_autoincrement ORDER BY id LIMIT 1", "expect": {"value": "1"}},
+      {"sql": "SELECT COUNT(*), COUNT(DISTINCT id) FROM test_autoincrement", "expect": {"rows": [["2", "2"]]}}
+    ]},
+    {"name": "identity-with-multiple-inserts", "steps": [
+      {"sql": "CREATE TABLE test_identity_multi (id INTEGER IDENTITY(10, 2), name VARCHAR)"},
+      {"sql": "INSERT INTO test_identity_multi (name) VALUES ('A'), ('B'), ('C')"},
+      {"sql": "SELECT id FROM test_identity_multi ORDER BY id",
+       "expect": {"rowCount": 3, "rows": [["10"], ["12"], ["14"]], "ordered": true}}
+    ]},
+    {"name": "identity-persists-across-queries", "steps": [
+      {"sql": "CREATE TABLE test_identity_persist (id INTEGER IDENTITY(1, 1), value INTEGER)"},
+      {"sql": "INSERT INTO test_identity_persist (value) VALUES (100)"},
+      {"sql": "INSERT INTO test_identity_persist (value) VALUES (200)"},
+      {"sql": "SELECT 1"},
+      {"sql": "INSERT INTO test_identity_persist (value) VALUES (300)"},
+      {"sql": "SELECT * FROM test_identity_persist", "expect": {"rowCount": 3}},
+      {"sql": "SELECT id FROM test_identity_persist ORDER BY id LIMIT 1", "expect": {"value": "1"}},
+      {"sql": "SELECT COUNT(*), COUNT(DISTINCT id) FROM test_identity_persist", "expect": {"rows": [["3", "3"]]}}
+    ]}
+  ]
+}

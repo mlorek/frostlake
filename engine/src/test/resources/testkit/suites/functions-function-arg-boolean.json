@@ -1,0 +1,33 @@
+{
+  "suite": "functions-function-arg-boolean",
+  "description": "A bare boolean AND / OR may appear as a function argument - COUNT_IF(a OR b), IFF(x AND y, ...) - without requiring extra parentheses. Previously only comparisons parsed as function arguments and a top-level AND/OR failed. The regression half checks that BETWEEN still binds its AND to its own range rather than to a following predicate, and that AND/OR in a WHERE clause are unaffected. Converted 1:1 from functions/FunctionArgBooleanTest (now retired); its @BeforeEach vals fixture is inlined per test.",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "count-if-with-an-or-argument", "steps": [
+      {"sql": "CREATE TABLE vals (v NUMBER)"},
+      {"sql": "INSERT INTO vals VALUES (1), (2), (3), (4), (5)"},
+      {"sql": "SELECT COUNT_IF(v = 2 OR v = 4) FROM vals", "expect": {"value": "2"}}
+    ]},
+    {"name": "count-if-with-an-and-argument", "steps": [
+      {"sql": "CREATE TABLE vals (v NUMBER)"},
+      {"sql": "INSERT INTO vals VALUES (1), (2), (3), (4), (5)"},
+      {"sql": "SELECT COUNT_IF(v > 1 AND v < 4) FROM vals", "expect": {"value": "2"}}
+    ]},
+    {"name": "iff-with-a-boolean-argument", "steps": [
+      {"sql": "SELECT IFF(1 = 1 OR 2 = 3, 1, 0)", "expect": {"value": "1"}},
+      {"sql": "SELECT IFF(1 = 1 AND 2 = 3, 1, 0)", "expect": {"value": "0"}}
+    ]},
+    {"name": "between-still-binds-its-and-to-its-range", "steps": [
+      {"sql": "CREATE TABLE vals (v NUMBER)"},
+      {"sql": "INSERT INTO vals VALUES (1), (2), (3), (4), (5)"},
+      {"sql": "SELECT COUNT(*) FROM vals WHERE v BETWEEN 2 AND 4", "expect": {"value": "3"}}
+    ]},
+    {"name": "where-clause-and-or-still-work", "steps": [
+      {"sql": "CREATE TABLE vals (v NUMBER)"},
+      {"sql": "INSERT INTO vals VALUES (1), (2), (3), (4), (5)"},
+      {"sql": "SELECT COUNT(*) FROM vals WHERE v = 1 OR v = 5", "expect": {"value": "2"}},
+      {"sql": "SELECT COUNT(*) FROM vals WHERE v > 2 AND v < 4", "expect": {"value": "1"}},
+      {"sql": "SELECT COUNT(*) FROM vals WHERE v = 1 OR v = 3 OR v = 5", "expect": {"value": "3"}}
+    ]}
+  ]
+}

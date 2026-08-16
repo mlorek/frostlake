@@ -196,6 +196,7 @@ public class JdbcDriverTest {
                 final String sql = """
                     SELECT e.name as emp_name, d.dept_name FROM employees e
                     JOIN departments d ON e.dept_id = d.dept_id
+                    ORDER BY e.id
                     """;
                 final ResultSet rs = stmt.executeQuery(sql);
 
@@ -318,7 +319,7 @@ public class JdbcDriverTest {
                     stmt.execute("INSERT INTO numbers VALUES (" + i + ")");
                 }
 
-                final ResultSet rs = stmt.executeQuery("SELECT * FROM numbers");
+                final ResultSet rs = stmt.executeQuery("SELECT * FROM numbers ORDER BY value");
 
                 // Forward navigation
                 assertTrue(rs.next());

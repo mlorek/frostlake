@@ -1,0 +1,22 @@
+{
+  "suite": "transaction-ddl-autocommit-in-procedure",
+  "description": "Snowflake commits the open transaction implicitly before EVERY DDL statement - INSIDE a stored procedure's BEGIN...END body just as at top level. The pre-commit used to live only in the string entry point's statement loop, which a procedural body bypasses because it dispatches statements through the visitor, so a mid-procedure CREATE TEMP TABLE left the whole-CALL transaction open and the common flush-the-stream-then-load idiom silently mis-scoped its stream windows. The pre-commit now lives at the dispatch point every path shares. Pinned inside a procedure - two inserts straddling a mid-body DDL both survive a later RAISE that fails the CALL, because each statement of a procedure commits in its own autocommit transaction - and at top level, where a DDL inside an explicit transaction commits it so the following ROLLBACK has nothing left to undo. Converted 1:1 from transaction/DdlAutocommitInProcedureTest (now retired); the Java swallowed the CALL's exception in a try/catch and asserted only which inserts survived, which becomes an expect.error on the CALL step followed by the same two counts.",
+  "tags": ["transaction", "converted"],
+  "tests": [
+    {"name": "a-mid-procedure-ddl-commits-work-buffered-before-it", "steps": [
+      {"sql": "CREATE TABLE t (id INT)"},
+      {"sql": "CREATE PROCEDURE p() RETURNS VARCHAR LANGUAGE SQL AS $$ DECLARE boom EXCEPTION (-20001, 'boom'); BEGIN INSERT INTO t VALUES (1); CREATE OR REPLACE TEMP TABLE scratch (x INT); INSERT INTO t VALUES (2); RAISE boom; END $$"},
+      {"sql": "CALL p()", "expect": {"error": {"messageContains": "Uncaught exception of type 'BOOM'"}}},
+      {"sql": "SELECT COUNT(*) FROM t WHERE id = 1", "expect": {"value": 1}},
+      {"sql": "SELECT COUNT(*) FROM t WHERE id = 2", "expect": {"value": 1}}
+    ]},
+    {"name": "a-top-level-ddl-still-commits-an-explicit-transaction", "steps": [
+      {"sql": "CREATE TABLE t (id INT)"},
+      {"sql": "BEGIN"},
+      {"sql": "INSERT INTO t VALUES (1)"},
+      {"sql": "CREATE TABLE other (x INT)"},
+      {"sql": "ROLLBACK"},
+      {"sql": "SELECT COUNT(*) FROM t", "expect": {"value": 1}}
+    ]}
+  ]
+}

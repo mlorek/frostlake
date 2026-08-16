@@ -1,0 +1,106 @@
+{
+  "suite": "ddl-alter-table-properties",
+  "description": "ALTER TABLE ... SET with several properties per statement (space- or comma-separated), each read back from SHOW TABLES cells: retention_time, comment, change_tracking, enable_schema_evolution; a repeated property accepted on ALTER (unlike CREATE); ERROR_LOGGING taking a bareword with the quoted form refused; unknown properties refused with the invalid-property sentence. Plus SUSPEND/RESUME RECLUSTER moving the automatic_clustering cell, the unclustered refusal's unusual bare message with trailing newline, and recluster staying usable as a name. Converted 1:1 from ddl/AlterTablePropertySetTest and AlterTableReclusterTest (both now retired).",
+  "tags": ["ddl", "converted"],
+  "tests": [
+    {"name": "one-set-carries-several-properties-separated-by-spaces", "steps": [
+      {"sql": "CREATE TABLE t (n INT)"},
+      {"sql": "ALTER TABLE t SET DATA_RETENTION_TIME_IN_DAYS = 1 COMMENT = 'multi'"},
+      {"sql": "SHOW TABLES LIKE 't'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"retention_time\", \"comment\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["1", "multi"]]}}
+    ]},
+    {"name": "commas-separate-them-too", "steps": [
+      {"sql": "CREATE TABLE t (n INT)"},
+      {"sql": "ALTER TABLE t SET DATA_RETENTION_TIME_IN_DAYS = 1, COMMENT = 'commas'"},
+      {"sql": "SHOW TABLES LIKE 't'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"retention_time\", \"comment\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["1", "commas"]]}}
+    ]},
+    {"name": "three-properties-at-once", "steps": [
+      {"sql": "CREATE TABLE t (n INT)"},
+      {"sql": "ALTER TABLE t SET DATA_RETENTION_TIME_IN_DAYS = 1 CHANGE_TRACKING = TRUE COMMENT = 'three'"},
+      {"sql": "SHOW TABLES LIKE 't'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"retention_time\", \"change_tracking\", \"comment\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["1", "ON", "three"]]}}
+    ]},
+    {"name": "a-repeated-property-is-accepted-on-alter", "steps": [
+      {"sql": "CREATE TABLE t (n INT)"},
+      {"sql": "ALTER TABLE t SET DATA_RETENTION_TIME_IN_DAYS = 1 DATA_RETENTION_TIME_IN_DAYS = 0"}
+    ]},
+    {"name": "the-single-property-forms-still-work", "steps": [
+      {"sql": "CREATE TABLE t (n INT)"},
+      {"sql": "ALTER TABLE t SET CHANGE_TRACKING = TRUE"},
+      {"sql": "SHOW TABLES LIKE 't'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"change_tracking\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "ON"}},
+      {"sql": "ALTER TABLE t SET COMMENT = 'single'"},
+      {"sql": "SHOW TABLES LIKE 't'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"comment\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "single"}}
+    ]},
+    {"name": "an-unknown-property-is-still-refused", "steps": [
+      {"sql": "CREATE TABLE t (n INT)"},
+      {"sql": "ALTER TABLE t SET NO_SUCH_PROP = 1",
+       "expect": {"error": {"messageContains": "SQL compilation error:\ninvalid property 'NO_SUCH_PROP' for 'TABLE'"}}}
+    ]},
+    {"name": "schema-evolution-is-recorded-not-just-accepted", "steps": [
+      {"sql": "CREATE TABLE t (n INT)"},
+      {"sql": "SHOW TABLES LIKE 't'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"enable_schema_evolution\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "N"}},
+      {"sql": "ALTER TABLE t SET ENABLE_SCHEMA_EVOLUTION = TRUE"},
+      {"sql": "SHOW TABLES LIKE 't'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"enable_schema_evolution\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "Y"}},
+      {"sql": "ALTER TABLE t UNSET ENABLE_SCHEMA_EVOLUTION"},
+      {"sql": "SHOW TABLES LIKE 't'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"enable_schema_evolution\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "N"}}
+    ]},
+    {"name": "schema-evolution-is-recorded-at-create-too", "steps": [
+      {"sql": "CREATE TABLE se (n INT) ENABLE_SCHEMA_EVOLUTION = TRUE"},
+      {"sql": "SHOW TABLES LIKE 'se'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"enable_schema_evolution\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "Y"}}
+    ]},
+    {"name": "error-logging-takes-a-bareword", "steps": [
+      {"sql": "CREATE TABLE t (n INT)"},
+      {"sql": "ALTER TABLE t SET ERROR_LOGGING = DEFAULT"},
+      {"sql": "SHOW TABLES LIKE 't'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"error_logging\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "OFF"}},
+      {"sql": "ALTER TABLE t UNSET ERROR_LOGGING"}
+    ]},
+    {"name": "a-quoted-error-logging-value-is-refused", "steps": [
+      {"sql": "CREATE TABLE t (n INT)"},
+      {"sql": "ALTER TABLE t SET ERROR_LOGGING = 'DEFAULT'",
+       "expect": {"error": {"messageContains": "SQL compilation error:\ninvalid value ['DEFAULT'] for parameter 'ERROR_LOGGING'"}}}
+    ]},
+    {"name": "suspend-and-resume-move-the-automatic-clustering-cell", "steps": [
+      {"sql": "CREATE TABLE clustered_t (n INT) CLUSTER BY (n)"},
+      {"sql": "SHOW TABLES LIKE 'clustered_t'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"automatic_clustering\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "ON"}},
+      {"sql": "ALTER TABLE clustered_t SUSPEND RECLUSTER"},
+      {"sql": "SHOW TABLES LIKE 'clustered_t'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"automatic_clustering\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "OFF"}},
+      {"sql": "ALTER TABLE clustered_t RESUME RECLUSTER"},
+      {"sql": "SHOW TABLES LIKE 'clustered_t'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"automatic_clustering\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "ON"}}
+    ]},
+    {"name": "the-clustering-key-is-untouched-by-suspending", "steps": [
+      {"sql": "CREATE TABLE clustered_t (n INT) CLUSTER BY (n)"},
+      {"sql": "ALTER TABLE clustered_t SUSPEND RECLUSTER"},
+      {"sql": "SHOW TABLES LIKE 'clustered_t'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"cluster_by\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "LINEAR(n)"}}
+    ]},
+    {"name": "suspending-an-unclustered-table-is-refused", "steps": [
+      {"sql": "CREATE TABLE plain_t (n INT)"},
+      {"sql": "ALTER TABLE plain_t SUSPEND RECLUSTER",
+       "expect": {"error": {"messageContains": "Table 'PLAIN_T' is not clustered"}}}
+    ]},
+    {"name": "resuming-an-unclustered-table-is-refused-the-same-way", "steps": [
+      {"sql": "CREATE TABLE plain_t (n INT)"},
+      {"sql": "ALTER TABLE plain_t RESUME RECLUSTER",
+       "expect": {"error": {"messageContains": "Table 'PLAIN_T' is not clustered"}}}
+    ]},
+    {"name": "recluster-remains-usable-as-a-name", "steps": [
+      {"sql": "CREATE TABLE recluster (recluster INT)"},
+      {"sql": "INSERT INTO recluster VALUES (5)"},
+      {"sql": "SELECT recluster FROM recluster", "expect": {"value": "5"}}
+    ]}
+  ]
+}

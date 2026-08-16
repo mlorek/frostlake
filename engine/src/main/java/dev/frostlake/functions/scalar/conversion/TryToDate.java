@@ -35,7 +35,8 @@ public class TryToDate extends BuiltInFunction {
             throw new RuntimeException("invalid type [TRY_TO_DATE(" + args.get(0)
                 + ")] for parameter 'TO_DATE'");
         }
-        final String format = args.size() >= 2 && args.get(1) != null ? args.get(1).toString() : null;
+        if (args.size() >= 2 && args.get(1) == null) return null;
+        final String format = args.size() >= 2 ? args.get(1).toString() : null;
         try {
             return SharedFunctionHelpers.parseDateWithFormat(args.get(0), format);
         } catch (final Exception e) {

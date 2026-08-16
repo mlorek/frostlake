@@ -37,7 +37,7 @@ public class VectorSumTest extends BaseVectorFunctionTest {
     @Test
     public void sumsElementWiseSkippingNullRows() {
         // Live: over [1,2,3], [4,5,6] and a NULL row, VECTOR_SUM is [5.0,7.0,9.0].
-        assertVector("[5.0,7.0,9.0]", "SELECT VECTOR_SUM(v) FROM sum_rows");
+        assertVector("[5.000000,7.000000,9.000000]", "SELECT VECTOR_SUM(v) FROM sum_rows");
     }
 
     @Test
@@ -47,7 +47,7 @@ public class VectorSumTest extends BaseVectorFunctionTest {
         engine.execute("INSERT INTO sum_cross SELECT [4,5,-6]::VECTOR(FLOAT,3)");
         engine.execute("INSERT INTO sum_cross SELECT [7,2,0]::VECTOR(FLOAT,3)");
         // Live: deliberately CROSSING rows (no row is the winner everywhere) => [12.0,16.0,-3.0].
-        assertVector("[12.0,16.0,-3.0]", "SELECT VECTOR_SUM(v) FROM sum_cross");
+        assertVector("[12.000000,16.000000,-3.000000]", "SELECT VECTOR_SUM(v) FROM sum_cross");
     }
 
     @Test
@@ -69,7 +69,7 @@ public class VectorSumTest extends BaseVectorFunctionTest {
     @Test
     public void singleRowGroupIsThatRow() {
         // Live: VECTOR_SUM over one row is that row's vector.
-        assertVector("[1.0,2.0,3.0]", "SELECT VECTOR_SUM(v) FROM sum_rows WHERE id = 1");
+        assertVector("[1.000000,2.000000,3.000000]", "SELECT VECTOR_SUM(v) FROM sum_rows WHERE id = 1");
     }
 
     @Test
@@ -78,8 +78,8 @@ public class VectorSumTest extends BaseVectorFunctionTest {
         final ResultSet grouped =
             engine.executeQuery("SELECT id, VECTOR_SUM(v) FROM sum_rows GROUP BY id ORDER BY id");
         assertEquals(3, grouped.getRows().size());
-        assertVectorValue("[1.0,2.0,3.0]", grouped.getRows().get(0).getValue(1), "group id = 1");
-        assertVectorValue("[4.0,5.0,6.0]", grouped.getRows().get(1).getValue(1), "group id = 2");
+        assertVectorValue("[1.000000,2.000000,3.000000]", grouped.getRows().get(0).getValue(1), "group id = 1");
+        assertVectorValue("[4.000000,5.000000,6.000000]", grouped.getRows().get(1).getValue(1), "group id = 2");
         assertNull(grouped.getRows().get(2).getValue(1));
     }
 

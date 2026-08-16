@@ -33,6 +33,13 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
  * LIMIT+OFFSET, LIMIT 0, LIMIT beyond the row count, projection over a limited result — and that
  * non-streamable shapes (ORDER BY + LIMIT) still fall back and stay correct. Rows are produced in
  * scan (insertion) order, the same as the materializing path.
+ *
+ * <p>★ THESE CELLS PIN A FROSTLAKE IMPLEMENTATION DETAIL, DELIBERATELY. A LIMIT with no ORDER BY picks
+ * an ARBITRARY set of rows in Snowflake — nothing about {@code WHERE id &gt;= 3 LIMIT 2} promises 3 and 4
+ * — so the sequence asserted here is Frostlake's scan order and not portable behaviour. That is the
+ * point: what is under test is the streaming path agreeing with the materializing one, and only a fixed
+ * order can show it. An ORDER BY would defeat the test by sending the query down the fallback path.
+ * These are the reason this class is expected to keep failing an unordered-row-sequence audit.
  */
 public class StreamingSelectTest extends BaseDatabaseTest {
 

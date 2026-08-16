@@ -16,6 +16,8 @@
 
 package dev.frostlake.executor.expressions;
 
+import dev.frostlake.values.DecimalOriginNode;
+import dev.frostlake.values.TypedVectorNode;
 import dev.frostlake.values.VariantUndefined;
 import dev.frostlake.values.VariantValue;
 
@@ -96,6 +98,11 @@ final class JsonPathExtractor {
 
     /** Node-based array-element extraction — see {@link #extractProperty(JsonNode, String)}. */
     static Object extractElement(final JsonNode root, final int index) {
+        // ★ A VECTOR member prints as an array and is NOT indexable: live answers NULL to
+        // TO_VARIANT(v)[0], to a path into one and to ARRAY_SIZE. The elements are visible in the
+        // text and unreachable through the semi-structured accessors — the member is vector-typed,
+        // not an array that happens to hold numbers.
+        if (TypedVectorNode.vectorValueOf(root) != null) return null;
         if (root == null || !root.isArray() || index < 0 || index >= root.size()) return null;
         return jsonNodeToJava(root.get(index));
     }
@@ -131,14 +138,21 @@ final class JsonPathExtractor {
         if (node.isBoolean()) return node.asBoolean();
         if (node.isLong() || node.isInt()) return node.asLong();
         // NUMBER(38,0)-scale values live in BigInteger/BigDecimal nodes; asDouble() would round
-        // 21000000006420544706 to 21000000006420546000. Double-provenance decimals (re-parsed from
-        // canonical text: negative scale or >15 significant digits) go back to Double so the
-        // FLOAT::VARCHAR 10-significant-digit rendering applies.
-        if (node.isBigDecimal()
-                && (node.decimalValue().scale() < 0
-                    || (node.decimalValue().scale() > 0 && node.decimalValue().precision() > 15))) {
+        // 21000000006420544706 to 21000000006420546000. A NEGATIVE scale is the one double-provenance
+        // shape left: it can only come from a number WRITTEN with an exponent, which is exactly what
+        // makes a member a DOUBLE, so it goes back to Double and takes the FLOAT::VARCHAR
+        // 10-significant-digit rendering.
+        //
+        // ★ THE DIGIT COUNT DECIDES NOTHING. A plain fraction is DECIMAL at EVERY width live —
+        // measured at 15, 16, 17, 18, 20, 30 and 38 digits, all DECIMAL, all rendering their full text
+        // — so the "more than 15 significant digits must have been a double" guess that used to sit
+        // here was refusing to believe a perfectly ordinary decimal.
+        if (node.isBigDecimal() && node.decimalValue().scale() < 0) {
             return node.asDouble();
         }
+        // A whole DECIMAL out of a scaled NUMBER stays a VARIANT, since only its node knows the kind: it
+        // reads as its text 3 while TYPEOF answers DECIMAL, as the account's extracted member does.
+        if (node instanceof DecimalOriginNode) return VariantValue.ofNode(node);
         if (node.isBigInteger() || node.isBigDecimal()) return node.decimalValue();
         if (node.isDouble() || node.isFloat() || node.isNumber()) return node.asDouble();
         // Object or array: a typed semi-structured value carrying the node's JSON text.

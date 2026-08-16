@@ -1,0 +1,20 @@
+{
+  "suite": "console-client",
+  "description": "Session context surfaced to console prompts (current database/schema after USE), converted from console/ConsoleClientTest.java via CURRENT_DATABASE()/CURRENT_SCHEMA(); the constructor smoke test stays in Java.",
+  "tags": ["console", "converted"],
+  "tests": [
+    {
+      "name": "context-prompt-with-database",
+      "steps": [
+        {"sql": "DROP DATABASE IF EXISTS test_console_db"},
+        {"sql": "CREATE DATABASE test_console_db"},
+        {"sql": "USE DATABASE test_console_db"},
+        {"sql": "SELECT CURRENT_DATABASE()", "expect": {"value": "TEST_CONSOLE_DB"}},
+        {"sql": "USE SCHEMA PUBLIC"},
+        {"sql": "SELECT CURRENT_SCHEMA()", "expect": {"value": "PUBLIC"}},
+        {"sql": "SELECT CURRENT_DATABASE()", "expect": {"value": "TEST_CONSOLE_DB"}},
+        {"sql": "DROP DATABASE IF EXISTS test_console_db"}
+      ]
+    }
+  ]
+}

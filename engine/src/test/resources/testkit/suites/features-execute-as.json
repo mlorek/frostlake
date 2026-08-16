@@ -1,0 +1,33 @@
+{
+  "suite": "features-execute-as",
+  "description": "The recorded EXECUTE AS of a procedure, read where a real account reports it: SHOW PROCEDURES has no execute_as column - it surfaces under DESCRIBE PROCEDURE as the property row 'execute as' (OWNER / CALLER, defaulting to OWNER when the clause is omitted), with the argument-type list mandatory there. The COMMENT lands in SHOW PROCEDURES' description column, and COMMENT before EXECUTE AS parses. Converted 1:1 from features/ExecuteAsTest (now retired).",
+  "tags": ["features", "converted"],
+  "tests": [
+    {"name": "execute-as-owner", "steps": [
+      {"sql": "CREATE OR REPLACE PROCEDURE my_proc() RETURNS VARCHAR LANGUAGE SQL COMMENT = 'owner proc' EXECUTE AS OWNER AS $$ BEGIN RETURN 'ok'; END $$"},
+      {"sql": "SHOW PROCEDURES"},
+      {"sql": "SELECT COUNT_IF(\"name\" = 'MY_PROC') >= 1 FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "true"}},
+      {"sql": "DESCRIBE PROCEDURE my_proc()"},
+      {"sql": "SELECT MAX(IFF(\"property\" = 'execute as', \"value\", NULL)) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "OWNER"}}
+    ]},
+    {"name": "execute-as-caller", "steps": [
+      {"sql": "CREATE OR REPLACE PROCEDURE caller_proc(n INTEGER) RETURNS INTEGER LANGUAGE SQL COMMENT = 'caller proc' EXECUTE AS CALLER AS $$ BEGIN RETURN n; END $$"},
+      {"sql": "SHOW PROCEDURES"},
+      {"sql": "SELECT COUNT_IF(\"name\" = 'CALLER_PROC') >= 1 FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "true"}},
+      {"sql": "DESCRIBE PROCEDURE caller_proc(INTEGER)"},
+      {"sql": "SELECT MAX(IFF(\"property\" = 'execute as', \"value\", NULL)) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "CALLER"}}
+    ]},
+    {"name": "default-execute-as-is-owner", "steps": [
+      {"sql": "CREATE OR REPLACE PROCEDURE default_proc() RETURNS VARCHAR LANGUAGE SQL AS $$ BEGIN RETURN 'default'; END $$"},
+      {"sql": "DESCRIBE PROCEDURE default_proc()"},
+      {"sql": "SELECT MAX(IFF(\"property\" = 'execute as', \"value\", NULL)) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "OWNER"}}
+    ]},
+    {"name": "comment-before-execute-as", "steps": [
+      {"sql": "CREATE OR REPLACE PROCEDURE commented_proc() RETURNS VARCHAR LANGUAGE SQL COMMENT = 'my comment' EXECUTE AS OWNER AS $$ BEGIN RETURN 'hello'; END $$"},
+      {"sql": "SHOW PROCEDURES"},
+      {"sql": "SELECT MAX(IFF(\"name\" = 'COMMENTED_PROC', \"description\", NULL)) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "my comment"}},
+      {"sql": "DESCRIBE PROCEDURE commented_proc()"},
+      {"sql": "SELECT MAX(IFF(\"property\" = 'execute as', \"value\", NULL)) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "OWNER"}}
+    ]}
+  ]
+}

@@ -1,0 +1,143 @@
+{
+  "suite": "functions-context-variant",
+  "description": "CURRENT_DATABASE() in every position (projection, WHERE, INSERT, subquery, JOIN, CTAS, concat, after switching), GET over arrays/objects/OBJECT_KEYS, HASH_AGG order-independence, plus UDFs in FROM-less SELECTs. Converted 1:1 from functions/CurrentDatabaseTest, GetFunctionTest, HashAggTest and features/UdfSelectTest (all now retired; HASH_AGG cross-cell equality asserts became SQL boolean comparisons).",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "current-database", "steps": [
+      {"sql": "SELECT CURRENT_DATABASE()", "expect": {"value": "TEST_DB"}}
+    ]},
+    {"name": "current-database-with-parentheses-alias", "steps": [
+      {"sql": "CREATE DATABASE IF NOT EXISTS my_database"},
+      {"sql": "USE DATABASE my_database"},
+      {"sql": "SELECT CURRENT_DATABASE() AS db_name", "expect": {"value": "MY_DATABASE", "columns": ["DB_NAME"]}},
+      {"sql": "USE DATABASE test_db"},
+      {"sql": "USE SCHEMA test_schema"},
+      {"sql": "DROP DATABASE IF EXISTS my_database"}
+    ]},
+    {"name": "current-database-in-where-clause", "steps": [
+      {"sql": "CREATE DATABASE IF NOT EXISTS analytics_db"},
+      {"sql": "USE DATABASE analytics_db"},
+      {"sql": "CREATE TABLE metadata (db_name VARCHAR, description VARCHAR)"},
+      {"sql": "INSERT INTO metadata VALUES ('ANALYTICS_DB', 'Main analytics database')"},
+      {"sql": "INSERT INTO metadata VALUES ('OTHER_DB', 'Other database')"},
+      {"sql": "SELECT description FROM metadata WHERE db_name = CURRENT_DATABASE()", "expect": {"rows": [["Main analytics database"]]}},
+      {"sql": "USE DATABASE test_db"},
+      {"sql": "USE SCHEMA test_schema"},
+      {"sql": "DROP DATABASE IF EXISTS analytics_db"}
+    ]},
+    {"name": "current-database-after-switching", "steps": [
+      {"sql": "CREATE DATABASE IF NOT EXISTS db1"},
+      {"sql": "CREATE DATABASE IF NOT EXISTS db2"},
+      {"sql": "USE DATABASE db1"},
+      {"sql": "SELECT CURRENT_DATABASE()", "expect": {"value": "DB1"}},
+      {"sql": "USE DATABASE db2"},
+      {"sql": "SELECT CURRENT_DATABASE()", "expect": {"value": "DB2"}},
+      {"sql": "USE DATABASE test_db"},
+      {"sql": "USE SCHEMA test_schema"},
+      {"sql": "DROP DATABASE IF EXISTS db1"},
+      {"sql": "DROP DATABASE IF EXISTS db2"}
+    ]},
+    {"name": "current-database-in-insert", "steps": [
+      {"sql": "CREATE DATABASE IF NOT EXISTS tracker_db"},
+      {"sql": "USE DATABASE tracker_db"},
+      {"sql": "CREATE TABLE operations (id INTEGER, db_name VARCHAR)"},
+      {"sql": "INSERT INTO operations VALUES (1, CURRENT_DATABASE())"},
+      {"sql": "INSERT INTO operations VALUES (2, CURRENT_DATABASE())"},
+      {"sql": "SELECT DISTINCT db_name FROM operations", "expect": {"rows": [["TRACKER_DB"]]}},
+      {"sql": "USE DATABASE test_db"},
+      {"sql": "USE SCHEMA test_schema"},
+      {"sql": "DROP DATABASE IF EXISTS tracker_db"}
+    ]},
+    {"name": "current-database-in-subquery", "steps": [
+      {"sql": "CREATE DATABASE IF NOT EXISTS subquery_db"},
+      {"sql": "USE DATABASE subquery_db"},
+      {"sql": "CREATE TABLE logs (id INTEGER, context VARCHAR)"},
+      {"sql": "INSERT INTO logs VALUES (1, 'test')"},
+      {"sql": "SELECT id FROM logs WHERE context = 'test' AND 'SUBQUERY_DB' = (SELECT CURRENT_DATABASE())", "expect": {"rows": [["1"]]}},
+      {"sql": "USE DATABASE test_db"},
+      {"sql": "USE SCHEMA test_schema"},
+      {"sql": "DROP DATABASE IF EXISTS subquery_db"}
+    ]},
+    {"name": "current-database-multiple-calls", "steps": [
+      {"sql": "CREATE DATABASE IF NOT EXISTS multi_db"},
+      {"sql": "USE DATABASE multi_db"},
+      {"sql": "SELECT CURRENT_DATABASE() AS db1, CURRENT_DATABASE() AS db2", "expect": {"rows": [["MULTI_DB", "MULTI_DB"]]}},
+      {"sql": "USE DATABASE test_db"},
+      {"sql": "USE SCHEMA test_schema"},
+      {"sql": "DROP DATABASE IF EXISTS multi_db"}
+    ]},
+    {"name": "current-database-with-join", "steps": [
+      {"sql": "CREATE DATABASE IF NOT EXISTS join_db"},
+      {"sql": "USE DATABASE join_db"},
+      {"sql": "CREATE TABLE databases (name VARCHAR, active INTEGER)"},
+      {"sql": "CREATE TABLE settings (db_name VARCHAR, config VARCHAR)"},
+      {"sql": "INSERT INTO databases VALUES ('JOIN_DB', 1)"},
+      {"sql": "INSERT INTO databases VALUES ('OTHER', 0)"},
+      {"sql": "INSERT INTO settings VALUES ('JOIN_DB', 'enabled')"},
+      {"sql": "SELECT s.config FROM databases d JOIN settings s ON d.name = s.db_name WHERE d.name = CURRENT_DATABASE()", "expect": {"rows": [["enabled"]]}},
+      {"sql": "USE DATABASE test_db"},
+      {"sql": "USE SCHEMA test_schema"},
+      {"sql": "DROP DATABASE IF EXISTS join_db"}
+    ]},
+    {"name": "current-database-create-table-as-select", "steps": [
+      {"sql": "CREATE DATABASE IF NOT EXISTS ctas_db"},
+      {"sql": "USE DATABASE ctas_db"},
+      {"sql": "CREATE TABLE db_snapshot AS SELECT CURRENT_DATABASE() AS snapshot_db"},
+      {"sql": "SELECT snapshot_db FROM db_snapshot", "expect": {"value": "CTAS_DB"}},
+      {"sql": "USE DATABASE test_db"},
+      {"sql": "USE SCHEMA test_schema"},
+      {"sql": "DROP DATABASE IF EXISTS ctas_db"}
+    ]},
+    {"name": "current-database-with-concat", "steps": [
+      {"sql": "CREATE DATABASE IF NOT EXISTS concat_db"},
+      {"sql": "USE DATABASE concat_db"},
+      {"sql": "SELECT 'Database: ' || CURRENT_DATABASE() AS info", "expect": {"value": "Database: CONCAT_DB"}},
+      {"sql": "USE DATABASE test_db"},
+      {"sql": "USE SCHEMA test_schema"},
+      {"sql": "DROP DATABASE IF EXISTS concat_db"}
+    ]},
+    {"name": "get-array-element-by-index", "steps": [
+      {"sql": "SELECT GET(PARSE_JSON('[10,20,30]'), 1)", "expect": {"value": "20"}}
+    ]},
+    {"name": "get-object-value-by-key", "steps": [
+      {"sql": "SELECT GET(PARSE_JSON('{\"a\":5}'), 'a')", "expect": {"value": "5"}}
+    ]},
+    {"name": "get-over-object-keys-from-colon-path-then-cast", "steps": [
+      {"sql": "CREATE TABLE t1 (c VARIANT)"},
+      {"sql": "INSERT INTO t1 SELECT PARSE_JSON('{\"owner\":{\"alice\":1,\"bob\":2}}')"},
+      {"sql": "SELECT GET(OBJECT_KEYS(a.c:owner), 0)::STRING FROM t1 a", "expect": {"value": "alice"}}
+    ]},
+    {"name": "hash-agg-is-order-independent-across-groups", "steps": [
+      {"sql": "CREATE TABLE h (g INTEGER, v INTEGER)"},
+      {"sql": "INSERT INTO h VALUES (1,1),(1,2),(1,3)"},
+      {"sql": "INSERT INTO h VALUES (2,3),(2,1),(2,2)"},
+      {"sql": "INSERT INTO h VALUES (3,1),(3,2),(3,4)"},
+      {"sql": "WITH x AS (SELECT g, HASH_AGG(v) AS hv FROM h GROUP BY g) SELECT (SELECT hv FROM x WHERE g = 1) = (SELECT hv FROM x WHERE g = 2), (SELECT hv FROM x WHERE g = 1) <> (SELECT hv FROM x WHERE g = 3)",
+       "expect": {"rows": [["true", "true"]]}}
+    ]},
+    {"name": "hash-agg-null-values-are-hashed-deterministically", "steps": [
+      {"sql": "CREATE TABLE hn (g INTEGER, v INTEGER)"},
+      {"sql": "INSERT INTO hn VALUES (1,1),(1,NULL),(1,2)"},
+      {"sql": "INSERT INTO hn VALUES (2,2),(2,1),(2,NULL)"},
+      {"sql": "WITH x AS (SELECT g, HASH_AGG(v) AS hv FROM hn GROUP BY g) SELECT (SELECT hv FROM x WHERE g = 1) = (SELECT hv FROM x WHERE g = 2)",
+       "expect": {"value": "true"}}
+    ]},
+    {"name": "hash-agg-empty-group-yields-zero", "steps": [
+      {"sql": "CREATE TABLE h (g INTEGER, v INTEGER)"},
+      {"sql": "INSERT INTO h VALUES (1,1)"},
+      {"sql": "SELECT HASH_AGG(v) FROM h WHERE g = 999", "expect": {"value": "0"}}
+    ]},
+    {"name": "udf-returns-object", "steps": [
+      {"sql": "CREATE OR REPLACE FUNCTION f() RETURNS OBJECT AS '{}'"},
+      {"sql": "SELECT f()", "expect": {"value": "{}", "rowCount": 1}}
+    ]},
+    {"name": "udf-with-args", "steps": [
+      {"sql": "CREATE OR REPLACE FUNCTION add_one(n INTEGER) RETURNS INTEGER AS 'n + 1'"},
+      {"sql": "SELECT add_one(41)", "expect": {"value": "42"}}
+    ]},
+    {"name": "udf-in-fromless-select", "steps": [
+      {"sql": "CREATE OR REPLACE FUNCTION greet(name VARCHAR) RETURNS VARCHAR AS 'concat(''hello '', name)'"},
+      {"sql": "SELECT greet('world')", "expect": {"value": "hello world"}}
+    ]}
+  ]
+}

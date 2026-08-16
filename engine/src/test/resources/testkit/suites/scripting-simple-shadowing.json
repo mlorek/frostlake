@@ -1,0 +1,17 @@
+{
+  "suite": "scripting-simple-shadowing",
+  "description": "Variable SHADOWING across nested blocks, reduced to its simplest form: a same-named DECLARE inside a nested block holds only INSIDE that block, and the statement after it sees the outer value again. Pinned at one level (5 / 20 / 5) and at two (5 / 20 / 100 / 20 / 5), which is what shows the restore happening at EACH level rather than only at the outermost. Converted 1:1 from scripting/SimpleShadowingTest (now retired); the Java's first test read the rows ORDERED BY VALUE, which sorted 5/20/5 into 5/5/20 and hid the sequence - the converted tests add a sequence column and pin the INSERT ORDER, which is the claim.",
+  "tags": ["scripting", "converted"],
+  "tests": [
+    {"name": "simple-shadowing", "steps": [
+      {"sql": "CREATE TABLE results (seq INTEGER, value INTEGER)"},
+      {"sql": "DECLARE x INTEGER := 5; BEGIN INSERT INTO results VALUES (1, :x); DECLARE x INTEGER := 20; BEGIN INSERT INTO results VALUES (2, :x); END; INSERT INTO results VALUES (3, :x); END;"},
+      {"sql": "SELECT value FROM results ORDER BY seq", "expect": {"rows": [[5],[20],[5]], "ordered": true}}
+    ]},
+    {"name": "double-shadowing", "steps": [
+      {"sql": "CREATE TABLE results (seq INTEGER, value INTEGER)"},
+      {"sql": "DECLARE x INTEGER := 5; BEGIN INSERT INTO results VALUES (1, :x); DECLARE x INTEGER := 20; BEGIN INSERT INTO results VALUES (2, :x); DECLARE x INTEGER := 100; BEGIN INSERT INTO results VALUES (3, :x); END; INSERT INTO results VALUES (4, :x); END; INSERT INTO results VALUES (5, :x); END;"},
+      {"sql": "SELECT value FROM results ORDER BY seq", "expect": {"rows": [[5],[20],[100],[20],[5]], "ordered": true}}
+    ]}
+  ]
+}

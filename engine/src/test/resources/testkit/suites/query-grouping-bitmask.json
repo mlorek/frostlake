@@ -1,0 +1,22 @@
+{
+  "suite": "query-grouping-bitmask",
+  "description": "GROUPING() with MULTIPLE arguments returns an integer BITMASK, the first argument being the most significant bit, each bit 1 when that column is aggregated over (rolled up) and 0 when grouped by. Previously a multi-argument call collapsed to a single 0/1 - and always 1, since the 'a, b' argument matched no key. Over ROLLUP(region, product) the detail rows are 0, the region subtotals 1 and the grand total 3. A single argument still yields 0 or 1, and it is 1 exactly when that column's value is NULL. Argument matching is case-INSENSITIVE, so GROUPING(REGION) matches GROUP BY region. Converted 1:1 from query/GroupingBitmaskTest (now retired); the Java counted rows by bitmask and checked a per-row relationship, which the converted tests state as whole ordered row sets - so the bitmask is pinned to the row it belongs to rather than to a tally.",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "a-multi-argument-grouping-is-a-bitmask", "steps": [
+      {"sql": "CREATE TABLE sales (region VARCHAR, product VARCHAR, amount INTEGER)"},
+      {"sql": "INSERT INTO sales VALUES ('East','A',10), ('East','B',20), ('West','A',30)"},
+      {"sql": "SELECT region, product, GROUPING(region, product) AS grp FROM sales GROUP BY ROLLUP(region, product) ORDER BY region NULLS LAST, product NULLS LAST", "expect": {"rows": [["East","A",0],["East","B",0],["East",null,1],["West","A",0],["West",null,1],[null,null,3]], "ordered": true}}
+    ]},
+    {"name": "a-single-argument-grouping-tracks-each-column", "steps": [
+      {"sql": "CREATE TABLE sales (region VARCHAR, product VARCHAR, amount INTEGER)"},
+      {"sql": "INSERT INTO sales VALUES ('East','A',10), ('East','B',20), ('West','A',30)"},
+      {"sql": "SELECT region, product, GROUPING(region) AS gr, GROUPING(product) AS gp FROM sales GROUP BY ROLLUP(region, product) ORDER BY region NULLS LAST, product NULLS LAST", "expect": {"rows": [["East","A",0,0],["East","B",0,0],["East",null,0,1],["West","A",0,0],["West",null,0,1],[null,null,1,1]], "ordered": true}}
+    ]},
+    {"name": "the-grouping-argument-is-case-insensitive", "steps": [
+      {"sql": "CREATE TABLE sales (region VARCHAR, product VARCHAR, amount INTEGER)"},
+      {"sql": "INSERT INTO sales VALUES ('East','A',10), ('East','B',20), ('West','A',30)"},
+      {"sql": "SELECT region, GROUPING(REGION) AS gr FROM sales GROUP BY ROLLUP(region) ORDER BY region NULLS LAST", "expect": {"rows": [["East",0],["West",0],[null,1]], "ordered": true}}
+    ]}
+  ]
+}

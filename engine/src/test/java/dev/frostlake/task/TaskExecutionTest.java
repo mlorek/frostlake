@@ -24,6 +24,9 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
 import java.time.LocalDateTime;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
+import java.time.ZonedDateTime;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -182,17 +185,19 @@ public class TaskExecutionTest extends BaseDatabaseTest {
             .getTask(name.toUpperCase());
     }
 
-    // A daily cron arms with a ~1440-minute interval (previously every cron meant 5 minutes).
+    // A daily cron arms for the next midnight in its own zone — a calendar instant, not an interval
+    // counted from the RESUME.
     @Test
-    public void cronDailyArmsWithDailyInterval() {
+    public void cronDailyArmsForTheNextMidnightInItsZone() {
         Assumptions.assumeFalse(isLiveSnowflake(), TASK_EXECUTION);
         engine.execute("CREATE TABLE tlog (v INTEGER)");
         engine.execute("CREATE TASK ct SCHEDULE = 'USING CRON 0 0 * * * UTC' AS INSERT INTO tlog VALUES (1)");
         engine.execute("ALTER TASK ct RESUME");
+        final ZonedDateTime midnight = ZonedDateTime.now(ZoneOffset.UTC).toLocalDate().plusDays(1)
+            .atStartOfDay(ZoneOffset.UTC);
         final LocalDateTime next = taskModel("ct").getNextRunTime();
-        final LocalDateTime now = LocalDateTime.now();
-        assertTrue(next.isAfter(now.plusMinutes(1000)) && next.isBefore(now.plusMinutes(2000)),
-            "daily cron should arm ~1440 minutes out, got " + next);
+        assertEquals(midnight.withZoneSameInstant(ZoneId.systemDefault()).toLocalDateTime(), next,
+            "a daily cron arms for the next midnight UTC, got " + next);
         engine.execute("ALTER TASK ct SUSPEND");
     }
 

@@ -1,0 +1,53 @@
+{
+  "suite": "scripting-procedure-home-schema-resolution",
+  "description": "A stored procedure's unqualified and partially-qualified object references resolve against the procedure's HOME database and schema - where the procedure LIVES - matching Snowflake, and not against the caller's current database. LIB.UTIL.SAVE_ENTRY internally calls UTIL.IS_ALLOWED and merges into UTIL.SETTINGS, so both must resolve against LIB.UTIL when the procedure is invoked while APPDB.WORK is current; the MERGE landing in lib.util.settings is what proves it. The caller's context is RESTORED after the call, so CURRENT_DATABASE and CURRENT_SCHEMA still read APPDB and WORK. And the internal function call really runs, so an invalid code is still detected across databases and nothing is written. Converted 1:1 from scripting/ProcedureHomeSchemaResolutionTest (now retired).",
+  "tags": ["scripting", "converted"],
+  "tests": [
+    {"name": "a-cross-database-call-resolves-internal-references-against-the-home-database", "steps": [
+      {"sql": "CREATE DATABASE IF NOT EXISTS lib"},
+      {"sql": "USE DATABASE lib"},
+      {"sql": "CREATE SCHEMA IF NOT EXISTS util"},
+      {"sql": "USE SCHEMA util"},
+      {"sql": "CREATE OR REPLACE FUNCTION UTIL.IS_ALLOWED(code VARCHAR) RETURNS BOOLEAN LANGUAGE SQL AS $$ UPPER(code) IN ('A', 'B', 'C') $$"},
+      {"sql": "CREATE OR REPLACE TABLE UTIL.SETTINGS (name VARCHAR, label VARCHAR, code VARCHAR)"},
+      {"sql": "CREATE OR REPLACE PROCEDURE UTIL.SAVE_ENTRY(p_name VARCHAR, p_label VARCHAR, p_code VARCHAR) RETURNS VARCHAR LANGUAGE SQL AS $$ BEGIN IF (NOT UTIL.IS_ALLOWED(:p_code)) THEN RETURN 'invalid'; END IF; MERGE INTO UTIL.SETTINGS t USING (SELECT :p_name AS name, :p_label AS label) s ON t.name = s.name AND t.label = s.label WHEN NOT MATCHED THEN INSERT (name, label, code) VALUES (:p_name, :p_label, :p_code); RETURN 'saved'; END $$"},
+      {"sql": "CREATE DATABASE IF NOT EXISTS appdb"},
+      {"sql": "USE DATABASE appdb"},
+      {"sql": "CREATE SCHEMA IF NOT EXISTS work"},
+      {"sql": "USE SCHEMA work"},
+      {"sql": "CALL lib.util.save_entry('n1', 'label1', 'A')", "expect": {"value": "saved"}},
+      {"sql": "SELECT name, label, code FROM lib.util.settings", "expect": {"rows": [["n1","label1","A"]]}}
+    ]},
+    {"name": "the-callers-current-database-is-restored-after-the-call", "steps": [
+      {"sql": "CREATE DATABASE IF NOT EXISTS lib"},
+      {"sql": "USE DATABASE lib"},
+      {"sql": "CREATE SCHEMA IF NOT EXISTS util"},
+      {"sql": "USE SCHEMA util"},
+      {"sql": "CREATE OR REPLACE FUNCTION UTIL.IS_ALLOWED(code VARCHAR) RETURNS BOOLEAN LANGUAGE SQL AS $$ UPPER(code) IN ('A', 'B', 'C') $$"},
+      {"sql": "CREATE OR REPLACE TABLE UTIL.SETTINGS (name VARCHAR, label VARCHAR, code VARCHAR)"},
+      {"sql": "CREATE OR REPLACE PROCEDURE UTIL.SAVE_ENTRY(p_name VARCHAR, p_label VARCHAR, p_code VARCHAR) RETURNS VARCHAR LANGUAGE SQL AS $$ BEGIN IF (NOT UTIL.IS_ALLOWED(:p_code)) THEN RETURN 'invalid'; END IF; MERGE INTO UTIL.SETTINGS t USING (SELECT :p_name AS name, :p_label AS label) s ON t.name = s.name AND t.label = s.label WHEN NOT MATCHED THEN INSERT (name, label, code) VALUES (:p_name, :p_label, :p_code); RETURN 'saved'; END $$"},
+      {"sql": "CREATE DATABASE IF NOT EXISTS appdb"},
+      {"sql": "USE DATABASE appdb"},
+      {"sql": "CREATE SCHEMA IF NOT EXISTS work"},
+      {"sql": "USE SCHEMA work"},
+      {"sql": "CALL lib.util.save_entry('n1', 'l', 'A')", "expect": {"value": "saved"}},
+      {"sql": "SELECT CURRENT_DATABASE()", "expect": {"value": "APPDB"}},
+      {"sql": "SELECT CURRENT_SCHEMA()", "expect": {"value": "WORK"}}
+    ]},
+    {"name": "an-invalid-code-is-still-detected-across-databases", "steps": [
+      {"sql": "CREATE DATABASE IF NOT EXISTS lib"},
+      {"sql": "USE DATABASE lib"},
+      {"sql": "CREATE SCHEMA IF NOT EXISTS util"},
+      {"sql": "USE SCHEMA util"},
+      {"sql": "CREATE OR REPLACE FUNCTION UTIL.IS_ALLOWED(code VARCHAR) RETURNS BOOLEAN LANGUAGE SQL AS $$ UPPER(code) IN ('A', 'B', 'C') $$"},
+      {"sql": "CREATE OR REPLACE TABLE UTIL.SETTINGS (name VARCHAR, label VARCHAR, code VARCHAR)"},
+      {"sql": "CREATE OR REPLACE PROCEDURE UTIL.SAVE_ENTRY(p_name VARCHAR, p_label VARCHAR, p_code VARCHAR) RETURNS VARCHAR LANGUAGE SQL AS $$ BEGIN IF (NOT UTIL.IS_ALLOWED(:p_code)) THEN RETURN 'invalid'; END IF; MERGE INTO UTIL.SETTINGS t USING (SELECT :p_name AS name, :p_label AS label) s ON t.name = s.name AND t.label = s.label WHEN NOT MATCHED THEN INSERT (name, label, code) VALUES (:p_name, :p_label, :p_code); RETURN 'saved'; END $$"},
+      {"sql": "CREATE DATABASE IF NOT EXISTS appdb"},
+      {"sql": "USE DATABASE appdb"},
+      {"sql": "CREATE SCHEMA IF NOT EXISTS work"},
+      {"sql": "USE SCHEMA work"},
+      {"sql": "CALL lib.util.save_entry('n1', 'l', 'ZZ')", "expect": {"value": "invalid"}},
+      {"sql": "SELECT COUNT(*) FROM lib.util.settings", "expect": {"value": 0}}
+    ]}
+  ]
+}

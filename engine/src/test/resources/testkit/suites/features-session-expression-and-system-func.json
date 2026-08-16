@@ -1,0 +1,54 @@
+{
+  "suite": "features-session-expression-and-system-func",
+  "description": "Statement-level expression evaluation on the SET / session-variable path - unary operators, parentheses and $var references inside a SET expression - plus the SYSTEM$ function family: SYSTEM$STREAM_HAS_DATA reflects pending changes, SYSTEM$USER_TASK_CANCEL_ONGOING_EXECUTIONS reports that nothing is running (echoing the name exactly as passed, accepting a qualified one, and leaving a started task started) while an unknown task is an error, and SYSTEM$TYPEOF answers a type name. Converted 1:1 from features/SessionExpressionAndSystemFuncTest (now retired).",
+  "tags": ["features", "converted"],
+  "tests": [
+    {"name": "set-evaluates-unary-parens-and-session-var-refs", "steps": [
+      {"sql": "SET n = -5"},
+      {"sql": "SELECT $n", "expect": {"value": "-5"}},
+      {"sql": "SET p = +7"},
+      {"sql": "SELECT $p", "expect": {"value": "7"}},
+      {"sql": "SET q = (3)"},
+      {"sql": "SELECT $q", "expect": {"value": "3"}},
+      {"sql": "SET r = $n"},
+      {"sql": "SELECT $r", "expect": {"value": "-5"}}
+    ]},
+    {"name": "system-stream-has-data-reflects-pending-changes", "steps": [
+      {"sql": "CREATE TABLE shd_src (id INTEGER)"},
+      {"sql": "CREATE STREAM shd_stream ON TABLE shd_src"},
+      {"sql": "SET empty_state = SYSTEM$STREAM_HAS_DATA('SHD_STREAM')"},
+      {"sql": "SELECT $empty_state", "expect": {"value": "false"}},
+      {"sql": "INSERT INTO shd_src VALUES (1)"},
+      {"sql": "SET full_state = SYSTEM$STREAM_HAS_DATA('SHD_STREAM')"},
+      {"sql": "SELECT $full_state", "expect": {"value": "true"}}
+    ]},
+    {"name": "system-user-task-cancel-reports-no-running-executions", "steps": [
+      {"sql": "CREATE TASK cancel_me SCHEDULE = '1 MINUTE' AS SELECT 1"},
+      {"sql": "ALTER TASK cancel_me RESUME"},
+      {"sql": "SET outcome = SYSTEM$USER_TASK_CANCEL_ONGOING_EXECUTIONS('CANCEL_ME')"},
+      {"sql": "SELECT $outcome",
+       "expect": {"value": "Task CANCEL_ME has no currently running executions. If the task was dropped or replaced after a previous execution started, use SYSTEM$CANCEL_QUERY along with the query id to cancel the run."}},
+      {"sql": "SHOW TASKS LIKE 'CANCEL_ME'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"state\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "started"}}
+    ]},
+    {"name": "system-user-task-cancel-echoes-the-name-verbatim", "steps": [
+      {"sql": "CREATE TASK echo_me SCHEDULE = '1 MINUTE' AS SELECT 1"},
+      {"sql": "SET outcome = SYSTEM$USER_TASK_CANCEL_ONGOING_EXECUTIONS('echo_me')"},
+      {"sql": "SELECT STARTSWITH($outcome, 'Task echo_me has no currently running executions.')",
+       "expect": {"value": "true"}}
+    ]},
+    {"name": "system-user-task-cancel-rejects-an-unknown-task", "steps": [
+      {"sql": "SET outcome = SYSTEM$USER_TASK_CANCEL_ONGOING_EXECUTIONS('NO_SUCH_TASK')",
+       "expect": {"error": {"messageContains": "Task NO_SUCH_TASK not found or not authorized."}}}
+    ]},
+    {"name": "system-typeof-returns-a-type-name", "steps": [
+      {"sql": "SET t = SYSTEM$TYPEOF(123)"},
+      {"sql": "SELECT IFF($t IS NULL, 'null', 'set')", "expect": {"value": "set"}}
+    ]},
+    {"name": "user-task-cancel-accepts-qualified-name", "steps": [
+      {"sql": "CREATE TASK cancel_q SCHEDULE = '1 MINUTE' AS SELECT 1"},
+      {"sql": "SELECT SYSTEM$USER_TASK_CANCEL_ONGOING_EXECUTIONS('TEST_SCHEMA.CANCEL_Q')",
+       "expect": {"value": "Task TEST_SCHEMA.CANCEL_Q has no currently running executions. If the task was dropped or replaced after a previous execution started, use SYSTEM$CANCEL_QUERY along with the query id to cancel the run."}}
+    ]}
+  ]
+}

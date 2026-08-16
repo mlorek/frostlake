@@ -323,9 +323,9 @@ public class SyntaxErrorShapeTest extends BaseDatabaseTest {
             refusal("SELECT a FROM kw WHERE").getMessage());
         assertEquals("SQL compilation error:\nsyntax error line 1 at position 22 unexpected '<EOF>'.",
             refusal("SELECT a FROM kw ORDER").getMessage());
-        // An unclosed call is the one measured shape where live stacks a SECOND line, pointing
-        // BACKWARDS at the '(' it never closed; Frostlake reports the first line only, so this cell
-        // pins the shared opening rather than the whole message.
+        // An unclosed call is a measured shape where live stacks a SECOND line, pointing BACKWARDS at
+        // the '(' it never closed; UnclosedCallLinesTest asserts whole messages, so this cell pins the
+        // shared opening only.
         assertTrue(refusal("SELECT MAX(").getMessage().startsWith(
             "SQL compilation error:\nsyntax error line 1 at position 11 unexpected '<EOF>'."),
             refusal("SELECT MAX(").getMessage());

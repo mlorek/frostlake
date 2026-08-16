@@ -57,9 +57,15 @@ public class Substring extends TextArgumentFunction {
      * behaves as 1 ({@code SUBSTR('hello',0,2)} is {@code he}), a negative start counts back from the
      * end ({@code SUBSTR('hello',-2,2)} is {@code lo}), a window falling entirely outside the value is
      * empty rather than clamped ({@code SUBSTR('hello',-99,2)} and {@code SUBSTR('hello',9,2)} are both
-     * empty), and a negative length is empty too ({@code SUBSTR('hello',2,-1)}).
+     * empty), and a negative length is empty too ({@code SUBSTR('hello',2,-1)}). INSERT cuts with the
+     * same windows, being planned as two SUBSTRs.
+     *
+     * @param total  the value's length in its own units — characters, or bytes for a BINARY
+     * @param start  the 1-based start as written
+     * @param length the length as written, {@link Integer#MAX_VALUE} for "to the end"
+     * @return the {@code [from, to)} window
      */
-    private int[] window(final int total, final int start, final int length) {
+    static int[] window(final int total, final int start, final int length) {
         final long first = start == 0 ? 1L : (start > 0 ? start : (long) total + start + 1L);
         final long lastExclusive = length == Integer.MAX_VALUE
             ? (long) total + 1L : first + Math.max(length, 0);

@@ -44,8 +44,11 @@ public class LastDay extends BuiltInFunction {
                 // Default WEEK_START (weeks start on Monday) → the week's last day is Sunday.
                 return d.with(TemporalAdjusters.nextOrSame(DayOfWeek.SUNDAY));
             case "MONTH": case "MM": case "MON": case "MONS": case "MONTHS":
-            default:
                 return d.with(TemporalAdjusters.lastDayOfMonth());
+            default:
+                // A word LAST_DAY does not know is refused rather than silently read as MONTH —
+                // live: "['ZZ'] is not a valid date/time component for function LAST_DAY."
+                throw SharedFunctionHelpers.notADateTimeComponent(args.get(1), "LAST_DAY");
         }
     }
 

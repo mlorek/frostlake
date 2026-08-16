@@ -28,6 +28,7 @@ import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
 import dev.frostlake.storage.TableStorage;
 import dev.frostlake.transaction.TransactionWriteSet;
+import dev.frostlake.types.DataType;
 import dev.frostlake.types.NumericType;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -35,6 +36,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import org.antlr.v4.runtime.ParserRuleContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -100,7 +102,9 @@ final class MergeExecutor {
 
             // Get target table
             final String targetTableName = executor.getQualifiedName(ctx.qualifiedName());
-            final Table targetTable = executor.getCatalog().resolveTable(targetTableName);
+            // The target is looked up the way a FROM clause looks a table up: a missing one is a missing
+            // Object, named as written (live-verified).
+            final Table targetTable = executor.getCatalog().resolveTableAsWritten(targetTableName, "Object");
             int mergeInserted = 0;
             int mergeUpdated = 0;
 
@@ -128,7 +132,7 @@ final class MergeExecutor {
                 final FrostlakeParser.MergeSourceValuesContext valuesCtx = (FrostlakeParser.MergeSourceValuesContext) mergeSource;
                 for (final FrostlakeParser.ValueTupleContext tuple : valuesCtx.valueTupleList().valueTuple()) {
                     final List<Object> values = new ArrayList<>();
-                    for (final FrostlakeParser.ExpressionContext expr : tuple.valueList().expression()) {
+                    for (final FrostlakeParser.BooleanExprContext expr : tuple.valueList().booleanExpr()) {
                         final String exprText = executor.getOriginalText(expr);
                         final Table dummyTable = new Table("DUMMY", new ArrayList<>(), false);
                         final Row dummyRow = new Row(new ArrayList<>());
@@ -149,11 +153,13 @@ final class MergeExecutor {
                     sourceRows = streamSource.rows;
                     sourceTable = streamSource.table;
                 } else {
+                    // Looked up the way a FROM clause looks a table up, before any row is read, so a missing
+                    // source is a missing Object rather than missing storage (live-verified).
+                    sourceTable = executor.getCatalog().resolveTableAsWritten(sourceTableName, "Object");
                     final String fullyQualifiedSourceName = executor.getFullyQualifiedTableName(sourceTableName);
                     // Overlay-aware: a stage table populated by THIS transaction must be visible as the
                     // merge source (a raw scan saw only the committed base — empty for a fresh stage).
                     sourceRows = executor.readTableRowsForTransaction(fullyQualifiedSourceName);
-                    sourceTable = executor.getCatalog().resolveTable(sourceTableName);
                 }
             } else if (mergeSource instanceof FrostlakeParser.MergeSourceSubqueryContext) {
                 // USING (SELECT ...) — pass CTEs so subquery can reference them
@@ -180,6 +186,14 @@ final class MergeExecutor {
                 }
                 sourceTable = executor.applyColumnAliases(sourceTable, aliases);
             }
+
+            // The target and the source each register a name (see FromSourceNames), and the same one twice
+            // is refused: MERGE INTO t USING s t is "duplicate alias 'T'" (live-verified).
+            final FromSourceNames sourceNames = new FromSourceNames(executor);
+            sourceNames.register(targetAlias != null ? targetAlias
+                : FromSourceNames.lastPart(ParseTreeText.qualifiedNameParts(ctx.qualifiedName())));
+            sourceNames.register(sourceAlias != null ? sourceAlias : FromSourceNames.mergeSourceName(mergeSource));
+            sourceNames.rejectDuplicate();
 
             // Get ON condition (preserve whitespace for proper AND/OR parsing)
             final String onCondition = executor.getOriginalText(ctx.booleanExpr());
@@ -247,6 +261,11 @@ final class MergeExecutor {
                     notMatchedClauses.add(clause);
                 }
             }
+
+            // Every value a branch writes is type-matched against its column before any row is read, as an
+            // INSERT's is: WHEN MATCHED THEN UPDATE SET n = (1 = 1) is refused even when nothing matches.
+            rejectMistypedBranchValues(targetTable, targetAlias, sourceTable, sourceAlias, matchedClauses,
+                notMatchedClauses);
 
             // A source row that joins to ANY target is "matched", so WHEN NOT MATCHED must skip it. Determine
             // this fully up front: the per-target update loop below stops at each target's FIRST matching
@@ -339,7 +358,8 @@ final class MergeExecutor {
                                         final List<Object> newValues = new ArrayList<>(targetRow.getValues());
                                         newValues.set(colIndex, newValue);
                                         final Row updatedRow = new Row(newValues);
-                                        executor.enforceColumnConstraintsForDml(targetTable, updatedRow);
+                                        executor.enforceColumnConstraintsForDml(targetTable, updatedRow, false,
+                                            targetTableName);
 
                                         if (executor.isDeferredApply()) {
                                             final Long targetRowId = targetRowIds.get(targetIdx);
@@ -417,14 +437,25 @@ final class MergeExecutor {
                         List<Object> values = new ArrayList<>();
                         if (notMatchedClause.valueTuple() != null) {
                             final Row emptyTargetRow = new Row(new ArrayList<>());
-                            for (final FrostlakeParser.ExpressionContext expr : notMatchedClause.valueTuple().valueList().expression()) {
+                            final List<FrostlakeParser.BooleanExprContext> valueExprs =
+                                notMatchedClause.valueTuple().valueList().booleanExpr();
+                            for (int v = 0; v < valueExprs.size(); v++) {
                                 // A bare DEFAULT travels as the MARKER and is substituted per target
                                 // column below, the same way INSERT … VALUES does it.
-                                final String valueText = executor.getOriginalText(expr);
+                                final String valueText = executor.getOriginalText(valueExprs.get(v));
                                 final Expression parsedValue = ExpressionEvaluator.parse(valueText);
-                                values.add(parsedValue instanceof DefaultMarkerExpression ? parsedValue
-                                    : evaluateMergeValue(valueText, emptyTargetRow, sourceRow,
-                                        targetTable, sourceTable, targetAlias, sourceAlias, true));
+                                try {
+                                    values.add(parsedValue instanceof DefaultMarkerExpression ? parsedValue
+                                        : evaluateMergeValue(valueText, emptyTargetRow, sourceRow,
+                                            targetTable, sourceTable, targetAlias, sourceAlias, true));
+                                } catch (final RuntimeException failed) {
+                                    // A VALUES item that cannot be computed is a DML failure on the
+                                    // column it feeds, live-verified — the target as the MERGE wrote it.
+                                    throw DmlWriteTarget.isRowTimeFailure(failed)
+                                        ? DmlWriteTarget.failedOnColumn(targetTableName,
+                                            mergeInsertColumnName(notMatchedClause, targetTable, v), failed)
+                                        : failed;
+                                }
                             }
                         } else {
                             values = new ArrayList<>(sourceRow.getValues());
@@ -463,7 +494,7 @@ final class MergeExecutor {
                         }
 
                         final Row newRow = new Row(orderedValues);
-                        executor.enforceColumnConstraintsForDml(targetTable, newRow);
+                        executor.enforceColumnConstraintsForDml(targetTable, newRow, false, targetTableName);
                         if (executor.isDeferredApply()) {
                             mergeWriteSet.recordInsert(fullyQualifiedTargetName, newRow);
                         } else {
@@ -503,7 +534,7 @@ final class MergeExecutor {
         }
         final List<Row> rows = new ArrayList<>();
         rows.add(new Row(values));
-        return new ResultSet(columns, rows);
+        return new ResultSet(columns, rows).markUpdateCount(inserted + updated + deleted);
     }
 
     /**
@@ -636,6 +667,87 @@ final class MergeExecutor {
     }
 
     /** Evaluate a MERGE UPDATE SET value expression using the merged source+target context. */
+    /**
+     * The compile-time type match of every value a MERGE branch writes (see {@link ColumnTypeFamilies}). An
+     * UPDATE SET value is judged against its column in the table's column order, an INSERT value against
+     * the column it feeds, each typed with the target and the source in scope. A DEFAULT, or a value the
+     * static channel cannot type, is left to the row.
+     */
+    private void rejectMistypedBranchValues(final Table targetTable, final String targetAlias,
+                                            final Table sourceTable, final String sourceAlias,
+                                            final List<FrostlakeParser.MergeClauseContext> matchedClauses,
+                                            final List<FrostlakeParser.MergeClauseContext> notMatchedClauses) {
+        final Map<String, Table> aliasToTable = new HashMap<>();
+        final List<Table> allTables = new ArrayList<>();
+        aliasToTable.put((targetAlias != null ? targetAlias : targetTable.getName()).toUpperCase(), targetTable);
+        allTables.add(targetTable);
+        if (sourceTable != null && sourceTable != targetTable) {
+            aliasToTable.put((sourceAlias != null ? sourceAlias : sourceTable.getName()).toUpperCase(), sourceTable);
+            allTables.add(sourceTable);
+        }
+        final ExpressionEvaluator scope = new ExpressionEvaluator(targetTable, executor.getFunctionRegistry(),
+            executor.getCatalog(), executor);
+        scope.setMultiTableContext(aliasToTable, allTables);
+        for (final FrostlakeParser.MergeClauseContext clause : matchedClauses) {
+            if (clause.assignmentList() == null) {
+                continue;
+            }
+            final Map<String, ParserRuleContext> assigned = new HashMap<>();
+            for (final FrostlakeParser.AssignmentContext assign : clause.assignmentList().assignment()) {
+                assigned.put(ParseTreeText.namePartText(assign.namePart()).toUpperCase(), assign.expression());
+            }
+            for (final TableColumn column : targetTable.getColumns()) {
+                final ParserRuleContext value = assigned.get(column.getName().toUpperCase());
+                if (value != null) {
+                    rejectMistypedValue(scope, column, value);
+                }
+            }
+        }
+        for (final FrostlakeParser.MergeClauseContext clause : notMatchedClauses) {
+            if (clause.valueTuple() == null || clause.valueTuple().valueList() == null) {
+                continue;
+            }
+            final List<FrostlakeParser.BooleanExprContext> values = clause.valueTuple().valueList().booleanExpr();
+            for (int i = 0; i < values.size(); i++) {
+                final TableColumn column = targetTable.getColumn(mergeInsertColumnName(clause, targetTable, i));
+                if (column != null) {
+                    rejectMistypedValue(scope, column, values.get(i));
+                }
+            }
+        }
+    }
+
+    /** One branch value against its column; see {@link #rejectMistypedBranchValues}. */
+    private void rejectMistypedValue(final ExpressionEvaluator scope, final TableColumn column,
+                                     final ParserRuleContext value) {
+        final DataType sourceType;
+        try {
+            final Expression parsed = ExpressionEvaluator.parse(executor.getOriginalText(value));
+            if (parsed instanceof DefaultMarkerExpression) {
+                return;
+            }
+            sourceType = scope.inferStaticType(parsed);
+        } catch (final RuntimeException untyped) {
+            return;
+        }
+        ColumnTypeFamilies.rejectMismatch(column, sourceType);
+    }
+
+    /** The target column the {@code index}-th VALUES item of a MERGE's INSERT feeds, upper-cased. */
+    private String mergeInsertColumnName(final FrostlakeParser.MergeClauseContext clause,
+                                         final Table targetTable, final int index) {
+        if (clause.mergeInsertColumnList() != null) {
+            final List<FrostlakeParser.MergeInsertColumnContext> columns =
+                clause.mergeInsertColumnList().mergeInsertColumn();
+            if (index < columns.size()) {
+                final List<FrostlakeParser.IdentifierContext> parts = columns.get(index).identifier();
+                return executor.getIdentifier(parts.get(parts.size() - 1)).toUpperCase();
+            }
+        }
+        return index < targetTable.getColumns().size()
+            ? targetTable.getColumns().get(index).getName().toUpperCase() : "?";
+    }
+
     private Object evaluateMergeValue(final String expr, final Row targetRow, final Row sourceRow,
                                       final Table targetTable, final Table sourceTable,
                                       final String targetAlias, final String sourceAlias) {
@@ -652,6 +764,15 @@ final class MergeExecutor {
         try {
             return shapeFor(targetTable, sourceTable, targetAlias, sourceAlias, true, unqualifiedFromSource)
                 .evaluate(expr, targetRow, sourceRow);
+        } catch (final RuntimeException failed) {
+            // A value that REFUSED — a conditional's branch cast, a conversion — is the answer, live's
+            // own sentence ("Failed to cast variant value 1 to DATE"); the fallback below is for a
+            // reference the two-table shape could not resolve, and used to swallow the refusal too,
+            // so the raw value reached the write and was refused there in other words.
+            if (DmlWriteTarget.isRowTimeFailure(failed)) {
+                throw failed;
+            }
+            return evaluateMergeExpression(expr, targetRow, sourceRow, targetTable, sourceTable, targetAlias, sourceAlias);
         } catch (final Exception e) {
             // Fall back to legacy evaluator for complex expressions
             return evaluateMergeExpression(expr, targetRow, sourceRow, targetTable, sourceTable, targetAlias, sourceAlias);

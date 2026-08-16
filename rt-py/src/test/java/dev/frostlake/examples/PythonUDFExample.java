@@ -213,7 +213,7 @@ public final class PythonUDFExample {
                 CREATE FUNCTION js_double(x INTEGER)
                 RETURNS INTEGER
                 LANGUAGE JAVASCRIPT
-                AS 'return x * 2;'
+                AS 'return X * 2;'
                 """);
 
             engine.execute("""

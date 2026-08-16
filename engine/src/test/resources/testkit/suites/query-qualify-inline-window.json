@@ -1,0 +1,31 @@
+{
+  "suite": "query-qualify-inline-window",
+  "description": "QUALIFY with the window function written INLINE in the predicate rather than referenced through a SELECT alias - QUALIFY ROW_NUMBER() OVER (PARTITION BY g ORDER BY v DESC) = 1. The engine precomputes each inline window function over all rows and substitutes it before filtering. Pinned with an equality (top row per group), a range predicate (top two per group), an AND against an ordinary predicate, and the alias-based form that already worked, as a regression guard. Converted 1:1 from query/QualifyInlineWindowTest (now retired); the Java asserted row counts and read the first column by index, so the converted tests pin the whole row set - the top-two and alias tests had asserted only a COUNT, which four or two arbitrary rows would have satisfied.",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "an-inline-row-number-equal-to-one", "steps": [
+      {"sql": "CREATE TABLE w (id INTEGER, grp VARCHAR, val INTEGER)"},
+      {"sql": "INSERT INTO w VALUES (1,'a',10),(2,'a',20),(3,'a',30),(4,'b',5),(5,'b',15)"},
+      {"sql": "SELECT id FROM w QUALIFY ROW_NUMBER() OVER (PARTITION BY grp ORDER BY val DESC) = 1",
+       "expect": {"rows": [[3],[5]]}}
+    ]},
+    {"name": "an-inline-row-number-taking-the-top-two", "steps": [
+      {"sql": "CREATE TABLE w (id INTEGER, grp VARCHAR, val INTEGER)"},
+      {"sql": "INSERT INTO w VALUES (1,'a',10),(2,'a',20),(3,'a',30),(4,'b',5),(5,'b',15)"},
+      {"sql": "SELECT id FROM w QUALIFY ROW_NUMBER() OVER (PARTITION BY grp ORDER BY val DESC) <= 2",
+       "expect": {"rows": [[2],[3],[4],[5]]}}
+    ]},
+    {"name": "the-aliased-row-number-form-still-works", "steps": [
+      {"sql": "CREATE TABLE w (id INTEGER, grp VARCHAR, val INTEGER)"},
+      {"sql": "INSERT INTO w VALUES (1,'a',10),(2,'a',20),(3,'a',30),(4,'b',5),(5,'b',15)"},
+      {"sql": "SELECT id, ROW_NUMBER() OVER (PARTITION BY grp ORDER BY val DESC) AS rn FROM w QUALIFY rn = 1",
+       "expect": {"rows": [[3,1],[5,1]]}}
+    ]},
+    {"name": "an-inline-window-combined-with-an-ordinary-predicate", "steps": [
+      {"sql": "CREATE TABLE w (id INTEGER, grp VARCHAR, val INTEGER)"},
+      {"sql": "INSERT INTO w VALUES (1,'a',10),(2,'a',20),(3,'a',30),(4,'b',5),(5,'b',15)"},
+      {"sql": "SELECT id FROM w QUALIFY ROW_NUMBER() OVER (PARTITION BY grp ORDER BY val DESC) = 1 AND grp = 'a'",
+       "expect": {"rows": [[3]]}}
+    ]}
+  ]
+}

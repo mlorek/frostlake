@@ -74,7 +74,7 @@ public class StageQueryTest extends BaseDatabaseTest {
 
     @Test
     public void selectStarExposesPositionalFieldsOnly() {
-        final ResultSet rs = q("SELECT * FROM @q_stage (PATTERN => 'a[.]csv')");
+        final ResultSet rs = q("SELECT * FROM @q_stage (PATTERN => 'a[.]csv') ORDER BY 1");
         assertEquals(2, rs.getRowCount());
         assertEquals(3, rs.getColumns().size(), "SELECT * must expose the field columns but no METADATA$ columns");
         for (final ResultSetColumn col : rs.getColumns()) {

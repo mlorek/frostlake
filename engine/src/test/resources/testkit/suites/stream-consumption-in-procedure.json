@@ -1,0 +1,85 @@
+{
+  "suite": "stream-consumption-in-procedure",
+  "description": "A stream read by DML INSIDE a stored procedure must advance its offset when the transaction commits, exactly as the same DML would at top level. The consuming-DML window used to be opened only by the string entry point, but a BEGIN...END body dispatches its statements through the visitor directly, so a procedure's INSERT ... SELECT FROM stream read the stream WITHOUT registering it: the offset never advanced and each re-CALL of a loader procedure re-processed everything it had already loaded. The window now opens at the dispatch point every path shares. Pinned with an explicit COMMIT in the body, with the CALL's own autocommit, with a NESTED call where a second pass must load only its delta, with a SIBLING stream that keeps its own offset, and with the mid-procedure FLUSH idiom, which needs both halves of the fix - DDL inside the body implicitly commits the open transaction so the flush consumes at its own point, and commit-time consumption is SCOPED to what each read saw so the flush cannot swallow rows inserted after it. The same scoping is pinned at top level in an explicit transaction. And a plain SELECT inside a procedure does NOT consume. Converted 1:1 from stream/StreamConsumptionInProcedureTest (now retired).",
+  "tags": ["stream", "converted"],
+  "tests": [
+    {"name": "procedure-dml-consumes-the-stream-on-its-commit", "steps": [
+      {"sql": "CREATE TABLE src (k VARCHAR)"},
+      {"sql": "CREATE STREAM st ON TABLE src"},
+      {"sql": "CREATE TABLE tgt (k VARCHAR)"},
+      {"sql": "INSERT INTO src VALUES ('r1'), ('r2')"},
+      {"sql": "CREATE PROCEDURE load_it() RETURNS VARCHAR LANGUAGE SQL AS $$ BEGIN INSERT INTO tgt SELECT k FROM st; COMMIT; RETURN 'ok'; END $$"},
+      {"sql": "CALL load_it()", "expect": {"value": "ok"}},
+      {"sql": "SELECT k FROM tgt ORDER BY k", "expect": {"rows": [["r1"],["r2"]], "ordered": true}},
+      {"sql": "SELECT COUNT(*) FROM st", "expect": {"value": 0}}
+    ]},
+    {"name": "procedure-dml-consumes-at-the-calls-autocommit-too", "steps": [
+      {"sql": "CREATE TABLE src (k VARCHAR)"},
+      {"sql": "CREATE STREAM st ON TABLE src"},
+      {"sql": "CREATE TABLE tgt (k VARCHAR)"},
+      {"sql": "INSERT INTO src VALUES ('r1'), ('r2')"},
+      {"sql": "CREATE PROCEDURE load_it() RETURNS VARCHAR LANGUAGE SQL AS $$ BEGIN INSERT INTO tgt SELECT k FROM st; RETURN 'ok'; END $$"},
+      {"sql": "CALL load_it()", "expect": {"value": "ok"}},
+      {"sql": "SELECT k FROM tgt ORDER BY k", "expect": {"rows": [["r1"],["r2"]], "ordered": true}},
+      {"sql": "SELECT COUNT(*) FROM st", "expect": {"value": 0}}
+    ]},
+    {"name": "a-nested-call-loads-only-its-delta-on-a-repeat", "steps": [
+      {"sql": "CREATE TABLE src (k VARCHAR)"},
+      {"sql": "CREATE STREAM st ON TABLE src"},
+      {"sql": "CREATE TABLE tgt (k VARCHAR)"},
+      {"sql": "INSERT INTO src VALUES ('r1'), ('r2')"},
+      {"sql": "CREATE PROCEDURE loader() RETURNS VARCHAR LANGUAGE SQL AS $$ BEGIN INSERT INTO tgt SELECT k FROM st; COMMIT; RETURN 'ok'; END $$"},
+      {"sql": "CREATE PROCEDURE step() RETURNS VARCHAR LANGUAGE SQL AS $$ BEGIN INSERT INTO src VALUES ('r3'); CALL loader(); RETURN 'done'; END $$"},
+      {"sql": "CALL step()", "expect": {"value": "done"}},
+      {"sql": "SELECT COUNT(*) FROM tgt", "expect": {"value": 3}},
+      {"sql": "SELECT COUNT(*) FROM st", "expect": {"value": 0}},
+      {"sql": "CALL step()", "expect": {"value": "done"}},
+      {"sql": "SELECT COUNT(*) FROM tgt", "expect": {"value": 4}},
+      {"sql": "SELECT COUNT(*) FROM st", "expect": {"value": 0}}
+    ]},
+    {"name": "a-sibling-stream-keeps-its-own-offset", "steps": [
+      {"sql": "CREATE TABLE src (k VARCHAR)"},
+      {"sql": "CREATE STREAM st ON TABLE src"},
+      {"sql": "CREATE TABLE tgt (k VARCHAR)"},
+      {"sql": "INSERT INTO src VALUES ('r1'), ('r2')"},
+      {"sql": "CREATE STREAM st_other ON TABLE src"},
+      {"sql": "INSERT INTO src VALUES ('r3')"},
+      {"sql": "CREATE PROCEDURE loader() RETURNS VARCHAR LANGUAGE SQL AS $$ BEGIN INSERT INTO tgt SELECT k FROM st; COMMIT; RETURN 'ok'; END $$"},
+      {"sql": "CALL loader()", "expect": {"value": "ok"}},
+      {"sql": "SELECT COUNT(*) FROM st", "expect": {"value": 0}},
+      {"sql": "SELECT k FROM st_other", "expect": {"rows": [["r3"]]}}
+    ]},
+    {"name": "a-mid-procedure-flush-does-not-swallow-rows-inserted-after-it", "steps": [
+      {"sql": "CREATE TABLE src (k VARCHAR)"},
+      {"sql": "CREATE STREAM st ON TABLE src"},
+      {"sql": "CREATE TABLE tgt (k VARCHAR)"},
+      {"sql": "INSERT INTO src VALUES ('r1'), ('r2')"},
+      {"sql": "CREATE PROCEDURE loader() RETURNS VARCHAR LANGUAGE SQL AS $$ BEGIN INSERT INTO tgt SELECT k FROM st; COMMIT; RETURN 'ok'; END $$"},
+      {"sql": "CREATE PROCEDURE step() RETURNS VARCHAR LANGUAGE SQL AS $$ BEGIN INSERT INTO src VALUES ('pre'); CREATE OR REPLACE TEMP TABLE tmp_flush AS SELECT * FROM st; DROP TABLE IF EXISTS tmp_flush; INSERT INTO src VALUES ('post-1'); INSERT INTO src VALUES ('post-2'); CALL loader(); RETURN 'done'; END $$"},
+      {"sql": "CALL step()", "expect": {"value": "done"}},
+      {"sql": "SELECT k FROM tgt ORDER BY k", "expect": {"rows": [["post-1"],["post-2"]], "ordered": true}},
+      {"sql": "SELECT COUNT(*) FROM st", "expect": {"value": 0}}
+    ]},
+    {"name": "consumption-is-scoped-to-what-the-read-saw", "steps": [
+      {"sql": "CREATE TABLE src (k VARCHAR)"},
+      {"sql": "CREATE STREAM st ON TABLE src"},
+      {"sql": "CREATE TABLE tgt (k VARCHAR)"},
+      {"sql": "INSERT INTO src VALUES ('r1'), ('r2')"},
+      {"sql": "BEGIN"},
+      {"sql": "INSERT INTO tgt SELECT k FROM st"},
+      {"sql": "INSERT INTO src VALUES ('r3')"},
+      {"sql": "COMMIT"},
+      {"sql": "SELECT k FROM tgt ORDER BY k", "expect": {"rows": [["r1"],["r2"]], "ordered": true}},
+      {"sql": "SELECT k FROM st", "expect": {"rows": [["r3"]]}}
+    ]},
+    {"name": "a-plain-select-inside-a-procedure-does-not-consume", "steps": [
+      {"sql": "CREATE TABLE src (k VARCHAR)"},
+      {"sql": "CREATE STREAM st ON TABLE src"},
+      {"sql": "CREATE TABLE tgt (k VARCHAR)"},
+      {"sql": "INSERT INTO src VALUES ('r1'), ('r2')"},
+      {"sql": "CREATE PROCEDURE peek() RETURNS NUMBER LANGUAGE SQL AS $$ DECLARE n NUMBER; BEGIN SELECT COUNT(*) INTO :n FROM st; RETURN n; END $$"},
+      {"sql": "CALL peek()", "expect": {"value": 2}},
+      {"sql": "SELECT COUNT(*) FROM st", "expect": {"value": 2}}
+    ]}
+  ]
+}

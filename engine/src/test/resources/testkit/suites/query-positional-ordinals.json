@@ -1,0 +1,28 @@
+{
+  "suite": "query-positional-ordinals",
+  "description": "Positional (ordinal) references: GROUP BY 1 and ORDER BY 2 address SELECT-list items BY POSITION, including an item that is an EXPRESSION rather than a column, and they mix freely with named references in the same clause list. An ordinal beyond the SELECT list's width is refused. Converted 1:1 from query/PositionalOrdinalsTest (now retired); the Java read cells by index, so each converted test pins the whole ordered row set.",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "group-by-an-ordinal-aggregates", "steps": [
+      {"sql": "CREATE TABLE t (r VARCHAR, n INTEGER)"},
+      {"sql": "INSERT INTO t VALUES ('a', 1), ('a', 2), ('b', 7), ('c', 4)"},
+      {"sql": "SELECT r, SUM(n) FROM t GROUP BY 1 ORDER BY 1", "expect": {"rows": [["a",3],["b",7],["c",4]], "ordered": true}}
+    ]},
+    {"name": "order-by-an-ordinal-desc-on-the-aggregate-column", "steps": [
+      {"sql": "CREATE TABLE t (r VARCHAR, n INTEGER)"},
+      {"sql": "INSERT INTO t VALUES ('a', 1), ('a', 2), ('b', 7), ('c', 4)"},
+      {"sql": "SELECT r, SUM(n) FROM t GROUP BY 1 ORDER BY 2 DESC, 1", "expect": {"rows": [["b",7],["c",4],["a",3]], "ordered": true}}
+    ]},
+    {"name": "an-ordinal-targets-an-expression-item-and-mixes-with-names", "steps": [
+      {"sql": "CREATE TABLE t (r VARCHAR, n INTEGER)"},
+      {"sql": "INSERT INTO t VALUES ('a', 1), ('a', 2), ('b', 7), ('c', 4)"},
+      {"sql": "SELECT UPPER(r), COUNT(*) AS c FROM t GROUP BY 1 ORDER BY c DESC, 1",
+       "expect": {"rows": [["A",2],["B",1],["C",1]], "ordered": true}}
+    ]},
+    {"name": "an-ordinal-beyond-the-select-list-is-refused", "steps": [
+      {"sql": "CREATE TABLE t (r VARCHAR, n INTEGER)"},
+      {"sql": "INSERT INTO t VALUES ('a', 1), ('a', 2), ('b', 7), ('c', 4)"},
+      {"sql": "SELECT r, n FROM t ORDER BY 5", "expect": {"error": {}}}
+    ]}
+  ]
+}

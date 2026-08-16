@@ -1,0 +1,59 @@
+{
+  "suite": "functions-variant-to-varchar-coercion",
+  "description": "Turning a VARIANT into a VARCHAR unwraps a variant STRING to its content; turning a VARCHAR into a VARCHAR does nothing at all. The two look identical in Frostlake, because a variant string is carried as a Java string with its JSON quotes - so the SOURCE's declared type decides, and the two conversions used to be wrong in OPPOSITE directions: TO_VARCHAR(v:k) over {\"k\":\"[3,4]\"} is [3,4], five characters (the content), while '\"[1,2,3]\"'::VARCHAR is the nine-character quoted text (a VARCHAR is its own text). TO_VARCHAR never unwrapped and the cast always unwrapped, so each was right for exactly the case the other got wrong. LENGTHS are asserted here rather than just the text, because the quotes are the whole question. The write direction of the same rule: ::VARIANT is TO_VARIANT, so a VARCHAR becomes a variant STRING and is never parsed - the cast used to hand the text straight through, which made it read back as an ARRAY and made FLATTEN expand a value that holds no elements at all. Converted 1:1 from functions/VariantToVarcharCoercionTest (now retired); the class's setupTest created vt(js, v), which each converted test that reads it recreates.",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "a-varchar-keeps-its-own-quotes", "steps": [
+      {"sql": "SELECT TO_VARCHAR('\"[1,2,3]\"')", "expect": {"value": "\"[1,2,3]\""}},
+      {"sql": "SELECT LENGTH(TO_VARCHAR('\"[1,2,3]\"'))", "expect": {"value": "9"}},
+      {"sql": "SELECT '\"[1,2,3]\"'::VARCHAR", "expect": {"value": "\"[1,2,3]\""}},
+      {"sql": "SELECT LENGTH('\"[1,2,3]\"'::VARCHAR)", "expect": {"value": "9"}}
+    ]},
+    {"name": "a-variant-string-contributes-its-content", "steps": [
+      {"sql": "CREATE TABLE vt (js VARCHAR(50), v VARIANT)"},
+      {"sql": "INSERT INTO vt SELECT '[1,2]', PARSE_JSON('{\"k\":\"[3,4]\"}')"},
+      {"sql": "SELECT TO_VARCHAR(v:k) FROM vt", "expect": {"value": "[3,4]"}},
+      {"sql": "SELECT LENGTH(TO_VARCHAR(v:k)) FROM vt", "expect": {"value": "5"}},
+      {"sql": "SELECT v:k::VARCHAR FROM vt", "expect": {"value": "[3,4]"}},
+      {"sql": "SELECT LENGTH(v:k::VARCHAR) FROM vt", "expect": {"value": "5"}},
+      {"sql": "SELECT TO_VARCHAR(PARSE_JSON('\"abc\"'))", "expect": {"value": "abc"}},
+      {"sql": "SELECT LENGTH(TO_VARCHAR(PARSE_JSON('\"abc\"')))", "expect": {"value": "3"}},
+      {"sql": "SELECT TO_CHAR(PARSE_JSON('\"abc\"'))", "expect": {"value": "abc"}}
+    ]},
+    {"name": "a-variant-string-that-reads-as-json-is-still-just-text", "steps": [
+      {"sql": "SELECT TO_VARCHAR(PARSE_JSON('\"[1,2,3]\"'))", "expect": {"value": "[1,2,3]"}},
+      {"sql": "SELECT LENGTH(TO_VARCHAR(PARSE_JSON('\"[1,2,3]\"')))", "expect": {"value": "7"}},
+      {"sql": "SELECT TYPEOF(PARSE_JSON(TO_VARCHAR(PARSE_JSON('\"[1,2,3]\"'))))", "expect": {"value": "ARRAY"}}
+    ]},
+    {"name": "a-non-string-variant-renders-its-json", "steps": [
+      {"sql": "SELECT TO_VARCHAR(PARSE_JSON('[1,2]'))", "expect": {"value": "[1,2]"}},
+      {"sql": "SELECT LENGTH(TO_VARCHAR(PARSE_JSON('[1,2]')))", "expect": {"value": "5"}},
+      {"sql": "SELECT LENGTH(TO_VARCHAR(PARSE_JSON('7.5')))", "expect": {"value": "3"}}
+    ]},
+    {"name": "the-json-null-becomes-sql-null", "steps": [
+      {"sql": "SELECT TO_VARCHAR(PARSE_JSON('null'))", "expect": {"rows": [[null]]}},
+      {"sql": "SELECT PARSE_JSON('null')::VARCHAR", "expect": {"rows": [[null]]}}
+    ]},
+    {"name": "a-varchar-column-is-not-unwrapped", "steps": [
+      {"sql": "CREATE TABLE vt (js VARCHAR(50), v VARIANT)"},
+      {"sql": "INSERT INTO vt SELECT '[1,2]', PARSE_JSON('{\"k\":\"[3,4]\"}')"},
+      {"sql": "SELECT TO_VARCHAR(js) FROM vt", "expect": {"value": "[1,2]"}},
+      {"sql": "SELECT LENGTH(js::VARCHAR) FROM vt", "expect": {"value": "5"}}
+    ]},
+    {"name": "casting-a-varchar-to-variant-makes-a-variant-string", "steps": [
+      {"sql": "CREATE TABLE vt (js VARCHAR(50), v VARIANT)"},
+      {"sql": "INSERT INTO vt SELECT '[1,2]', PARSE_JSON('{\"k\":\"[3,4]\"}')"},
+      {"sql": "SELECT TYPEOF('[1,2,3]'::VARIANT)", "expect": {"value": "VARCHAR"}},
+      {"sql": "SELECT TYPEOF(js::VARIANT) FROM vt", "expect": {"value": "VARCHAR"}},
+      {"sql": "SELECT TO_VARCHAR('[1,2,3]'::VARIANT)", "expect": {"value": "[1,2,3]"}},
+      {"sql": "SELECT LENGTH(TO_VARCHAR('[1,2,3]'::VARIANT))", "expect": {"value": "7"}},
+      {"sql": "SELECT * FROM TABLE(FLATTEN(INPUT => '[1,2,3]'::VARIANT))", "expect": {"rowCount": 0}},
+      {"sql": "SELECT '[1,2,3]'::VARIANT = TO_VARIANT('[1,2,3]')", "expect": {"value": "true"}}
+    ]},
+    {"name": "casting-a-semi-structured-value-to-variant-keeps-it", "steps": [
+      {"sql": "SELECT TYPEOF(PARSE_JSON('[1,2]')::VARIANT)", "expect": {"value": "ARRAY"}},
+      {"sql": "SELECT TYPEOF(PARSE_JSON('\"abc\"')::VARIANT)", "expect": {"value": "VARCHAR"}},
+      {"sql": "SELECT TYPEOF(123::VARIANT)", "expect": {"value": "INTEGER"}}
+    ]}
+  ]
+}

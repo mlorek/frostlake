@@ -89,6 +89,7 @@ public class CopyUnloadStagePathTest extends BaseDatabaseTest {
             COPY INTO @unload_all/exports/orders/ FROM (
                 SELECT OBJECT_CONSTRUCT('region_id', region_id, 'order_id', order_id) AS record
                 FROM orders
+                ORDER BY order_id
             )
             PARTITION BY ('full-2026-07-28')
             FILE_FORMAT = (TYPE = JSON COMPRESSION = GZIP)

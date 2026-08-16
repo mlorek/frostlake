@@ -16,6 +16,7 @@
 
 package dev.frostlake.functions.scalar.context;
 
+import dev.frostlake.executor.SessionZone;
 import dev.frostlake.executor.StatementClock;
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.types.DateTimeType;
@@ -26,13 +27,23 @@ public class CurrentTimestamp extends BuiltInFunction {
     // Live types this TIMESTAMP_LTZ(9) — the session-timezone flavor, not NTZ.
     public CurrentTimestamp() { super("CURRENT_TIMESTAMP", DateTimeType.TIMESTAMP_LTZ); }
 
+    /**
+     * The statement's clock in the session's zone, as live's TIMESTAMP_LTZ carries it.
+     *
+     * @param args the optional fractional-seconds precision, which types the call but leaves the value
+     *             at full precision
+     * @return the statement's clock
+     */
     @Override
-    public Object evaluate(final List<Object> args) { return StatementClock.now(); }
+    public Object evaluate(final List<Object> args) {
+        // Live types this TIMESTAMP_LTZ, which is an OffsetDateTime here.
+        return StatementClock.instant().atZone(SessionZone.current()).toOffsetDateTime();
+    }
 
     @Override
     public int getMinArgCount() { return 0; }
-    // Snowflake accepts an optional fractional-seconds precision argument (CURRENT_TIMESTAMP(3));
-    // the engine renders full precision regardless, so the argument is accepted and ignored.
+    // Snowflake accepts an optional fractional-seconds precision argument (CURRENT_TIMESTAMP(3)): the
+    // call's static type carries it (TIMESTAMP_LTZ(3)), while the value keeps full precision.
     @Override
     public int getMaxArgCount() { return 1; }
 }

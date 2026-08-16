@@ -1,0 +1,80 @@
+{
+  "suite": "features-alter-table-if-exists",
+  "description": "The IF EXISTS clause of ALTER TABLE: every action form (RENAME TO, ADD/DROP/RENAME COLUMN, SET COMMENT) is a clean no-op on a missing table (and creates nothing) while the unforgiven forms error; on an existing table each action applies normally - with qualified names, sequences of forgiven statements, and data-bearing tables untouched. Converted 1:1 from features/AlterTableIfExistsTest (now retired).",
+  "tags": ["features", "converted"],
+  "tests": [
+    {"name": "alter-table-rename-without-if-exists", "steps": [
+      {"sql": "ALTER TABLE non_existent_table RENAME TO new_table", "expect": {"error": {}}}
+    ]},
+    {"name": "alter-table-rename-with-if-exists", "steps": [
+      {"sql": "ALTER TABLE IF EXISTS non_existent_table RENAME TO new_table"}
+    ]},
+    {"name": "alter-table-add-column-without-if-exists", "steps": [
+      {"sql": "ALTER TABLE non_existent_table ADD COLUMN new_col VARCHAR", "expect": {"error": {}}}
+    ]},
+    {"name": "alter-table-add-column-with-if-exists", "steps": [
+      {"sql": "ALTER TABLE IF EXISTS non_existent_table ADD COLUMN new_col VARCHAR"}
+    ]},
+    {"name": "alter-table-drop-column-with-if-exists", "steps": [
+      {"sql": "ALTER TABLE IF EXISTS non_existent_table DROP COLUMN old_col"}
+    ]},
+    {"name": "alter-table-rename-column-with-if-exists", "steps": [
+      {"sql": "ALTER TABLE IF EXISTS non_existent_table RENAME COLUMN old_col TO new_col"}
+    ]},
+    {"name": "alter-table-comment-with-if-exists", "steps": [
+      {"sql": "ALTER TABLE IF EXISTS non_existent_table SET COMMENT = 'Some comment'"}
+    ]},
+    {"name": "alter-table-if-exists-on-existing-table", "steps": [
+      {"sql": "CREATE TABLE existing_table (id INTEGER, name VARCHAR)"},
+      {"sql": "ALTER TABLE IF EXISTS existing_table ADD COLUMN age INTEGER"},
+      {"sql": "DESCRIBE TABLE existing_table", "expect": {"rowCount": 3}},
+      {"sql": "SELECT COUNT_IF(\"name\" = 'AGE') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "1"}}
+    ]},
+    {"name": "alter-table-rename-if-exists-on-existing-table", "steps": [
+      {"sql": "CREATE TABLE old_name (id INTEGER)"},
+      {"sql": "ALTER TABLE IF EXISTS old_name RENAME TO new_name"},
+      {"sql": "SHOW TABLES LIKE 'old_name'", "expect": {"rowCount": 0}},
+      {"sql": "SHOW TABLES LIKE 'new_name'", "expect": {"rowCount": 1}}
+    ]},
+    {"name": "alter-table-drop-column-if-exists-on-existing-table", "steps": [
+      {"sql": "CREATE TABLE test_table (id INTEGER, name VARCHAR, age INTEGER)"},
+      {"sql": "ALTER TABLE IF EXISTS test_table DROP COLUMN age"},
+      {"sql": "DESCRIBE TABLE test_table", "expect": {"rowCount": 2}}
+    ]},
+    {"name": "alter-table-rename-column-if-exists-on-existing-table", "steps": [
+      {"sql": "CREATE TABLE test_table (id INTEGER, old_name VARCHAR)"},
+      {"sql": "ALTER TABLE IF EXISTS test_table RENAME COLUMN old_name TO new_name"},
+      {"sql": "DESCRIBE TABLE test_table"},
+      {"sql": "SELECT COUNT_IF(\"name\" = 'NEW_NAME') FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "1"}}
+    ]},
+    {"name": "alter-table-comment-if-exists-on-existing-table", "steps": [
+      {"sql": "CREATE TABLE test_table (id INTEGER)"},
+      {"sql": "ALTER TABLE IF EXISTS test_table SET COMMENT = 'Test comment'"},
+      {"sql": "SHOW TABLES LIKE 'test_table'"},
+      {"sql": "SELECT MAX(IFF(\"name\" = 'TEST_TABLE', \"comment\", NULL)) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "Test comment"}}
+    ]},
+    {"name": "alter-table-if-exists-with-qualified-name", "steps": [
+      {"sql": "CREATE SCHEMA alter_ie_schema"},
+      {"sql": "ALTER TABLE IF EXISTS alter_ie_schema.non_existent RENAME TO new_table"}
+    ]},
+    {"name": "alter-table-if-exists-multiple-operations", "steps": [
+      {"sql": "ALTER TABLE IF EXISTS table1 ADD COLUMN col1 VARCHAR"},
+      {"sql": "ALTER TABLE IF EXISTS table2 DROP COLUMN col2"},
+      {"sql": "ALTER TABLE IF EXISTS table3 RENAME TO table4"},
+      {"sql": "ALTER TABLE IF EXISTS table5 RENAME COLUMN old TO new"},
+      {"sql": "ALTER TABLE IF EXISTS table6 SET COMMENT = 'Comment'"}
+    ]},
+    {"name": "alter-table-if-exists-does-not-create-table", "steps": [
+      {"sql": "ALTER TABLE IF EXISTS phantom_table ADD COLUMN col1 VARCHAR"},
+      {"sql": "SHOW TABLES LIKE 'phantom_table'", "expect": {"rowCount": 0}}
+    ]},
+    {"name": "alter-table-if-exists-with-data-in-table", "steps": [
+      {"sql": "CREATE TABLE customers (id INTEGER, name VARCHAR)"},
+      {"sql": "INSERT INTO customers VALUES (1, 'Alice')"},
+      {"sql": "INSERT INTO customers VALUES (2, 'Bob')"},
+      {"sql": "ALTER TABLE IF EXISTS customers ADD COLUMN email VARCHAR"},
+      {"sql": "SELECT * FROM customers", "expect": {"rowCount": 2}},
+      {"sql": "DESCRIBE TABLE customers", "expect": {"rowCount": 3}}
+    ]}
+  ]
+}

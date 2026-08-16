@@ -1,0 +1,50 @@
+{
+  "suite": "features-stream-triggered-task",
+  "description": "Stream-triggered tasks - CREATE TASK ... WHEN SYSTEM$STREAM_HAS_DATA('s') AS ... - the canonical incremental-processing pattern: the body runs only when the named stream has unconsumed data, EXECUTE TASK triggers a run deterministically, the WHEN condition is re-evaluated on every execution, and a body that reads the stream itself loads the changed rows. Converted 1:1 from features/StreamTriggeredTaskTest (now retired). The three tests that assert the body's rows immediately skip the snowflake backend, as the Java class did: live EXECUTE TASK is asynchronous, so the body's side effects land after the statement returns.",
+  "tags": ["features", "converted"],
+  "tests": [
+    {"name": "task-skipped-when-stream-empty", "steps": [
+      {"sql": "CREATE TABLE src (id INTEGER, name VARCHAR)"},
+      {"sql": "CREATE STREAM src_stream ON TABLE src"},
+      {"sql": "CREATE TABLE tgt (id INTEGER, name VARCHAR)"},
+      {"sql": "CREATE TASK load_tgt WAREHOUSE = 'compute_wh' WHEN SYSTEM$STREAM_HAS_DATA('src_stream') AS INSERT INTO tgt SELECT id, name FROM src"},
+      {"sql": "EXECUTE TASK load_tgt"},
+      {"sql": "SELECT COUNT(*) FROM tgt", "expect": {"value": "0"}}
+    ]},
+    {"name": "task-runs-when-stream-has-data",
+     "skip": {"backends": ["snowflake"], "reason": "live EXECUTE TASK runs asynchronously; immediate row counts are embedded-only"},
+     "steps": [
+      {"sql": "CREATE TABLE src (id INTEGER, name VARCHAR)"},
+      {"sql": "CREATE STREAM src_stream ON TABLE src"},
+      {"sql": "CREATE TABLE tgt (id INTEGER, name VARCHAR)"},
+      {"sql": "CREATE TASK load_tgt WAREHOUSE = 'compute_wh' WHEN SYSTEM$STREAM_HAS_DATA('src_stream') AS INSERT INTO tgt SELECT id, name FROM src"},
+      {"sql": "INSERT INTO src VALUES (1, 'a'), (2, 'b')"},
+      {"sql": "EXECUTE TASK load_tgt"},
+      {"sql": "SELECT COUNT(*) FROM tgt", "expect": {"value": "2"}}
+    ]},
+    {"name": "when-condition-reevaluated-each-execution",
+     "skip": {"backends": ["snowflake"], "reason": "live EXECUTE TASK runs asynchronously; immediate row counts are embedded-only"},
+     "steps": [
+      {"sql": "CREATE TABLE src (id INTEGER, name VARCHAR)"},
+      {"sql": "CREATE STREAM src_stream ON TABLE src"},
+      {"sql": "CREATE TABLE tgt (id INTEGER, name VARCHAR)"},
+      {"sql": "CREATE TASK load_tgt WAREHOUSE = 'compute_wh' WHEN SYSTEM$STREAM_HAS_DATA('src_stream') AS INSERT INTO tgt SELECT id, name FROM src"},
+      {"sql": "EXECUTE TASK load_tgt"},
+      {"sql": "SELECT COUNT(*) FROM tgt", "expect": {"value": "0"}},
+      {"sql": "INSERT INTO src VALUES (1, 'a')"},
+      {"sql": "EXECUTE TASK load_tgt"},
+      {"sql": "SELECT COUNT(*) FROM tgt", "expect": {"value": "1"}}
+    ]},
+    {"name": "stream-consuming-task-body-loads-changed-rows",
+     "skip": {"backends": ["snowflake"], "reason": "live EXECUTE TASK runs asynchronously; immediate row counts are embedded-only"},
+     "steps": [
+      {"sql": "CREATE TABLE src (id INTEGER, name VARCHAR)"},
+      {"sql": "CREATE STREAM src_stream ON TABLE src"},
+      {"sql": "CREATE TABLE tgt (id INTEGER, name VARCHAR)"},
+      {"sql": "CREATE TASK load_tgt WAREHOUSE = 'compute_wh' WHEN SYSTEM$STREAM_HAS_DATA('src_stream') AS INSERT INTO tgt SELECT id, name FROM src_stream"},
+      {"sql": "INSERT INTO src VALUES (1, 'a'), (2, 'b')"},
+      {"sql": "EXECUTE TASK load_tgt"},
+      {"sql": "SELECT COUNT(*) FROM tgt", "expect": {"value": "2"}}
+    ]}
+  ]
+}

@@ -1,0 +1,100 @@
+{
+  "suite": "features-policy-references",
+  "description": "INFORMATION_SCHEMA.POLICY_REFERENCES - the readback surface every policy attachment shares, and the only one that shows a row access or aggregation policy at all (DESCRIBE's policy name cell answers for masking policies alone). The measured split: a policy attached to a COLUMN fills REF_COLUMN_NAME and leaves REF_ARG_COLUMN_NAMES null, while one attached to the OBJECT does the reverse and renders its argument columns as a spaced JSON array. Several attachments come back together ordered by policy name, a view is its own domain, the domain is matched case-insensitively, the policy-name call shape lists every object a policy reaches, and each refusal (neither argument shape, half a pair, missing object, missing policy, unknown domain, a positional call read as a policy kind) carries its own wording. Converted 1:1 from features/PolicyReferencesTest (now retired).",
+  "tags": ["features", "converted"],
+  "tests": [
+    {"name": "a-column-policy-names-its-column", "steps": [
+      {"sql": "CREATE MASKING POLICY pr_mp AS (v VARCHAR) RETURNS VARCHAR -> '***'"},
+      {"sql": "CREATE TABLE pr_t (a VARCHAR, b VARCHAR, id NUMBER)"},
+      {"sql": "ALTER TABLE pr_t ALTER COLUMN a SET MASKING POLICY pr_mp"},
+      {"sql": "SELECT POLICY_NAME, POLICY_KIND, REF_ENTITY_NAME, REF_ENTITY_DOMAIN, REF_COLUMN_NAME, IFF(REF_ARG_COLUMN_NAMES IS NULL, 'null', 'set'), POLICY_STATUS FROM TABLE(INFORMATION_SCHEMA.POLICY_REFERENCES(REF_ENTITY_NAME => 'PR_T', REF_ENTITY_DOMAIN => 'TABLE'))",
+       "expect": {"rowCount": 1, "rows": [["PR_MP", "MASKING_POLICY", "PR_T", "TABLE", "A", "null", "ACTIVE"]]}}
+    ]},
+    {"name": "a-projection-policy-is-keyed-by-column-too", "steps": [
+      {"sql": "CREATE PROJECTION POLICY pr_pp AS () RETURNS PROJECTION_CONSTRAINT -> PROJECTION_CONSTRAINT(ALLOW => TRUE)"},
+      {"sql": "CREATE TABLE pr_t (a VARCHAR, b VARCHAR, id NUMBER)"},
+      {"sql": "ALTER TABLE pr_t ALTER COLUMN b SET PROJECTION POLICY pr_pp"},
+      {"sql": "SELECT POLICY_NAME, POLICY_KIND, REF_ENTITY_NAME, REF_ENTITY_DOMAIN, REF_COLUMN_NAME, IFF(REF_ARG_COLUMN_NAMES IS NULL, 'null', 'set'), POLICY_STATUS FROM TABLE(INFORMATION_SCHEMA.POLICY_REFERENCES(REF_ENTITY_NAME => 'PR_T', REF_ENTITY_DOMAIN => 'TABLE'))",
+       "expect": {"rows": [["PR_PP", "PROJECTION_POLICY", "PR_T", "TABLE", "B", "null", "ACTIVE"]]}}
+    ]},
+    {"name": "a-row-access-policy-lists-its-argument-columns", "steps": [
+      {"sql": "CREATE ROW ACCESS POLICY pr_rap AS (a VARCHAR, b VARCHAR) RETURNS BOOLEAN -> TRUE"},
+      {"sql": "CREATE TABLE pr_t (a VARCHAR, b VARCHAR, id NUMBER)"},
+      {"sql": "ALTER TABLE pr_t ADD ROW ACCESS POLICY pr_rap ON (a, b)"},
+      {"sql": "SELECT POLICY_NAME, POLICY_KIND, REF_ENTITY_NAME, REF_ENTITY_DOMAIN, IFF(REF_COLUMN_NAME IS NULL, 'null', 'set'), REF_ARG_COLUMN_NAMES, POLICY_STATUS FROM TABLE(INFORMATION_SCHEMA.POLICY_REFERENCES(REF_ENTITY_NAME => 'PR_T', REF_ENTITY_DOMAIN => 'TABLE'))",
+       "expect": {"rows": [["PR_RAP", "ROW_ACCESS_POLICY", "PR_T", "TABLE", "null", "[ \"A\", \"B\" ]", "ACTIVE"]]}}
+    ]},
+    {"name": "an-aggregation-policy-lists-its-entity-key", "steps": [
+      {"sql": "CREATE AGGREGATION POLICY pr_ap AS () RETURNS AGGREGATION_CONSTRAINT -> AGGREGATION_CONSTRAINT(MIN_GROUP_SIZE => 2)"},
+      {"sql": "CREATE TABLE pr_t (a VARCHAR, b VARCHAR, id NUMBER)"},
+      {"sql": "ALTER TABLE pr_t SET AGGREGATION POLICY pr_ap ENTITY KEY (id)"},
+      {"sql": "SELECT POLICY_NAME, POLICY_KIND, REF_ENTITY_NAME, REF_ENTITY_DOMAIN, IFF(REF_COLUMN_NAME IS NULL, 'null', 'set'), REF_ARG_COLUMN_NAMES, POLICY_STATUS FROM TABLE(INFORMATION_SCHEMA.POLICY_REFERENCES(REF_ENTITY_NAME => 'PR_T', REF_ENTITY_DOMAIN => 'TABLE'))",
+       "expect": {"rows": [["PR_AP", "AGGREGATION_POLICY", "PR_T", "TABLE", "null", "[ \"ID\" ]", "ACTIVE"]]}}
+    ]},
+    {"name": "every-attachment-on-the-object-is-listed", "steps": [
+      {"sql": "CREATE MASKING POLICY pr_mp AS (v VARCHAR) RETURNS VARCHAR -> '***'"},
+      {"sql": "CREATE PROJECTION POLICY pr_pp AS () RETURNS PROJECTION_CONSTRAINT -> PROJECTION_CONSTRAINT(ALLOW => TRUE)"},
+      {"sql": "CREATE AGGREGATION POLICY pr_ap AS () RETURNS AGGREGATION_CONSTRAINT -> AGGREGATION_CONSTRAINT(MIN_GROUP_SIZE => 2)"},
+      {"sql": "CREATE TABLE pr_t (a VARCHAR, b VARCHAR, id NUMBER)"},
+      {"sql": "ALTER TABLE pr_t ALTER COLUMN a SET MASKING POLICY pr_mp"},
+      {"sql": "ALTER TABLE pr_t ALTER COLUMN b SET PROJECTION POLICY pr_pp"},
+      {"sql": "ALTER TABLE pr_t SET AGGREGATION POLICY pr_ap ENTITY KEY (id)"},
+      {"sql": "SELECT POLICY_NAME FROM TABLE(INFORMATION_SCHEMA.POLICY_REFERENCES(REF_ENTITY_NAME => 'PR_T', REF_ENTITY_DOMAIN => 'TABLE'))",
+       "expect": {"rowCount": 3, "rows": [["PR_AP"], ["PR_MP"], ["PR_PP"]], "ordered": true}}
+    ]},
+    {"name": "a-view-is-its-own-domain", "steps": [
+      {"sql": "CREATE ROW ACCESS POLICY pr_rap AS (a VARCHAR, b VARCHAR) RETURNS BOOLEAN -> TRUE"},
+      {"sql": "CREATE TABLE pr_t (a VARCHAR, b VARCHAR, id NUMBER)"},
+      {"sql": "CREATE VIEW pr_v AS SELECT * FROM pr_t"},
+      {"sql": "ALTER VIEW pr_v ADD ROW ACCESS POLICY pr_rap ON (a, b)"},
+      {"sql": "SELECT POLICY_NAME, REF_ENTITY_NAME, REF_ENTITY_DOMAIN FROM TABLE(INFORMATION_SCHEMA.POLICY_REFERENCES(REF_ENTITY_NAME => 'PR_V', REF_ENTITY_DOMAIN => 'VIEW'))",
+       "expect": {"rowCount": 1, "rows": [["PR_RAP", "PR_V", "VIEW"]]}}
+    ]},
+    {"name": "the-domain-is-case-insensitive", "steps": [
+      {"sql": "CREATE MASKING POLICY pr_mp AS (v VARCHAR) RETURNS VARCHAR -> '***'"},
+      {"sql": "CREATE TABLE pr_t (a VARCHAR, b VARCHAR, id NUMBER)"},
+      {"sql": "ALTER TABLE pr_t ALTER COLUMN a SET MASKING POLICY pr_mp"},
+      {"sql": "SELECT POLICY_NAME FROM TABLE(INFORMATION_SCHEMA.POLICY_REFERENCES(REF_ENTITY_NAME => 'PR_T', REF_ENTITY_DOMAIN => 'table'))",
+       "expect": {"rowCount": 1}}
+    ]},
+    {"name": "a-policy-lists-every-object-it-is-attached-to", "steps": [
+      {"sql": "CREATE ROW ACCESS POLICY pr_rap AS (a VARCHAR, b VARCHAR) RETURNS BOOLEAN -> TRUE"},
+      {"sql": "CREATE TABLE pr_t (a VARCHAR, b VARCHAR, id NUMBER)"},
+      {"sql": "CREATE VIEW pr_v AS SELECT * FROM pr_t"},
+      {"sql": "ALTER TABLE pr_t ADD ROW ACCESS POLICY pr_rap ON (a, b)"},
+      {"sql": "ALTER VIEW pr_v ADD ROW ACCESS POLICY pr_rap ON (a, b)"},
+      {"sql": "SELECT REF_ENTITY_NAME, REF_ENTITY_DOMAIN FROM TABLE(INFORMATION_SCHEMA.POLICY_REFERENCES(POLICY_NAME => 'PR_RAP'))",
+       "expect": {"rowCount": 2}}
+    ]},
+    {"name": "an-object-with-no-policies-answers-nothing", "steps": [
+      {"sql": "CREATE TABLE pr_t (a VARCHAR, b VARCHAR, id NUMBER)"},
+      {"sql": "SELECT POLICY_NAME FROM TABLE(INFORMATION_SCHEMA.POLICY_REFERENCES(REF_ENTITY_NAME => 'PR_T', REF_ENTITY_DOMAIN => 'TABLE'))",
+       "expect": {"rowCount": 0}}
+    ]},
+    {"name": "the-argument-shapes-are-spelled-out-when-neither-is-given", "steps": [
+      {"sql": "CREATE TABLE pr_t (a VARCHAR, b VARCHAR, id NUMBER)"},
+      {"sql": "SELECT * FROM TABLE(INFORMATION_SCHEMA.POLICY_REFERENCES())",
+       "expect": {"error": {"messageContains": "expects argument (policy_name=>'policyName') or (ref_entity_name=>'name', ref_entity_domain=>'domain')."}}},
+      {"sql": "SELECT * FROM TABLE(INFORMATION_SCHEMA.POLICY_REFERENCES(REF_ENTITY_NAME => 'PR_T'))",
+       "expect": {"error": {"messageContains": "expects argument (policy_name=>'policyName') or (ref_entity_name=>'name', ref_entity_domain=>'domain')."}}}
+    ]},
+    {"name": "an-object-that-does-not-exist-is-refused", "steps": [
+      {"sql": "SELECT * FROM TABLE(INFORMATION_SCHEMA.POLICY_REFERENCES(REF_ENTITY_NAME => 'NO_SUCH_T', REF_ENTITY_DOMAIN => 'TABLE'))",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nTable 'NO_SUCH_T' does not exist or not authorized."}}}
+    ]},
+    {"name": "a-policy-that-does-not-exist-is-refused", "steps": [
+      {"sql": "SELECT * FROM TABLE(INFORMATION_SCHEMA.POLICY_REFERENCES(POLICY_NAME => 'NO_SUCH_P'))",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nPolicy 'TEST_DB.TEST_SCHEMA.NO_SUCH_P' does not exist or not authorized."}}}
+    ]},
+    {"name": "an-unknown-domain-is-refused", "steps": [
+      {"sql": "CREATE TABLE pr_t (a VARCHAR, b VARCHAR, id NUMBER)"},
+      {"sql": "SELECT * FROM TABLE(INFORMATION_SCHEMA.POLICY_REFERENCES(REF_ENTITY_NAME => 'PR_T', REF_ENTITY_DOMAIN => 'NONSENSE'))",
+       "expect": {"error": {"messageContains": "Unknown domain: NONSENSE."}}}
+    ]},
+    {"name": "a-positional-call-is-refused-as-a-policy-kind", "steps": [
+      {"sql": "CREATE TABLE pr_t (a VARCHAR, b VARCHAR, id NUMBER)"},
+      {"sql": "SELECT * FROM TABLE(INFORMATION_SCHEMA.POLICY_REFERENCES('PR_T', 'TABLE'))",
+       "expect": {"error": {"messageContains": "Unknown policy kind: TABLE."}}}
+    ]}
+  ]
+}

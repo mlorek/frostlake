@@ -1,0 +1,36 @@
+{
+  "suite": "functions-is-vector",
+  "description": "IS_VECTOR - every expectation measured on a real Snowflake account. It is TRUE for both element types, and FALSE for everything else VARIANT can hold: a plain ARRAY, an OBJECT, a PARSE_JSON array, a NUMBER and a BOOLEAN - an array that merely LOOKS like a vector is not one. The trap that makes this function unlike the rest of the IS_* family is NULL: IS_VECTOR(NULL) and IS_VECTOR(NULL::VECTOR(FLOAT,3)) are both SQL NULL rather than FALSE. A non-VARIANT argument is a compile error naming its type, and the vector type is tracked through a stored column, a derived table and a CTE. Converted 1:1 from functions/vector/IsVectorTest (now retired); the Java's assertRejected only asserted that something threw, so the converted tests pin the exact live messages instead.",
+  "tags": ["functions", "vector", "converted"],
+  "tests": [
+    {"name": "vectors-are-true", "steps": [
+      {"sql": "SELECT IS_VECTOR([1,2,3]::VECTOR(FLOAT,3))", "expect": {"value": "true"}},
+      {"sql": "SELECT IS_VECTOR([1,2,3]::VECTOR(INT,3))", "expect": {"value": "true"}}
+    ]},
+    {"name": "other-variant-values-are-false", "steps": [
+      {"sql": "SELECT IS_VECTOR([1,2,3])", "expect": {"value": "false"}},
+      {"sql": "SELECT IS_VECTOR({'a':1})", "expect": {"value": "false"}},
+      {"sql": "SELECT IS_VECTOR(PARSE_JSON('[1,2,3]'))", "expect": {"value": "false"}},
+      {"sql": "SELECT IS_VECTOR(TO_VARIANT([1,2,3]))", "expect": {"value": "false"}},
+      {"sql": "SELECT IS_VECTOR(1)", "expect": {"value": "false"}},
+      {"sql": "SELECT IS_VECTOR(TRUE)", "expect": {"value": "false"}}
+    ]},
+    {"name": "null-is-null-not-false", "steps": [
+      {"sql": "SELECT IS_VECTOR(NULL)", "expect": {"rows": [[null]]}},
+      {"sql": "SELECT IS_VECTOR(NULL::VECTOR(FLOAT,3))", "expect": {"rows": [[null]]}}
+    ]},
+    {"name": "non-variant-arguments-are-rejected", "steps": [
+      {"sql": "SELECT IS_VECTOR('abc')", "expect": {"error": {"messageContains": "Invalid argument types for function 'IS_VECTOR': (VARCHAR(3))"}}},
+      {"sql": "SELECT IS_VECTOR('2020-01-01'::DATE)", "expect": {"error": {"messageContains": "Invalid argument types for function 'IS_VECTOR': (DATE)"}}}
+    ]},
+    {"name": "it-tracks-the-type-through-derived-tables-and-columns", "steps": [
+      {"sql": "CREATE TABLE isvec_rows (id INTEGER, v VECTOR(FLOAT,3))"},
+      {"sql": "INSERT INTO isvec_rows SELECT 1, [1,2,3]::VECTOR(FLOAT,3)"},
+      {"sql": "INSERT INTO isvec_rows SELECT 2, NULL"},
+      {"sql": "SELECT IS_VECTOR(v) FROM isvec_rows WHERE id = 1", "expect": {"value": "true"}},
+      {"sql": "SELECT IS_VECTOR(v) FROM isvec_rows WHERE id = 2", "expect": {"rows": [[null]]}},
+      {"sql": "SELECT IS_VECTOR(v) FROM (SELECT [1,2,3]::VECTOR(FLOAT,3) AS v)", "expect": {"value": "true"}},
+      {"sql": "WITH t AS (SELECT [1,2,3]::VECTOR(FLOAT,3) AS v) SELECT IS_VECTOR(v) FROM t", "expect": {"value": "true"}}
+    ]}
+  ]
+}

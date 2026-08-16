@@ -1,0 +1,58 @@
+{
+  "suite": "features-alter-column-list",
+  "description": "ALTER TABLE's column-action LIST, live-verified: {ALTER | MODIFY} [(] [COLUMN] c1 action [, [COLUMN] c2 action]* [)] with COLUMN optional per item and the parens optional; the list is ATOMIC (a failing second item leaves the first unapplied); IF EXISTS forgives ONLY the named table's absence - a missing schema still errors and so does an error the action itself raises. Converted 1:1 from features/AlterColumnListTest (now retired).",
+  "tags": ["features", "converted"],
+  "tests": [
+    {"name": "a-multi-column-list-applies-every-action", "steps": [
+      {"sql": "CREATE SCHEMA IF NOT EXISTS sch"},
+      {"sql": "CREATE OR REPLACE TABLE sch.tbl (col1 INT DEFAULT 5, col2 INT NOT NULL)"},
+      {"sql": "ALTER TABLE IF EXISTS sch.tbl\n    ALTER COLUMN col1 DROP DEFAULT,\n        col2 DROP NOT NULL"},
+      {"sql": "DESCRIBE TABLE sch.tbl"},
+      {"sql": "SELECT COUNT_IF(\"name\" = 'COL1' AND (\"default\" IS NULL OR \"default\" = 'null')), MAX(IFF(\"name\" = 'COL2', \"null?\", NULL)) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["1", "Y"]]}}
+    ]},
+    {"name": "the-column-keyword-may-be-repeated-or-absent", "steps": [
+      {"sql": "CREATE SCHEMA IF NOT EXISTS sch"},
+      {"sql": "CREATE OR REPLACE TABLE sch.tbl (col1 INT DEFAULT 5, col2 INT NOT NULL)"},
+      {"sql": "ALTER TABLE sch.tbl ALTER COLUMN col1 DROP DEFAULT, COLUMN col2 DROP NOT NULL"},
+      {"sql": "DESCRIBE TABLE sch.tbl"},
+      {"sql": "SELECT COUNT_IF(\"name\" = 'COL1' AND (\"default\" IS NULL OR \"default\" = 'null')), MAX(IFF(\"name\" = 'COL2', \"null?\", NULL)) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["1", "Y"]]}},
+      {"sql": "CREATE OR REPLACE TABLE sch.tbl (col1 INT DEFAULT 5, col2 INT NOT NULL)"},
+      {"sql": "ALTER TABLE sch.tbl ALTER col1 DROP DEFAULT, col2 DROP NOT NULL"},
+      {"sql": "DESCRIBE TABLE sch.tbl"},
+      {"sql": "SELECT COUNT_IF(\"name\" = 'COL1' AND (\"default\" IS NULL OR \"default\" = 'null')), MAX(IFF(\"name\" = 'COL2', \"null?\", NULL)) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["1", "Y"]]}}
+    ]},
+    {"name": "the-list-may-be-parenthesized-and-modify-spells", "steps": [
+      {"sql": "CREATE SCHEMA IF NOT EXISTS sch"},
+      {"sql": "CREATE OR REPLACE TABLE sch.tbl (col1 INT DEFAULT 5, col2 INT NOT NULL)"},
+      {"sql": "ALTER TABLE sch.tbl ALTER (col1 DROP DEFAULT, col2 DROP NOT NULL)"},
+      {"sql": "DESCRIBE TABLE sch.tbl"},
+      {"sql": "SELECT COUNT_IF(\"name\" = 'COL1' AND (\"default\" IS NULL OR \"default\" = 'null')), MAX(IFF(\"name\" = 'COL2', \"null?\", NULL)) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["1", "Y"]]}},
+      {"sql": "CREATE OR REPLACE TABLE sch.tbl (col1 INT DEFAULT 5, col2 INT NOT NULL)"},
+      {"sql": "ALTER TABLE sch.tbl MODIFY COLUMN col1 DROP DEFAULT, col2 DROP NOT NULL"},
+      {"sql": "DESCRIBE TABLE sch.tbl"},
+      {"sql": "SELECT COUNT_IF(\"name\" = 'COL1' AND (\"default\" IS NULL OR \"default\" = 'null')), MAX(IFF(\"name\" = 'COL2', \"null?\", NULL)) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["1", "Y"]]}}
+    ]},
+    {"name": "a-failing-item-leaves-the-whole-list-unapplied", "steps": [
+      {"sql": "CREATE SCHEMA IF NOT EXISTS sch"},
+      {"sql": "CREATE OR REPLACE TABLE sch.tbl (col1 INT DEFAULT 5, col2 INT NOT NULL)"},
+      {"sql": "ALTER TABLE sch.tbl ALTER (col1 DROP DEFAULT, nosuch DROP NOT NULL)",
+       "expect": {"error": {"messageContains": "invalid identifier 'NOSUCH'"}}},
+      {"sql": "DESCRIBE TABLE sch.tbl"},
+      {"sql": "SELECT MAX(IFF(\"name\" = 'COL1', \"default\", NULL)) FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))", "expect": {"value": "5"}}
+    ]},
+    {"name": "if-exists-forgives-only-the-missing-table", "steps": [
+      {"sql": "CREATE SCHEMA IF NOT EXISTS sch"},
+      {"sql": "CREATE OR REPLACE TABLE sch.tbl (col1 INT DEFAULT 5, col2 INT NOT NULL)"},
+      {"sql": "ALTER TABLE IF EXISTS sch.nope ALTER COLUMN c DROP DEFAULT"},
+      {"sql": "ALTER TABLE IF EXISTS nosch.tbl ALTER COLUMN c DROP DEFAULT",
+       "expect": {"error": {"messageContains": ".NOSCH' does not exist or not authorized."}}},
+      {"sql": "ALTER TABLE IF EXISTS sch.tbl ALTER COLUMN nosuch DROP DEFAULT",
+       "expect": {"error": {"messageContains": "invalid identifier 'NOSUCH'"}}}
+    ]}
+  ]
+}

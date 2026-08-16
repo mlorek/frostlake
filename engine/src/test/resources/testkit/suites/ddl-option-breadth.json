@@ -1,0 +1,119 @@
+{
+  "suite": "ddl-option-breadth",
+  "description": "DDL/DML option breadth from the Snowflake-corpus audit: CLONE with time travel (engine parses AT/BEFORE and clones current state - live really time-travels, so those steps skip snowflake), TAG clauses everywhere (tags must exist), ROW ACCESS POLICY attached at CREATE (DDL acceptance; the attach-metadata asserts read the in-memory catalog and stay dropped), UNDROP TAG, SAMPLE method/seed variants incl. a session-variable size, CREATE STAGE property forms, COPY INTO parenthesized option groups getting past the parser (pinned to their non-syntax runtime refusals), DESCRIBE ... TYPE=STAGE, ALTER TABLE SET property forms, per-column IF NOT EXISTS, head/tail table and view properties, sequences with WITH/commas/inline comments, and dynamic-table column lists on either side of the options. Converted from ddl/DdlOptionBreadthTest (now retired).",
+  "tags": ["ddl", "converted"],
+  "tests": [
+    {"name": "clone-accepts-time-travel-and-clones-current-state",
+     "skip": {"backends": ["snowflake"], "reason": "Frostlake parses AT/BEFORE and clones current state; a real account really time-travels and fails for offsets before the table's creation (Java test had the same assumption)"},
+     "steps": [
+      {"sql": "CREATE TABLE tt_src (id INTEGER)"},
+      {"sql": "INSERT INTO tt_src VALUES (1), (2)"},
+      {"sql": "CREATE TABLE tt_at CLONE tt_src AT (OFFSET => -3600)"},
+      {"sql": "SELECT COUNT(*) FROM tt_at", "expect": {"value": "2"}},
+      {"sql": "CREATE TABLE tt_before CLONE tt_src BEFORE (STATEMENT => '8e5d0ca9-005e-44e6-b858-a8f5b37c5726')"},
+      {"sql": "SELECT COUNT(*) FROM tt_before", "expect": {"value": "2"}},
+      {"sql": "CREATE SCHEMA tt_schema_clone CLONE test_schema AT (TIMESTAMP => CURRENT_TIMESTAMP())"},
+      {"sql": "CREATE DATABASE tt_db_clone CLONE test_db AT (OFFSET => -60)"},
+      {"sql": "DROP DATABASE IF EXISTS tt_db_clone"}
+    ]},
+    {"name": "tag-clauses-are-accepted-everywhere", "steps": [
+      {"sql": "CREATE TAG IF NOT EXISTS key1"},
+      {"sql": "CREATE TAG IF NOT EXISTS key2"},
+      {"sql": "CREATE TAG IF NOT EXISTS k"},
+      {"sql": "CREATE TAG IF NOT EXISTS a"},
+      {"sql": "CREATE TABLE tagged (id INTEGER) TAG (key1='value_1', key2='value_2')"},
+      {"sql": "ALTER TABLE tagged ADD col1 VARCHAR NOT NULL TAG (key1='value_1'), col2 VARCHAR TAG (key2='v2')"},
+      {"sql": "SELECT COUNT(*) FROM tagged", "expect": {"value": "0"}},
+      {"sql": "CREATE TABLE col_tagged (id INTEGER TAG (k='v'), name VARCHAR)"},
+      {"sql": "CREATE OR REPLACE MATERIALIZED VIEW mv_tagged COPY GRANTS (a, b) COMMENT='foo' TAG (a='b')\nAS SELECT id AS a, name AS b FROM col_tagged"},
+      {"sql": "CREATE OR REPLACE VIEW v_grants (uid) COPY GRANTS AS (SELECT 1)"},
+      {"sql": "SELECT COUNT(*) FROM v_grants", "expect": {"value": "1"}}
+    ]},
+    {"name": "row-access-policy-attaches-at-create", "steps": [
+      {"sql": "CREATE ROW ACCESS POLICY eu_only AS (r VARCHAR) RETURNS BOOLEAN -> r = 'EU'"},
+      {"sql": "CREATE TABLE regions (r VARCHAR) ROW ACCESS POLICY eu_only ON (r)"},
+      {"sql": "CREATE VIEW eu_view WITH ROW ACCESS POLICY eu_only ON (r) AS SELECT r FROM regions"}
+    ]},
+    {"name": "undrop-tag-restores-it", "steps": [
+      {"sql": "CREATE TAG my_tag"},
+      {"sql": "DROP TAG my_tag"},
+      {"sql": "SHOW TAGS LIKE 'MY_TAG'", "expect": {"rowCount": 0}},
+      {"sql": "UNDROP TAG my_tag"},
+      {"sql": "SHOW TAGS LIKE 'MY_TAG'", "expect": {"rowCount": 1}}
+    ]},
+    {"name": "sample-variants", "steps": [
+      {"sql": "CREATE TABLE s_t (id INTEGER)"},
+      {"sql": "INSERT INTO s_t VALUES (1), (2), (3), (4)"},
+      {"sql": "SELECT COUNT(*) FROM s_t SAMPLE BLOCK (100) SEED (42)", "expect": {"value": "4"}},
+      {"sql": "SELECT COUNT(*) FROM s_t SAMPLE BLOCK (100) REPEATABLE (99992)", "expect": {"value": "4"}},
+      {"sql": "SET s = 100"},
+      {"sql": "SELECT COUNT(*) FROM s_t SAMPLE BERNOULLI ($s) SEED (0)", "expect": {"value": "4"}}
+    ]},
+    {"name": "create-stage-property-forms", "steps": [
+      {"sql": "CREATE FILE FORMAT fmt1 TYPE = 'CSV'"},
+      {"sql": "CREATE STAGE st_string FILE_FORMAT='fmt1'"},
+      {"sql": "CREATE STAGE st_paren FILE_FORMAT=(TYPE=PARQUET)"},
+      {"sql": "CREATE STAGE st_named FILE_FORMAT=(FORMAT_NAME=test_schema.fmt1)"},
+      {"sql": "CREATE STAGE st_named_str FILE_FORMAT=(FORMAT_NAME='test_schema.fmt1')"},
+      {"sql": "CREATE STAGE st_qual FILE_FORMAT=test_schema.fmt1"},
+      {"sql": "CREATE TEMPORARY STAGE st_temp FILE_FORMAT=(TYPE=PARQUET)"},
+      {"sql": "CREATE STAGE st_creds URL='s3://bucket-123' FILE_FORMAT=(TYPE='JSON') CREDENTIALS=(aws_key_id='test' aws_secret_key='test')"},
+      {"sql": "SHOW STAGES", "expect": {"rowCount": 7}}
+    ]},
+    {"name": "copy-option-groups-parse", "steps": [
+      {"sql": "CREATE TABLE load1 (c1 VARCHAR)"},
+      {"sql": "COPY INTO load1 FROM @%load1/data1/ CREDENTIALS = (AWS_KEY_ID='id' AWS_SECRET_KEY='key' AWS_TOKEN='token') FILES = ('test1.csv', 'test2.csv') FORCE = TRUE",
+       "expect": {"error": {"messageContains": "Remote file '@%load1/data1/test1.csv' was not found."}}},
+      {"sql": "COPY INTO load1 (c1) FROM 's3://mybucket/data/files' STORAGE_INTEGRATION = \"storage\" ENCRYPTION = (TYPE='NONE' MASTER_KEY='key') FILES = ('file1.csv') CREDENTIALS = ()",
+       "expect": {"error": {"messageContains": "invalid parameter 'STORAGE_INTEGRATION'"}}}
+    ]},
+    {"name": "describe-type-stage-and-alter-set-forms", "steps": [
+      {"sql": "CREATE TABLE d_t (id INTEGER)"},
+      {"sql": "DESCRIBE TABLE d_t type=stage", "expect": {"rowCount": 1}},
+      {"sql": "ALTER TABLE d_t SET DATA_RETENTION_TIME_IN_DAYS=1"},
+      {"sql": "ALTER TABLE d_t SET STAGE_COPY_OPTIONS = (ON_ERROR=SKIP_FILE SIZE_LIMIT=5 PURGE=TRUE MATCH_BY_COLUMN_NAME=CASE_SENSITIVE)"},
+      {"sql": "ALTER TABLE d_t SET STAGE_FILE_FORMAT = (TYPE=CSV FIELD_DELIMITER='|' NULL_IF=('') FIELD_OPTIONALLY_ENCLOSED_BY='\"' TIMESTAMP_FORMAT='TZHTZM YYYY-MM-DD HH24:MI:SS.FF9')"},
+      {"sql": "ALTER TABLE d_t ADD IF NOT EXISTS c1 INTEGER, IF NOT EXISTS c2 INTEGER"},
+      {"sql": "DESCRIBE TABLE d_t", "expect": {"rowCount": 3}}
+    ]},
+    {"name": "table-properties-before-or-after-the-body-are-accepted", "steps": [
+      {"sql": "CREATE TABLE prop_tail (id INTEGER) CHANGE_TRACKING=TRUE"},
+      {"sql": "CREATE TABLE prop_head CHANGE_TRACKING=TRUE DATA_RETENTION_TIME_IN_DAYS=1 (id INTEGER)"},
+      {"sql": "INSERT INTO prop_head VALUES (7)"},
+      {"sql": "SELECT COUNT(*) FROM prop_head", "expect": {"value": "1"}},
+      {"sql": "ALTER TABLE prop_head UNSET DATA_RETENTION_TIME_IN_DAYS, CHANGE_TRACKING"},
+      {"sql": "SELECT id FROM prop_head", "expect": {"value": "7"}}
+    ]},
+    {"name": "view-properties-and-qualified-row-access-policy", "steps": [
+      {"sql": "CREATE TABLE vp_src (c INTEGER, region VARCHAR)"},
+      {"sql": "CREATE VIEW vp_head CHANGE_TRACKING=TRUE (c) AS SELECT c FROM vp_src"},
+      {"sql": "CREATE VIEW vp_tail (c) CHANGE_TRACKING=TRUE AS SELECT c FROM vp_src"},
+      {"sql": "SELECT COUNT(*) FROM vp_tail", "expect": {"value": "0"}},
+      {"sql": "CREATE ROW ACCESS POLICY policy AS (r VARCHAR) RETURNS BOOLEAN -> r = 'EU'"},
+      {"sql": "CREATE VIEW vp_rap (region COMMENT 'per-column comment') WITH ROW ACCESS POLICY test_db.test_schema.policy ON (region) COMMENT='view comment' AS (SELECT region FROM vp_src)"}
+    ]},
+    {"name": "sequence-with-lead-in-commas-and-inline-comment", "steps": [
+      {"sql": "CREATE SEQUENCE seq_with WITH START=1 INCREMENT=1 ORDER"},
+      {"sql": "SELECT seq_with.NEXTVAL", "expect": {"value": "1"}},
+      {"sql": "SELECT seq_with.NEXTVAL", "expect": {"value": "2"}},
+      {"sql": "CREATE SEQUENCE seq_commas WITH START=5, INCREMENT=10 ORDER"},
+      {"sql": "SELECT seq_commas.NEXTVAL", "expect": {"value": "5"}},
+      {"sql": "SELECT seq_commas.NEXTVAL", "expect": {"value": "15"}},
+      {"sql": "CREATE SEQUENCE seq_inline START=3 COMMENT = 'counts things' INCREMENT=2"},
+      {"sql": "SELECT seq_inline.NEXTVAL", "expect": {"value": "3"}},
+      {"sql": "SHOW SEQUENCES LIKE 'seq_inline'", "expect": {"rowCount": 1}},
+      {"sql": "SELECT \"comment\" FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) WHERE \"name\" = 'SEQ_INLINE'",
+       "expect": {"value": "counts things"}}
+    ]},
+    {"name": "dynamic-table-column-list-on-either-side-of-options", "steps": [
+      {"sql": "CREATE WAREHOUSE IF NOT EXISTS my_wh WITH WAREHOUSE_SIZE = 'XSMALL' AUTO_SUSPEND = 60 INITIALLY_SUSPENDED = TRUE"},
+      {"sql": "CREATE TABLE dyn_src (id INTEGER)"},
+      {"sql": "INSERT INTO dyn_src VALUES (1), (2)"},
+      {"sql": "CREATE DYNAMIC TABLE dyn_after TARGET_LAG='1 minute' WAREHOUSE=my_wh (id) AS SELECT id FROM dyn_src"},
+      {"sql": "CREATE DYNAMIC TABLE dyn_before (a) TARGET_LAG='20 minutes' WAREHOUSE=my_wh AS SELECT id FROM dyn_src"},
+      {"sql": "SELECT COUNT(*) FROM dyn_after", "expect": {"value": "2"}},
+      {"sql": "SELECT COUNT(*) FROM dyn_before", "expect": {"value": "2"}},
+      {"sql": "DROP WAREHOUSE IF EXISTS my_wh"}
+    ]}
+  ]
+}

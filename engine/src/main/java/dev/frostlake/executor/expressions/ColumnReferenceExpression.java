@@ -16,6 +16,8 @@
 
 package dev.frostlake.executor.expressions;
 
+import dev.frostlake.executor.StarArgument;
+
 /**
  * Represents a column reference (e.g., "name", "users.id", "u.name")
  */
@@ -37,6 +39,8 @@ public class ColumnReferenceExpression implements Expression {
      * Null when nobody wrote this reference (a star expansion, a synthesised key).
      */
     private String writtenName;
+    /** The star this reference stands for when it was written as a function argument, else null. */
+    private StarArgument starArgument;
 
     public ColumnReferenceExpression(final String columnName) {
         this(null, columnName, null);
@@ -95,6 +99,19 @@ public class ColumnReferenceExpression implements Expression {
 
     public boolean isQualified() {
         return tableName != null;
+    }
+
+    /**
+     * The star — qualifier, EXCLUDE and ILIKE — when this reference is a star written beside other
+     * function arguments, which the evaluator splices into the list as the columns it names.
+     */
+    public StarArgument getStarArgument() {
+        return starArgument;
+    }
+
+    /** Marks this reference as the star argument {@code star}; see {@link #getStarArgument()}. */
+    public void describeStar(final StarArgument star) {
+        this.starArgument = star;
     }
 
     @Override

@@ -1,0 +1,72 @@
+{
+  "suite": "query-derived-column-name",
+  "description": "The generated NAME of an unaliased select item, all live-verified. A (possibly parenthesised, possibly qualified) column reference is named after the COLUMN - (amount), ( amount ), ((amount)) and s.amount all project AMOUNT. EVERY other expression is named by its SOURCE TEXT, bluntly: whitespace and newlines survive exactly as written, nothing is truncated, a parenthesised expression keeps its parens in the name, and a FROM-less literal is named after itself, so SELECT 1 projects a column named 1. A set operation takes its names from the FIRST branch. A positional item is named in its dollar form, $N, and not after the COLUMN<N> name it resolves through; an out-of-range one is refused in that same form. Converted from query/DerivedColumnNameTest. The class's CASE claims - that the text folds to upper case, that a quoted column reference keeps the column's own case, and that a quoted alias is verbatim while an unquoted one folds - are NOT expressible here: the suite schema's column comparison is case-INSENSITIVE, so those assertions would pass vacuously. They stay in the trimmed Java class, which keeps the two tests whose whole subject is case. Everything else - the text, the spacing, the parens, the quoting inside the text, the absence of truncation, and the values - is asserted here.",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "the-source-text-is-preserved-verbatim", "steps": [
+      {"sql": "CREATE TABLE sales (region VARCHAR, product VARCHAR, amount NUMBER)"},
+      {"sql": "INSERT INTO sales VALUES ('east','a',10),('west','b',20)"},
+      {"sql": "SELECT amount    +    1 FROM sales", "expect": {"columns": ["AMOUNT    +    1"]}},
+      {"sql": "SELECT amount+1 FROM sales", "expect": {"columns": ["AMOUNT+1"]}},
+      {"sql": "SELECT amount::int FROM sales", "expect": {"columns": ["AMOUNT::INT"]}}
+    ]},
+    {"name": "a-newline-inside-the-expression-survives", "steps": [
+      {"sql": "CREATE TABLE sales (region VARCHAR, product VARCHAR, amount NUMBER)"},
+      {"sql": "INSERT INTO sales VALUES ('east','a',10),('west','b',20)"},
+      {"sql": "SELECT amount +\n1 FROM sales", "expect": {"columns": ["AMOUNT +\n1"]}}
+    ]},
+    {"name": "literals-and-quoted-identifiers-inside-the-text-are-kept", "steps": [
+      {"sql": "CREATE TABLE q188 (\"lc\" VARCHAR)"},
+      {"sql": "INSERT INTO q188 VALUES ('x')"},
+      {"sql": "SELECT upper('a')", "expect": {"columns": ["UPPER('A')"]}},
+      {"sql": "SELECT \"lc\" || 'x' FROM q188", "expect": {"columns": ["\"LC\" || 'X'"]}}
+    ]},
+    {"name": "nothing-is-truncated", "steps": [
+      {"sql": "CREATE TABLE sales (region VARCHAR, product VARCHAR, amount NUMBER)"},
+      {"sql": "INSERT INTO sales VALUES ('east','a',10),('west','b',20)"},
+      {"sql": "SELECT upper('abcdefghijklmnopqrstuvwxyz0123456789') FROM sales", "expect": {"columns": ["UPPER('ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789')"]}}
+    ]},
+    {"name": "a-from-less-literal-is-named-after-itself", "steps": [
+      {"sql": "SELECT 1", "expect": {"columns": ["1"], "rows": [[1]]}},
+      {"sql": "SELECT 'x'", "expect": {"columns": ["'X'"], "rows": [["x"]]}}
+    ]},
+    {"name": "aggregate-items-are-named-by-their-text-like-any-other", "steps": [
+      {"sql": "CREATE TABLE sales (region VARCHAR, product VARCHAR, amount NUMBER)"},
+      {"sql": "INSERT INTO sales VALUES ('east','a',10),('west','b',20)"},
+      {"sql": "SELECT count(*), sum(amount), MAX(amount), MIN(amount) FROM sales", "expect": {"columns": ["COUNT(*)", "SUM(AMOUNT)", "MAX(AMOUNT)", "MIN(AMOUNT)"], "rows": [[2, 30, 20, 10]]}}
+    ]},
+    {"name": "a-column-reference-is-named-after-the-column-through-parens-and-qualifiers", "steps": [
+      {"sql": "CREATE TABLE sales (region VARCHAR, product VARCHAR, amount NUMBER)"},
+      {"sql": "INSERT INTO sales VALUES ('east','a',10),('west','b',20)"},
+      {"sql": "SELECT (amount) FROM sales", "expect": {"columns": ["AMOUNT"]}},
+      {"sql": "SELECT ((amount)) FROM sales", "expect": {"columns": ["AMOUNT"]}},
+      {"sql": "SELECT ( amount ) FROM sales", "expect": {"columns": ["AMOUNT"]}},
+      {"sql": "SELECT s.amount FROM sales s", "expect": {"columns": ["AMOUNT"]}},
+      {"sql": "SELECT (s.amount) FROM sales s", "expect": {"columns": ["AMOUNT"]}}
+    ]},
+    {"name": "a-parenthesised-expression-keeps-its-parens-in-the-name", "steps": [
+      {"sql": "CREATE TABLE sales (region VARCHAR, product VARCHAR, amount NUMBER)"},
+      {"sql": "INSERT INTO sales VALUES ('east','a',10),('west','b',20)"},
+      {"sql": "SELECT (amount + 1) FROM sales", "expect": {"columns": ["(AMOUNT + 1)"]}}
+    ]},
+    {"name": "an-alias-names-the-column", "steps": [
+      {"sql": "CREATE TABLE sales (region VARCHAR, product VARCHAR, amount NUMBER)"},
+      {"sql": "INSERT INTO sales VALUES ('east','a',10),('west','b',20)"},
+      {"sql": "SELECT count(*) AS cnt FROM sales", "expect": {"columns": ["CNT"], "rows": [[2]]}}
+    ]},
+    {"name": "a-set-operation-is-named-by-its-first-branch", "steps": [
+      {"sql": "CREATE TABLE sales (region VARCHAR, product VARCHAR, amount NUMBER)"},
+      {"sql": "INSERT INTO sales VALUES ('east','a',10),('west','b',20)"},
+      {"sql": "SELECT amount+1 FROM sales UNION ALL SELECT amount+2 FROM sales", "expect": {"columns": ["AMOUNT+1"], "rowCount": 4}}
+    ]},
+    {"name": "a-positional-item-is-named-in-its-dollar-form", "steps": [
+      {"sql": "CREATE TABLE sales (region VARCHAR, product VARCHAR, amount NUMBER)"},
+      {"sql": "INSERT INTO sales VALUES ('east','a',10),('west','b',20)"},
+      {"sql": "SELECT $2 FROM sales ORDER BY 1", "expect": {"columns": ["$2"], "rows": [["a"], ["b"]], "ordered": true}},
+      {"sql": "SELECT $1 FROM (VALUES (7,8))", "expect": {"columns": ["$1"], "rows": [[7]]}}
+    ]},
+    {"name": "an-out-of-range-positional-is-refused-in-its-dollar-form", "steps": [
+      {"sql": "SELECT $3 FROM (VALUES (7,8))", "expect": {"error": {"messageContains": "SQL compilation error: error line 1 at position 7\ninvalid identifier '$3'"}}}
+    ]}
+  ]
+}

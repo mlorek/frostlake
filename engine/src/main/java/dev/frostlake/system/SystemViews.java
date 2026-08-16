@@ -16,6 +16,7 @@
 
 package dev.frostlake.system;
 
+import dev.frostlake.executor.ShowResultHelpers;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.model.Database;
@@ -39,13 +40,16 @@ import dev.frostlake.metastore.model.View;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
-import dev.frostlake.types.BinaryType;
 import dev.frostlake.types.DataType;
 import dev.frostlake.types.DateTimeType;
+import dev.frostlake.types.LengthlessStringType;
 import dev.frostlake.types.NumericType;
+import dev.frostlake.types.SqlTypeNames;
 import dev.frostlake.types.StringType;
+import dev.frostlake.types.UuidType;
 
 import java.time.Instant;
+import java.time.OffsetDateTime;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
@@ -62,7 +66,7 @@ public class SystemViews {
     private static final String YES_NO_FALSE = "NO";
     /** Data retention, in days: this engine keeps no time-travel history, and a real account's
      *  default for a standard database is 1 — reported as text, as live does. */
-    private static final String DEFAULT_RETENTION_TIME = "1";
+    private static final Long DEFAULT_RETENTION_TIME = 1L;
     /** Every object here is owned by a role, never directly by a user. */
     private static final String OWNER_ROLE_TYPE = "ROLE";
 
@@ -76,14 +80,20 @@ public class SystemViews {
 
     public ResultSet queryDatabases() {
         final ResultSet result = new ResultSet(Arrays.asList(
-            col("DATABASE_NAME"), col("DATABASE_OWNER"), col("IS_TRANSIENT"), col("COMMENT"),
-            col("CREATED"), col("LAST_ALTERED"), col("RETENTION_TIME"), col("TYPE"),
+            col("DATABASE_NAME"), col("DATABASE_OWNER"), colYesNo("IS_TRANSIENT"), col("COMMENT"),
+            colLtz("CREATED"), colLtz("LAST_ALTERED"), colLong("RETENTION_TIME"), colText("TYPE", 19),
             col("REPLICABLE_WITH_FAILOVER_GROUPS"), col("OWNER_ROLE_TYPE")
         ));
         for (final Database db : catalog.getAllDatabases()) {
             result.addRow(new Row(
-                db.getName(), db.getOwner(), YES_NO_FALSE, db.getComment(),
-                db.getCreatedTime(), db.getCreatedTime(), DEFAULT_RETENTION_TIME, "STANDARD",
+                // The same fact SHOW spells as the word TRANSIENT reads YES/NO here — the two
+                // metadata surfaces disagree on spelling by design.
+                db.getName(), db.getOwner(), db.isTransientObject() ? "YES" : YES_NO_FALSE,
+                db.getComment(),
+                db.getCreatedTime(), db.getCreatedTime(),
+                db.getDataRetentionTimeInDays() != null
+                    ? Long.valueOf(db.getDataRetentionTimeInDays().longValue()) : DEFAULT_RETENTION_TIME,
+                "STANDARD",
                 "UNSET", OWNER_ROLE_TYPE
             ));
         }
@@ -95,17 +105,25 @@ public class SystemViews {
     public ResultSet querySchemata(final String databaseName) {
         final ResultSet result = new ResultSet(Arrays.asList(
             col("CATALOG_NAME"), col("SCHEMA_NAME"), col("SCHEMA_OWNER"),
-            col("IS_TRANSIENT"), col("IS_MANAGED_ACCESS"), col("RETENTION_TIME"),
+            colYesNo("IS_TRANSIENT"), colYesNo("IS_MANAGED_ACCESS"), colLong("RETENTION_TIME"),
             col("DEFAULT_CHARACTER_SET_CATALOG"), col("DEFAULT_CHARACTER_SET_SCHEMA"),
             col("DEFAULT_CHARACTER_SET_NAME"), col("SQL_PATH"),
-            col("CREATED"), col("LAST_ALTERED"), col("COMMENT"),
+            colLtz("CREATED"), colLtz("LAST_ALTERED"), col("COMMENT"),
             col("REPLICABLE_WITH_FAILOVER_GROUPS"), col("OWNER_ROLE_TYPE")
         ));
         for (final Database db : databases(databaseName)) {
             for (final Schema schema : db.getAllSchemas()) {
                 result.addRow(new Row(
                     db.getName(), schema.getName(), schema.getOwner(),
-                    YES_NO_FALSE, YES_NO_FALSE, DEFAULT_RETENTION_TIME,
+                    schema.isTransientObject() ? "YES" : YES_NO_FALSE,
+                    YES_NO_FALSE,
+                    // The schema's own value, else its database's, else the account default — the
+                    // same live-resolved inheritance SHOW SCHEMAS reports.
+                    schema.getDataRetentionTimeInDays() != null
+                        ? Long.valueOf(schema.getDataRetentionTimeInDays().longValue())
+                        : db.getDataRetentionTimeInDays() != null
+                            ? Long.valueOf(db.getDataRetentionTimeInDays().longValue())
+                            : DEFAULT_RETENTION_TIME,
                     null, null, null, null,
                     schema.getCreatedTime(), schema.getCreatedTime(), schema.getComment(),
                     "UNSET", OWNER_ROLE_TYPE
@@ -140,13 +158,13 @@ public class SystemViews {
     public ResultSet queryTables(final String databaseName, final String schemaName) {
         final ResultSet result = new ResultSet(Arrays.asList(
             col("TABLE_CATALOG"), col("TABLE_SCHEMA"), col("TABLE_NAME"),
-            col("TABLE_OWNER"), col("TABLE_TYPE"),
-            col("IS_TRANSIENT"), col("CLUSTERING_KEY"),
-            colLong("ROW_COUNT"), colLong("BYTES"), col("RETENTION_TIME"),
+            col("TABLE_OWNER"), colText("TABLE_TYPE", 134217728),
+            colText("IS_TRANSIENT", 134217728), col("CLUSTERING_KEY"),
+            colLong("ROW_COUNT"), colLong("BYTES"), colLong("RETENTION_TIME"),
             col("SELF_REFERENCING_COLUMN_NAME"), col("REFERENCE_GENERATION"),
             col("USER_DEFINED_TYPE_CATALOG"), col("USER_DEFINED_TYPE_SCHEMA"),
             col("USER_DEFINED_TYPE_NAME"), col("IS_INSERTABLE_INTO"), col("IS_TYPED"),
-            col("COMMIT_ACTION"), col("CREATED"), col("LAST_ALTERED"),
+            col("COMMIT_ACTION"), colLtz("CREATED"), colLtz("LAST_ALTERED"),
             col("LAST_DDL"), col("LAST_DDL_BY"), col("AUTO_CLUSTERING_ON"), col("COMMENT"),
             col("IS_TEMPORARY"), col("IS_ICEBERG"), col("IS_DYNAMIC"), col("IS_IMMUTABLE"),
             col("IS_HYBRID"), col("ROW_TIMESTAMP_ON"), col("ERROR_LOGGING"), col("IS_INTERACTIVE")
@@ -233,7 +251,7 @@ public class SystemViews {
         final ResultSet result = new ResultSet(Arrays.asList(
             col("TABLE_CATALOG"), col("TABLE_SCHEMA"), col("TABLE_NAME"),
             col("COLUMN_NAME"), colInt("ORDINAL_POSITION"),
-            col("COLUMN_DEFAULT"), col("IS_NULLABLE"),
+            colText("COLUMN_DEFAULT", 134217728), colYesNo("IS_NULLABLE"),
             col("DATA_TYPE"), colInt("CHARACTER_MAXIMUM_LENGTH"), colInt("CHARACTER_OCTET_LENGTH"),
             colInt("NUMERIC_PRECISION"), colInt("NUMERIC_PRECISION_RADIX"), colInt("NUMERIC_SCALE"),
             colInt("DATETIME_PRECISION"), col("INTERVAL_TYPE"), col("INTERVAL_PRECISION"),
@@ -243,7 +261,7 @@ public class SystemViews {
             col("UDT_CATALOG"), col("UDT_SCHEMA"), col("UDT_NAME"),
             col("SCOPE_CATALOG"), col("SCOPE_SCHEMA"), col("SCOPE_NAME"),
             col("MAXIMUM_CARDINALITY"), col("DTD_IDENTIFIER"), col("IS_SELF_REFERENCING"),
-            col("IS_IDENTITY"), col("IDENTITY_GENERATION"),
+            colYesNo("IS_IDENTITY"), col("IDENTITY_GENERATION"),
             col("IDENTITY_START"), col("IDENTITY_INCREMENT"),
             col("IDENTITY_MAXIMUM"), col("IDENTITY_MINIMUM"),
             col("IDENTITY_CYCLE"), col("IDENTITY_ORDERED"),
@@ -311,12 +329,18 @@ public class SystemViews {
         final DataType dataType = col.getDataType();
         final String typeName = dataType.getName().toUpperCase();
         final String canonical = canonicalDataType(typeName);
-        final Integer charLen = dataType instanceof StringType
-            ? Integer.valueOf(((StringType) dataType).getMaxLength()) : null;
-        Integer octetLen = charLen;
-        if (dataType instanceof BinaryType) {
-            octetLen = Integer.valueOf(((BinaryType) dataType).getMaxLength());
-        }
+        // A string's length stops at the widest a column can declare, as DESCRIBE's does — a view over
+        // UPPER or || of a 16MB column reads 16777216 here although the expression itself is wider —
+        // and its octet length is four bytes a character, uncapped: VARCHAR(5) reads 20 and the
+        // 16MB maximum 67108864 (live-verified).
+        // A UUID reports neither length, as a BINARY does not (live-verified).
+        final Integer charLen = dataType instanceof StringType && !(dataType instanceof UuidType)
+            ? Integer.valueOf((int) Math.min(((StringType) dataType).getMaxLength(),
+                SqlTypeNames.DESCRIBED_STRING_MAXIMUM)) : null;
+        // A BINARY column reports NEITHER length, declared width or not — live leaves both NULL for a
+        // table column, a view column and a CTAS column alike; its size reaches JDBC through SHOW
+        // COLUMNS instead (live-verified).
+        final Integer octetLen = charLen == null ? null : Integer.valueOf(charLen.intValue() * 4);
         // Live reports precision/scale only for the exact-numeric family: a FLOAT column
         // leaves both NULL, and every non-numeric type leaves both NULL too.
         Integer numPrec = null;
@@ -407,8 +431,8 @@ public class SystemViews {
         final ResultSet result = new ResultSet(Arrays.asList(
             col("TABLE_CATALOG"), col("TABLE_SCHEMA"), col("TABLE_NAME"),
             col("TABLE_OWNER"), col("VIEW_DEFINITION"), col("CHECK_OPTION"),
-            col("IS_UPDATABLE"), col("INSERTABLE_INTO"), col("IS_SECURE"),
-            col("CREATED"), col("LAST_ALTERED"), col("LAST_DDL"), col("LAST_DDL_BY"),
+            col("IS_UPDATABLE"), col("INSERTABLE_INTO"), colYesNo("IS_SECURE"),
+            colLtz("CREATED"), colLtz("LAST_ALTERED"), col("LAST_DDL"), col("LAST_DDL_BY"),
             col("COMMENT")
         ));
         for (final Database db : databases(databaseName)) {
@@ -641,7 +665,7 @@ public class SystemViews {
                         YES_NO_FALSE, null, null, null, null, null,
                         null, listOrNull(func.getImports()), func.getHandler(), null,
                         func.getRuntimeVersion(), null, null,
-                        YES_NO_FALSE, null, null,
+                        yesNo(func.isMemoizable()), null, null,
                         YES_NO_FALSE, YES_NO_FALSE, null
                     ));
                 }
@@ -655,21 +679,27 @@ public class SystemViews {
     public ResultSet querySequences(final String databaseName, final String schemaName) {
         final ResultSet result = new ResultSet(Arrays.asList(
             col("SEQUENCE_CATALOG"), col("SEQUENCE_SCHEMA"), col("SEQUENCE_NAME"),
-            col("SEQUENCE_OWNER"), col("DATA_TYPE"),
-            colLong("NUMERIC_PRECISION"), colLong("NUMERIC_PRECISION_RADIX"), colLong("NUMERIC_SCALE"),
-            colLong("START_VALUE"), colLong("MINIMUM_VALUE"), colLong("MAXIMUM_VALUE"),
-            colLong("NEXT_VALUE"), colLong("INCREMENT"), col("CYCLE_OPTION"),
-            col("CREATED"), col("LAST_ALTERED"), col("ORDERED"), col("COMMENT")
+            col("SEQUENCE_OWNER"), colText("DATA_TYPE", 6),
+            colNumber("NUMERIC_PRECISION", 2), colLong("NUMERIC_PRECISION_RADIX"), colLong("NUMERIC_SCALE"),
+            // The five bounds are TEXT on the account, as the standard's view defines them — only the
+            // three NUMERIC_* cells are numbers.
+            col("START_VALUE"), col("MINIMUM_VALUE"), col("MAXIMUM_VALUE"),
+            col("NEXT_VALUE"), col("INCREMENT"), col("CYCLE_OPTION"),
+            colLtz("CREATED"), colLtz("LAST_ALTERED"), colYesNo("ORDERED"), col("COMMENT")
         ));
         for (final Database db : databases(databaseName)) {
             for (final Schema schema : schemas(db, schemaName)) {
                 for (final Sequence seq : schema.getSequences()) {
+                    // A never-altered sequence's LAST_ALTERED is its creation instant (live-verified),
+                    // and ORDERED spells the ORDER clause YES/NO where SHOW spells it Y/N.
+                    final OffsetDateTime created = ShowResultHelpers.createdOn(seq.getCreatedTime());
                     result.addRow(new Row(
                         db.getName(), schema.getName(), seq.getName().toUpperCase(), seq.getOwner(),
                         "NUMBER", 38L, 10L, 0L,
-                        seq.getStartValue(), Long.MIN_VALUE, Long.MAX_VALUE,
-                        seq.peekNextValue(), seq.getIncrement(), YES_NO_FALSE,
-                        null, null, YES_NO_FALSE, seq.getComment()
+                        String.valueOf(seq.getStartValue()), String.valueOf(Long.MIN_VALUE),
+                        String.valueOf(Long.MAX_VALUE), String.valueOf(seq.peekNextValue()),
+                        String.valueOf(seq.getIncrement()), YES_NO_FALSE,
+                        created, created, seq.isOrder() ? YES_NO_TRUE : YES_NO_FALSE, seq.getComment()
                     ));
                 }
             }
@@ -767,7 +797,7 @@ public class SystemViews {
         final ResultSet result = new ResultSet(Arrays.asList(
             col("GRANTOR"), col("GRANTEE"), col("GRANTED_TO"), col("TABLE_CATALOG"),
             col("TABLE_SCHEMA"), col("TABLE_NAME"),
-            col("PRIVILEGE_TYPE"), col("IS_GRANTABLE"), col("WITH_HIERARCHY"), col("CREATED")
+            col("PRIVILEGE_TYPE"), col("IS_GRANTABLE"), col("WITH_HIERARCHY"), colLtz("CREATED")
         ));
         // Privileges are not fully tracked yet; return empty result set
         return result;
@@ -928,16 +958,42 @@ public class SystemViews {
         return value ? YES_NO_TRUE : YES_NO_FALSE;
     }
 
+    /**
+     * A name, a comment, a definition: the VARCHAR the account's views declare with no length of
+     * their own, which SYSTEM$TYPEOF spells as the bare word VARCHAR (live-verified over TABLES,
+     * COLUMNS, SCHEMATA, DATABASES, VIEWS and SEQUENCES).
+     */
     private ResultSetColumn col(final String name) {
-        return new ResultSetColumn(name, StringType.VARCHAR);
+        return new ResultSetColumn(name, StringType.VARCHAR, null, new LengthlessStringType());
     }
 
+    /** A YES / NO cell: VARCHAR(3) on the account (IS_NULLABLE, IS_SECURE, ORDERED, …). */
+    private ResultSetColumn colYesNo(final String name) {
+        return new ResultSetColumn(name, StringType.VARCHAR, null, new StringType("VARCHAR", 3));
+    }
+
+    /** A text column the account declares at a measured width — VARCHAR(134217728) for TABLE_TYPE. */
+    private ResultSetColumn colText(final String name, final int length) {
+        return new ResultSetColumn(name, StringType.VARCHAR, null, new StringType("VARCHAR", length));
+    }
+
+    /** A whole-number cell: NUMBER(38,0) on the account, whatever it counts. */
     private ResultSetColumn colInt(final String name) {
-        return new ResultSetColumn(name, NumericType.INTEGER);
+        return new ResultSetColumn(name, NumericType.INTEGER, null, new NumericType("NUMBER", 38, 0));
     }
 
     private ResultSetColumn colLong(final String name) {
-        return new ResultSetColumn(name, NumericType.BIGINT);
+        return new ResultSetColumn(name, NumericType.BIGINT, null, new NumericType("NUMBER", 38, 0));
+    }
+
+    /** A whole-number cell the account declares narrower — NUMBER(2,0) for SEQUENCES.NUMERIC_PRECISION. */
+    private ResultSetColumn colNumber(final String name, final int precision) {
+        return new ResultSetColumn(name, NumericType.BIGINT, null, new NumericType("NUMBER", precision, 0));
+    }
+
+    /** A creation or alteration instant — TIMESTAMP_LTZ(3) on the account, rendered at the session zone. */
+    private ResultSetColumn colLtz(final String name) {
+        return new ResultSetColumn(name, ShowResultHelpers.CREATED_ON, null, ShowResultHelpers.CREATED_ON);
     }
 
     /** A list rendered as live renders IMPORTS / PACKAGES, or null when it holds nothing. */

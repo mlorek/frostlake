@@ -1,0 +1,161 @@
+{
+  "suite": "functions-like-ilike",
+  "description": "The function-call forms LIKE(subject, pattern) and ILIKE(subject, pattern), and the RLIKE == REGEXP_LIKE synonym - alternatives to the infix subject LIKE pattern operators. LIKE is case-sensitive, ILIKE case-insensitive, RLIKE an anchored regular-expression match, and a NULL argument yields NULL. The function form is usable in a WHERE clause, and allowing LIKE/ILIKE as function names must not disturb the infix operators. Snowflake's % and _ match ANY character INCLUDING newlines, so a multi-line subject matches '%needle%' when the needle sits between newlines. Converted 1:1 from functions/LikeIlikeFunctionTest (now retired); the newline cases keep the backslash-n string escape the Java passed, which the engine decodes.",
+  "tags": [
+    "functions",
+    "converted"
+  ],
+  "tests": [
+    {
+      "name": "the-like-function-is-case-sensitive",
+      "steps": [
+        {
+          "sql": "SELECT LIKE('High fidelity method', 'High%')",
+          "expect": {
+            "value": "true"
+          }
+        },
+        {
+          "sql": "SELECT LIKE('High fidelity method', 'high%')",
+          "expect": {
+            "value": "false"
+          }
+        },
+        {
+          "sql": "SELECT LIKE('abc', 'a_c')",
+          "expect": {
+            "value": "true"
+          }
+        }
+      ]
+    },
+    {
+      "name": "the-ilike-function-is-case-insensitive",
+      "steps": [
+        {
+          "sql": "SELECT ILIKE('High fidelity method', 'high%')",
+          "expect": {
+            "value": "true"
+          }
+        },
+        {
+          "sql": "SELECT ILIKE('High fidelity method', '%FIDELITY method')",
+          "expect": {
+            "value": "true"
+          }
+        },
+        {
+          "sql": "SELECT ILIKE('High fidelity method', 'low%')",
+          "expect": {
+            "value": "false"
+          }
+        }
+      ]
+    },
+    {
+      "name": "rlike-is-a-regexp-like-synonym",
+      "steps": [
+        {
+          "sql": "SELECT RLIKE('High fidelity method', '.*method')",
+          "expect": {
+            "value": "true"
+          }
+        },
+        {
+          "sql": "SELECT RLIKE('High fidelity method', '^low')",
+          "expect": {
+            "value": "false"
+          }
+        }
+      ]
+    },
+    {
+      "name": "null-arguments-yield-null",
+      "steps": [
+        {
+          "sql": "SELECT LIKE(NULL, 'a%')",
+          "expect": {
+            "rows": [
+              [
+                null
+              ]
+            ]
+          }
+        },
+        {
+          "sql": "SELECT ILIKE('a', NULL)",
+          "expect": {
+            "rows": [
+              [
+                null
+              ]
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "the-function-form-is-usable-in-a-where-clause",
+      "steps": [
+        {
+          "sql": "CREATE TABLE os (m VARCHAR)"
+        },
+        {
+          "sql": "INSERT INTO os VALUES ('High fidelity method'), ('low signal')"
+        },
+        {
+          "sql": "SELECT m FROM os WHERE ILIKE(m, '%fidelity method')",
+          "expect": {
+            "rowCount": 1
+          }
+        }
+      ]
+    },
+    {
+      "name": "the-infix-operators-still-work",
+      "steps": [
+        {
+          "sql": "SELECT 'abc' LIKE 'a%'",
+          "expect": {
+            "value": "true"
+          }
+        },
+        {
+          "sql": "SELECT 'ABC' ILIKE 'abc'",
+          "expect": {
+            "value": "true"
+          }
+        }
+      ]
+    },
+    {
+      "name": "percent-and-underscore-span-newlines",
+      "steps": [
+        {
+          "sql": "SELECT '\\n The remote host is a virtual machine.\\n' ILIKE '%The remote host is a virtual machine%'",
+          "expect": {
+            "value": "true"
+          }
+        },
+        {
+          "sql": "SELECT 'a\\nb' LIKE '%b%'",
+          "expect": {
+            "value": "true"
+          }
+        },
+        {
+          "sql": "SELECT 'a\\nb' LIKE 'a_b'",
+          "expect": {
+            "value": "true"
+          }
+        },
+        {
+          "sql": "SELECT 'a\\nb' LIKE '%c%'",
+          "expect": {
+            "value": "false"
+          }
+        }
+      ]
+    }
+  ]
+}

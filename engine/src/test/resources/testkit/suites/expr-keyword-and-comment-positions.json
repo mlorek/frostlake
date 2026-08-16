@@ -1,0 +1,73 @@
+{
+  "suite": "expr-keyword-and-comment-positions",
+  "description": "Two positioning surfaces: of the five keywords a NAME position admits, CONSTRAINT reads its column and fails by NAME when absent, an unquoted DEFAULT NEVER resolves (it is the DML marker - even when a quoted DEFAULT column exists) while the quoted spelling reads it, and case/cast/when stay parser syntax errors; and a statement BEGINNING with comments reports positions from the first real token - a RE-BASING (later offsets shift by the comment's width, comment newlines do not advance the line) while leading whitespace still counts and an interior comment is ordinary text. Converted 1:1 from expressions/KeywordColumnReferenceTest + expressions/LeadingCommentPositionTest (now retired).",
+  "tags": ["expressions", "converted"],
+  "tests": [
+    {"name": "constraint-reads-its-column", "steps": [
+      {"sql": "CREATE TABLE d (\"DEFAULT\" INT, \"CONSTRAINT\" INT, b INT)"},
+      {"sql": "INSERT INTO d SELECT 5, 6, 7"},
+      {"sql": "SELECT constraint FROM d", "expect": {"value": "6"}},
+      {"sql": "SELECT b - 1 FROM d WHERE constraint = 6", "expect": {"value": "6"}}
+    ]},
+    {"name": "constraint-is-refused-by-name", "steps": [
+      {"sql": "CREATE TABLE kw (a INT)"},
+      {"sql": "INSERT INTO kw VALUES (1)"},
+      {"sql": "SELECT constraint FROM kw",
+       "expect": {"error": {"messageContains": "error line 1 at position 7\ninvalid identifier 'CONSTRAINT'"}}}
+    ]},
+    {"name": "unquoted-default-never-resolves", "steps": [
+      {"sql": "CREATE TABLE kw (a INT)"},
+      {"sql": "CREATE TABLE d (\"DEFAULT\" INT, \"CONSTRAINT\" INT, b INT)"},
+      {"sql": "INSERT INTO d SELECT 5, 6, 7"},
+      {"sql": "SELECT default FROM d",
+       "expect": {"error": {"messageContains": "error line 1 at position 7\ninvalid identifier 'DEFAULT'"}}},
+      {"sql": "SELECT default FROM kw",
+       "expect": {"error": {"messageContains": "error line 1 at position 7\ninvalid identifier 'DEFAULT'"}}},
+      {"sql": "SELECT b FROM d WHERE default = 5",
+       "expect": {"error": {"messageContains": "error line 1 at position 22\ninvalid identifier 'DEFAULT'"}}}
+    ]},
+    {"name": "the-quoted-spelling-reads-it", "steps": [
+      {"sql": "CREATE TABLE d (\"DEFAULT\" INT, \"CONSTRAINT\" INT, b INT)"},
+      {"sql": "INSERT INTO d SELECT 5, 6, 7"},
+      {"sql": "SELECT \"DEFAULT\" FROM d", "expect": {"value": "5"}}
+    ]},
+    {"name": "default-in-an-expression-is-a-name", "steps": [
+      {"sql": "CREATE TABLE d (\"DEFAULT\" INT, \"CONSTRAINT\" INT, b INT)"},
+      {"sql": "INSERT INTO d SELECT 5, 6, 7"},
+      {"sql": "SELECT default + 1 FROM d",
+       "expect": {"error": {"messageContains": "invalid identifier 'DEFAULT'"}}}
+    ]},
+    {"name": "the-other-three-stay-parser-refusals", "steps": [
+      {"sql": "CREATE TABLE kw (a INT)"},
+      {"sql": "SELECT case FROM kw", "expect": {"error": {"messageContains": "syntax error"}}},
+      {"sql": "SELECT cast FROM kw", "expect": {"error": {"messageContains": "syntax error"}}},
+      {"sql": "SELECT when FROM kw", "expect": {"error": {"messageContains": "syntax error"}}}
+    ]},
+    {"name": "whitespace-alone-still-counts", "steps": [
+      {"sql": "NULL", "expect": {"error": {"messageContains": "line 1 at position 0"}}},
+      {"sql": "   NULL", "expect": {"error": {"messageContains": "line 1 at position 3"}}}
+    ]},
+    {"name": "a-leading-comment-re-bases-the-position", "steps": [
+      {"sql": "/* c */ NULL", "expect": {"error": {"messageContains": "line 1 at position 0"}}},
+      {"sql": "   /* c */   NULL", "expect": {"error": {"messageContains": "line 1 at position 0"}}},
+      {"sql": "/* a */ /* b */ NULL", "expect": {"error": {"messageContains": "line 1 at position 0"}}},
+      {"sql": "-- c\nNULL", "expect": {"error": {"messageContains": "line 1 at position 0"}}},
+      {"sql": "  -- c\n  NULL", "expect": {"error": {"messageContains": "line 1 at position 0"}}}
+    ]},
+    {"name": "a-comments-newlines-do-not-advance-the-line", "steps": [
+      {"sql": "/* c */\nNULL", "expect": {"error": {"messageContains": "line 1 at position 0"}}},
+      {"sql": "/* a\nb */ NULL", "expect": {"error": {"messageContains": "line 1 at position 0"}}}
+    ]},
+    {"name": "later-offsets-shift-by-the-same-amount", "steps": [
+      {"sql": "CREATE TABLE ss (o OBJECT, s VARCHAR(10))"},
+      {"sql": "SELECT UPPER(o) FROM ss", "expect": {"error": {"messageContains": "line 1 at position 7"}}},
+      {"sql": "/* c */ SELECT UPPER(o) FROM ss", "expect": {"error": {"messageContains": "line 1 at position 7"}}},
+      {"sql": "-- c\nSELECT UPPER(o) FROM ss", "expect": {"error": {"messageContains": "line 1 at position 7"}}},
+      {"sql": "/* c */\nSELECT UPPER(o) FROM ss", "expect": {"error": {"messageContains": "line 1 at position 7"}}}
+    ]},
+    {"name": "an-interior-comment-counts-normally", "steps": [
+      {"sql": "CREATE TABLE ss (o OBJECT, s VARCHAR(10))"},
+      {"sql": "SELECT /* c */ UPPER(o) FROM ss", "expect": {"error": {"messageContains": "line 1 at position 15"}}}
+    ]}
+  ]
+}

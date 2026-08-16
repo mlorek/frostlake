@@ -1,0 +1,116 @@
+{
+  "suite": "functions-flatten",
+  "description": "FLATTEN expands semi-structured data into one row per element, emitting SEQ, KEY, PATH, INDEX, VALUE and THIS. Every INPUT here is a VARIANT because Snowflake will not read JSON out of a VARCHAR - the refusal names the argument's measured width - and the other half of that rule is that a VARIANT holding a SCALAR expands to nothing, so a string that merely looks like JSON is never re-read as JSON. Covers objects (KEY order, null INDEX) and arrays (null KEY, 0-based INDEX), nesting with and without RECURSIVE, MODE => OBJECT and ARRAY including RECURSIVE following what the MODE emitted, the empty container with and without OUTER, WHERE and ORDER BY over the result, the positional argument form and its named-wins rule, PATH prefixing rather than replacing the reported path, VALUE staying a typed VARIANT, and the refusals for a non-VARIANT input, a non-boolean flag, a missing or unknown argument and a bad mode. Converted 1:1 from functions/FlattenTest (now retired); the Java class read cells by column index and asserted Boolean / Number identities, which the converted suite expresses as explicit projections and TYPEOF reads.",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "flatten-a-simple-object", "steps": [
+      {"sql": "SELECT * FROM TABLE(FLATTEN(INPUT => PARSE_JSON('{\"name\":\"John\",\"age\":30}')))",
+       "expect": {"rowCount": 2, "columns": ["SEQ", "KEY", "PATH", "INDEX", "VALUE", "THIS"]}},
+      {"sql": "SELECT SEQ, KEY, PATH, IFF(INDEX IS NULL, 'null', 'set'), IFF(VALUE IS NULL, 'null', 'set') FROM TABLE(FLATTEN(INPUT => PARSE_JSON('{\"name\":\"John\",\"age\":30}')))",
+       "expect": {"rows": [["1", "age", "age", "null", "set"], ["1", "name", "name", "null", "set"]], "ordered": true}}
+    ]},
+    {"name": "flatten-a-simple-array", "steps": [
+      {"sql": "SELECT SEQ, IFF(KEY IS NULL, 'null', 'set'), PATH, INDEX, IFF(VALUE IS NULL, 'null', 'set') FROM TABLE(FLATTEN(INPUT => PARSE_JSON('[1,2,3]')))",
+       "expect": {"rowCount": 3, "rows": [["1", "null", "[0]", "0", "set"], ["1", "null", "[1]", "1", "set"], ["1", "null", "[2]", "2", "set"]], "ordered": true}}
+    ]},
+    {"name": "flatten-a-nested-object-without-recursive", "steps": [
+      {"sql": "SELECT KEY FROM TABLE(FLATTEN(INPUT => PARSE_JSON('{\"person\":{\"name\":\"Alice\",\"address\":{\"city\":\"NYC\"}}}')))",
+       "expect": {"rowCount": 1, "value": "person"}}
+    ]},
+    {"name": "flatten-recursive", "steps": [
+      {"sql": "SELECT PATH FROM TABLE(FLATTEN(INPUT => PARSE_JSON('{\"person\":{\"name\":\"Alice\",\"age\":25}}'), RECURSIVE => TRUE))",
+       "expect": {"rowCount": 3, "rows": [["person"], ["person.age"], ["person.name"]], "ordered": true}}
+    ]},
+    {"name": "flatten-an-array-of-objects", "steps": [
+      {"sql": "SELECT IFF(KEY IS NULL, 'null', 'set'), INDEX FROM TABLE(FLATTEN(INPUT => PARSE_JSON('[{\"id\":1,\"name\":\"A\"},{\"id\":2,\"name\":\"B\"}]')))",
+       "expect": {"rowCount": 2, "rows": [["null", "0"], ["null", "1"]], "ordered": true}}
+    ]},
+    {"name": "mode-object-takes-the-keys-not-the-array-elements", "steps": [
+      {"sql": "SELECT KEY FROM TABLE(FLATTEN(INPUT => PARSE_JSON('{\"a\":1,\"b\":[2,3]}'), MODE => 'OBJECT'))",
+       "expect": {"rowCount": 2, "rows": [["a"], ["b"]], "ordered": true}}
+    ]},
+    {"name": "recursive-follows-what-the-mode-emitted", "steps": [
+      {"sql": "SELECT * FROM TABLE(FLATTEN(INPUT => PARSE_JSON('{\"arr\":[1,2,3]}'), MODE => 'ARRAY', RECURSIVE => TRUE))",
+       "expect": {"rowCount": 0}},
+      {"sql": "SELECT PATH FROM TABLE(FLATTEN(INPUT => PARSE_JSON('[[1,2],[3]]'), MODE => 'ARRAY', RECURSIVE => TRUE))",
+       "expect": {"rowCount": 5, "rows": [["[0]"], ["[0][0]"], ["[0][1]"], ["[1]"], ["[1][0]"]], "ordered": true}}
+    ]},
+    {"name": "an-empty-object-expands-to-nothing", "steps": [
+      {"sql": "SELECT * FROM TABLE(FLATTEN(INPUT => PARSE_JSON('{}')))", "expect": {"rowCount": 0}}
+    ]},
+    {"name": "outer-over-an-empty-object-gives-a-stand-in-row", "steps": [
+      {"sql": "SELECT SEQ, IFF(KEY IS NULL, 'null', 'set'), '<' || PATH || '>', IFF(INDEX IS NULL, 'null', 'set'), IFF(VALUE IS NULL, 'null', 'set'), IFF(THIS IS NULL, 'null', 'set') FROM TABLE(FLATTEN(INPUT => PARSE_JSON('{}'), OUTER => TRUE))",
+       "expect": {"rowCount": 1, "rows": [["1", "null", "<>", "null", "null", "set"]]}}
+    ]},
+    {"name": "an-empty-array-expands-to-nothing", "steps": [
+      {"sql": "SELECT * FROM TABLE(FLATTEN(INPUT => PARSE_JSON('[]')))", "expect": {"rowCount": 0}}
+    ]},
+    {"name": "a-where-clause-over-the-result", "steps": [
+      {"sql": "SELECT VALUE FROM TABLE(FLATTEN(INPUT => PARSE_JSON('[{\"id\":1},{\"id\":2},{\"id\":3}]'))) WHERE INDEX < 2",
+       "expect": {"rowCount": 2}}
+    ]},
+    {"name": "an-order-by-over-the-result", "steps": [
+      {"sql": "SELECT SEQ, VALUE FROM TABLE(FLATTEN(INPUT => PARSE_JSON('[3,1,2]'))) ORDER BY VALUE",
+       "expect": {"rowCount": 3}}
+    ]},
+    {"name": "the-positional-argument-form", "steps": [
+      {"sql": "SELECT * FROM TABLE(FLATTEN(PARSE_JSON('{\"name\":\"John\",\"age\":30}')))",
+       "expect": {"rowCount": 2}},
+      {"sql": "SELECT PATH FROM TABLE(FLATTEN(PARSE_JSON('{\"a\":[1,2]}'), 'a'))",
+       "expect": {"rowCount": 2, "rows": [["a[0]"], ["a[1]"]], "ordered": true}},
+      {"sql": "SELECT * FROM TABLE(FLATTEN(PARSE_JSON('[1]'), '', FALSE, FALSE, 'BOTH'))",
+       "expect": {"rowCount": 1}},
+      {"sql": "SELECT VALUE FROM TABLE(FLATTEN(PARSE_JSON('[1]'), INPUT => PARSE_JSON('[2]')))",
+       "expect": {"rowCount": 1, "value": "2"}}
+    ]},
+    {"name": "a-path-argument-prefixes-the-reported-path", "steps": [
+      {"sql": "SELECT PATH FROM TABLE(FLATTEN(INPUT => PARSE_JSON('{\"a\":{\"b\":[1,2]}}'), PATH => 'a.b'))",
+       "expect": {"rowCount": 2, "rows": [["a.b[0]"], ["a.b[1]"]], "ordered": true}},
+      {"sql": "SELECT * FROM TABLE(FLATTEN(INPUT => PARSE_JSON('[1,2]'), PATH => 'nosuch'))",
+       "expect": {"rowCount": 0}},
+      {"sql": "SELECT * FROM TABLE(FLATTEN(INPUT => PARSE_JSON('{\"a\":1}'), PATH => 'a'))",
+       "expect": {"rowCount": 0}}
+    ]},
+    {"name": "scalar-values-keep-their-types", "steps": [
+      {"sql": "SELECT TYPEOF(f.value) FROM (SELECT 1 AS i), LATERAL FLATTEN(input => PARSE_JSON('[true, 5, \"s\"]')) f ORDER BY f.index",
+       "expect": {"rowCount": 3, "rows": [["BOOLEAN"], ["INTEGER"], ["VARCHAR"]], "ordered": true}},
+      {"sql": "SELECT f.value::VARCHAR FROM (SELECT 1 AS i), LATERAL FLATTEN(input => PARSE_JSON('[true, 5, \"s\"]')) f ORDER BY f.index",
+       "expect": {"rows": [["true"], ["5"], ["s"]], "ordered": true}}
+    ]},
+    {"name": "a-varchar-input-is-refused", "steps": [
+      {"sql": "SELECT * FROM TABLE(FLATTEN(INPUT => '[1,2,3]'))",
+       "expect": {"error": {"messageContains": "invalid type [VARCHAR(7)] for parameter 'INPUT'"}}},
+      {"sql": "SELECT COUNT(*) FROM (SELECT 1 AS i), LATERAL FLATTEN(INPUT => '[1,2,3]')",
+       "expect": {"error": {"messageContains": "invalid type [VARCHAR(7)] for parameter 'INPUT'"}}},
+      {"sql": "SELECT * FROM TABLE(FLATTEN(INPUT => 1))",
+       "expect": {"error": {"messageContains": "invalid type [NUMBER(1,0)] for parameter 'INPUT'"}}},
+      {"sql": "SELECT * FROM TABLE(FLATTEN('[1,2,3]'))",
+       "expect": {"error": {"messageContains": "invalid type [VARCHAR(7)] for parameter '1'"}}}
+    ]},
+    {"name": "a-variant-holding-a-scalar-expands-to-nothing", "steps": [
+      {"sql": "SELECT * FROM TABLE(FLATTEN(INPUT => PARSE_JSON('\"abc\"')))", "expect": {"rowCount": 0}},
+      {"sql": "SELECT * FROM TABLE(FLATTEN(INPUT => PARSE_JSON('7')))", "expect": {"rowCount": 0}},
+      {"sql": "SELECT * FROM TABLE(FLATTEN(INPUT => NULL))", "expect": {"rowCount": 0}},
+      {"sql": "SELECT IFF(PATH IS NULL, 'null', 'set'), IFF(VALUE IS NULL, 'null', 'set'), IFF(THIS IS NULL, 'null', 'set') FROM TABLE(FLATTEN(INPUT => PARSE_JSON('7'), OUTER => TRUE))",
+       "expect": {"rowCount": 1, "rows": [["null", "null", "null"]]}}
+    ]},
+    {"name": "a-non-boolean-flag-is-refused", "steps": [
+      {"sql": "SELECT * FROM TABLE(FLATTEN(INPUT => PARSE_JSON('[]'), OUTER => 'TRUE'))",
+       "expect": {"error": {"messageContains": "invalid type [VARCHAR(4)] for parameter 'OUTER'"}}},
+      {"sql": "SELECT * FROM TABLE(FLATTEN(INPUT => PARSE_JSON('[]'), RECURSIVE => 'true'))",
+       "expect": {"error": {"messageContains": "invalid type [VARCHAR(4)] for parameter 'RECURSIVE'"}}},
+      {"sql": "SELECT * FROM TABLE(FLATTEN(INPUT => PARSE_JSON('[1,2]'), PATH => 1))",
+       "expect": {"error": {"messageContains": "invalid type [NUMBER(1,0)] for parameter 'PATH'"}}}
+    ]},
+    {"name": "a-missing-or-unknown-argument-is-refused", "steps": [
+      {"sql": "SELECT * FROM TABLE(FLATTEN(MODE => 'OBJECT'))",
+       "expect": {"error": {"messageContains": "missing required argument [INPUT] for function [FLATTEN]"}}},
+      {"sql": "SELECT * FROM TABLE(FLATTEN(INPUT => PARSE_JSON('[1]'), NOSUCH => 1))",
+       "expect": {"error": {"messageContains": "invalid argument for function [FLATTEN] unexpected argument [NOSUCH] at position 2,"}}}
+    ]},
+    {"name": "an-invalid-mode-is-refused", "steps": [
+      {"sql": "SELECT * FROM TABLE(FLATTEN(INPUT => PARSE_JSON('[]'), MODE => 'INVALID'))",
+       "expect": {"error": {"messageContains": "Bad flattening mode 'INVALID' (not 'BOTH', 'ARRAY', or 'OBJECT')"}}}
+    ]}
+  ]
+}

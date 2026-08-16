@@ -1,0 +1,355 @@
+{
+  "suite": "features-geo-type-rejection",
+  "description": "The GEOGRAPHY / GEOMETRY positions Snowflake rejects at COMPILE time - grouping/sorting/partition keys, every conversion, the reading functions, the operators and comparison - measured live over a table carrying both geo types beside VARCHAR/NUMBER bounds. All are PLAN-time checks reading the DECLARED type, so an empty table rejects exactly as a populated one (no geo module, no rows needed). The ACCEPTED forms guard against over-broad rules: DISTINCT, COUNT, ANY_VALUE, HASH, the NULL-choosing conditionals, FIRST_VALUE/LAST_VALUE, set operators, NULL tests, plain projection, and everything on the non-geo columns. Converted 1:1 from features/GeoTypeRejectionTest (now retired).",
+  "tags": ["features", "converted"],
+  "tests": [
+    {"name": "group-by-a-geo-column-is-rejected", "steps": [
+      {"sql": "CREATE TABLE gt (id INTEGER, g GEOGRAPHY, gm GEOMETRY, s VARCHAR, n NUMBER)"},
+      {"sql": "SELECT COUNT(*) FROM gt GROUP BY g",
+       "expect": {"error": {"messageContains": "Expressions of type GEOGRAPHY cannot be used as GROUP BY keys"}}},
+      {"sql": "SELECT COUNT(*) FROM gt GROUP BY gm",
+       "expect": {"error": {"messageContains": "Expressions of type GEOMETRY cannot be used as GROUP BY keys"}}}
+    ]},
+    {"name": "group-by-a-geo-ordinal-or-alias-is-rejected", "steps": [
+      {"sql": "CREATE TABLE gt (id INTEGER, g GEOGRAPHY, gm GEOMETRY, s VARCHAR, n NUMBER)"},
+      {"sql": "SELECT g, COUNT(*) FROM gt GROUP BY 1",
+       "expect": {"error": {"messageContains": "Expressions of type GEOGRAPHY cannot be used as GROUP BY keys"}}},
+      {"sql": "SELECT g AS x, COUNT(*) FROM gt GROUP BY x",
+       "expect": {"error": {"messageContains": "Expressions of type GEOGRAPHY cannot be used as GROUP BY keys"}}}
+    ]},
+    {"name": "group-by-rejects-a-geo-key-among-others-and-in-super-groups", "steps": [
+      {"sql": "CREATE TABLE gt (id INTEGER, g GEOGRAPHY, gm GEOMETRY, s VARCHAR, n NUMBER)"},
+      {"sql": "SELECT COUNT(*) FROM gt GROUP BY n, g",
+       "expect": {"error": {"messageContains": "Expressions of type GEOGRAPHY cannot be used as GROUP BY keys"}}},
+      {"sql": "SELECT COUNT(*) FROM gt GROUP BY ROLLUP(g)",
+       "expect": {"error": {"messageContains": "Expressions of type GEOGRAPHY cannot be used as GROUP BY keys"}}},
+      {"sql": "SELECT COUNT(*) FROM gt GROUP BY CUBE(gm)",
+       "expect": {"error": {"messageContains": "Expressions of type GEOMETRY cannot be used as GROUP BY keys"}}}
+    ]},
+    {"name": "group-by-a-conditional-yielding-geo-is-rejected", "steps": [
+      {"sql": "CREATE TABLE gt (id INTEGER, g GEOGRAPHY, gm GEOMETRY, s VARCHAR, n NUMBER)"},
+      {"sql": "SELECT COUNT(*) FROM gt GROUP BY IFF(TRUE, g, g)",
+       "expect": {"error": {"messageContains": "Expressions of type GEOGRAPHY cannot be used as GROUP BY keys"}}},
+      {"sql": "SELECT COUNT(*) FROM gt GROUP BY COALESCE(g, g)",
+       "expect": {"error": {"messageContains": "Expressions of type GEOGRAPHY cannot be used as GROUP BY keys"}}}
+    ]},
+    {"name": "group-by-a-geo-key-is-rejected-over-empty-input-and-through-a-cte", "steps": [
+      {"sql": "CREATE TABLE gt (id INTEGER, g GEOGRAPHY, gm GEOMETRY, s VARCHAR, n NUMBER)"},
+      {"sql": "SELECT COUNT(*) FROM gt WHERE 1 = 0 GROUP BY g",
+       "expect": {"error": {"messageContains": "Expressions of type GEOGRAPHY cannot be used as GROUP BY keys"}}},
+      {"sql": "WITH q AS (SELECT g AS x FROM gt) SELECT COUNT(*) FROM q GROUP BY x",
+       "expect": {"error": {"messageContains": "Expressions of type GEOGRAPHY cannot be used as GROUP BY keys"}}}
+    ]},
+    {"name": "order-by-a-geo-column-is-rejected", "steps": [
+      {"sql": "CREATE TABLE gt (id INTEGER, g GEOGRAPHY, gm GEOMETRY, s VARCHAR, n NUMBER)"},
+      {"sql": "SELECT id FROM gt ORDER BY g",
+       "expect": {"error": {"messageContains": "Expressions of type GEOGRAPHY cannot be used as ORDER BY keys"}}},
+      {"sql": "SELECT id FROM gt ORDER BY gm",
+       "expect": {"error": {"messageContains": "Expressions of type GEOMETRY cannot be used as ORDER BY keys"}}}
+    ]},
+    {"name": "order-by-a-geo-ordinal-alias-or-direction-is-rejected", "steps": [
+      {"sql": "CREATE TABLE gt (id INTEGER, g GEOGRAPHY, gm GEOMETRY, s VARCHAR, n NUMBER)"},
+      {"sql": "SELECT g FROM gt ORDER BY 1",
+       "expect": {"error": {"messageContains": "Expressions of type GEOGRAPHY cannot be used as ORDER BY keys"}}},
+      {"sql": "SELECT g AS x FROM gt ORDER BY x",
+       "expect": {"error": {"messageContains": "Expressions of type GEOGRAPHY cannot be used as ORDER BY keys"}}},
+      {"sql": "SELECT id FROM gt ORDER BY g DESC NULLS LAST",
+       "expect": {"error": {"messageContains": "Expressions of type GEOGRAPHY cannot be used as ORDER BY keys"}}},
+      {"sql": "SELECT id FROM gt ORDER BY n, g",
+       "expect": {"error": {"messageContains": "Expressions of type GEOGRAPHY cannot be used as ORDER BY keys"}}}
+    ]},
+    {"name": "window-partition-by-a-geo-column-is-rejected", "steps": [
+      {"sql": "CREATE TABLE gt (id INTEGER, g GEOGRAPHY, gm GEOMETRY, s VARCHAR, n NUMBER)"},
+      {"sql": "SELECT ROW_NUMBER() OVER (PARTITION BY g ORDER BY id) FROM gt",
+       "expect": {"error": {"messageContains": "Expressions of type GEOGRAPHY cannot be used as PARTITION BY keys"}}},
+      {"sql": "SELECT ROW_NUMBER() OVER (PARTITION BY gm ORDER BY id) FROM gt",
+       "expect": {"error": {"messageContains": "Expressions of type GEOMETRY cannot be used as PARTITION BY keys"}}}
+    ]},
+    {"name": "window-order-by-a-geo-column-reports-the-order-by-variant", "steps": [
+      {"sql": "CREATE TABLE gt (id INTEGER, g GEOGRAPHY, gm GEOMETRY, s VARCHAR, n NUMBER)"},
+      {"sql": "SELECT ROW_NUMBER() OVER (ORDER BY g) FROM gt",
+       "expect": {"error": {"messageContains": "Expressions of type GEOGRAPHY cannot be used as ORDER BY keys"}}},
+      {"sql": "SELECT FIRST_VALUE(id) OVER (PARTITION BY n ORDER BY g) FROM gt",
+       "expect": {"error": {"messageContains": "Expressions of type GEOGRAPHY cannot be used as ORDER BY keys"}}}
+    ]},
+    {"name": "text-functions-reject-a-geo-argument", "steps": [
+      {"sql": "CREATE TABLE gt (id INTEGER, g GEOGRAPHY, gm GEOMETRY, s VARCHAR, n NUMBER)"},
+      {"sql": "SELECT UPPER(g) FROM gt",
+       "expect": {"error": {"messageContains": "Invalid argument types for function 'UPPER': (GEOGRAPHY)"}}},
+      {"sql": "SELECT UPPER(gm) FROM gt",
+       "expect": {"error": {"messageContains": "Invalid argument types for function 'UPPER': (GEOMETRY)"}}},
+      {"sql": "SELECT LENGTH(g) FROM gt",
+       "expect": {"error": {"messageContains": "Invalid argument types for function 'LENGTH': (GEOGRAPHY)"}}},
+      {"sql": "SELECT SUBSTR(g, 1, 3) FROM gt",
+       "expect": {"error": {"messageContains": "Invalid argument types for function 'SUBSTR': (GEOGRAPHY, NUMBER(1,0), NUMBER(1,0))"}}},
+      {"sql": "SELECT SPLIT_PART(s, g, 1) FROM gt",
+       "expect": {"error": {"messageContains": "Invalid argument types for function 'SPLIT_PART': (VARCHAR(16777216), GEOGRAPHY, NUMBER(1,0))"}}}
+    ]},
+    {"name": "numeric-functions-reject-a-geo-argument", "steps": [
+      {"sql": "CREATE TABLE gt (id INTEGER, g GEOGRAPHY, gm GEOMETRY, s VARCHAR, n NUMBER)"},
+      {"sql": "SELECT ABS(g) FROM gt",
+       "expect": {"error": {"messageContains": "Invalid argument types for function 'ABS': (GEOGRAPHY)"}}},
+      {"sql": "SELECT ABS(gm) FROM gt",
+       "expect": {"error": {"messageContains": "Invalid argument types for function 'ABS': (GEOMETRY)"}}},
+      {"sql": "SELECT ROUND(g) FROM gt",
+       "expect": {"error": {"messageContains": "Invalid argument types for function 'ROUND': (GEOGRAPHY)"}}},
+      {"sql": "SELECT POWER(g, 2) FROM gt",
+       "expect": {"error": {"messageContains": "Invalid argument types for function 'POWER': (GEOGRAPHY, NUMBER(1,0))"}}}
+    ]},
+    {"name": "variant-reading-functions-reject-a-geo-argument", "steps": [
+      {"sql": "CREATE TABLE gt (id INTEGER, g GEOGRAPHY, gm GEOMETRY, s VARCHAR, n NUMBER)"},
+      {"sql": "SELECT TYPEOF(g) FROM gt",
+       "expect": {"error": {"messageContains": "Invalid argument types for function 'TYPEOF': (GEOGRAPHY)"}}},
+      {"sql": "SELECT TO_JSON(g) FROM gt",
+       "expect": {"error": {"messageContains": "Invalid argument types for function 'TO_JSON': (GEOGRAPHY)"}}},
+      {"sql": "SELECT IS_OBJECT(g) FROM gt",
+       "expect": {"error": {"messageContains": "Invalid argument types for function 'IS_OBJECT': (GEOGRAPHY)"}}},
+      {"sql": "SELECT AS_VARCHAR(g) FROM gt",
+       "expect": {"error": {"messageContains": "Invalid argument types for function 'AS_VARCHAR': (GEOGRAPHY)"}}},
+      {"sql": "SELECT OBJECT_KEYS(g) FROM gt",
+       "expect": {"error": {"messageContains": "Invalid argument types for function 'OBJECT_KEYS': (GEOGRAPHY)"}}},
+      {"sql": "SELECT GET(g, 'type') FROM gt",
+       "expect": {"error": {"messageContains": "Invalid argument types for function 'GET': (GEOGRAPHY, VARCHAR(4))"}}},
+      {"sql": "SELECT ARRAY_SIZE(g) FROM gt",
+       "expect": {"error": {"messageContains": "Invalid argument types for function 'ARRAY_SIZE': (GEOGRAPHY)"}}},
+      {"sql": "SELECT OBJECT_INSERT(g, 'a', 1) FROM gt",
+       "expect": {"error": {"messageContains": "Invalid argument types for function 'OBJECT_INSERT': (GEOGRAPHY, VARCHAR(1), NUMBER(1,0))"}}}
+    ]},
+    {"name": "colon-path-access-on-a-geo-column-is-rejected", "steps": [
+      {"sql": "CREATE TABLE gt (id INTEGER, g GEOGRAPHY, gm GEOMETRY, s VARCHAR, n NUMBER)"},
+      {"sql": "SELECT g:type FROM gt",
+       "expect": {"error": {"messageContains": "Invalid argument types for function 'GET': (GEOGRAPHY, VARCHAR(4))"}}}
+    ]},
+    {"name": "semi-structured-constructors-reject-a-geo-argument", "steps": [
+      {"sql": "CREATE TABLE gt (id INTEGER, g GEOGRAPHY, gm GEOMETRY, s VARCHAR, n NUMBER)"},
+      {"sql": "SELECT ARRAY_CONSTRUCT(g) FROM gt",
+       "expect": {"error": {"messageContains": "Function ARRAY_CONSTRUCT does not support GEOGRAPHY argument type"}}},
+      {"sql": "SELECT ARRAY_CONSTRUCT(1, g) FROM gt",
+       "expect": {"error": {"messageContains": "Function ARRAY_CONSTRUCT does not support GEOGRAPHY argument type"}}},
+      {"sql": "SELECT OBJECT_CONSTRUCT('a', g) FROM gt",
+       "expect": {"error": {"messageContains": "Function OBJECT_CONSTRUCT does not support GEOGRAPHY argument type"}}},
+      {"sql": "SELECT OBJECT_CONSTRUCT(g, 1) FROM gt",
+       "expect": {"error": {"messageContains": "Function OBJECT_CONSTRUCT does not support GEOGRAPHY argument type for keys"}}}
+    ]},
+    {"name": "ordering-aggregates-reject-a-geo-argument", "steps": [
+      {"sql": "CREATE TABLE gt (id INTEGER, g GEOGRAPHY, gm GEOMETRY, s VARCHAR, n NUMBER)"},
+      {"sql": "SELECT MAX(g) FROM gt",
+       "expect": {"error": {"messageContains": "Function MAX does not support GEOGRAPHY argument type"}}},
+      {"sql": "SELECT MAX(gm) FROM gt",
+       "expect": {"error": {"messageContains": "Function MAX does not support GEOMETRY argument type"}}},
+      {"sql": "SELECT MIN(g) FROM gt",
+       "expect": {"error": {"messageContains": "Function MIN does not support GEOGRAPHY argument type"}}},
+      {"sql": "SELECT MODE(g) FROM gt",
+       "expect": {"error": {"messageContains": "Function MODE does not support GEOGRAPHY argument type"}}},
+      {"sql": "SELECT MAX(g) OVER () FROM gt",
+       "expect": {"error": {"messageContains": "Function MAX does not support GEOGRAPHY argument type"}}}
+    ]},
+    {"name": "numeric-aggregates-reject-a-geo-argument", "steps": [
+      {"sql": "CREATE TABLE gt (id INTEGER, g GEOGRAPHY, gm GEOMETRY, s VARCHAR, n NUMBER)"},
+      {"sql": "SELECT SUM(g) FROM gt",
+       "expect": {"error": {"messageContains": "Invalid argument types for function 'SUM': (GEOGRAPHY)"}}},
+      {"sql": "SELECT SUM(gm) FROM gt",
+       "expect": {"error": {"messageContains": "Invalid argument types for function 'SUM': (GEOMETRY)"}}},
+      {"sql": "SELECT LISTAGG(g) FROM gt",
+       "expect": {"error": {"messageContains": "Invalid argument types for function 'LISTAGG': (GEOGRAPHY)"}}}
+    ]},
+    {"name": "ordered-value-aggregates-reject-a-geo-argument", "steps": [
+      {"sql": "CREATE TABLE gt (id INTEGER, g GEOGRAPHY, gm GEOMETRY, s VARCHAR, n NUMBER)"},
+      {"sql": "SELECT MEDIAN(g) FROM gt",
+       "expect": {"error": {"messageContains": "incompatible types: [GEOGRAPHY] and [NUMBER(9,0)]"}}},
+      {"sql": "SELECT MEDIAN(gm) FROM gt",
+       "expect": {"error": {"messageContains": "incompatible types: [GEOMETRY] and [NUMBER(9,0)]"}}},
+      {"sql": "SELECT PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY g) FROM gt",
+       "expect": {"error": {"messageContains": "incompatible types: [GEOGRAPHY] and [NUMBER(9,0)]"}}},
+      {"sql": "SELECT PERCENTILE_DISC(0.5) WITHIN GROUP (ORDER BY g) FROM gt",
+       "expect": {"error": {"messageContains": "incompatible types: [GEOGRAPHY] and [NUMBER(9,0)]"}}}
+    ]},
+    {"name": "moment-aggregates-report-the-internal-multiplication", "steps": [
+      {"sql": "CREATE TABLE gt (id INTEGER, g GEOGRAPHY, gm GEOMETRY, s VARCHAR, n NUMBER)"},
+      {"sql": "SELECT STDDEV(g) FROM gt",
+       "expect": {"error": {"messageContains": "Invalid argument types for function '*': (GEOGRAPHY, GEOGRAPHY)"}}},
+      {"sql": "SELECT VARIANCE(gm) FROM gt",
+       "expect": {"error": {"messageContains": "Invalid argument types for function '*': (GEOMETRY, GEOMETRY)"}}}
+    ]},
+    {"name": "carrying-aggregates-reject-a-geo-argument-even-though-they-take-an-object", "steps": [
+      {"sql": "CREATE TABLE gt (id INTEGER, g GEOGRAPHY, gm GEOMETRY, s VARCHAR, n NUMBER)"},
+      {"sql": "SELECT ARRAY_AGG(g) FROM gt",
+       "expect": {"error": {"messageContains": "Invalid argument types for function 'ARRAY_AGG': (GEOGRAPHY)"}}},
+      {"sql": "SELECT ARRAY_UNIQUE_AGG(g) FROM gt",
+       "expect": {"error": {"messageContains": "Invalid argument types for function 'ARRAY_UNIQUE_AGG': (GEOGRAPHY)"}}},
+      {"sql": "SELECT HASH_AGG(g) FROM gt",
+       "expect": {"error": {"messageContains": "Invalid argument types for function 'HASH_AGG': (GEOGRAPHY)"}}},
+      {"sql": "SELECT MAX_BY(g, n) FROM gt",
+       "expect": {"error": {"messageContains": "Invalid argument types for function 'MAX_BY': (GEOGRAPHY, NUMBER(38,0))"}}},
+      {"sql": "SELECT MIN_BY(n, g) FROM gt",
+       "expect": {"error": {"messageContains": "Invalid argument types for function 'MIN_BY': (NUMBER(38,0), GEOGRAPHY)"}}},
+      {"sql": "SELECT OBJECT_AGG(s, g) FROM gt",
+       "expect": {"error": {"messageContains": "Invalid argument types for function 'OBJECT_AGG': (VARCHAR(16777216), GEOGRAPHY)"}}}
+    ]},
+    {"name": "the-approximate-counter-rejects-a-geo-argument", "steps": [
+      {"sql": "CREATE TABLE gt (id INTEGER, g GEOGRAPHY, gm GEOMETRY, s VARCHAR, n NUMBER)"},
+      {"sql": "SELECT APPROX_COUNT_DISTINCT(g) FROM gt",
+       "expect": {"error": {"messageContains": "Invalid argument types for function 'HLL_ACCUMULATE': (GEOGRAPHY)"}}}
+    ]},
+    {"name": "offset-window-functions-reject-a-geo-argument", "steps": [
+      {"sql": "CREATE TABLE gt (id INTEGER, g GEOGRAPHY, gm GEOMETRY, s VARCHAR, n NUMBER)"},
+      {"sql": "SELECT LAG(g) OVER (ORDER BY id) FROM gt",
+       "expect": {"error": {"messageContains": "Invalid argument types for function 'LAG': (GEOGRAPHY)"}}},
+      {"sql": "SELECT LEAD(gm) OVER (ORDER BY id) FROM gt",
+       "expect": {"error": {"messageContains": "Invalid argument types for function 'LEAD': (GEOMETRY)"}}},
+      {"sql": "SELECT NTH_VALUE(g, 1) OVER (ORDER BY id) FROM gt",
+       "expect": {"error": {"messageContains": "Invalid argument types for function 'NTH_VALUE': (GEOGRAPHY, NUMBER(1,0))"}}}
+    ]},
+    {"name": "concatenation-rejects-a-geo-operand", "steps": [
+      {"sql": "CREATE TABLE gt (id INTEGER, g GEOGRAPHY, gm GEOMETRY, s VARCHAR, n NUMBER)"},
+      {"sql": "SELECT 'x' || g FROM gt",
+       "expect": {"error": {"messageContains": "Invalid argument types for function '||': (VARCHAR(1), GEOGRAPHY)"}}},
+      {"sql": "SELECT 'x' || gm FROM gt",
+       "expect": {"error": {"messageContains": "Invalid argument types for function '||': (VARCHAR(1), GEOMETRY)"}}}
+    ]},
+    {"name": "arithmetic-rejects-a-geo-operand", "steps": [
+      {"sql": "CREATE TABLE gt (id INTEGER, g GEOGRAPHY, gm GEOMETRY, s VARCHAR, n NUMBER)"},
+      {"sql": "SELECT g + 1 FROM gt",
+       "expect": {"error": {"messageContains": "Invalid argument types for function '+': (GEOGRAPHY, NUMBER(1,0))"}}},
+      {"sql": "SELECT g * g FROM gt",
+       "expect": {"error": {"messageContains": "Invalid argument types for function '*': (GEOGRAPHY, GEOGRAPHY)"}}},
+      {"sql": "SELECT -g FROM gt",
+       "expect": {"error": {"messageContains": "Invalid argument types for function 'NEGATE': (GEOGRAPHY)"}}}
+    ]},
+    {"name": "comparison-rejects-a-geo-operand", "steps": [
+      {"sql": "CREATE TABLE gt (id INTEGER, g GEOGRAPHY, gm GEOMETRY, s VARCHAR, n NUMBER)"},
+      {"sql": "SELECT g = g FROM gt",
+       "expect": {"error": {"messageContains": "Invalid argument types for function '=': (GEOGRAPHY, GEOGRAPHY)"}}},
+      {"sql": "SELECT gm = gm FROM gt",
+       "expect": {"error": {"messageContains": "Invalid argument types for function '=': (GEOMETRY, GEOMETRY)"}}},
+      {"sql": "SELECT g < g FROM gt",
+       "expect": {"error": {"messageContains": "Invalid argument types for function '<': (GEOGRAPHY, GEOGRAPHY)"}}},
+      {"sql": "SELECT id FROM gt WHERE g = g",
+       "expect": {"error": {"messageContains": "Invalid argument types for function '=': (GEOGRAPHY, GEOGRAPHY)"}}},
+      {"sql": "SELECT id FROM gt WHERE g > g",
+       "expect": {"error": {"messageContains": "Invalid argument types for function '>': (GEOGRAPHY, GEOGRAPHY)"}}}
+    ]},
+    {"name": "in-list-rejects-a-geo-operand", "steps": [
+      {"sql": "CREATE TABLE gt (id INTEGER, g GEOGRAPHY, gm GEOMETRY, s VARCHAR, n NUMBER)"},
+      {"sql": "SELECT id FROM gt WHERE g IN (g)",
+       "expect": {"error": {"messageContains": "Invalid argument types for function 'IN': (GEOGRAPHY, GEOGRAPHY)"}}},
+      {"sql": "SELECT id FROM gt WHERE gm NOT IN (gm)",
+       "expect": {"error": {"messageContains": "Invalid argument types for function 'IN': (GEOMETRY, GEOMETRY)"}}}
+    ]},
+    {"name": "comparing-functions-reject-a-geo-argument", "steps": [
+      {"sql": "CREATE TABLE gt (id INTEGER, g GEOGRAPHY, gm GEOMETRY, s VARCHAR, n NUMBER)"},
+      {"sql": "SELECT EQUAL_NULL(g, g) FROM gt",
+       "expect": {"error": {"messageContains": "Invalid argument types for function 'EQUAL_NULL': (GEOGRAPHY, GEOGRAPHY)"}}},
+      {"sql": "SELECT NULLIF(g, g) FROM gt",
+       "expect": {"error": {"messageContains": "Invalid argument types for function 'NULLIF': (GEOGRAPHY, GEOGRAPHY)"}}},
+      {"sql": "SELECT GREATEST(g, g) FROM gt",
+       "expect": {"error": {"messageContains": "Invalid argument types for function 'GREATEST': (GEOGRAPHY, GEOGRAPHY)"}}},
+      {"sql": "SELECT LEAST(g, g) FROM gt",
+       "expect": {"error": {"messageContains": "Invalid argument types for function 'LEAST': (GEOGRAPHY, GEOGRAPHY)"}}}
+    ]},
+    {"name": "every-cast-from-a-geo-value-is-rejected", "steps": [
+      {"sql": "CREATE TABLE gt (id INTEGER, g GEOGRAPHY, gm GEOMETRY, s VARCHAR, n NUMBER)"},
+      {"sql": "SELECT CAST(g AS VARCHAR) FROM gt",
+       "expect": {"error": {"messageContains": "invalid type [CAST(GT.G AS VARCHAR(134217728))] for parameter 'TO_VARCHAR'"}}},
+      {"sql": "SELECT CAST(gm AS VARCHAR) FROM gt",
+       "expect": {"error": {"messageContains": "invalid type [CAST(GT.GM AS VARCHAR(134217728))] for parameter 'TO_VARCHAR'"}}},
+      {"sql": "SELECT g::VARCHAR FROM gt",
+       "expect": {"error": {"messageContains": "invalid type [CAST(GT.G AS VARCHAR(134217728))] for parameter 'TO_VARCHAR'"}}},
+      {"sql": "SELECT CAST(g AS VARCHAR(20)) FROM gt",
+       "expect": {"error": {"messageContains": "invalid type [CAST(GT.G AS VARCHAR(20))] for parameter 'TO_VARCHAR'"}}},
+      {"sql": "SELECT TRY_CAST(g AS VARCHAR) FROM gt",
+       "expect": {"error": {"messageContains": "invalid type [TRY_CAST(GT.G)] for parameter 'TO_VARCHAR'"}}},
+      {"sql": "SELECT CAST(g AS VARIANT) FROM gt",
+       "expect": {"error": {"messageContains": "invalid type [CAST(GT.G AS VARIANT)] for parameter 'TO_VARIANT'"}}},
+      {"sql": "SELECT CAST(g AS OBJECT) FROM gt",
+       "expect": {"error": {"messageContains": "invalid type [CAST(GT.G AS OBJECT)] for parameter 'TO_OBJECT'"}}},
+      {"sql": "SELECT CAST(g AS NUMBER) FROM gt",
+       "expect": {"error": {"messageContains": "invalid type [CAST(GT.G AS NUMBER(38,0))] for parameter 'TO_NUMBER'"}}},
+      {"sql": "SELECT CAST(g AS GEOGRAPHY) FROM gt",
+       "expect": {"error": {"messageContains": "invalid type [CAST(GT.G AS GEOGRAPHY)] for parameter 'TO_GEOGRAPHY'"}}},
+      {"sql": "SELECT CAST(gm AS GEOGRAPHY) FROM gt",
+       "expect": {"error": {"messageContains": "invalid type [CAST(GT.GM AS GEOGRAPHY)] for parameter 'TO_GEOGRAPHY'"}}}
+    ]},
+    {"name": "every-conversion-function-over-a-geo-value-is-rejected", "steps": [
+      {"sql": "CREATE TABLE gt (id INTEGER, g GEOGRAPHY, gm GEOMETRY, s VARCHAR, n NUMBER)"},
+      {"sql": "SELECT TO_VARCHAR(g) FROM gt",
+       "expect": {"error": {"messageContains": "invalid type [TO_VARCHAR(GT.G)] for parameter 'TO_VARCHAR'"}}},
+      {"sql": "SELECT TO_VARCHAR(gm) FROM gt",
+       "expect": {"error": {"messageContains": "invalid type [TO_VARCHAR(GT.GM)] for parameter 'TO_VARCHAR'"}}},
+      {"sql": "SELECT TO_CHAR(g) FROM gt",
+       "expect": {"error": {"messageContains": "invalid type [TO_CHAR(GT.G)] for parameter 'TO_CHAR'"}}},
+      {"sql": "SELECT TO_NUMBER(g) FROM gt",
+       "expect": {"error": {"messageContains": "invalid type [TO_NUMBER(GT.G)] for parameter 'TO_NUMBER'"}}},
+      {"sql": "SELECT TRY_TO_NUMBER(g) FROM gt",
+       "expect": {"error": {"messageContains": "invalid type [TRY_TO_NUMBER(GT.G)] for parameter 'TO_NUMBER'"}}},
+      {"sql": "SELECT TO_VARIANT(g) FROM gt",
+       "expect": {"error": {"messageContains": "invalid type [TO_VARIANT(GT.G)] for parameter 'TO_VARIANT'"}}},
+      {"sql": "SELECT TO_OBJECT(g) FROM gt",
+       "expect": {"error": {"messageContains": "invalid type [TO_OBJECT(GT.G)] for parameter 'TO_OBJECT'"}}},
+      {"sql": "SELECT TO_ARRAY(g) FROM gt",
+       "expect": {"error": {"messageContains": "invalid type [TO_ARRAY(GT.G)] for parameter 'TO_ARRAY'"}}},
+      {"sql": "SELECT TO_BOOLEAN(g) FROM gt",
+       "expect": {"error": {"messageContains": "invalid type [TO_BOOLEAN(GT.G)] for parameter 'TO_BOOLEAN'"}}}
+    ]},
+    {"name": "the-conversion-message-renders-every-argument", "steps": [
+      {"sql": "CREATE TABLE gt (id INTEGER, g GEOGRAPHY, gm GEOMETRY, s VARCHAR, n NUMBER)"},
+      {"sql": "SELECT TO_CHAR(g, 'x') FROM gt",
+       "expect": {"error": {"messageContains": "invalid type [TO_CHAR(GT.G, 'x')] for parameter 'TO_CHAR'"}}}
+    ]},
+    {"name": "distinct-count-and-carrying-forms-are-accepted", "steps": [
+      {"sql": "CREATE TABLE gt (id INTEGER, g GEOGRAPHY, gm GEOMETRY, s VARCHAR, n NUMBER)"},
+      {"sql": "SELECT DISTINCT g FROM gt"},
+      {"sql": "SELECT DISTINCT gm FROM gt"},
+      {"sql": "SELECT DISTINCT g, gm FROM gt"},
+      {"sql": "SELECT DISTINCT g, n FROM gt"},
+      {"sql": "SELECT COUNT(g) FROM gt"},
+      {"sql": "SELECT COUNT(DISTINCT g) FROM gt"},
+      {"sql": "SELECT COUNT(g) OVER () FROM gt"},
+      {"sql": "SELECT ANY_VALUE(g) FROM gt"},
+      {"sql": "SELECT ANY_VALUE(gm) FROM gt"},
+      {"sql": "SELECT HASH(g) FROM gt"}
+    ]},
+    {"name": "null-choosing-conditionals-over-geo-are-accepted", "steps": [
+      {"sql": "CREATE TABLE gt (id INTEGER, g GEOGRAPHY, gm GEOMETRY, s VARCHAR, n NUMBER)"},
+      {"sql": "SELECT IFF(TRUE, g, g) FROM gt"},
+      {"sql": "SELECT COALESCE(g, g) FROM gt"},
+      {"sql": "SELECT NVL(g, g) FROM gt"},
+      {"sql": "SELECT IFNULL(g, g) FROM gt"},
+      {"sql": "SELECT CASE WHEN TRUE THEN g ELSE g END FROM gt"},
+      {"sql": "SELECT COALESCE(g, NULL) FROM gt"}
+    ]},
+    {"name": "first-and-last-value-over-geo-are-accepted", "steps": [
+      {"sql": "CREATE TABLE gt (id INTEGER, g GEOGRAPHY, gm GEOMETRY, s VARCHAR, n NUMBER)"},
+      {"sql": "SELECT FIRST_VALUE(g) OVER (ORDER BY id) FROM gt"},
+      {"sql": "SELECT LAST_VALUE(g) OVER (ORDER BY id) FROM gt"}
+    ]},
+    {"name": "set-operators-and-null-tests-over-geo-are-accepted", "steps": [
+      {"sql": "CREATE TABLE gt (id INTEGER, g GEOGRAPHY, gm GEOMETRY, s VARCHAR, n NUMBER)"},
+      {"sql": "SELECT g FROM gt UNION ALL SELECT g FROM gt"},
+      {"sql": "SELECT g FROM gt UNION SELECT g FROM gt"},
+      {"sql": "SELECT g FROM gt INTERSECT SELECT g FROM gt"},
+      {"sql": "SELECT g FROM gt EXCEPT SELECT g FROM gt"},
+      {"sql": "SELECT id FROM gt WHERE g IS NULL"},
+      {"sql": "SELECT id FROM gt WHERE gm IS NOT NULL"}
+    ]},
+    {"name": "the-rules-do-not-touch-the-non-geo-columns", "steps": [
+      {"sql": "CREATE TABLE gt (id INTEGER, g GEOGRAPHY, gm GEOMETRY, s VARCHAR, n NUMBER)"},
+      {"sql": "SELECT COUNT(*) FROM gt GROUP BY n"},
+      {"sql": "SELECT id FROM gt ORDER BY n"},
+      {"sql": "SELECT ROW_NUMBER() OVER (PARTITION BY s ORDER BY id) FROM gt"},
+      {"sql": "SELECT UPPER(s) FROM gt"},
+      {"sql": "SELECT SUM(n) FROM gt"},
+      {"sql": "SELECT CAST(n AS VARCHAR) FROM gt"},
+      {"sql": "SELECT 's' || s FROM gt"},
+      {"sql": "SELECT id FROM gt WHERE s = 'x'"},
+      {"sql": "SELECT id FROM gt WHERE n IN (1, 2)", "expect": {"rowCount": 0}}
+    ]},
+    {"name": "projecting-and-inserting-a-geo-column-is-accepted", "steps": [
+      {"sql": "CREATE TABLE gt (id INTEGER, g GEOGRAPHY, gm GEOMETRY, s VARCHAR, n NUMBER)"},
+      {"sql": "SELECT g FROM gt"},
+      {"sql": "SELECT g, gm FROM gt"},
+      {"sql": "SELECT * FROM gt"},
+      {"sql": "SELECT * FROM (SELECT g FROM gt) WHERE 1 = 1"}
+    ]}
+  ]
+}

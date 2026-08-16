@@ -1,0 +1,68 @@
+{
+  "suite": "constraints-type-coercion",
+  "description": "Write-path type coercion (on by default): VARCHAR(n) length enforced, numeric strings parsed and non-numeric ones rejected, strings into DATE/TIMESTAMP columns becoming real temporal values equal to TO_DATE/TO_TIMESTAMP results, and NUMBER(p,s) values padded/rounded to exactly s fractional digits (asserted through '<'||TO_VARCHAR(n)||'>' so value normalization cannot hide the scale). Converted 1:1 from constraints/TypeCoercionTest (now retired; its explicit constraints.enforce.types=true flag is the engine default).",
+  "tags": ["constraints", "converted"],
+  "tests": [
+    {"name": "varchar-length-is-enforced", "steps": [
+      {"sql": "CREATE TABLE t (v VARCHAR(3))"},
+      {"sql": "INSERT INTO t VALUES ('abc')"},
+      {"sql": "INSERT INTO t VALUES ('abcd')", "expect": {"error": {}}},
+      {"sql": "SELECT * FROM t", "expect": {"rowCount": 1}}
+    ]},
+    {"name": "non-numeric-string-into-numeric-column-is-rejected", "steps": [
+      {"sql": "CREATE TABLE t (n NUMBER(10,0))"},
+      {"sql": "INSERT INTO t VALUES ('not a number')", "expect": {"error": {}}},
+      {"sql": "SELECT * FROM t", "expect": {"rowCount": 0}}
+    ]},
+    {"name": "numeric-string-into-numeric-column-is-parsed", "steps": [
+      {"sql": "CREATE TABLE t (n NUMBER(10,0))"},
+      {"sql": "INSERT INTO t VALUES ('123')"},
+      {"sql": "SELECT * FROM t", "expect": {"rowCount": 1}}
+    ]},
+    {"name": "valid-values-pass-through", "steps": [
+      {"sql": "CREATE TABLE t (id INTEGER, v VARCHAR(10))"},
+      {"sql": "INSERT INTO t VALUES (1, 'hello')"},
+      {"sql": "INSERT INTO t VALUES (2, 'world')"},
+      {"sql": "SELECT * FROM t", "expect": {"rowCount": 2}}
+    ]},
+    {"name": "string-into-timestamp-column-becomes-temporal-value", "steps": [
+      {"sql": "CREATE TABLE t (ts TIMESTAMP_NTZ)"},
+      {"sql": "INSERT INTO t VALUES ('2024-02-09 12:24:12.000')"},
+      {"sql": "SELECT '<' || ts || '>' FROM t", "expect": {"value": "<2024-02-09 12:24:12.000>"}}
+    ]},
+    {"name": "string-into-date-column-becomes-date", "steps": [
+      {"sql": "CREATE TABLE t (d DATE)"},
+      {"sql": "INSERT INTO t VALUES ('2024-02-09')"},
+      {"sql": "SELECT d FROM t", "expect": {"value": "2024-02-09"}}
+    ]},
+    {"name": "string-inserted-timestamp-equals-computed-timestamp", "steps": [
+      {"sql": "CREATE TABLE expected (ts TIMESTAMP_NTZ)"},
+      {"sql": "CREATE TABLE actual (ts TIMESTAMP_NTZ)"},
+      {"sql": "INSERT INTO expected VALUES ('2024-02-09 12:24:12.000')"},
+      {"sql": "INSERT INTO actual SELECT TO_TIMESTAMP_NTZ('2024-02-09 12:24:12.000')"},
+      {"sql": "SELECT ts FROM expected EXCEPT SELECT ts FROM actual", "expect": {"rowCount": 0}},
+      {"sql": "SELECT (SELECT ts FROM expected) = (SELECT ts FROM actual)", "expect": {"value": "true"}}
+    ]},
+    {"name": "string-cast-to-timestamp-equals-to-timestamp-ntz", "steps": [
+      {"sql": "SELECT '2024-02-09 12:24:12.000'::TIMESTAMP_NTZ = TO_TIMESTAMP_NTZ('2024-02-09 12:24:12.000')",
+       "expect": {"value": "true"}}
+    ]},
+    {"name": "integer-into-scaled-number-column-is-padded-to-scale", "steps": [
+      {"sql": "CREATE TABLE t (n NUMBER(8,4))"},
+      {"sql": "INSERT INTO t VALUES (0)"},
+      {"sql": "SELECT '<' || TO_VARCHAR(n) || '>' FROM t", "expect": {"value": "<0.0000>"}}
+    ]},
+    {"name": "inserted-scaled-number-equals-cast-scaled-number", "steps": [
+      {"sql": "CREATE TABLE viaCol (n NUMBER(8,4))"},
+      {"sql": "CREATE TABLE viaCast (n NUMBER(8,4))"},
+      {"sql": "INSERT INTO viaCol VALUES (0), (1), (0.1)"},
+      {"sql": "INSERT INTO viaCast SELECT 0::NUMBER(8,4) UNION ALL SELECT 1::NUMBER(8,4) UNION ALL SELECT 0.1::NUMBER(8,4)"},
+      {"sql": "SELECT n FROM viaCol EXCEPT SELECT n FROM viaCast", "expect": {"rowCount": 0}}
+    ]},
+    {"name": "too-many-fractional-digits-round-to-scale", "steps": [
+      {"sql": "CREATE TABLE t (n NUMBER(8,2))"},
+      {"sql": "INSERT INTO t VALUES (1.239)"},
+      {"sql": "SELECT '<' || TO_VARCHAR(n) || '>' FROM t", "expect": {"value": "<1.24>"}}
+    ]}
+  ]
+}

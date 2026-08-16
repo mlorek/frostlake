@@ -1,0 +1,147 @@
+{
+  "suite": "functions-binary-argument-byte-semantics",
+  "description": "A BINARY argument contributes its BYTES, never its hex rendering. Every expected value here is what a LIVE Snowflake account returned, pinned as a literal - that is the gap that let the family diverge, because the round trip HEX_DECODE_STRING(HEX_ENCODE(x)) passed regardless (both directions applied the same wrong step) and the VARCHAR path most tests use was always correct. The VARCHAR-argument cases and the no-format TO_VARCHAR case are the BOUNDARY, where hex IS the right rendering, and are asserted alongside so a fix cannot invert them. Covers the encoders, the digest family, the byte-counting length functions, SUBSTR / LEFT / RIGHT / REVERSE / LPAD / RPAD / POSITION over bytes, concatenation staying BINARY, TO_VARCHAR(<binary>, <encoding>), and a BINARY column round trip. Converted 1:1 from functions/BinaryArgumentByteSemanticsTest (now retired); its assertInstanceOf(BinaryValue.class) checks become TYPEOF(TO_VARIANT(x)) = BINARY, and empty results are stringified as '<' || TO_VARCHAR(x) || '>' so an empty byte string cannot be confused with SQL NULL.",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "hex-encode-encodes-the-bytes-of-a-binary-argument", "steps": [
+      {"sql": "SELECT HEX_ENCODE(TO_BINARY('48454C','HEX'))", "expect": {"value": "48454C"}},
+      {"sql": "SELECT HEX_ENCODE(MD5_BINARY('a'))", "expect": {"value": "0CC175B9C0F1B6A831C399E269772661"}},
+      {"sql": "SELECT HEX_ENCODE(SHA2_BINARY('a'))",
+       "expect": {"value": "CA978112CA1BBDCAFAC231B39A23DC4DA786EFF8147C4E72B9807785AFEE48BB"}},
+      {"sql": "SELECT HEX_ENCODE(SHA1_BINARY('a'))", "expect": {"value": "86F7E437FAA5A7FCE15D1DDCB9EAEAEA377667B8"}},
+      {"sql": "SELECT HEX_ENCODE(COMPRESS('hello','snappy'))", "expect": {"value": "051068656C6C6F"}}
+    ]},
+    {"name": "base64-encode-encodes-the-bytes-of-a-binary-argument", "steps": [
+      {"sql": "SELECT BASE64_ENCODE(COMPRESS('hello','snappy'))", "expect": {"value": "BRBoZWxsbw=="}},
+      {"sql": "SELECT BASE64_ENCODE(MD5_BINARY('a'))", "expect": {"value": "DMF1ucDxtqgxw5niaXcmYQ=="}},
+      {"sql": "SELECT BASE64_ENCODE(COMPRESS('hello','zlib'))", "expect": {"value": "eJzLSM3JyQcABiwCFQ=="}}
+    ]},
+    {"name": "encoders-still-encode-the-text-of-a-non-binary-argument", "steps": [
+      {"sql": "SELECT HEX_ENCODE('hello')", "expect": {"value": "68656C6C6F"}},
+      {"sql": "SELECT BASE64_ENCODE('hello')", "expect": {"value": "aGVsbG8="}},
+      {"sql": "SELECT HEX_ENCODE(123)", "expect": {"value": "313233"}},
+      {"sql": "SELECT HEX_ENCODE(TRUE)", "expect": {"value": "74727565"}},
+      {"sql": "SELECT HEX_ENCODE('2024-01-01'::DATE)", "expect": {"value": "323032342D30312D3031"}},
+      {"sql": "SELECT '<' || HEX_ENCODE(TO_BINARY('','HEX')) || '>'", "expect": {"value": "<>"}},
+      {"sql": "SELECT HEX_ENCODE(NULL)", "expect": {"rows": [[null]]}},
+      {"sql": "SELECT BASE64_ENCODE(NULL)", "expect": {"rows": [[null]]}}
+    ]},
+    {"name": "to-varchar-without-a-format-still-renders-binary-as-hex", "steps": [
+      {"sql": "SELECT TO_VARCHAR(COMPRESS('hello','snappy'))", "expect": {"value": "051068656C6C6F"}},
+      {"sql": "SELECT TO_CHAR(TO_BINARY('48454C4C4F','HEX'))", "expect": {"value": "48454C4C4F"}},
+      {"sql": "SELECT TO_BINARY('48454C4C4F','HEX')::VARCHAR", "expect": {"value": "48454C4C4F"}}
+    ]},
+    {"name": "text-round-trips-still-hold", "steps": [
+      {"sql": "SELECT HEX_DECODE_STRING(HEX_ENCODE('hi'))", "expect": {"value": "hi"}},
+      {"sql": "SELECT BASE64_DECODE_STRING(BASE64_ENCODE('hi'))", "expect": {"value": "hi"}},
+      {"sql": "SELECT HEX_ENCODE(HEX_DECODE_BINARY(HEX_ENCODE(TO_BINARY('48454C','HEX'))))",
+       "expect": {"value": "48454C"}},
+      {"sql": "SELECT HEX_ENCODE(BASE64_DECODE_BINARY(BASE64_ENCODE(TO_BINARY('48454C','HEX'))))",
+       "expect": {"value": "48454C"}}
+    ]},
+    {"name": "digests-hash-the-bytes-of-a-binary-argument", "steps": [
+      {"sql": "SELECT MD5(TO_BINARY('61','HEX'))", "expect": {"value": "0cc175b9c0f1b6a831c399e269772661"}},
+      {"sql": "SELECT SHA1(TO_BINARY('61','HEX'))", "expect": {"value": "86f7e437faa5a7fce15d1ddcb9eaeaea377667b8"}},
+      {"sql": "SELECT SHA2(TO_BINARY('61','HEX'))",
+       "expect": {"value": "ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb"}},
+      {"sql": "SELECT MD5('a') = MD5(TO_BINARY('61','HEX'))", "expect": {"value": "true"}},
+      {"sql": "SELECT HEX_ENCODE(MD5_BINARY(TO_BINARY('61','HEX')))",
+       "expect": {"value": "0CC175B9C0F1B6A831C399E269772661"}},
+      {"sql": "SELECT HEX_ENCODE(SHA2_BINARY(TO_BINARY('61','HEX'), 512))",
+       "expect": {"value": "1F40FC92DA241694750979EE6CF582F2D5D7D28E18335DE05ABC54D0560E0F5302860C652BF08D560252AA5E74210546F369FBBBCE8C12CFC7957B2652FE9A75"}}
+    ]},
+    {"name": "digests-hash-the-snowflake-rendering-of-a-temporal", "steps": [
+      {"sql": "SELECT MD5('2024-01-02 03:04:05.000'::TIMESTAMP_NTZ)", "expect": {"value": "550566bf6e75f4bcc181bd762df0728a"}},
+      {"sql": "SELECT MD5('2024-01-02 03:04:05.000') = MD5('2024-01-02 03:04:05.000'::TIMESTAMP_NTZ)",
+       "expect": {"value": "true"}},
+      {"sql": "SELECT HEX_ENCODE('2024-01-02 03:04:05.000'::TIMESTAMP_NTZ)",
+       "expect": {"value": "323032342D30312D30322030333A30343A30352E303030"}}
+    ]},
+    {"name": "length-functions-count-bytes-not-hex-digits", "steps": [
+      {"sql": "SELECT LEN(TO_BINARY('48454C','HEX')), LENGTH(TO_BINARY('48454C','HEX')), OCTET_LENGTH(TO_BINARY('48454C','HEX')), BIT_LENGTH(TO_BINARY('48454C','HEX')), LEN(MD5_BINARY('a'))",
+       "expect": {"rows": [["3", "3", "3", "24", "16"]]}}
+    ]},
+    {"name": "substr-slices-bytes-and-yields-binary", "steps": [
+      {"sql": "SELECT SUBSTR(TO_BINARY('48454C4C4F','HEX'), 2, 2)", "expect": {"value": "454C"}},
+      {"sql": "SELECT SUBSTR(TO_BINARY('48454C4C4F','HEX'), 2)", "expect": {"value": "454C4C4F"}},
+      {"sql": "SELECT SUBSTR(TO_BINARY('48454C4C4F','HEX'), -2, 2)", "expect": {"value": "4C4F"}},
+      {"sql": "SELECT SUBSTR(TO_BINARY('48454C4C4F','HEX'), 0, 2)", "expect": {"value": "4845"}},
+      {"sql": "SELECT SUBSTR(TO_BINARY('48454C4C4F','HEX'), 1, 99)", "expect": {"value": "48454C4C4F"}},
+      {"sql": "SELECT SUBSTRING(TO_BINARY('48454C4C4F','HEX'), 3, 1)", "expect": {"value": "4C"}},
+      {"sql": "SELECT '<' || TO_VARCHAR(SUBSTR(TO_BINARY('48454C4C4F','HEX'), 9, 2)) || '>'", "expect": {"value": "<>"}},
+      {"sql": "SELECT '<' || TO_VARCHAR(SUBSTR(TO_BINARY('48454C4C4F','HEX'), -99, 2)) || '>'", "expect": {"value": "<>"}},
+      {"sql": "SELECT TYPEOF(TO_VARIANT(SUBSTR(TO_BINARY('48454C4C4F','HEX'), 2, 2)))", "expect": {"value": "BINARY"}}
+    ]},
+    {"name": "substr-window-rules-match-on-varchar", "steps": [
+      {"sql": "SELECT SUBSTR('hello', -2, 2)", "expect": {"value": "lo"}},
+      {"sql": "SELECT SUBSTR('hello', 0, 2)", "expect": {"value": "he"}},
+      {"sql": "SELECT '<' || SUBSTR('hello', -99, 2) || '>'", "expect": {"value": "<>"}},
+      {"sql": "SELECT '<' || SUBSTR('hello', 2, -1) || '>'", "expect": {"value": "<>"}},
+      {"sql": "SELECT SUBSTR('hello', 2)", "expect": {"value": "ello"}},
+      {"sql": "SELECT SUBSTR('hello', 1, 99)", "expect": {"value": "hello"}}
+    ]},
+    {"name": "left-right-and-reverse-work-on-bytes", "steps": [
+      {"sql": "SELECT LEFT(TO_BINARY('48454C4C4F','HEX'), 2)", "expect": {"value": "4845"}},
+      {"sql": "SELECT RIGHT(TO_BINARY('48454C4C4F','HEX'), 2)", "expect": {"value": "4C4F"}},
+      {"sql": "SELECT LEFT(TO_BINARY('48454C4C4F','HEX'), 99)", "expect": {"value": "48454C4C4F"}},
+      {"sql": "SELECT '<' || TO_VARCHAR(LEFT(TO_BINARY('48454C4C4F','HEX'), 0)) || '>'", "expect": {"value": "<>"}},
+      {"sql": "SELECT REVERSE(TO_BINARY('48454C4C4F','HEX'))", "expect": {"value": "4F4C4C4548"}},
+      {"sql": "SELECT REVERSE(TO_BINARY('AABBCC','HEX'))", "expect": {"value": "CCBBAA"}},
+      {"sql": "SELECT TYPEOF(TO_VARIANT(LEFT(TO_BINARY('48454C4C4F','HEX'), 2)))", "expect": {"value": "BINARY"}},
+      {"sql": "SELECT TYPEOF(TO_VARIANT(REVERSE(TO_BINARY('AABBCC','HEX'))))", "expect": {"value": "BINARY"}}
+    ]},
+    {"name": "pads-repeat-the-pad-pattern-byte-wise", "steps": [
+      {"sql": "SELECT LPAD(TO_BINARY('4845','HEX'), 5, TO_BINARY('0102','HEX'))", "expect": {"value": "0102014845"}},
+      {"sql": "SELECT RPAD(TO_BINARY('4845','HEX'), 5, TO_BINARY('0102','HEX'))", "expect": {"value": "4845010201"}},
+      {"sql": "SELECT LPAD(TO_BINARY('4845','HEX'), 4, TO_BINARY('00','HEX'))", "expect": {"value": "00004845"}},
+      {"sql": "SELECT RPAD(TO_BINARY('4845','HEX'), 4, TO_BINARY('00','HEX'))", "expect": {"value": "48450000"}},
+      {"sql": "SELECT LPAD(TO_BINARY('','HEX'), 3, TO_BINARY('AB','HEX'))", "expect": {"value": "ABABAB"}},
+      {"sql": "SELECT LPAD(TO_BINARY('48454C','HEX'), 2, TO_BINARY('00','HEX'))", "expect": {"value": "4845"}},
+      {"sql": "SELECT RPAD(TO_BINARY('48454C','HEX'), 2, TO_BINARY('00','HEX'))", "expect": {"value": "4845"}},
+      {"sql": "SELECT TYPEOF(TO_VARIANT(LPAD(TO_BINARY('4845','HEX'), 4, TO_BINARY('00','HEX'))))",
+       "expect": {"value": "BINARY"}}
+    ]},
+    {"name": "position-searches-by-byte", "steps": [
+      {"sql": "SELECT POSITION(TO_BINARY('45','HEX'), TO_BINARY('48454C','HEX'))", "expect": {"value": "2"}},
+      {"sql": "SELECT POSITION(TO_BINARY('4C','HEX'), TO_BINARY('48454C4C4F','HEX'))", "expect": {"value": "3"}},
+      {"sql": "SELECT POSITION(TO_BINARY('4C','HEX'), TO_BINARY('48454C4C4F','HEX'), 4)", "expect": {"value": "4"}},
+      {"sql": "SELECT POSITION(TO_BINARY('99','HEX'), TO_BINARY('48454C4C4F','HEX'))", "expect": {"value": "0"}},
+      {"sql": "SELECT POSITION(TO_BINARY('','HEX'), TO_BINARY('4845','HEX'))", "expect": {"value": "1"}},
+      {"sql": "SELECT CHARINDEX(TO_BINARY('4C','HEX'), TO_BINARY('48454C4C4F','HEX'))", "expect": {"value": "3"}}
+    ]},
+    {"name": "concatenation-of-binaries-stays-binary", "steps": [
+      {"sql": "SELECT TO_BINARY('4845','HEX') || TO_BINARY('4C4F','HEX')", "expect": {"value": "48454C4F"}},
+      {"sql": "SELECT CONCAT(TO_BINARY('4845','HEX'), TO_BINARY('4C4F','HEX'))", "expect": {"value": "48454C4F"}},
+      {"sql": "SELECT HEX_ENCODE(TO_BINARY('4845','HEX') || TO_BINARY('4C4F','HEX'))", "expect": {"value": "48454C4F"}},
+      {"sql": "SELECT LENGTH(TO_BINARY('4845','HEX') || TO_BINARY('4C4F','HEX'))", "expect": {"value": "4"}},
+      {"sql": "SELECT TYPEOF(TO_VARIANT(TO_BINARY('4845','HEX') || TO_BINARY('4C4F','HEX')))",
+       "expect": {"value": "BINARY"}}
+    ]},
+    {"name": "to-varchar-with-a-binary-format-encodes-the-bytes", "steps": [
+      {"sql": "SELECT TO_VARCHAR(TO_BINARY('48454C4C4F','HEX'),'UTF-8')", "expect": {"value": "HELLO"}},
+      {"sql": "SELECT TO_VARCHAR(TO_BINARY('48454C4C4F','HEX'),'BASE64')", "expect": {"value": "SEVMTE8="}},
+      {"sql": "SELECT TO_VARCHAR(TO_BINARY('48454C4C4F','HEX'),'HEX')", "expect": {"value": "48454C4C4F"}},
+      {"sql": "SELECT TO_CHAR(TO_BINARY('48454C4C4F','HEX'),'BASE64')", "expect": {"value": "SEVMTE8="}},
+      {"sql": "SELECT TO_VARCHAR(TO_BINARY('48454C4C4F','HEX'),'utf-8')", "expect": {"value": "HELLO"}},
+      {"sql": "SELECT TO_VARCHAR(TO_BINARY('48454C4C4F','HEX'),'UTF8')", "expect": {"value": "HELLO"}},
+      {"sql": "SELECT TO_VARCHAR(TO_BINARY('48454C4C4F','HEX'),'base64')", "expect": {"value": "SEVMTE8="}}
+    ]},
+    {"name": "a-binary-column-encodes-its-stored-bytes", "steps": [
+      {"sql": "CREATE TABLE test_db.test_schema.b159 (id INT, b BINARY)"},
+      {"sql": "INSERT INTO test_db.test_schema.b159 SELECT 1, TO_BINARY('00FF','HEX')"},
+      {"sql": "INSERT INTO test_db.test_schema.b159 SELECT 2, TO_BINARY('0100','HEX')"},
+      {"sql": "INSERT INTO test_db.test_schema.b159 SELECT 3, TO_BINARY('FF','HEX')"},
+      {"sql": "SELECT HEX_ENCODE(b) FROM test_db.test_schema.b159 WHERE id = 1", "expect": {"value": "00FF"}},
+      {"sql": "SELECT BASE64_ENCODE(b) FROM test_db.test_schema.b159 WHERE id = 1", "expect": {"value": "AP8="}},
+      {"sql": "SELECT BASE64_ENCODE(b) FROM test_db.test_schema.b159 WHERE id = 3", "expect": {"value": "/w=="}},
+      {"sql": "SELECT LENGTH(b) FROM test_db.test_schema.b159 WHERE id = 2", "expect": {"value": "2"}},
+      {"sql": "SELECT MD5(b) FROM test_db.test_schema.b159 WHERE id = 3",
+       "expect": {"value": "00594fd4f42ba43fc1ca0427a0576295"}},
+      {"sql": "SELECT MIN(b) FROM test_db.test_schema.b159", "expect": {"value": "00FF"}},
+      {"sql": "SELECT MAX(b) FROM test_db.test_schema.b159", "expect": {"value": "FF"}},
+      {"sql": "INSERT INTO test_db.test_schema.b159 SELECT 4, SUBSTR(TO_BINARY('48454C4C4F','HEX'), 2, 2)"},
+      {"sql": "SELECT HEX_ENCODE(b) FROM test_db.test_schema.b159 WHERE id = 4", "expect": {"value": "454C"}},
+      {"sql": "SELECT LENGTH(b) FROM test_db.test_schema.b159 WHERE id = 4", "expect": {"value": "2"}}
+    ]}
+  ]
+}

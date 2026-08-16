@@ -17,7 +17,7 @@
 package dev.frostlake.functions.scalar.conversion;
 
 import dev.frostlake.functions.BuiltInFunction;
-import dev.frostlake.types.StringType;
+import dev.frostlake.types.UuidType;
 import java.util.List;
 
 /** TRY_TO_UUID(s) — TO_UUID that returns NULL instead of erroring. */
@@ -25,7 +25,7 @@ public class TryToUuid extends BuiltInFunction {
 
     private static final ToUuid BASE = new ToUuid();
 
-    public TryToUuid() { super("TRY_TO_UUID", StringType.VARCHAR); }
+    public TryToUuid() { super("TRY_TO_UUID", UuidType.UUID); }
 
     @Override
     public Object evaluate(final List<Object> args) {

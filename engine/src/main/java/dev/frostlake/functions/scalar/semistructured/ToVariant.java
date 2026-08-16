@@ -51,7 +51,8 @@ public class ToVariant extends BuiltInFunction {
             return VariantValue.ofNode(
                 ArrayFunctionHelper.MAPPER.getNodeFactory().textNode(value.toString()));
         }
-        // Canonicalized, so a whole-valued decimal wraps as an integral variant (TYPEOF = INTEGER).
+        // Canonicalized: a whole value takes the kind of its own scale — 3.00 out of a NUMBER(10,2) is
+        // DECIMAL, a scale-0 value INTEGER (see DecimalOriginNode).
         return ArrayFunctionHelper.toCanonicalVariant(
             ArrayFunctionHelper.toNode(ArrayFunctionHelper.MAPPER, value));
     }

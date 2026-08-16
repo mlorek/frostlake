@@ -1,0 +1,54 @@
+{
+  "suite": "query-cte-parsing",
+  "description": "CTE parsing edge cases: a definition with no column list keeps the inner projection's columns; a definition WITH a column list renames them; RECURSIVE runs to its stop condition; and a CTE resolves inside INSERT, inside an UPDATE's SET-clause subquery (including the correlated form) and inside a DELETE's IN-list. AS is REQUIRED in a CTE definition - live-Snowflake verified, the AS-less form is a sqlglot-corpus artifact and not Snowflake syntax - and the parenthesised form after the name is a COLUMN LIST only when AS follows it. Converted 1:1 from query/CTEParsingTest (now retired); the Java looked up its renamed columns through getColumnIndex, which the converted test states as an explicit column-name expectation instead.",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "a-cte-without-a-column-list", "steps": [
+      {"sql": "CREATE TABLE test_table (id INTEGER, value VARCHAR)"},
+      {"sql": "INSERT INTO test_table VALUES (1, 'A')"},
+      {"sql": "INSERT INTO test_table VALUES (2, 'B')"},
+      {"sql": "WITH cte AS (SELECT * FROM test_table) SELECT * FROM cte ORDER BY id", "expect": {"rows": [[1, "A"], [2, "B"]], "ordered": true, "columns": ["ID", "VALUE"]}}
+    ]},
+    {"name": "a-cte-with-a-column-list", "steps": [
+      {"sql": "CREATE TABLE test_table (id INTEGER, value VARCHAR)"},
+      {"sql": "INSERT INTO test_table VALUES (1, 'A')"},
+      {"sql": "INSERT INTO test_table VALUES (2, 'B')"},
+      {"sql": "WITH cte (id, val) AS (SELECT * FROM test_table) SELECT * FROM cte ORDER BY id", "expect": {"rows": [[1, "A"], [2, "B"]], "ordered": true, "columns": ["ID", "VAL"]}}
+    ]},
+    {"name": "a-recursive-cte", "steps": [
+      {"sql": "WITH RECURSIVE cte AS (SELECT 1 as n UNION ALL SELECT n + 1 FROM cte WHERE n < 5) SELECT * FROM cte ORDER BY n", "expect": {"rows": [[1],[2],[3],[4],[5]], "ordered": true, "columns": ["N"]}}
+    ]},
+    {"name": "a-cte-in-insert", "steps": [
+      {"sql": "CREATE TABLE test_table (id INTEGER, value VARCHAR)"},
+      {"sql": "INSERT INTO test_table VALUES (1, 'A')"},
+      {"sql": "INSERT INTO test_table VALUES (2, 'B')"},
+      {"sql": "CREATE TABLE target (id INTEGER, value VARCHAR)"},
+      {"sql": "INSERT INTO target WITH cte AS (SELECT * FROM test_table WHERE id = 1) SELECT * FROM cte"},
+      {"sql": "SELECT id, value FROM target ORDER BY id", "expect": {"rows": [[1, "A"]], "ordered": true}}
+    ]},
+    {"name": "a-cte-in-update", "steps": [
+      {"sql": "CREATE TABLE test_table (id INTEGER, value VARCHAR)"},
+      {"sql": "INSERT INTO test_table VALUES (1, 'A')"},
+      {"sql": "INSERT INTO test_table VALUES (2, 'B')"},
+      {"sql": "CREATE TABLE target (id INTEGER, value VARCHAR)"},
+      {"sql": "INSERT INTO target VALUES (1, 'X')"},
+      {"sql": "UPDATE target SET value = (WITH cte AS (SELECT id, value FROM test_table WHERE id = 1) SELECT value FROM cte WHERE cte.id = target.id)"},
+      {"sql": "SELECT id, value FROM target ORDER BY id", "expect": {"rows": [[1, "A"]], "ordered": true}}
+    ]},
+    {"name": "a-cte-in-delete", "steps": [
+      {"sql": "CREATE TABLE test_table (id INTEGER, value VARCHAR)"},
+      {"sql": "INSERT INTO test_table VALUES (1, 'A')"},
+      {"sql": "INSERT INTO test_table VALUES (2, 'B')"},
+      {"sql": "CREATE TABLE target (id INTEGER, value VARCHAR)"},
+      {"sql": "INSERT INTO target VALUES (1, 'X')"},
+      {"sql": "INSERT INTO target VALUES (2, 'Y')"},
+      {"sql": "DELETE FROM target WHERE id IN (WITH cte AS (SELECT id FROM test_table WHERE id = 1) SELECT id FROM cte)"},
+      {"sql": "SELECT id, value FROM target ORDER BY id", "expect": {"rows": [[2, "Y"]], "ordered": true}}
+    ]},
+    {"name": "a-cte-requires-the-as-keyword", "steps": [
+      {"sql": "WITH t (SELECT 1 AS c) SELECT c FROM t", "expect": {"error": {}}},
+      {"sql": "WITH t AS (SELECT 1 AS c) SELECT * FROM t", "expect": {"rows": [[1]]}},
+      {"sql": "WITH t (c) AS (SELECT 2) SELECT c FROM t", "expect": {"rows": [[2]], "columns": ["C"]}}
+    ]}
+  ]
+}

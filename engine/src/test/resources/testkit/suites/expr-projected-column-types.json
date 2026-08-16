@@ -1,0 +1,74 @@
+{
+  "suite": "expr-projected-column-types",
+  "description": "A computed projection reports its SEMI-STRUCTURED static type so a direct CTAS declares the column the way live does (OBJECT_CONSTRUCT -> OBJECT, ARRAY_CONSTRUCT -> ARRAY, PARSE_JSON -> VARIANT, OBJECT_KEYS -> ARRAY per the producer), through derived tables, empty selects, FROM-less selects and views alike - while every OTHER family keeps its value-derived recovery (the decimal-scale guard: CTAS of 1.5 stores 1.5, not a bare-NUMBER-rounded 2; arithmetic NUMBER, comparison BOOLEAN, string TEXT). Converted 1:1 from expressions/ProjectedColumnTypeTest (now retired).",
+  "tags": ["expressions", "converted"],
+  "tests": [
+    {"name": "an-object-construct-projection-declares-object", "steps": [
+      {"sql": "CREATE TABLE proj_src (id INTEGER)"},
+      {"sql": "INSERT INTO proj_src VALUES (1)"},
+      {"sql": "CREATE TABLE p_obj AS SELECT OBJECT_CONSTRUCT('k','v') AS c FROM proj_src"},
+      {"sql": "SELECT data_type FROM test_db.information_schema.columns WHERE table_name = 'P_OBJ'", "expect": {"value": "OBJECT"}}
+    ]},
+    {"name": "an-array-construct-projection-declares-array", "steps": [
+      {"sql": "CREATE TABLE proj_src (id INTEGER)"},
+      {"sql": "INSERT INTO proj_src VALUES (1)"},
+      {"sql": "CREATE TABLE p_arr AS SELECT ARRAY_CONSTRUCT(1, 2) AS c FROM proj_src"},
+      {"sql": "SELECT data_type FROM test_db.information_schema.columns WHERE table_name = 'P_ARR'", "expect": {"value": "ARRAY"}}
+    ]},
+    {"name": "a-parse-json-projection-declares-variant", "steps": [
+      {"sql": "CREATE TABLE proj_src (id INTEGER)"},
+      {"sql": "INSERT INTO proj_src VALUES (1)"},
+      {"sql": "CREATE TABLE p_var AS SELECT PARSE_JSON('{\"a\":1}') AS c FROM proj_src"},
+      {"sql": "SELECT data_type FROM test_db.information_schema.columns WHERE table_name = 'P_VAR'", "expect": {"value": "VARIANT"}}
+    ]},
+    {"name": "the-reported-type-comes-from-the-producer-not-the-name", "steps": [
+      {"sql": "CREATE TABLE proj_src (id INTEGER)"},
+      {"sql": "INSERT INTO proj_src VALUES (1)"},
+      {"sql": "CREATE TABLE p_keys AS SELECT OBJECT_KEYS(OBJECT_CONSTRUCT('k','v')) AS c FROM proj_src"},
+      {"sql": "SELECT data_type FROM test_db.information_schema.columns WHERE table_name = 'P_KEYS'", "expect": {"value": "ARRAY"}}
+    ]},
+    {"name": "a-decimal-literal-still-keeps-its-scale", "steps": [
+      {"sql": "CREATE TABLE proj_src (id INTEGER)"},
+      {"sql": "INSERT INTO proj_src VALUES (1)"},
+      {"sql": "CREATE TABLE p_dec AS SELECT 1.5 AS c FROM proj_src"},
+      {"sql": "SELECT c FROM p_dec", "expect": {"value": "1.5"}}
+    ]},
+    {"name": "the-other-families-are-unchanged", "steps": [
+      {"sql": "CREATE TABLE proj_src (id INTEGER)"},
+      {"sql": "INSERT INTO proj_src VALUES (1)"},
+      {"sql": "CREATE TABLE p_num AS SELECT 1 + 1 AS c FROM proj_src"},
+      {"sql": "CREATE TABLE p_bool AS SELECT id > 0 AS c FROM proj_src"},
+      {"sql": "CREATE TABLE p_txt AS SELECT 'x' || 'y' AS c FROM proj_src"},
+      {"sql": "SELECT data_type FROM test_db.information_schema.columns WHERE table_name = 'P_NUM'", "expect": {"value": "NUMBER"}},
+      {"sql": "SELECT data_type FROM test_db.information_schema.columns WHERE table_name = 'P_BOOL'", "expect": {"value": "BOOLEAN"}},
+      {"sql": "SELECT data_type FROM test_db.information_schema.columns WHERE table_name = 'P_TXT'", "expect": {"value": "TEXT"}}
+    ]},
+    {"name": "the-derived-form-still-agrees-with-the-direct-one", "steps": [
+      {"sql": "CREATE TABLE proj_src (id INTEGER)"},
+      {"sql": "INSERT INTO proj_src VALUES (1)"},
+      {"sql": "CREATE TABLE p_direct AS SELECT OBJECT_CONSTRUCT('k','v') AS c FROM proj_src"},
+      {"sql": "CREATE TABLE p_derived AS SELECT c FROM (SELECT OBJECT_CONSTRUCT('k','v') AS c FROM proj_src)"},
+      {"sql": "SELECT data_type FROM test_db.information_schema.columns WHERE table_name = 'P_DIRECT'", "expect": {"value": "OBJECT"}},
+      {"sql": "SELECT data_type FROM test_db.information_schema.columns WHERE table_name = 'P_DERIVED'", "expect": {"value": "OBJECT"}}
+    ]},
+    {"name": "an-empty-select-still-declares-the-semi-structured-type", "steps": [
+      {"sql": "CREATE TABLE proj_src (id INTEGER)"},
+      {"sql": "INSERT INTO proj_src VALUES (1)"},
+      {"sql": "CREATE TABLE p_empty AS SELECT OBJECT_CONSTRUCT('k','v') AS c FROM proj_src WHERE id < 0"},
+      {"sql": "SELECT c FROM p_empty", "expect": {"rowCount": 0}},
+      {"sql": "SELECT data_type FROM test_db.information_schema.columns WHERE table_name = 'P_EMPTY'", "expect": {"value": "OBJECT"}}
+    ]},
+    {"name": "a-from-less-decimal-literal-also-keeps-its-scale", "steps": [
+      {"sql": "CREATE TABLE n_dec AS SELECT 1.5 AS c"},
+      {"sql": "SELECT c FROM n_dec", "expect": {"value": "1.5"}}
+    ]},
+    {"name": "a-from-less-select-declares-the-semi-structured-types-too", "steps": [
+      {"sql": "CREATE TABLE n_obj AS SELECT OBJECT_CONSTRUCT('k','v') AS c"},
+      {"sql": "CREATE TABLE n_arr AS SELECT ARRAY_CONSTRUCT(1, 2) AS c"},
+      {"sql": "CREATE VIEW n_view AS SELECT OBJECT_CONSTRUCT('k','v') AS c"},
+      {"sql": "SELECT data_type FROM test_db.information_schema.columns WHERE table_name = 'N_OBJ'", "expect": {"value": "OBJECT"}},
+      {"sql": "SELECT data_type FROM test_db.information_schema.columns WHERE table_name = 'N_ARR'", "expect": {"value": "ARRAY"}},
+      {"sql": "SELECT data_type FROM test_db.information_schema.columns WHERE table_name = 'N_VIEW'", "expect": {"value": "OBJECT"}}
+    ]}
+  ]
+}

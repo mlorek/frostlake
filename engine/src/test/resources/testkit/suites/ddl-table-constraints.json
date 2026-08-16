@@ -1,0 +1,169 @@
+{
+  "suite": "ddl-table-constraints",
+  "description": "INFORMATION_SCHEMA.TABLE_CONSTRAINTS and REFERENTIAL_CONSTRAINTS surface: PRIMARY KEY / UNIQUE / FOREIGN KEY rows with live's cell values (IS_DEFERRABLE NO, INITIALLY_DEFERRED YES, ENFORCED NO), SYS_CONSTRAINT_ auto-naming vs explicit CONSTRAINT names, one row per constraint for composite keys, cross-schema listing, joins against INFORMATION_SCHEMA.TABLES, ALTER TABLE DROP/ADD PRIMARY KEY / DROP UNIQUE / DROP FOREIGN KEY lifecycles (a re-added key auto-names itself; DROP UNIQUE preserves a same-column FK), and REFERENTIAL_CONSTRAINTS tying an FK to its parent key's name. Tests run in the PUBLIC schema to match the measured catalog/schema cells. Converted 1:1 from ddl/TableConstraintsTest (now retired).",
+  "tags": ["ddl", "converted"],
+  "tests": [
+    {"name": "primary-key-constraint", "steps": [
+      {"sql": "USE SCHEMA public"},
+      {"sql": "CREATE TABLE users (id INTEGER PRIMARY KEY, name VARCHAR)"},
+      {"sql": "SELECT CONSTRAINT_CATALOG, CONSTRAINT_SCHEMA, STARTSWITH(CONSTRAINT_NAME, 'SYS_CONSTRAINT_'), TABLE_CATALOG, TABLE_SCHEMA, TABLE_NAME, CONSTRAINT_TYPE, IS_DEFERRABLE, INITIALLY_DEFERRED, ENFORCED FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS WHERE TABLE_NAME = 'USERS' AND CONSTRAINT_TYPE = 'PRIMARY KEY'",
+       "expect": {"rows": [["TEST_DB", "PUBLIC", "true", "TEST_DB", "PUBLIC", "USERS", "PRIMARY KEY", "NO", "YES", "NO"]]}}
+    ]},
+    {"name": "unique-constraint", "steps": [
+      {"sql": "USE SCHEMA public"},
+      {"sql": "CREATE TABLE products (id INTEGER, code VARCHAR UNIQUE, name VARCHAR)"},
+      {"sql": "SELECT CONSTRAINT_SCHEMA, STARTSWITH(CONSTRAINT_NAME, 'SYS_CONSTRAINT_'), TABLE_NAME, CONSTRAINT_TYPE FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS WHERE TABLE_NAME = 'PRODUCTS' AND CONSTRAINT_TYPE = 'UNIQUE'",
+       "expect": {"rows": [["PUBLIC", "true", "PRODUCTS", "UNIQUE"]]}}
+    ]},
+    {"name": "foreign-key-constraint", "steps": [
+      {"sql": "USE SCHEMA public"},
+      {"sql": "CREATE TABLE departments (id INTEGER PRIMARY KEY, name VARCHAR)"},
+      {"sql": "CREATE TABLE employees (id INTEGER, dept_id INTEGER REFERENCES departments(id), name VARCHAR)"},
+      {"sql": "SELECT CONSTRAINT_SCHEMA, STARTSWITH(CONSTRAINT_NAME, 'SYS_CONSTRAINT_'), TABLE_NAME, CONSTRAINT_TYPE FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS WHERE TABLE_NAME = 'EMPLOYEES' AND CONSTRAINT_TYPE = 'FOREIGN KEY'",
+       "expect": {"rows": [["PUBLIC", "true", "EMPLOYEES", "FOREIGN KEY"]]}}
+    ]},
+    {"name": "multiple-constraints-on-same-table", "steps": [
+      {"sql": "USE SCHEMA public"},
+      {"sql": "CREATE TABLE orders (id INTEGER PRIMARY KEY, order_number VARCHAR UNIQUE, customer_id INTEGER)"},
+      {"sql": "SELECT CONSTRAINT_TYPE FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS WHERE TABLE_NAME = 'ORDERS' ORDER BY CONSTRAINT_TYPE",
+       "expect": {"rows": [["PRIMARY KEY"], ["UNIQUE"]], "ordered": true}}
+    ]},
+    {"name": "no-constraints", "steps": [
+      {"sql": "USE SCHEMA public"},
+      {"sql": "CREATE TABLE logs (timestamp INTEGER, message VARCHAR)"},
+      {"sql": "SELECT * FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS WHERE TABLE_NAME = 'LOGS'", "expect": {"rowCount": 0}}
+    ]},
+    {"name": "table-constraints-across-schemas", "steps": [
+      {"sql": "USE SCHEMA public"},
+      {"sql": "CREATE SCHEMA schema1"},
+      {"sql": "CREATE TABLE schema1.table1 (id INTEGER PRIMARY KEY)"},
+      {"sql": "CREATE SCHEMA schema2"},
+      {"sql": "CREATE TABLE schema2.table2 (id INTEGER PRIMARY KEY)"},
+      {"sql": "SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS WHERE CONSTRAINT_TYPE = 'PRIMARY KEY' AND TABLE_SCHEMA = 'SCHEMA1' AND TABLE_NAME = 'TABLE1'", "expect": {"value": "1"}},
+      {"sql": "SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS WHERE CONSTRAINT_TYPE = 'PRIMARY KEY' AND TABLE_SCHEMA = 'SCHEMA2' AND TABLE_NAME = 'TABLE2'", "expect": {"value": "1"}}
+    ]},
+    {"name": "table-constraints-with-join", "steps": [
+      {"sql": "USE SCHEMA public"},
+      {"sql": "CREATE TABLE items (id INTEGER PRIMARY KEY, name VARCHAR)"},
+      {"sql": "SELECT t.TABLE_NAME, tc.CONSTRAINT_TYPE FROM INFORMATION_SCHEMA.TABLES t INNER JOIN INFORMATION_SCHEMA.TABLE_CONSTRAINTS tc ON t.TABLE_NAME = tc.TABLE_NAME AND t.TABLE_SCHEMA = tc.TABLE_SCHEMA WHERE t.TABLE_NAME = 'ITEMS'",
+       "expect": {"rows": [["ITEMS", "PRIMARY KEY"]]}}
+    ]},
+    {"name": "table-constraints-filtering", "steps": [
+      {"sql": "USE SCHEMA public"},
+      {"sql": "CREATE TABLE t1 (id INTEGER PRIMARY KEY)"},
+      {"sql": "CREATE TABLE t2 (id INTEGER PRIMARY KEY)"},
+      {"sql": "CREATE TABLE t3 (id INTEGER, code VARCHAR UNIQUE)"},
+      {"sql": "SELECT COUNT(*) AS cnt FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS WHERE CONSTRAINT_TYPE = 'PRIMARY KEY' AND TABLE_NAME IN ('T1', 'T2', 'T3')", "expect": {"value": "2"}}
+    ]},
+    {"name": "constraint-catalog-and-schema-match", "steps": [
+      {"sql": "USE SCHEMA public"},
+      {"sql": "CREATE TABLE test_table (id INTEGER PRIMARY KEY)"},
+      {"sql": "SELECT CONSTRAINT_CATALOG = TABLE_CATALOG, CONSTRAINT_SCHEMA = TABLE_SCHEMA FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS WHERE TABLE_NAME = 'TEST_TABLE'",
+       "expect": {"rows": [["true", "true"]]}}
+    ]},
+    {"name": "alter-table-drop-primary-key", "steps": [
+      {"sql": "USE SCHEMA public"},
+      {"sql": "CREATE TABLE dp (id INTEGER PRIMARY KEY, name VARCHAR)"},
+      {"sql": "SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS WHERE TABLE_NAME = 'DP' AND CONSTRAINT_TYPE = 'PRIMARY KEY'", "expect": {"value": "1"}},
+      {"sql": "ALTER TABLE dp DROP PRIMARY KEY"},
+      {"sql": "SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS WHERE TABLE_NAME = 'DP' AND CONSTRAINT_TYPE = 'PRIMARY KEY'", "expect": {"value": "0"}}
+    ]},
+    {"name": "drop-and-re-add-primary-key", "steps": [
+      {"sql": "USE SCHEMA public"},
+      {"sql": "CREATE TABLE dp2 (a INTEGER, b INTEGER, PRIMARY KEY (a, b))"},
+      {"sql": "SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS WHERE TABLE_NAME = 'DP2' AND CONSTRAINT_TYPE = 'PRIMARY KEY'", "expect": {"value": "1"}},
+      {"sql": "ALTER TABLE dp2 DROP PRIMARY KEY"},
+      {"sql": "SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS WHERE TABLE_NAME = 'DP2' AND CONSTRAINT_TYPE = 'PRIMARY KEY'", "expect": {"value": "0"}},
+      {"sql": "ALTER TABLE dp2 ADD PRIMARY KEY (a)"},
+      {"sql": "SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS WHERE TABLE_NAME = 'DP2' AND CONSTRAINT_TYPE = 'PRIMARY KEY'", "expect": {"value": "1"}}
+    ]},
+    {"name": "drop-unique", "steps": [
+      {"sql": "USE SCHEMA public"},
+      {"sql": "CREATE TABLE du (a INTEGER UNIQUE, b INTEGER)"},
+      {"sql": "SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS WHERE TABLE_NAME = 'DU' AND CONSTRAINT_TYPE = 'UNIQUE'", "expect": {"value": "1"}},
+      {"sql": "ALTER TABLE du DROP UNIQUE (a)"},
+      {"sql": "SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS WHERE TABLE_NAME = 'DU' AND CONSTRAINT_TYPE = 'UNIQUE'", "expect": {"value": "0"}}
+    ]},
+    {"name": "drop-foreign-key-inline", "steps": [
+      {"sql": "USE SCHEMA public"},
+      {"sql": "CREATE TABLE fk_parent (id INTEGER PRIMARY KEY)"},
+      {"sql": "CREATE TABLE fk_child (x INTEGER REFERENCES fk_parent(id))"},
+      {"sql": "SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS WHERE TABLE_NAME = 'FK_CHILD' AND CONSTRAINT_TYPE = 'FOREIGN KEY'", "expect": {"value": "1"}},
+      {"sql": "ALTER TABLE fk_child DROP FOREIGN KEY (x)"},
+      {"sql": "SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS WHERE TABLE_NAME = 'FK_CHILD' AND CONSTRAINT_TYPE = 'FOREIGN KEY'", "expect": {"value": "0"}}
+    ]},
+    {"name": "table-level-foreign-key-visible-and-droppable", "steps": [
+      {"sql": "USE SCHEMA public"},
+      {"sql": "CREATE TABLE fk_parent2 (id INTEGER PRIMARY KEY)"},
+      {"sql": "CREATE TABLE fk_child2 (y INTEGER, FOREIGN KEY (y) REFERENCES fk_parent2(id))"},
+      {"sql": "SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS WHERE TABLE_NAME = 'FK_CHILD2' AND CONSTRAINT_TYPE = 'FOREIGN KEY'", "expect": {"value": "1"}},
+      {"sql": "ALTER TABLE fk_child2 DROP FOREIGN KEY (y)"},
+      {"sql": "SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS WHERE TABLE_NAME = 'FK_CHILD2' AND CONSTRAINT_TYPE = 'FOREIGN KEY'", "expect": {"value": "0"}}
+    ]},
+    {"name": "table-level-foreign-key-in-referential-constraints", "steps": [
+      {"sql": "USE SCHEMA public"},
+      {"sql": "CREATE TABLE rc_parent (id INTEGER PRIMARY KEY)"},
+      {"sql": "CREATE TABLE rc_child (a INTEGER, FOREIGN KEY (a) REFERENCES rc_parent(id))"},
+      {"sql": "SET fkname = (SELECT CONSTRAINT_NAME FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS WHERE TABLE_NAME = 'RC_CHILD' AND CONSTRAINT_TYPE = 'FOREIGN KEY')"},
+      {"sql": "SET pkname = (SELECT CONSTRAINT_NAME FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS WHERE TABLE_NAME = 'RC_PARENT' AND CONSTRAINT_TYPE = 'PRIMARY KEY')"},
+      {"sql": "SELECT COUNT(*), COUNT_IF(UNIQUE_CONSTRAINT_NAME = $pkname) FROM INFORMATION_SCHEMA.REFERENTIAL_CONSTRAINTS WHERE CONSTRAINT_NAME = $fkname",
+       "expect": {"rows": [["1", "1"]]}}
+    ]},
+    {"name": "explicitly-named-constraint-keeps-its-name", "steps": [
+      {"sql": "USE SCHEMA public"},
+      {"sql": "CREATE TABLE nc_parent (id INTEGER PRIMARY KEY)"},
+      {"sql": "CREATE TABLE nc_child (a INTEGER, CONSTRAINT my_fk FOREIGN KEY (a) REFERENCES nc_parent(id))"},
+      {"sql": "SELECT CONSTRAINT_NAME FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS WHERE TABLE_NAME = 'NC_CHILD' AND CONSTRAINT_TYPE = 'FOREIGN KEY'", "expect": {"value": "MY_FK"}}
+    ]},
+    {"name": "composite-primary-key-is-one-constraint", "steps": [
+      {"sql": "USE SCHEMA public"},
+      {"sql": "CREATE TABLE ck (a INTEGER, b INTEGER, c VARCHAR, CONSTRAINT my_pk PRIMARY KEY (a, b), CONSTRAINT my_uq UNIQUE (c))"},
+      {"sql": "SELECT CONSTRAINT_NAME FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS WHERE TABLE_NAME = 'CK' AND CONSTRAINT_TYPE = 'PRIMARY KEY'", "expect": {"rows": [["MY_PK"]]}},
+      {"sql": "SELECT CONSTRAINT_NAME FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS WHERE TABLE_NAME = 'CK' AND CONSTRAINT_TYPE = 'UNIQUE'", "expect": {"rows": [["MY_UQ"]]}}
+    ]},
+    {"name": "multi-column-unique-is-one-constraint", "steps": [
+      {"sql": "USE SCHEMA public"},
+      {"sql": "CREATE TABLE mu (a INTEGER, b INTEGER, CONSTRAINT uq_ab UNIQUE (a, b))"},
+      {"sql": "SELECT CONSTRAINT_NAME FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS WHERE TABLE_NAME = 'MU' AND CONSTRAINT_TYPE = 'UNIQUE'", "expect": {"rows": [["UQ_AB"]]}}
+    ]},
+    {"name": "unnamed-table-level-constraints-are-auto-named", "steps": [
+      {"sql": "USE SCHEMA public"},
+      {"sql": "CREATE TABLE ck2 (a INTEGER, b VARCHAR, PRIMARY KEY (a), UNIQUE (b))"},
+      {"sql": "SELECT STARTSWITH(CONSTRAINT_NAME, 'SYS_CONSTRAINT_') FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS WHERE TABLE_NAME = 'CK2' AND CONSTRAINT_TYPE = 'PRIMARY KEY'", "expect": {"value": "true"}},
+      {"sql": "SELECT STARTSWITH(CONSTRAINT_NAME, 'SYS_CONSTRAINT_') FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS WHERE TABLE_NAME = 'CK2' AND CONSTRAINT_TYPE = 'UNIQUE'", "expect": {"value": "true"}}
+    ]},
+    {"name": "alter-table-add-named-constraints", "steps": [
+      {"sql": "USE SCHEMA public"},
+      {"sql": "CREATE TABLE anc (a INTEGER, b INTEGER, c VARCHAR)"},
+      {"sql": "ALTER TABLE anc ADD CONSTRAINT anc_pk PRIMARY KEY (a, b)"},
+      {"sql": "ALTER TABLE anc ADD CONSTRAINT anc_uq UNIQUE (c)"},
+      {"sql": "SELECT CONSTRAINT_NAME FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS WHERE TABLE_NAME = 'ANC' AND CONSTRAINT_TYPE = 'PRIMARY KEY'", "expect": {"rows": [["ANC_PK"]]}},
+      {"sql": "SELECT CONSTRAINT_NAME FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS WHERE TABLE_NAME = 'ANC' AND CONSTRAINT_TYPE = 'UNIQUE'", "expect": {"rows": [["ANC_UQ"]]}}
+    ]},
+    {"name": "referential-constraints-use-explicit-names", "steps": [
+      {"sql": "USE SCHEMA public"},
+      {"sql": "CREATE TABLE erc_parent (id INTEGER, CONSTRAINT erc_pk PRIMARY KEY (id))"},
+      {"sql": "CREATE TABLE erc_child (a INTEGER, CONSTRAINT erc_fk FOREIGN KEY (a) REFERENCES erc_parent(id))"},
+      {"sql": "SELECT CONSTRAINT_NAME, UNIQUE_CONSTRAINT_NAME FROM INFORMATION_SCHEMA.REFERENTIAL_CONSTRAINTS WHERE CONSTRAINT_NAME = 'ERC_FK'",
+       "expect": {"rows": [["ERC_FK", "ERC_PK"]]}}
+    ]},
+    {"name": "dropped-primary-key-loses-its-explicit-name", "steps": [
+      {"sql": "USE SCHEMA public"},
+      {"sql": "CREATE TABLE dpn (a INTEGER, CONSTRAINT dpn_pk PRIMARY KEY (a))"},
+      {"sql": "SELECT CONSTRAINT_NAME FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS WHERE TABLE_NAME = 'DPN' AND CONSTRAINT_TYPE = 'PRIMARY KEY'", "expect": {"value": "DPN_PK"}},
+      {"sql": "ALTER TABLE dpn DROP PRIMARY KEY"},
+      {"sql": "ALTER TABLE dpn ADD PRIMARY KEY (a)"},
+      {"sql": "SELECT STARTSWITH(CONSTRAINT_NAME, 'SYS_CONSTRAINT_') FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS WHERE TABLE_NAME = 'DPN' AND CONSTRAINT_TYPE = 'PRIMARY KEY'", "expect": {"value": "true"}}
+    ]},
+    {"name": "drop-unique-keeps-foreign-key", "steps": [
+      {"sql": "USE SCHEMA public"},
+      {"sql": "CREATE TABLE ufp (id INTEGER PRIMARY KEY)"},
+      {"sql": "CREATE TABLE uf (z INTEGER UNIQUE REFERENCES ufp(id))"},
+      {"sql": "SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS WHERE TABLE_NAME = 'UF' AND CONSTRAINT_TYPE = 'UNIQUE'", "expect": {"value": "1"}},
+      {"sql": "SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS WHERE TABLE_NAME = 'UF' AND CONSTRAINT_TYPE = 'FOREIGN KEY'", "expect": {"value": "1"}},
+      {"sql": "ALTER TABLE uf DROP UNIQUE (z)"},
+      {"sql": "SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS WHERE TABLE_NAME = 'UF' AND CONSTRAINT_TYPE = 'UNIQUE'", "expect": {"value": "0"}},
+      {"sql": "SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS WHERE TABLE_NAME = 'UF' AND CONSTRAINT_TYPE = 'FOREIGN KEY'", "expect": {"value": "1"}}
+    ]}
+  ]
+}

@@ -1,0 +1,78 @@
+{
+  "suite": "dml-copy-option-surface",
+  "description": "The COPY INTO <table> load-option surface over an empty internal stage (live-measured cell by cell): every documented ON_ERROR spelling and VALIDATION_MODE mode compiles; bad option values refuse in one of three renderings (quoted string keeps quotes, bareword and negative integer echo bare); unknown option is invalid parameter; repeated options and the ENFORCE_LENGTH/TRUNCATECOLUMNS pair at one polarity conflict (message on the prefix line with trailing newline); MATCH_BY_COLUMN_NAME over headerless CSV and VALIDATION_MODE over a transform refuse with single-line sentences; a FILES entry the stage does not hold aborts naming the location exactly as written. Converted 1:1 from ddl/CopyOptionSurfaceTest (now retired).",
+  "tags": ["dml", "copy", "converted"],
+  "tests": [
+    {"name": "every-documented-on-error-spelling-compiles", "steps": [
+      {"sql": "CREATE OR REPLACE STAGE copt_st"},
+      {"sql": "CREATE OR REPLACE TABLE copt_t (a INTEGER, b VARCHAR)"},
+      {"sql": "COPY INTO copt_t FROM @copt_st ON_ERROR = CONTINUE"},
+      {"sql": "COPY INTO copt_t FROM @copt_st ON_ERROR = 'SKIP_FILE'"},
+      {"sql": "COPY INTO copt_t FROM @copt_st ON_ERROR = SKIP_FILE_3"},
+      {"sql": "COPY INTO copt_t FROM @copt_st ON_ERROR = 'SKIP_FILE_3%'"},
+      {"sql": "COPY INTO copt_t FROM @copt_st ON_ERROR = ABORT_STATEMENT"}
+    ]},
+    {"name": "boolean-options-and-size-limit-compile", "steps": [
+      {"sql": "CREATE OR REPLACE STAGE copt_st"},
+      {"sql": "CREATE OR REPLACE TABLE copt_t (a INTEGER, b VARCHAR)"},
+      {"sql": "COPY INTO copt_t FROM @copt_st ENFORCE_LENGTH = FALSE TRUNCATECOLUMNS = TRUE"},
+      {"sql": "COPY INTO copt_t FROM @copt_st LOAD_UNCERTAIN_FILES = TRUE"},
+      {"sql": "COPY INTO copt_t FROM @copt_st RETURN_FAILED_ONLY = TRUE"},
+      {"sql": "COPY INTO copt_t FROM @copt_st SIZE_LIMIT = 0"}
+    ]},
+    {"name": "validation-mode-modes-compile-over-an-empty-stage", "steps": [
+      {"sql": "CREATE OR REPLACE STAGE copt_st"},
+      {"sql": "CREATE OR REPLACE TABLE copt_t (a INTEGER, b VARCHAR)"},
+      {"sql": "COPY INTO copt_t FROM @copt_st VALIDATION_MODE = RETURN_2_ROWS"},
+      {"sql": "COPY INTO copt_t FROM @copt_st VALIDATION_MODE = RETURN_ALL_ERRORS"}
+    ]},
+    {"name": "bad-values-refuse-with-their-measured-renderings", "steps": [
+      {"sql": "CREATE OR REPLACE STAGE copt_st"},
+      {"sql": "CREATE OR REPLACE TABLE copt_t (a INTEGER, b VARCHAR)"},
+      {"sql": "COPY INTO copt_t FROM @copt_st ON_ERROR = 'BOGUS'",
+       "expect": {"error": {"messageContains": "SQL compilation error:\ninvalid value ['BOGUS'] for parameter 'ON_ERROR'"}}},
+      {"sql": "COPY INTO copt_t FROM @copt_st MATCH_BY_COLUMN_NAME = 'WRONG'",
+       "expect": {"error": {"messageContains": "SQL compilation error:\ninvalid value ['WRONG'] for parameter 'MATCH_BY_COLUMN_NAME'"}}},
+      {"sql": "COPY INTO copt_t FROM @copt_st VALIDATION_MODE = 'WRONG_MODE'",
+       "expect": {"error": {"messageContains": "SQL compilation error:\ninvalid value ['WRONG_MODE'] for parameter 'VALIDATION_MODE'"}}},
+      {"sql": "COPY INTO copt_t FROM @copt_st FORCE = 'TRUE'",
+       "expect": {"error": {"messageContains": "SQL compilation error:\ninvalid value ['TRUE'] for parameter 'FORCE'"}}},
+      {"sql": "COPY INTO copt_t FROM @copt_st SIZE_LIMIT = -5",
+       "expect": {"error": {"messageContains": "SQL compilation error:\ninvalid value [-5] for parameter 'SIZE_LIMIT'"}}},
+      {"sql": "COPY INTO copt_t FROM @copt_st PURGE = MAYBE",
+       "expect": {"error": {"messageContains": "SQL compilation error:\ninvalid value [MAYBE] for parameter 'PURGE'"}}}
+    ]},
+    {"name": "unknown-option-refuses-as-invalid-parameter", "steps": [
+      {"sql": "CREATE OR REPLACE STAGE copt_st"},
+      {"sql": "CREATE OR REPLACE TABLE copt_t (a INTEGER, b VARCHAR)"},
+      {"sql": "COPY INTO copt_t FROM @copt_st NO_SUCH_COPY_OPT = 1",
+       "expect": {"error": {"messageContains": "SQL compilation error:\ninvalid parameter 'NO_SUCH_COPY_OPT'"}}}
+    ]},
+    {"name": "repeated-and-inverse-options-conflict", "steps": [
+      {"sql": "CREATE OR REPLACE STAGE copt_st"},
+      {"sql": "CREATE OR REPLACE TABLE copt_t (a INTEGER, b VARCHAR)"},
+      {"sql": "COPY INTO copt_t FROM @copt_st ON_ERROR = CONTINUE ON_ERROR = SKIP_FILE",
+       "expect": {"error": {"messageContains": "SQL compilation error: conflicting values for copy option 'ON_ERROR'"}}},
+      {"sql": "COPY INTO copt_t FROM @copt_st ENFORCE_LENGTH = TRUE TRUNCATECOLUMNS = TRUE",
+       "expect": {"error": {"messageContains": "SQL compilation error: conflicting values for copy option 'TRUNCATECOLUMNS'"}}}
+    ]},
+    {"name": "match-by-column-name-needs-a-parsed-csv-header", "steps": [
+      {"sql": "CREATE OR REPLACE STAGE copt_st"},
+      {"sql": "CREATE OR REPLACE TABLE copt_t (a INTEGER, b VARCHAR)"},
+      {"sql": "COPY INTO copt_t FROM @copt_st MATCH_BY_COLUMN_NAME = CASE_SENSITIVE",
+       "expect": {"error": {"messageContains": "SQL compilation error: match_by_column_name option is not supported for file format CSV without PARSE_HEADER = TRUE"}}}
+    ]},
+    {"name": "validation-mode-refuses-a-transform-source", "steps": [
+      {"sql": "CREATE OR REPLACE STAGE copt_st"},
+      {"sql": "CREATE OR REPLACE TABLE copt_t (a INTEGER, b VARCHAR)"},
+      {"sql": "COPY INTO copt_t FROM (SELECT $1, $2 FROM @copt_st) VALIDATION_MODE = RETURN_ERRORS",
+       "expect": {"error": {"messageContains": "SQL compilation error:\nVALIDATION_MODE does not support COPY with transform."}}}
+    ]},
+    {"name": "missing-named-file-aborts-echoing-the-location-as-written", "steps": [
+      {"sql": "CREATE OR REPLACE STAGE copt_st"},
+      {"sql": "CREATE OR REPLACE TABLE copt_t (a INTEGER, b VARCHAR)"},
+      {"sql": "COPY INTO copt_t FROM @copt_st PATTERN = '.*' FILES = ('x.csv')",
+       "expect": {"error": {"messageContains": "Remote file '@copt_st/x.csv' was not found."}}}
+    ]}
+  ]
+}

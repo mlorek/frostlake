@@ -1,0 +1,121 @@
+{
+  "suite": "query-scalar-subquery",
+  "description": "Scalar subqueries in the select list (correlated, multiple, NULL, arithmetic, with star) and quantified comparisons (ANY/SOME/ALL incl. empty subqueries). Converted 1:1 from query/ScalarSubqueryInSelectTest, ScalarSubqueryWithStarTest and QuantifiedComparisonTest (all now retired).",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "simple-scalar-subquery", "steps": [
+      {"sql": "CREATE TABLE products (id INTEGER, name VARCHAR, price NUMBER, category_id INTEGER)"},
+      {"sql": "INSERT INTO products VALUES (1, 'Laptop', 1000, 1), (2, 'Mouse', 25, 1), (3, 'Desk', 500, 2), (4, 'Chair', 300, 2)"},
+      {"sql": "SELECT name, price, (SELECT AVG(price) FROM products) as avg_price FROM products WHERE id = 1",
+       "expect": {"rows": [["Laptop", "1000", "456.25"]]}}
+    ]},
+    {"name": "correlated-scalar-subquery", "steps": [
+      {"sql": "CREATE TABLE products (id INTEGER, name VARCHAR, price NUMBER, category_id INTEGER)"},
+      {"sql": "INSERT INTO products VALUES (1, 'Laptop', 1000, 1), (2, 'Mouse', 25, 1), (3, 'Desk', 500, 2), (4, 'Chair', 300, 2)"},
+      {"sql": "CREATE TABLE categories (id INTEGER, name VARCHAR)"},
+      {"sql": "INSERT INTO categories VALUES (1, 'Electronics'), (2, 'Furniture')"},
+      {"sql": "SELECT name, (SELECT AVG(price) FROM products WHERE products.category_id = categories.id) as avg_price FROM categories ORDER BY id",
+       "expect": {"rows": [["Electronics", "512.5"], ["Furniture", "400"]], "ordered": true}}
+    ]},
+    {"name": "correlated-ref-with-same-named-column-binds-to-outer", "steps": [
+      {"sql": "CREATE TABLE idents (grp_id VARCHAR, item_key VARCHAR, label VARCHAR)"},
+      {"sql": "INSERT INTO idents VALUES ('c1', 'ik-1', 'first'), ('c1', 'ik-2', 'second')"},
+      {"sql": "CREATE TABLE profiles (grp_id VARCHAR, item_key VARCHAR, ident_ref VARCHAR, status VARCHAR)"},
+      {"sql": "INSERT INTO profiles VALUES ('c1', 'ak-9', 'ik-1', 'ACTIVE')"},
+      {"sql": "SELECT ident.label,\n       (SELECT COUNT(*) FROM profiles acc\n         WHERE acc.grp_id = ident.grp_id\n           AND acc.ident_ref = ident.item_key\n           AND acc.status = 'ACTIVE') AS n,\n       CASE WHEN EXISTS (SELECT 1 FROM profiles acc\n                          WHERE acc.grp_id = ident.grp_id\n                            AND acc.ident_ref = ident.item_key\n                            AND acc.status = 'ACTIVE')\n            THEN 'ACTIVE' END AS st\nFROM idents ident ORDER BY ident.label",
+       "expect": {"rows": [["first", "1", "ACTIVE"], ["second", "0", null]], "ordered": true}}
+    ]},
+    {"name": "multiple-correlated-scalar-subqueries", "steps": [
+      {"sql": "CREATE TABLE products (id INTEGER, name VARCHAR, price NUMBER, category_id INTEGER)"},
+      {"sql": "INSERT INTO products VALUES (1, 'Laptop', 1000, 1), (2, 'Mouse', 25, 1), (3, 'Desk', 500, 2), (4, 'Chair', 300, 2)"},
+      {"sql": "CREATE TABLE categories (id INTEGER, name VARCHAR)"},
+      {"sql": "INSERT INTO categories VALUES (1, 'Electronics'), (2, 'Furniture')"},
+      {"sql": "SELECT name, (SELECT COUNT(*) FROM products WHERE products.category_id = categories.id) as product_count, (SELECT MAX(price) FROM products WHERE products.category_id = categories.id) as max_price, (SELECT MIN(price) FROM products WHERE products.category_id = categories.id) as min_price FROM categories ORDER BY id",
+       "expect": {"rows": [["Electronics", "2", "1000", "25"], ["Furniture", "2", "500", "300"]], "ordered": true}}
+    ]},
+    {"name": "scalar-subquery-returns-null", "steps": [
+      {"sql": "CREATE TABLE products (id INTEGER, name VARCHAR, price NUMBER, category_id INTEGER)"},
+      {"sql": "INSERT INTO products VALUES (1, 'Laptop', 1000, 1)"},
+      {"sql": "CREATE TABLE empty (id INTEGER)"},
+      {"sql": "SELECT name, (SELECT MAX(id) FROM empty) as max_empty FROM products WHERE id = 1", "expect": {"rows": [["Laptop", null]]}}
+    ]},
+    {"name": "scalar-subquery-in-arithmetic", "steps": [
+      {"sql": "CREATE TABLE products (id INTEGER, name VARCHAR, price NUMBER, category_id INTEGER)"},
+      {"sql": "INSERT INTO products VALUES (1, 'Laptop', 1000, 1), (2, 'Mouse', 25, 1), (3, 'Desk', 500, 2), (4, 'Chair', 300, 2)"},
+      {"sql": "SELECT name, price - (SELECT AVG(price) FROM products) as diff_from_avg FROM products WHERE id = 1",
+       "expect": {"rows": [["Laptop", "543.75"]]}}
+    ]},
+    {"name": "scalar-subquery-with-star-from-derived-table", "steps": [
+      {"sql": "select (select 1), * from (select 2 as c) as t", "expect": {"rows": [["1", "2"]]}}
+    ]},
+    {"name": "scalar-subquery-with-star-from-table", "steps": [
+      {"sql": "CREATE TABLE test_table (id INTEGER, name VARCHAR)"},
+      {"sql": "INSERT INTO test_table VALUES (1, 'Alice')"},
+      {"sql": "select (select 100), * from test_table", "expect": {"rows": [["100", "1", "Alice"]]}}
+    ]},
+    {"name": "multiple-scalar-subqueries-with-star", "steps": [
+      {"sql": "CREATE TABLE test_table (val INTEGER)"},
+      {"sql": "INSERT INTO test_table VALUES (42)"},
+      {"sql": "select (select 1), (select 2), * from test_table", "expect": {"rows": [["1", "2", "42"]]}}
+    ]},
+    {"name": "any-comparison", "steps": [
+      {"sql": "CREATE TABLE employees (id INT, name VARCHAR, salary INT, dept VARCHAR)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 75000, 'Engineering'), (2, 'Bob', 60000, 'Sales'), (3, 'Charlie', 80000, 'Engineering'), (4, 'Diana', 55000, 'Sales'), (5, 'Eve', 90000, 'Engineering')"},
+      {"sql": "SELECT name, salary FROM employees WHERE salary > ANY (SELECT salary FROM employees WHERE dept = 'Sales') ORDER BY name",
+       "expect": {"rows": [["Alice", "75000"], ["Bob", "60000"], ["Charlie", "80000"], ["Eve", "90000"]], "ordered": true}}
+    ]},
+    {"name": "some-comparison", "steps": [
+      {"sql": "CREATE TABLE employees (id INT, name VARCHAR, salary INT, dept VARCHAR)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 75000, 'Engineering'), (2, 'Bob', 60000, 'Sales'), (3, 'Charlie', 80000, 'Engineering'), (4, 'Diana', 55000, 'Sales'), (5, 'Eve', 90000, 'Engineering')"},
+      {"sql": "SELECT name, salary FROM employees WHERE salary > SOME (SELECT salary FROM employees WHERE dept = 'Sales') ORDER BY name",
+       "expect": {"rowCount": 4}}
+    ]},
+    {"name": "all-comparison", "steps": [
+      {"sql": "CREATE TABLE employees (id INT, name VARCHAR, salary INT, dept VARCHAR)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 75000, 'Engineering'), (2, 'Bob', 60000, 'Sales'), (3, 'Charlie', 80000, 'Engineering'), (4, 'Diana', 55000, 'Sales'), (5, 'Eve', 90000, 'Engineering')"},
+      {"sql": "SELECT name, salary FROM employees WHERE salary > ALL (SELECT salary FROM employees WHERE dept = 'Sales') ORDER BY name",
+       "expect": {"rows": [["Alice", "75000"], ["Charlie", "80000"], ["Eve", "90000"]], "ordered": true}}
+    ]},
+    {"name": "all-comparison-less-or-equal", "steps": [
+      {"sql": "CREATE TABLE employees (id INT, name VARCHAR, salary INT, dept VARCHAR)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 75000, 'Engineering'), (2, 'Bob', 60000, 'Sales'), (3, 'Charlie', 80000, 'Engineering'), (4, 'Diana', 55000, 'Sales'), (5, 'Eve', 90000, 'Engineering')"},
+      {"sql": "SELECT name, salary FROM employees WHERE salary <= ALL (SELECT salary FROM employees WHERE dept = 'Engineering') ORDER BY name",
+       "expect": {"rows": [["Alice", "75000"], ["Bob", "60000"], ["Diana", "55000"]], "ordered": true}}
+    ]},
+    {"name": "any-comparison-equals", "steps": [
+      {"sql": "CREATE TABLE employees (id INT, name VARCHAR, salary INT, dept VARCHAR)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 75000, 'Engineering'), (2, 'Bob', 60000, 'Sales'), (3, 'Charlie', 80000, 'Engineering'), (4, 'Diana', 55000, 'Sales'), (5, 'Eve', 90000, 'Engineering')"},
+      {"sql": "CREATE TABLE departments (dept_name VARCHAR, min_salary INT)"},
+      {"sql": "INSERT INTO departments VALUES ('Engineering', 70000), ('Sales', 50000), ('Marketing', 60000)"},
+      {"sql": "SELECT name FROM employees WHERE dept = ANY (SELECT dept_name FROM departments) ORDER BY name", "expect": {"rowCount": 5}}
+    ]},
+    {"name": "all-comparison-with-empty-subquery", "steps": [
+      {"sql": "CREATE TABLE employees (id INT, name VARCHAR, salary INT, dept VARCHAR)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 75000, 'Engineering'), (2, 'Bob', 60000, 'Sales'), (3, 'Charlie', 80000, 'Engineering'), (4, 'Diana', 55000, 'Sales'), (5, 'Eve', 90000, 'Engineering')"},
+      {"sql": "SELECT name FROM employees WHERE salary > ALL (SELECT salary FROM employees WHERE dept = 'NonExistent') ORDER BY name", "expect": {"rowCount": 5}}
+    ]},
+    {"name": "any-comparison-with-empty-subquery", "steps": [
+      {"sql": "CREATE TABLE employees (id INT, name VARCHAR, salary INT, dept VARCHAR)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 75000, 'Engineering'), (2, 'Bob', 60000, 'Sales'), (3, 'Charlie', 80000, 'Engineering'), (4, 'Diana', 55000, 'Sales'), (5, 'Eve', 90000, 'Engineering')"},
+      {"sql": "SELECT name FROM employees WHERE salary > ANY (SELECT salary FROM employees WHERE dept = 'NonExistent') ORDER BY name", "expect": {"rowCount": 0}}
+    ]},
+    {"name": "nested-quantified-comparison", "steps": [
+      {"sql": "CREATE TABLE employees (id INT, name VARCHAR, salary INT, dept VARCHAR)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 75000, 'Engineering'), (2, 'Bob', 60000, 'Sales'), (3, 'Charlie', 80000, 'Engineering'), (4, 'Diana', 55000, 'Sales'), (5, 'Eve', 90000, 'Engineering')"},
+      {"sql": "CREATE TABLE departments (dept_name VARCHAR, min_salary INT)"},
+      {"sql": "INSERT INTO departments VALUES ('Engineering', 70000), ('Sales', 50000), ('Marketing', 60000)"},
+      {"sql": "SELECT dept_name FROM departments WHERE min_salary > ANY (SELECT salary FROM employees WHERE dept = 'Sales') ORDER BY dept_name",
+       "expect": {"rows": [["Engineering"], ["Marketing"]], "ordered": true}}
+    ]},
+    {"name": "comparison-operators-with-any-all", "steps": [
+      {"sql": "CREATE TABLE employees (id INT, name VARCHAR, salary INT, dept VARCHAR)"},
+      {"sql": "INSERT INTO employees VALUES (1, 'Alice', 75000, 'Engineering'), (2, 'Bob', 60000, 'Sales'), (3, 'Charlie', 80000, 'Engineering'), (4, 'Diana', 55000, 'Sales'), (5, 'Eve', 90000, 'Engineering')"},
+      {"sql": "CREATE TABLE departments (dept_name VARCHAR, min_salary INT)"},
+      {"sql": "INSERT INTO departments VALUES ('Engineering', 70000), ('Sales', 50000), ('Marketing', 60000)"},
+      {"sql": "SELECT name FROM employees WHERE salary >= ANY (SELECT min_salary FROM departments WHERE dept_name = 'Engineering')", "expect": {"rowCount": 3}},
+      {"sql": "SELECT name FROM employees WHERE salary < ANY (SELECT salary FROM employees WHERE dept = 'Engineering') ORDER BY name", "expect": {"rowCount": 4}},
+      {"sql": "SELECT name FROM employees WHERE name != ALL (SELECT name FROM employees WHERE dept = 'Sales') ORDER BY name",
+       "expect": {"rows": [["Alice"], ["Charlie"], ["Eve"]], "ordered": true}}
+    ]}
+  ]
+}

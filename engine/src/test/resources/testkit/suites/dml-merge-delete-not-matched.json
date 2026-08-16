@@ -1,0 +1,79 @@
+{
+  "suite": "dml-merge-delete-not-matched",
+  "description": "MERGE WHEN MATCHED THEN DELETE and NOT MATCHED insert semantics (first-clause-wins, source-column resolution, DEFAULT/AUTOINCREMENT fill, target-alias qualifiers). Converted 1:1 from dml/MergeDeleteTest.java and dml/MergeNotMatchedTest.java (both now retired).",
+  "tags": ["dml", "converted"],
+  "tests": [
+    {
+      "name": "merge-with-delete-no-condition",
+      "steps": [
+        {"sql": "CREATE TABLE target (id INTEGER, name VARCHAR)"},
+        {"sql": "INSERT INTO target VALUES (1, 'Alice')"},
+        {"sql": "INSERT INTO target VALUES (2, 'Bob')"},
+        {"sql": "INSERT INTO target VALUES (3, 'Charlie')"},
+        {"sql": "CREATE TABLE source (id INTEGER)"},
+        {"sql": "INSERT INTO source VALUES (1)"},
+        {"sql": "INSERT INTO source VALUES (2)"},
+        {"sql": "MERGE INTO target USING source ON target.id = source.id WHEN MATCHED THEN DELETE"},
+        {"sql": "SELECT * FROM target ORDER BY id", "expect": {"rows": [["3", "Charlie"]], "ordered": true}}
+      ]
+    },
+    {
+      "name": "merge-with-multiple-deletes",
+      "steps": [
+        {"sql": "CREATE TABLE target (id INTEGER, name VARCHAR)"},
+        {"sql": "INSERT INTO target VALUES (1, 'Alice')"},
+        {"sql": "INSERT INTO target VALUES (2, 'Bob')"},
+        {"sql": "INSERT INTO target VALUES (3, 'Charlie')"},
+        {"sql": "INSERT INTO target VALUES (4, 'Diana')"},
+        {"sql": "INSERT INTO target VALUES (5, 'Eve')"},
+        {"sql": "CREATE TABLE source (id INTEGER)"},
+        {"sql": "INSERT INTO source VALUES (1)"},
+        {"sql": "INSERT INTO source VALUES (3)"},
+        {"sql": "INSERT INTO source VALUES (5)"},
+        {"sql": "MERGE INTO target USING source ON target.id = source.id WHEN MATCHED THEN DELETE"},
+        {"sql": "SELECT * FROM target ORDER BY id", "expect": {"rows": [["2", "Bob"], ["4", "Diana"]], "ordered": true}}
+      ]
+    },
+    {
+      "name": "first-matching-not-matched-clause-wins",
+      "steps": [
+        {"sql": "CREATE TABLE t (id INTEGER, tag VARCHAR)"},
+        {"sql": "CREATE TABLE s (id INTEGER)"},
+        {"sql": "INSERT INTO s VALUES (20), (5)"},
+        {"sql": "MERGE INTO t USING s ON t.id = s.id WHEN NOT MATCHED AND s.id > 10 THEN INSERT (id, tag) VALUES (s.id, 'HI') WHEN NOT MATCHED THEN INSERT (id, tag) VALUES (s.id, 'LO')"},
+        {"sql": "SELECT tag FROM t WHERE id = 20", "expect": {"value": "HI"}},
+        {"sql": "SELECT tag FROM t WHERE id = 5", "expect": {"value": "LO"}}
+      ]
+    },
+    {
+      "name": "not-matched-insert-resolves-unqualified-columns-to-the-source",
+      "steps": [
+        {"sql": "CREATE TABLE t (src VARCHAR NOT NULL, kind VARCHAR NOT NULL DEFAULT 'ALL', ratio NUMBER(5,2))"},
+        {"sql": "MERGE INTO t AS tgt USING (SELECT 'A', 'ALL', 0.10 UNION SELECT 'B', 'ITEM', 0.40) AS s (src, kind, ratio) ON s.src = tgt.src AND s.kind = tgt.kind WHEN NOT MATCHED THEN INSERT (src, kind, ratio) VALUES (s.src, kind, ratio)"},
+        {"sql": "SELECT kind FROM t WHERE src = 'B'", "expect": {"value": "ITEM"}},
+        {"sql": "SELECT ratio FROM t WHERE src = 'A'", "expect": {"value": "0.10"}}
+      ]
+    },
+    {
+      "name": "not-matched-insert-applies-default-and-autoincrement",
+      "steps": [
+        {"sql": "CREATE TABLE t (id INTEGER AUTOINCREMENT, v VARCHAR DEFAULT 'DEF', w VARCHAR)"},
+        {"sql": "CREATE TABLE s (sw VARCHAR)"},
+        {"sql": "INSERT INTO s VALUES ('src')"},
+        {"sql": "MERGE INTO t USING s ON 1 = 0 WHEN NOT MATCHED THEN INSERT (w) VALUES (s.sw)"},
+        {"sql": "SELECT id, v, w FROM t", "expect": {"rows": [["1", "DEF", "src"]]}}
+      ]
+    },
+    {
+      "name": "not-matched-insert-columns-may-carry-target-alias-qualifier",
+      "steps": [
+        {"sql": "CREATE TABLE t (a INTEGER, b VARCHAR, c VARCHAR)"},
+        {"sql": "CREATE TABLE s (a INTEGER, b VARCHAR)"},
+        {"sql": "INSERT INTO t VALUES (1, 'old', 'keep')"},
+        {"sql": "INSERT INTO s VALUES (1, 'upd'), (2, 'new')"},
+        {"sql": "MERGE INTO t AS t USING s AS s ON t.a = s.a WHEN MATCHED THEN UPDATE SET t.b = s.b WHEN NOT MATCHED THEN INSERT (t.a, t.b) VALUES (s.a, s.b)"},
+        {"sql": "SELECT a, b, c FROM t ORDER BY a", "expect": {"rows": [["1", "upd", "keep"], ["2", "new", null]], "ordered": true}}
+      ]
+    }
+  ]
+}

@@ -30,8 +30,9 @@ public class BoolXorAccumulator implements AggregateFunction.Accumulator {
         if (BoolOrAgg.isTruthy(v)) trueCount++;
     }
 
+    /** TRUE when EXACTLY ONE input is true — three trues are FALSE on the account, not a parity. */
     @Override
-    public Object getResult() { return hasValue ? (trueCount % 2 != 0) : null; }
+    public Object getResult() { return hasValue ? (trueCount == 1) : null; }
 
     @Override
     public void reset() {

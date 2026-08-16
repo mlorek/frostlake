@@ -1,0 +1,58 @@
+{
+  "suite": "constraints-write-violations",
+  "description": "The exact wording of the three write violations DML can fail on - NULL into a NOT NULL column, a value too long for its VARCHAR(n), and a non-numeric string into a numeric column - pinned across INSERT, INSERT...SELECT, UPDATE and MERGE, each in the per-statement envelope naming the table and column (live-verified wording). Converted 1:1 from constraints/WriteViolationMessageTest (now retired).",
+  "tags": ["constraints", "converted"],
+  "tests": [
+    {"name": "insert-null-into-not-null-column", "steps": [
+      {"sql": "CREATE TABLE nn (id INTEGER, name VARCHAR NOT NULL)"},
+      {"sql": "INSERT INTO nn VALUES (1, NULL)",
+       "expect": {"error": {"messageContains": "DML operation to table NN failed on column NAME with error: NULL result in a non-nullable column"}}}
+    ]},
+    {"name": "insert-select-null-into-not-null-column", "steps": [
+      {"sql": "CREATE TABLE nn (id INTEGER, name VARCHAR NOT NULL)"},
+      {"sql": "INSERT INTO nn SELECT 2, NULL",
+       "expect": {"error": {"messageContains": "DML operation to table NN failed on column NAME with error: NULL result in a non-nullable column"}}}
+    ]},
+    {"name": "update-not-null-column-to-null", "steps": [
+      {"sql": "CREATE TABLE nn (id INTEGER, name VARCHAR NOT NULL)"},
+      {"sql": "INSERT INTO nn VALUES (3, 'ok')"},
+      {"sql": "UPDATE nn SET name = NULL WHERE id = 3",
+       "expect": {"error": {"messageContains": "DML operation to table NN failed on column NAME with error: NULL result in a non-nullable column"}}}
+    ]},
+    {"name": "merge-inserting-null-into-not-null-column", "steps": [
+      {"sql": "CREATE TABLE nn (id INTEGER, name VARCHAR NOT NULL)"},
+      {"sql": "CREATE TABLE src (id INTEGER, name VARCHAR)"},
+      {"sql": "INSERT INTO src VALUES (9, NULL)"},
+      {"sql": "MERGE INTO nn t USING src s ON t.id = s.id WHEN NOT MATCHED THEN INSERT (id, name) VALUES (s.id, s.name)",
+       "expect": {"error": {"messageContains": "DML operation to table NN failed on column NAME with error: NULL result in a non-nullable column"}}}
+    ]},
+    {"name": "insert-over-long-value", "steps": [
+      {"sql": "CREATE TABLE tl (id INTEGER, name VARCHAR(3))"},
+      {"sql": "INSERT INTO tl VALUES (1, 'abcdefgh')",
+       "expect": {"error": {"messageContains": "DML operation to table TL failed on column NAME with error: String 'abcdefgh' is too long and would be truncated"}}}
+    ]},
+    {"name": "insert-select-over-long-value", "steps": [
+      {"sql": "CREATE TABLE tl (id INTEGER, name VARCHAR(3))"},
+      {"sql": "INSERT INTO tl SELECT 2, 'abcdefgh'",
+       "expect": {"error": {"messageContains": "DML operation to table TL failed on column NAME with error: String 'abcdefgh' is too long and would be truncated"}}}
+    ]},
+    {"name": "update-to-an-over-long-value", "steps": [
+      {"sql": "CREATE TABLE tl (id INTEGER, name VARCHAR(3))"},
+      {"sql": "INSERT INTO tl VALUES (3, 'ab')"},
+      {"sql": "UPDATE tl SET name = 'abcdefgh' WHERE id = 3",
+       "expect": {"error": {"messageContains": "DML operation to table TL failed on column NAME with error: String 'abcdefgh' is too long and would be truncated"}}}
+    ]},
+    {"name": "merge-inserting-an-over-long-value", "steps": [
+      {"sql": "CREATE TABLE tl (id INTEGER, name VARCHAR(3))"},
+      {"sql": "CREATE TABLE src (id INTEGER, name VARCHAR)"},
+      {"sql": "INSERT INTO src VALUES (9, 'abcdefgh')"},
+      {"sql": "MERGE INTO tl t USING src s ON t.id = s.id WHEN NOT MATCHED THEN INSERT (id, name) VALUES (s.id, s.name)",
+       "expect": {"error": {"messageContains": "DML operation to table TL failed on column NAME with error: String 'abcdefgh' is too long and would be truncated"}}}
+    ]},
+    {"name": "insert-non-numeric-into-numeric-column", "steps": [
+      {"sql": "CREATE TABLE nv (id INTEGER)"},
+      {"sql": "INSERT INTO nv VALUES ('BADX')",
+       "expect": {"error": {"messageContains": "DML operation to table NV failed on column ID with error: Numeric value 'BADX' is not recognized"}}}
+    ]}
+  ]
+}

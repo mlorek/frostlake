@@ -17,7 +17,6 @@
 package dev.frostlake.functions.scalar.conversion;
 
 import dev.frostlake.functions.BuiltInFunction;
-import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.types.DateTimeType;
 
 import java.util.List;
@@ -30,7 +29,10 @@ public class ToTimestampNtz extends BuiltInFunction {
         if (args.get(0) == null) return null;
         // The second argument is a format for a string input, or a scale (0-9) for a numeric epoch.
         final Object formatOrScale = args.size() >= 2 ? args.get(1) : null;
-        return SharedFunctionHelpers.parseTimestampWithFormatOrScale(args.get(0), formatOrScale);
+        if (args.size() >= 2 && formatOrScale == null) {
+            return null;
+        }
+        return TimestampFlavourConversion.convert("TIMESTAMP_NTZ", args.get(0), formatOrScale);
     }
 
     @Override

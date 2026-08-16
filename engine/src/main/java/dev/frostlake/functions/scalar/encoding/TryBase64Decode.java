@@ -29,12 +29,13 @@ public class TryBase64Decode extends BuiltInFunction {
     public Object evaluate(final List<Object> args) {
         if (args.get(0) == null) return null;
         try {
-            return DecodedText.lenient(Base64.getDecoder().decode(args.get(0).toString()));
+            return DecodedText.lenient(Base64.getDecoder().decode(Base64Options.toStandardAlphabet(
+                args.get(0).toString(), Base64Options.alphabetOf(args, 1))));
         } catch (final Exception e) { return null; }
     }
 
     @Override
     public int getMinArgCount() { return 1; }
     @Override
-    public int getMaxArgCount() { return 1; }
+    public int getMaxArgCount() { return 2; }
 }

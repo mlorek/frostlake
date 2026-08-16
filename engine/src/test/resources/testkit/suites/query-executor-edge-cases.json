@@ -1,0 +1,65 @@
+{
+  "suite": "query-executor-edge-cases",
+  "description": "Query-executor edge cases whose Snowflake-correct behaviour the engine already implements. A scalar subquery returning more than one row raises the single-row cardinality error. > ALL over a set containing a NULL is UNKNOWN, so no rows qualify. For an OUTER join, a predicate in ON keeps the unmatched left rows where the same predicate in WHERE would drop them. GROUP BY ALL groups by every non-aggregated SELECT column. Grouping and set-operation equality is the DELIBERATE OPPOSITE of predicate three-valued logic: GROUP BY collapses all NULL keys into ONE group and UNION treats NULLs as EQUAL when de-duplicating, while the predicate side (where NULL = NULL is UNKNOWN) lives in query-null-three-valued-logic. Aggregates over an EMPTY table answer one row where COUNT is 0 but SUM, MIN and MAX are NULL, not zero. GROUP BY <n> and ORDER BY <n> are 1-based positional references. And a self-join under two aliases must resolve each alias to its own side, so m.name is the matched manager's name and not the employee's own. Converted 1:1 from query/QueryExecutorEdgeCaseTest (now retired); the Java asserted row COUNTS almost throughout, so the converted tests pin which rows.",
+  "tags": ["query", "converted"],
+  "tests": [
+    {"name": "a-multi-row-scalar-subquery-errors", "steps": [
+      {"sql": "CREATE TABLE emp (id INTEGER, name VARCHAR)"},
+      {"sql": "INSERT INTO emp VALUES (1, 'Alice')"},
+      {"sql": "CREATE TABLE departments (name VARCHAR)"},
+      {"sql": "INSERT INTO departments VALUES ('Eng'), ('Sales'), ('HR')"},
+      {"sql": "SELECT name, (SELECT name FROM departments) FROM emp WHERE id = 1", "expect": {"error": {}}}
+    ]},
+    {"name": "greater-than-all-with-a-null-member-excludes-every-row", "steps": [
+      {"sql": "CREATE TABLE emp (sal INTEGER)"},
+      {"sql": "INSERT INTO emp VALUES (100), (200)"},
+      {"sql": "CREATE TABLE t (s INTEGER)"},
+      {"sql": "INSERT INTO t VALUES (150), (NULL)"},
+      {"sql": "SELECT sal FROM emp WHERE sal > ALL (SELECT s FROM t)", "expect": {"rowCount": 0}}
+    ]},
+    {"name": "a-left-join-on-predicate-keeps-the-unmatched-rows", "steps": [
+      {"sql": "CREATE TABLE emp (id INTEGER, dept VARCHAR)"},
+      {"sql": "INSERT INTO emp VALUES (1, 'X'), (2, 'Y')"},
+      {"sql": "CREATE TABLE d (dept VARCHAR, region VARCHAR)"},
+      {"sql": "INSERT INTO d VALUES ('X', 'US')"},
+      {"sql": "SELECT e.id FROM emp e LEFT JOIN d ON e.dept = d.dept AND d.region = 'EU'", "expect": {"rows": [[1],[2]]}},
+      {"sql": "SELECT e.id FROM emp e LEFT JOIN d ON e.dept = d.dept WHERE d.region = 'EU'", "expect": {"rowCount": 0}}
+    ]},
+    {"name": "group-by-all", "steps": [
+      {"sql": "CREATE TABLE t (dept VARCHAR, region VARCHAR)"},
+      {"sql": "INSERT INTO t VALUES ('A', 'X'), ('A', 'X'), ('B', 'Y')"},
+      {"sql": "SELECT dept, region, COUNT(*) FROM t GROUP BY ALL", "expect": {"rows": [["A","X",2],["B","Y",1]]}}
+    ]},
+    {"name": "group-by-collapses-all-nulls-into-one-group", "steps": [
+      {"sql": "CREATE TABLE t (k INTEGER)"},
+      {"sql": "INSERT INTO t VALUES (NULL), (NULL), (1)"},
+      {"sql": "SELECT k, COUNT(*) FROM t GROUP BY k", "expect": {"rows": [[null,2],[1,1]]}}
+    ]},
+    {"name": "union-treats-nulls-as-equal-when-de-duplicating", "steps": [
+      {"sql": "CREATE TABLE t1 (v INTEGER)"},
+      {"sql": "INSERT INTO t1 VALUES (NULL), (1)"},
+      {"sql": "CREATE TABLE t2 (v INTEGER)"},
+      {"sql": "INSERT INTO t2 VALUES (NULL), (2)"},
+      {"sql": "SELECT v FROM t1 UNION SELECT v FROM t2", "expect": {"rows": [[null],[1],[2]]}}
+    ]},
+    {"name": "aggregates-over-an-empty-table", "steps": [
+      {"sql": "CREATE TABLE t (v INTEGER)"},
+      {"sql": "SELECT COUNT(*), SUM(v), MIN(v), MAX(v) FROM t", "expect": {"rows": [[0,null,null,null]]}}
+    ]},
+    {"name": "group-by-an-ordinal", "steps": [
+      {"sql": "CREATE TABLE t (dept VARCHAR, amt INTEGER)"},
+      {"sql": "INSERT INTO t VALUES ('A', 10), ('A', 20), ('B', 30)"},
+      {"sql": "SELECT dept, SUM(amt) FROM t GROUP BY 1", "expect": {"rows": [["A",30],["B",30]]}}
+    ]},
+    {"name": "order-by-an-ordinal", "steps": [
+      {"sql": "CREATE TABLE t (name VARCHAR, sal INTEGER)"},
+      {"sql": "INSERT INTO t VALUES ('A', 100), ('B', 300), ('C', 200)"},
+      {"sql": "SELECT name, sal FROM t ORDER BY 2 DESC", "expect": {"rows": [["B",300],["C",200],["A",100]], "ordered": true}}
+    ]},
+    {"name": "a-self-join-resolves-its-aliases-independently", "steps": [
+      {"sql": "CREATE TABLE emp (id INTEGER, name VARCHAR, mgr_id INTEGER)"},
+      {"sql": "INSERT INTO emp VALUES (1, 'CEO', NULL), (2, 'Alice', 1), (3, 'Bob', 1)"},
+      {"sql": "SELECT e.name, m.name FROM emp e JOIN emp m ON e.mgr_id = m.id", "expect": {"rows": [["Alice","CEO"],["Bob","CEO"]]}}
+    ]}
+  ]
+}

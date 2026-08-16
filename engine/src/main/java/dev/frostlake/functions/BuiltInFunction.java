@@ -16,6 +16,7 @@
 
 package dev.frostlake.functions;
 
+import dev.frostlake.executor.expressions.CollationSpec;
 import dev.frostlake.types.DataType;
 import java.util.List;
 
@@ -45,6 +46,19 @@ public abstract class BuiltInFunction {
      * @return the function's value for these arguments, or {@code null} for SQL NULL
      */
     public abstract Object evaluate(final List<Object> args);
+
+    /**
+     * The same, for a call whose arguments settled on a collation. A function that COMPARES text —
+     * CONTAINS, REPLACE, NULLIF and their kin — looks for what the collation calls equal rather than
+     * what matches byte for byte; every other function answers as it always did.
+     *
+     * @param args      the argument values, in call order
+     * @param collation the collation the call settled on, or null when it carries none
+     * @return the function's value for these arguments, or {@code null} for SQL NULL
+     */
+    public Object evaluate(final List<Object> args, final CollationSpec collation) {
+        return evaluate(args);
+    }
 
     /**
      * The fewest arguments a call to this function may pass; fewer is an argument-count error.
@@ -226,6 +240,116 @@ public abstract class BuiltInFunction {
      * @return the refusal this position gives a BINARY value; by default none
      */
     public SemiStructuredRejection binaryRejection(final int position) {
+        return SemiStructuredRejection.NONE;
+    }
+
+    /**
+     * The refusal this position gives a VECTOR argument.
+     *
+     * <p>A vector is not semi-structured and is not binary, so it needs its own declaration: the
+     * functions that refuse one are the TEXT CONVERSIONS and the concatenations, and they refuse in
+     * two different shapes — the conversion sentence quotes the whole call, the concatenation lists
+     * argument types and carries a position.
+     *
+     * <p>The default is {@code NONE}: undeclared means unconstrained, as for the others.
+     *
+     * @param position the zero-based argument position being asked about
+     * @return the refusal this position gives a VECTOR value; by default none
+     */
+    public SemiStructuredRejection vectorRejection(final int position) {
+        return SemiStructuredRejection.NONE;
+    }
+
+    /**
+     * The refusal this position gives a declared UUID argument. A UUID is its own type on the account,
+     * and the ordering aggregates refuse it — "Function MAX does not support UUID argument type" — while
+     * the text functions read it as the text it holds.
+     *
+     * @param position the argument's position, counted from zero
+     * @return how it is refused, or {@link SemiStructuredRejection#NONE} when it is taken
+     */
+    public SemiStructuredRejection uuidRejection(final int position) {
+        return SemiStructuredRejection.NONE;
+    }
+
+    /**
+     * The refusal this position gives a declared BOOLEAN argument. Membership is declared per
+     * function and never assumed for a family: the whole NUMERIC family ({@code NumericArgumentFunction})
+     * refuses a SQL BOOLEAN at compile time in every position — "Invalid argument types for function
+     * 'ABS': (BOOLEAN)", {@code MOD(1, TRUE)} listing "(NUMBER(1,0), BOOLEAN)" — while the SAME value
+     * inside a VARIANT converts to 1.0, and the conditionals ({@code NULLIF(b, 0)},
+     * {@code NULLIFZERO(b)}) take it. The rule reads the DECLARED type, like every channel here.
+     *
+     * @param position the zero-based argument position being asked about
+     * @return the refusal this position gives a BOOLEAN value; by default none
+     */
+    public SemiStructuredRejection booleanRejection(final int position) {
+        return SemiStructuredRejection.NONE;
+    }
+
+    /**
+     * The refusal this position gives a declared DATE / TIME / TIMESTAMP argument. Declared per
+     * function: the numeric family refuses every temporal flavour at compile time, each named with
+     * its own parameters — (DATE), (TIME(9)), (TIMESTAMP_NTZ(9)) and the LTZ/TZ twins — where the
+     * datetime functions read them happily.
+     *
+     * @param position the zero-based argument position being asked about
+     * @return the refusal this position gives a temporal value; by default none
+     */
+    public SemiStructuredRejection temporalRejection(final int position) {
+        return SemiStructuredRejection.NONE;
+    }
+
+    /**
+     * The refusal this position gives a declared temporal argument in a call of
+     * {@code argumentCount} arguments. One member's answer depends on the call's ARITY: TRUNC over a
+     * temporal is DATE_TRUNC with a unit, so a temporal first argument BESIDE a unit is legal while
+     * the same argument alone is refused "(DATE)" — live-verified. Every other function answers the
+     * arity-blind question, which is what this consults by default.
+     *
+     * @param position the zero-based argument position being asked about
+     * @param argumentCount how many arguments the call carries
+     * @return the refusal this position gives a temporal value in a call of that arity
+     */
+    public SemiStructuredRejection temporalRejection(final int position, final int argumentCount) {
+        return temporalRejection(position);
+    }
+
+    /**
+     * The refusal this position gives a declared temporal argument of type {@code temporal}. One
+     * member's answer depends on WHICH temporal type arrives: the TIME synonym takes a DATE (its
+     * midnight) and every timestamp flavour, and refuses only a TIME. Every other function answers
+     * without looking, which is what this consults by default.
+     *
+     * @param position the zero-based argument position being asked about
+     * @param argumentCount how many arguments the call carries
+     * @param temporal the argument's declared temporal type
+     * @return the refusal this position gives that temporal value
+     */
+    public SemiStructuredRejection temporalRejection(final int position, final int argumentCount,
+                                                     final DataType temporal) {
+        return temporalRejection(position, argumentCount);
+    }
+
+    /**
+     * Whether a call with fewer arguments than {@link #getMinArgCount} is refused by its argument types
+     * rather than by its count. A function the account resolves among overloads has no single count to
+     * report: live, {@code TIME()} is "Invalid argument types for function 'TIME': ()" where
+     * {@code LOG(10)} is "not enough arguments for function [LOG(10)], expected 2, got 1".
+     *
+     * @return true when the refusal lists the argument types; false by default
+     */
+    public boolean refusesMissingArgumentsByType() {
+        return false;
+    }
+
+    /** How the function treats a TEXT argument at {@code position} — NONE for the many that take one. */
+    public SemiStructuredRejection textRejection(final int position) {
+        return SemiStructuredRejection.NONE;
+    }
+
+    /** How the function treats an APPROXIMATE numeric argument at {@code position}. */
+    public SemiStructuredRejection approximateRejection(final int position) {
         return SemiStructuredRejection.NONE;
     }
 }

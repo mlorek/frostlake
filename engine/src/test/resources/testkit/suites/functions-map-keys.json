@@ -1,0 +1,40 @@
+{
+  "suite": "functions-map-keys",
+  "description": "MAP_KEYS(map) - the map's keys as an array, sorted rather than in insertion order, and sorted by CODEPOINT so upper-case keys come first. An empty map has no keys, a NULL map answers NULL, a MAP column reads normally, and a MAP position takes a MAP and nothing else: the OBJECT, VARIANT, ARRAY, VARCHAR, NUMBER and untyped-NULL spellings each get the same argument-type sentence naming their own type. Every expectation was measured live. Converted 1:1 from functions/MapKeysTest (now retired); the ARRAY result is read through TO_JSON(...::VARIANT) so the assertion lands on a VARCHAR no transport reformats.",
+  "tags": ["functions", "converted"],
+  "tests": [
+    {"name": "keys-come-back-sorted-not-in-insertion-order", "steps": [
+      {"sql": "SELECT TO_JSON(MAP_KEYS(OBJECT_CONSTRUCT('b',1,'a',2,'c',3)::MAP(VARCHAR,INT))::VARIANT)",
+       "expect": {"value": "[\"a\",\"b\",\"c\"]"}}
+    ]},
+    {"name": "sorting-is-by-codepoint-so-upper-case-keys-come-first", "steps": [
+      {"sql": "SELECT TO_JSON(MAP_KEYS(MAP_CONSTRUCT('Z','x','a','y','B','z'))::VARIANT)",
+       "expect": {"value": "[\"B\",\"Z\",\"a\"]"}}
+    ]},
+    {"name": "an-empty-map-has-no-keys", "steps": [
+      {"sql": "SELECT TO_JSON(MAP_KEYS(OBJECT_CONSTRUCT()::MAP(VARCHAR,INT))::VARIANT)", "expect": {"value": "[]"}}
+    ]},
+    {"name": "a-null-map-answers-null", "steps": [
+      {"sql": "SELECT MAP_KEYS(NULL::MAP(VARCHAR,INT))", "expect": {"rows": [[null]]}}
+    ]},
+    {"name": "it-reads-a-map-column", "steps": [
+      {"sql": "CREATE TABLE mk (m MAP(VARCHAR,INT))"},
+      {"sql": "INSERT INTO mk SELECT OBJECT_CONSTRUCT('z',1,'a',2,'M',3)::MAP(VARCHAR,INT)"},
+      {"sql": "SELECT TO_JSON(MAP_KEYS(m)::VARIANT) FROM mk", "expect": {"value": "[\"M\",\"a\",\"z\"]"}}
+    ]},
+    {"name": "anything-that-is-not-a-map-is-refused", "steps": [
+      {"sql": "SELECT MAP_KEYS(OBJECT_CONSTRUCT('a',1))",
+       "expect": {"error": {"messageContains": "Invalid argument types for function 'MAP_KEYS'"}}},
+      {"sql": "SELECT MAP_KEYS(PARSE_JSON('{\"a\":1}'))",
+       "expect": {"error": {"messageContains": "Invalid argument types for function 'MAP_KEYS'"}}},
+      {"sql": "SELECT MAP_KEYS(ARRAY_CONSTRUCT(1,2))",
+       "expect": {"error": {"messageContains": "Invalid argument types for function 'MAP_KEYS'"}}},
+      {"sql": "SELECT MAP_KEYS('abc')",
+       "expect": {"error": {"messageContains": "Invalid argument types for function 'MAP_KEYS'"}}},
+      {"sql": "SELECT MAP_KEYS(1)",
+       "expect": {"error": {"messageContains": "Invalid argument types for function 'MAP_KEYS'"}}},
+      {"sql": "SELECT MAP_KEYS(NULL)",
+       "expect": {"error": {"messageContains": "Invalid argument types for function 'MAP_KEYS'"}}}
+    ]}
+  ]
+}

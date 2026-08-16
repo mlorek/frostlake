@@ -1,0 +1,43 @@
+{
+  "suite": "ddl-alter-column-null-default",
+  "description": "ALTER COLUMN SET/DROP NOT NULL and DEFAULT behaviour, converted 1:1 from ddl/AlterColumnNullDefaultTest.java (now retired). Includes the regression that ALTER COLUMN ... DROP NOT NULL/DEFAULT must not be dispatched as a table-level DROP COLUMN.",
+  "tags": ["ddl", "converted"],
+  "tests": [
+    {
+      "name": "set-then-drop-not-null",
+      "steps": [
+        {"sql": "CREATE TABLE nn_t (id INTEGER, name VARCHAR)"},
+        {"sql": "ALTER TABLE nn_t ALTER COLUMN name SET NOT NULL"},
+        {"sql": "INSERT INTO nn_t VALUES (1, NULL)", "expect": {"error": {}}},
+        {"sql": "ALTER TABLE nn_t ALTER COLUMN name DROP NOT NULL"},
+        {"sql": "INSERT INTO nn_t VALUES (2, NULL)"},
+        {"sql": "SELECT COUNT(*) FROM nn_t", "expect": {"value": "1"}}
+      ]
+    },
+    {
+      "name": "set-default-literal-is-rejected",
+      "steps": [
+        {"sql": "CREATE TABLE def_t (id INTEGER, qty INTEGER DEFAULT 5)"},
+        {"sql": "ALTER TABLE def_t ALTER COLUMN qty SET DEFAULT 7", "expect": {"error": {}}},
+        {"sql": "INSERT INTO def_t (id) VALUES (1)"},
+        {"sql": "SELECT qty FROM def_t WHERE id = 1", "expect": {"value": "5"}}
+      ]
+    },
+    {
+      "name": "alter-column-drop-keeps-the-column",
+      "steps": [
+        {"sql": "CREATE TABLE keep_t (id INTEGER, name VARCHAR)"},
+        {"sql": "DESCRIBE TABLE keep_t", "expect": {"rowCount": 2}},
+        {"sql": "ALTER TABLE keep_t ALTER COLUMN name SET NOT NULL"},
+        {"sql": "ALTER TABLE keep_t ALTER COLUMN name DROP NOT NULL"},
+        {"sql": "DESCRIBE TABLE keep_t", "expect": {"rowCount": 2}},
+        {"sql": "ALTER TABLE keep_t ALTER COLUMN name DROP DEFAULT"},
+        {"sql": "DESCRIBE TABLE keep_t", "expect": {"rowCount": 2}},
+        {"sql": "INSERT INTO keep_t (id, name) VALUES (1, NULL)"},
+        {"sql": "SELECT COUNT(*) FROM keep_t", "expect": {"value": "1"}},
+        {"sql": "ALTER TABLE keep_t DROP COLUMN name"},
+        {"sql": "DESCRIBE TABLE keep_t", "expect": {"rowCount": 1}}
+      ]
+    }
+  ]
+}

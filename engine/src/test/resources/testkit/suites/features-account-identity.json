@@ -1,0 +1,35 @@
+{
+  "suite": "features-account-identity",
+  "description": "The four account identifiers (CURRENT_ORGANIZATION_NAME / CURRENT_ACCOUNT_NAME / CURRENT_ACCOUNT the locator / CURRENT_REGION) are answered upper-cased and genuinely distinct: the region is BARE by default (no region-group prefix), SHOW ACCOUNTS reports the same identity the functions answer, both account listings carry the measured 24-column shape (no invented region_group / org_default_region columns), and an absent old URL is the empty string with null moments beside it. Converted 1:1 from features/AccountIdentityTest (trimmed: the AccountIdentity/EngineConfig constructor tests - URL building and the configured region-group prefix - are Java-API-only and stay).",
+  "tags": ["features", "converted"],
+  "tests": [
+    {"name": "the-four-identifiers-are-answered-and-upper-cased", "steps": [
+      {"sql": "SELECT CURRENT_ORGANIZATION_NAME() IS NOT NULL, CURRENT_ORGANIZATION_NAME() = UPPER(CURRENT_ORGANIZATION_NAME())", "expect": {"rows": [["true", "true"]]}},
+      {"sql": "SELECT CURRENT_ACCOUNT() IS NOT NULL, CURRENT_ACCOUNT() = UPPER(CURRENT_ACCOUNT())", "expect": {"rows": [["true", "true"]]}},
+      {"sql": "SELECT CURRENT_ACCOUNT_NAME() IS NOT NULL, CURRENT_ACCOUNT_NAME() = UPPER(CURRENT_ACCOUNT_NAME())", "expect": {"rows": [["true", "true"]]}},
+      {"sql": "SELECT CURRENT_REGION() IS NOT NULL, CURRENT_REGION() = UPPER(CURRENT_REGION())", "expect": {"rows": [["true", "true"]]}}
+    ]},
+    {"name": "the-region-is-bare-by-default", "steps": [
+      {"sql": "SELECT CURRENT_REGION() RLIKE '[A-Z0-9]+_[A-Z0-9_]+'", "expect": {"value": "true"}},
+      {"sql": "SELECT CONTAINS(CURRENT_REGION(), '.')", "expect": {"value": "false"}}
+    ]},
+    {"name": "show-accounts-agrees-with-the-context-functions", "steps": [
+      {"sql": "SHOW ACCOUNTS"},
+      {"sql": "SELECT \"organization_name\" = CURRENT_ORGANIZATION_NAME(), \"account_name\" = CURRENT_ACCOUNT_NAME(), \"account_locator\" = CURRENT_ACCOUNT(), \"snowflake_region\" = CURRENT_REGION() FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["true", "true", "true", "true"]]}}
+    ]},
+    {"name": "both-account-listings-carry-the-measured-shape", "steps": [
+      {"sql": "SHOW ACCOUNTS",
+       "expect": {"columns": ["organization_name", "account_name", "snowflake_region", "edition", "account_url", "created_on", "comment", "account_locator", "account_locator_url", "managed_accounts", "consumption_billing_entity_name", "marketplace_consumer_billing_entity_name", "marketplace_provider_billing_entity_name", "old_account_url", "is_org_admin", "account_old_url_saved_on", "account_old_url_last_used", "organization_old_url", "organization_old_url_saved_on", "organization_old_url_last_used", "is_events_account", "is_organization_account", "tenant_type", "domain_names"]}},
+      {"sql": "SHOW ORGANIZATION ACCOUNTS",
+       "expect": {"columns": ["organization_name", "account_name", "snowflake_region", "edition", "account_url", "created_on", "comment", "account_locator", "account_locator_url", "managed_accounts", "consumption_billing_entity_name", "marketplace_consumer_billing_entity_name", "marketplace_provider_billing_entity_name", "old_account_url", "is_org_admin", "account_old_url_saved_on", "account_old_url_last_used", "organization_old_url", "organization_old_url_saved_on", "organization_old_url_last_used", "is_events_account", "is_organization_account", "tenant_type", "domain_names"]}}
+    ]},
+    {"name": "an-absent-old-url-is-empty-and-its-moments-are-null",
+     "skip": {"backends": ["snowflake"], "reason": "a real account's old-URL history is its own, not something a test may assert"},
+     "steps": [
+      {"sql": "SHOW ACCOUNTS"},
+      {"sql": "SELECT '<' || \"old_account_url\" || '>', \"account_old_url_saved_on\" IS NULL, \"organization_old_url_last_used\" IS NULL FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))",
+       "expect": {"rows": [["<>", "true", "true"]]}}
+    ]}
+  ]
+}

@@ -16,6 +16,7 @@
 
 package dev.frostlake.executor;
 
+import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.parser.FrostlakeParser;
 import java.math.BigDecimal;
 import java.util.ArrayList;
@@ -68,7 +69,7 @@ public final class ParseTreeText {
     }
 
     public static String getQualifiedName(final FrostlakeParser.QualifiedNameContext ctx) {
-        return String.join(".", qualifiedNameParts(ctx));
+        return QualifiedName.join(qualifiedNameParts(ctx));
     }
 
     /** The canonical text of one name part: a regular identifier folds through
@@ -99,12 +100,12 @@ public final class ParseTreeText {
         for (int i = 0; i < rest.size(); i++) {
             parts[1 + i] = namePartText(rest.get(i));
         }
-        return parts;
+        return withEmptySchemaPart(parts, ctx.DOT().size());
     }
 
     /** The FROM-position flavour of {@link #getQualifiedName}. */
     public static String getQualifiedName(final FrostlakeParser.TableQualifiedNameContext ctx) {
-        return String.join(".", qualifiedNameParts(ctx));
+        return QualifiedName.join(qualifiedNameParts(ctx));
     }
 
     /** The {@code <name>.*} flavour: a {@code starQualifiedName}'s parts. */
@@ -115,12 +116,12 @@ public final class ParseTreeText {
         for (int i = 0; i < rest.size(); i++) {
             parts[1 + i] = namePartText(rest.get(i));
         }
-        return parts;
+        return withEmptySchemaPart(parts, ctx.DOT().size());
     }
 
     /** The {@code <name>.*} flavour of {@link #getQualifiedName}. */
     public static String getQualifiedName(final FrostlakeParser.StarQualifiedNameContext ctx) {
-        return String.join(".", qualifiedNameParts(ctx));
+        return QualifiedName.join(qualifiedNameParts(ctx));
     }
 
     /** The name parts of a qualified name, read from the parse tree instead of splitting its
@@ -132,6 +133,61 @@ public final class ParseTreeText {
         for (int i = 0; i < rest.size(); i++) {
             parts[1 + i] = namePartText(rest.get(i));
         }
+        return withEmptySchemaPart(parts, ctx.DOT().size());
+    }
+
+    /**
+     * The canonical parts of a function's name, or null for a name that is a keyword or an
+     * {@code IDENTIFIER(...)}; an empty middle part, {@code db..f}, is the database's PUBLIC schema.
+     */
+    public static String[] functionNameParts(final FrostlakeParser.FunctionNameContext ctx) {
+        final List<FrostlakeParser.IdentifierContext> ids = ctx.identifier();
+        if (ids == null || ids.isEmpty()) {
+            return null;
+        }
+        final String[] parts = new String[ids.size()];
+        for (int i = 0; i < ids.size(); i++) {
+            parts[i] = getIdentifier(ids.get(i));
+        }
+        return withEmptySchemaPart(parts, ctx.DOT().size());
+    }
+
+    /**
+     * A star qualifier as written, with an empty middle part ({@code db..t.*}) spelled out as the
+     * PUBLIC schema it names; any other qualifier exactly as written.
+     */
+    public static String writtenText(final FrostlakeParser.StarQualifiedNameContext ctx) {
+        if (ctx.DOT().size() <= ctx.namePart().size()) {
+            return ctx.getText();
+        }
+        final StringBuilder written = new StringBuilder(ctx.nameStartPart().getText()).append(".PUBLIC");
+        for (final FrostlakeParser.NamePartContext part : ctx.namePart()) {
+            written.append('.').append(part.getText());
+        }
+        return written.toString();
+    }
+
+    /**
+     * Whether a name leaves its middle part empty, {@code db..t}: it then has as many dots as written
+     * parts, where every other name has one dot fewer.
+     */
+    public static boolean hasEmptySchemaPart(final FrostlakeParser.QualifiedNameContext ctx) {
+        return ctx.DOT().size() > ctx.namePart().size();
+    }
+
+    /**
+     * The parts of a name whose middle part was left empty, {@code db..t}, with that part read as the
+     * database's PUBLIC schema, which is how the account reads it everywhere but a SHOW scope; any
+     * other name's parts unchanged.
+     */
+    private static String[] withEmptySchemaPart(final String[] written, final int dots) {
+        if (dots < written.length) {
+            return written;
+        }
+        final String[] parts = new String[written.length + 1];
+        parts[0] = written[0];
+        parts[1] = "PUBLIC";
+        System.arraycopy(written, 1, parts, 2, written.length - 1);
         return parts;
     }
 

@@ -18,6 +18,7 @@ package dev.frostlake.metastore.model;
 
 import dev.frostlake.executor.SqlAccessControlError;
 import dev.frostlake.executor.SqlCompilationError;
+import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.SqlObject;
 import dev.frostlake.types.DataType;
 
@@ -27,6 +28,21 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 public class Schema extends SqlObject {
+
+    /**
+     * The DATA_RETENTION_TIME_IN_DAYS this object declares, or null when it declares none and
+     * inherits its container's (the account default is 1 at the top of the chain).
+     */
+    private Integer dataRetentionTimeInDays;
+
+    public Integer getDataRetentionTimeInDays() {
+        return dataRetentionTimeInDays;
+    }
+
+    public void setDataRetentionTimeInDays(final Integer dataRetentionTimeInDays) {
+        this.dataRetentionTimeInDays = dataRetentionTimeInDays;
+    }
+
 
     private final Map<String, Table> tables;
     private final Map<String, View> views;
@@ -74,8 +90,26 @@ public class Schema extends SqlObject {
     }
 
     private String qualified(final String memberName) {
-        final String prefix = databaseName != null ? databaseName + "." + getName() + "." : getName() + ".";
-        return prefix + memberName;
+        return databaseName != null
+            ? QualifiedName.join(databaseName, getName(), memberName) : QualifiedName.join(getName(), memberName);
+    }
+
+    /**
+     * TRANSIENT — written on the CREATE, or INHERITED from a transient database.
+     *
+     * <p>Live-verified: every schema of a transient database is itself transient, PUBLIC included,
+     * so this is not simply a copy of the CREATE's modifier. A permanent schema cannot be made in a
+     * transient database, which is why the inheritance is applied when the schema is added rather
+     * than left to whoever wrote the statement.
+     */
+    private boolean transientObject;
+
+    public boolean isTransientObject() {
+        return transientObject;
+    }
+
+    public void setTransientObject(final boolean value) {
+        this.transientObject = value;
     }
 
     public Schema(final String name) {
@@ -108,9 +142,11 @@ public class Schema extends SqlObject {
         if ("INFORMATION_SCHEMA".equals(this.getName())) {
             throw new RuntimeException("Cannot create tables in INFORMATION_SCHEMA");
         }
-        final String upperName = table.getName().toUpperCase();
+        rejectNameHeldByOtherKind(table.getName(), RelationKind.TABLE, table.isTemporary());
+        final String upperName = table.getName();
         if (tables.containsKey(upperName)) {
-            throw new RuntimeException("Table already exists: " + table.getName());
+            throw new RuntimeException(SqlCompilationError.of(
+                "Object '" + table.getName() + "' already exists."));
         }
         register(table);
     }
@@ -124,14 +160,14 @@ public class Schema extends SqlObject {
      */
     private void register(final Table table) {
         table.markCatalogResident();
-        tables.put(table.getName().toUpperCase(), table);
+        tables.put(table.getName(), table);
     }
 
     public void dropTable(final String name) {
-        if (!tables.containsKey(name.toUpperCase())) {
+        if (!tables.containsKey(keyFor(tables, name))) {
             throw new RuntimeException(SqlCompilationError.doesNotExist("Table", qualified(name)));
         }
-        tables.remove(name.toUpperCase());
+        tables.remove(keyFor(tables, name));
     }
 
     public Table getTable(final String name) {
@@ -143,7 +179,7 @@ public class Schema extends SqlObject {
      * {@code Object 'DB.SCHEMA.MIXEDTBL' does not exist or not authorized.} — "Object", not "Table".
      */
     public Table tableExact(final String name) {
-        final Table table = tables.get(name.toUpperCase());
+        final Table table = tables.get(keyFor(tables, name));
         if (table == null || !table.getName().equals(name)) {
             return null;
         }
@@ -156,7 +192,7 @@ public class Schema extends SqlObject {
      * FROM-clause name an {@code Object} — so the caller, which knows the statement, chooses both.
      */
     public Table getTable(final String name, final String reportedName, final String reportedKind) {
-        final Table table = tables.get(name.toUpperCase());
+        final Table table = tables.get(keyFor(tables, name));
         if (table == null) {
             throw new RuntimeException(SqlCompilationError.doesNotExist(reportedKind, reportedName));
         }
@@ -164,7 +200,7 @@ public class Schema extends SqlObject {
     }
 
     public boolean hasTable(final String name) {
-        return tables.containsKey(name.toUpperCase());
+        return tables.containsKey(keyFor(tables, name));
     }
 
     public List<Table> getTables() {
@@ -174,15 +210,17 @@ public class Schema extends SqlObject {
     // Views
     public void addView(final View view) {
         // Allow system views to be added during initialization, but protect after that
-        final String upperName = view.getName().toUpperCase();
+        rejectNameHeldByOtherKind(view.getName(), RelationKind.VIEW, view.isTemporary());
+        final String upperName = view.getName();
         if (views.containsKey(upperName)) {
-            throw new RuntimeException("View already exists: " + view.getName());
+            throw new RuntimeException(SqlCompilationError.of(
+                "Object '" + view.getName() + "' already exists."));
         }
         views.put(upperName, view);
     }
 
     public void dropView(final String name) {
-        final String upperName = name.toUpperCase();
+        final String upperName = keyFor(views, name);
         if (!views.containsKey(upperName)) {
             throw new RuntimeException(SqlCompilationError.doesNotExist("View", qualified(name)));
         }
@@ -196,7 +234,7 @@ public class Schema extends SqlObject {
     }
 
     public View getView(final String name) {
-        final View view = views.get(name.toUpperCase());
+        final View view = views.get(keyFor(views, name));
         if (view == null) {
             throw new RuntimeException(SqlCompilationError.doesNotExist("View", qualified(name)));
         }
@@ -205,7 +243,7 @@ public class Schema extends SqlObject {
 
     /** Whether a view of this name exists, without the throwing lookup {@link #getView} performs. */
     public boolean hasView(final String name) {
-        return views.containsKey(name.toUpperCase());
+        return views.containsKey(keyFor(views, name));
     }
 
     public List<View> getViews() {
@@ -214,15 +252,17 @@ public class Schema extends SqlObject {
 
     // Materialized Views
     public void addMaterializedView(final MaterializedView materializedView) {
-        final String upperName = materializedView.getName().toUpperCase();
+        rejectNameHeldByOtherKind(materializedView.getName(), RelationKind.MATERIALIZED_VIEW, false);
+        final String upperName = materializedView.getName();
         if (materializedViews.containsKey(upperName)) {
-            throw new RuntimeException("Materialized view already exists: " + materializedView.getName());
+            throw new RuntimeException(SqlCompilationError.of(
+                "Object '" + materializedView.getName() + "' already exists."));
         }
         materializedViews.put(upperName, materializedView);
     }
 
     public void dropMaterializedView(final String name) {
-        final String upperName = name.toUpperCase();
+        final String upperName = keyFor(materializedViews, name);
         if (!materializedViews.containsKey(upperName)) {
             throw new RuntimeException(SqlCompilationError.doesNotExist("Materialized view", qualified(name)));
         }
@@ -230,11 +270,15 @@ public class Schema extends SqlObject {
     }
 
     public MaterializedView getMaterializedView(final String name) {
-        final MaterializedView mv = materializedViews.get(name.toUpperCase());
+        final MaterializedView mv = materializedViews.get(keyFor(materializedViews, name));
         if (mv == null) {
             throw new RuntimeException(SqlCompilationError.doesNotExist("Materialized view", qualified(name)));
         }
         return mv;
+    }
+
+    public boolean hasMaterializedView(final String name) {
+        return materializedViews.containsKey(keyFor(materializedViews, name));
     }
 
     public List<MaterializedView> getMaterializedViews() {
@@ -243,15 +287,16 @@ public class Schema extends SqlObject {
 
     // Dynamic Tables
     public void addDynamicTable(final DynamicTable dt) {
-        final String upperName = dt.getName().toUpperCase();
+        rejectNameHeldByOtherKind(dt.getName(), RelationKind.DYNAMIC_TABLE, false);
+        final String upperName = dt.getName();
         if (dynamicTables.containsKey(upperName)) {
-            throw new RuntimeException("Dynamic table already exists: " + dt.getName());
+            throw new RuntimeException(SqlCompilationError.of("Object '" + dt.getName() + "' already exists."));
         }
         dynamicTables.put(upperName, dt);
     }
 
     public void dropDynamicTable(final String name) {
-        final String upperName = name.toUpperCase();
+        final String upperName = keyFor(dynamicTables, name);
         if (!dynamicTables.containsKey(upperName)) {
             throw new RuntimeException(SqlCompilationError.doesNotExist("Dynamic table", qualified(name)));
         }
@@ -259,13 +304,13 @@ public class Schema extends SqlObject {
     }
 
     public DynamicTable getDynamicTable(final String name) {
-        final DynamicTable dt = dynamicTables.get(name.toUpperCase());
+        final DynamicTable dt = dynamicTables.get(keyFor(dynamicTables, name));
         if (dt == null) throw new RuntimeException(SqlCompilationError.doesNotExist("Dynamic table", qualified(name)));
         return dt;
     }
 
     public boolean hasDynamicTable(final String name) {
-        return dynamicTables.containsKey(name.toUpperCase());
+        return dynamicTables.containsKey(keyFor(dynamicTables, name));
     }
 
     public List<DynamicTable> getDynamicTables() {
@@ -274,106 +319,106 @@ public class Schema extends SqlObject {
 
     // Contacts
     public void addContact(final Contact contact) {
-        contacts.put(contact.getName().toUpperCase(), contact);
+        contacts.put(contact.getName(), contact);
     }
-    public void dropContact(final String name) { contacts.remove(name.toUpperCase()); }
-    public Contact getContact(final String name) { return contacts.get(name.toUpperCase()); }
-    public boolean hasContact(final String name) { return contacts.containsKey(name.toUpperCase()); }
+    public void dropContact(final String name) { contacts.remove(keyFor(contacts, name)); }
+    public Contact getContact(final String name) { return contacts.get(keyFor(contacts, name)); }
+    public boolean hasContact(final String name) { return contacts.containsKey(keyFor(contacts, name)); }
     public List<Contact> getContacts() { return new ArrayList<>(contacts.values()); }
 
     // Join Policies
     public void addJoinPolicy(final JoinPolicy policy) {
-        joinPolicies.put(policy.getName().toUpperCase(), policy);
+        joinPolicies.put(policy.getName(), policy);
     }
-    public void dropJoinPolicy(final String name) { joinPolicies.remove(name.toUpperCase()); }
-    public JoinPolicy getJoinPolicy(final String name) { return joinPolicies.get(name.toUpperCase()); }
-    public boolean hasJoinPolicy(final String name) { return joinPolicies.containsKey(name.toUpperCase()); }
+    public void dropJoinPolicy(final String name) { joinPolicies.remove(keyFor(joinPolicies, name)); }
+    public JoinPolicy getJoinPolicy(final String name) { return joinPolicies.get(keyFor(joinPolicies, name)); }
+    public boolean hasJoinPolicy(final String name) { return joinPolicies.containsKey(keyFor(joinPolicies, name)); }
     public List<JoinPolicy> getJoinPolicies() { return new ArrayList<>(joinPolicies.values()); }
     public void renameJoinPolicy(final String oldName, final String newName) {
-        final JoinPolicy policy = joinPolicies.get(oldName.toUpperCase());
+        final JoinPolicy policy = joinPolicies.get(keyFor(joinPolicies, oldName));
         if (policy == null) {
             throw new RuntimeException("Join policy not found: " + oldName);
         }
-        joinPolicies.remove(oldName.toUpperCase());
+        joinPolicies.remove(keyFor(joinPolicies, oldName));
         policy.rename(newName.toUpperCase());
         joinPolicies.put(newName.toUpperCase(), policy);
     }
 
     // Aggregation Policies
     public void addAggregationPolicy(final AggregationPolicy policy) {
-        aggregationPolicies.put(policy.getName().toUpperCase(), policy);
+        aggregationPolicies.put(policy.getName(), policy);
     }
-    public void dropAggregationPolicy(final String name) { aggregationPolicies.remove(name.toUpperCase()); }
-    public AggregationPolicy getAggregationPolicy(final String name) { return aggregationPolicies.get(name.toUpperCase()); }
-    public boolean hasAggregationPolicy(final String name) { return aggregationPolicies.containsKey(name.toUpperCase()); }
+    public void dropAggregationPolicy(final String name) { aggregationPolicies.remove(keyFor(aggregationPolicies, name)); }
+    public AggregationPolicy getAggregationPolicy(final String name) { return aggregationPolicies.get(keyFor(aggregationPolicies, name)); }
+    public boolean hasAggregationPolicy(final String name) { return aggregationPolicies.containsKey(keyFor(aggregationPolicies, name)); }
     public List<AggregationPolicy> getAggregationPolicies() { return new ArrayList<>(aggregationPolicies.values()); }
     public void renameAggregationPolicy(final String oldName, final String newName) {
-        final AggregationPolicy policy = aggregationPolicies.get(oldName.toUpperCase());
+        final AggregationPolicy policy = aggregationPolicies.get(keyFor(aggregationPolicies, oldName));
         if (policy == null) {
             throw new RuntimeException("Aggregation policy not found: " + oldName);
         }
-        aggregationPolicies.remove(oldName.toUpperCase());
+        aggregationPolicies.remove(keyFor(aggregationPolicies, oldName));
         policy.rename(newName.toUpperCase());
         aggregationPolicies.put(newName.toUpperCase(), policy);
     }
 
     // Projection Policies
     public void addProjectionPolicy(final ProjectionPolicy policy) {
-        projectionPolicies.put(policy.getName().toUpperCase(), policy);
+        projectionPolicies.put(policy.getName(), policy);
     }
-    public void dropProjectionPolicy(final String name) { projectionPolicies.remove(name.toUpperCase()); }
-    public ProjectionPolicy getProjectionPolicy(final String name) { return projectionPolicies.get(name.toUpperCase()); }
-    public boolean hasProjectionPolicy(final String name) { return projectionPolicies.containsKey(name.toUpperCase()); }
+    public void dropProjectionPolicy(final String name) { projectionPolicies.remove(keyFor(projectionPolicies, name)); }
+    public ProjectionPolicy getProjectionPolicy(final String name) { return projectionPolicies.get(keyFor(projectionPolicies, name)); }
+    public boolean hasProjectionPolicy(final String name) { return projectionPolicies.containsKey(keyFor(projectionPolicies, name)); }
     public List<ProjectionPolicy> getProjectionPolicies() { return new ArrayList<>(projectionPolicies.values()); }
     public void renameProjectionPolicy(final String oldName, final String newName) {
-        final ProjectionPolicy policy = projectionPolicies.get(oldName.toUpperCase());
+        final ProjectionPolicy policy = projectionPolicies.get(keyFor(projectionPolicies, oldName));
         if (policy == null) {
             throw new RuntimeException("Projection policy not found: " + oldName);
         }
-        projectionPolicies.remove(oldName.toUpperCase());
+        projectionPolicies.remove(keyFor(projectionPolicies, oldName));
         policy.rename(newName.toUpperCase());
         projectionPolicies.put(newName.toUpperCase(), policy);
     }
 
     // Masking Policies
     public void addMaskingPolicy(final MaskingPolicy policy) {
-        maskingPolicies.put(policy.getName().toUpperCase(), policy);
+        maskingPolicies.put(policy.getName(), policy);
     }
-    public void dropMaskingPolicy(final String name) { maskingPolicies.remove(name.toUpperCase()); }
-    public MaskingPolicy getMaskingPolicy(final String name) { return maskingPolicies.get(name.toUpperCase()); }
-    public boolean hasMaskingPolicy(final String name) { return maskingPolicies.containsKey(name.toUpperCase()); }
+    public void dropMaskingPolicy(final String name) { maskingPolicies.remove(keyFor(maskingPolicies, name)); }
+    public MaskingPolicy getMaskingPolicy(final String name) { return maskingPolicies.get(keyFor(maskingPolicies, name)); }
+    public boolean hasMaskingPolicy(final String name) { return maskingPolicies.containsKey(keyFor(maskingPolicies, name)); }
     public List<MaskingPolicy> getMaskingPolicies() { return new ArrayList<>(maskingPolicies.values()); }
     public void renameMaskingPolicy(final String oldName, final String newName) {
-        final MaskingPolicy policy = maskingPolicies.get(oldName.toUpperCase());
+        final MaskingPolicy policy = maskingPolicies.get(keyFor(maskingPolicies, oldName));
         if (policy == null) {
             throw new RuntimeException("Masking policy not found: " + oldName);
         }
-        maskingPolicies.remove(oldName.toUpperCase());
+        maskingPolicies.remove(keyFor(maskingPolicies, oldName));
         policy.rename(newName.toUpperCase());
         maskingPolicies.put(newName.toUpperCase(), policy);
     }
 
     // Row Access Policies
     public void addRowAccessPolicy(final RowAccessPolicy policy) {
-        rowAccessPolicies.put(policy.getName().toUpperCase(), policy);
+        rowAccessPolicies.put(policy.getName(), policy);
     }
-    public void dropRowAccessPolicy(final String name) { rowAccessPolicies.remove(name.toUpperCase()); }
-    public RowAccessPolicy getRowAccessPolicy(final String name) { return rowAccessPolicies.get(name.toUpperCase()); }
-    public boolean hasRowAccessPolicy(final String name) { return rowAccessPolicies.containsKey(name.toUpperCase()); }
+    public void dropRowAccessPolicy(final String name) { rowAccessPolicies.remove(keyFor(rowAccessPolicies, name)); }
+    public RowAccessPolicy getRowAccessPolicy(final String name) { return rowAccessPolicies.get(keyFor(rowAccessPolicies, name)); }
+    public boolean hasRowAccessPolicy(final String name) { return rowAccessPolicies.containsKey(keyFor(rowAccessPolicies, name)); }
     public List<RowAccessPolicy> getRowAccessPolicies() { return new ArrayList<>(rowAccessPolicies.values()); }
     public void renameRowAccessPolicy(final String oldName, final String newName) {
-        final RowAccessPolicy policy = rowAccessPolicies.get(oldName.toUpperCase());
+        final RowAccessPolicy policy = rowAccessPolicies.get(keyFor(rowAccessPolicies, oldName));
         if (policy == null) {
             throw new RuntimeException("Row access policy not found: " + oldName);
         }
-        rowAccessPolicies.remove(oldName.toUpperCase());
+        rowAccessPolicies.remove(keyFor(rowAccessPolicies, oldName));
         policy.rename(newName.toUpperCase());
         rowAccessPolicies.put(newName.toUpperCase(), policy);
     }
 
     // Procedures
     public void addProcedure(final Procedure procedure) {
-        final String upperName = procedure.getName().toUpperCase();
+        final String upperName = procedure.getName();
         // putIfAbsent rather than get/put: the map is concurrent, and losing a race here would
         // drop an overload registered by another thread.
         List<Procedure> overloads = procedures.get(upperName);
@@ -388,8 +433,7 @@ public class Schema extends SqlObject {
         // Check for duplicate signature
         for (final Procedure existing : overloads) {
             if (hasSameSignature(existing.getParameters(), procedure.getParameters())) {
-                throw new RuntimeException("Procedure with same signature already exists: " + procedure.getName() +
-                    " with parameters " + formatParameters(procedure.getParameters()));
+                throw new RuntimeException(SqlCompilationError.of("Object '" + procedure.getName() + "' already exists."));
             }
         }
 
@@ -397,7 +441,7 @@ public class Schema extends SqlObject {
     }
 
     public void dropProcedure(final String name) {
-        final String upperName = name.toUpperCase();
+        final String upperName = keyFor(procedures, name);
         if (!procedures.containsKey(upperName)) {
             throw new RuntimeException(SqlCompilationError.doesNotExist("Procedure", qualified(name)));
         }
@@ -405,7 +449,7 @@ public class Schema extends SqlObject {
     }
 
     public void dropProcedureBySignature(final String name, final List<DataType> argumentTypes) {
-        final String upperName = name.toUpperCase();
+        final String upperName = keyFor(procedures, name);
         final List<Procedure> overloads = procedures.get(upperName);
         if (overloads == null || overloads.isEmpty()) {
             throw new RuntimeException(SqlCompilationError.doesNotExist("Procedure", qualified(name)));
@@ -430,7 +474,7 @@ public class Schema extends SqlObject {
     }
 
     public Procedure getProcedure(final String name) {
-        final String upperName = name.toUpperCase();
+        final String upperName = keyFor(procedures, name);
         final List<Procedure> overloads = procedures.get(upperName);
         if (overloads == null || overloads.isEmpty()) {
             throw new RuntimeException(SqlCompilationError.doesNotExist("Procedure", qualified(name)));
@@ -444,7 +488,7 @@ public class Schema extends SqlObject {
     }
 
     public Procedure getProcedureBySignature(final String name, final List<DataType> argumentTypes) {
-        final String upperName = name.toUpperCase();
+        final String upperName = keyFor(procedures, name);
         final List<Procedure> overloads = procedures.get(upperName);
         if (overloads == null || overloads.isEmpty()) {
             throw new RuntimeException(SqlCompilationError.doesNotExist("Procedure", qualified(name)));
@@ -475,14 +519,14 @@ public class Schema extends SqlObject {
     }
 
     public List<Procedure> getProcedureOverloads(final String name) {
-        final String upperName = name.toUpperCase();
+        final String upperName = keyFor(procedures, name);
         final List<Procedure> overloads = procedures.get(upperName);
         return overloads != null ? new ArrayList<>(overloads) : new ArrayList<>();
     }
 
     // Functions
     public void addFunction(final Function function) {
-        final String upperName = function.getName().toUpperCase();
+        final String upperName = function.getName();
         // putIfAbsent rather than get/put: the map is concurrent, and losing a race here would
         // drop an overload registered by another thread.
         List<Function> overloads = functions.get(upperName);
@@ -497,8 +541,7 @@ public class Schema extends SqlObject {
         // Check for duplicate signature
         for (final Function existing : overloads) {
             if (hasSameSignature(existing.getParameters(), function.getParameters())) {
-                throw new RuntimeException("Function with same signature already exists: " + function.getName() +
-                    " with parameters " + formatParameters(function.getParameters()));
+                throw new RuntimeException(SqlCompilationError.of("Object '" + function.getName() + "' already exists."));
             }
         }
 
@@ -506,7 +549,7 @@ public class Schema extends SqlObject {
     }
 
     public void dropFunction(final String name) {
-        final String upperName = name.toUpperCase();
+        final String upperName = keyFor(functions, name);
         if (!functions.containsKey(upperName)) {
             throw new RuntimeException(SqlCompilationError.doesNotExist("Function", qualified(name)));
         }
@@ -514,7 +557,7 @@ public class Schema extends SqlObject {
     }
 
     public void dropFunctionBySignature(final String name, final List<DataType> argumentTypes) {
-        final String upperName = name.toUpperCase();
+        final String upperName = keyFor(functions, name);
         final List<Function> overloads = functions.get(upperName);
         if (overloads == null || overloads.isEmpty()) {
             throw new RuntimeException(SqlCompilationError.doesNotExist("Function", qualified(name)));
@@ -539,7 +582,7 @@ public class Schema extends SqlObject {
     }
 
     public Function getFunction(final String name) {
-        final String upperName = name.toUpperCase();
+        final String upperName = keyFor(functions, name);
         final List<Function> overloads = functions.get(upperName);
         if (overloads == null || overloads.isEmpty()) {
             throw new RuntimeException(SqlCompilationError.doesNotExist("Function", qualified(name)));
@@ -553,7 +596,7 @@ public class Schema extends SqlObject {
     }
 
     public Function getFunctionBySignature(final String name, final List<DataType> argumentTypes) {
-        final String upperName = name.toUpperCase();
+        final String upperName = keyFor(functions, name);
         final List<Function> overloads = functions.get(upperName);
         if (overloads == null || overloads.isEmpty()) {
             throw new RuntimeException(SqlCompilationError.doesNotExist("Function", qualified(name)));
@@ -584,9 +627,29 @@ public class Schema extends SqlObject {
     }
 
     public List<Function> getFunctionOverloads(final String name) {
-        final String upperName = name.toUpperCase();
+        final String upperName = keyFor(functions, name);
         final List<Function> overloads = functions.get(upperName);
         return overloads != null ? new ArrayList<>(overloads) : new ArrayList<>();
+    }
+
+    /** Whether a function of that name already carries this signature (see {@link #addFunction}). */
+    public boolean hasFunctionSignature(final String name, final List<Parameter> parameters) {
+        for (final Function existing : getFunctionOverloads(name)) {
+            if (hasSameSignature(existing.getParameters(), parameters)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** Whether a procedure of that name already carries this signature (see {@link #addProcedure}). */
+    public boolean hasProcedureSignature(final String name, final List<Parameter> parameters) {
+        for (final Procedure existing : getProcedureOverloads(name)) {
+            if (hasSameSignature(existing.getParameters(), parameters)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     // Helper methods for signature matching
@@ -670,22 +733,23 @@ public class Schema extends SqlObject {
 
     // Streams
     public void addStream(final Stream stream) {
-        final String upperName = stream.getName().toUpperCase();
+        rejectNameHeldByOtherKind(stream.getName(), RelationKind.STREAM, false);
+        final String upperName = stream.getName();
         if (streams.containsKey(upperName)) {
-            throw new RuntimeException("Stream already exists: " + stream.getName());
+            throw new RuntimeException(SqlCompilationError.of("Object '" + stream.getName() + "' already exists."));
         }
         streams.put(upperName, stream);
     }
 
     public void dropStream(final String name) {
-        if (!streams.containsKey(name.toUpperCase())) {
+        if (!streams.containsKey(keyFor(streams, name))) {
             throw new RuntimeException(SqlCompilationError.doesNotExist("Stream", qualified(name)));
         }
-        streams.remove(name.toUpperCase());
+        streams.remove(keyFor(streams, name));
     }
 
     public Stream getStream(final String name) {
-        final Stream stream = streams.get(name.toUpperCase());
+        final Stream stream = streams.get(keyFor(streams, name));
         if (stream == null) {
             throw new RuntimeException(SqlCompilationError.doesNotExist("Stream", qualified(name)));
         }
@@ -698,26 +762,26 @@ public class Schema extends SqlObject {
 
     // Tasks
     public void addTask(final Task task) {
-        final String upperName = task.getName().toUpperCase();
+        final String upperName = task.getName();
         if (tasks.containsKey(upperName)) {
-            throw new RuntimeException("Task already exists: " + task.getName());
+            throw new RuntimeException(SqlCompilationError.of("Object '" + task.getName() + "' already exists."));
         }
         tasks.put(upperName, task);
     }
 
     public void dropTask(final String name) {
-        if (!tasks.containsKey(name.toUpperCase())) {
+        if (!tasks.containsKey(keyFor(tasks, name))) {
             throw new RuntimeException(SqlCompilationError.doesNotExist("Task", qualified(name)));
         }
-        tasks.remove(name.toUpperCase());
+        tasks.remove(keyFor(tasks, name));
     }
 
     public boolean hasTask(final String name) {
-        return tasks.containsKey(name.toUpperCase());
+        return tasks.containsKey(keyFor(tasks, name));
     }
 
     public Task getTask(final String name) {
-        final Task task = tasks.get(name.toUpperCase());
+        final Task task = tasks.get(keyFor(tasks, name));
         if (task == null) {
             throw new RuntimeException(SqlCompilationError.doesNotExist("Task", qualified(name)));
         }
@@ -730,15 +794,15 @@ public class Schema extends SqlObject {
 
     // Pipes
     public void addPipe(final Pipe pipe) {
-        final String upperName = pipe.getName().toUpperCase();
+        final String upperName = pipe.getName();
         if (pipes.containsKey(upperName)) {
-            throw new RuntimeException("Pipe already exists: " + pipe.getName());
+            throw new RuntimeException(SqlCompilationError.of("Object '" + pipe.getName() + "' already exists."));
         }
         pipes.put(upperName, pipe);
     }
 
     public void dropPipe(final String name) {
-        final String upperName = name.toUpperCase();
+        final String upperName = keyFor(pipes, name);
         if (!pipes.containsKey(upperName)) {
             throw new RuntimeException(SqlCompilationError.doesNotExist("Pipe", qualified(name)));
         }
@@ -746,7 +810,7 @@ public class Schema extends SqlObject {
     }
 
     public Pipe getPipe(final String name) {
-        final Pipe pipe = pipes.get(name.toUpperCase());
+        final Pipe pipe = pipes.get(keyFor(pipes, name));
         if (pipe == null) {
             throw new RuntimeException(SqlCompilationError.doesNotExist("Pipe", qualified(name)));
         }
@@ -759,15 +823,15 @@ public class Schema extends SqlObject {
 
     // Sequences
     public void addSequence(final Sequence sequence) {
-        final String upperName = sequence.getName().toUpperCase();
+        final String upperName = sequence.getName();
         if (sequences.containsKey(upperName)) {
-            throw new RuntimeException("Sequence already exists: " + sequence.getName());
+            throw new RuntimeException(SqlCompilationError.of("Object '" + sequence.getName() + "' already exists."));
         }
         sequences.put(upperName, sequence);
     }
 
     public void dropSequence(final String name) {
-        final String upperName = name.toUpperCase();
+        final String upperName = keyFor(sequences, name);
         if (!sequences.containsKey(upperName)) {
             throw new RuntimeException(SqlCompilationError.doesNotExist("Sequence", qualified(name)));
         }
@@ -775,7 +839,7 @@ public class Schema extends SqlObject {
     }
 
     public Sequence getSequence(final String name) {
-        final Sequence sequence = sequences.get(name.toUpperCase());
+        final Sequence sequence = sequences.get(keyFor(sequences, name));
         if (sequence == null) {
             throw new RuntimeException(SqlCompilationError.doesNotExist("Sequence", qualified(name)));
         }
@@ -788,11 +852,11 @@ public class Schema extends SqlObject {
 
     // File formats
     public void addFileFormat(final FileFormat fileFormat) {
-        fileFormats.put(fileFormat.getName().toUpperCase(), fileFormat);
+        fileFormats.put(fileFormat.getName(), fileFormat);
     }
 
     public void dropFileFormat(final String name) {
-        final String upperName = name.toUpperCase();
+        final String upperName = keyFor(fileFormats, name);
         if (!fileFormats.containsKey(upperName)) {
             throw new RuntimeException(SqlCompilationError.doesNotExist("File format", qualified(name)));
         }
@@ -800,11 +864,11 @@ public class Schema extends SqlObject {
     }
 
     public FileFormat getFileFormat(final String name) {
-        return fileFormats.get(name.toUpperCase());
+        return fileFormats.get(keyFor(fileFormats, name));
     }
 
     public boolean hasFileFormat(final String name) {
-        return fileFormats.containsKey(name.toUpperCase());
+        return fileFormats.containsKey(keyFor(fileFormats, name));
     }
 
     public List<FileFormat> getFileFormats() {
@@ -864,7 +928,7 @@ public class Schema extends SqlObject {
         // every view of an ordinary schema (whatever its name) is cloned.
         if (!"INFORMATION_SCHEMA".equals(getName())) {
             for (final View view : views.values()) {
-                clonedSchema.views.put(view.getName().toUpperCase(), view.copy());
+                clonedSchema.views.put(view.getName(), view.copy());
             }
         }
 
@@ -934,7 +998,7 @@ public class Schema extends SqlObject {
             clonedStream.setBaseTableNames(stream.getBaseTableNames());
             clonedStream.setOwner(stream.getOwner());
             clonedStream.setComment(stream.getComment());
-            clonedSchema.streams.put(stream.getName().toUpperCase(), clonedStream);
+            clonedSchema.streams.put(stream.getName(), clonedStream);
         }
 
         // Clone tasks
@@ -948,7 +1012,7 @@ public class Schema extends SqlObject {
             );
             clonedTask.setComment(task.getComment());
             clonedTask.setState(task.getState());
-            clonedSchema.tasks.put(task.getName().toUpperCase(), clonedTask);
+            clonedSchema.tasks.put(task.getName(), clonedTask);
         }
 
         // Clone pipes
@@ -971,7 +1035,7 @@ public class Schema extends SqlObject {
             if (pipe.getLastLoadedTime() != null) {
                 clonedPipe.setLastLoadedTime(pipe.getLastLoadedTime());
             }
-            clonedSchema.pipes.put(pipe.getName().toUpperCase(), clonedPipe);
+            clonedSchema.pipes.put(pipe.getName(), clonedPipe);
         }
 
         // Clone sequences
@@ -985,7 +1049,7 @@ public class Schema extends SqlObject {
             );
             // Preserve current value (use raw to avoid CURRVAL check)
             clonedSequence.setCurrentValue(sequence.getCurrentValueRaw());
-            clonedSchema.sequences.put(sequence.getName().toUpperCase(), clonedSequence);
+            clonedSchema.sequences.put(sequence.getName(), clonedSequence);
         }
 
         // Clone the policy OBJECTS too — a policy attached to a cloned table/view must still resolve
@@ -995,7 +1059,7 @@ public class Schema extends SqlObject {
             clonedContact.setComment(contact.getComment());
             clonedContact.setUrl(contact.getUrl());
             clonedContact.setEmailDistributionList(contact.getEmailDistributionList());
-            clonedSchema.contacts.put(contact.getName().toUpperCase(), clonedContact);
+            clonedSchema.contacts.put(contact.getName(), clonedContact);
         }
         for (final ProjectionPolicy policy : projectionPolicies.values()) {
             clonedSchema.projectionPolicies.put(policy.getName().toUpperCase(),
@@ -1024,7 +1088,7 @@ public class Schema extends SqlObject {
         for (final Stage stage : stages.values()) {
             final Stage clonedStage = new Stage(stage.getName(), stage.getType(), stage.getUrl(),
                 stage.getFileFormat(), stage.isEncryption(), stage.getComment(), stage.getS3Resolver());
-            clonedSchema.stages.put(stage.getName().toUpperCase(), clonedStage);
+            clonedSchema.stages.put(stage.getName(), clonedStage);
         }
 
         // Clone file formats
@@ -1034,7 +1098,7 @@ public class Schema extends SqlObject {
                 clonedFormat.setOption(option.getKey(), option.getValue());
             }
             clonedFormat.setComment(fileFormat.getComment());
-            clonedSchema.fileFormats.put(fileFormat.getName().toUpperCase(), clonedFormat);
+            clonedSchema.fileFormats.put(fileFormat.getName(), clonedFormat);
         }
 
         return clonedSchema;
@@ -1042,25 +1106,35 @@ public class Schema extends SqlObject {
 
     // Stages
     public void addStage(final Stage stage) {
-        final String key = stage.getName().toUpperCase();
-        if (stages.containsKey(key)) throw new RuntimeException("Stage already exists: " + stage.getName());
+        final String key = stage.getName();
+        if (stages.containsKey(key)) {
+            throw new RuntimeException(SqlCompilationError.of("Object '" + stage.getName() + "' already exists."));
+        }
         stages.put(key, stage);
     }
 
     public void dropStage(final String name) {
-        final String upper = name.toUpperCase();
+        final String upper = keyFor(stages, name);
         if (!stages.containsKey(upper)) throw new RuntimeException(SqlCompilationError.doesNotExist("Stage", qualified(name)));
         stages.remove(upper);
     }
 
     public Stage getStage(final String name) {
-        final Stage s = stages.get(name.toUpperCase());
+        final Stage s = stages.get(keyFor(stages, name));
         if (s == null) throw new RuntimeException(SqlCompilationError.doesNotExist("Stage", qualified(name)));
         return s;
     }
 
     public boolean hasStage(final String name) {
-        return stages.containsKey(name.toUpperCase());
+        return stages.containsKey(keyFor(stages, name));
+    }
+
+    /**
+     * Whether a stage of EXACTLY this name is here - the check a create makes, where a name that differs
+     * only in case is a different stage.
+     */
+    public boolean hasStageExact(final String name) {
+        return stages.containsKey(name);
     }
 
     public List<Stage> getStages() {
@@ -1071,11 +1145,11 @@ public class Schema extends SqlObject {
     public void addCortexSearchService(final CortexSearchService service) {
         service.setDatabaseName(databaseName);
         service.setSchemaName(getName());
-        cortexSearchServices.put(service.getName().toUpperCase(), service);
+        cortexSearchServices.put(service.getName(), service);
     }
 
     public void dropCortexSearchService(final String name) {
-        final String upper = name.toUpperCase();
+        final String upper = keyFor(cortexSearchServices, name);
         if (!cortexSearchServices.containsKey(upper)) {
             throw new RuntimeException(SqlCompilationError.doesNotExist("Cortex Search Service", qualified(name)));
         }
@@ -1083,7 +1157,7 @@ public class Schema extends SqlObject {
     }
 
     public CortexSearchService getCortexSearchService(final String name) {
-        final CortexSearchService service = cortexSearchServices.get(name.toUpperCase());
+        final CortexSearchService service = cortexSearchServices.get(keyFor(cortexSearchServices, name));
         if (service == null) {
             throw new RuntimeException(SqlCompilationError.doesNotExist("Cortex Search Service", qualified(name)));
         }
@@ -1091,7 +1165,7 @@ public class Schema extends SqlObject {
     }
 
     public boolean hasCortexSearchService(final String name) {
-        return cortexSearchServices.containsKey(name.toUpperCase());
+        return cortexSearchServices.containsKey(keyFor(cortexSearchServices, name));
     }
 
     public List<CortexSearchService> getCortexSearchServices() {
@@ -1100,23 +1174,23 @@ public class Schema extends SqlObject {
 
     // Tags
     public void addTag(final Tag tag) {
-        tags.put(tag.getName().toUpperCase(), tag);
+        tags.put(tag.getName(), tag);
     }
 
     public void dropTag(final String name) {
-        final String upper = name.toUpperCase();
+        final String upper = keyFor(tags, name);
         if (!tags.containsKey(upper)) throw new RuntimeException(SqlCompilationError.doesNotExist("Tag", qualified(name)));
         tags.remove(upper);
     }
 
     public Tag getTag(final String name) {
-        final Tag tag = tags.get(name.toUpperCase());
+        final Tag tag = tags.get(keyFor(tags, name));
         if (tag == null) throw new RuntimeException(SqlCompilationError.doesNotExist("Tag", qualified(name)));
         return tag;
     }
 
     public boolean hasTag(final String name) {
-        return tags.containsKey(name.toUpperCase());
+        return tags.containsKey(keyFor(tags, name));
     }
 
     public List<Tag> getTags() {
@@ -1125,13 +1199,139 @@ public class Schema extends SqlObject {
 
     public void renameTag(final String oldName, final String newName) {
         final Tag tag = getTag(oldName);
-        tags.remove(oldName.toUpperCase());
+        if (tags.containsKey(keyFor(tags, newName))) {
+            throw new RuntimeException(SqlCompilationError.of("Object '" + newName.toUpperCase() + "' already exists."));
+        }
+        tags.remove(keyFor(tags, oldName));
         tag.rename(newName);
         tags.put(newName.toUpperCase(), tag);
+    }
+
+    /**
+     * The kinds that share one namespace in a schema: a table, a view, a materialized view, a dynamic table
+     * and a stream (live-verified). A create over a name another of them holds is refused with the holder's
+     * kind, {@code Object 'KT' already exists as TABLE}, before the body is compiled and before an OR
+     * REPLACE drops anything; IF NOT EXISTS does not skip it.
+     *
+     * <p>A TEMPORARY table is the exception: it may take the name of a view, a materialized view or a
+     * dynamic table, and it then shadows it. A stream's name it may not take. A TEMPORARY view may take a
+     * table's name the same way.
+     *
+     * @param name      the name being created
+     * @param kind      the kind being created
+     * @param temporary whether the create says TEMPORARY
+     */
+    public void rejectNameHeldByOtherKind(final String name, final RelationKind kind, final boolean temporary) {
+        // A PERMANENT create looks past a temporary holder of the name and is judged against the
+        // permanent object underneath, naming ITS kind. A temporary create sees the temporary holder,
+        // and so does a stream, whose name check reaches the session's own objects (live-verified).
+        final boolean seesTemporary = temporary || kind == RelationKind.STREAM;
+        for (final RelationKind holder : RelationKind.values()) {
+            if (holder == kind || !holds(holder, name, seesTemporary)
+                    || yieldsTo(holder, kind, temporary, holderIsTemporary(holder, name))) {
+                continue;
+            }
+            throw new RuntimeException(SqlCompilationError.of(
+                "Object '" + name + "' already exists as " + holder.spelling()));
+        }
+    }
+
+    /**
+     * The kind holding that name, or null when none of the five does. A temporary object counts: a DROP
+     * reaches the session's own objects as a read does.
+     */
+    public RelationKind relationKindOf(final String name) {
+        for (final RelationKind holder : RelationKind.values()) {
+            if (holds(holder, name, true)) {
+                return holder;
+            }
+        }
+        return null;
+    }
+
+    /** Whether that kind holds the name here, a temporary object of it included. */
+    public boolean holdsRelation(final String name, final RelationKind kind) {
+        return holds(kind, name, true);
+    }
+
+    /** Whether a TEMPORARY table of this name is here, shadowing whatever else holds the name. */
+    public boolean hasTemporaryTable(final String name) {
+        final Table table = tables.get(name);
+        return table != null && table.isTemporary();
+    }
+
+    /** Whether a kind holds that name in this schema, counting a temporary object only when asked. */
+    private boolean holds(final RelationKind kind, final String name, final boolean seesTemporary) {
+        switch (kind) {
+            case TABLE:
+                return tables.containsKey(name) && (seesTemporary || !tables.get(name).isTemporary());
+            case VIEW:
+                return views.containsKey(name) && (seesTemporary || !views.get(name).isTemporary());
+            case MATERIALIZED_VIEW:
+                return materializedViews.containsKey(name);
+            case DYNAMIC_TABLE:
+                return dynamicTables.containsKey(name);
+            default:
+                return streams.containsKey(name);
+        }
+    }
+
+    /** Whether the object holding the name is itself a temporary one. */
+    private boolean holderIsTemporary(final RelationKind holder, final String name) {
+        if (holder == RelationKind.TABLE) {
+            return tables.containsKey(name) && tables.get(name).isTemporary();
+        }
+        return holder == RelationKind.VIEW && views.containsKey(name) && views.get(name).isTemporary();
+    }
+
+    /**
+     * Whether the holder gives its name up to a TEMPORARY create, as the account lets it. Only a
+     * PERMANENT object gives way: a temporary view over a temporary table of that name is refused,
+     * where the same view over a permanent table is created (live-verified).
+     */
+    private static boolean yieldsTo(final RelationKind holder, final RelationKind kind, final boolean temporary,
+                                    final boolean holderTemporary) {
+        if (!temporary || holderTemporary) {
+            return false;
+        }
+        if (kind == RelationKind.TABLE) {
+            return holder == RelationKind.VIEW || holder == RelationKind.MATERIALIZED_VIEW
+                || holder == RelationKind.DYNAMIC_TABLE;
+        }
+        return kind == RelationKind.VIEW && holder == RelationKind.TABLE;
     }
 
     @Override
     public String getObjectType() {
         return "SCHEMA";
     }
+
+    /**
+     * The key a map holds that name under. A name resolves EXACTLY - an unquoted reference arrives
+     * upper-cased and a quoted one verbatim, so two objects whose names differ only in case are two
+     * objects, each reachable only by its own spelling. The case-insensitive fallback below is for the
+     * engine's own Java callers, which pass a name as a person wrote it; it answers only when exactly
+     * one stored name matches, so it can never choose between two that coexist. A name nothing holds
+     * comes back unchanged, and the caller's lookup misses as it did before.
+     *
+     * @param map  the map to resolve against
+     * @param name the name as the caller spells it
+     * @return the stored key, or the name itself when none matches
+     */
+    private static String keyFor(final Map<String, ?> map, final String name) {
+        if (name == null || map.containsKey(name)) {
+            return name;
+        }
+        String found = null;
+        for (final String key : map.keySet()) {
+            if (key.equalsIgnoreCase(name)) {
+                if (found != null) {
+                    return name;
+                }
+                found = key;
+            }
+        }
+        return found != null ? found : name;
+    }
+
 }

@@ -1,0 +1,57 @@
+{
+  "suite": "security-grant-revoke-breadth",
+  "description": "GRANT / REVOKE statement breadth: multi-privilege lists on a table, ALL / FUTURE tables in a schema, account-level privileges (ON ACCOUNT), role-to-user grants, OWNERSHIP transfer, and the matching REVOKEs, checked via SHOW GRANTS row counts. Converted 1:1 from security/GrantRevokeBreadthTest (now retired). Roles/users are account-level in the shared engine session, so each test creates them with OR REPLACE and drops them at the end.",
+  "tags": ["security", "converted"],
+  "tests": [
+    {"name": "multi-privilege-grant-and-revoke-on-table", "steps": [
+      {"sql": "CREATE OR REPLACE ROLE breadth_role"},
+      {"sql": "CREATE OR REPLACE USER breadth_user"},
+      {"sql": "CREATE TABLE breadth_t (id INTEGER)"},
+      {"sql": "GRANT SELECT, INSERT, UPDATE ON TABLE breadth_t TO ROLE breadth_role"},
+      {"sql": "SHOW GRANTS TO ROLE breadth_role", "expect": {"rowCount": 3}},
+      {"sql": "REVOKE INSERT, UPDATE ON TABLE breadth_t FROM ROLE breadth_role"},
+      {"sql": "SHOW GRANTS TO ROLE breadth_role", "expect": {"rowCount": 1}},
+      {"sql": "DROP USER breadth_user"},
+      {"sql": "DROP ROLE breadth_role"}
+    ]},
+    {"name": "all-tables-in-schema-grant", "steps": [
+      {"sql": "CREATE OR REPLACE ROLE breadth_role"},
+      {"sql": "CREATE OR REPLACE USER breadth_user"},
+      {"sql": "CREATE TABLE breadth_t (id INTEGER)"},
+      {"sql": "GRANT SELECT ON ALL TABLES IN SCHEMA test_schema TO ROLE breadth_role"},
+      {"sql": "SHOW GRANTS TO ROLE breadth_role", "expect": {"rowCount": 1}},
+      {"sql": "DROP USER breadth_user"},
+      {"sql": "DROP ROLE breadth_role"}
+    ]},
+    {"name": "future-tables-in-schema-grant", "steps": [
+      {"sql": "CREATE OR REPLACE ROLE breadth_role"},
+      {"sql": "CREATE OR REPLACE USER breadth_user"},
+      {"sql": "CREATE TABLE breadth_t (id INTEGER)"},
+      {"sql": "GRANT SELECT ON FUTURE TABLES IN SCHEMA test_schema TO ROLE breadth_role"},
+      {"sql": "SHOW GRANTS TO ROLE breadth_role", "expect": {"rowCount": 1}},
+      {"sql": "DROP USER breadth_user"},
+      {"sql": "DROP ROLE breadth_role"}
+    ]},
+    {"name": "account-level-and-role-to-user-grants", "steps": [
+      {"sql": "CREATE OR REPLACE ROLE breadth_role"},
+      {"sql": "CREATE OR REPLACE USER breadth_user"},
+      {"sql": "CREATE TABLE breadth_t (id INTEGER)"},
+      {"sql": "GRANT CREATE DATABASE ON ACCOUNT TO ROLE breadth_role"},
+      {"sql": "GRANT ROLE breadth_role TO USER breadth_user"},
+      {"sql": "SHOW GRANTS TO USER breadth_user", "expect": {"rowCount": 1}},
+      {"sql": "REVOKE ROLE breadth_role FROM USER breadth_user"},
+      {"sql": "REVOKE CREATE DATABASE ON ACCOUNT FROM ROLE breadth_role"},
+      {"sql": "DROP USER breadth_user"},
+      {"sql": "DROP ROLE breadth_role"}
+    ]},
+    {"name": "ownership-grant-on-table", "steps": [
+      {"sql": "CREATE OR REPLACE ROLE breadth_role"},
+      {"sql": "CREATE OR REPLACE USER breadth_user"},
+      {"sql": "CREATE TABLE breadth_t (id INTEGER)"},
+      {"sql": "GRANT OWNERSHIP ON TABLE breadth_t TO ROLE breadth_role"},
+      {"sql": "SHOW GRANTS ON TABLE breadth_t", "expect": {"rowCount": 1}},
+      {"sql": "DROP USER breadth_user"},
+      {"sql": "DROP ROLE breadth_role"}
+    ]}
+  ]
+}

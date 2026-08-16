@@ -16,28 +16,68 @@
 
 package dev.frostlake.functions.scalar.string;
 
+import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.functions.TextArgumentFunction;
+import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.types.StringType;
+import dev.frostlake.values.BinaryValue;
 
 import java.util.List;
 
+/**
+ * INSERT(base, position, length, insertion). The account plans it as
+ * {@code SUBSTR(base, 1, position - 1) || insertion || SUBSTR(base, position + length)} and answers
+ * exactly that, SUBSTR's windows included (all live-verified):
+ *
+ * <pre>
+ *   INSERT('abc', 2, 1, 'x')     axc        INSERT('abc', 0, 1, 'x')    xabc
+ *   INSERT('abc', 2, -1, 'x')    axabc      INSERT('abc', -2, 1, 'x')   xc      a negative start counts back
+ *   INSERT('abc', 5, 1, 'x')     abcx       INSERT('abc', 1, 1, NULL)   NULL    any NULL argument
+ *   INSERT(X'6162', 1, 1, X'63') 6362       two binaries splice their BYTES
+ * </pre>
+ *
+ * <p>A BINARY beside another family is judged as that concatenation — see
+ * {@link SemiStructuredRejection#INSERT_REWRITE_OPERANDS}.
+ */
 public class Insert extends TextArgumentFunction {
     public Insert() { super("INSERT", StringType.VARCHAR); }
 
     @Override
     public Object evaluate(final List<Object> args) {
-        if (args.get(0) == null) return null;
-        final String base = args.get(0).toString();
-        int pos = ((Number) args.get(1)).intValue() - 1;
-        final int len = ((Number) args.get(2)).intValue();
-        final String ins = args.get(3) == null ? "" : args.get(3).toString();
-        pos = Math.max(0, Math.min(pos, base.length()));
-        final int end = Math.min(pos + len, base.length());
-        return base.substring(0, pos) + ins + base.substring(end);
+        for (final Object arg : args) {
+            if (arg == null) {
+                return null;
+            }
+        }
+        final int position = ((Number) args.get(1)).intValue();
+        final int length = ((Number) args.get(2)).intValue();
+        if (args.get(0) instanceof BinaryValue && args.get(3) instanceof BinaryValue) {
+            final byte[] base = ((BinaryValue) args.get(0)).bytes();
+            final byte[] insertion = ((BinaryValue) args.get(3)).bytes();
+            final int[] head = Substring.window(base.length, 1, position - 1);
+            final int[] tail = Substring.window(base.length, position + length, Integer.MAX_VALUE);
+            final int headLength = head[1] - head[0];
+            final byte[] spliced = new byte[headLength + insertion.length + tail[1] - tail[0]];
+            System.arraycopy(base, head[0], spliced, 0, headLength);
+            System.arraycopy(insertion, 0, spliced, headLength, insertion.length);
+            System.arraycopy(base, tail[0], spliced, headLength + insertion.length, tail[1] - tail[0]);
+            return BinaryValue.of(spliced);
+        }
+        final String base = SharedFunctionHelpers.textOf(args.get(0));
+        final int[] head = Substring.window(base.length(), 1, position - 1);
+        final int[] tail = Substring.window(base.length(), position + length, Integer.MAX_VALUE);
+        return base.substring(head[0], head[1]) + SharedFunctionHelpers.textOf(args.get(3))
+            + base.substring(tail[0], tail[1]);
     }
 
     @Override
     public int getMinArgCount() { return 4; }
     @Override
     public int getMaxArgCount() { return 4; }
+
+    /** A BINARY anywhere is judged as the concatenation the call is planned as (live-verified). */
+    @Override
+    public SemiStructuredRejection binaryRejection(final int position) {
+        return SemiStructuredRejection.INSERT_REWRITE_OPERANDS;
+    }
 }
