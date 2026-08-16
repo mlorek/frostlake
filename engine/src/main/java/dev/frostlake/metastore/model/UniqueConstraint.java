@@ -31,7 +31,8 @@ import java.util.List;
  */
 public class UniqueConstraint {
 
-    private final String constraintName;
+    // Not final: ALTER TABLE … RENAME CONSTRAINT moves a declared constraint to a new name.
+    private String constraintName;
     private final List<String> columnNames;
 
     /**
@@ -47,6 +48,11 @@ public class UniqueConstraint {
 
     public String getConstraintName() {
         return constraintName;
+    }
+
+    /** Rename it in place — ALTER TABLE … RENAME CONSTRAINT. */
+    public void setConstraintName(final String constraintName) {
+        this.constraintName = constraintName;
     }
 
     public List<String> getColumnNames() {

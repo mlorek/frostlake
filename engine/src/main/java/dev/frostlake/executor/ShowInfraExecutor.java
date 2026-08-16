@@ -27,8 +27,8 @@ import dev.frostlake.metastore.model.WarehouseState;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
-import dev.frostlake.types.NumericType;
 import dev.frostlake.types.DateTimeType;
+import dev.frostlake.types.NumericType;
 import dev.frostlake.types.StringType;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
@@ -118,7 +118,7 @@ final class ShowInfraExecutor {
                 0L, 0L,
                 "N",
                 wh.getName().equalsIgnoreCase(currentWarehouse) ? "Y" : "N",
-                (long) wh.getAutoSuspendSeconds(),
+                wh.getAutoSuspendSeconds() == null ? null : Long.valueOf(wh.getAutoSuspendSeconds().longValue()),
                 String.valueOf(wh.isAutoResume()),
                 // The four cluster-health cells are empty strings on an idle warehouse.
                 "", "", "", "",
@@ -190,7 +190,7 @@ final class ShowInfraExecutor {
                 stage.getOwner(),
                 ShowResultHelpers.text(stage.getComment()),
                 null, type, cloud, null, null, null,
-                ShowResultHelpers.OWNER_ROLE_TYPE, "N"
+                ShowResultHelpers.OWNER_ROLE_TYPE, stage.isDirectoryEnabled() ? "Y" : "N"
             )));
         }
     }
@@ -387,20 +387,84 @@ final class ShowInfraExecutor {
         return new ResultSet(columns, rows);
     }
 
+    /**
+     * The CSV file-format property tree a real account describes for a stage, in its order:
+     * property, type, default. DESC STAGE overlays the stage's own declared options on these.
+     */
+    private static final String[][] STAGE_FORMAT_PROPERTIES = {
+        {"TYPE", "String", "CSV"},
+        {"RECORD_DELIMITER", "String", "\\n"},
+        {"FIELD_DELIMITER", "String", ","},
+        {"FILE_EXTENSION", "String", ""},
+        {"SKIP_HEADER", "Integer", "0"},
+        {"PARSE_HEADER", "Boolean", "false"},
+        {"DATE_FORMAT", "String", "AUTO"},
+        {"TIME_FORMAT", "String", "AUTO"},
+        {"TIMESTAMP_FORMAT", "String", "AUTO"},
+        {"BINARY_FORMAT", "String", "HEX"},
+        {"ESCAPE", "String", "NONE"},
+        {"ESCAPE_UNENCLOSED_FIELD", "String", "\\\\"},
+        {"TRIM_SPACE", "Boolean", "false"},
+        {"FIELD_OPTIONALLY_ENCLOSED_BY", "String", "NONE"},
+        {"NULL_IF", "List", "[\\\\N]"},
+        {"COMPRESSION", "String", "AUTO"},
+        {"ERROR_ON_COLUMN_COUNT_MISMATCH", "Boolean", "true"},
+        {"VALIDATE_UTF8", "Boolean", "true"},
+        {"SKIP_BLANK_LINES", "Boolean", "false"},
+        {"REPLACE_INVALID_CHARACTERS", "Boolean", "false"},
+        {"EMPTY_FIELD_AS_NULL", "Boolean", "true"},
+        {"SKIP_BYTE_ORDER_MARK", "Boolean", "true"},
+        {"ENCODING", "String", "UTF8"},
+        {"MULTI_LINE", "Boolean", "true"},
+    };
+
+    /** The copy-option rows of DESC STAGE, likewise property, type, default. */
+    private static final String[][] STAGE_COPY_OPTION_PROPERTIES = {
+        {"ON_ERROR", "String", "ABORT_STATEMENT"},
+        {"SIZE_LIMIT", "Long", ""},
+        {"PURGE", "Boolean", "false"},
+        {"RETURN_FAILED_ONLY", "Boolean", "false"},
+        {"ENFORCE_LENGTH", "Boolean", "true"},
+        {"TRUNCATECOLUMNS", "Boolean", "false"},
+        {"FORCE", "Boolean", "false"},
+    };
+
+    /**
+     * DESC STAGE in live's five-column shape — a property TREE grouped as STAGE_FILE_FORMAT,
+     * STAGE_COPY_OPTIONS, STAGE_LOCATION and DIRECTORY, each row carrying its type, current value
+     * and default. The current value is the stage's declared option where one was given, else the
+     * default; TYPE reflects the stage's format.
+     */
     public ResultSet describeStage(final String stageName) {
-        List<Row> rows = new ArrayList<>();
-        List<ResultSetColumn> columns = Arrays.asList(
+        final List<ResultSetColumn> columns = Arrays.asList(
+            new ResultSetColumn("parent_property", StringType.VARCHAR),
             new ResultSetColumn("property", StringType.VARCHAR),
-            new ResultSetColumn("value", StringType.VARCHAR)
-        );
-
-        Stage stage = catalog.getStage(stageName);
-        rows.add(new Row(Arrays.asList("name", stage.getName())));
-        rows.add(new Row(Arrays.asList("type", stage.getType().toString())));
-        rows.add(new Row(Arrays.asList("url", stage.getUrl())));
-        rows.add(new Row(Arrays.asList("file_format", stage.getFileFormat())));
-        rows.add(new Row(Arrays.asList("encryption", String.valueOf(stage.isEncryption()))));
-
+            new ResultSetColumn("property_type", StringType.VARCHAR),
+            new ResultSetColumn("property_value", StringType.VARCHAR),
+            new ResultSetColumn("property_default", StringType.VARCHAR));
+        final Stage stage = catalog.getStage(stageName);
+        final List<Row> rows = new ArrayList<>();
+        for (final String[] property : STAGE_FORMAT_PROPERTIES) {
+            String value = stage.getFileFormatOptions().get(property[0]);
+            if (value == null) {
+                value = "TYPE".equals(property[0]) ? stage.getFileFormat() : property[2];
+            }
+            rows.add(new Row(Arrays.asList("STAGE_FILE_FORMAT", property[0], property[1],
+                value, property[2])));
+        }
+        for (final String[] property : STAGE_COPY_OPTION_PROPERTIES) {
+            String value = stage.getCopyOptions().get(property[0]);
+            if (value == null) {
+                value = property[2];
+            }
+            rows.add(new Row(Arrays.asList("STAGE_COPY_OPTIONS", property[0], property[1],
+                value, property[2])));
+        }
+        rows.add(new Row(Arrays.asList("STAGE_LOCATION", "URL", "String",
+            stage.getUrl() != null ? stage.getUrl() : "", "")));
+        rows.add(new Row(Arrays.asList("DIRECTORY", "ENABLE", "Boolean",
+            String.valueOf(stage.isDirectoryEnabled()), "false")));
+        rows.add(new Row(Arrays.asList("DIRECTORY", "AUTO_REFRESH", "Boolean", "false", "false")));
         return new ResultSet(columns, rows);
     }
 }

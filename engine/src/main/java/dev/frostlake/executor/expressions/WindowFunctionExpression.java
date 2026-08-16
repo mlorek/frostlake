@@ -16,6 +16,8 @@
 
 package dev.frostlake.executor.expressions;
 
+import java.util.List;
+
 /**
  * A window function call (one carrying an {@code OVER} clause) that appears nested inside a larger
  * expression — e.g. {@code revenue - LAG(revenue) OVER (ORDER BY yr)} in a SELECT item, or an inline
@@ -33,6 +35,8 @@ package dev.frostlake.executor.expressions;
 public class WindowFunctionExpression implements Expression {
 
     private final String callText;
+    private String functionName;
+    private List<Expression> arguments;
 
     public WindowFunctionExpression(final String callText) {
         this.callText = callText;
@@ -41,6 +45,30 @@ public class WindowFunctionExpression implements Expression {
     /** The window call's exact source text; the key under which its per-row value is supplied. */
     public String getCallText() {
         return callText;
+    }
+
+    /**
+     * Record what the call IS, read off the parse tree when this node was built. Evaluation never uses
+     * it — the value still arrives by call text — but the static channel needs the name and arguments
+     * to type the window functions that hand their argument back, and re-parsing the text to recover
+     * them would make the text the source of truth again.
+     *
+     * @param name      the function's name, upper-cased
+     * @param callArgs  its argument expressions
+     */
+    public void describeCall(final String name, final List<Expression> callArgs) {
+        this.functionName = name;
+        this.arguments = callArgs;
+    }
+
+    /** The window function's name, or null when this node was built without one. */
+    public String getFunctionName() {
+        return functionName;
+    }
+
+    /** The window call's argument expressions, or null when this node was built without them. */
+    public List<Expression> getArguments() {
+        return arguments;
     }
 
     @Override

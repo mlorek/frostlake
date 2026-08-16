@@ -49,6 +49,7 @@ public class StageFileOpsTest {
         localDir = Files.createTempDirectory("stage_ops_local_");
         final EngineConfig config = new EngineConfig();
         config.setProperty(EngineConfig.PROP_COMMAND_REMOVE_ENABLED, "true");  // REMOVE/RM is gated off by default; this suite exercises it
+        config.setProperty(EngineConfig.PROP_STAGE_FILE_URL_ENABLED, "true");
         engine = new DatabaseEngine(config);
         engine.execute("CREATE DATABASE db");
         engine.execute("USE DATABASE db");
@@ -71,9 +72,11 @@ public class StageFileOpsTest {
         final Path local = localDir.resolve("up.csv");
         Files.writeString(local, "1,Alice\n");
 
+        // Default AUTO_COMPRESS gzips and renames the target, exactly like a real account.
         final ResultSet rs = engine.executeQuery("PUT 'file://" + local + "' @st");
-        assertEquals("UPLOADED", String.valueOf(rs.getRows().get(0).getValue(4)));
-        assertTrue(Files.exists(stageDir.resolve("up.csv")), "PUT should copy the file into the stage dir");
+        assertEquals("UPLOADED", String.valueOf(rs.getRows().get(0).getValue(rs.getColumnIndex("status"))));
+        assertEquals("up.csv.gz", String.valueOf(rs.getRows().get(0).getValue(rs.getColumnIndex("target"))));
+        assertTrue(Files.exists(stageDir.resolve("up.csv.gz")), "PUT should land the gzipped file in the stage dir");
     }
 
     @Test

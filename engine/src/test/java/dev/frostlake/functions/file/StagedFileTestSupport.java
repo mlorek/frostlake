@@ -51,6 +51,11 @@ public abstract class StagedFileTestSupport extends FileFunctionTestSupport {
     @Override
     protected void setupTest() {
         if (isLiveSnowflake()) {
+            // Live: an INTERNAL stage under the same name, with SERVER-SIDE encryption so the
+            // FILE descriptor's SIZE and ETAG reflect the plain bytes (the client-side default
+            // pads sizes to the cipher block — 24 bytes read back as 32). stage()/stageBytes()
+            // PUT into it, so cells whose asserts hold there can lift their guards one by one.
+            engine.execute("CREATE STAGE st ENCRYPTION = (TYPE = 'SNOWFLAKE_SSE')");
             return;
         }
         try {
@@ -76,10 +81,31 @@ public abstract class StagedFileTestSupport extends FileFunctionTestSupport {
 
     /** Write a binary file into the stage, creating any sub-directories it names. */
     protected void stageBytes(final String relativePath, final byte[] content) {
+        if (isLiveSnowflake()) {
+            putBytes(relativePath, content);
+            return;
+        }
         final Path target = stageDir.resolve(relativePath);
         try {
             Files.createDirectories(target.getParent());
             Files.write(target, content);
+        } catch (final IOException e) {
+            throw new UncheckedIOException(e);
+        }
+    }
+
+    /** Live staging: the bytes land via a real PUT (uncompressed, so the staged name is exact). */
+    private void putBytes(final String relativePath, final byte[] content) {
+        try {
+            final Path dir = Files.createTempDirectory("fl_file_fn_put");
+            final int slash = relativePath.lastIndexOf('/');
+            final String fileName = slash >= 0 ? relativePath.substring(slash + 1) : relativePath;
+            final String subPath = slash >= 0 ? "/" + relativePath.substring(0, slash) : "";
+            final Path file = dir.resolve(fileName);
+            Files.write(file, content);
+            // Quoted, so names carrying spaces or non-ASCII letters survive the statement.
+            engine.execute("PUT 'file://" + file.toAbsolutePath() + "' @st" + subPath
+                + " AUTO_COMPRESS=FALSE");
         } catch (final IOException e) {
             throw new UncheckedIOException(e);
         }

@@ -17,15 +17,14 @@
 package dev.frostlake.jdbc;
 
 import dev.frostlake.BaseJdbcTest;
-import org.junit.jupiter.api.Assumptions;
-import org.junit.jupiter.api.Test;
-
 import java.math.BigDecimal;
 import java.sql.CallableStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Types;
-
+import org.junit.jupiter.api.Assumptions;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -44,7 +43,7 @@ public class CallableStatementTest extends BaseJdbcTest {
 
     @Test
     public void testCallableStatementCreation() throws SQLException {
-        CallableStatement cstmt = connection.prepareCall("CALL test_proc(?)");
+        final CallableStatement cstmt = connection.prepareCall("CALL test_proc(?)");
         assertNotNull(cstmt);
         assertFalse(cstmt.isClosed());
         cstmt.close();
@@ -54,10 +53,10 @@ public class CallableStatementTest extends BaseJdbcTest {
     @Test
     public void testCallFunctionWithIntegerParameter() throws SQLException {
         // Test with simple arithmetic expression
-        CallableStatement cstmt = connection.prepareCall("SELECT ? * 2");
+        final CallableStatement cstmt = connection.prepareCall("SELECT ? * 2");
         cstmt.setInt(1, 5);
 
-        ResultSet rs = cstmt.executeQuery();
+        final ResultSet rs = cstmt.executeQuery();
         assertTrue(rs.next());
         assertEquals(10, rs.getInt(1));
 
@@ -68,10 +67,10 @@ public class CallableStatementTest extends BaseJdbcTest {
     @Test
     public void testCallFunctionWithStringParameter() throws SQLException {
         // Test with string concatenation
-        CallableStatement cstmt = connection.prepareCall("SELECT ?");
+        final CallableStatement cstmt = connection.prepareCall("SELECT ?");
         cstmt.setString(1, "Hello, World");
 
-        ResultSet rs = cstmt.executeQuery();
+        final ResultSet rs = cstmt.executeQuery();
         assertTrue(rs.next());
         assertEquals("Hello, World", rs.getString(1));
 
@@ -82,11 +81,11 @@ public class CallableStatementTest extends BaseJdbcTest {
     @Test
     public void testCallFunctionWithMultipleParameters() throws SQLException {
         // Test with simple addition
-        CallableStatement cstmt = connection.prepareCall("SELECT ? + ?");
+        final CallableStatement cstmt = connection.prepareCall("SELECT ? + ?");
         cstmt.setInt(1, 10);
         cstmt.setInt(2, 20);
 
-        ResultSet rs = cstmt.executeQuery();
+        final ResultSet rs = cstmt.executeQuery();
         assertTrue(rs.next());
         assertEquals(30, rs.getInt(1));
 
@@ -100,7 +99,7 @@ public class CallableStatementTest extends BaseJdbcTest {
         // Create a procedure that returns a value
         statement.execute("CREATE PROCEDURE get_constant() RETURNS INTEGER AS 'begin RETURN 42; end;'");
 
-        CallableStatement cstmt = connection.prepareCall("CALL get_constant()");
+        final CallableStatement cstmt = connection.prepareCall("CALL get_constant()");
         cstmt.registerOutParameter(1, Types.INTEGER);
 
         cstmt.execute();
@@ -113,10 +112,10 @@ public class CallableStatementTest extends BaseJdbcTest {
 
     @Test
     public void testSetAndGetIntegerParameter() throws SQLException {
-        CallableStatement cstmt = connection.prepareCall("SELECT ?");
+        final CallableStatement cstmt = connection.prepareCall("SELECT ?");
         cstmt.setInt(1, 100);
 
-        ResultSet rs = cstmt.executeQuery();
+        final ResultSet rs = cstmt.executeQuery();
         assertTrue(rs.next());
         assertEquals(100, rs.getInt(1));
 
@@ -126,10 +125,10 @@ public class CallableStatementTest extends BaseJdbcTest {
 
     @Test
     public void testSetAndGetStringParameter() throws SQLException {
-        CallableStatement cstmt = connection.prepareCall("SELECT ?");
+        final CallableStatement cstmt = connection.prepareCall("SELECT ?");
         cstmt.setString(1, "test_string");
 
-        ResultSet rs = cstmt.executeQuery();
+        final ResultSet rs = cstmt.executeQuery();
         assertTrue(rs.next());
         assertEquals("test_string", rs.getString(1));
 
@@ -139,10 +138,10 @@ public class CallableStatementTest extends BaseJdbcTest {
 
     @Test
     public void testSetAndGetBooleanParameter() throws SQLException {
-        CallableStatement cstmt = connection.prepareCall("SELECT ?");
+        final CallableStatement cstmt = connection.prepareCall("SELECT ?");
         cstmt.setBoolean(1, true);
 
-        ResultSet rs = cstmt.executeQuery();
+        final ResultSet rs = cstmt.executeQuery();
         assertTrue(rs.next());
         assertTrue(rs.getBoolean(1));
 
@@ -152,10 +151,10 @@ public class CallableStatementTest extends BaseJdbcTest {
 
     @Test
     public void testSetAndGetDoubleParameter() throws SQLException {
-        CallableStatement cstmt = connection.prepareCall("SELECT ?");
+        final CallableStatement cstmt = connection.prepareCall("SELECT ?");
         cstmt.setDouble(1, 3.14159);
 
-        ResultSet rs = cstmt.executeQuery();
+        final ResultSet rs = cstmt.executeQuery();
         assertTrue(rs.next());
         assertEquals(3.14159, rs.getDouble(1), 0.00001);
 
@@ -165,11 +164,11 @@ public class CallableStatementTest extends BaseJdbcTest {
 
     @Test
     public void testSetAndGetBigDecimalParameter() throws SQLException {
-        CallableStatement cstmt = connection.prepareCall("SELECT ?");
-        BigDecimal value = new BigDecimal("12345.6789");
+        final CallableStatement cstmt = connection.prepareCall("SELECT ?");
+        final BigDecimal value = new BigDecimal("12345.6789");
         cstmt.setBigDecimal(1, value);
 
-        ResultSet rs = cstmt.executeQuery();
+        final ResultSet rs = cstmt.executeQuery();
         assertTrue(rs.next());
         assertEquals(0, value.compareTo(rs.getBigDecimal(1)));
 
@@ -181,13 +180,13 @@ public class CallableStatementTest extends BaseJdbcTest {
     public void testNamedParameters() throws SQLException {
         Assumptions.assumeFalse(isLiveSnowflake(), NAMED_PARAMETERS);
         // Test named parameter parsing
-        CallableStatement cstmt = connection.prepareCall("SELECT :param1, :param2");
+        final CallableStatement cstmt = connection.prepareCall("SELECT :param1, :param2");
 
         // Set parameters by name
         cstmt.setString("param1", "first");
         cstmt.setString("param2", "second");
 
-        ResultSet rs = cstmt.executeQuery();
+        final ResultSet rs = cstmt.executeQuery();
         assertTrue(rs.next());
         assertEquals("first", rs.getString(1));
         assertEquals("second", rs.getString(2));
@@ -199,11 +198,15 @@ public class CallableStatementTest extends BaseJdbcTest {
     @Test
     public void testNamedParameterNotFound() throws SQLException {
         Assumptions.assumeFalse(isLiveSnowflake(), NAMED_PARAMETERS);
-        CallableStatement cstmt = connection.prepareCall("SELECT :param1");
+        final CallableStatement cstmt = connection.prepareCall("SELECT :param1");
 
         // Try to set a parameter that doesn't exist
-        assertThrows(SQLException.class, () -> {
-            cstmt.setString("nonexistent", "value");
+        assertThrows(SQLException.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                cstmt.setString("nonexistent", "value");
+                
+            }
         });
 
         cstmt.close();
@@ -212,7 +215,7 @@ public class CallableStatementTest extends BaseJdbcTest {
     @Test
     public void testRegisterOutParameterWithScale() throws SQLException {
         Assumptions.assumeFalse(isLiveSnowflake(), OUT_PARAMETERS);
-        CallableStatement cstmt = connection.prepareCall("CALL test_proc(?)");
+        final CallableStatement cstmt = connection.prepareCall("CALL test_proc(?)");
         cstmt.registerOutParameter(1, Types.DECIMAL, 2);
 
         // Should not throw exception
@@ -222,7 +225,7 @@ public class CallableStatementTest extends BaseJdbcTest {
     @Test
     public void testRegisterOutParameterWithTypeName() throws SQLException {
         Assumptions.assumeFalse(isLiveSnowflake(), OUT_PARAMETERS);
-        CallableStatement cstmt = connection.prepareCall("CALL test_proc(?)");
+        final CallableStatement cstmt = connection.prepareCall("CALL test_proc(?)");
         cstmt.registerOutParameter(1, Types.VARCHAR, "VARCHAR");
 
         // Should not throw exception
@@ -232,7 +235,7 @@ public class CallableStatementTest extends BaseJdbcTest {
     @Test
     public void testRegisterNamedOutParameter() throws SQLException {
         Assumptions.assumeFalse(isLiveSnowflake(), OUT_PARAMETERS);
-        CallableStatement cstmt = connection.prepareCall("CALL test_proc(:result)");
+        final CallableStatement cstmt = connection.prepareCall("CALL test_proc(:result)");
         cstmt.registerOutParameter("result", Types.INTEGER);
 
         // Should not throw exception
@@ -241,10 +244,10 @@ public class CallableStatementTest extends BaseJdbcTest {
 
     @Test
     public void testSetNullParameter() throws SQLException {
-        CallableStatement cstmt = connection.prepareCall("SELECT ?");
+        final CallableStatement cstmt = connection.prepareCall("SELECT ?");
         cstmt.setNull(1, Types.VARCHAR);
 
-        ResultSet rs = cstmt.executeQuery();
+        final ResultSet rs = cstmt.executeQuery();
         assertTrue(rs.next());
         assertEquals(null, rs.getString(1));
 
@@ -255,10 +258,10 @@ public class CallableStatementTest extends BaseJdbcTest {
     @Test
     public void testSetNullNamedParameter() throws SQLException {
         Assumptions.assumeFalse(isLiveSnowflake(), NAMED_PARAMETERS);
-        CallableStatement cstmt = connection.prepareCall("SELECT :param");
+        final CallableStatement cstmt = connection.prepareCall("SELECT :param");
         cstmt.setNull("param", Types.INTEGER);
 
-        ResultSet rs = cstmt.executeQuery();
+        final ResultSet rs = cstmt.executeQuery();
         assertTrue(rs.next());
         assertEquals(null, rs.getObject(1));
 
@@ -269,13 +272,13 @@ public class CallableStatementTest extends BaseJdbcTest {
     @Test
     public void testCallProcedureWithComplexLogic() throws SQLException {
         // Create a procedure with conditional logic
-        String procBody = "BEGIN IF (x > 10) THEN RETURN 'HIGH'; ELSE RETURN 'LOW'; END IF; END;";
+        final String procBody = "BEGIN IF (x > 10) THEN RETURN 'HIGH'; ELSE RETURN 'LOW'; END IF; END;";
         statement.execute("CREATE PROCEDURE check_threshold(x INTEGER) RETURNS VARCHAR AS $$" + procBody + "$$");
 
-        CallableStatement cstmt = connection.prepareCall("CALL check_threshold(?)");
+        final CallableStatement cstmt = connection.prepareCall("CALL check_threshold(?)");
         cstmt.setInt(1, 15);
 
-        boolean hasResults = cstmt.execute();
+        final boolean hasResults = cstmt.execute();
         // Procedure execution should complete
 
         cstmt.close();
@@ -284,9 +287,9 @@ public class CallableStatementTest extends BaseJdbcTest {
     @Test
     public void testCallFunctionWithNoParameters() throws SQLException {
         // Test with constant value
-        CallableStatement cstmt = connection.prepareCall("SELECT 3.14159");
+        final CallableStatement cstmt = connection.prepareCall("SELECT 3.14159");
 
-        ResultSet rs = cstmt.executeQuery();
+        final ResultSet rs = cstmt.executeQuery();
         assertTrue(rs.next());
         assertEquals(3.14159, rs.getDouble(1), 0.00001);
 
@@ -297,21 +300,21 @@ public class CallableStatementTest extends BaseJdbcTest {
     @Test
     public void testExecuteVsExecuteQuery() throws SQLException {
         // Test both execute() and executeQuery() methods
-        CallableStatement cstmt = connection.prepareCall("SELECT ? * 3");
+        final CallableStatement cstmt = connection.prepareCall("SELECT ? * 3");
         cstmt.setInt(1, 4);
 
         // Use executeQuery
-        ResultSet rs = cstmt.executeQuery();
+        final ResultSet rs = cstmt.executeQuery();
         assertTrue(rs.next());
         assertEquals(12, rs.getInt(1));
         rs.close();
 
         // Use execute
         cstmt.setInt(1, 5);
-        boolean hasResultSet = cstmt.execute();
+        final boolean hasResultSet = cstmt.execute();
         assertTrue(hasResultSet);
 
-        ResultSet rs2 = cstmt.getResultSet();
+        final ResultSet rs2 = cstmt.getResultSet();
         assertTrue(rs2.next());
         assertEquals(15, rs2.getInt(1));
         rs2.close();
@@ -322,12 +325,12 @@ public class CallableStatementTest extends BaseJdbcTest {
     @Test
     public void testMultipleExecutions() throws SQLException {
         // Test executing the same CallableStatement multiple times
-        CallableStatement cstmt = connection.prepareCall("SELECT ? * ?");
+        final CallableStatement cstmt = connection.prepareCall("SELECT ? * ?");
 
         // First execution
         cstmt.setInt(1, 3);
         cstmt.setInt(2, 3);
-        ResultSet rs1 = cstmt.executeQuery();
+        final ResultSet rs1 = cstmt.executeQuery();
         assertTrue(rs1.next());
         assertEquals(9, rs1.getInt(1));
         rs1.close();
@@ -335,7 +338,7 @@ public class CallableStatementTest extends BaseJdbcTest {
         // Second execution
         cstmt.setInt(1, 4);
         cstmt.setInt(2, 4);
-        ResultSet rs2 = cstmt.executeQuery();
+        final ResultSet rs2 = cstmt.executeQuery();
         assertTrue(rs2.next());
         assertEquals(16, rs2.getInt(1));
         rs2.close();
@@ -343,7 +346,7 @@ public class CallableStatementTest extends BaseJdbcTest {
         // Third execution
         cstmt.setInt(1, 5);
         cstmt.setInt(2, 5);
-        ResultSet rs3 = cstmt.executeQuery();
+        final ResultSet rs3 = cstmt.executeQuery();
         assertTrue(rs3.next());
         assertEquals(25, rs3.getInt(1));
         rs3.close();
@@ -357,10 +360,10 @@ public class CallableStatementTest extends BaseJdbcTest {
         statement.execute("CREATE TABLE test_table (id INTEGER, name VARCHAR)");
         statement.execute("INSERT INTO test_table VALUES (1, 'Alice'), (2, 'Bob')");
 
-        CallableStatement cstmt = connection.prepareCall("SELECT * FROM test_table WHERE id = ?");
+        final CallableStatement cstmt = connection.prepareCall("SELECT * FROM test_table WHERE id = ?");
         cstmt.setInt(1, 1);
 
-        ResultSet rs = cstmt.executeQuery();
+        final ResultSet rs = cstmt.executeQuery();
         assertTrue(rs.next());
         assertEquals(1, rs.getInt("id"));
         assertEquals("Alice", rs.getString("name"));

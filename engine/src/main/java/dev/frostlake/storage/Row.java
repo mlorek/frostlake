@@ -71,7 +71,7 @@ public class Row {
     public boolean equals(final Object obj) {
         if (this == obj) return true;
         if (obj == null || getClass() != obj.getClass()) return false;
-        Row row = (Row) obj;
+        final Row row = (Row) obj;
         return Objects.equals(values, row.values);
     }
 

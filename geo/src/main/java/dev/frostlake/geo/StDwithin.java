@@ -35,6 +35,8 @@ public class StDwithin extends BuiltInFunction {
         return Boolean.valueOf(GeoShapes.minDistance(a, b) <= ((Number) args.get(2)).doubleValue());
     }
 
-    @Override public int getMinArgCount() { return 3; }
-    @Override public int getMaxArgCount() { return 3; }
+    @Override
+    public int getMinArgCount() { return 3; }
+    @Override
+    public int getMaxArgCount() { return 3; }
 }

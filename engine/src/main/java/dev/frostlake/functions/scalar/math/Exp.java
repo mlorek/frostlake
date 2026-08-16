@@ -27,10 +27,12 @@ public class Exp extends NumericArgumentFunction {
     @Override
     public Object evaluate(final List<Object> args) {
         if (args.get(0) == null) return null;
-        double exponent = ((Number) args.get(0)).doubleValue();
+        final double exponent = ((Number) args.get(0)).doubleValue();
         return Math.exp(exponent);
     }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return 1; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return 1; }
 }

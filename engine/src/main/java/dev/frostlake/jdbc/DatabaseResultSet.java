@@ -16,13 +16,28 @@
 
 package dev.frostlake.jdbc;
 
-import dev.frostlake.http.SqlResponse;
+import dev.frostlake.http.ResultSetData;
 
 import java.io.InputStream;
 import java.io.Reader;
 import java.math.BigDecimal;
 import java.net.URL;
-import java.sql.*;
+import java.sql.Array;
+import java.sql.Blob;
+import java.sql.Clob;
+import java.sql.Date;
+import java.sql.NClob;
+import java.sql.Ref;
+import java.sql.ResultSet;
+import java.sql.ResultSetMetaData;
+import java.sql.RowId;
+import java.sql.SQLException;
+import java.sql.SQLFeatureNotSupportedException;
+import java.sql.SQLWarning;
+import java.sql.SQLXML;
+import java.sql.Statement;
+import java.sql.Time;
+import java.sql.Timestamp;
 import java.util.Calendar;
 import java.util.List;
 import java.util.Map;
@@ -32,12 +47,12 @@ import java.util.Map;
  */
 public class DatabaseResultSet implements ResultSet {
     private final Statement statement;
-    private final SqlResponse.ResultSetData data;
+    private final ResultSetData data;
     private int currentRow;
     private boolean closed;
     private boolean wasNull;
 
-    public DatabaseResultSet(final Statement statement, final SqlResponse.ResultSetData data) {
+    public DatabaseResultSet(final Statement statement, final ResultSetData data) {
         this.statement = statement;
         this.data = data;
         this.currentRow = -1;
@@ -69,14 +84,14 @@ public class DatabaseResultSet implements ResultSet {
 
     @Override
     public String getString(final int columnIndex) throws SQLException {
-        Object value = getValue(columnIndex);
+        final Object value = getValue(columnIndex);
         wasNull = (value == null);
         return value == null ? null : value.toString();
     }
 
     @Override
     public boolean getBoolean(final int columnIndex) throws SQLException {
-        Object value = getValue(columnIndex);
+        final Object value = getValue(columnIndex);
         wasNull = (value == null);
         if (value == null) return false;
         if (value instanceof Boolean) return (Boolean) value;
@@ -85,7 +100,7 @@ public class DatabaseResultSet implements ResultSet {
 
     @Override
     public byte getByte(final int columnIndex) throws SQLException {
-        Object value = getValue(columnIndex);
+        final Object value = getValue(columnIndex);
         wasNull = (value == null);
         if (value == null) return 0;
         if (value instanceof Number) return ((Number) value).byteValue();
@@ -94,7 +109,7 @@ public class DatabaseResultSet implements ResultSet {
 
     @Override
     public short getShort(final int columnIndex) throws SQLException {
-        Object value = getValue(columnIndex);
+        final Object value = getValue(columnIndex);
         wasNull = (value == null);
         if (value == null) return 0;
         if (value instanceof Number) return ((Number) value).shortValue();
@@ -103,7 +118,7 @@ public class DatabaseResultSet implements ResultSet {
 
     @Override
     public int getInt(final int columnIndex) throws SQLException {
-        Object value = getValue(columnIndex);
+        final Object value = getValue(columnIndex);
         wasNull = (value == null);
         if (value == null) return 0;
         if (value instanceof Number) return ((Number) value).intValue();
@@ -112,7 +127,7 @@ public class DatabaseResultSet implements ResultSet {
 
     @Override
     public long getLong(final int columnIndex) throws SQLException {
-        Object value = getValue(columnIndex);
+        final Object value = getValue(columnIndex);
         wasNull = (value == null);
         if (value == null) return 0;
         if (value instanceof Number) return ((Number) value).longValue();
@@ -121,7 +136,7 @@ public class DatabaseResultSet implements ResultSet {
 
     @Override
     public float getFloat(final int columnIndex) throws SQLException {
-        Object value = getValue(columnIndex);
+        final Object value = getValue(columnIndex);
         wasNull = (value == null);
         if (value == null) return 0;
         if (value instanceof Number) return ((Number) value).floatValue();
@@ -130,7 +145,7 @@ public class DatabaseResultSet implements ResultSet {
 
     @Override
     public double getDouble(final int columnIndex) throws SQLException {
-        Object value = getValue(columnIndex);
+        final Object value = getValue(columnIndex);
         wasNull = (value == null);
         if (value == null) return 0;
         if (value instanceof Number) return ((Number) value).doubleValue();
@@ -139,7 +154,7 @@ public class DatabaseResultSet implements ResultSet {
 
     @Override
     public BigDecimal getBigDecimal(final int columnIndex, final int scale) throws SQLException {
-        Object value = getValue(columnIndex);
+        final Object value = getValue(columnIndex);
         wasNull = (value == null);
         if (value == null) return null;
         if (value instanceof BigDecimal) return (BigDecimal) value;
@@ -148,28 +163,28 @@ public class DatabaseResultSet implements ResultSet {
 
     @Override
     public byte[] getBytes(final int columnIndex) throws SQLException {
-        Object value = getValue(columnIndex);
+        final Object value = getValue(columnIndex);
         wasNull = (value == null);
         return JdbcMarshaling.toBytes(value);
     }
 
     @Override
     public Date getDate(final int columnIndex) throws SQLException {
-        Object value = getValue(columnIndex);
+        final Object value = getValue(columnIndex);
         wasNull = (value == null);
         return JdbcMarshaling.toDate(value);
     }
 
     @Override
     public Time getTime(final int columnIndex) throws SQLException {
-        Object value = getValue(columnIndex);
+        final Object value = getValue(columnIndex);
         wasNull = (value == null);
         return JdbcMarshaling.toTime(value);
     }
 
     @Override
     public Timestamp getTimestamp(final int columnIndex) throws SQLException {
-        Object value = getValue(columnIndex);
+        final Object value = getValue(columnIndex);
         wasNull = (value == null);
         return JdbcMarshaling.toTimestamp(value);
     }
@@ -291,7 +306,7 @@ public class DatabaseResultSet implements ResultSet {
 
     @Override
     public Object getObject(final int columnIndex) throws SQLException {
-        Object value = getValue(columnIndex);
+        final Object value = getValue(columnIndex);
         wasNull = (value == null);
         if (value instanceof String && columnIndex <= data.getColumns().size()) {
             final String typeName = data.getColumns().get(columnIndex - 1).getDataType();
@@ -330,7 +345,7 @@ public class DatabaseResultSet implements ResultSet {
 
     @Override
     public BigDecimal getBigDecimal(final int columnIndex) throws SQLException {
-        Object value = getValue(columnIndex);
+        final Object value = getValue(columnIndex);
         wasNull = (value == null);
         if (value == null) return null;
         if (value instanceof BigDecimal) return (BigDecimal) value;
@@ -406,7 +421,7 @@ public class DatabaseResultSet implements ResultSet {
 
     @Override
     public boolean relative(final int rows) throws SQLException {
-        int newRow = currentRow + rows;
+        final int newRow = currentRow + rows;
         if (newRow >= 0 && newRow < data.getRowCount()) {
             currentRow = newRow;
             return true;
@@ -721,7 +736,7 @@ public class DatabaseResultSet implements ResultSet {
 
     @Override
     public Array getArray(final int columnIndex) throws SQLException {
-        Object value = getValue(columnIndex);
+        final Object value = getValue(columnIndex);
         wasNull = (value == null);
         return EngineArray.from(value);
     }
@@ -1073,7 +1088,7 @@ public class DatabaseResultSet implements ResultSet {
 
     @Override
     public <T> T getObject(final int columnIndex, final Class<T> type) throws SQLException {
-        Object value = getValue(columnIndex);
+        final Object value = getValue(columnIndex);
         if (value == null) {
             return null;
         }
@@ -1118,7 +1133,7 @@ public class DatabaseResultSet implements ResultSet {
             throw new SQLException("Invalid column index: " + columnIndex);
         }
 
-        List<Object> row = data.getRows().get(currentRow);
+        final List<Object> row = data.getRows().get(currentRow);
         return row.get(columnIndex - 1); // JDBC columns are 1-based
     }
 }

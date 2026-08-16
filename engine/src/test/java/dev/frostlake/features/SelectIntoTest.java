@@ -16,34 +16,24 @@
 
 package dev.frostlake.features;
 
-import dev.frostlake.DatabaseEngine;
+import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
-public class SelectIntoTest {
+public class SelectIntoTest extends BaseDatabaseTest {
 
-    private DatabaseEngine engine;
-
-    @BeforeEach
-    public void setUp() {
-        engine = new DatabaseEngine();
+    @Override
+    protected void setupTest() {
         engine.execute("CREATE DATABASE IF NOT EXISTS test_db");
-        engine.execute("USE DATABASE test_db");
-        engine.execute("USE SCHEMA public");
-    }
-
-    @AfterEach
-    public void tearDown() {
-        if (engine != null) engine.shutdown();
     }
 
     @Test
     public void testSelectIntoReturnsOne() {
-        ResultSet rs = engine.executeQuery(
+        final ResultSet rs = engine.executeQuery(
             "DECLARE\n" +
             "    s STRING DEFAULT '';\n" +
             "    b BOOLEAN DEFAULT TRUE;\n" +
@@ -61,14 +51,14 @@ public class SelectIntoTest {
         );
         assertNotNull(rs);
         assertEquals(1, rs.getRowCount());
-        Object val = rs.getRows().get(0).getValue(0);
+        final Object val = rs.getRows().get(0).getValue(0);
         assertNotNull(val, "Block should return a value");
         assertEquals(1L, Long.parseLong(val.toString()), "Expected block to return 1");
     }
 
     @Test
     public void testSelectIntoMultipleVars() {
-        ResultSet rs = engine.executeQuery(
+        final ResultSet rs = engine.executeQuery(
             "DECLARE\n" +
             "    a INTEGER;\n" +
             "    b VARCHAR;\n" +
@@ -87,7 +77,7 @@ public class SelectIntoTest {
     @Test
     public void testSelectIntoWithLimit() {
         // LIMIT reduces a multi-row result to the single row that SELECT INTO requires.
-        ResultSet rs = engine.executeQuery("""
+        final ResultSet rs = engine.executeQuery("""
             DECLARE
                 v INTEGER;
             BEGIN
@@ -104,7 +94,7 @@ public class SelectIntoTest {
 
     @Test
     public void testSelectIntoWithLimitOffset() {
-        ResultSet rs = engine.executeQuery("""
+        final ResultSet rs = engine.executeQuery("""
             DECLARE
                 v INTEGER;
             BEGIN
@@ -121,7 +111,7 @@ public class SelectIntoTest {
 
     @Test
     public void testSelectIntoWithFetchFirst() {
-        ResultSet rs = engine.executeQuery("""
+        final ResultSet rs = engine.executeQuery("""
             DECLARE
                 v INTEGER;
             BEGIN
@@ -139,7 +129,7 @@ public class SelectIntoTest {
     @Test
     public void testSelectIntoWithQualify() {
         // QUALIFY over a window function also narrows the result to one row before INTO assigns it.
-        ResultSet rs = engine.executeQuery("""
+        final ResultSet rs = engine.executeQuery("""
             DECLARE
                 v INTEGER;
             BEGIN
@@ -158,7 +148,7 @@ public class SelectIntoTest {
     public void testSelectIntoZeroRowsAssignsNull() {
         // Snowflake Scripting (verified against live Snowflake): SELECT INTO over ZERO rows assigns
         // NULL to the targets and continues — it does NOT raise. Only more than one row errors.
-        ResultSet rs = engine.executeQuery("""
+        final ResultSet rs = engine.executeQuery("""
             DECLARE
                 col_type STRING;
             BEGIN
@@ -175,7 +165,7 @@ public class SelectIntoTest {
     public void testSelectIntoZeroRowsLetsAProbeBlockComplete() {
         // The vendor stream-reset idiom: probe SHOW output via RESULT_SCAN; on a fresh database the
         // probe finds nothing, the flag stays NULL, the IF is skipped and the block returns normally.
-        ResultSet rs = engine.executeQuery("""
+        final ResultSet rs = engine.executeQuery("""
             DECLARE
                 stale_flag BOOLEAN DEFAULT FALSE;
             BEGIN

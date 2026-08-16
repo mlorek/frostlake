@@ -17,11 +17,11 @@
 package dev.frostlake.executor.operators;
 
 import dev.frostlake.executor.AmbiguousColumnException;
-import dev.frostlake.executor.InvalidQualifierException;
 import dev.frostlake.executor.ExpressionEvaluator;
-import dev.frostlake.executor.expressions.SqlTruth;
+import dev.frostlake.executor.InvalidQualifierException;
 import dev.frostlake.executor.expressions.Expression;
 import dev.frostlake.executor.expressions.RowOrdinal;
+import dev.frostlake.executor.expressions.SqlTruth;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.storage.Row;
 import org.slf4j.Logger;
@@ -57,7 +57,7 @@ public class WhereOperator implements Operator {
      * Create a WHERE operator with automatic mode detection.
      */
     public static WhereOperator create(final String whereExpression, final OperatorContext context) {
-        WhereEvaluationMode mode;
+        final WhereEvaluationMode mode;
         if (context.hasLateralContext()) {
             mode = WhereEvaluationMode.WITH_LATERAL_CONTEXT;
         } else if (context.hasMultipleTables()) {
@@ -105,7 +105,7 @@ public class WhereOperator implements Operator {
      * Simple filtering for single table queries.
      */
     private List<Row> filterSimple(final List<Row> rows, final OperatorContext context) {
-        ExpressionEvaluator evaluator = new ExpressionEvaluator(
+        final ExpressionEvaluator evaluator = new ExpressionEvaluator(
             context.getTable(),
             context.getFunctionRegistry(),
             getCatalog(context),
@@ -126,14 +126,14 @@ public class WhereOperator implements Operator {
         // Parse the predicate once, then evaluate the AST per row.
         final Expression parsed = ExpressionEvaluator.parse(whereExpression);
         evaluator.validatePredicate(parsed);
-        List<Row> filtered = new ArrayList<>();
+        final List<Row> filtered = new ArrayList<>();
 
         for (int rowIndex = 0; rowIndex < rows.size(); rowIndex++) {
             final Row row = rows.get(rowIndex);
             // Number the rows the filter reads, so a SEQ1/2/4/8 in the predicate counts them.
             final Long displacedOrdinal = RowOrdinal.begin(rowIndex);
             try {
-                Object result = evaluator.evaluate(parsed, row);
+                final Object result = evaluator.evaluate(parsed, row);
                 if (SqlTruth.isTrue(result)) {
                     filtered.add(row);
                 }
@@ -165,7 +165,7 @@ public class WhereOperator implements Operator {
     }
 
     private List<Row> filterWithAliases(final List<Row> rows, final OperatorContext context) {
-        List<Row> filtered = new ArrayList<>();
+        final List<Row> filtered = new ArrayList<>();
         final Expression parsed = ExpressionEvaluator.parse(whereExpression);
         validatePredicateOnce(parsed, context);
 
@@ -174,7 +174,7 @@ public class WhereOperator implements Operator {
             final Long displacedOrdinal = RowOrdinal.begin(rowIndex);
             try {
                 // Try to evaluate with alias support
-                Object result = evaluateWithAliases(parsed, row, context);
+                final Object result = evaluateWithAliases(parsed, row, context);
                 if (SqlTruth.isTrue(result)) {
                     filtered.add(row);
                 }
@@ -190,13 +190,13 @@ public class WhereOperator implements Operator {
                     e.getMessage());
                 // Fallback to simple evaluation
                 try {
-                    ExpressionEvaluator evaluator = new ExpressionEvaluator(
+                    final ExpressionEvaluator evaluator = new ExpressionEvaluator(
                         context.getTable(),
                         context.getFunctionRegistry(),
                         getCatalog(context),
                         context.getQueryExecutor()
                     );
-                    Object result = evaluator.evaluate(parsed, row);
+                    final Object result = evaluator.evaluate(parsed, row);
                     if (SqlTruth.isTrue(result)) {
                         filtered.add(row);
                     }
@@ -222,7 +222,7 @@ public class WhereOperator implements Operator {
             return filterWithAliases(rows, context);
         }
 
-        List<Row> filtered = new ArrayList<>();
+        final List<Row> filtered = new ArrayList<>();
         final Expression parsed = ExpressionEvaluator.parse(whereExpression);
         validatePredicateOnce(parsed, context);
 
@@ -232,7 +232,7 @@ public class WhereOperator implements Operator {
             try {
                 // For lateral context, we need to evaluate with outer row values
                 // This is a placeholder - full implementation would require QueryExecutor integration
-                Object result = evaluateWithAliases(parsed, row, context);
+                final Object result = evaluateWithAliases(parsed, row, context);
                 if (SqlTruth.isTrue(result)) {
                     filtered.add(row);
                 }
@@ -262,7 +262,7 @@ public class WhereOperator implements Operator {
         }
 
         // Fallback to simple evaluation
-        ExpressionEvaluator evaluator = new ExpressionEvaluator(
+        final ExpressionEvaluator evaluator = new ExpressionEvaluator(
             context.getTable(),
             context.getFunctionRegistry(),
             getCatalog(context)

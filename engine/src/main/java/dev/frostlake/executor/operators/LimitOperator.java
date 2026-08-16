@@ -48,8 +48,8 @@ public class LimitOperator implements Operator {
             return input;
         }
 
-        int startIndex = offset;
-        int endIndex = Math.min(offset + limit, input.size());
+        final int startIndex = offset;
+        final int endIndex = Math.min(offset + limit, input.size());
 
         if (startIndex >= input.size()) {
             logger.debug("LIMIT offset {} exceeds input size {}, returning empty result",
@@ -57,7 +57,7 @@ public class LimitOperator implements Operator {
             return new ArrayList<>();
         }
 
-        List<Row> result = new ArrayList<>(input.subList(startIndex, endIndex));
+        final List<Row> result = new ArrayList<>(input.subList(startIndex, endIndex));
 
         logger.debug("LIMIT {} OFFSET {}: {} -> {} rows",
             limit, offset, input.size(), result.size());

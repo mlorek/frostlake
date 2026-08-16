@@ -35,6 +35,8 @@ public class CurrentUser extends BuiltInFunction {
         return sessionContext.getDisplayUser();
     }
 
-    @Override public int getMinArgCount() { return 0; }
-    @Override public int getMaxArgCount() { return 0; }
+    @Override
+    public int getMinArgCount() { return 0; }
+    @Override
+    public int getMaxArgCount() { return 0; }
 }

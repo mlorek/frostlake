@@ -164,7 +164,7 @@ public class ImplicitStageTest {
             id,name
             7,gina
             8,hank
-            """) + " @%c");
+            """) + " @%c AUTO_COMPRESS=FALSE");
 
         final ResultSet copied = engine.executeQuery("COPY INTO c FILE_FORMAT = (TYPE = CSV SKIP_HEADER = 1)");
 
@@ -186,7 +186,7 @@ public class ImplicitStageTest {
             id,name
             7,gina
             8,hank
-            """) + " @%c");
+            """) + " @%c AUTO_COMPRESS=FALSE");
 
         engine.executeQuery("COPY INTO c FILE_FORMAT = (TYPE = CSV SKIP_HEADER = 1)");
         assertEquals(2, count("c"));
@@ -226,11 +226,11 @@ public class ImplicitStageTest {
             id,name
             7,gina
             8,hank
-            """) + " @%c");
+            """) + " @%c AUTO_COMPRESS=FALSE");
         engine.executeQuery("PUT " + localCsvUrl("skip.csv", """
             id,name
             9,ivy
-            """) + " @%c");
+            """) + " @%c AUTO_COMPRESS=FALSE");
 
         engine.execute("COPY INTO c PATTERN = '.*keep[.]csv' FILE_FORMAT = (TYPE = CSV SKIP_HEADER = 1)");
 
@@ -250,7 +250,7 @@ public class ImplicitStageTest {
             id,name
             7,gina
             8,hank
-            """) + " @%tq");
+            """) + " @%tq AUTO_COMPRESS=FALSE");
 
         // A same-named table in another schema stages a different file in its own table stage.
         engine.execute("USE SCHEMA s");
@@ -258,7 +258,7 @@ public class ImplicitStageTest {
         engine.executeQuery("PUT " + localCsvUrl("d.csv", """
             id,name
             99,zoe
-            """) + " @%tq");
+            """) + " @%tq AUTO_COMPRESS=FALSE");
 
         engine.execute("COPY INTO db.s2.tq FILE_FORMAT = (TYPE = CSV SKIP_HEADER = 1)");
 

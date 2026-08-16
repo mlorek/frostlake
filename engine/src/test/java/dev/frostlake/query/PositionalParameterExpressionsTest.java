@@ -49,7 +49,7 @@ public class PositionalParameterExpressionsTest extends BaseDatabaseTest {
     public void testPositionalParameterWithAbsFunction() {
         logger.info("Testing SELECT $1, ABS($2) FROM VALUES");
 
-        ResultSet result = engine.executeQuery("SELECT $1, ABS($2) FROM VALUES(1, -2)");
+        final ResultSet result = engine.executeQuery("SELECT $1, ABS($2) FROM VALUES(1, -2)");
 
         assertEquals(1, result.getRowCount());
         assertEquals(2, result.getColumnCount());
@@ -61,7 +61,7 @@ public class PositionalParameterExpressionsTest extends BaseDatabaseTest {
     public void testPositionalParameterWithMultipleFunctions() {
         logger.info("Testing positional parameters with multiple functions");
 
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT ABS($1), UPPER($2), LENGTH($3)
             FROM VALUES(-5, 'hello', 'world')
             """);
@@ -77,7 +77,7 @@ public class PositionalParameterExpressionsTest extends BaseDatabaseTest {
     public void testPositionalParameterInNestedFunctions() {
         logger.info("Testing positional parameters in nested functions");
 
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT UPPER(LOWER($1)), ABS(ABS($2))
             FROM VALUES('TeSt', -10)
             """);
@@ -92,7 +92,7 @@ public class PositionalParameterExpressionsTest extends BaseDatabaseTest {
     public void testPositionalParameterInArithmeticWithFunctions() {
         logger.info("Testing positional parameters in arithmetic with functions");
 
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT ABS($1) + ABS($2) AS sum
             FROM VALUES(-3, -4)
             """);
@@ -106,7 +106,7 @@ public class PositionalParameterExpressionsTest extends BaseDatabaseTest {
     public void testPositionalParameterWithCast() {
         logger.info("Testing positional parameters with CAST");
 
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT CAST($1 AS VARCHAR), CAST($2 AS INTEGER)
             FROM VALUES(123, '456')
             """);
@@ -121,7 +121,7 @@ public class PositionalParameterExpressionsTest extends BaseDatabaseTest {
     public void testPositionalParameterWithConcat() {
         logger.info("Testing positional parameters with string concatenation");
 
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT $1 || ' ' || $2 AS full_name
             FROM VALUES('John', 'Doe')
             """);
@@ -135,7 +135,7 @@ public class PositionalParameterExpressionsTest extends BaseDatabaseTest {
     public void testPositionalParameterWithCase() {
         logger.info("Testing positional parameters in CASE expression");
 
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT CASE WHEN $1 > 10 THEN 'High' ELSE 'Low' END
             FROM VALUES(5), (15)
             """);
@@ -150,7 +150,7 @@ public class PositionalParameterExpressionsTest extends BaseDatabaseTest {
     public void testPositionalParameterWithCoalesce() {
         logger.info("Testing positional parameters with COALESCE");
 
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT COALESCE($1, $2, $3)
             FROM VALUES(NULL, NULL, 'default')
             """);
@@ -164,7 +164,7 @@ public class PositionalParameterExpressionsTest extends BaseDatabaseTest {
     public void testPositionalParameterWithSubstring() {
         logger.info("Testing positional parameters with SUBSTRING");
 
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT SUBSTRING($1, 1, 3)
             FROM VALUES('Hello World')
             """);
@@ -178,7 +178,7 @@ public class PositionalParameterExpressionsTest extends BaseDatabaseTest {
     public void testMixedPositionalParametersAndFunctions() {
         logger.info("Testing mixed positional parameters and functions");
 
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT $1, ABS($2), $3 * 2, UPPER($4)
             FROM VALUES(10, -20, 5, 'test')
             """);

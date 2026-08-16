@@ -91,7 +91,7 @@ public class ImplicitStageFileTest extends BaseDatabaseTest {
     @Test
     public void userStageRendersQuotedTilde() {
         assumeFalse(isLiveSnowflake(), "reaching @~ on a live account needs a PUT");
-        ownEngine.executeQuery("PUT 'file://" + localDir.resolve("hello.txt") + "' @~/p135");
+        ownEngine.executeQuery("PUT 'file://" + localDir.resolve("hello.txt") + "' @~/p135 AUTO_COMPRESS=FALSE");
 
         assertEquals("@\"~\"", scalarOnOwnEngine("SELECT FL_GET_STAGE(TO_FILE('@~/p135/hello.txt'))"));
         assertEquals("p135/hello.txt",
@@ -105,7 +105,7 @@ public class ImplicitStageFileTest extends BaseDatabaseTest {
     @Test
     public void tableStageRendersTheBareTableName() {
         assumeFalse(isLiveSnowflake(), "reaching @%table on a live account needs a PUT");
-        ownEngine.executeQuery("PUT 'file://" + localDir.resolve("hello.txt") + "' @%tstg");
+        ownEngine.executeQuery("PUT 'file://" + localDir.resolve("hello.txt") + "' @%tstg AUTO_COMPRESS=FALSE");
 
         assertEquals("@TSTG", scalarOnOwnEngine("SELECT FL_GET_STAGE(TO_FILE('@%tstg/hello.txt'))"));
         assertEquals("hello.txt",

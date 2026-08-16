@@ -16,38 +16,40 @@
 
 package dev.frostlake.features;
 
-import dev.frostlake.DatabaseEngine;
-import dev.frostlake.metastore.*;
-import dev.frostlake.metastore.model.*;
-import dev.frostlake.metastore.model.ChangeType;
-import dev.frostlake.metastore.model.ScheduleType;
-import dev.frostlake.metastore.model.StreamType;
-import dev.frostlake.metastore.model.TaskState;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
+import dev.frostlake.BaseDatabaseTest;
+import dev.frostlake.metastore.model.Schema;
+import dev.frostlake.metastore.model.Task;
+import dev.frostlake.metastore.model.TaskExecution;
+import dev.frostlake.storage.ResultSet;
+import dev.frostlake.storage.Row;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 
-import java.util.List;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import static org.junit.jupiter.api.Assertions.*;
+/**
+ * Streams and tasks side by side, asserted through the SQL surface — {@code SHOW STREAMS} /
+ * {@code SHOW TASKS} cells, reads of the stream itself ({@code METADATA$ACTION} /
+ * {@code METADATA$ISUPDATE}), and DML consumption — so every check runs against whichever engine
+ * executed the statements, embedded or live. Execution RESULTS stay exempt on live:
+ * {@code EXECUTE TASK} is asynchronous there, so a shared session cannot observe the side effect
+ * deterministically.
+ */
+public class StreamsAndTasksTest extends BaseDatabaseTest {
 
-public class StreamsAndTasksTest {
+    private static final String LIVE_TASKS_ASYNC =
+        "live EXECUTE TASK is asynchronous — the shared session cannot await the task body's side "
+        + "effects, so execution results are asserted embedded only";
 
-    private DatabaseEngine engine;
-
-    @BeforeEach
-    public void setup() {
-        engine = new DatabaseEngine();
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
-        engine.execute("USE SCHEMA PUBLIC");
+    private String streamCell(final String name, final String column) {
+        final ResultSet streams = engine.executeQuery("SHOW STREAMS LIKE '" + name + "'");
+        return cell(streams, soleRowWhere(streams, "name", name.toUpperCase()), column);
     }
 
-    @AfterEach
-    public void teardown() {
-        if (engine != null) {
-            engine.shutdown();
-        }
+    private String taskCell(final String name, final String column) {
+        final ResultSet tasks = engine.executeQuery("SHOW TASKS LIKE '" + name + "'");
+        return cell(tasks, soleRowWhere(tasks, "name", name.toUpperCase()), column);
     }
 
     // ==================== STREAM TESTS ====================
@@ -57,13 +59,10 @@ public class StreamsAndTasksTest {
         engine.execute("CREATE TABLE users (id INTEGER, name VARCHAR, email VARCHAR)");
         engine.execute("CREATE STREAM user_stream ON TABLE users");
 
-        Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("PUBLIC");
-        Stream stream = schema.getStream("user_stream");
-
-        assertNotNull(stream);
-        assertEquals("USER_STREAM", stream.getName().toUpperCase());
-        assertEquals("USERS", stream.getSourceTableName().toUpperCase());
-        assertEquals(StreamType.STANDARD, stream.getStreamType());
+        assertTrue(streamCell("user_stream", "table_name").endsWith("USERS"),
+            streamCell("user_stream", "table_name"));
+        assertEquals("Table", streamCell("user_stream", "source_type"));
+        assertEquals("DEFAULT", streamCell("user_stream", "mode"));
     }
 
     @Test
@@ -71,10 +70,7 @@ public class StreamsAndTasksTest {
         engine.execute("CREATE TABLE users (id INTEGER, name VARCHAR)");
         engine.execute("CREATE STREAM user_stream ON TABLE users APPEND_ONLY = TRUE");
 
-        Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("PUBLIC");
-        Stream stream = schema.getStream("user_stream");
-
-        assertEquals(StreamType.APPEND_ONLY, stream.getStreamType());
+        assertEquals("APPEND_ONLY", streamCell("user_stream", "mode"));
     }
 
     @Test
@@ -82,16 +78,12 @@ public class StreamsAndTasksTest {
         engine.execute("CREATE TABLE users (id INTEGER, name VARCHAR)");
         engine.execute("CREATE STREAM user_stream ON TABLE users");
 
-        Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("PUBLIC");
-        Stream stream = schema.getStream("user_stream");
-
-        // Insert data
         engine.execute("INSERT INTO users VALUES (1, 'Alice'), (2, 'Bob')");
 
-        // Check stream has records
-        List<StreamRecord> records = stream.getUnconsumedRecords();
-        assertEquals(2, records.size());
-        assertEquals(ChangeType.INSERT, records.get(0).getChangeType());
+        final ResultSet delta = engine.executeQuery(
+            "SELECT id, METADATA$ACTION FROM user_stream");
+        assertEquals(2, delta.getRowCount());
+        assertEquals(2, rowsWhere(delta, "METADATA$ACTION", "INSERT").size());
     }
 
     @Test
@@ -101,19 +93,17 @@ public class StreamsAndTasksTest {
 
         engine.execute("CREATE STREAM user_stream ON TABLE users");
 
-        // Update data
         engine.execute("UPDATE users SET age = 31 WHERE id = 1");
 
-        Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("PUBLIC");
-        Stream stream = schema.getStream("user_stream");
-
-        // Updates generate DELETE + INSERT
-        List<StreamRecord> records = stream.getUnconsumedRecords();
-        assertEquals(2, records.size());
-        assertEquals(ChangeType.DELETE, records.get(0).getChangeType());
-        assertEquals(ChangeType.INSERT, records.get(1).getChangeType());
-        assertTrue(records.get(0).isUpdate());
-        assertTrue(records.get(1).isUpdate());
+        // An UPDATE reads as a DELETE of the old image plus an INSERT of the new one, both flagged
+        // METADATA$ISUPDATE.
+        final ResultSet delta = engine.executeQuery(
+            "SELECT id, METADATA$ACTION, METADATA$ISUPDATE FROM user_stream");
+        assertEquals(2, delta.getRowCount());
+        final Row deleted = soleRowWhere(delta, "METADATA$ACTION", "DELETE");
+        final Row inserted = soleRowWhere(delta, "METADATA$ACTION", "INSERT");
+        assertEquals("true", cell(delta, deleted, "METADATA$ISUPDATE"));
+        assertEquals("true", cell(delta, inserted, "METADATA$ISUPDATE"));
     }
 
     @Test
@@ -123,15 +113,12 @@ public class StreamsAndTasksTest {
 
         engine.execute("CREATE STREAM user_stream ON TABLE users");
 
-        // Delete data
         engine.execute("DELETE FROM users WHERE id = 1");
 
-        Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("PUBLIC");
-        Stream stream = schema.getStream("user_stream");
-
-        List<StreamRecord> records = stream.getUnconsumedRecords();
-        assertEquals(1, records.size());
-        assertEquals(ChangeType.DELETE, records.get(0).getChangeType());
+        final ResultSet delta = engine.executeQuery(
+            "SELECT id, METADATA$ACTION FROM user_stream");
+        assertEquals(1, delta.getRowCount());
+        soleRowWhere(delta, "METADATA$ACTION", "DELETE");
     }
 
     @Test
@@ -143,31 +130,27 @@ public class StreamsAndTasksTest {
         engine.execute("UPDATE users SET name = 'Alicia' WHERE id = 1");
         engine.execute("DELETE FROM users WHERE id = 1");
 
-        Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("PUBLIC");
-        Stream stream = schema.getStream("user_stream");
-
-        // Append-only stream should only have the INSERT
-        List<StreamRecord> records = stream.getUnconsumedRecords();
-        assertEquals(1, records.size());
-        assertEquals(ChangeType.INSERT, records.get(0).getChangeType());
+        // An append-only stream reports inserts only; the later UPDATE and DELETE leave no rows.
+        final ResultSet delta = engine.executeQuery(
+            "SELECT id, METADATA$ACTION FROM user_stream");
+        assertEquals(1, delta.getRowCount());
+        soleRowWhere(delta, "METADATA$ACTION", "INSERT");
     }
 
     @Test
     public void testStreamConsume() {
         engine.execute("CREATE TABLE users (id INTEGER, name VARCHAR)");
+        engine.execute("CREATE TABLE users_copy (id INTEGER, name VARCHAR)");
         engine.execute("CREATE STREAM user_stream ON TABLE users");
 
         engine.execute("INSERT INTO users VALUES (1, 'Alice')");
 
-        Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("PUBLIC");
-        Stream stream = schema.getStream("user_stream");
+        assertEquals(1, engine.executeQuery("SELECT * FROM user_stream").getRowCount());
 
-        assertEquals(1, stream.getUnconsumedCount());
+        // A stream is consumed by a DML statement that reads it, not by a plain SELECT.
+        engine.execute("INSERT INTO users_copy SELECT id, name FROM user_stream");
 
-        // Consume the stream
-        stream.consume();
-
-        assertEquals(0, stream.getUnconsumedCount());
+        assertEquals(0, engine.executeQuery("SELECT * FROM user_stream").getRowCount());
     }
 
     @Test
@@ -176,11 +159,7 @@ public class StreamsAndTasksTest {
         engine.execute("CREATE STREAM user_stream ON TABLE users");
         engine.execute("DROP STREAM user_stream");
 
-        Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("PUBLIC");
-
-        assertThrows(RuntimeException.class, () -> {
-            schema.getStream("user_stream");
-        });
+        assertEquals(0, engine.executeQuery("SHOW STREAMS LIKE 'user_stream'").getRowCount());
     }
 
     // ==================== TASK TESTS ====================
@@ -194,14 +173,8 @@ public class StreamsAndTasksTest {
             AS DELETE FROM logs WHERE timestamp < '2024-01-01'
             """);
 
-        Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("PUBLIC");
-        Task task = schema.getTask("daily_cleanup");
-
-        assertNotNull(task);
-        assertEquals("daily_cleanup", task.getName().toLowerCase());
-        assertEquals("60 MINUTES", task.getSchedule());
-        assertEquals(ScheduleType.MINUTES, task.getScheduleType());
-        assertEquals(TaskState.SUSPENDED, task.getState());
+        assertEquals("60 MINUTES", taskCell("daily_cleanup", "schedule"));
+        assertEquals("suspended", taskCell("daily_cleanup", "state"));
     }
 
     @Test
@@ -213,10 +186,8 @@ public class StreamsAndTasksTest {
             AS INSERT INTO summary SELECT * FROM staging
             """);
 
-        Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("PUBLIC");
-        Task task = schema.getTask("hourly_job");
-
-        assertEquals(ScheduleType.CRON, task.getScheduleType());
+        assertTrue(taskCell("hourly_job", "schedule").startsWith("USING CRON"),
+            taskCell("hourly_job", "schedule"));
     }
 
     @Test
@@ -230,10 +201,7 @@ public class StreamsAndTasksTest {
 
         engine.execute("ALTER TASK test_task RESUME");
 
-        Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("PUBLIC");
-        Task task = schema.getTask("test_task");
-
-        assertEquals(TaskState.STARTED, task.getState());
+        assertEquals("started", taskCell("test_task", "state"));
     }
 
     @Test
@@ -248,10 +216,7 @@ public class StreamsAndTasksTest {
         engine.execute("ALTER TASK test_task RESUME");
         engine.execute("ALTER TASK test_task SUSPEND");
 
-        Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("PUBLIC");
-        Task task = schema.getTask("test_task");
-
-        assertEquals(TaskState.SUSPENDED, task.getState());
+        assertEquals("suspended", taskCell("test_task", "state"));
     }
 
     @Test
@@ -265,15 +230,13 @@ public class StreamsAndTasksTest {
 
         engine.execute("DROP TASK test_task");
 
-        Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("PUBLIC");
-
-        assertThrows(RuntimeException.class, () -> {
-            schema.getTask("test_task");
-        });
+        assertEquals(0, engine.executeQuery("SHOW TASKS LIKE 'test_task'").getRowCount());
     }
 
     @Test
     public void testTaskExecution() {
+        Assumptions.assumeFalse(isLiveSnowflake(), LIVE_TASKS_ASYNC);
+
         // Create a table for task to populate
         engine.execute("CREATE TABLE task_log (execution_time VARCHAR, message VARCHAR)");
 
@@ -284,17 +247,17 @@ public class StreamsAndTasksTest {
             AS INSERT INTO task_log VALUES ('2024-01-01', 'Task executed')
             """);
 
-        Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("PUBLIC");
-        Task task = schema.getTask("test_task");
+        final Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("TEST_SCHEMA");
+        final Task task = schema.getTask("test_task");
 
-        // Execute task manually for testing
-        String qualifiedName = "test_db.PUBLIC.test_task";
-        engine.getTaskScheduler().executeTaskNow(qualifiedName, task);
+        // Execute task manually: the embedded scheduler runs the body synchronously.
+        engine.getTaskScheduler().executeTaskNow("test_db.TEST_SCHEMA.test_task", task);
 
-        // Verify task execution was recorded
         assertEquals(1, task.getExecutionHistory().size());
-        TaskExecution execution = task.getExecutionHistory().get(0);
+        final TaskExecution execution = task.getExecutionHistory().get(0);
         assertEquals("SUCCEEDED", execution.getState());
+
+        assertEquals(1, engine.executeQuery("SELECT * FROM task_log").getRowCount());
     }
 
     // ==================== COMBINED STREAMS AND TASKS ====================
@@ -311,11 +274,7 @@ public class StreamsAndTasksTest {
         // Insert initial data
         engine.execute("INSERT INTO orders VALUES (1, 100, 'pending'), (2, 200, 'completed')");
 
-        // Verify stream captured changes
-        Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("PUBLIC");
-        Stream stream = schema.getStream("order_stream");
-
-        assertEquals(2, stream.getUnconsumedCount());
+        assertEquals(2, engine.executeQuery("SELECT * FROM order_stream").getRowCount());
 
         // Create task to process stream (conceptually)
         engine.execute("""
@@ -325,11 +284,8 @@ public class StreamsAndTasksTest {
             AS INSERT INTO order_summary SELECT COUNT(*), SUM(amount) FROM orders
             """);
 
-        Task task = schema.getTask("process_orders");
-        assertNotNull(task);
-
-        // Task and stream are set up correctly
-        assertEquals(2, stream.getUnconsumedCount());
-        assertEquals(TaskState.SUSPENDED, task.getState());
+        // Task and stream are set up correctly: the read did not consume the stream.
+        assertEquals(2, engine.executeQuery("SELECT * FROM order_stream").getRowCount());
+        assertEquals("suspended", taskCell("process_orders", "state"));
     }
 }

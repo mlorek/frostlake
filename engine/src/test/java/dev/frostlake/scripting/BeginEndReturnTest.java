@@ -16,10 +16,8 @@
 
 package dev.frostlake.scripting;
 
-import dev.frostlake.DatabaseEngine;
+import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -27,35 +25,20 @@ import org.slf4j.LoggerFactory;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 
-public class BeginEndReturnTest {
+public class BeginEndReturnTest extends BaseDatabaseTest {
 
     private static final Logger logger = LoggerFactory.getLogger(BeginEndReturnTest.class);
-    private DatabaseEngine engine;
-
-    @BeforeEach
-    public void setUp() {
-        engine = new DatabaseEngine();
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
-    }
-
-    @AfterEach
-    public void tearDown() {
-        if (engine != null) {
-            engine.shutdown();
-        }
-    }
 
     @Test
     public void testBeginEndReturnInteger() {
         logger.info("Testing BEGIN...END block with RETURN integer value");
 
-        ResultSet rs = engine.executeQuery("BEGIN RETURN 1; END;");
+        final ResultSet rs = engine.executeQuery("BEGIN RETURN 1; END;");
 
         assertNotNull(rs, "Result set should not be null");
         assertEquals(1, rs.getRowCount(), "Should return one row");
 
-        Object value = rs.getRows().get(0).getValue(0);
+        final Object value = rs.getRows().get(0).getValue(0);
         logger.info("Returned value: {}", value);
 
         // The value should be 1
@@ -66,12 +49,12 @@ public class BeginEndReturnTest {
     public void testBeginEndReturnString() {
         logger.info("Testing BEGIN...END block with RETURN string value");
 
-        ResultSet rs = engine.executeQuery("BEGIN RETURN 'hello'; END;");
+        final ResultSet rs = engine.executeQuery("BEGIN RETURN 'hello'; END;");
 
         assertNotNull(rs, "Result set should not be null");
         assertEquals(1, rs.getRowCount(), "Should return one row");
 
-        Object value = rs.getRows().get(0).getValue(0);
+        final Object value = rs.getRows().get(0).getValue(0);
         logger.info("Returned value: {}", value);
 
         assertEquals("hello", value, "Should return 'hello'");
@@ -81,12 +64,12 @@ public class BeginEndReturnTest {
     public void testBeginEndReturnExpression() {
         logger.info("Testing BEGIN...END block with RETURN expression");
 
-        ResultSet rs = engine.executeQuery("BEGIN RETURN 10 + 5; END;");
+        final ResultSet rs = engine.executeQuery("BEGIN RETURN 10 + 5; END;");
 
         assertNotNull(rs, "Result set should not be null");
         assertEquals(1, rs.getRowCount(), "Should return one row");
 
-        Object value = rs.getRows().get(0).getValue(0);
+        final Object value = rs.getRows().get(0).getValue(0);
         logger.info("Returned value: {}", value);
 
         // The value should be 15
@@ -97,7 +80,7 @@ public class BeginEndReturnTest {
     public void testBeginEndReturnWithVariable() {
         logger.info("Testing BEGIN...END block with RETURN using variable");
 
-        ResultSet rs = engine.executeQuery("""
+        final ResultSet rs = engine.executeQuery("""
             DECLARE x INTEGER DEFAULT 42;
             BEGIN
                 RETURN x;
@@ -107,7 +90,7 @@ public class BeginEndReturnTest {
         assertNotNull(rs, "Result set should not be null");
         assertEquals(1, rs.getRowCount(), "Should return one row");
 
-        Object value = rs.getRows().get(0).getValue(0);
+        final Object value = rs.getRows().get(0).getValue(0);
         logger.info("Returned value: {}", value);
 
         assertEquals(42L, ((Number) value).longValue(), "Should return 42");
@@ -117,12 +100,12 @@ public class BeginEndReturnTest {
     public void testBeginEndReturnNull() {
         logger.info("Testing BEGIN...END block with RETURN (no expression) - should return NULL");
 
-        ResultSet rs = engine.executeQuery("BEGIN RETURN; END;");
+        final ResultSet rs = engine.executeQuery("BEGIN RETURN; END;");
 
         assertNotNull(rs, "Result set should not be null");
         assertEquals(1, rs.getRowCount(), "Should return one row");
 
-        Object value = rs.getRows().get(0).getValue(0);
+        final Object value = rs.getRows().get(0).getValue(0);
         logger.info("Returned value: {}", value);
 
         // The value should be null
@@ -146,7 +129,7 @@ public class BeginEndReturnTest {
     public void testBeginEndReturnArrayWithCursor() {
         logger.info("Testing BEGIN...END block with RETURN array built from cursor iteration");
 
-        ResultSet rs = engine.executeQuery("""
+        final ResultSet rs = engine.executeQuery("""
             DECLARE c1 CURSOR FOR SELECT 1 as c UNION SELECT 2 as c;
             BEGIN
                 LET a ARRAY := [];
@@ -162,7 +145,7 @@ public class BeginEndReturnTest {
         assertNotNull(rs, "Result set should not be null");
         assertEquals(1, rs.getRowCount(), "Should return one row");
 
-        Object value = rs.getRows().get(0).getValue(0);
+        final Object value = rs.getRows().get(0).getValue(0);
         logger.info("Returned value: {}", value);
 
         // The value should be an array with [1, 2]
@@ -174,7 +157,7 @@ public class BeginEndReturnTest {
     public void testBeginEndReturnObjectWithCursor() {
         logger.info("Testing BEGIN...END block with RETURN object built from cursor iteration");
 
-        ResultSet rs = engine.executeQuery("""
+        final ResultSet rs = engine.executeQuery("""
             DECLARE c1 CURSOR FOR SELECT 1 as c;
             BEGIN
                 LET o OBJECT := {};
@@ -190,7 +173,7 @@ public class BeginEndReturnTest {
         assertNotNull(rs, "Result set should not be null");
         assertEquals(1, rs.getRowCount(), "Should return one row");
 
-        Object value = rs.getRows().get(0).getValue(0);
+        final Object value = rs.getRows().get(0).getValue(0);
         logger.info("Returned value: {}", value);
 
         // The value should be an object with key 'k' and value 1
@@ -205,7 +188,7 @@ public class BeginEndReturnTest {
         engine.execute("CREATE TABLE simple_test (id INTEGER)");
         engine.execute("INSERT INTO simple_test VALUES (1), (2)");
 
-        ResultSet rs = engine.executeQuery("SELECT * FROM simple_test");
+        final ResultSet rs = engine.executeQuery("SELECT * FROM simple_test");
         logger.info("Direct query returned {} rows", rs.getRowCount());
         assertEquals(2, rs.getRowCount(), "Direct query should return 2 rows");
     }
@@ -218,7 +201,7 @@ public class BeginEndReturnTest {
         engine.execute("INSERT INTO test_values VALUES (1), (2)");
 
         // EXECUTE IMMEDIATE must be wrapped in parentheses when assigning to a variable
-        ResultSet rs = engine.executeQuery("""
+        final ResultSet rs = engine.executeQuery("""
             DECLARE
               res RESULTSET;
               stmt VARCHAR;
@@ -238,8 +221,8 @@ public class BeginEndReturnTest {
         }
         assertEquals(2, rs.getRowCount(), "Should return two rows");
 
-        Object value1 = rs.getRows().get(0).getValue(0);
-        Object value2 = rs.getRows().get(1).getValue(0);
+        final Object value1 = rs.getRows().get(0).getValue(0);
+        final Object value2 = rs.getRows().get(1).getValue(0);
         logger.info("Returned values: {}, {}", value1, value2);
 
         assertEquals(1L, ((Number) value1).longValue(), "First row should be 1");
@@ -260,7 +243,7 @@ public class BeginEndReturnTest {
             END;
             """);
 
-        ResultSet rs = engine.executeQuery("SELECT COUNT(*) FROM customers");
+        final ResultSet rs = engine.executeQuery("SELECT COUNT(*) FROM customers");
         assertEquals(2L, ((Number) rs.getRows().get(0).getValue(0)).longValue(),
             "Both rows should remain after rollback");
     }

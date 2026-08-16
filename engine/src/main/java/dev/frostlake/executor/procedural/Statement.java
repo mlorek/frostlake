@@ -25,8 +25,28 @@ public abstract class Statement {
     // the TARGET label. Null when unlabeled. (Snowflake has no LEADING `<label>:` declaration.)
     private String label;
 
+    // Where the statement stands in the script, for the uncaught-exception message
+    // ("… on line L at position P"); -1 when unknown.
+    private int sourceLine = -1;
+    private int sourcePosition = -1;
+
     protected Statement(final StatementType type) {
         this.type = type;
+    }
+
+    /** 1-based line of the statement's first token, or -1 when unknown. */
+    public int getSourceLine() {
+        return sourceLine;
+    }
+
+    /** 0-based column of the statement's first token, or -1 when unknown. */
+    public int getSourcePosition() {
+        return sourcePosition;
+    }
+
+    public void setSourcePosition(final int line, final int position) {
+        this.sourceLine = line;
+        this.sourcePosition = position;
     }
 
     public StatementType getType() {

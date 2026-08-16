@@ -66,7 +66,7 @@ public class CreateViewCommentPositionTest extends BaseJdbcTest {
         statement.execute("CREATE VIEW emp_view COMMENT = 'Employee view' AS SELECT id, name FROM employees");
 
         // Verify view works
-        ResultSet rs = statement.executeQuery("SELECT id, name FROM emp_view");
+        final ResultSet rs = statement.executeQuery("SELECT id, name FROM emp_view");
         assertTrue(rs.next());
         assertEquals(1, rs.getInt("id"));
         assertEquals("John", rs.getString("name"));
@@ -83,7 +83,7 @@ public class CreateViewCommentPositionTest extends BaseJdbcTest {
         statement.execute("CREATE VIEW order_view (id, total) COMMENT = 'Order summary' AS SELECT order_id, amount FROM orders");
 
         // Verify view works with renamed columns
-        ResultSet rs = statement.executeQuery("SELECT id, total FROM order_view");
+        final ResultSet rs = statement.executeQuery("SELECT id, total FROM order_view");
         assertTrue(rs.next());
         assertEquals(100, rs.getInt("id"));
         assertEquals(500, rs.getInt("total"));
@@ -116,7 +116,7 @@ public class CreateViewCommentPositionTest extends BaseJdbcTest {
         statement.execute("CREATE VIEW cust_view AS SELECT id, name FROM customers");
 
         // Verify view works
-        ResultSet rs = statement.executeQuery("SELECT id, name FROM cust_view");
+        final ResultSet rs = statement.executeQuery("SELECT id, name FROM cust_view");
         assertTrue(rs.next());
         assertEquals(1, rs.getInt("id"));
         assertEquals("Alice", rs.getString("name"));
@@ -197,7 +197,7 @@ public class CreateViewCommentPositionTest extends BaseJdbcTest {
         statement.execute("CREATE VIEW user_orders (id, name, order_num, total) COMMENT = 'User orders summary' AS SELECT u.user_id, u.user_name, o.order_id, o.amount FROM users u JOIN orders_table o ON u.user_id = o.user_ref");
 
         // Verify complex view works
-        ResultSet rs = statement.executeQuery("SELECT id, name, order_num, total FROM user_orders");
+        final ResultSet rs = statement.executeQuery("SELECT id, name, order_num, total FROM user_orders");
         assertTrue(rs.next());
         assertEquals(1, rs.getInt("id"));
         assertEquals("Alice", rs.getString("name"));

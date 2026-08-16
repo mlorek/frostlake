@@ -19,47 +19,34 @@ package dev.frostlake.functions.scalar.conversion;
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.types.VariantType;
 
-import java.math.BigDecimal;
-import java.math.RoundingMode;
 import java.util.List;
 
+/**
+ * Catalog entry for TRY_CAST. The construct is pure grammar — {@code TRY_CAST(expr AS type)} parses
+ * as a cast expression and evaluates there; a function-call shape ({@code TRY_CAST(x, 'type')} or
+ * {@code TRY_CAST(x)}) is a syntax error at the comma/paren, live-verified, and the grammar refuses
+ * it before name resolution. This class exists only so SHOW FUNCTIONS lists TRY_CAST the way a real
+ * account does.
+ */
 public class TryCast extends BuiltInFunction {
-    public TryCast() { super("TRY_CAST", VariantType.VARIANT); }
+
+    public TryCast() {
+        super("TRY_CAST", VariantType.VARIANT);
+    }
 
     @Override
     public Object evaluate(final List<Object> args) {
-        if (args.get(0) == null) return null;
-        if (args.size() < 2 || args.get(1) == null) return args.get(0);
-        String targetType = args.get(1).toString().toUpperCase();
-        try {
-            switch (targetType.replaceAll("\\(.*", "").trim()) {
-                case "INTEGER": case "INT": case "BIGINT": return Long.parseLong(args.get(0).toString().trim());
-                case "FLOAT": case "DOUBLE": return Double.parseDouble(args.get(0).toString().trim());
-                case "NUMBER": case "DECIMAL": case "NUMERIC":
-                    // Bare NUMBER is NUMBER(38,0); a declared (precision, scale) rounds to that scale.
-                    return new BigDecimal(args.get(0).toString().trim())
-                        .setScale(numberScale(targetType), RoundingMode.HALF_UP);
-                case "BOOLEAN": { String v = args.get(0).toString().trim().toUpperCase(); return v.equals("TRUE") || v.equals("1"); }
-                default: return args.get(0).toString();
-            }
-        } catch (final Exception e) { return null; }
+        throw new RuntimeException(
+            "TRY_CAST is not callable as a function; use TRY_CAST(<expr> AS <type>)");
     }
 
-    /** Scale declared in a NUMBER/DECIMAL/NUMERIC type string, defaulting to 0 (bare NUMBER is NUMBER(38,0)). */
-    private static int numberScale(final String targetType) {
-        final int open = targetType.indexOf('(');
-        final int close = targetType.indexOf(')');
-        if (open < 0 || close <= open) {
-            return 0;
-        }
-        final String[] parts = targetType.substring(open + 1, close).split(",");
-        try {
-            return parts.length > 1 ? Integer.parseInt(parts[1].trim()) : 0;
-        } catch (final NumberFormatException nfe) {
-            return 0;
-        }
+    @Override
+    public int getMinArgCount() {
+        return 1;
     }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return 2; }
+    @Override
+    public int getMaxArgCount() {
+        return 2;
+    }
 }

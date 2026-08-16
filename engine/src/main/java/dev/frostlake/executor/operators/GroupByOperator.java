@@ -16,8 +16,8 @@
 
 package dev.frostlake.executor.operators;
 
-import dev.frostlake.executor.InvalidQualifierException;
 import dev.frostlake.executor.ExpressionEvaluator;
+import dev.frostlake.executor.InvalidQualifierException;
 import dev.frostlake.executor.ValueComparisons;
 import dev.frostlake.executor.expressions.Expression;
 import dev.frostlake.executor.expressions.SortKeyRole;
@@ -26,9 +26,13 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
+import java.util.Iterator;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * GROUP BY operator - groups rows and computes aggregates.
@@ -100,6 +104,54 @@ public class GroupByOperator implements Operator {
                                            final AggregateEvaluator aggregateEvaluator) {
         return new GroupByOperator(new ArrayList<>(), selectExpressions, columnEvaluator,
             aggregateEvaluator, true);
+    }
+
+    /**
+     * Fold groups smaller than {@code minGroupSize} into ONE remainder group, the way an AGGREGATION
+     * POLICY does: the remainder's group keys read NULL, its aggregates are computed over the folded
+     * rows when the remainder itself reaches the floor, and read NULL when it does not (live-verified).
+     *
+     * @param minGroupSize the policy's floor, or 0 to fold nothing
+     * @param entityKey    the columns whose DISTINCT values count as one entity, or empty to count rows
+     * @param columnNames  the source table's column names, index-aligned with each row's values
+     */
+    public void foldSmallGroups(final int minGroupSize, final List<String> entityKey,
+                                final List<String> columnNames) {
+        this.minGroupSize = minGroupSize;
+        this.entityKey = new ArrayList<>(entityKey);
+        this.columnNames = new ArrayList<>(columnNames);
+    }
+
+    private int minGroupSize;
+    private List<String> entityKey = new ArrayList<>();
+    private List<String> columnNames = new ArrayList<>();
+
+    /** How many entities a group holds: distinct entity-key values, or rows when there is no key. */
+    private int groupSize(final List<Row> groupRows) {
+        if (entityKey.isEmpty()) {
+            return groupRows.size();
+        }
+        final Set<List<Object>> entities = new LinkedHashSet<>();
+        for (final Row row : groupRows) {
+            final List<Object> entity = new ArrayList<>();
+            for (final String column : entityKey) {
+                final int index = columnNames.indexOf(column.toUpperCase(Locale.ROOT));
+                entity.add(index >= 0 && index < row.getValues().size() ? row.getValue(index) : null);
+            }
+            entities.add(entity);
+        }
+        return entities.size();
+    }
+
+    /** Whether a select item IS one of the group keys, and so reads NULL in the remainder row. */
+    private boolean isGroupKey(final int selectIndex) {
+        final String item = selectExpressions.get(selectIndex);
+        for (final String key : groupByExpressions) {
+            if (key.equalsIgnoreCase(item)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** Capture each output row's source group rows into {@code sink} (parallel to the returned list), so a
@@ -193,11 +245,11 @@ public class GroupByOperator implements Operator {
     private List<Row> executeImplicitGrouping(final List<Row> input) {
         logger.debug("Executing implicit grouping on {} rows", input.size());
 
-        List<Object> resultValues = new ArrayList<>();
+        final List<Object> resultValues = new ArrayList<>();
 
         beginGroupAliases();
         for (int i = 0; i < selectExpressions.size(); i++) {
-            Object value = evaluateAggregate(i, input);
+            final Object value = evaluateAggregate(i, input);
             resultValues.add(value);
             publishGroupAlias(i, value);
         }
@@ -219,14 +271,14 @@ public class GroupByOperator implements Operator {
             groupByExpressions.size(), input.size());
 
         // Group rows by the specified expressions. Parse the group-by expressions once.
-        List<Expression> parsedGroupBy = new ArrayList<>(groupByExpressions.size());
+        final List<Expression> parsedGroupBy = new ArrayList<>(groupByExpressions.size());
         for (final String e : groupByExpressions) {
             parsedGroupBy.add(ExpressionEvaluator.parse(e));
         }
-        Map<List<Object>, List<Row>> groups = new LinkedHashMap<>();
+        final Map<List<Object>, List<Row>> groups = new LinkedHashMap<>();
 
         for (final Row row : input) {
-            List<Object> groupKey = buildGroupKey(row, parsedGroupBy);
+            final List<Object> groupKey = buildGroupKey(row, parsedGroupBy);
             List<Row> bucket = groups.get(groupKey);
             if (bucket == null) {
                 bucket = new ArrayList<>();
@@ -237,16 +289,29 @@ public class GroupByOperator implements Operator {
 
         logger.debug("Grouped {} rows into {} groups", input.size(), groups.size());
 
+        // An aggregation policy folds every group below its floor into one remainder group.
+        final List<Row> remainderRows = new ArrayList<>();
+        if (minGroupSize > 0) {
+            final Iterator<Map.Entry<List<Object>, List<Row>>> small = groups.entrySet().iterator();
+            while (small.hasNext()) {
+                final Map.Entry<List<Object>, List<Row>> entry = small.next();
+                if (groupSize(entry.getValue()) < minGroupSize) {
+                    remainderRows.addAll(entry.getValue());
+                    small.remove();
+                }
+            }
+        }
+
         // Build result rows for each group
-        List<Row> result = new ArrayList<>();
+        final List<Row> result = new ArrayList<>();
 
         for (final Map.Entry<List<Object>, List<Row>> entry : groups.entrySet()) {
-            List<Row> groupRows = entry.getValue();
-            List<Object> resultValues = new ArrayList<>();
+            final List<Row> groupRows = entry.getValue();
+            final List<Object> resultValues = new ArrayList<>();
 
             beginGroupAliases();
             for (int i = 0; i < selectExpressions.size(); i++) {
-                Object value = evaluateAggregate(i, groupRows);
+                final Object value = evaluateAggregate(i, groupRows);
                 resultValues.add(value);
                 publishGroupAlias(i, value);
             }
@@ -254,6 +319,22 @@ public class GroupByOperator implements Operator {
             result.add(new Row(resultValues));
             if (groupRowsSink != null) {
                 groupRowsSink.add(groupRows);
+            }
+        }
+
+        if (!remainderRows.isEmpty()) {
+            final boolean remainderCounts = groupSize(remainderRows) >= minGroupSize;
+            final List<Object> remainderValues = new ArrayList<>();
+            beginGroupAliases();
+            for (int i = 0; i < selectExpressions.size(); i++) {
+                final Object value = remainderCounts && !isGroupKey(i)
+                    ? evaluateAggregate(i, remainderRows) : null;
+                remainderValues.add(value);
+                publishGroupAlias(i, value);
+            }
+            result.add(new Row(remainderValues));
+            if (groupRowsSink != null) {
+                groupRowsSink.add(remainderRows);
             }
         }
 
@@ -278,7 +359,7 @@ public class GroupByOperator implements Operator {
             throw new IllegalStateException("No column evaluator provided for GROUP BY");
         }
 
-        List<Object> key = new ArrayList<>(parsedGroupBy.size());
+        final List<Object> key = new ArrayList<>(parsedGroupBy.size());
 
         for (int i = 0; i < parsedGroupBy.size(); i++) {
             try {

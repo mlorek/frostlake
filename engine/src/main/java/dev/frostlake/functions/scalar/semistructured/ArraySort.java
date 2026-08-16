@@ -83,6 +83,8 @@ public class ArraySort extends BuiltInFunction {
         return Boolean.parseBoolean(value.toString());
     }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return 3; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return 3; }
 }

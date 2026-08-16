@@ -99,7 +99,7 @@ public class TableFunctionOperator implements Operator {
     public List<Row> execute(final List<Row> input, final OperatorContext context) {
         logger.debug("Executing table function: {}", functionName);
 
-        ResultSet result;
+        final ResultSet result;
 
         // Use custom provider if provided
         if (resultProvider != null) {
@@ -128,13 +128,14 @@ public class TableFunctionOperator implements Operator {
 
     @Override
     public String getDescription() {
-        StringBuilder desc = new StringBuilder();
+        final StringBuilder desc = new StringBuilder();
         desc.append("TABLE[").append(functionName).append("(");
 
         if (namedArguments != null && !namedArguments.isEmpty()) {
-            List<String> argStrs = new ArrayList<>();
-            namedArguments.forEach((final var key, final var value) ->
-                argStrs.add(key + " => " + value));
+            final List<String> argStrs = new ArrayList<>();
+            for (final Map.Entry<String, Object> named : namedArguments.entrySet()) {
+                argStrs.add(named.getKey() + " => " + named.getValue());
+            }
             desc.append(String.join(", ", argStrs));
         } else if (positionalArguments != null && !positionalArguments.isEmpty()) {
             desc.append(positionalArguments.size()).append(" args");
@@ -181,7 +182,7 @@ public class TableFunctionOperator implements Operator {
 
             if ("RESULT_SCAN".equalsIgnoreCase(functionName) && positionalArguments.size() == 1) {
                 if (tableFunction instanceof ResultScan) {
-                    String queryId = positionalArguments.get(0).toString();
+                    final String queryId = positionalArguments.get(0).toString();
                     return ((ResultScan) tableFunction).execute(queryId);
                 }
             }

@@ -16,10 +16,8 @@
 
 package dev.frostlake.scripting;
 
-import dev.frostlake.DatabaseEngine;
+import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -28,25 +26,14 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-public class JavaProcedureTest {
+public class JavaProcedureTest extends BaseDatabaseTest {
 
     private static final Logger logger = LoggerFactory.getLogger(JavaProcedureTest.class);
-    private DatabaseEngine engine;
 
-    @BeforeEach
-    public void setUp() {
-        engine = new DatabaseEngine();
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
+    @Override
+    protected void setupTest() {
         engine.execute("CREATE SCHEMA io");
         engine.execute("USE SCHEMA io");
-    }
-
-    @AfterEach
-    public void tearDown() {
-        if (engine != null) {
-            engine.shutdown();
-        }
     }
 
     /**
@@ -82,10 +69,10 @@ public class JavaProcedureTest {
             $$
             """);
 
-        ResultSet result = engine.executeQuery("CALL vt()");
+        final ResultSet result = engine.executeQuery("CALL vt()");
         assertNotNull(result);
         assertTrue(result.getRowCount() > 0, "Expected result rows, got 0");
-        String value = result.getRows().get(0).getValue(0).toString();
+        final String value = result.getRows().get(0).getValue(0).toString();
         logger.info("Variant result: {}", value);
         assertTrue(value.contains("b"), "Expected variant to contain key 'b', got: " + value);
         assertTrue(value.contains("c"), "Expected variant to contain key 'c', got: " + value);
@@ -102,6 +89,7 @@ public class JavaProcedureTest {
             CREATE OR REPLACE PROCEDURE count_items()
             RETURNS VARCHAR
             LANGUAGE JAVA
+            PACKAGES=('com.snowflake:snowpark:1.9.0')
             HANDLER='Counter.run'
             AS
             $$
@@ -122,10 +110,10 @@ public class JavaProcedureTest {
             $$
             """);
 
-        ResultSet result = engine.executeQuery("CALL count_items()");
+        final ResultSet result = engine.executeQuery("CALL count_items()");
         assertNotNull(result);
         assertTrue(result.getRowCount() > 0, "Expected result rows, got 0");
-        String value = result.getRows().get(0).getValue(0).toString();
+        final String value = result.getRows().get(0).getValue(0).toString();
         logger.info("Count result: {}", value);
         assertTrue(value.startsWith("count="), "Expected result starting with 'count=', got: " + value);
     }
@@ -136,6 +124,7 @@ public class JavaProcedureTest {
             CREATE OR REPLACE PROCEDURE greet(name VARCHAR)
             RETURNS VARCHAR
             LANGUAGE JAVA
+            PACKAGES=('com.snowflake:snowpark:1.9.0')
             HANDLER='Greeter.greet'
             AS
             $$
@@ -149,10 +138,10 @@ public class JavaProcedureTest {
             $$
             """);
 
-        ResultSet result = engine.executeQuery("CALL greet('World')");
+        final ResultSet result = engine.executeQuery("CALL greet('World')");
         assertNotNull(result);
         assertTrue(result.getRowCount() > 0, "Expected result rows, got 0");
-        String value = result.getRows().get(0).getValue(0).toString();
+        final String value = result.getRows().get(0).getValue(0).toString();
         logger.info("Greet result: {}", value);
         assertEquals("Hello, World!", value);
     }

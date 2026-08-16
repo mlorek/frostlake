@@ -43,12 +43,12 @@ public class NumericTypeTest extends BaseDatabaseTest {
     public void testIntegerLiteralReturnsLong() {
         logger.info("Testing SELECT 2 returns Long");
 
-        ExecutionResult result = engine.execute("SELECT 2");
-        ResultSet rs = result.getResultSets().get(0);
+        final ExecutionResult result = engine.execute("SELECT 2");
+        final ResultSet rs = result.getResultSets().get(0);
 
         assertEquals(1, rs.getRows().size());
-        Row row = rs.getRows().get(0);
-        Object value = row.getValues().get(0);
+        final Row row = rs.getRows().get(0);
+        final Object value = row.getValues().get(0);
 
         logger.info("Value: {} (type: {})", value, value.getClass().getName());
 
@@ -60,12 +60,12 @@ public class NumericTypeTest extends BaseDatabaseTest {
     public void testDecimalLiteralReturnsDecimal() {
         logger.info("Testing SELECT 2.5 returns BigDecimal");
 
-        ExecutionResult result = engine.execute("SELECT 2.5");
-        ResultSet rs = result.getResultSets().get(0);
+        final ExecutionResult result = engine.execute("SELECT 2.5");
+        final ResultSet rs = result.getResultSets().get(0);
 
         assertEquals(1, rs.getRows().size());
-        Row row = rs.getRows().get(0);
-        Object value = row.getValues().get(0);
+        final Row row = rs.getRows().get(0);
+        final Object value = row.getValues().get(0);
 
         logger.info("Value: {} (type: {})", value, value.getClass().getName());
 
@@ -77,11 +77,11 @@ public class NumericTypeTest extends BaseDatabaseTest {
     public void testNegativeIntegerReturnsLong() {
         logger.info("Testing SELECT -42 returns Long");
 
-        ExecutionResult result = engine.execute("SELECT -42");
-        ResultSet rs = result.getResultSets().get(0);
+        final ExecutionResult result = engine.execute("SELECT -42");
+        final ResultSet rs = result.getResultSets().get(0);
 
-        Row row = rs.getRows().get(0);
-        Object value = row.getValues().get(0);
+        final Row row = rs.getRows().get(0);
+        final Object value = row.getValues().get(0);
 
         logger.info("Value: {} (type: {})", value, value.getClass().getName());
 
@@ -93,11 +93,11 @@ public class NumericTypeTest extends BaseDatabaseTest {
     public void testArithmeticPreservesTypes() {
         logger.info("Testing 2 + 3 returns Long");
 
-        ExecutionResult result = engine.execute("SELECT 2 + 3");
-        ResultSet rs = result.getResultSets().get(0);
+        final ExecutionResult result = engine.execute("SELECT 2 + 3");
+        final ResultSet rs = result.getResultSets().get(0);
 
-        Row row = rs.getRows().get(0);
-        Object value = row.getValues().get(0);
+        final Row row = rs.getRows().get(0);
+        final Object value = row.getValues().get(0);
 
         logger.info("Value: {} (type: {})", value, value.getClass().getName());
 
@@ -109,11 +109,11 @@ public class NumericTypeTest extends BaseDatabaseTest {
     public void testIntegerMultiplication() {
         logger.info("Testing 3 * 4 returns Long");
 
-        ExecutionResult result = engine.execute("SELECT 3 * 4");
-        ResultSet rs = result.getResultSets().get(0);
+        final ExecutionResult result = engine.execute("SELECT 3 * 4");
+        final ResultSet rs = result.getResultSets().get(0);
 
-        Row row = rs.getRows().get(0);
-        Object value = row.getValues().get(0);
+        final Row row = rs.getRows().get(0);
+        final Object value = row.getValues().get(0);
 
         logger.info("Value: {} (type: {})", value, value.getClass().getName());
 
@@ -125,11 +125,11 @@ public class NumericTypeTest extends BaseDatabaseTest {
     public void testIntegerSubtraction() {
         logger.info("Testing 10 - 3 returns Long");
 
-        ExecutionResult result = engine.execute("SELECT 10 - 3");
-        ResultSet rs = result.getResultSets().get(0);
+        final ExecutionResult result = engine.execute("SELECT 10 - 3");
+        final ResultSet rs = result.getResultSets().get(0);
 
-        Row row = rs.getRows().get(0);
-        Object value = row.getValues().get(0);
+        final Row row = rs.getRows().get(0);
+        final Object value = row.getValues().get(0);
 
         logger.info("Value: {} (type: {})", value, value.getClass().getName());
 
@@ -141,11 +141,11 @@ public class NumericTypeTest extends BaseDatabaseTest {
     public void testDivisionReturnsSnowflakeScaledDecimal() {
         logger.info("Testing 10 / 3 returns a BigDecimal with Snowflake's division scale");
 
-        ExecutionResult result = engine.execute("SELECT 10 / 3");
-        ResultSet rs = result.getResultSets().get(0);
+        final ExecutionResult result = engine.execute("SELECT 10 / 3");
+        final ResultSet rs = result.getResultSets().get(0);
 
-        Row row = rs.getRows().get(0);
-        Object value = row.getValues().get(0);
+        final Row row = rs.getRows().get(0);
+        final Object value = row.getValues().get(0);
 
         logger.info("Value: {} (type: {})", value, value.getClass().getName());
 
@@ -158,11 +158,11 @@ public class NumericTypeTest extends BaseDatabaseTest {
     public void testDivisionKeepsScaleSixForExactResults() {
         logger.info("Testing 10 / 2 returns BigDecimal 5.000000");
 
-        ExecutionResult result = engine.execute("SELECT 10 / 2");
-        ResultSet rs = result.getResultSets().get(0);
+        final ExecutionResult result = engine.execute("SELECT 10 / 2");
+        final ResultSet rs = result.getResultSets().get(0);
 
-        Row row = rs.getRows().get(0);
-        Object value = row.getValues().get(0);
+        final Row row = rs.getRows().get(0);
+        final Object value = row.getValues().get(0);
 
         logger.info("Value: {} (type: {})", value, value.getClass().getName());
 
@@ -174,11 +174,11 @@ public class NumericTypeTest extends BaseDatabaseTest {
     public void testMixedArithmeticReturnsBigDecimal() {
         logger.info("Testing 2 + 3.5 returns BigDecimal");
 
-        ExecutionResult result = engine.execute("SELECT 2 + 3.5");
-        ResultSet rs = result.getResultSets().get(0);
+        final ExecutionResult result = engine.execute("SELECT 2 + 3.5");
+        final ResultSet rs = result.getResultSets().get(0);
 
-        Row row = rs.getRows().get(0);
-        Object value = row.getValues().get(0);
+        final Row row = rs.getRows().get(0);
+        final Object value = row.getValues().get(0);
 
         logger.info("Value: {} (type: {})", value, value.getClass().getName());
 
@@ -191,11 +191,11 @@ public class NumericTypeTest extends BaseDatabaseTest {
     public void testZeroReturnsLong() {
         logger.info("Testing SELECT 0 returns Long");
 
-        ExecutionResult result = engine.execute("SELECT 0");
-        ResultSet rs = result.getResultSets().get(0);
+        final ExecutionResult result = engine.execute("SELECT 0");
+        final ResultSet rs = result.getResultSets().get(0);
 
-        Row row = rs.getRows().get(0);
-        Object value = row.getValues().get(0);
+        final Row row = rs.getRows().get(0);
+        final Object value = row.getValues().get(0);
 
         logger.info("Value: {} (type: {})", value, value.getClass().getName());
 

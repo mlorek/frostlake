@@ -17,13 +17,20 @@
 package dev.frostlake.functions.scalar.datetime;
 
 import dev.frostlake.functions.BuiltInFunction;
-import dev.frostlake.types.DateTimeType;
+import dev.frostlake.types.TimestampFlavours;
 
 import java.time.LocalDateTime;
 import java.util.List;
 
 public class TimestampFromParts extends BuiltInFunction {
-    public TimestampFromParts() { super("TIMESTAMP_FROM_PARTS", DateTimeType.TIMESTAMP_NTZ); }
+    public TimestampFromParts() { this("TIMESTAMP_FROM_PARTS"); }
+
+    /**
+     * The same construction under one of its flavoured names, which is what its declared type follows.
+     *
+     * @param name the registered name
+     */
+    public TimestampFromParts(final String name) { super(name, TimestampFlavours.forFunctionName(name)); }
 
     @Override
     public Object evaluate(final List<Object> args) {
@@ -33,16 +40,18 @@ public class TimestampFromParts extends BuiltInFunction {
                 return null;
             }
         }
-        int year   = ((Number) args.get(0)).intValue();
-        int month  = ((Number) args.get(1)).intValue();
-        int day    = ((Number) args.get(2)).intValue();
-        int hour   = ((Number) args.get(3)).intValue();
-        int minute = ((Number) args.get(4)).intValue();
-        int second = ((Number) args.get(5)).intValue();
-        int nanos  = args.size() > 6 && args.get(6) != null ? ((Number) args.get(6)).intValue() : 0;
+        final int year   = ((Number) args.get(0)).intValue();
+        final int month  = ((Number) args.get(1)).intValue();
+        final int day    = ((Number) args.get(2)).intValue();
+        final int hour   = ((Number) args.get(3)).intValue();
+        final int minute = ((Number) args.get(4)).intValue();
+        final int second = ((Number) args.get(5)).intValue();
+        final int nanos  = args.size() > 6 && args.get(6) != null ? ((Number) args.get(6)).intValue() : 0;
         return LocalDateTime.of(year, month, day, hour, minute, second, nanos);
     }
 
-    @Override public int getMinArgCount() { return 6; }
-    @Override public int getMaxArgCount() { return 7; }
+    @Override
+    public int getMinArgCount() { return 6; }
+    @Override
+    public int getMaxArgCount() { return 7; }
 }

@@ -16,7 +16,26 @@
 
 package dev.frostlake.executor;
 
-import dev.frostlake.executor.procedural.*;
+import dev.frostlake.executor.procedural.BaseExpression;
+import dev.frostlake.executor.procedural.CallStatement;
+import dev.frostlake.executor.procedural.CaseStatement;
+import dev.frostlake.executor.procedural.ExecuteImmediateExpression;
+import dev.frostlake.executor.procedural.ForStatement;
+import dev.frostlake.executor.procedural.IfCondition;
+import dev.frostlake.executor.procedural.IfStatement;
+import dev.frostlake.executor.procedural.LiteralExpression;
+import dev.frostlake.executor.procedural.LoopStatement;
+import dev.frostlake.executor.procedural.ProceduralBlock;
+import dev.frostlake.executor.procedural.RaiseStatement;
+import dev.frostlake.executor.procedural.RepeatStatement;
+import dev.frostlake.executor.procedural.ReturnStatement;
+import dev.frostlake.executor.procedural.ReturnTableStatement;
+import dev.frostlake.executor.procedural.SetStatement;
+import dev.frostlake.executor.procedural.SqlStatement;
+import dev.frostlake.executor.procedural.Statement;
+import dev.frostlake.executor.procedural.StatementType;
+import dev.frostlake.executor.procedural.WhenClause;
+import dev.frostlake.executor.procedural.WhileStatement;
 import dev.frostlake.parser.FrostlakeParser;
 
 import java.util.ArrayList;
@@ -37,10 +56,10 @@ public class ProceduralBlockBuilder {
     }
 
     ProceduralBlock buildProceduralBlock(final FrostlakeParser.StatementListContext ctx) {
-        ProceduralBlock block = new ProceduralBlock();
+        final ProceduralBlock block = new ProceduralBlock();
 
         for (final FrostlakeParser.StatementContext stmtCtx : ctx.statement()) {
-            Statement stmt = buildStatement(stmtCtx);
+            final Statement stmt = buildStatement(stmtCtx);
             if (stmt != null) {
                 block.addStatement(stmt);
             }
@@ -53,6 +72,16 @@ public class ProceduralBlockBuilder {
      * Build a Statement from ANTLR statement context
      */
     private Statement buildStatement(final FrostlakeParser.StatementContext ctx) {
+        final Statement statement = buildStatementOf(ctx);
+        if (statement != null) {
+            // Every statement carries where it stands, so an error escaping the block can name the
+            // statement that failed ("… on line L at position P"), as live does.
+            statement.setSourcePosition(ctx.getStart().getLine(), ctx.getStart().getCharPositionInLine());
+        }
+        return statement;
+    }
+
+    private Statement buildStatementOf(final FrostlakeParser.StatementContext ctx) {
         // For procedural statements, convert context to Statement objects
         if (ctx.proceduralStatement() != null) {
             return buildProceduralStatement(ctx.proceduralStatement());
@@ -61,7 +90,7 @@ public class ProceduralBlockBuilder {
         // For all non-procedural SQL statements, wrap in SqlStatement so they execute
         // conditionally (respecting IF/WHILE/FOR control flow).
         // Use getOriginalText to preserve whitespace correctly.
-        String rawSql = visitor.getOriginalText(ctx);
+        final String rawSql = visitor.getOriginalText(ctx);
         if (rawSql != null && !rawSql.isBlank()) {
             return new SqlStatement(rawSql);
         }
@@ -76,8 +105,8 @@ public class ProceduralBlockBuilder {
             // SET is a session variable, which a procedure may not touch. The block is built while
             // the CALL is running, so the depth check sees the procedure it belongs to.
             visitor.rejectInsideProcedure("SET");
-            String varName = visitor.getText(ctx.setStatement().identifier());
-            BaseExpression expr = visitor.buildExpression(ctx.setStatement().expression());
+            final String varName = visitor.getText(ctx.setStatement().identifier());
+            final BaseExpression expr = visitor.buildExpression(ctx.setStatement().expression());
             return new SetStatement(varName, expr);
         }
 
@@ -111,43 +140,46 @@ public class ProceduralBlockBuilder {
 
         if (ctx.breakStatement() != null) {
             final Statement brk = new Statement(StatementType.BREAK) {};
-            applyTrailingLabel(brk, ctx.breakStatement().identifier());
+            applyTrailingLabel(brk, ctx.breakStatement().loopLabel());
             return brk;
         }
 
         if (ctx.continueStatement() != null) {
             final Statement cont = new Statement(StatementType.CONTINUE) {};
-            applyTrailingLabel(cont, ctx.continueStatement().identifier());
+            applyTrailingLabel(cont, ctx.continueStatement().loopLabel());
             return cont;
         }
 
         if (ctx.raiseStatement() != null) {
             if (ctx.raiseStatement().identifier() != null && ctx.raiseStatement().STRING_LITERAL() == null) {
                 // RAISE exception_name - must be a user-defined exception
-                String name = visitor.getText(ctx.raiseStatement().identifier());
+                final String name = visitor.getText(ctx.raiseStatement().identifier());
                 // Check if it's a user-defined exception
                 if (visitor.getProceduralExecutor().hasException(name)) {
-                    return new RaiseStatement(name);
+                    final RaiseStatement raise = new RaiseStatement(name);
+                    raise.setSourcePosition(ctx.raiseStatement().getStart().getLine(),
+                        ctx.raiseStatement().getStart().getCharPositionInLine());
+                    return raise;
                 } else {
                     // Undefined exception - throw error immediately
                     throw new RuntimeException("Undefined exception: " + name);
                 }
             } else if (ctx.raiseStatement().STRING_LITERAL() != null) {
                 // RAISE 'message'
-                String msg = visitor.extractStringLiteral(ctx.raiseStatement().STRING_LITERAL());
-                BaseExpression message = new LiteralExpression(msg);
+                final String msg = visitor.extractStringLiteral(ctx.raiseStatement().STRING_LITERAL());
+                final BaseExpression message = new LiteralExpression(msg);
                 return new RaiseStatement(message);
             } else {
                 // RAISE without arguments
-                BaseExpression message = new LiteralExpression("Error raised");
+                final BaseExpression message = new LiteralExpression("Error raised");
                 return new RaiseStatement(message);
             }
         }
 
         if (ctx.callStatement() != null) {
-            String procName = visitor.getText(ctx.callStatement().qualifiedName());
-            List<BaseExpression> arguments = new ArrayList<>();
-            List<String> argumentNames = new ArrayList<>();
+            final String procName = visitor.getText(ctx.callStatement().qualifiedName());
+            final List<BaseExpression> arguments = new ArrayList<>();
+            final List<String> argumentNames = new ArrayList<>();
             if (ctx.callStatement().callArguments() != null) {
                 for (final FrostlakeParser.CallArgumentContext argCtx :
                      ctx.callStatement().callArguments().callArgument()) {
@@ -182,8 +214,8 @@ public class ProceduralBlockBuilder {
         }
 
         if (ctx.assignmentStatement() != null) {
-            FrostlakeParser.AssignmentStatementContext aCtx = ctx.assignmentStatement();
-            String varName = visitor.getText(aCtx.identifier());
+            final FrostlakeParser.AssignmentStatementContext aCtx = ctx.assignmentStatement();
+            final String varName = visitor.getText(aCtx.identifier());
             if (aCtx.callStatement() != null) {
                 return new SqlStatement(visitor.getOriginalText(ctx));
             }
@@ -201,22 +233,22 @@ public class ProceduralBlockBuilder {
                 return new SetStatement(varName, new ExecuteImmediateExpression(eiSql, eiBinds));
             }
             if (aCtx.expression() != null) {
-                BaseExpression expr = visitor.buildExpression(aCtx.expression());
+                final BaseExpression expr = visitor.buildExpression(aCtx.expression());
                 return new SetStatement(varName, expr, visitor.getOriginalText(aCtx.expression()));
             }
         }
 
         if (ctx.letStatement() != null) {
-            FrostlakeParser.LetStatementContext lCtx = ctx.letStatement();
-            String varName = visitor.getText(lCtx.identifier());
+            final FrostlakeParser.LetStatementContext lCtx = ctx.letStatement();
+            final String varName = visitor.getText(lCtx.identifier());
             if (lCtx.expression() != null) {
-                BaseExpression expr = visitor.buildExpression(lCtx.expression());
+                final BaseExpression expr = visitor.buildExpression(lCtx.expression());
                 return new SetStatement(varName, expr);
             }
         }
 
         // All other procedural statements: execute as raw SQL via the visitor
-        String rawSql = visitor.getOriginalText(ctx);
+        final String rawSql = visitor.getOriginalText(ctx);
         if (rawSql != null && !rawSql.isBlank()) {
             return new SqlStatement(rawSql);
         }
@@ -225,24 +257,24 @@ public class ProceduralBlockBuilder {
     }
 
     Statement buildIfStatement(final FrostlakeParser.IfStatementContext ctx) {
-        List<IfCondition> conditions = new ArrayList<>();
+        final List<IfCondition> conditions = new ArrayList<>();
 
         // Main IF condition
-        BaseExpression condition = visitor.buildExpression(ctx.booleanExpr(0));
-        ProceduralBlock block = buildProceduralBlock(ctx.statementList(0));
+        final BaseExpression condition = visitor.buildExpression(ctx.booleanExpr(0));
+        final ProceduralBlock block = buildProceduralBlock(ctx.statementList(0));
         conditions.add(new IfCondition(condition, block));
 
         // ELSEIF conditions
         for (int i = 1; i < ctx.booleanExpr().size(); i++) {
-            BaseExpression elseifCondition = visitor.buildExpression(ctx.booleanExpr(i));
-            ProceduralBlock elseifBlock = buildProceduralBlock(ctx.statementList(i));
+            final BaseExpression elseifCondition = visitor.buildExpression(ctx.booleanExpr(i));
+            final ProceduralBlock elseifBlock = buildProceduralBlock(ctx.statementList(i));
             conditions.add(new IfCondition(elseifCondition, elseifBlock));
         }
 
         // ELSE block
         ProceduralBlock elseBlock = null;
         if (ctx.ELSE() != null) {
-            int elseIndex = ctx.statementList().size() - 1;
+            final int elseIndex = ctx.statementList().size() - 1;
             elseBlock = buildProceduralBlock(ctx.statementList(elseIndex));
         }
 
@@ -257,18 +289,18 @@ public class ProceduralBlockBuilder {
         final boolean hasSwitch = ctx.booleanExpr().size() > ctx.WHEN().size();
         final BaseExpression switchExpression = hasSwitch ? visitor.buildExpression(ctx.booleanExpr(0)) : null;
 
-        List<WhenClause> whenClauses = new ArrayList<>();
+        final List<WhenClause> whenClauses = new ArrayList<>();
         int exprIndex = hasSwitch ? 1 : 0;
 
         for (int i = 0; i < ctx.WHEN().size(); i++) {
-            BaseExpression whenCondition = visitor.buildExpression(ctx.booleanExpr(exprIndex++));
-            ProceduralBlock whenBlock = buildProceduralBlock(ctx.statementList(i));
+            final BaseExpression whenCondition = visitor.buildExpression(ctx.booleanExpr(exprIndex++));
+            final ProceduralBlock whenBlock = buildProceduralBlock(ctx.statementList(i));
             whenClauses.add(new WhenClause(whenCondition, whenBlock));
         }
 
         ProceduralBlock elseBlock = null;
         if (ctx.ELSE() != null) {
-            int elseIndex = ctx.statementList().size() - 1;
+            final int elseIndex = ctx.statementList().size() - 1;
             elseBlock = buildProceduralBlock(ctx.statementList(elseIndex));
         }
 
@@ -277,21 +309,21 @@ public class ProceduralBlockBuilder {
 
     Statement buildLoopStatement(final FrostlakeParser.LoopStatementContext ctx) {
         final LoopStatement stmt = new LoopStatement(buildProceduralBlock(ctx.statementList()));
-        applyTrailingLabel(stmt, ctx.identifier());
+        applyTrailingLabel(stmt, ctx.loopLabel());
         return stmt;
     }
 
     Statement buildWhileStatement(final FrostlakeParser.WhileStatementContext ctx) {
-        BaseExpression condition = visitor.buildExpression(ctx.booleanExpr());
-        ProceduralBlock block = buildProceduralBlock(ctx.statementList());
+        final BaseExpression condition = visitor.buildExpression(ctx.booleanExpr());
+        final ProceduralBlock block = buildProceduralBlock(ctx.statementList());
         final WhileStatement stmt = new WhileStatement(condition, block);
-        applyTrailingLabel(stmt, ctx.identifier());
+        applyTrailingLabel(stmt, ctx.loopLabel());
         return stmt;
     }
 
     Statement buildForStatement(final FrostlakeParser.ForStatementContext ctx) {
-        // identifier(0) is the loop variable; a trailing identifier(1), if any, is the loop's label.
-        final String varName = visitor.getText(ctx.identifier(0));
+        // The identifier is the loop variable; a trailing loopLabel, if any, is the loop's label.
+        final String varName = visitor.getText(ctx.identifier());
         final ProceduralBlock block = buildProceduralBlock(ctx.statementList());
         final ForStatement stmt;
         if (ctx.TO() != null) {
@@ -302,7 +334,7 @@ public class ProceduralBlockBuilder {
         } else {
             stmt = new ForStatement(varName, visitor.buildExpression(ctx.expression(0)), block);
         }
-        applyTrailingLabel(stmt, ctx.identifier().size() > 1 ? ctx.identifier(1) : null);
+        applyTrailingLabel(stmt, ctx.loopLabel());
         return stmt;
     }
 
@@ -310,27 +342,25 @@ public class ProceduralBlockBuilder {
         final BaseExpression condition = visitor.buildExpression(ctx.booleanExpr());
         final ProceduralBlock block = buildProceduralBlock(ctx.statementList());
         final RepeatStatement stmt = new RepeatStatement(condition, block);
-        applyTrailingLabel(stmt, ctx.identifier());
+        applyTrailingLabel(stmt, ctx.loopLabel());
         return stmt;
     }
 
     /** Copy a loop's TRAILING label (`END LOOP <name>`) onto its statement so BREAK/CONTINUE can target it. */
-    private void applyTrailingLabel(final Statement stmt, final FrostlakeParser.IdentifierContext labelCtx) {
+    /** A loop label is its own name position — it admits INNER, which a plain identifier may not. */
+    private void applyTrailingLabel(final Statement stmt, final FrostlakeParser.LoopLabelContext labelCtx) {
         if (labelCtx != null) {
             stmt.setLabel(visitor.getText(labelCtx));
         }
     }
 
     Statement buildReturnStatement(final FrostlakeParser.ReturnStatementContext ctx) {
-        // RETURN TABLE(SELECT ...) — table-valued return produced by running the query directly.
-        if (ctx.TABLE() != null && ctx.selectStatement() != null) {
-            return new ReturnTableStatement(visitor.getOriginalText(ctx.selectStatement()));
-        }
         BaseExpression expr = null;
         if (ctx.expression() != null) {
             expr = visitor.buildExpression(ctx.expression());
         }
-        // RETURN TABLE(expression) — table-valued return from a RESULTSET value/variable.
+        // RETURN TABLE(expression) — table-valued return from a RESULTSET value/variable. A direct
+        // query inside TABLE() is not a form live accepts, and the grammar no longer parses it.
         if (ctx.TABLE() != null) {
             return new ReturnTableStatement(expr);
         }

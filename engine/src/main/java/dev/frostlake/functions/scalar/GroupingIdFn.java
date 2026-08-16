@@ -45,6 +45,8 @@ public class GroupingIdFn extends BuiltInFunction {
         return 0L;
     }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return Integer.MAX_VALUE; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return Integer.MAX_VALUE; }
 }

@@ -30,20 +30,20 @@ public class ConsoleClientTest {
     @Test
     public void testConsoleClientCreation() {
         // Just verify we can instantiate the console client
-        ConsoleClient client = new ConsoleClient();
+        final ConsoleClient client = new ConsoleClient();
         assertNotNull(client, "ConsoleClient should be created");
     }
 
     @Test
     public void testContextPromptWithDatabase() {
-        DatabaseEngine engine = new DatabaseEngine();
+        final DatabaseEngine engine = new DatabaseEngine();
 
         // Create and use a database
         engine.execute("DROP DATABASE IF EXISTS test_console_db");
         engine.execute("CREATE DATABASE test_console_db");
         engine.execute("USE DATABASE test_console_db");
 
-        String db = engine.getCatalog().getCurrentDatabase();
+        final String db = engine.getCatalog().getCurrentDatabase();
         String schema = engine.getCatalog().getCurrentSchema();
 
         assertNotNull(db, "Database should be selected");

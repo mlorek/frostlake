@@ -17,6 +17,7 @@
 package dev.frostlake.dml;
 
 import dev.frostlake.DatabaseEngine;
+import dev.frostlake.config.EngineConfig;
 import dev.frostlake.storage.ResultSet;
 
 import org.junit.jupiter.api.AfterEach;
@@ -49,6 +50,9 @@ public class CopyIntoLoadTest {
     public void setUp() throws IOException {
         stageDir = Files.createTempDirectory("copy_load_test_");
         engine = new DatabaseEngine();
+        // The tests point stages at local file:// directories - opt in to the affordance the
+        // default config refuses (a real account refuses those URLs).
+        engine.getConfig().setProperty(EngineConfig.PROP_STAGE_FILE_URL_ENABLED, "true");
         engine.execute("CREATE DATABASE db");
         engine.execute("USE DATABASE db");
         engine.execute("CREATE SCHEMA s");
@@ -227,7 +231,7 @@ public class CopyIntoLoadTest {
         engine.execute("CREATE TABLE export_t (id INTEGER, name VARCHAR)");
         engine.execute("INSERT INTO export_t VALUES (1, 'Alice'), (2, 'Bob')");
 
-        final ResultSet rs = engine.executeQuery("COPY INTO @data_stage FROM export_t FILE_FORMAT = (TYPE = 'CSV')");
+        final ResultSet rs = engine.executeQuery("COPY INTO @data_stage FROM export_t FILE_FORMAT = (TYPE = 'CSV' COMPRESSION = NONE)");
         assertEquals(2, ((Number) rs.getRows().get(0).getValue(0)).intValue());
 
         // The unload wrote a CSV file into the file:// stage directory containing both rows.
@@ -257,7 +261,7 @@ public class CopyIntoLoadTest {
         engine.execute("INSERT INTO hdr_t VALUES (1, 'Alice')");
 
         // Bare HEADER (no "= TRUE") means HEADER = TRUE: the CSV gets a column-name header row.
-        engine.executeQuery("COPY INTO @data_stage FROM hdr_t FILE_FORMAT = (TYPE = CSV) HEADER");
+        engine.executeQuery("COPY INTO @data_stage FROM hdr_t FILE_FORMAT = (TYPE = CSV COMPRESSION = NONE) HEADER");
 
         final String content = Files.readString(stageDir.resolve("data_0_0_0.csv"));
         final String firstLine = content.split("\n", 2)[0].toUpperCase();
@@ -282,7 +286,7 @@ public class CopyIntoLoadTest {
         engine.execute("CREATE TABLE up (id INTEGER, name VARCHAR)");
         engine.execute("INSERT INTO up VALUES (1, 'Alice')");
 
-        engine.executeQuery("COPY INTO @data_stage/out FROM up FILE_FORMAT = (TYPE = CSV)");
+        engine.executeQuery("COPY INTO @data_stage/out FROM up FILE_FORMAT = (TYPE = CSV COMPRESSION = NONE)");
 
         final Path csv = stageDir.resolve("out").resolve("data_0_0_0.csv");
         assertTrue(Files.exists(csv), "unload to @stage/out should write beneath the sub-path");
@@ -296,7 +300,7 @@ public class CopyIntoLoadTest {
 
         // COPY INTO '<external location>' — unload directly to a URL rather than a named stage.
         final ResultSet rs = engine.executeQuery(
-            "COPY INTO 'file://" + stageDir + "/ext' FROM ext_t FILE_FORMAT = (TYPE = CSV)");
+            "COPY INTO 'file://" + stageDir + "/ext' FROM ext_t FILE_FORMAT = (TYPE = CSV COMPRESSION = NONE)");
         assertEquals(2, ((Number) rs.getRows().get(0).getValue(0)).intValue());
 
         final Path csv = stageDir.resolve("ext").resolve("data_0_0_0.csv");
@@ -310,7 +314,7 @@ public class CopyIntoLoadTest {
         engine.execute("INSERT INTO part_t VALUES (1, 'EAST'), (2, 'WEST'), (3, 'EAST')");
 
         final ResultSet rs = engine.executeQuery(
-            "COPY INTO @data_stage FROM part_t PARTITION BY region FILE_FORMAT = (TYPE = CSV)");
+            "COPY INTO @data_stage FROM part_t PARTITION BY region FILE_FORMAT = (TYPE = CSV COMPRESSION = NONE)");
         assertEquals(3, ((Number) rs.getRows().get(0).getValue(0)).intValue());
 
         // Each distinct partition value lands in its own sub-directory with a data file.
@@ -369,16 +373,18 @@ public class CopyIntoLoadTest {
     @Test
     public void copyLoadsWithColumnTransformation() throws IOException {
         writeStageFile("t.csv", "1,alice,5\n2,bob,10\n");
-        engine.execute("CREATE TABLE transformed (id INTEGER, upper_name VARCHAR, doubled INTEGER)");
+        engine.execute("CREATE TABLE transformed (id INTEGER, tagged_name VARCHAR, as_number INTEGER)");
 
-        // $1 → id, UPPER($2) → upper_name, $3 * 2 → doubled.
-        engine.execute("COPY INTO transformed FROM (SELECT $1, UPPER($2), $3 * 2 FROM @data_stage) "
+        // $1 → id, CONCAT/SUBSTR shaping → tagged_name, TO_NUMBER($3) → as_number — all from the
+        // account's COPY-transformation allowlist (UPPER and arithmetic are refused there).
+        engine.execute("COPY INTO transformed"
+            + " FROM (SELECT $1, CONCAT(SUBSTR($2, 1, 3), '-x'), TO_NUMBER($3) FROM @data_stage) "
             + "FILE_FORMAT = (TYPE = CSV)");
 
         assertEquals(2, count("transformed"));
-        final ResultSet rs = engine.executeQuery("SELECT upper_name, doubled FROM transformed WHERE id = 1");
-        assertEquals("ALICE", rs.getRows().get(0).getValue(0).toString());
-        assertEquals(10, ((Number) rs.getRows().get(0).getValue(1)).intValue());
+        final ResultSet rs = engine.executeQuery("SELECT tagged_name, as_number FROM transformed WHERE id = 1");
+        assertEquals("ali-x", rs.getRows().get(0).getValue(0).toString());
+        assertEquals(5, ((Number) rs.getRows().get(0).getValue(1)).intValue());
     }
 
     @Test

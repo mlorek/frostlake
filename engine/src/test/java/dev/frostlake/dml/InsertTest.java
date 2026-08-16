@@ -34,7 +34,7 @@ public class InsertTest extends BaseDatabaseTest {
         engine.execute("CREATE TABLE users (id INTEGER, name VARCHAR, age INTEGER)");
         engine.execute("INSERT INTO users VALUES (1, 'Alice', 30)");
 
-        ResultSet result = engine.executeQuery("SELECT * FROM users");
+        final ResultSet result = engine.executeQuery("SELECT * FROM users");
         assertEquals(1, result.getRowCount());
     }
 
@@ -43,7 +43,7 @@ public class InsertTest extends BaseDatabaseTest {
         engine.execute("CREATE TABLE users (id INTEGER, name VARCHAR, age INTEGER)");
         engine.execute("INSERT INTO users VALUES (1, 'Alice', 30), (2, 'Bob', 25), (3, 'Charlie', 35)");
 
-        ResultSet result = engine.executeQuery("SELECT * FROM users");
+        final ResultSet result = engine.executeQuery("SELECT * FROM users");
         assertEquals(3, result.getRowCount());
     }
 
@@ -52,10 +52,10 @@ public class InsertTest extends BaseDatabaseTest {
         engine.execute("CREATE TABLE users (id INTEGER, name VARCHAR, age INTEGER, city VARCHAR)");
         engine.execute("INSERT INTO users (id, name, age) VALUES (1, 'Alice', 30)");
 
-        ResultSet result = engine.executeQuery("SELECT * FROM users");
+        final ResultSet result = engine.executeQuery("SELECT * FROM users");
         assertEquals(1, result.getRowCount());
 
-        Row row = result.getRows().get(0);
+        final Row row = result.getRows().get(0);
         assertEquals(1L, row.getValue(0));
         assertEquals("Alice", row.getValue(1));
         assertEquals(30L, row.getValue(2));
@@ -75,10 +75,10 @@ public class InsertTest extends BaseDatabaseTest {
 
         engine.execute("INSERT INTO test_types VALUES (42, 'hello', true, 3.14)");
 
-        ResultSet result = engine.executeQuery("SELECT * FROM test_types");
+        final ResultSet result = engine.executeQuery("SELECT * FROM test_types");
         assertEquals(1, result.getRowCount());
 
-        Row row = result.getRows().get(0);
+        final Row row = result.getRows().get(0);
         assertEquals(42L, row.getValue(0));
         assertEquals("hello", row.getValue(1));
         assertEquals(true, row.getValue(2));
@@ -90,10 +90,10 @@ public class InsertTest extends BaseDatabaseTest {
         engine.execute("CREATE TABLE users (id INTEGER, name VARCHAR, age INTEGER)");
         engine.execute("INSERT INTO users VALUES (1, 'Alice', null)");
 
-        ResultSet result = engine.executeQuery("SELECT * FROM users");
+        final ResultSet result = engine.executeQuery("SELECT * FROM users");
         assertEquals(1, result.getRowCount());
 
-        Row row = result.getRows().get(0);
+        final Row row = result.getRows().get(0);
         assertNull(row.getValue(2));
     }
 
@@ -104,7 +104,7 @@ public class InsertTest extends BaseDatabaseTest {
         engine.execute("INSERT INTO products VALUES (2, 'Gadget', 200)");
         engine.execute("INSERT INTO products VALUES (3, 'Doohickey', 150)");
 
-        ResultSet result = engine.executeQuery("SELECT * FROM products");
+        final ResultSet result = engine.executeQuery("SELECT * FROM products");
         assertEquals(3, result.getRowCount());
     }
 
@@ -114,7 +114,7 @@ public class InsertTest extends BaseDatabaseTest {
         engine.execute("INSERT INTO users VALUES (1, 'Alice', 30)");
         engine.execute("INSERT INTO users VALUES (2, 'Bob', 25)");
 
-        ResultSet result = engine.executeQuery("SELECT * FROM users WHERE age > 28");
+        final ResultSet result = engine.executeQuery("SELECT * FROM users WHERE age > 28");
         assertEquals(1, result.getRowCount());
         assertEquals("Alice", result.getRows().get(0).getValue(1));
     }

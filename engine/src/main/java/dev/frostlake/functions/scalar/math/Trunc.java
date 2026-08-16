@@ -17,15 +17,15 @@
 package dev.frostlake.functions.scalar.math;
 
 import dev.frostlake.functions.NumericArgumentFunction;
-import dev.frostlake.types.NumericType;
 import dev.frostlake.functions.scalar.datetime.DateTrunc;
+import dev.frostlake.types.NumericType;
 
-import java.util.Arrays;
-import java.time.LocalTime;
-import java.time.LocalDateTime;
-import java.time.LocalDate;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.LocalTime;
+import java.util.Arrays;
 import java.util.List;
 
 public class Trunc extends NumericArgumentFunction {
@@ -47,16 +47,18 @@ public class Trunc extends NumericArgumentFunction {
             final Object part = partSecond ? args.get(1) : "DAY";
             return DATE_TRUNC.evaluate(Arrays.asList(part, first));
         }
-        BigDecimal num = new BigDecimal(first.toString());
+        final BigDecimal num = new BigDecimal(first.toString());
 
         if (args.size() > 1 && args.get(1) != null) {
-            int scale = ((Number) args.get(1)).intValue();
+            final int scale = ((Number) args.get(1)).intValue();
             return num.setScale(scale, RoundingMode.DOWN);
         }
 
         return num.setScale(0, RoundingMode.DOWN);
     }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return 2; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return 2; }
 }

@@ -31,21 +31,23 @@ public class ArrayRemove extends BuiltInFunction {
 
     @Override
     public Object evaluate(final List<Object> args) {
-        ArrayNode src = ArrayFunctionHelper.parseArray(args.get(0));
+        final ArrayNode src = ArrayFunctionHelper.parseArray(args.get(0));
         if (src == null) return null;
         // A SQL NULL "value to remove" propagates — live: ARRAY_REMOVE(ARRAY_CONSTRUCT(1,NULL,2),
         // NULL) is SQL NULL (it does NOT strip the undefined), while ARRAY_REMOVE over the same array with a
         // JSON null needle leaves it untouched ([1,undefined,2]) and only PARSE_JSON('[1,null,2]') loses its
         // JSON null ([1,2]).
         if (args.get(1) == null) return null;
-        JsonNode target = ArrayFunctionHelper.toNode(ArrayFunctionHelper.MAPPER, args.get(1));
-        ArrayNode result = ArrayFunctionHelper.MAPPER.createArrayNode();
+        final JsonNode target = ArrayFunctionHelper.toNode(ArrayFunctionHelper.MAPPER, args.get(1));
+        final ArrayNode result = ArrayFunctionHelper.MAPPER.createArrayNode();
         for (final JsonNode el : src) {
             if (!ArrayFunctionHelper.nodesEqual(el, target)) result.add(el);
         }
         return VariantValue.ofNode(result);
     }
 
-    @Override public int getMinArgCount() { return 2; }
-    @Override public int getMaxArgCount() { return 2; }
+    @Override
+    public int getMinArgCount() { return 2; }
+    @Override
+    public int getMaxArgCount() { return 2; }
 }

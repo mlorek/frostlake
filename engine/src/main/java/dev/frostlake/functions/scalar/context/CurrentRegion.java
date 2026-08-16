@@ -40,6 +40,8 @@ public class CurrentRegion extends BuiltInFunction {
         return config != null ? config.getRegion() : "PUBLIC.AWS_US_EAST_1";
     }
 
-    @Override public int getMinArgCount() { return 0; }
-    @Override public int getMaxArgCount() { return 0; }
+    @Override
+    public int getMinArgCount() { return 0; }
+    @Override
+    public int getMaxArgCount() { return 0; }
 }

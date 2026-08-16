@@ -35,12 +35,20 @@ public class AstPrinterVisitor implements ExpressionVisitor<String> {
     }
 
     @Override
+    public String visitDefaultMarker(final DefaultMarkerExpression expr) {
+        return "DEFAULT";
+    }
+
+    @Override
     public String visitLiteral(final LiteralExpression expr) {
         switch (expr.getType()) {
             case NULL:
                 return "null";
             case STRING:
                 return "'" + expr.getValue() + "'";
+            case BOOLEAN:
+                // Rendered UPPER in refusal brackets — live spells [IFF(TRUE)].
+                return String.valueOf(expr.getValue()).toUpperCase(java.util.Locale.ROOT);
             default:
                 return String.valueOf(expr.getValue());
         }
@@ -112,7 +120,7 @@ public class AstPrinterVisitor implements ExpressionVisitor<String> {
     @Override
     public String visitCaseExpression(final CaseExpression expr) {
         final StringBuilder sb = new StringBuilder("(CASE");
-        for (final CaseExpression.WhenClause when : expr.getWhenClauses()) {
+        for (final WhenClause when : expr.getWhenClauses()) {
             sb.append(" WHEN ").append(when.getCondition().accept(this))
               .append(" THEN ").append(when.getResult().accept(this));
         }
@@ -244,8 +252,24 @@ public class AstPrinterVisitor implements ExpressionVisitor<String> {
         sb.append(expr.isNot() ? ") NOT IN (" : ") IN (");
         if (expr.hasSubquery()) {
             sb.append(expr.getSubquery().accept(this));
+        } else if (expr.hasTupleRows()) {
+            final List<List<Expression>> rows = expr.getTupleRows();
+            for (int r = 0; r < rows.size(); r++) {
+                if (r > 0) {
+                    sb.append(", ");
+                }
+                sb.append('(');
+                final List<Expression> row = rows.get(r);
+                for (int i = 0; i < row.size(); i++) {
+                    if (i > 0) {
+                        sb.append(", ");
+                    }
+                    sb.append(row.get(i).accept(this));
+                }
+                sb.append(')');
+            }
         } else {
-            final List<Expression> list = expr.getListValues();
+            final List<Expression> list = expr.getFlatListValues();
             for (int i = 0; i < list.size(); i++) {
                 if (i > 0) {
                     sb.append(", ");
@@ -269,7 +293,11 @@ public class AstPrinterVisitor implements ExpressionVisitor<String> {
             if (part != expr) {
                 out.append(", ");
             }
-            out.append(part.getValueExpression().accept(this)).append(' ').append(part.getUnit());
+            // The SPELLING is part of the identity, not decoration: `INTERVAL '1' DAY` and
+            // `INTERVAL '1 day'` shift a DATE by the same amount but to different TYPES, and this
+            // print is used as an expression KEY — two aggregates keyed alike would share one value.
+            out.append(part.getValueExpression().accept(this)).append(' ').append(part.getUnit())
+               .append(part.isUnitInString() ? " in-string" : " keyword");
         }
         return out.append(')').toString();
     }

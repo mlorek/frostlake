@@ -16,10 +16,8 @@
 
 package dev.frostlake.query;
 
-import dev.frostlake.DatabaseEngine;
+import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -27,30 +25,15 @@ import org.slf4j.LoggerFactory;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 
-public class ValuesClauseTest {
+public class ValuesClauseTest extends BaseDatabaseTest {
 
     private static final Logger logger = LoggerFactory.getLogger(ValuesClauseTest.class);
-    private DatabaseEngine engine;
-
-    @BeforeEach
-    public void setUp() {
-        engine = new DatabaseEngine();
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
-    }
-
-    @AfterEach
-    public void tearDown() {
-        if (engine != null) {
-            engine.shutdown();
-        }
-    }
 
     @Test
     public void testSelectFromValuesTwoColumns() {
         logger.info("Testing SELECT * FROM VALUES with two columns");
 
-        ResultSet rs = engine.executeQuery("SELECT * FROM VALUES(1,2),(3,4)");
+        final ResultSet rs = engine.executeQuery("SELECT * FROM VALUES(1,2),(3,4)");
 
         assertNotNull(rs, "Result set should not be null");
         assertEquals(2, rs.getRowCount(), "Should return 2 rows");
@@ -61,15 +44,15 @@ public class ValuesClauseTest {
         assertEquals("COLUMN2", rs.getColumns().get(1).getName(), "Second column should be COLUMN2");
 
         // Check row 1
-        Object row1col1 = rs.getRows().get(0).getValue(0);
-        Object row1col2 = rs.getRows().get(0).getValue(1);
+        final Object row1col1 = rs.getRows().get(0).getValue(0);
+        final Object row1col2 = rs.getRows().get(0).getValue(1);
         logger.info("Row 1: {}, {}", row1col1, row1col2);
         assertEquals(1L, ((Number) row1col1).longValue(), "Row 1 Column 1 should be 1");
         assertEquals(2L, ((Number) row1col2).longValue(), "Row 1 Column 2 should be 2");
 
         // Check row 2
-        Object row2col1 = rs.getRows().get(1).getValue(0);
-        Object row2col2 = rs.getRows().get(1).getValue(1);
+        final Object row2col1 = rs.getRows().get(1).getValue(0);
+        final Object row2col2 = rs.getRows().get(1).getValue(1);
         logger.info("Row 2: {}, {}", row2col1, row2col2);
         assertEquals(3L, ((Number) row2col1).longValue(), "Row 2 Column 1 should be 3");
         assertEquals(4L, ((Number) row2col2).longValue(), "Row 2 Column 2 should be 4");
@@ -79,7 +62,7 @@ public class ValuesClauseTest {
     public void testSelectFromValuesSingleColumn() {
         logger.info("Testing SELECT * FROM VALUES with single column");
 
-        ResultSet rs = engine.executeQuery("SELECT * FROM VALUES(10),(20),(30)");
+        final ResultSet rs = engine.executeQuery("SELECT * FROM VALUES(10),(20),(30)");
 
         assertNotNull(rs, "Result set should not be null");
         assertEquals(3, rs.getRowCount(), "Should return 3 rows");
@@ -96,7 +79,7 @@ public class ValuesClauseTest {
     public void testSelectFromValuesMixedTypes() {
         logger.info("Testing SELECT * FROM VALUES with mixed types");
 
-        ResultSet rs = engine.executeQuery("SELECT * FROM VALUES(1, 'Alice'), (2, 'Bob')");
+        final ResultSet rs = engine.executeQuery("SELECT * FROM VALUES(1, 'Alice'), (2, 'Bob')");
 
         assertNotNull(rs, "Result set should not be null");
         assertEquals(2, rs.getRowCount(), "Should return 2 rows");
@@ -115,7 +98,7 @@ public class ValuesClauseTest {
     public void testSelectFromValuesWithAlias() {
         logger.info("Testing SELECT * FROM VALUES with table alias");
 
-        ResultSet rs = engine.executeQuery("SELECT * FROM VALUES(1, 2), (3, 4) AS t");
+        final ResultSet rs = engine.executeQuery("SELECT * FROM VALUES(1, 2), (3, 4) AS t");
 
         assertNotNull(rs, "Result set should not be null");
         assertEquals(2, rs.getRowCount(), "Should return 2 rows");
@@ -126,7 +109,7 @@ public class ValuesClauseTest {
     public void testSelectSpecificColumnsFromValues() {
         logger.info("Testing SELECT specific columns FROM VALUES");
 
-        ResultSet rs = engine.executeQuery("SELECT COLUMN1 FROM VALUES(1, 2), (3, 4)");
+        final ResultSet rs = engine.executeQuery("SELECT COLUMN1 FROM VALUES(1, 2), (3, 4)");
 
         assertNotNull(rs, "Result set should not be null");
         assertEquals(2, rs.getRowCount(), "Should return 2 rows");
@@ -140,7 +123,7 @@ public class ValuesClauseTest {
     public void testSelectFromValuesWithWhere() {
         logger.info("Testing SELECT FROM VALUES with WHERE clause");
 
-        ResultSet rs = engine.executeQuery("SELECT * FROM VALUES(1, 2), (3, 4) WHERE COLUMN1 > 1");
+        final ResultSet rs = engine.executeQuery("SELECT * FROM VALUES(1, 2), (3, 4) WHERE COLUMN1 > 1");
 
         assertNotNull(rs, "Result set should not be null");
         assertEquals(1, rs.getRowCount(), "Should return 1 row after filtering");
@@ -154,7 +137,7 @@ public class ValuesClauseTest {
     public void testSelectFromValuesWithColumnAliases() {
         logger.info("Testing SELECT FROM VALUES with column aliases");
 
-        ResultSet rs = engine.executeQuery("SELECT i, j FROM VALUES(1, 2), (3, 4) AS t(i, j)");
+        final ResultSet rs = engine.executeQuery("SELECT i, j FROM VALUES(1, 2), (3, 4) AS t(i, j)");
 
         assertNotNull(rs, "Result set should not be null");
         assertEquals(2, rs.getRowCount(), "Should return 2 rows");
@@ -175,7 +158,7 @@ public class ValuesClauseTest {
     public void testSelectFromValuesWithColumnAliasesAndGroupBy() {
         logger.info("Testing SELECT FROM VALUES with column aliases and GROUP BY");
 
-        ResultSet rs = engine.executeQuery("SELECT i, count(*) FROM VALUES(1, 2), (1, 2) AS t(i, j) GROUP BY i");
+        final ResultSet rs = engine.executeQuery("SELECT i, count(*) FROM VALUES(1, 2), (1, 2) AS t(i, j) GROUP BY i");
 
         assertNotNull(rs, "Result set should not be null");
         assertEquals(1, rs.getRowCount(), "Should return 1 row after grouping");
@@ -191,7 +174,7 @@ public class ValuesClauseTest {
         logger.info("Testing SELECT FROM VALUES with partial column aliases");
 
         // Only provide alias for first column
-        ResultSet rs = engine.executeQuery("SELECT x FROM VALUES(10, 20), (30, 40) AS t(x)");
+        final ResultSet rs = engine.executeQuery("SELECT x FROM VALUES(10, 20), (30, 40) AS t(x)");
 
         assertNotNull(rs, "Result set should not be null");
         assertEquals(2, rs.getRowCount(), "Should return 2 rows");
@@ -207,7 +190,7 @@ public class ValuesClauseTest {
         logger.info("Testing SELECT * FROM VALUES with empty-string tuples labels COLUMN1..n");
 
         // The reported query: empty-string values still auto-name the columns COLUMN1..COLUMNn.
-        ResultSet rs = engine.executeQuery(
+        final ResultSet rs = engine.executeQuery(
             "SELECT * FROM VALUES ('', '', '', '', ''), ('', '', '', '', '')");
 
         assertNotNull(rs, "Result set should not be null");
@@ -225,7 +208,7 @@ public class ValuesClauseTest {
         logger.info("Testing user's exact query example");
 
         // User's exact query: select i, count(*) from values (1,2),(1,2) as t(i,j) group by i
-        ResultSet rs = engine.executeQuery("select i, count(*) from values (1,2),(1,2) as t(i,j) group by i");
+        final ResultSet rs = engine.executeQuery("select i, count(*) from values (1,2),(1,2) as t(i,j) group by i");
 
         assertNotNull(rs, "Result set should not be null");
         assertEquals(1, rs.getRowCount(), "Should return 1 grouped row");
@@ -233,8 +216,8 @@ public class ValuesClauseTest {
 
         // Verify column names
         assertEquals("I", rs.getColumns().get(0).getName(), "First column should be I");
-        // The aggregate function name comes from expression text, which is lowercase
-        assertEquals("count(*)", rs.getColumns().get(1).getName(), "Second column should be count(*)");
+        // An unaliased expression is named by its source text folded to upper case (live-verified)
+        assertEquals("COUNT(*)", rs.getColumns().get(1).getName(), "Second column should be COUNT(*)");
 
         // Verify values
         assertEquals(1L, ((Number) rs.getRows().get(0).getValue(0)).longValue(), "Grouped value should be 1");

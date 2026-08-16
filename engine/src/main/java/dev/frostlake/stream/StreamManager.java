@@ -16,7 +16,8 @@
 
 package dev.frostlake.stream;
 
-import dev.frostlake.metastore.*;
+import dev.frostlake.metastore.Catalog;
+import dev.frostlake.metastore.QualifiedName;
 import dev.frostlake.metastore.model.ChangeType;
 import dev.frostlake.metastore.model.Database;
 import dev.frostlake.metastore.model.Schema;
@@ -53,20 +54,20 @@ public class StreamManager {
      * Track an INSERT operation
      */
     public void trackInsert(final String qualifiedTableName, final Row row) {
-        String[] parts = QualifiedName.parse(qualifiedTableName).parts();
+        final String[] parts = QualifiedName.parse(qualifiedTableName).parts();
         if (parts.length != 3) return;
 
-        String dbName = parts[0];
-        String schemaName = parts[1];
-        String tableName = parts[2];
+        final String dbName = parts[0];
+        final String schemaName = parts[1];
+        final String tableName = parts[2];
 
         try {
-            List<Stream> streams = streamsCapturing(dbName, schemaName, tableName);
+            final List<Stream> streams = streamsCapturing(dbName, schemaName, tableName);
 
-            long rowId = getNextRowId(qualifiedTableName);
+            final long rowId = getNextRowId(qualifiedTableName);
 
             for (final Stream stream : streams) {
-                StreamRecord record = new StreamRecord(
+                final StreamRecord record = new StreamRecord(
                     row.getValues(),
                     ChangeType.INSERT,
                     false,
@@ -78,6 +79,66 @@ public class StreamManager {
             }
         } catch (final Exception e) {
             logger.warn("Failed to track INSERT for streams: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * The streams capturing {@code qualifiedTableName}, resolved ONCE for a bulk apply — commit
+     * used to re-walk every schema's streams per committed ROW. An empty answer lets the caller
+     * skip old-image copies and record construction entirely.
+     */
+    public List<Stream> capturingStreams(final String qualifiedTableName) {
+        final String[] parts = QualifiedName.parse(qualifiedTableName).parts();
+        if (parts.length != 3) {
+            return Collections.emptyList();
+        }
+        try {
+            return streamsCapturing(parts[0], parts[1], parts[2]);
+        } catch (final Exception e) {
+            logger.warn("Failed to resolve capturing streams: {}", e.getMessage());
+            return Collections.emptyList();
+        }
+    }
+
+    /** {@link #trackInsert(String, Row)} over a PRE-RESOLVED capture list (bulk commit apply). */
+    public void trackInsert(final List<Stream> capturing, final String qualifiedTableName, final Row row) {
+        if (capturing.isEmpty()) {
+            return;
+        }
+        final String tableName = QualifiedName.parse(qualifiedTableName).last();
+        final long rowId = getNextRowId(qualifiedTableName);
+        for (final Stream stream : capturing) {
+            stream.addRecord(new StreamRecord(row.getValues(), ChangeType.INSERT, false, rowId,
+                tableName.toUpperCase()));
+        }
+    }
+
+    /** {@link #trackUpdate(String, Row, Row)} over a PRE-RESOLVED capture list (bulk commit apply). */
+    public void trackUpdate(final List<Stream> capturing, final String qualifiedTableName,
+                            final Row oldRow, final Row newRow) {
+        if (capturing.isEmpty()) {
+            return;
+        }
+        final String tableName = QualifiedName.parse(qualifiedTableName).last();
+        final long rowId = getNextRowId(qualifiedTableName);
+        for (final Stream stream : capturing) {
+            stream.addRecord(new StreamRecord(oldRow.getValues(), ChangeType.DELETE, true, rowId,
+                tableName.toUpperCase()));
+            stream.addRecord(new StreamRecord(newRow.getValues(), ChangeType.INSERT, true, rowId,
+                tableName.toUpperCase()));
+        }
+    }
+
+    /** {@link #trackDelete(String, Row)} over a PRE-RESOLVED capture list (bulk commit apply). */
+    public void trackDelete(final List<Stream> capturing, final String qualifiedTableName, final Row row) {
+        if (capturing.isEmpty()) {
+            return;
+        }
+        final String tableName = QualifiedName.parse(qualifiedTableName).last();
+        final long rowId = getNextRowId(qualifiedTableName);
+        for (final Stream stream : capturing) {
+            stream.addRecord(new StreamRecord(row.getValues(), ChangeType.DELETE, false, rowId,
+                tableName.toUpperCase()));
         }
     }
 
@@ -129,21 +190,21 @@ public class StreamManager {
      * Track an UPDATE operation
      */
     public void trackUpdate(final String qualifiedTableName, final Row oldRow, final Row newRow) {
-        String[] parts = QualifiedName.parse(qualifiedTableName).parts();
+        final String[] parts = QualifiedName.parse(qualifiedTableName).parts();
         if (parts.length != 3) return;
 
-        String dbName = parts[0];
-        String schemaName = parts[1];
-        String tableName = parts[2];
+        final String dbName = parts[0];
+        final String schemaName = parts[1];
+        final String tableName = parts[2];
 
         try {
-            List<Stream> streams = streamsCapturing(dbName, schemaName, tableName);
+            final List<Stream> streams = streamsCapturing(dbName, schemaName, tableName);
 
-            long rowId = getNextRowId(qualifiedTableName);
+            final long rowId = getNextRowId(qualifiedTableName);
 
             for (final Stream stream : streams) {
                 // For updates, streams track both DELETE and INSERT
-                StreamRecord deleteRecord = new StreamRecord(
+                final StreamRecord deleteRecord = new StreamRecord(
                     oldRow.getValues(),
                     ChangeType.DELETE,
                     true,
@@ -152,7 +213,7 @@ public class StreamManager {
                 );
                 stream.addRecord(deleteRecord);
 
-                StreamRecord insertRecord = new StreamRecord(
+                final StreamRecord insertRecord = new StreamRecord(
                     newRow.getValues(),
                     ChangeType.INSERT,
                     true,
@@ -172,20 +233,20 @@ public class StreamManager {
      * Track a DELETE operation
      */
     public void trackDelete(final String qualifiedTableName, final Row row) {
-        String[] parts = QualifiedName.parse(qualifiedTableName).parts();
+        final String[] parts = QualifiedName.parse(qualifiedTableName).parts();
         if (parts.length != 3) return;
 
-        String dbName = parts[0];
-        String schemaName = parts[1];
-        String tableName = parts[2];
+        final String dbName = parts[0];
+        final String schemaName = parts[1];
+        final String tableName = parts[2];
 
         try {
-            List<Stream> streams = streamsCapturing(dbName, schemaName, tableName);
+            final List<Stream> streams = streamsCapturing(dbName, schemaName, tableName);
 
-            long rowId = getNextRowId(qualifiedTableName);
+            final long rowId = getNextRowId(qualifiedTableName);
 
             for (final Stream stream : streams) {
-                StreamRecord record = new StreamRecord(
+                final StreamRecord record = new StreamRecord(
                     row.getValues(),
                     ChangeType.DELETE,
                     false,
@@ -275,8 +336,17 @@ public class StreamManager {
     }
 
     private long getNextRowId(final String qualifiedTableName) {
-        return rowIdCounters
-            .computeIfAbsent(qualifiedTableName.toUpperCase(), (final var k) -> new AtomicLong(1))
-            .getAndIncrement();
+        // putIfAbsent rather than get/put: two threads racing here must end up sharing ONE counter,
+        // or the same row id would be handed out twice.
+        final String key = qualifiedTableName.toUpperCase();
+        AtomicLong counter = rowIdCounters.get(key);
+        if (counter == null) {
+            counter = new AtomicLong(1);
+            final AtomicLong raced = rowIdCounters.putIfAbsent(key, counter);
+            if (raced != null) {
+                counter = raced;
+            }
+        }
+        return counter.getAndIncrement();
     }
 }

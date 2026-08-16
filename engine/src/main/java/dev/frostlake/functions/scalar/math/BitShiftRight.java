@@ -30,6 +30,8 @@ public class BitShiftRight extends NumericArgumentFunction {
         return ((Number) args.get(0)).longValue() >>> ((Number) args.get(1)).intValue();
     }
 
-    @Override public int getMinArgCount() { return 2; }
-    @Override public int getMaxArgCount() { return 2; }
+    @Override
+    public int getMinArgCount() { return 2; }
+    @Override
+    public int getMaxArgCount() { return 2; }
 }

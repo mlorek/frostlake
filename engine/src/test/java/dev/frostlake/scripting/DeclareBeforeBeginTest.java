@@ -16,10 +16,8 @@
 
 package dev.frostlake.scripting;
 
-import dev.frostlake.DatabaseEngine;
+import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -30,24 +28,9 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
  * Tests demonstrating that DECLARE section comes BEFORE BEGIN keyword
  * according to proper Snowflake SQL scripting syntax
  */
-public class DeclareBeforeBeginTest {
+public class DeclareBeforeBeginTest extends BaseDatabaseTest {
 
     private static final Logger logger = LoggerFactory.getLogger(DeclareBeforeBeginTest.class);
-    private DatabaseEngine engine;
-
-    @BeforeEach
-    public void setUp() {
-        engine = new DatabaseEngine();
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
-    }
-
-    @AfterEach
-    public void tearDown() {
-        if (engine != null) {
-            engine.shutdown();
-        }
-    }
 
     @Test
     public void testDeclareBeforeBegin() {
@@ -63,7 +46,7 @@ public class DeclareBeforeBeginTest {
             END;
             """);
 
-        ResultSet rs = engine.executeQuery("SELECT * FROM results");
+        final ResultSet rs = engine.executeQuery("SELECT * FROM results");
         assertEquals(1, rs.getRowCount());
         assertEquals(100L, ((Number) rs.getRows().get(0).getValue(0)).longValue());
     }
@@ -86,7 +69,7 @@ public class DeclareBeforeBeginTest {
             END;
             """);
 
-        ResultSet rs = engine.executeQuery("SELECT * FROM results");
+        final ResultSet rs = engine.executeQuery("SELECT * FROM results");
         assertEquals(1, rs.getRowCount());
         assertEquals(1L, ((Number) rs.getRows().get(0).getValue(0)).longValue());
         assertEquals(2L, ((Number) rs.getRows().get(0).getValue(1)).longValue());
@@ -115,7 +98,7 @@ public class DeclareBeforeBeginTest {
             END;
             """);
 
-        ResultSet rs = engine.executeQuery("SELECT * FROM results ORDER BY level, value");
+        final ResultSet rs = engine.executeQuery("SELECT * FROM results ORDER BY level, value");
         assertEquals(2, rs.getRowCount());
         assertEquals(1, ((Number) rs.getRows().get(0).getValue(0)).intValue());
         assertEquals(1L, ((Number) rs.getRows().get(0).getValue(1)).longValue());
@@ -144,7 +127,7 @@ public class DeclareBeforeBeginTest {
             END;
             """);
 
-        ResultSet rs = engine.executeQuery("SELECT * FROM results");
+        final ResultSet rs = engine.executeQuery("SELECT * FROM results");
         assertEquals(1, rs.getRowCount());
         assertEquals(1L, ((Number) rs.getRows().get(0).getValue(0)).longValue());
         assertEquals("Alice", rs.getRows().get(0).getValue(1));
@@ -169,7 +152,7 @@ public class DeclareBeforeBeginTest {
             END;
             """);
 
-        ResultSet rs = engine.executeQuery("SELECT * FROM results");
+        final ResultSet rs = engine.executeQuery("SELECT * FROM results");
         assertEquals(1, rs.getRowCount());
         assertEquals(6L, ((Number) rs.getRows().get(0).getValue(0)).longValue());
     }
@@ -191,7 +174,7 @@ public class DeclareBeforeBeginTest {
             END;
             """);
 
-        ResultSet rs = engine.executeQuery("SELECT * FROM results ORDER BY value");
+        final ResultSet rs = engine.executeQuery("SELECT * FROM results ORDER BY value");
         assertEquals(2, rs.getRowCount());
         assertEquals(42L, ((Number) rs.getRows().get(0).getValue(0)).longValue());
         assertEquals(999L, ((Number) rs.getRows().get(1).getValue(0)).longValue());

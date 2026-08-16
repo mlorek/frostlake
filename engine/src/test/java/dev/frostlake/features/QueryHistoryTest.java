@@ -54,7 +54,7 @@ public class QueryHistoryTest extends BaseDatabaseTest {
         engine.executeQuery("SELECT * FROM test_table");
 
         // Query history
-        ResultSet history = engine.executeQuery("SELECT * FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY())");
+        final ResultSet history = engine.executeQuery("SELECT * FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY())");
 
         assertNotNull(history);
         assertTrue(history.getRowCount() >= 3); // At least 3 queries: CREATE, INSERT, SELECT
@@ -71,7 +71,7 @@ public class QueryHistoryTest extends BaseDatabaseTest {
 
         engine.execute("SELECT 1");
 
-        ResultSet history = engine.executeQuery("SELECT * FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY())");
+        final ResultSet history = engine.executeQuery("SELECT * FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY())");
 
         // Snowflake's QUERY_HISTORY table function exposes 62 columns (live-captured).
         assertEquals(62, history.getColumns().size());
@@ -97,7 +97,7 @@ public class QueryHistoryTest extends BaseDatabaseTest {
         engine.executeQuery("SELECT * FROM type_test");
         engine.execute("DROP TABLE type_test");
 
-        ResultSet history = engine.executeQuery("""
+        final ResultSet history = engine.executeQuery("""
             SELECT query_type, COUNT(*) as count
             FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY())
             GROUP BY query_type
@@ -125,7 +125,7 @@ public class QueryHistoryTest extends BaseDatabaseTest {
             // Expected to fail
         }
 
-        ResultSet history = engine.executeQuery("""
+        final ResultSet history = engine.executeQuery("""
             SELECT execution_status, COUNT(*) as count
             FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY())
             GROUP BY execution_status
@@ -147,7 +147,7 @@ public class QueryHistoryTest extends BaseDatabaseTest {
         engine.execute("DROP TABLE filter_test");
 
         // Filter by query type
-        ResultSet selectQueries = engine.executeQuery("""
+        final ResultSet selectQueries = engine.executeQuery("""
             SELECT * FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY())
             WHERE query_type = 'SELECT'
             """);
@@ -156,7 +156,7 @@ public class QueryHistoryTest extends BaseDatabaseTest {
         logger.info("Filtered SELECT queries: {}", selectQueries.getRowCount());
 
         // Filter by status
-        ResultSet successQueries = engine.executeQuery("""
+        final ResultSet successQueries = engine.executeQuery("""
             SELECT * FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY())
             WHERE execution_status = 'SUCCESS'
             """);
@@ -176,7 +176,7 @@ public class QueryHistoryTest extends BaseDatabaseTest {
         engine.execute("SELECT 2");
         engine.execute("SELECT 3");
 
-        ResultSet history = engine.executeQuery("""
+        final ResultSet history = engine.executeQuery("""
             SELECT query_text, start_time
             FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY())
             ORDER BY start_time DESC
@@ -196,7 +196,7 @@ public class QueryHistoryTest extends BaseDatabaseTest {
         engine.execute("CREATE TABLE perf_test (id INTEGER)");
         engine.execute("INSERT INTO perf_test VALUES (1), (2), (3), (4), (5)");
 
-        ResultSet history = engine.executeQuery("""
+        final ResultSet history = engine.executeQuery("""
             SELECT query_type, TOTAL_ELAPSED_TIME
             FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY())
             WHERE query_type IN ('CREATE', 'INSERT')
@@ -205,7 +205,7 @@ public class QueryHistoryTest extends BaseDatabaseTest {
         assertTrue(history.getRowCount() >= 2);
 
         for (int i = 0; i < history.getRowCount(); i++) {
-            Object execTime = history.getRows().get(i).getValues().get(1);
+            final Object execTime = history.getRows().get(i).getValues().get(1);
             assertNotNull(execTime);
             logger.info("Query execution time: {} ms", execTime);
         }
@@ -222,7 +222,7 @@ public class QueryHistoryTest extends BaseDatabaseTest {
         engine.execute("INSERT INTO rows_test VALUES (1), (2), (3)");
         engine.executeQuery("SELECT * FROM rows_test");
 
-        ResultSet history = engine.executeQuery("""
+        final ResultSet history = engine.executeQuery("""
             SELECT query_text, rows_produced
             FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY())
             WHERE query_type = 'SELECT'
@@ -247,7 +247,7 @@ public class QueryHistoryTest extends BaseDatabaseTest {
         engine.execute("USE SCHEMA test_hist_schema");
         engine.execute("CREATE TABLE ddl_test (id INTEGER)");
 
-        ResultSet history = engine.executeQuery("""
+        final ResultSet history = engine.executeQuery("""
             SELECT query_type, COUNT(*) as count
             FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY())
             WHERE query_type = 'CREATE'
@@ -276,7 +276,7 @@ public class QueryHistoryTest extends BaseDatabaseTest {
             logger.warn("Transaction execution issue: {}", e.getMessage());
         }
 
-        ResultSet history = engine.executeQuery("""
+        final ResultSet history = engine.executeQuery("""
             SELECT query_type
             FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY())
             WHERE query_type IN ('BEGIN', 'COMMIT', 'CREATE', 'INSERT')
@@ -299,11 +299,11 @@ public class QueryHistoryTest extends BaseDatabaseTest {
         }
 
         // Verify we have at least 10 queries
-        ResultSet allHistory = engine.executeQuery("SELECT * FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY())");
+        final ResultSet allHistory = engine.executeQuery("SELECT * FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY())");
         assertTrue(allHistory.getRowCount() >= 10);
 
         // Test LIMIT
-        ResultSet limitedHistory = engine.executeQuery("""
+        final ResultSet limitedHistory = engine.executeQuery("""
             SELECT * FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY())
             LIMIT 5
             """);
@@ -326,7 +326,7 @@ public class QueryHistoryTest extends BaseDatabaseTest {
             // Expected
         }
 
-        ResultSet history = engine.executeQuery("""
+        final ResultSet history = engine.executeQuery("""
             SELECT error_message
             FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY())
             WHERE execution_status = 'FAILED'
@@ -348,14 +348,14 @@ public class QueryHistoryTest extends BaseDatabaseTest {
         engine.execute("SELECT 1");
         engine.execute("SELECT 2");
 
-        ResultSet history1 = engine.executeQuery("SELECT COUNT(*) as count FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY())");
-        long count1 = ((Number) history1.getRows().get(0).getValues().get(0)).longValue();
+        final ResultSet history1 = engine.executeQuery("SELECT COUNT(*) as count FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY())");
+        final long count1 = ((Number) history1.getRows().get(0).getValues().get(0)).longValue();
 
         // Execute more queries
         engine.execute("SELECT 3");
 
-        ResultSet history2 = engine.executeQuery("SELECT COUNT(*) as count FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY())");
-        long count2 = ((Number) history2.getRows().get(0).getValues().get(0)).longValue();
+        final ResultSet history2 = engine.executeQuery("SELECT COUNT(*) as count FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY())");
+        final long count2 = ((Number) history2.getRows().get(0).getValues().get(0)).longValue();
 
         assertTrue(count2 > count1);
         logger.info("Query history persists: {} -> {}", count1, count2);

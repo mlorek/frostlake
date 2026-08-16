@@ -16,10 +16,8 @@
 
 package dev.frostlake.scripting;
 
-import dev.frostlake.DatabaseEngine;
+import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -31,14 +29,10 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
  * merges into {@code UTIL.SETTINGS}, so those must resolve against LIB.UTIL when it is invoked from another
  * current database. The caller's context is restored after the call.
  */
-public class ProcedureHomeSchemaResolutionTest {
+public class ProcedureHomeSchemaResolutionTest extends BaseDatabaseTest {
 
-    private DatabaseEngine engine;
-
-    @BeforeEach
-    public void setUp() {
-        engine = new DatabaseEngine();
-        // Home of the helper function/table/procedure: LIB.UTIL.
+    @Override
+    protected void setupTest() {
         engine.execute("CREATE DATABASE lib");
         engine.execute("USE DATABASE lib");
         engine.execute("CREATE SCHEMA util");
@@ -61,18 +55,10 @@ public class ProcedureHomeSchemaResolutionTest {
                  RETURN 'saved';
                END $$
             """);
-        // Switch the session to a different database, so the procedure is called from outside its home.
         engine.execute("CREATE DATABASE appdb");
         engine.execute("USE DATABASE appdb");
         engine.execute("CREATE SCHEMA work");
         engine.execute("USE SCHEMA work");
-    }
-
-    @AfterEach
-    public void tearDown() {
-        if (engine != null) {
-            engine.shutdown();
-        }
     }
 
     private Object scalar(final String sql) {

@@ -41,5 +41,6 @@ public class RowAccessPolicy extends SqlObject {
     public List<Parameter> getParameters() { return new ArrayList<>(parameters); }
     public String getBody() { return body; }
 
-    @Override public String getObjectType() { return "ROW ACCESS POLICY"; }
+    @Override
+    public String getObjectType() { return "ROW ACCESS POLICY"; }
 }

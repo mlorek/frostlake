@@ -23,14 +23,18 @@ import org.slf4j.LoggerFactory;
 /**
  * Example demonstrating CREATE IF NOT EXISTS statements
  */
-public class CreateIfNotExistsExample {
+public final class CreateIfNotExistsExample {
+
+    /** Static helpers only — never instantiated. */
+    private CreateIfNotExistsExample() {
+    }
     private static final Logger logger = LoggerFactory.getLogger(CreateIfNotExistsExample.class);
 
     public static void main(final String[] args) {
         try {
             logger.info("=== CREATE IF NOT EXISTS Example ===\n");
 
-            DatabaseEngine engine = new DatabaseEngine();
+            final DatabaseEngine engine = new DatabaseEngine();
 
             // 1. Idempotent database setup
             logger.info("1. Idempotent Database Setup:");
@@ -62,7 +66,7 @@ public class CreateIfNotExistsExample {
             logger.info("3. Idempotent Table Setup:");
             logger.info("   " + "-".repeat(60));
 
-            String createUsers = """
+            final String createUsers = """
                     CREATE TABLE IF NOT EXISTS users (
                     id INTEGER PRIMARY KEY,
                     email VARCHAR NOT NULL,
@@ -79,7 +83,7 @@ public class CreateIfNotExistsExample {
             logger.info("4. Complete Idempotent Setup Script:");
             logger.info("   " + "-".repeat(60));
 
-            String setupScript = """
+            final String setupScript = """
                     CREATE DATABASE IF NOT EXISTS prod_db;
                     CREATE SCHEMA IF NOT EXISTS prod_db.app;
                     CREATE TABLE IF NOT EXISTS customers (
@@ -99,7 +103,7 @@ public class CreateIfNotExistsExample {
                 sql = sql.trim();
                 if (!sql.isEmpty()) {
                     engine.execute(sql);
-                    String shortSql = sql.length() > 50 ? sql.substring(0, 47) + "..." : sql;
+                    final String shortSql = sql.length() > 50 ? sql.substring(0, 47) + "..." : sql;
                     logger.info("     \u2713 " + shortSql);
                 }
             }
@@ -109,7 +113,7 @@ public class CreateIfNotExistsExample {
                 sql = sql.trim();
                 if (!sql.isEmpty()) {
                     engine.execute(sql);
-                    String shortSql = sql.length() > 50 ? sql.substring(0, 47) + "..." : sql;
+                    final String shortSql = sql.length() > 50 ? sql.substring(0, 47) + "..." : sql;
                     logger.info("     \u2713 " + shortSql);
                 }
             }
@@ -119,7 +123,7 @@ public class CreateIfNotExistsExample {
             logger.info("\n5. Use Case: CI/CD Deployment Scripts:");
             logger.info("   " + "-".repeat(60));
 
-            String deploymentScript = """
+            final String deploymentScript = """
                     -- Safe to run on every deployment
                     CREATE DATABASE IF NOT EXISTS staging_db;
                     CREATE SCHEMA IF NOT EXISTS staging_db.api;
@@ -138,7 +142,7 @@ public class CreateIfNotExistsExample {
                 sql = sql.trim();
                 if (!sql.isEmpty() && !sql.startsWith("--")) {
                     engine.execute(sql);
-                    String shortSql = sql.length() > 45 ? sql.substring(0, 42) + "..." : sql;
+                    final String shortSql = sql.length() > 45 ? sql.substring(0, 42) + "..." : sql;
                     logger.info("     \u2713 " + shortSql);
                 }
             }
@@ -148,7 +152,7 @@ public class CreateIfNotExistsExample {
             logger.info("\n6. Safe Schema Migration Pattern:");
             logger.info("   " + "-".repeat(60));
 
-            String migrationScript = """
+            final String migrationScript = """
                     -- Safe migration: replace old objects with new ones
                     DROP VIEW IF EXISTS old_dashboard;
                     CREATE VIEW IF NOT EXISTS new_dashboard AS
@@ -167,7 +171,7 @@ public class CreateIfNotExistsExample {
                 sql = sql.trim();
                 if (!sql.isEmpty() && !sql.startsWith("--")) {
                     engine.execute(sql);
-                    String shortSql = sql.length() > 50 ? sql.substring(0, 47) + "..." : sql;
+                    final String shortSql = sql.length() > 50 ? sql.substring(0, 47) + "..." : sql;
                     logger.info("     \u2713 " + shortSql);
                 }
             }

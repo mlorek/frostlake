@@ -32,8 +32,15 @@ public class FunctionCallExpression implements Expression {
     private final List<String> argumentNames;
     // IDENTIFIER('fn')/IDENTIFIER($var) as the function name: resolved per evaluation (null otherwise).
     private final Expression nameExpression;
+    /** Where the call starts in its fragment, when the builder recorded it — see {@link SourcePosition}. */
+    private SourcePosition position;
     // Uppercase column names to omit when a `*` argument is expanded — e.g. OBJECT_CONSTRUCT(* EXCLUDE src).
     private List<String> starExcludes = new ArrayList<>();
+    // Canonical per-identifier parts of the call's (possibly qualified) name, read from the parse
+    // tree at build: quoted parts keep their case with the quotes stripped, unquoted parts fold.
+    // Null when the name has no identifier parts (LIKE/ILIKE keyword calls, IDENTIFIER(...) dynamic
+    // names) — the flattened functionName is the only spelling then.
+    private List<String> nameParts;
 
     public FunctionCallExpression(final String functionName, final List<Expression> arguments) {
         this(functionName, arguments, false, false);
@@ -88,6 +95,15 @@ public class FunctionCallExpression implements Expression {
         this.starExcludes = starExcludes;
     }
 
+    /** Canonical name parts ({@code db, schema, fn}), or null when the name has none — see the field note. */
+    public List<String> getNameParts() {
+        return nameParts;
+    }
+
+    public void setNameParts(final List<String> nameParts) {
+        this.nameParts = nameParts;
+    }
+
     @Override
     public <T> T accept(final ExpressionVisitor<T> visitor) {
         return visitor.visitFunctionCall(this);
@@ -98,7 +114,7 @@ public class FunctionCallExpression implements Expression {
         if (star) {
             return functionName + "(*)";
         }
-        StringBuilder sb = new StringBuilder();
+        final StringBuilder sb = new StringBuilder();
         sb.append(functionName).append("(");
         if (distinct) {
             sb.append("DISTINCT ");
@@ -128,6 +144,14 @@ public class FunctionCallExpression implements Expression {
 
     public Expression getNameExpression() {
         return nameExpression;
+    }
+
+    public SourcePosition getPosition() {
+        return position;
+    }
+
+    public void setPosition(final SourcePosition position) {
+        this.position = position;
     }
 
 }

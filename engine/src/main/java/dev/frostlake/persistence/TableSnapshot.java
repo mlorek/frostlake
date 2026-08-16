@@ -20,6 +20,7 @@ import java.io.Serializable;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Serializable snapshot of table metadata
@@ -40,6 +41,13 @@ public class TableSnapshot implements Serializable {
     public List<ForeignKeyConstraintSnapshot> foreignKeys;
     // ROW ACCESS POLICY binding (the policy definition itself is in SchemaSnapshot.rowAccessPolicies);
     // null on old snapshot files — restore null-guards.
+    public List<CheckConstraintSnapshot> checkConstraints;
+    /** Attached contacts, purpose to the contact's fully qualified name. */
+    public Map<String, String> contacts;
+    public String aggregationPolicyName;
+    public String joinPolicyName;
+    public List<SearchOptimizationSnapshot> searchOptimization;
+    public List<String> aggregationEntityKey;
     public String rowAccessPolicyName;
     public List<String> rowAccessPolicyColumns;
     // Constraint NAMES — the name an explicit CONSTRAINT <name> clause gave, or the generated

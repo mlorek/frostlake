@@ -20,8 +20,11 @@ import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * A routine's result takes the static type of the expression the EXECUTED RETURN names,
@@ -132,8 +135,16 @@ public class ReturnValueTypingTest extends BaseDatabaseTest {
 
     /** RETURN of a name that holds nothing stays NULL rather than becoming the four letters. */
     @Test
-    public void aNullValuedNameStaysNull() {
-        assertEquals(null, returned("BEGIN FOR i IN 1 TO 1 DO NULL; END FOR; RETURN missing_name; END"));
+    public void anUnresolvableNameIsRefusedNotReturnedAsNull() {
+        // This test used to assert the NULL: Frostlake resolved an unknown name to nothing and handed
+        // it back, so a typo produced a plausible answer. Live refuses the block instead.
+        final RuntimeException ex = assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                returned("BEGIN FOR i IN 1 TO 1 DO NULL; END FOR; RETURN missing_name; END");
+            }
+        });
+        assertTrue(String.valueOf(ex.getMessage()).contains("invalid identifier"), ex.getMessage());
     }
 
     // ── Mixed blocks: the type follows the RETURN that EXECUTES, live-verified. A sibling RETURN

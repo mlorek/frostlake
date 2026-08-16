@@ -16,10 +16,8 @@
 
 package dev.frostlake.query;
 
-import dev.frostlake.DatabaseEngine;
+import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
-import org.junit.jupiter.api.AfterAll;
-import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -28,23 +26,11 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 /**
  * Test BETWEEN and IN operators in WHERE clause
  */
-public class BetweenInTest {
+public class BetweenInTest extends BaseDatabaseTest {
 
-    private static DatabaseEngine engine;
-
-    @BeforeAll
-    public static void setup() {
-        engine = new DatabaseEngine();
+    @Override
+    protected void setupTest() {
         engine.execute("CREATE DATABASE IF NOT EXISTS test_db");
-        engine.execute("USE DATABASE test_db");
-        engine.execute("USE SCHEMA public");
-    }
-
-    @AfterAll
-    public static void teardown() {
-        if (engine != null) {
-            engine.shutdown();
-        }
     }
 
     @BeforeEach
@@ -75,7 +61,7 @@ public class BetweenInTest {
     // BETWEEN tests
     @Test
     public void testBetweenBasic() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT name, price FROM products WHERE price BETWEEN 50 AND 300 ORDER BY price"
         );
 
@@ -92,7 +78,7 @@ public class BetweenInTest {
     @Test
     public void testBetweenInclusive() {
         // BETWEEN is inclusive on both ends
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT name FROM products WHERE price BETWEEN 150 AND 150"
         );
 
@@ -102,7 +88,7 @@ public class BetweenInTest {
 
     @Test
     public void testNotBetween() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT name, price FROM products WHERE price NOT BETWEEN 100 AND 500 ORDER BY price"
         );
 
@@ -120,7 +106,7 @@ public class BetweenInTest {
 
     @Test
     public void testBetweenWithLiterals() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT id, name FROM products WHERE id BETWEEN 2 AND 4 ORDER BY id"
         );
 
@@ -133,7 +119,7 @@ public class BetweenInTest {
     // IN tests
     @Test
     public void testInWithList() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT name, category FROM products WHERE category IN ('Electronics', 'Furniture') ORDER BY name"
         );
 
@@ -143,7 +129,7 @@ public class BetweenInTest {
 
     @Test
     public void testInWithNumbers() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT name, price FROM products WHERE price IN (25, 75, 150) ORDER BY price"
         );
 
@@ -157,7 +143,7 @@ public class BetweenInTest {
 
     @Test
     public void testNotIn() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT name, category FROM products WHERE category NOT IN ('Electronics') ORDER BY name"
         );
 
@@ -170,7 +156,7 @@ public class BetweenInTest {
 
     @Test
     public void testInWithSubquery() {
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT name, category FROM products
             WHERE category IN (SELECT name FROM categories)
             ORDER BY name
@@ -185,7 +171,7 @@ public class BetweenInTest {
         // Remove Furniture from categories
         engine.execute("DELETE FROM categories WHERE name = 'Furniture'");
 
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT name, category FROM products
             WHERE category NOT IN (SELECT name FROM categories)
             ORDER BY name
@@ -200,7 +186,7 @@ public class BetweenInTest {
 
     @Test
     public void testInWithSingleValue() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT name FROM products WHERE category IN ('Electronics') ORDER BY name"
         );
 
@@ -216,7 +202,7 @@ public class BetweenInTest {
         // Create a query with empty result - NOT IN empty set should return all rows
         engine.execute("DELETE FROM categories");
 
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT name FROM products
             WHERE category NOT IN (SELECT name FROM categories)
             ORDER BY name
@@ -229,7 +215,7 @@ public class BetweenInTest {
     // Combined tests
     @Test
     public void testBetweenAndIn() {
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT name, price FROM products
             WHERE price BETWEEN 50 AND 400
             AND category IN ('Electronics')
@@ -246,7 +232,7 @@ public class BetweenInTest {
 
     @Test
     public void testNotBetweenAndNotIn() {
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT name, price FROM products
             WHERE price NOT BETWEEN 100 AND 500
             AND category NOT IN ('Furniture')
@@ -262,7 +248,7 @@ public class BetweenInTest {
 
     @Test
     public void testBetweenOrIn() {
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT name, price FROM products
             WHERE price BETWEEN 300 AND 500
             OR category IN ('Furniture')

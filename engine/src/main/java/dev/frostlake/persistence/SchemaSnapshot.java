@@ -39,6 +39,10 @@ public class SchemaSnapshot implements Serializable {
     public List<StageSnapshot> stages = new ArrayList<>();
     public List<StreamSnapshot> streams = new ArrayList<>();
     public List<TaskSnapshot> tasks = new ArrayList<>();
+    public List<ContactSnapshot> contacts = new ArrayList<>();
+    public List<ProjectionPolicySnapshot> projectionPolicies = new ArrayList<>();
+    public List<ProjectionPolicySnapshot> aggregationPolicies = new ArrayList<>();
+    public List<ProjectionPolicySnapshot> joinPolicies = new ArrayList<>();
     public List<MaskingPolicySnapshot> maskingPolicies = new ArrayList<>();
     public List<FileFormatSnapshot> fileFormats = new ArrayList<>();
     public List<FunctionSnapshot> functions = new ArrayList<>();

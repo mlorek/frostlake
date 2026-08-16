@@ -29,7 +29,7 @@ import java.util.List;
  * enough arguments … expected 2, got 1").
  */
 public class DecompressBinary extends BuiltInFunction {
-    public DecompressBinary() { super("DECOMPRESS_BINARY", BinaryType.BINARY); }
+    public DecompressBinary() { super("DECOMPRESS_BINARY", BinaryType.VARBINARY); }
 
     @Override
     public Object evaluate(final List<Object> args) {
@@ -39,6 +39,8 @@ public class DecompressBinary extends BuiltInFunction {
         return BinaryValue.of(CompressionCodec.decompress(data, method));
     }
 
-    @Override public int getMinArgCount() { return 2; }
-    @Override public int getMaxArgCount() { return 2; }
+    @Override
+    public int getMinArgCount() { return 2; }
+    @Override
+    public int getMaxArgCount() { return 2; }
 }

@@ -18,11 +18,11 @@ package dev.frostlake.functions.scalar.semistructured;
 
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
-import tools.jackson.databind.JsonNode;
-import java.util.List;
 import dev.frostlake.types.NumericType;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.util.List;
+import tools.jackson.databind.JsonNode;
 
 /**
  * AS_DECIMAL(v [, precision [, scale]]) — the variant's numeric value as a fixed-point number
@@ -64,6 +64,8 @@ public class AsDecimal extends BuiltInFunction {
         return rounded;
     }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return 3; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return 3; }
 }

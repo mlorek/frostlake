@@ -17,14 +17,31 @@
 package dev.frostlake.jdbc;
 
 import dev.frostlake.http.DatabaseHttpServer;
-import java.net.ServerSocket;
-import org.junit.jupiter.api.*;
-
 import java.math.BigDecimal;
-import java.sql.*;
+import java.net.ServerSocket;
+import java.sql.Connection;
+import java.sql.Driver;
+import java.sql.DriverManager;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.ResultSetMetaData;
+import java.sql.SQLException;
+import java.sql.Statement;
+import java.sql.Timestamp;
+import java.sql.Types;
 import java.util.Properties;
-
-import static org.junit.jupiter.api.Assertions.*;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.MethodOrderer;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestMethodOrder;
+import org.junit.jupiter.api.function.Executable;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Tests for JDBC Driver
@@ -59,7 +76,7 @@ public class JdbcDriverTest {
     @Test
     public void testDriverRegistration() throws Exception {
         // Driver should be automatically registered
-        Driver driver = DriverManager.getDriver(JDBC_URL);
+        final Driver driver = DriverManager.getDriver(JDBC_URL);
         assertNotNull(driver);
         assertTrue(driver instanceof DatabaseDriver);
     }
@@ -83,11 +100,11 @@ public class JdbcDriverTest {
                 stmt.execute("CREATE TABLE users (id INT, name VARCHAR, age INT)");
 
                 // Insert data — the affected-row count is reported over the wire
-                int rows = stmt.executeUpdate("INSERT INTO users VALUES (1, 'Alice', 30)");
+                final int rows = stmt.executeUpdate("INSERT INTO users VALUES (1, 'Alice', 30)");
                 assertEquals(1, rows);
 
                 // Query data
-                ResultSet rs = stmt.executeQuery("SELECT * FROM users");
+                final ResultSet rs = stmt.executeQuery("SELECT * FROM users");
                 assertTrue(rs.next());
                 assertEquals(1, rs.getInt("id"));
                 assertEquals("Alice", rs.getString("name"));
@@ -107,7 +124,7 @@ public class JdbcDriverTest {
             }
 
             // Use PreparedStatement
-            String sql = "INSERT INTO products VALUES (?, ?, ?)";
+            final String sql = "INSERT INTO products VALUES (?, ?, ?)";
             try (PreparedStatement pstmt = conn.prepareStatement(sql)) {
                 pstmt.setInt(1, 1);
                 pstmt.setString(2, "Laptop");
@@ -121,10 +138,10 @@ public class JdbcDriverTest {
             }
 
             // Query with PreparedStatement
-            String querySql = "SELECT * FROM products WHERE price > ?";
+            final String querySql = "SELECT * FROM products WHERE price > ?";
             try (PreparedStatement pstmt = conn.prepareStatement(querySql)) {
                 pstmt.setDouble(1, 50.0);
-                ResultSet rs = pstmt.executeQuery();
+                final ResultSet rs = pstmt.executeQuery();
 
                 assertTrue(rs.next());
                 assertEquals("Laptop", rs.getString("name"));
@@ -142,15 +159,17 @@ public class JdbcDriverTest {
                 stmt.execute("CREATE TABLE test (id INT, name VARCHAR, active BOOLEAN)");
                 stmt.execute("INSERT INTO test VALUES (1, 'Test', true)");
 
-                ResultSet rs = stmt.executeQuery("SELECT * FROM test");
-                ResultSetMetaData meta = rs.getMetaData();
+                final ResultSet rs = stmt.executeQuery("SELECT * FROM test");
+                final ResultSetMetaData meta = rs.getMetaData();
 
                 assertEquals(3, meta.getColumnCount());
                 assertEquals("ID", meta.getColumnName(1).toUpperCase());
                 assertEquals("NAME", meta.getColumnName(2).toUpperCase());
                 assertEquals("ACTIVE", meta.getColumnName(3).toUpperCase());
 
-                assertEquals(Types.INTEGER, meta.getColumnType(1));
+                // An INT column is NUMBER(38,0) in the catalog, as on a real account, and a
+                // scale-less NUMBER is a BIGINT to JDBC — which is exactly what live reports for it.
+                assertEquals(Types.BIGINT, meta.getColumnType(1));
                 assertEquals(Types.VARCHAR, meta.getColumnType(2));
             }
         }
@@ -174,11 +193,11 @@ public class JdbcDriverTest {
                 stmt.execute("INSERT INTO departments VALUES (20, 'Sales')");
 
                 // Join query
-                String sql = """
+                final String sql = """
                     SELECT e.name as emp_name, d.dept_name FROM employees e
                     JOIN departments d ON e.dept_id = d.dept_id
                     """;
-                ResultSet rs = stmt.executeQuery(sql);
+                final ResultSet rs = stmt.executeQuery(sql);
 
                 assertTrue(rs.next());
                 assertEquals("Alice", rs.getString("emp_name"));
@@ -210,7 +229,7 @@ public class JdbcDriverTest {
                 stmt.executeUpdate("UPDATE wallets SET balance = 500 WHERE id = 1");
                 conn.commit();
 
-                ResultSet rs = stmt.executeQuery("SELECT balance FROM wallets WHERE id = 1");
+                final ResultSet rs = stmt.executeQuery("SELECT balance FROM wallets WHERE id = 1");
                 assertTrue(rs.next());
                 assertEquals(500, rs.getInt(1));
             }
@@ -220,7 +239,7 @@ public class JdbcDriverTest {
     @Test
     public void testDatabaseMetaData() throws Exception {
         try (Connection conn = DriverManager.getConnection(JDBC_URL)) {
-            java.sql.DatabaseMetaData meta = conn.getMetaData();
+            final java.sql.DatabaseMetaData meta = conn.getMetaData();
 
             assertNotNull(meta);
             assertEquals("Frostlake SQL Engine", meta.getDatabaseProductName());
@@ -244,7 +263,7 @@ public class JdbcDriverTest {
                 stmt.execute("USE SCHEMA meta_s");
                 stmt.execute("CREATE TABLE employees (id INTEGER PRIMARY KEY, name VARCHAR, salary NUMBER(10,2))");
             }
-            java.sql.DatabaseMetaData meta = conn.getMetaData();
+            final java.sql.DatabaseMetaData meta = conn.getMetaData();
 
             // getTables — the created table must appear (previously threw over the HTTP path)
             boolean foundTable = false;
@@ -299,7 +318,7 @@ public class JdbcDriverTest {
                     stmt.execute("INSERT INTO numbers VALUES (" + i + ")");
                 }
 
-                ResultSet rs = stmt.executeQuery("SELECT * FROM numbers");
+                final ResultSet rs = stmt.executeQuery("SELECT * FROM numbers");
 
                 // Forward navigation
                 assertTrue(rs.next());
@@ -338,7 +357,7 @@ public class JdbcDriverTest {
                 stmt.execute("CREATE TABLE test (id INT)");
                 stmt.execute("INSERT INTO test VALUES (1)");
 
-                ResultSet rs = stmt.executeQuery("SELECT * FROM test");
+                final ResultSet rs = stmt.executeQuery("SELECT * FROM test");
                 assertTrue(rs.next());
                 assertEquals(1, rs.getInt(1));
             }
@@ -368,13 +387,13 @@ public class JdbcDriverTest {
 
             // Verify each connection sees its own data
             try (Statement stmt1 = conn1.createStatement()) {
-                ResultSet rs = stmt1.executeQuery("SELECT * FROM data");
+                final ResultSet rs = stmt1.executeQuery("SELECT * FROM data");
                 assertTrue(rs.next());
                 assertEquals("connection1", rs.getString(1));
             }
 
             try (Statement stmt2 = conn2.createStatement()) {
-                ResultSet rs = stmt2.executeQuery("SELECT * FROM data");
+                final ResultSet rs = stmt2.executeQuery("SELECT * FROM data");
                 assertTrue(rs.next());
                 assertEquals("connection2", rs.getString(1));
             }
@@ -386,13 +405,21 @@ public class JdbcDriverTest {
         try (Connection conn = DriverManager.getConnection(JDBC_URL)) {
             try (Statement stmt = conn.createStatement()) {
                 // Try to select from non-existent table
-                assertThrows(SQLException.class, () -> {
-                    stmt.executeQuery("SELECT * FROM nonexistent_table");
+                assertThrows(SQLException.class, new Executable() {
+                    @Override
+                    public void execute() throws Throwable {
+                        stmt.executeQuery("SELECT * FROM nonexistent_table");
+                        
+                    }
                 });
 
                 // Try to use non-existent database
-                assertThrows(SQLException.class, () -> {
-                    stmt.execute("USE DATABASE nonexistent_db");
+                assertThrows(SQLException.class, new Executable() {
+                    @Override
+                    public void execute() throws Throwable {
+                        stmt.execute("USE DATABASE nonexistent_db");
+                        
+                    }
                 });
             }
         }
@@ -474,7 +501,7 @@ public class JdbcDriverTest {
                 stmt.execute("INSERT INTO test_table VALUES (1, 'test')");
 
                 // Verify data
-                ResultSet rs = stmt.executeQuery("SELECT * FROM test_table");
+                final ResultSet rs = stmt.executeQuery("SELECT * FROM test_table");
                 assertTrue(rs.next());
                 assertEquals(1, rs.getInt("id"));
                 assertEquals("test", rs.getString("value"));
@@ -491,7 +518,7 @@ public class JdbcDriverTest {
     @Test
     public void testConnectionWithDatabaseParameter() throws Exception {
         // Test database as query parameter
-        Properties props = new Properties();
+        final Properties props = new Properties();
         props.setProperty("database", "param_db_test");
 
         try (Connection conn = DriverManager.getConnection(JDBC_URL, props)) {
@@ -504,7 +531,7 @@ public class JdbcDriverTest {
                 stmt.execute("CREATE TABLE test (id INT)");
                 stmt.execute("INSERT INTO test VALUES (42)");
 
-                ResultSet rs = stmt.executeQuery("SELECT * FROM test");
+                final ResultSet rs = stmt.executeQuery("SELECT * FROM test");
                 assertTrue(rs.next());
                 assertEquals(42, rs.getInt(1));
             }

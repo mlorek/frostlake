@@ -44,6 +44,8 @@ public class Log extends NumericArgumentFunction {
         return text.endsWith(".0") ? text.substring(0, text.length() - 2) : text;
     }
 
-    @Override public int getMinArgCount() { return 2; }
-    @Override public int getMaxArgCount() { return 2; }
+    @Override
+    public int getMinArgCount() { return 2; }
+    @Override
+    public int getMaxArgCount() { return 2; }
 }

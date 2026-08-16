@@ -33,13 +33,20 @@ public class TimeFromParts extends BuiltInFunction {
                 return null;
             }
         }
-        int hour   = ((Number) args.get(0)).intValue();
-        int minute = ((Number) args.get(1)).intValue();
-        int second = ((Number) args.get(2)).intValue();
-        int nanos  = args.size() > 3 && args.get(3) != null ? ((Number) args.get(3)).intValue() : 0;
-        return LocalTime.of(hour, minute, second, nanos);
+        final int hour   = ((Number) args.get(0)).intValue();
+        final int minute = ((Number) args.get(1)).intValue();
+        final int second = ((Number) args.get(2)).intValue();
+        final int nanos  = args.size() > 3 && args.get(3) != null ? ((Number) args.get(3)).intValue() : 0;
+        // Components beyond their range carry over, and the total wraps within the day
+        // (25 h -> 01:00:00), rather than erroring.
+        long total = hour * 3600L + minute * 60L + second + Math.floorDiv(nanos, 1_000_000_000L);
+        final int nano = (int) Math.floorMod(nanos, 1_000_000_000L);
+        total = Math.floorMod(total, 86_400L);
+        return LocalTime.ofSecondOfDay(total).withNano(nano);
     }
 
-    @Override public int getMinArgCount() { return 3; }
-    @Override public int getMaxArgCount() { return 4; }
+    @Override
+    public int getMinArgCount() { return 3; }
+    @Override
+    public int getMaxArgCount() { return 4; }
 }

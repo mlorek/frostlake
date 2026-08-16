@@ -16,9 +16,12 @@
 
 package dev.frostlake.query;
 
-import dev.frostlake.DatabaseEngine;
+import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
-import org.junit.jupiter.api.*;
+import org.junit.jupiter.api.MethodOrderer;
+import org.junit.jupiter.api.Order;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestMethodOrder;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
@@ -26,36 +29,21 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
  * Tests for TOP clause and LIMIT with OFFSET
  */
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
-public class TopLimitTest {
+public class TopLimitTest extends BaseDatabaseTest {
 
-    private static DatabaseEngine engine;
-
-    @BeforeAll
-    public static void setup() {
-        engine = new DatabaseEngine();
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
-        engine.execute("USE SCHEMA PUBLIC");
-
-        // Create test table with more data for pagination testing
+    @Override
+    protected void setupTest() {
         engine.execute("CREATE TABLE numbers (id INTEGER, value INTEGER, category VARCHAR)");
-
-        // Insert 20 rows
         for (int i = 1; i <= 20; i++) {
-            String category = (i % 2 == 0) ? "even" : "odd";
+            final String category = (i % 2 == 0) ? "even" : "odd";
             engine.execute(String.format("INSERT INTO numbers VALUES (%d, %d, '%s')", i, i * 10, category));
         }
-    }
-
-    @AfterAll
-    public static void teardown() {
-        engine.shutdown();
     }
 
     @Test
     @Order(1)
     public void testBasicLimit() {
-        ResultSet result = engine.executeQuery("SELECT * FROM numbers ORDER BY id LIMIT 5");
+        final ResultSet result = engine.executeQuery("SELECT * FROM numbers ORDER BY id LIMIT 5");
 
         assertEquals(5, result.getRowCount(), "Should return 5 rows");
         result.reset();
@@ -73,7 +61,7 @@ public class TopLimitTest {
     @Test
     @Order(2)
     public void testLimitWithOffset() {
-        ResultSet result = engine.executeQuery("SELECT * FROM numbers ORDER BY id LIMIT 5 OFFSET 5");
+        final ResultSet result = engine.executeQuery("SELECT * FROM numbers ORDER BY id LIMIT 5 OFFSET 5");
 
         assertEquals(5, result.getRowCount(), "Should return 5 rows");
         result.reset();
@@ -92,28 +80,28 @@ public class TopLimitTest {
     @Order(3)
     public void testLimitOffsetPagination() {
         // Page 1: rows 1-5
-        ResultSet page1 = engine.executeQuery("SELECT * FROM numbers ORDER BY id LIMIT 5 OFFSET 0");
+        final ResultSet page1 = engine.executeQuery("SELECT * FROM numbers ORDER BY id LIMIT 5 OFFSET 0");
         assertEquals(5, page1.getRowCount());
         page1.reset();
         page1.next();
         assertEquals(1L, page1.getValue("id"));
 
         // Page 2: rows 6-10
-        ResultSet page2 = engine.executeQuery("SELECT * FROM numbers ORDER BY id LIMIT 5 OFFSET 5");
+        final ResultSet page2 = engine.executeQuery("SELECT * FROM numbers ORDER BY id LIMIT 5 OFFSET 5");
         assertEquals(5, page2.getRowCount());
         page2.reset();
         page2.next();
         assertEquals(6L, page2.getValue("id"));
 
         // Page 3: rows 11-15
-        ResultSet page3 = engine.executeQuery("SELECT * FROM numbers ORDER BY id LIMIT 5 OFFSET 10");
+        final ResultSet page3 = engine.executeQuery("SELECT * FROM numbers ORDER BY id LIMIT 5 OFFSET 10");
         assertEquals(5, page3.getRowCount());
         page3.reset();
         page3.next();
         assertEquals(11L, page3.getValue("id"));
 
         // Page 4: rows 16-20
-        ResultSet page4 = engine.executeQuery("SELECT * FROM numbers ORDER BY id LIMIT 5 OFFSET 15");
+        final ResultSet page4 = engine.executeQuery("SELECT * FROM numbers ORDER BY id LIMIT 5 OFFSET 15");
         assertEquals(5, page4.getRowCount());
         page4.reset();
         page4.next();
@@ -124,7 +112,7 @@ public class TopLimitTest {
     @Order(4)
     public void testLimitOffsetBeyondData() {
         // Offset beyond available data
-        ResultSet result = engine.executeQuery("SELECT * FROM numbers ORDER BY id LIMIT 5 OFFSET 100");
+        final ResultSet result = engine.executeQuery("SELECT * FROM numbers ORDER BY id LIMIT 5 OFFSET 100");
         assertEquals(0, result.getRowCount(), "Should return 0 rows when offset is beyond data");
     }
 
@@ -132,7 +120,7 @@ public class TopLimitTest {
     @Order(5)
     public void testLimitOffsetPartialPage() {
         // Request 10 rows but only 5 remain after offset
-        ResultSet result = engine.executeQuery("SELECT * FROM numbers ORDER BY id LIMIT 10 OFFSET 15");
+        final ResultSet result = engine.executeQuery("SELECT * FROM numbers ORDER BY id LIMIT 10 OFFSET 15");
         assertEquals(5, result.getRowCount(), "Should return only 5 rows (16-20)");
         result.reset();
         result.next();
@@ -142,7 +130,7 @@ public class TopLimitTest {
     @Test
     @Order(6)
     public void testTopClause() {
-        ResultSet result = engine.executeQuery("SELECT TOP 5 * FROM numbers ORDER BY id");
+        final ResultSet result = engine.executeQuery("SELECT TOP 5 * FROM numbers ORDER BY id");
 
         assertEquals(5, result.getRowCount(), "TOP 5 should return 5 rows");
         result.reset();
@@ -160,7 +148,7 @@ public class TopLimitTest {
     @Test
     @Order(7)
     public void testTopWithWhereClause() {
-        ResultSet result = engine.executeQuery("SELECT TOP 3 * FROM numbers WHERE id > 10 ORDER BY id");
+        final ResultSet result = engine.executeQuery("SELECT TOP 3 * FROM numbers WHERE id > 10 ORDER BY id");
 
         assertEquals(3, result.getRowCount(), "Should return 3 rows where id > 10");
         result.reset();
@@ -175,14 +163,14 @@ public class TopLimitTest {
     @Test
     @Order(8)
     public void testTopLargerThanData() {
-        ResultSet result = engine.executeQuery("SELECT TOP 100 * FROM numbers");
+        final ResultSet result = engine.executeQuery("SELECT TOP 100 * FROM numbers");
         assertEquals(20, result.getRowCount(), "Should return all 20 rows when TOP exceeds data");
     }
 
     @Test
     @Order(9)
     public void testFetchFirstRows() {
-        ResultSet result = engine.executeQuery("SELECT * FROM numbers ORDER BY id FETCH FIRST 5 ROWS ONLY");
+        final ResultSet result = engine.executeQuery("SELECT * FROM numbers ORDER BY id FETCH FIRST 5 ROWS ONLY");
 
         assertEquals(5, result.getRowCount(), "FETCH FIRST 5 ROWS should return 5 rows");
         result.reset();
@@ -193,7 +181,7 @@ public class TopLimitTest {
     @Test
     @Order(10)
     public void testFetchNextRows() {
-        ResultSet result = engine.executeQuery("SELECT * FROM numbers ORDER BY id FETCH NEXT 7 ROWS ONLY");
+        final ResultSet result = engine.executeQuery("SELECT * FROM numbers ORDER BY id FETCH NEXT 7 ROWS ONLY");
 
         assertEquals(7, result.getRowCount(), "FETCH NEXT 7 ROWS should return 7 rows");
         result.reset();
@@ -212,7 +200,7 @@ public class TopLimitTest {
     @Order(11)
     public void testFetchWithoutRowsKeyword() {
         // FETCH FIRST n ONLY (ROWS is optional)
-        ResultSet result = engine.executeQuery("SELECT * FROM numbers ORDER BY id FETCH FIRST 3 ONLY");
+        final ResultSet result = engine.executeQuery("SELECT * FROM numbers ORDER BY id FETCH FIRST 3 ONLY");
 
         assertEquals(3, result.getRowCount(), "FETCH FIRST 3 ONLY should return 3 rows");
     }
@@ -220,7 +208,7 @@ public class TopLimitTest {
     @Test
     @Order(12)
     public void testLimitWithAggregation() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT category, COUNT(*) as cnt FROM numbers GROUP BY category ORDER BY category LIMIT 1"
         );
 
@@ -233,7 +221,7 @@ public class TopLimitTest {
     @Test
     @Order(13)
     public void testTopWithAggregation() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT TOP 1 category, COUNT(*) as cnt FROM numbers GROUP BY category ORDER BY category DESC"
         );
 
@@ -246,14 +234,14 @@ public class TopLimitTest {
     @Test
     @Order(14)
     public void testLimitZero() {
-        ResultSet result = engine.executeQuery("SELECT * FROM numbers LIMIT 0");
+        final ResultSet result = engine.executeQuery("SELECT * FROM numbers LIMIT 0");
         assertEquals(0, result.getRowCount(), "LIMIT 0 should return no rows");
     }
 
     @Test
     @Order(15)
     public void testOffsetZero() {
-        ResultSet result = engine.executeQuery("SELECT * FROM numbers ORDER BY id LIMIT 3 OFFSET 0");
+        final ResultSet result = engine.executeQuery("SELECT * FROM numbers ORDER BY id LIMIT 3 OFFSET 0");
         assertEquals(3, result.getRowCount());
         result.reset();
         result.next();
@@ -263,7 +251,7 @@ public class TopLimitTest {
     @Test
     @Order(16)
     public void testTopDescendingOrder() {
-        ResultSet result = engine.executeQuery("SELECT TOP 3 * FROM numbers ORDER BY id DESC");
+        final ResultSet result = engine.executeQuery("SELECT TOP 3 * FROM numbers ORDER BY id DESC");
 
         assertEquals(3, result.getRowCount());
         result.reset();
@@ -278,7 +266,7 @@ public class TopLimitTest {
     @Test
     @Order(17)
     public void testLimitOffsetDescendingOrder() {
-        ResultSet result = engine.executeQuery("SELECT * FROM numbers ORDER BY id DESC LIMIT 5 OFFSET 5");
+        final ResultSet result = engine.executeQuery("SELECT * FROM numbers ORDER BY id DESC LIMIT 5 OFFSET 5");
 
         assertEquals(5, result.getRowCount());
         result.reset();
@@ -289,7 +277,7 @@ public class TopLimitTest {
     @Test
     @Order(18)
     public void testTopWithOrderByValue() {
-        ResultSet result = engine.executeQuery("SELECT TOP 3 * FROM numbers ORDER BY value DESC");
+        final ResultSet result = engine.executeQuery("SELECT TOP 3 * FROM numbers ORDER BY value DESC");
 
         assertEquals(3, result.getRowCount());
         result.reset();
@@ -300,7 +288,7 @@ public class TopLimitTest {
     @Test
     @Order(19)
     public void testLimitWithMultipleColumns() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT id, value, category FROM numbers ORDER BY id LIMIT 5"
         );
 
@@ -314,7 +302,7 @@ public class TopLimitTest {
     @Test
     @Order(20)
     public void testFetchFirstWithComplexQuery() {
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT category, SUM(value) as total FROM numbers
             GROUP BY category
             HAVING SUM(value) > 500

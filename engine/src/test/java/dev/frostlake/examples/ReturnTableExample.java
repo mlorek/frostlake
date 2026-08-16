@@ -21,11 +21,15 @@ import dev.frostlake.storage.ResultSet;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-public class ReturnTableExample {
+public final class ReturnTableExample {
+
+    /** Static helpers only — never instantiated. */
+    private ReturnTableExample() {
+    }
     private static final Logger logger = LoggerFactory.getLogger(ReturnTableExample.class);
 
     public static void main(final String[] args) {
-        DatabaseEngine engine = new DatabaseEngine();
+        final DatabaseEngine engine = new DatabaseEngine();
 
         try {
             engine.execute("CREATE DATABASE demo_db");
@@ -43,7 +47,7 @@ public class ReturnTableExample {
 
             // Example 1: Simple RETURN TABLE
             logger.info("2. Using RETURN TABLE with EXECUTE IMMEDIATE");
-            ResultSet rs1 = engine.executeQuery("""
+            final ResultSet rs1 = engine.executeQuery("""
                 DECLARE
                   res RESULTSET;
                   select_statement VARCHAR;
@@ -64,7 +68,7 @@ public class ReturnTableExample {
 
             // Example 2: Dynamic query with filtering
             logger.info("3. Dynamic Query with Filtering");
-            ResultSet rs2 = engine.executeQuery("""
+            final ResultSet rs2 = engine.executeQuery("""
                 DECLARE
                   res RESULTSET;
                   query_text VARCHAR;

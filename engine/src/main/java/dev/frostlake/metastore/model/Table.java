@@ -23,7 +23,10 @@ import dev.frostlake.types.DataType;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 public class Table extends SqlObject {
@@ -40,7 +43,24 @@ public class Table extends SqlObject {
     private boolean hybrid;
     private long rowCount;
     private List<String> clusterKeys;
+    // CHECK constraints, in declaration order — the order GET_DDL renders them in.
+    private final List<CheckConstraint> checkConstraints = new ArrayList<>();
     private String rowAccessPolicyName;  // qualified name of attached row access policy, or null
+    private String aggregationPolicyName;  // qualified name of attached aggregation policy, or null
+    private String joinPolicyName;  // qualified name of attached join policy, or null
+    // SEARCH OPTIMIZATION: the configured expressions, and the next number to hand out. Numbers are
+    // never reused, so dropping one leaves the others as they were (live-verified).
+    private final List<SearchOptimizationExpression> searchOptimization = new ArrayList<>();
+    private int nextSearchOptimizationId = 1;
+    // DATA METRIC FUNCTIONS attached to this table, recorded and never evaluated.
+    private final List<DataMetricAttachment> dataMetrics = new ArrayList<>();
+    // DATA_METRIC_SCHEDULE as written ('60 MINUTE'); the references view renders it as cron.
+    private String dataMetricSchedule;
+    // The columns whose DISTINCT values count as one entity for the policy's minimum group size.
+    private List<String> aggregationEntityKey = new ArrayList<>();
+    // Contacts attached for a purpose — ALTER TABLE … SET CONTACT support = c. Purpose (upper) to the
+    // contact's fully qualified name. Ordered so the attachments read back in the order they were made.
+    private final Map<String, String> contacts = new LinkedHashMap<>();
     private List<String> rowAccessPolicyColumns = new ArrayList<>();  // columns passed to policy
     // Names for the constraints this table carries as column flags rather than as constraint objects: the
     // PRIMARY KEY (one constraint spanning every PK column) and the per-column UNIQUE / inline-REFERENCES
@@ -56,6 +76,11 @@ public class Table extends SqlObject {
     private final List<UniqueConstraint> uniqueConstraints = new ArrayList<>();
     // Whether this instance is the CATALOG's own object for its name — see isCatalogResident().
     private boolean catalogResident;
+    // CHANGE_TRACKING: off on creation; flipped by the table option, ALTER … SET, or the creation
+    // of a stream over the table (which enables it implicitly). The CHANGES clause requires it.
+    private boolean changeTracking;
+    private boolean schemaEvolution;
+    private boolean reclusterSuspended;
     // Set only on a USING / NATURAL join's merged relation: the join-key column names (upper-cased,
     // in USING-list / left-table order). SELECT * surfaces these first, and a bare reference to one
     // reads the first NON-NULL of its per-side copies — the merged column of an outer join. Null for
@@ -124,6 +149,25 @@ public class Table extends SqlObject {
         return new ArrayList<>(columns);
     }
 
+    /** The column count WITHOUT copying the column list ({@link #getColumns()} copies per call). */
+    public int columnCount() {
+        return columns.size();
+    }
+
+    /**
+     * A read-only LIVE view of the columns for hot paths that only iterate — an ALTER stays
+     * visible through it, and nothing is copied. {@link #getColumns()} keeps returning a
+     * defensive copy for callers that hold or mutate their list.
+     */
+    public List<TableColumn> columnsView() {
+        return Collections.unmodifiableList(columns);
+    }
+
+    /** Whether any PRIMARY KEY columns are declared, without copying the name list. */
+    public boolean hasPrimaryKeyColumns() {
+        return !primaryKeys.isEmpty();
+    }
+
     /**
      * The column, or null when there is none — for callers that phrase the miss their own way. Resolves
      * exactly as {@link #getColumn} does, through the same index, so the two can never disagree.
@@ -134,7 +178,7 @@ public class Table extends SqlObject {
     }
 
     public TableColumn getColumn(final String name) {
-        Integer index = columnIndex.get(name.toUpperCase());
+        final Integer index = columnIndex.get(name.toUpperCase());
         if (index == null) {
             throw new RuntimeException(SqlCompilationError.invalidIdentifier(name));
         }
@@ -142,7 +186,7 @@ public class Table extends SqlObject {
     }
 
     public int getColumnIndex(final String name) {
-        Integer index = columnIndex.get(name.toUpperCase());
+        final Integer index = columnIndex.get(name.toUpperCase());
         if (index == null) {
             throw new RuntimeException(SqlCompilationError.invalidIdentifier(name));
         }
@@ -200,6 +244,78 @@ public class Table extends SqlObject {
         if (name != null && !name.isEmpty()) {
             uniqueConstraintNames.put(columnName.toUpperCase(), name);
         }
+    }
+
+    /**
+     * Move a constraint to a new name — {@code ALTER TABLE … RENAME CONSTRAINT old TO new}. A name can
+     * live in four places (a declared UNIQUE, the primary key, a table-level FOREIGN KEY, and the
+     * per-column name an inline UNIQUE or REFERENCES carries), so all four are searched.
+     *
+     * @return whether a constraint of that name was found and renamed.
+     */
+    public boolean renameConstraint(final String oldName, final String newName) {
+        for (final UniqueConstraint unique : uniqueConstraints) {
+            if (unique.getConstraintName().equalsIgnoreCase(oldName)) {
+                unique.setConstraintName(newName);
+                return true;
+            }
+        }
+        for (final ForeignKeyConstraint foreignKey : foreignKeys) {
+            if (foreignKey.getConstraintName().equalsIgnoreCase(oldName)) {
+                foreignKey.setConstraintName(newName);
+                return true;
+            }
+        }
+        if (primaryKeyConstraintName != null && primaryKeyConstraintName.equalsIgnoreCase(oldName)) {
+            primaryKeyConstraintName = newName;
+            return true;
+        }
+        return renameInNameMap(uniqueConstraintNames, oldName, newName)
+            || renameInNameMap(columnForeignKeyConstraintNames, oldName, newName);
+    }
+
+    /** Rename a per-column constraint name in one of the name maps, if it holds {@code oldName}. */
+    private static boolean renameInNameMap(final Map<String, String> names,
+            final String oldName, final String newName) {
+        for (final Map.Entry<String, String> entry : names.entrySet()) {
+            if (entry.getValue() != null && entry.getValue().equalsIgnoreCase(oldName)) {
+                entry.setValue(newName);
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** The columns a named constraint covers, or an empty list when no constraint carries that name. */
+    public List<String> constraintColumns(final String constraintName) {
+        for (final UniqueConstraint unique : uniqueConstraints) {
+            if (unique.getConstraintName().equalsIgnoreCase(constraintName)) {
+                return unique.getColumnNames();
+            }
+        }
+        for (final ForeignKeyConstraint foreignKey : foreignKeys) {
+            if (foreignKey.getConstraintName().equalsIgnoreCase(constraintName)) {
+                return foreignKey.getColumnNames();
+            }
+        }
+        final List<String> columns = new ArrayList<>();
+        if (primaryKeyConstraintName != null && primaryKeyConstraintName.equalsIgnoreCase(constraintName)) {
+            for (final TableColumn column : getColumns()) {
+                if (column.isPrimaryKey()) {
+                    columns.add(column.getName());
+                }
+            }
+            return columns;
+        }
+        for (final Map<String, String> names
+                : java.util.Arrays.asList(uniqueConstraintNames, columnForeignKeyConstraintNames)) {
+            for (final Map.Entry<String, String> entry : names.entrySet()) {
+                if (entry.getValue() != null && entry.getValue().equalsIgnoreCase(constraintName)) {
+                    columns.add(entry.getKey());
+                }
+            }
+        }
+        return columns;
     }
 
     /** Restore a persisted name for the FOREIGN KEY constraint an inline {@code REFERENCES} declares. */
@@ -296,7 +412,12 @@ public class Table extends SqlObject {
     }
 
     public void dropForeignKey(final String constraintName) {
-        foreignKeys.removeIf((final var fk) -> fk.getConstraintName().equalsIgnoreCase(constraintName));
+        final Iterator<ForeignKeyConstraint> it = foreignKeys.iterator();
+        while (it.hasNext()) {
+            if (it.next().getConstraintName().equalsIgnoreCase(constraintName)) {
+                it.remove();
+            }
+        }
     }
 
     public boolean isTemporary() {
@@ -313,6 +434,35 @@ public class Table extends SqlObject {
 
     public void setHybrid(final boolean hybrid) {
         this.hybrid = hybrid;
+    }
+
+    public boolean isChangeTracking() {
+        return changeTracking;
+    }
+
+    public void setChangeTracking(final boolean changeTracking) {
+        this.changeTracking = changeTracking;
+    }
+
+    /**
+     * Whether automatic reclustering is paused — {@code ALTER TABLE … SUSPEND RECLUSTER}. SHOW TABLES'
+     * automatic_clustering cell reads ON only for a CLUSTERED table that is not suspended.
+     */
+    public boolean isReclusterSuspended() {
+        return reclusterSuspended;
+    }
+
+    public void setReclusterSuspended(final boolean reclusterSuspended) {
+        this.reclusterSuspended = reclusterSuspended;
+    }
+
+    /** ENABLE_SCHEMA_EVOLUTION — SHOW TABLES reports it as Y/N (live-verified). */
+    public boolean isSchemaEvolution() {
+        return schemaEvolution;
+    }
+
+    public void setSchemaEvolution(final boolean schemaEvolution) {
+        this.schemaEvolution = schemaEvolution;
     }
 
     public long getRowCount() {
@@ -343,11 +493,11 @@ public class Table extends SqlObject {
     }
 
     public void dropColumn(final String name) {
-        Integer index = columnIndex.get(name.toUpperCase());
+        final Integer index = columnIndex.get(name.toUpperCase());
         if (index == null) {
             throw new RuntimeException(SqlCompilationError.columnDoesNotExist(name));
         }
-        TableColumn col = columns.get(index);
+        final TableColumn col = columns.get(index);
         columns.remove((int) index);
         columnIndex.remove(name.toUpperCase());
         primaryKeys.remove(col.getName());
@@ -371,16 +521,18 @@ public class Table extends SqlObject {
     }
 
     public void renameColumn(final String oldName, final String newName) {
-        Integer index = columnIndex.get(oldName.toUpperCase());
+        final Integer index = columnIndex.get(oldName.toUpperCase());
         if (index == null) {
             throw new RuntimeException(SqlCompilationError.doesNotExist("Object", oldName));
         }
         if (columnIndex.containsKey(newName.toUpperCase())) {
-            throw new RuntimeException("Column already exists: " + newName);
+            // The account treats the rename target as an OBJECT, spelled table.column.
+            throw new RuntimeException(SqlCompilationError.of("Object '" + getName().toUpperCase()
+                + "." + newName.toUpperCase() + "' already exists."));
         }
 
-        TableColumn oldColumn = columns.get(index);
-        TableColumn newColumn = new TableColumn(newName, oldColumn.getDataType(), oldColumn.isNullable(),
+        final TableColumn oldColumn = columns.get(index);
+        final TableColumn newColumn = new TableColumn(newName, oldColumn.getDataType(), oldColumn.isNullable(),
                 oldColumn.getDefaultValue(), oldColumn.isPrimaryKey(), oldColumn.isUnique(),
                 oldColumn.isAutoIncrement());
         newColumn.setComment(oldColumn.getComment());
@@ -411,13 +563,13 @@ public class Table extends SqlObject {
     }
 
     public void alterColumnType(final String columnName, final DataType newDataType) {
-        Integer index = columnIndex.get(columnName.toUpperCase());
+        final Integer index = columnIndex.get(columnName.toUpperCase());
         if (index == null) {
             throw new RuntimeException(SqlCompilationError.invalidIdentifier(columnName));
         }
 
-        TableColumn oldColumn = columns.get(index);
-        TableColumn newColumn = new TableColumn(oldColumn.getName(), newDataType, oldColumn.isNullable(),
+        final TableColumn oldColumn = columns.get(index);
+        final TableColumn newColumn = new TableColumn(oldColumn.getName(), newDataType, oldColumn.isNullable(),
                 oldColumn.getDefaultValue(), oldColumn.isPrimaryKey(), oldColumn.isUnique(),
                 oldColumn.isAutoIncrement());
         newColumn.setComment(oldColumn.getComment());
@@ -428,12 +580,12 @@ public class Table extends SqlObject {
 
     public void addPrimaryKeyConstraint(final List<String> columnNames) {
         for (final String colName : columnNames) {
-            Integer index = columnIndex.get(colName.toUpperCase());
+            final Integer index = columnIndex.get(colName.toUpperCase());
             if (index == null) {
                 throw new RuntimeException(SqlCompilationError.invalidIdentifier(colName));
             }
 
-            TableColumn oldColumn = columns.get(index);
+            final TableColumn oldColumn = columns.get(index);
             if (!oldColumn.isPrimaryKey()) {
                 columns.set(index, copyColumnWithConstraintFlags(oldColumn, true, oldColumn.isUnique()));
                 primaryKeys.add(colName);
@@ -573,4 +725,144 @@ public class Table extends SqlObject {
     public List<String> getRowAccessPolicyColumns() { return new ArrayList<>(rowAccessPolicyColumns); }
     public void setRowAccessPolicyColumns(final List<String> cols) { this.rowAccessPolicyColumns = new ArrayList<>(cols); }
     public boolean hasRowAccessPolicy() { return rowAccessPolicyName != null && !rowAccessPolicyName.isEmpty(); }
+
+    public String getAggregationPolicyName() { return aggregationPolicyName; }
+    public void setAggregationPolicyName(final String name) { this.aggregationPolicyName = name; }
+    public boolean hasAggregationPolicy() {
+        return aggregationPolicyName != null && !aggregationPolicyName.isEmpty();
+    }
+
+    public String getDataMetricSchedule() { return dataMetricSchedule; }
+    public void setDataMetricSchedule(final String schedule) { this.dataMetricSchedule = schedule; }
+
+    /** The data metric functions attached to this table, in the order they were added. */
+    public List<DataMetricAttachment> getDataMetrics() { return new ArrayList<>(dataMetrics); }
+
+    /** Attach a metric unless the same one over the same columns is already there (live: a repeat
+     *  adds nothing). */
+    public void addDataMetric(final DataMetricAttachment attachment) {
+        if (findDataMetric(attachment.getMetricName(), attachment.getColumns()) == null) {
+            dataMetrics.add(attachment);
+        }
+    }
+
+    /** The attachment for that metric over those columns, or null when there is none. */
+    public DataMetricAttachment findDataMetric(final String metricName, final List<String> columns) {
+        for (final DataMetricAttachment attachment : dataMetrics) {
+            if (attachment.matches(metricName, columns)) {
+                return attachment;
+            }
+        }
+        return null;
+    }
+
+    /** Detach that metric; answers whether there was one to detach. */
+    public boolean dropDataMetric(final String metricName, final List<String> columns) {
+        final DataMetricAttachment attachment = findDataMetric(metricName, columns);
+        return attachment != null && dataMetrics.remove(attachment);
+    }
+
+    /** The configured search-optimization expressions, in the order they were added. */
+    public List<SearchOptimizationExpression> getSearchOptimization() {
+        return new ArrayList<>(searchOptimization);
+    }
+
+    public boolean hasSearchOptimization() { return !searchOptimization.isEmpty(); }
+
+    /**
+     * Add one expression unless an identical one is already configured — live takes a repeat without
+     * adding a second row.
+     *
+     * @return the expression, whether it was added now or already there
+     */
+    public SearchOptimizationExpression addSearchOptimization(final String method, final String target,
+                                                              final String targetDataType) {
+        for (final SearchOptimizationExpression existing : searchOptimization) {
+            if (existing.getMethod().equalsIgnoreCase(method)
+                    && existing.getTarget().equalsIgnoreCase(target)) {
+                return existing;
+            }
+        }
+        final SearchOptimizationExpression added = new SearchOptimizationExpression(
+            nextSearchOptimizationId, method, target, targetDataType);
+        nextSearchOptimizationId++;
+        searchOptimization.add(added);
+        return added;
+    }
+
+    /** Restore one expression with the number it already had (snapshot / clone). */
+    public void restoreSearchOptimization(final SearchOptimizationExpression expression) {
+        searchOptimization.add(expression);
+        if (expression.getExpressionId() >= nextSearchOptimizationId) {
+            nextSearchOptimizationId = expression.getExpressionId() + 1;
+        }
+    }
+
+    /** Drop the expression with that number; answers whether there was one. */
+    public boolean dropSearchOptimization(final int expressionId) {
+        for (int i = 0; i < searchOptimization.size(); i++) {
+            if (searchOptimization.get(i).getExpressionId() == expressionId) {
+                searchOptimization.remove(i);
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** Drop the expression naming that method and target; answers whether there was one. */
+    public boolean dropSearchOptimization(final String method, final String target) {
+        for (int i = 0; i < searchOptimization.size(); i++) {
+            final SearchOptimizationExpression expression = searchOptimization.get(i);
+            if (expression.getMethod().equalsIgnoreCase(method)
+                    && expression.getTarget().equalsIgnoreCase(target)) {
+                searchOptimization.remove(i);
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** Drop the lot — the bare DROP SEARCH OPTIMIZATION. */
+    public void clearSearchOptimization() {
+        searchOptimization.clear();
+        nextSearchOptimizationId = 1;
+    }
+
+    public String getJoinPolicyName() { return joinPolicyName; }
+    public void setJoinPolicyName(final String name) { this.joinPolicyName = name; }
+    public boolean hasJoinPolicy() { return joinPolicyName != null && !joinPolicyName.isEmpty(); }
+
+    public List<String> getAggregationEntityKey() { return new ArrayList<>(aggregationEntityKey); }
+    public void setAggregationEntityKey(final List<String> columns) {
+        this.aggregationEntityKey = new ArrayList<>(columns);
+    }
+
+    /** The CHECK constraints, in declaration order. */
+    public List<CheckConstraint> getCheckConstraints() { return new ArrayList<>(checkConstraints); }
+
+    public void addCheckConstraint(final CheckConstraint check) { checkConstraints.add(check); }
+
+    /** Remove the check of that name; answers whether there was one. */
+    public boolean dropCheckConstraint(final String name) {
+        for (int i = 0; i < checkConstraints.size(); i++) {
+            if (checkConstraints.get(i).getName().equalsIgnoreCase(name)) {
+                checkConstraints.remove(i);
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** The contacts attached to this table, keyed by purpose. */
+    public Map<String, String> getContacts() { return new LinkedHashMap<>(contacts); }
+
+    /** Attach a contact for a purpose, replacing whatever that purpose held. */
+    public void setContact(final String purpose, final String contactName) {
+        contacts.put(purpose.toUpperCase(Locale.ROOT), contactName);
+    }
+
+    /** Detach the contact held for a purpose, if any — live does not mind that there was none. */
+    public void unsetContact(final String purpose) {
+        contacts.remove(purpose.toUpperCase(Locale.ROOT));
+    }
 }

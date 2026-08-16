@@ -30,15 +30,17 @@ public class ConvertTimezone extends BuiltInFunction {
     public Object evaluate(final List<Object> args) {
         if (args.size() == 2) {
             if (args.get(1) == null) return null;
-            ZoneId tz = ZoneId.of(args.get(0).toString());
+            final ZoneId tz = ZoneId.of(args.get(0).toString());
             return SharedFunctionHelpers.toLocalDateTime(args.get(1)).atZone(ZoneId.of("UTC")).withZoneSameInstant(tz).toLocalDateTime();
         }
         if (args.get(2) == null) return null;
-        ZoneId src = ZoneId.of(args.get(0).toString());
-        ZoneId tgt = ZoneId.of(args.get(1).toString());
+        final ZoneId src = ZoneId.of(args.get(0).toString());
+        final ZoneId tgt = ZoneId.of(args.get(1).toString());
         return SharedFunctionHelpers.toLocalDateTime(args.get(2)).atZone(src).withZoneSameInstant(tgt).toLocalDateTime();
     }
 
-    @Override public int getMinArgCount() { return 2; }
-    @Override public int getMaxArgCount() { return 3; }
+    @Override
+    public int getMinArgCount() { return 2; }
+    @Override
+    public int getMaxArgCount() { return 3; }
 }

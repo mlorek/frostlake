@@ -27,12 +27,14 @@ public class TryToBoolean extends BuiltInFunction {
     @Override
     public Object evaluate(final List<Object> args) {
         if (args.get(0) == null) return null;
-        String v = args.get(0).toString().trim().toUpperCase();
+        final String v = args.get(0).toString().trim().toUpperCase();
         if (v.equals("TRUE") || v.equals("1") || v.equals("YES") || v.equals("ON")) return true;
         if (v.equals("FALSE") || v.equals("0") || v.equals("NO") || v.equals("OFF")) return false;
         return null;
     }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return 1; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return 1; }
 }

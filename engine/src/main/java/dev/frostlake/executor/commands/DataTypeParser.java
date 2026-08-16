@@ -146,10 +146,13 @@ public final class DataTypeParser {
         // INFORMATION_SCHEMA.COLUMNS, and SYSTEM$TYPEOF of a cast to any of them is `NUMBER(38,0)`.
         // Snowflake keeps no narrower range for the small spellings, so the constants below now differ
         // only in the name they carry — see {@link NumericType}.
-        if (ctx.INTEGER() != null || ctx.INT() != null) return NumericType.INTEGER;
-        if (ctx.BIGINT() != null) return NumericType.BIGINT;
-        if (ctx.SMALLINT() != null) return NumericType.SMALLINT;
-        if (ctx.TINYINT() != null || ctx.BYTEINT() != null) return NumericType.TINYINT;
+        // Every integer alias IS NUMBER(38,0) — live keeps no trace of the spelling, on any surface:
+        // DESCRIBE, SHOW COLUMNS, INFORMATION_SCHEMA and a result column all answer NUMBER(38,0) for
+        // INT, INTEGER, BIGINT, SMALLINT, TINYINT and BYTEINT alike (measured, all six).
+        if (ctx.INTEGER() != null || ctx.INT() != null || ctx.BIGINT() != null
+                || ctx.SMALLINT() != null || ctx.TINYINT() != null || ctx.BYTEINT() != null) {
+            return NumericType.NUMBER;
+        }
         // NUMERIC and DEC are plain NUMBER synonyms — live, a NUMERIC(7,3) / DEC(7,3) column
         // reports DATA_TYPE NUMBER with precision 7 and scale 3, exactly like NUMBER(7,3), and
         // `1.5::NUMERIC(8,5)` is `1.50000`. Missing them here made a NUMERIC column a VARCHAR, which
@@ -166,7 +169,7 @@ public final class DataTypeParser {
         // arbitrary-exponent decimal representation.
         if (ctx.DECFLOAT() != null) return NumericType.DOUBLE;
         if (ctx.FLOAT() != null || ctx.FLOAT4() != null || ctx.FLOAT8() != null || ctx.REAL() != null) return NumericType.FLOAT;
-        if (ctx.DOUBLE() != null) return NumericType.DOUBLE;   // DOUBLE and DOUBLE PRECISION
+        if (ctx.DOUBLE() != null) return NumericType.FLOAT;   // DOUBLE and DOUBLE PRECISION are FLOAT
         // The character family collapses onto two Snowflake types, VARCHAR and CHAR, and the alias only
         // decides the DEFAULT length — live: VARCHAR / STRING / TEXT / NVARCHAR / NVARCHAR2
         // and any `... VARYING` spelling default to 16,777,216, while the fixed-length CHAR / CHARACTER /
@@ -179,8 +182,11 @@ public final class DataTypeParser {
                 : bareStringDefault == DDL_STRING_DEFAULT
                     ? StringType.VARCHAR : new StringType("VARCHAR", bareStringDefault);
         }
+        // CHAR is not a fixed-width type on Snowflake: CHAR(3) is VARCHAR(3), reported that way
+        // everywhere and not padded (SHOW COLUMNS says fixed:false for it). Bare CHAR keeps its
+        // one-character length.
         if (ctx.CHAR() != null || ctx.CHARACTER() != null || ctx.NCHAR() != null) {
-            return hasTypeLength(typeParams) ? new StringType("CHAR", precision) : StringType.CHAR;
+            return new StringType("VARCHAR", hasTypeLength(typeParams) ? precision : 1);
         }
         if (ctx.BOOLEAN() != null) return BooleanType.BOOLEAN;
         if (ctx.DATE() != null) return DateTimeType.DATE;
@@ -196,11 +202,19 @@ public final class DataTypeParser {
                 ? new DateTimeType("TIMESTAMP_LTZ", precision, true)
                 : new DateTimeType("TIMESTAMP", precision, false);
         }
-        if (ctx.TIME() != null) return DateTimeType.TIME;
+        // TIME carries its declared precision like the rest of the family — DESCRIBE spells it back
+        // as TIME(3) when the column said so, and TIME(9) when it did not.
+        if (ctx.TIME() != null) {
+            return hasTypeLength(typeParams) ? new DateTimeType("TIME", precision, false)
+                : DateTimeType.TIME;
+        }
         if (ctx.VARIANT() != null) return VariantType.VARIANT;
         if (ctx.BINARY() != null) {
             return hasTypeLength(typeParams) ? new BinaryType("BINARY", precision) : BinaryType.BINARY;
         }
+        // VARBINARY stays its own name in the CATALOG even though DESCRIBE and INFORMATION_SCHEMA
+        // both spell it BINARY: SHOW COLUMNS reports fixed:true for BINARY and fixed:false for
+        // VARBINARY, so the two are not interchangeable here (measured on the account).
         if (ctx.VARBINARY() != null) {
             return hasTypeLength(typeParams) ? new BinaryType("VARBINARY", precision) : BinaryType.VARBINARY;
         }

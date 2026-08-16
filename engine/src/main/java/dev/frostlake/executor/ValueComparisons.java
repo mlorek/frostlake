@@ -17,9 +17,11 @@
 package dev.frostlake.executor;
 
 import dev.frostlake.metastore.model.Table;
+import dev.frostlake.metastore.model.TableColumn;
 import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.values.VariantValue;
 import java.math.BigDecimal;
+import java.util.List;
 
 /**
  * Stateless value/ordering comparison helpers extracted from {@link QueryExecutor}. These are pure
@@ -31,9 +33,24 @@ public final class ValueComparisons {
     private ValueComparisons() {
     }
 
+    /** Like {@link #getColumnIndex} but answers -1 instead of throwing — for callers probing
+     *  whether a text is a bare column at all (the throw built a stack trace per probe). */
+    public static int findColumnIndex(final Table table, final String columnName) {
+        final List<TableColumn> cols = table.getColumns();
+        for (int i = 0; i < cols.size(); i++) {
+            if (cols.get(i).getName().equalsIgnoreCase(columnName)) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
     public static int getColumnIndex(final Table table, final String columnName) {
-        for (int i = 0; i < table.getColumns().size(); i++) {
-            if (table.getColumns().get(i).getName().equalsIgnoreCase(columnName)) {
+        // One snapshot for the whole scan — Table.getColumns() copies its list per call, so the
+        // former per-iteration double call cost 2i copies to resolve column i.
+        final List<TableColumn> cols = table.getColumns();
+        for (int i = 0; i < cols.size(); i++) {
+            if (cols.get(i).getName().equalsIgnoreCase(columnName)) {
                 return i;
             }
         }
@@ -96,8 +113,15 @@ public final class ValueComparisons {
 
         // Two numbers may have different runtime types across set-operation branches (e.g. a column that is
         // Long in one SELECT and BigDecimal in another) — Long.compareTo(BigDecimal) would ClassCastException,
-        // so compare by value via BigDecimal.
+        // so compare by value. Integral and same-type BigDecimal pairs compare directly; the
+        // toString/BigDecimal bridge stays for Double/Float and mixed pairs.
         if (v1 instanceof Number && v2 instanceof Number) {
+            if (isIntegral(v1) && isIntegral(v2)) {
+                return Long.compare(((Number) v1).longValue(), ((Number) v2).longValue());
+            }
+            if (v1 instanceof BigDecimal && v2 instanceof BigDecimal) {
+                return ((BigDecimal) v1).compareTo((BigDecimal) v2);
+            }
             return new BigDecimal(v1.toString()).compareTo(new BigDecimal(v2.toString()));
         }
         if (v1 instanceof Comparable && v2 instanceof Comparable && v1.getClass() == v2.getClass()) {
@@ -105,6 +129,11 @@ public final class ValueComparisons {
         }
 
         return v1.toString().compareTo(v2.toString());
+    }
+
+    private static boolean isIntegral(final Object value) {
+        return value instanceof Long || value instanceof Integer
+            || value instanceof Short || value instanceof Byte;
     }
 
     /** NULLS FIRST → TRUE, NULLS LAST → FALSE, unspecified → null, for an ORDER BY item. */

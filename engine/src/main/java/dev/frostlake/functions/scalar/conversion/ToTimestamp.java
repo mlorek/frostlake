@@ -18,13 +18,16 @@ package dev.frostlake.functions.scalar.conversion;
 
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
-import dev.frostlake.types.DateTimeType;
+import dev.frostlake.types.TimestampFlavours;
 
 import java.util.List;
 
-/** TO_TIMESTAMP / TO_TIMESTAMP_LTZ / TO_TIMESTAMP_TZ — aliases of TO_TIMESTAMP_NTZ in this engine. */
+/**
+ * TO_TIMESTAMP / TO_TIMESTAMP_LTZ / TO_TIMESTAMP_TZ. They share one conversion but NOT one declared
+ * type: live reports each under the flavour its own name asks for, so the name decides.
+ */
 public class ToTimestamp extends BuiltInFunction {
-    public ToTimestamp(final String name) { super(name, DateTimeType.TIMESTAMP_NTZ); }
+    public ToTimestamp(final String name) { super(name, TimestampFlavours.forFunctionName(name)); }
 
     @Override
     public Object evaluate(final List<Object> args) {
@@ -34,6 +37,8 @@ public class ToTimestamp extends BuiltInFunction {
         return SharedFunctionHelpers.parseTimestampWithFormatOrScale(args.get(0), formatOrScale);
     }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return 2; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return 2; }
 }

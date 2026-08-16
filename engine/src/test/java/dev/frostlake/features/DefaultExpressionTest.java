@@ -16,39 +16,29 @@
 
 package dev.frostlake.features;
 
-import dev.frostlake.DatabaseEngine;
-import dev.frostlake.metastore.model.Table;
-import dev.frostlake.metastore.model.TableColumn;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
+import dev.frostlake.BaseDatabaseTest;
 import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Tests for DEFAULT constraint with expressions
+ * The DEFAULT constraint with expressions, asserted through the SQL surface — the
+ * {@code DESCRIBE TABLE} default cell, which carries the declared expression verbatim — so every
+ * check runs against whichever engine executed the DDL, embedded or live.
  */
-public class DefaultExpressionTest {
+public class DefaultExpressionTest extends BaseDatabaseTest {
     private static final Logger logger = LoggerFactory.getLogger(DefaultExpressionTest.class);
 
-    private DatabaseEngine engine;
-
-    @BeforeEach
-    public void setUp() {
-        engine = new DatabaseEngine();
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
-        logger.info("DatabaseEngine initialized for DEFAULT expression tests");
-    }
-
-    @AfterEach
-    public void tearDown() {
-        if (engine != null) {
-            engine.shutdown();
-        }
+    /** Asserts the column's DESCRIBE default cell carries this fragment of the declared expression. */
+    private void assertDefaultContains(final String table, final String column, final String fragment) {
+        final String cellText = describeCell(table, column, "default");
+        assertNotNull(cellText, column + " should carry a default");
+        assertTrue(cellText.toUpperCase().contains(fragment.toUpperCase()),
+            column + "'s default cell reads: " + cellText);
     }
 
     @Test
@@ -57,11 +47,7 @@ public class DefaultExpressionTest {
 
         engine.execute("CREATE TABLE test1 (id INTEGER, status VARCHAR DEFAULT 'active')");
 
-        Table table = engine.getCatalog().resolveTable("TEST1");
-        assertNotNull(table);
-
-        TableColumn statusColumn = table.getColumn("status");
-        assertNotNull(statusColumn.getDefaultValue());
+        assertEquals("'active'", describeCell("test1", "STATUS", "default"));
 
         logger.info("DEFAULT with literal works correctly");
     }
@@ -72,11 +58,7 @@ public class DefaultExpressionTest {
 
         engine.execute("CREATE TABLE test2 (id INTEGER, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)");
 
-        Table table = engine.getCatalog().resolveTable("TEST2");
-        assertNotNull(table);
-
-        TableColumn createdAtColumn = table.getColumn("created_at");
-        assertNotNull(createdAtColumn.getDefaultValue());
+        assertDefaultContains("test2", "CREATED_AT", "CURRENT_TIMESTAMP");
 
         logger.info("DEFAULT with CURRENT_TIMESTAMP works correctly");
     }
@@ -87,11 +69,7 @@ public class DefaultExpressionTest {
 
         engine.execute("CREATE TABLE test3 (id INTEGER, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP())");
 
-        Table table = engine.getCatalog().resolveTable("TEST3");
-        assertNotNull(table);
-
-        TableColumn updatedAtColumn = table.getColumn("updated_at");
-        assertNotNull(updatedAtColumn.getDefaultValue());
+        assertDefaultContains("test3", "UPDATED_AT", "CURRENT_TIMESTAMP");
 
         logger.info("DEFAULT with CURRENT_TIMESTAMP() works correctly");
     }
@@ -102,11 +80,7 @@ public class DefaultExpressionTest {
 
         engine.execute("CREATE TABLE test4 (id INTEGER, date_col DATE DEFAULT CURRENT_DATE)");
 
-        Table table = engine.getCatalog().resolveTable("TEST4");
-        assertNotNull(table);
-
-        TableColumn dateColumn = table.getColumn("date_col");
-        assertNotNull(dateColumn.getDefaultValue());
+        assertDefaultContains("test4", "DATE_COL", "CURRENT_DATE");
 
         logger.info("DEFAULT with CURRENT_DATE works correctly");
     }
@@ -117,11 +91,7 @@ public class DefaultExpressionTest {
 
         engine.execute("CREATE TABLE test5 (id INTEGER, quantity INTEGER DEFAULT 10 + 5)");
 
-        Table table = engine.getCatalog().resolveTable("TEST5");
-        assertNotNull(table);
-
-        TableColumn quantityColumn = table.getColumn("quantity");
-        assertNotNull(quantityColumn.getDefaultValue());
+        assertDefaultContains("test5", "QUANTITY", "10 + 5");
 
         logger.info("DEFAULT with arithmetic expression works correctly");
     }
@@ -132,11 +102,7 @@ public class DefaultExpressionTest {
 
         engine.execute("CREATE TABLE test6 (id INTEGER, upper_name VARCHAR DEFAULT UPPER('test'))");
 
-        Table table = engine.getCatalog().resolveTable("TEST6");
-        assertNotNull(table);
-
-        TableColumn nameColumn = table.getColumn("upper_name");
-        assertNotNull(nameColumn.getDefaultValue());
+        assertDefaultContains("test6", "UPPER_NAME", "UPPER");
 
         logger.info("DEFAULT with function call works correctly");
     }
@@ -147,11 +113,7 @@ public class DefaultExpressionTest {
 
         engine.execute("CREATE TABLE test7 (id INTEGER, full_name VARCHAR DEFAULT 'Mr. ' || 'Unknown')");
 
-        Table table = engine.getCatalog().resolveTable("TEST7");
-        assertNotNull(table);
-
-        TableColumn nameColumn = table.getColumn("full_name");
-        assertNotNull(nameColumn.getDefaultValue());
+        assertDefaultContains("test7", "FULL_NAME", "||");
 
         logger.info("DEFAULT with concatenation works correctly");
     }
@@ -162,11 +124,7 @@ public class DefaultExpressionTest {
 
         engine.execute("CREATE TABLE test8 (id INTEGER, priority VARCHAR DEFAULT CASE WHEN 1 = 1 THEN 'high' ELSE 'low' END)");
 
-        Table table = engine.getCatalog().resolveTable("TEST8");
-        assertNotNull(table);
-
-        TableColumn priorityColumn = table.getColumn("priority");
-        assertNotNull(priorityColumn.getDefaultValue());
+        assertDefaultContains("test8", "PRIORITY", "CASE");
 
         logger.info("DEFAULT with CASE expression works correctly");
     }
@@ -177,11 +135,7 @@ public class DefaultExpressionTest {
 
         engine.execute("CREATE TABLE test9 (id INTEGER, balance INTEGER DEFAULT -100)");
 
-        Table table = engine.getCatalog().resolveTable("TEST9");
-        assertNotNull(table);
-
-        TableColumn balanceColumn = table.getColumn("balance");
-        assertNotNull(balanceColumn.getDefaultValue());
+        assertDefaultContains("test9", "BALANCE", "-100");
 
         logger.info("DEFAULT with negative number works correctly");
     }
@@ -192,11 +146,7 @@ public class DefaultExpressionTest {
 
         engine.execute("CREATE TABLE test10 (id INTEGER, computed INTEGER DEFAULT (10 * 5) + (20 - 5))");
 
-        Table table = engine.getCatalog().resolveTable("TEST10");
-        assertNotNull(table);
-
-        TableColumn computedColumn = table.getColumn("computed");
-        assertNotNull(computedColumn.getDefaultValue());
+        assertDefaultContains("test10", "COMPUTED", "(10 * 5)");
 
         logger.info("DEFAULT with complex expression works correctly");
     }
@@ -207,11 +157,7 @@ public class DefaultExpressionTest {
 
         engine.execute("CREATE TABLE test11 (id INTEGER, value INTEGER DEFAULT (100))");
 
-        Table table = engine.getCatalog().resolveTable("TEST11");
-        assertNotNull(table);
-
-        TableColumn valueColumn = table.getColumn("value");
-        assertNotNull(valueColumn.getDefaultValue());
+        assertDefaultContains("test11", "VALUE", "100");
 
         logger.info("DEFAULT with parenthesized expression works correctly");
     }
@@ -222,14 +168,12 @@ public class DefaultExpressionTest {
 
         engine.execute("CREATE TABLE test12 (id INTEGER DEFAULT 0, name VARCHAR DEFAULT 'unnamed', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, count INTEGER DEFAULT 5 * 2)");
 
-        Table table = engine.getCatalog().resolveTable("TEST12");
-        assertNotNull(table);
-        assertEquals(4, table.getColumns().size());
+        assertEquals(4, engine.executeQuery("DESCRIBE TABLE test12").getRowCount());
 
-        assertNotNull(table.getColumn("id").getDefaultValue());
-        assertNotNull(table.getColumn("name").getDefaultValue());
-        assertNotNull(table.getColumn("created_at").getDefaultValue());
-        assertNotNull(table.getColumn("count").getDefaultValue());
+        assertDefaultContains("test12", "ID", "0");
+        assertEquals("'unnamed'", describeCell("test12", "NAME", "default"));
+        assertDefaultContains("test12", "CREATED_AT", "CURRENT_TIMESTAMP");
+        assertDefaultContains("test12", "COUNT", "5 * 2");
 
         logger.info("Multiple columns with DEFAULT expressions work correctly");
     }
@@ -240,11 +184,8 @@ public class DefaultExpressionTest {
 
         engine.execute("CREATE TABLE test13 (id INTEGER, nullable_col VARCHAR DEFAULT NULL)");
 
-        Table table = engine.getCatalog().resolveTable("TEST13");
-        assertNotNull(table);
-
-        TableColumn nullableColumn = table.getColumn("nullable_col");
-        assertNotNull(nullableColumn.getDefaultValue());
+        // A NULL default leaves the column nullable; the declaration itself must parse.
+        assertEquals("Y", describeCell("test13", "NULLABLE_COL", "null?"));
 
         logger.info("DEFAULT with NULL works correctly");
     }
@@ -255,11 +196,7 @@ public class DefaultExpressionTest {
 
         engine.execute("CREATE TABLE test14 (id INTEGER, is_active BOOLEAN DEFAULT TRUE)");
 
-        Table table = engine.getCatalog().resolveTable("TEST14");
-        assertNotNull(table);
-
-        TableColumn activeColumn = table.getColumn("is_active");
-        assertNotNull(activeColumn.getDefaultValue());
+        assertDefaultContains("test14", "IS_ACTIVE", "TRUE");
 
         logger.info("DEFAULT with boolean works correctly");
     }
@@ -270,11 +207,7 @@ public class DefaultExpressionTest {
 
         engine.execute("CREATE TABLE test15 (id INTEGER, rate DECIMAL DEFAULT 3.14 * 2)");
 
-        Table table = engine.getCatalog().resolveTable("TEST15");
-        assertNotNull(table);
-
-        TableColumn rateColumn = table.getColumn("rate");
-        assertNotNull(rateColumn.getDefaultValue());
+        assertDefaultContains("test15", "RATE", "3.14");
 
         logger.info("DEFAULT with decimal expression works correctly");
     }

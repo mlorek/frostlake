@@ -42,7 +42,7 @@ public class ThreeTableJoinPerformanceTest extends BaseDatabaseTest {
     }
 
     private void setupTables() {
-        long startTime = System.currentTimeMillis();
+        final long startTime = System.currentTimeMillis();
 
         engine.execute("""
             CREATE TABLE customers (
@@ -89,25 +89,25 @@ public class ThreeTableJoinPerformanceTest extends BaseDatabaseTest {
             )
             """);
 
-        long createTime = System.currentTimeMillis() - startTime;
+        final long createTime = System.currentTimeMillis() - startTime;
         logger.info("Tables created in " + createTime + " ms");
 
         insertCustomers();
         insertOrders();
         insertOrderDetails();
 
-        long totalTime = System.currentTimeMillis() - startTime;
+        final long totalTime = System.currentTimeMillis() - startTime;
         logger.info("Data insertion completed in " + totalTime + " ms");
     }
 
     private void insertCustomers() {
-        long startTime = System.currentTimeMillis();
+        final long startTime = System.currentTimeMillis();
         logger.info("Inserting " + ROWS_PER_TABLE + " customers...");
 
         for (int batch = 0; batch < ROWS_PER_TABLE / BATCH_SIZE; batch++) {
-            StringBuilder sql = new StringBuilder("INSERT INTO customers VALUES ");
+            final StringBuilder sql = new StringBuilder("INSERT INTO customers VALUES ");
             for (int i = 0; i < BATCH_SIZE; i++) {
-                int id = batch * BATCH_SIZE + i + 1;
+                final int id = batch * BATCH_SIZE + i + 1;
                 if (i > 0) sql.append(", ");
                 sql.append(String.format(
                     "(%d, 'Customer_%d', 'customer%d@example.com', '555-%04d', " +
@@ -123,18 +123,18 @@ public class ThreeTableJoinPerformanceTest extends BaseDatabaseTest {
             }
         }
 
-        long duration = System.currentTimeMillis() - startTime;
+        final long duration = System.currentTimeMillis() - startTime;
         logger.info("Customers inserted in " + duration + " ms");
     }
 
     private void insertOrders() {
-        long startTime = System.currentTimeMillis();
+        final long startTime = System.currentTimeMillis();
         logger.info("Inserting " + ROWS_PER_TABLE + " orders...");
 
         for (int batch = 0; batch < ROWS_PER_TABLE / BATCH_SIZE; batch++) {
-            StringBuilder sql = new StringBuilder("INSERT INTO orders VALUES ");
+            final StringBuilder sql = new StringBuilder("INSERT INTO orders VALUES ");
             for (int i = 0; i < BATCH_SIZE; i++) {
-                int id = batch * BATCH_SIZE + i + 1;
+                final int id = batch * BATCH_SIZE + i + 1;
                 if (i > 0) sql.append(", ");
                 sql.append(String.format(
                     "(%d, %d, '2024-%02d-%02d', %d.%02d, '%s', '%s', " +
@@ -153,18 +153,18 @@ public class ThreeTableJoinPerformanceTest extends BaseDatabaseTest {
             }
         }
 
-        long duration = System.currentTimeMillis() - startTime;
+        final long duration = System.currentTimeMillis() - startTime;
         logger.info("Orders inserted in " + duration + " ms");
     }
 
     private void insertOrderDetails() {
-        long startTime = System.currentTimeMillis();
+        final long startTime = System.currentTimeMillis();
         logger.info("Inserting " + ROWS_PER_TABLE + " order details...");
 
         for (int batch = 0; batch < ROWS_PER_TABLE / BATCH_SIZE; batch++) {
-            StringBuilder sql = new StringBuilder("INSERT INTO order_details VALUES ");
+            final StringBuilder sql = new StringBuilder("INSERT INTO order_details VALUES ");
             for (int i = 0; i < BATCH_SIZE; i++) {
-                int id = batch * BATCH_SIZE + i + 1;
+                final int id = batch * BATCH_SIZE + i + 1;
                 if (i > 0) sql.append(", ");
                 sql.append(String.format(
                     "(%d, %d, 'Product_%d', %d, %d.%02d, %d.%02d, %d.%02d, %d.%02d, '%s', 'Supplier_%d')",
@@ -184,7 +184,7 @@ public class ThreeTableJoinPerformanceTest extends BaseDatabaseTest {
             }
         }
 
-        long duration = System.currentTimeMillis() - startTime;
+        final long duration = System.currentTimeMillis() - startTime;
         logger.info("Order details inserted in " + duration + " ms");
     }
 
@@ -192,7 +192,7 @@ public class ThreeTableJoinPerformanceTest extends BaseDatabaseTest {
     public void testThreeTableInnerJoinPerformance() {
         logger.info("\n=== Testing 3-table INNER JOIN performance ===");
 
-        String query = """
+        final String query = """
             SELECT
                 c.customer_id,
                 c.name,
@@ -211,9 +211,9 @@ public class ThreeTableJoinPerformanceTest extends BaseDatabaseTest {
             INNER JOIN order_details od ON o.order_id = od.order_id
             """;
 
-        long startTime = System.currentTimeMillis();
-        ResultSet result = engine.executeQuery(query);
-        long duration = System.currentTimeMillis() - startTime;
+        final long startTime = System.currentTimeMillis();
+        final ResultSet result = engine.executeQuery(query);
+        final long duration = System.currentTimeMillis() - startTime;
 
         logger.info("Query executed in " + duration + " ms");
         logger.info("Rows returned: " + result.getRowCount());
@@ -232,7 +232,7 @@ public class ThreeTableJoinPerformanceTest extends BaseDatabaseTest {
     public void testThreeTableJoinWithFilter() {
         logger.info("\n=== Testing 3-table JOIN with WHERE clause ===");
 
-        String query = """
+        final String query = """
             SELECT
                 c.customer_id,
                 c.name,
@@ -247,9 +247,9 @@ public class ThreeTableJoinPerformanceTest extends BaseDatabaseTest {
             AND od.quantity > 5
             """;
 
-        long startTime = System.currentTimeMillis();
-        ResultSet result = engine.executeQuery(query);
-        long duration = System.currentTimeMillis() - startTime;
+        final long startTime = System.currentTimeMillis();
+        final ResultSet result = engine.executeQuery(query);
+        final long duration = System.currentTimeMillis() - startTime;
 
         logger.info("Query executed in " + duration + " ms");
         logger.info("Rows returned: " + result.getRowCount());
@@ -265,7 +265,7 @@ public class ThreeTableJoinPerformanceTest extends BaseDatabaseTest {
     public void testThreeTableJoinWithAggregation() {
         logger.info("\n=== Testing 3-table JOIN with aggregation ===");
 
-        String query = """
+        final String query = """
             SELECT
                 c.city,
                 COUNT(*) as order_count,
@@ -277,9 +277,9 @@ public class ThreeTableJoinPerformanceTest extends BaseDatabaseTest {
             GROUP BY c.city
             """;
 
-        long startTime = System.currentTimeMillis();
-        ResultSet result = engine.executeQuery(query);
-        long duration = System.currentTimeMillis() - startTime;
+        final long startTime = System.currentTimeMillis();
+        final ResultSet result = engine.executeQuery(query);
+        final long duration = System.currentTimeMillis() - startTime;
 
         logger.info("Query executed in " + duration + " ms");
         logger.info("Groups returned: " + result.getRowCount());
@@ -295,7 +295,7 @@ public class ThreeTableJoinPerformanceTest extends BaseDatabaseTest {
     public void testThreeTableLeftJoinPerformance() {
         logger.info("\n=== Testing 3-table LEFT JOIN performance ===");
 
-        String query = """
+        final String query = """
             SELECT
                 c.customer_id,
                 c.name,
@@ -306,9 +306,9 @@ public class ThreeTableJoinPerformanceTest extends BaseDatabaseTest {
             LEFT JOIN order_details od ON o.order_id = od.order_id
             """;
 
-        long startTime = System.currentTimeMillis();
-        ResultSet result = engine.executeQuery(query);
-        long duration = System.currentTimeMillis() - startTime;
+        final long startTime = System.currentTimeMillis();
+        final ResultSet result = engine.executeQuery(query);
+        final long duration = System.currentTimeMillis() - startTime;
 
         logger.info("Query executed in " + duration + " ms");
         logger.info("Rows returned: " + result.getRowCount());
@@ -324,7 +324,7 @@ public class ThreeTableJoinPerformanceTest extends BaseDatabaseTest {
     public void testThreeTableJoinSelectivity() {
         logger.info("\n=== Testing 3-table JOIN with high selectivity ===");
 
-        String query = """
+        final String query = """
             SELECT
                 c.customer_id,
                 c.name,
@@ -336,9 +336,9 @@ public class ThreeTableJoinPerformanceTest extends BaseDatabaseTest {
             WHERE c.customer_id < 100
             """;
 
-        long startTime = System.currentTimeMillis();
-        ResultSet result = engine.executeQuery(query);
-        long duration = System.currentTimeMillis() - startTime;
+        final long startTime = System.currentTimeMillis();
+        final ResultSet result = engine.executeQuery(query);
+        final long duration = System.currentTimeMillis() - startTime;
 
         logger.info("Query executed in " + duration + " ms");
         logger.info("Rows returned: " + result.getRowCount());

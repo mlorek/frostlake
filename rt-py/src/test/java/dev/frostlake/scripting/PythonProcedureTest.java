@@ -20,19 +20,18 @@ import dev.frostlake.DatabaseEngine;
 import dev.frostlake.metastore.model.Parameter;
 import dev.frostlake.metastore.model.Procedure;
 import dev.frostlake.metastore.model.Schema;
-import dev.frostlake.types.VariantType;
 import dev.frostlake.rt.py.PythonProcedureExecutor;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
+import dev.frostlake.types.VariantType;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assertions;
-
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -75,8 +74,8 @@ def run(session):
             $$
             """);
 
-        Schema schema = engine.getCatalog().getDatabase("TEST_DB").getSchema("PUBLIC");
-        Procedure proc = schema.getProcedure("pysp");
+        final Schema schema = engine.getCatalog().getDatabase("TEST_DB").getSchema("PUBLIC");
+        final Procedure proc = schema.getProcedure("pysp");
 
         assertNotNull(proc, "Procedure should be created");
         assertEquals("PYSP", proc.getName());
@@ -93,19 +92,19 @@ def run(session):
     public void testExecutePythonProcedureReturningString() {
         logger.info("Testing Python procedure execution returning string");
 
-        List<Parameter> parameters = new ArrayList<>();
+        final List<Parameter> parameters = new ArrayList<>();
 
-        String body = """
+        final String body = """
 def run(session):
     return "{}"
 """;
 
-        List<String> packages = Arrays.asList("snowflake-snowpark-python");
-        Procedure proc = new Procedure("test_pysp", parameters, VariantType.VARIANT,
+        final List<String> packages = Arrays.asList("snowflake-snowpark-python");
+        final Procedure proc = new Procedure("test_pysp", parameters, VariantType.VARIANT,
                                       body, "PYTHON", "run", "3.9", packages);
 
-        List<Object> args = Arrays.asList();
-        Object result = PythonProcedureExecutor.executePythonProcedure(proc, args, engine);
+        final List<Object> args = Arrays.asList();
+        final Object result = PythonProcedureExecutor.executePythonProcedure(proc, args, engine);
 
         assertNotNull(result, "Result should not be null");
         logger.info("Result: {}", result);
@@ -120,20 +119,20 @@ def run(session):
         engine.execute("INSERT INTO test_table VALUES (1, 'Alice')");
         engine.execute("INSERT INTO test_table VALUES (2, 'Bob')");
 
-        List<Parameter> parameters = new ArrayList<>();
+        final List<Parameter> parameters = new ArrayList<>();
 
-        String body = """
+        final String body = """
 def run(session):
     result = session.sql("SELECT COUNT(*) as cnt FROM test_table")
     return str(result.count())
 """;
 
-        List<String> packages = Arrays.asList("snowflake-snowpark-python");
-        Procedure proc = new Procedure("test_count", parameters, VariantType.VARIANT,
+        final List<String> packages = Arrays.asList("snowflake-snowpark-python");
+        final Procedure proc = new Procedure("test_count", parameters, VariantType.VARIANT,
                                       body, "PYTHON", "run", "3.9", packages);
 
-        List<Object> args = Arrays.asList();
-        Object result = PythonProcedureExecutor.executePythonProcedure(proc, args, engine);
+        final List<Object> args = Arrays.asList();
+        final Object result = PythonProcedureExecutor.executePythonProcedure(proc, args, engine);
 
         assertNotNull(result, "Result should not be null");
         logger.info("Result: {}", result);
@@ -158,8 +157,8 @@ def process(session):
             $$
             """);
 
-        Schema schema = engine.getCatalog().getDatabase("TEST_DB").getSchema("PUBLIC");
-        Procedure proc = schema.getProcedure("multi_pkg_proc");
+        final Schema schema = engine.getCatalog().getDatabase("TEST_DB").getSchema("PUBLIC");
+        final Procedure proc = schema.getProcedure("multi_pkg_proc");
 
         assertNotNull(proc, "Procedure should be created");
         assertEquals(3, proc.getPackages().size());
@@ -172,19 +171,19 @@ def process(session):
     public void testPythonProcedureReturningDict() {
         logger.info("Testing Python procedure returning dictionary");
 
-        List<Parameter> parameters = new ArrayList<>();
+        final List<Parameter> parameters = new ArrayList<>();
 
-        String body = """
+        final String body = """
 def run(session):
     return {"status": "success", "count": 42}
 """;
 
-        List<String> packages = Arrays.asList("snowflake-snowpark-python");
-        Procedure proc = new Procedure("test_dict", parameters, VariantType.VARIANT,
+        final List<String> packages = Arrays.asList("snowflake-snowpark-python");
+        final Procedure proc = new Procedure("test_dict", parameters, VariantType.VARIANT,
                                       body, "PYTHON", "run", "3.9", packages);
 
-        List<Object> args = Arrays.asList();
-        Object result = PythonProcedureExecutor.executePythonProcedure(proc, args, engine);
+        final List<Object> args = Arrays.asList();
+        final Object result = PythonProcedureExecutor.executePythonProcedure(proc, args, engine);
 
         assertNotNull(result, "Result should not be null");
         logger.info("Result: {}", result);
@@ -207,15 +206,19 @@ def run(session):
             $$
             """);
 
-        Schema schema = engine.getCatalog().getDatabase("TEST_DB").getSchema("PUBLIC");
+        final Schema schema = engine.getCatalog().getDatabase("TEST_DB").getSchema("PUBLIC");
         assertNotNull(schema.getProcedure("py_test"), "Procedure should exist");
 
         engine.execute("DROP PROCEDURE py_test()");
 
-        RuntimeException exception = Assertions.assertThrows(
+        final RuntimeException exception = Assertions.assertThrows(
             RuntimeException.class,
-            () -> schema.getProcedure("py_test")
-        );
+            new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                schema.getProcedure("py_test");
+            }
+        });
         assertTrue(exception.getMessage().contains("does not exist"));
     }
 }

@@ -25,7 +25,9 @@ import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class PythonTableFunctionTest {
 
@@ -73,7 +75,7 @@ public class PythonTableFunctionTest {
             $$
             """);
 
-        ResultSet rs = engine.executeQuery("SELECT * FROM TABLE(stock_sale_average('AAPL', 10, 150.0))");
+        final ResultSet rs = engine.executeQuery("SELECT * FROM TABLE(stock_sale_average('AAPL', 10, 150.0))");
         assertNotNull(rs);
         assertTrue(rs.getRowCount() >= 1, "Expected at least one row from process()");
         logger.info("stock_sale_average rows: {}", rs.getRowCount());
@@ -98,7 +100,7 @@ public class PythonTableFunctionTest {
             $$
             """);
 
-        ResultSet rs = engine.executeQuery("SELECT * FROM TABLE(expand(3))");
+        final ResultSet rs = engine.executeQuery("SELECT * FROM TABLE(expand(3))");
         assertNotNull(rs);
         assertEquals(3, rs.getRowCount(), "Expected 3 rows from expand(3)");
         assertEquals(0L, ((Number) rs.getRows().get(0).getValue(0)).longValue());
@@ -131,7 +133,7 @@ public class PythonTableFunctionTest {
             $$
             """);
 
-        ResultSet rs = engine.executeQuery("SELECT * FROM TABLE(sum_and_avg(10))");
+        final ResultSet rs = engine.executeQuery("SELECT * FROM TABLE(sum_and_avg(10))");
         assertNotNull(rs);
         // process() yields ('item', 10.0) + end_partition() yields ('avg', 10.0) = 2 rows
         assertEquals(2, rs.getRowCount(), "Expected process row + end_partition row");
@@ -156,7 +158,7 @@ public class PythonTableFunctionTest {
             $$
             """);
 
-        Function f = engine.getCatalog()
+        final Function f = engine.getCatalog()
             .getDatabase("TEST_DB").getSchema("PUBLIC").getFunction("META_FN");
         assertNotNull(f);
         assertTrue(f.isTableFunction());

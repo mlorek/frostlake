@@ -30,6 +30,8 @@ public class TimeDiff extends BuiltInFunction {
     @Override
     public Object evaluate(final List<Object> args) { return delegate.evaluate(args); }
 
-    @Override public int getMinArgCount() { return 3; }
-    @Override public int getMaxArgCount() { return 3; }
+    @Override
+    public int getMinArgCount() { return 3; }
+    @Override
+    public int getMaxArgCount() { return 3; }
 }

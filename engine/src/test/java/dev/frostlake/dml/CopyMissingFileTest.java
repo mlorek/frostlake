@@ -79,6 +79,7 @@ public class CopyMissingFileTest {
         localDir = Files.createTempDirectory("copy_missing_local_");
         final EngineConfig cfg = new EngineConfig();
         cfg.setProperty(EngineConfig.PROP_STAGE_INTERNAL_LOCAL_ROOT, internalRoot.toString());
+        cfg.setProperty(EngineConfig.PROP_STAGE_FILE_URL_ENABLED, "true");
         engine = new DatabaseEngine(cfg);
         engine.execute("CREATE DATABASE db");
         engine.execute("USE DATABASE db");
@@ -101,7 +102,7 @@ public class CopyMissingFileTest {
     private void stage(final String fileName, final String content) throws IOException {
         final Path file = localDir.resolve(fileName);
         Files.write(file, content.getBytes(StandardCharsets.UTF_8));
-        engine.executeQuery("PUT file://" + file + " @%t");
+        engine.executeQuery("PUT file://" + file + " @%t AUTO_COMPRESS=FALSE");
     }
 
     private ResultSet copy(final String options) {
@@ -275,7 +276,8 @@ public class CopyMissingFileTest {
                     + " FILE_FORMAT = (TYPE = CSV SKIP_HEADER = 1)");
             }
         });
-        assertTrue(e.getMessage().contains("Remote file '@ST/nosuch.csv' was not found."), e.getMessage());
+        // The stage reference is echoed exactly as the statement wrote it — lower-case @st here.
+        assertTrue(e.getMessage().contains("Remote file '@st/nosuch.csv' was not found."), e.getMessage());
 
         // Control: the file that IS on that stage loads.
         final ResultSet loaded = engine.executeQuery("COPY INTO t FROM @st FILES = ('good1.csv')"

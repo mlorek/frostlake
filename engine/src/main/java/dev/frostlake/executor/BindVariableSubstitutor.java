@@ -190,7 +190,10 @@ public class BindVariableSubstitutor {
         }
         final Token prev = toks.get(colonIndex - 1);
         final int type = prev.getType();
-        final boolean endsAValue = type == FrostlakeLexer.IDENTIFIER
+        // Any bare word ends a value — a path step may be a keyword token that the grammar
+        // admits as an identifier (src:value:attributes:core), so the check must not be
+        // limited to the IDENTIFIER token type.
+        final boolean endsAValue = SqlTokens.isWord(prev)
             || type == FrostlakeLexer.QUOTED_IDENTIFIER
             || type == FrostlakeLexer.RPAREN
             || type == FrostlakeLexer.RBRACKET
@@ -216,6 +219,12 @@ public class BindVariableSubstitutor {
         // A BINARY variable binds as a hex literal, which the parser reads back as BINARY.
         if (value instanceof BinaryValue) {
             return "X'" + ((BinaryValue) value).toHex() + "'";
+        }
+        // A NUMERIC variable binds as a bare number. Quoting it put a STRING where the grammar and the
+        // column both want a number: `LIMIT :batch_size` became LIMIT '2', which is a syntax error,
+        // and `SELECT …, :batch_id` inserted the text '1' into an INTEGER column.
+        if (value instanceof Number) {
+            return value.toString();
         }
         // A temporal variable binds as a cast literal so it re-enters SQL as a temporal.
         final String temporal = SharedFunctionHelpers.temporalSqlLiteral(value);

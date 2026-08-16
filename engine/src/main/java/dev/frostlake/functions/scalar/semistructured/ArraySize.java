@@ -18,21 +18,23 @@ package dev.frostlake.functions.scalar.semistructured;
 
 import dev.frostlake.functions.VariantAccessorFunction;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
-import dev.frostlake.types.NumericType;
+import dev.frostlake.types.IntegerResultWidths;
 import tools.jackson.databind.node.ArrayNode;
 
 import java.util.List;
 
 /** ARRAY_SIZE(array) — returns the number of elements. */
 public class ArraySize extends VariantAccessorFunction {
-    public ArraySize() { super("ARRAY_SIZE", NumericType.INTEGER); }
+    public ArraySize() { super("ARRAY_SIZE", IntegerResultWidths.POSITION); }
 
     @Override
     public Object evaluate(final List<Object> args) {
-        ArrayNode arr = ArrayFunctionHelper.parseArray(args.get(0));
+        final ArrayNode arr = ArrayFunctionHelper.parseArray(args.get(0));
         return arr == null ? null : (long) arr.size();
     }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return 1; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return 1; }
 }

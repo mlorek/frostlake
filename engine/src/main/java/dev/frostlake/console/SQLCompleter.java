@@ -84,29 +84,29 @@ public class SQLCompleter implements Completer {
 
     @Override
     public void complete(final LineReader reader, final ParsedLine line, final List<Candidate> candidates) {
-        String buffer = line.line();
-        String word = line.word();
+        final String buffer = line.line();
+        final String word = line.word();
 
         // If word is empty or just started, don't complete
         if (word.isEmpty()) {
             return;
         }
 
-        String wordUpper = word.toUpperCase();
+        final String wordUpper = word.toUpperCase();
 
         // Get the text before the current word to determine context
-        int wordStart = line.wordIndex();
-        String beforeWord = wordStart > 0 ? buffer.substring(0, wordStart).trim() : "";
-        String[] tokens = beforeWord.split("\\s+");
-        String lastToken = tokens.length > 0 ? tokens[tokens.length - 1].toUpperCase() : "";
+        final int wordStart = line.wordIndex();
+        final String beforeWord = wordStart > 0 ? buffer.substring(0, wordStart).trim() : "";
+        final String[] tokens = beforeWord.split("\\s+");
+        final String lastToken = tokens.length > 0 ? tokens[tokens.length - 1].toUpperCase() : "";
 
         // Determine what type of completion to provide based on context
-        boolean afterFrom = containsToken(tokens, "FROM");
-        boolean afterSelect = containsToken(tokens, "SELECT");
-        boolean afterWhere = containsToken(tokens, "WHERE");
-        boolean afterTable = lastToken.equals("TABLE");
-        boolean afterDatabase = lastToken.equals("DATABASE");
-        boolean afterSchema = lastToken.equals("SCHEMA");
+        final boolean afterFrom = containsToken(tokens, "FROM");
+        final boolean afterSelect = containsToken(tokens, "SELECT");
+        final boolean afterWhere = containsToken(tokens, "WHERE");
+        final boolean afterTable = lastToken.equals("TABLE");
+        final boolean afterDatabase = lastToken.equals("DATABASE");
+        final boolean afterSchema = lastToken.equals("SCHEMA");
 
         // Complete table names after FROM, JOIN, INTO, UPDATE
         if (afterFrom || lastToken.equals("JOIN") || lastToken.equals("INTO") ||
@@ -163,16 +163,16 @@ public class SQLCompleter implements Completer {
 
     private void addTableCompletions(final String prefix, final List<Candidate> candidates) {
         try {
-            String currentDb = engine.getCatalog().getCurrentDatabase();
-            String currentSchema = engine.getCatalog().getCurrentSchema();
+            final String currentDb = engine.getCatalog().getCurrentDatabase();
+            final String currentSchema = engine.getCatalog().getCurrentSchema();
 
             if (currentDb != null && currentSchema != null) {
-                Database db = engine.getCatalog().getDatabase(currentDb);
+                final Database db = engine.getCatalog().getDatabase(currentDb);
                 if (db != null) {
-                    Schema schema = db.getSchema(currentSchema);
+                    final Schema schema = db.getSchema(currentSchema);
                     if (schema != null) {
                         for (final Table table : schema.getTables()) {
-                            String tableName = table.getName();
+                            final String tableName = table.getName();
                             if (tableName.toUpperCase().startsWith(prefix)) {
                                 candidates.add(new Candidate(tableName, tableName, "table", null, null, null, true));
                             }
@@ -188,7 +188,7 @@ public class SQLCompleter implements Completer {
     private void addDatabaseCompletions(final String prefix, final List<Candidate> candidates) {
         try {
             for (final Database db : engine.getCatalog().getAllDatabases()) {
-                String dbName = db.getName();
+                final String dbName = db.getName();
                 if (dbName.toUpperCase().startsWith(prefix)) {
                     candidates.add(new Candidate(dbName, dbName, "database", null, null, null, true));
                 }
@@ -200,12 +200,12 @@ public class SQLCompleter implements Completer {
 
     private void addSchemaCompletions(final String prefix, final List<Candidate> candidates) {
         try {
-            String currentDb = engine.getCatalog().getCurrentDatabase();
+            final String currentDb = engine.getCatalog().getCurrentDatabase();
             if (currentDb != null) {
-                Database db = engine.getCatalog().getDatabase(currentDb);
+                final Database db = engine.getCatalog().getDatabase(currentDb);
                 if (db != null) {
                     for (final Schema schema : db.getAllSchemas()) {
-                        String schemaName = schema.getName();
+                        final String schemaName = schema.getName();
                         if (schemaName.toUpperCase().startsWith(prefix)) {
                             candidates.add(new Candidate(schemaName, schemaName, "schema", null, null, null, true));
                         }
@@ -219,18 +219,18 @@ public class SQLCompleter implements Completer {
 
     private void addColumnCompletions(final String prefix, final List<Candidate> candidates) {
         try {
-            String currentDb = engine.getCatalog().getCurrentDatabase();
-            String currentSchema = engine.getCatalog().getCurrentSchema();
+            final String currentDb = engine.getCatalog().getCurrentDatabase();
+            final String currentSchema = engine.getCatalog().getCurrentSchema();
 
             if (currentDb != null && currentSchema != null) {
-                Database db = engine.getCatalog().getDatabase(currentDb);
+                final Database db = engine.getCatalog().getDatabase(currentDb);
                 if (db != null) {
-                    Schema schema = db.getSchema(currentSchema);
+                    final Schema schema = db.getSchema(currentSchema);
                     if (schema != null) {
                         // Add columns from all tables in current schema
                         for (final Table table : schema.getTables()) {
                             for (final TableColumn column : table.getColumns()) {
-                                String columnName = column.getName();
+                                final String columnName = column.getName();
                                 if (columnName.toUpperCase().startsWith(prefix)) {
                                     candidates.add(new Candidate(
                                             columnName,

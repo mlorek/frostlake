@@ -20,10 +20,10 @@ import dev.frostlake.config.S3PathResolver;
 import dev.frostlake.executor.udf.JarHandlerLoader;
 import dev.frostlake.executor.udf.UdfConsoleCapture;
 import dev.frostlake.metastore.Catalog;
-import dev.frostlake.values.BinaryValue;
 import dev.frostlake.metastore.model.Function;
 import dev.frostlake.metastore.model.Parameter;
 import dev.frostlake.metastore.model.UdfLanguage;
+import dev.frostlake.values.BinaryValue;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -40,7 +40,11 @@ import java.util.List;
  * <p>HANDLER is {@code 'ClassName.methodName'}; a Scala {@code object} is invoked through its
  * {@code MODULE$} singleton, a {@code class} via its no-arg constructor.
  */
-public class ScalaFunctionExecutor {
+public final class ScalaFunctionExecutor {
+
+    /** Static helpers only — never instantiated. */
+    private ScalaFunctionExecutor() {
+    }
 
     private static final Logger logger = LoggerFactory.getLogger(ScalaFunctionExecutor.class);
 

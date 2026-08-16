@@ -17,6 +17,7 @@
 package dev.frostlake.ddl;
 
 import dev.frostlake.DatabaseEngine;
+import dev.frostlake.config.EngineConfig;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.Row;
 
@@ -49,6 +50,9 @@ public class FileFormatTest {
     public void setUp() throws IOException {
         stageDir = Files.createTempDirectory("file_format_test_");
         engine = new DatabaseEngine();
+        // The tests point stages at local file:// directories - opt in to the affordance the
+        // default config refuses (a real account refuses those URLs).
+        engine.getConfig().setProperty(EngineConfig.PROP_STAGE_FILE_URL_ENABLED, "true");
         engine.execute("CREATE DATABASE db");
         engine.execute("USE DATABASE db");
         engine.execute("CREATE SCHEMA s");
@@ -68,7 +72,8 @@ public class FileFormatTest {
         final ResultSet rs = engine.executeQuery(sql);
         final Map<String, String> props = new HashMap<>();
         for (final Row row : rs.getRows()) {
-            props.put(String.valueOf(row.getValue(0)), String.valueOf(row.getValue(1)));
+            // Four-column DESC: property(0) | property_type(1) | property_value(2) | property_default(3).
+            props.put(String.valueOf(row.getValue(0)), String.valueOf(row.getValue(2)));
         }
         return props;
     }

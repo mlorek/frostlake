@@ -30,6 +30,9 @@ public class Cursor {
     private ResultSet resultSet;
     private int currentPosition;
     private boolean isOpen;
+    /** Whether OPEN ever ran (a FOR loop opens implicitly): live tolerates CLOSE on a cursor that
+     *  WAS open at some point and raises only for one that never opened. */
+    private boolean everOpened;
 
     public Cursor(final String name, final String selectQuery) {
         this(name, selectQuery, null);
@@ -63,6 +66,12 @@ public class Cursor {
         this.resultSet = resultSet;
         this.currentPosition = -1;
         this.isOpen = true;
+        this.everOpened = true;
+    }
+
+    /** True once this cursor has been opened at least once, however it was later closed. */
+    public boolean wasEverOpened() {
+        return everOpened;
     }
 
     public Row fetch() {

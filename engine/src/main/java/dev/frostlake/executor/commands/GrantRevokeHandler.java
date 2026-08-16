@@ -69,20 +69,27 @@ public class GrantRevokeHandler implements CommandHandler {
         try {
             if (ctx.bulkObjectType() != null) {
                 // GRANT privs ON ALL/FUTURE <types> IN DATABASE/SCHEMA/ACCOUNT <name> TO USER/ROLE target
-                boolean isFuture = ctx.FUTURE() != null;
-                String objectType = ctx.bulkObjectType().getText().toUpperCase();
-                FrostlakeParser.BulkScopeContext scope = ctx.bulkScope();
-                String scopeType = scope.DATABASE() != null ? "DATABASE"
+                final boolean isFuture = ctx.FUTURE() != null;
+                final String objectType = ctx.bulkObjectType().getText().toUpperCase();
+                final FrostlakeParser.BulkScopeContext scope = ctx.bulkScope();
+                final String scopeType = scope.DATABASE() != null ? "DATABASE"
                     : scope.SCHEMA() != null ? "SCHEMA" : "ACCOUNT";
-                String scopeName = scope.qualifiedName() != null
+                final String scopeName = scope.qualifiedName() != null
                     ? scope.qualifiedName().getText().toUpperCase() : "ACCOUNT";
-                String privilege = ctx.privilegeList().ALL() != null ? "ALL"
-                    : ctx.privilegeList().privilege().stream()
-                        .map((final var p) -> p.getText().toUpperCase()).reduce((final var a, final var b) -> a + "," + b).orElse("ALL");
-                List<FrostlakeParser.IdentifierContext> ids = ctx.identifier();
-                String targetName = ids != null && !ids.isEmpty() ? ids.get(ids.size() - 1).getText() : "";
-                boolean isUser = ctx.USER() != null;
-                String grantKey = (isFuture ? "FUTURE_" : "ALL_") + objectType + "_IN_" + scopeType;
+                String privilege = "ALL";
+                if (ctx.privilegeList().ALL() == null) {
+                    final StringBuilder names = new StringBuilder();
+                    for (final FrostlakeParser.PrivilegeContext p : ctx.privilegeList().privilege()) {
+                        names.append(names.length() == 0 ? "" : ",").append(p.getText().toUpperCase());
+                    }
+                    if (names.length() > 0) {
+                        privilege = names.toString();
+                    }
+                }
+                final List<FrostlakeParser.IdentifierContext> ids = ctx.identifier();
+                final String targetName = ids != null && !ids.isEmpty() ? ids.get(ids.size() - 1).getText() : "";
+                final boolean isUser = ctx.USER() != null;
+                final String grantKey = (isFuture ? "FUTURE_" : "ALL_") + objectType + "_IN_" + scopeType;
                 if (isUser) {
                     catalog.grantPrivilegeToUser(privilege, grantKey, scopeName, targetName);
                 } else {
@@ -94,8 +101,8 @@ public class GrantRevokeHandler implements CommandHandler {
             } else if (ctx.ROLE() != null && ctx.objectType() == null && ctx.globalPrivilegeList() == null) {
                 // GRANT ROLE role_name TO USER/ROLE target_name
                 // identifiers: 0=role_name, 1=target_name
-                String roleName = visitor.getText(ctx.identifier(0));
-                String targetName2 = visitor.getText(ctx.identifier(1));
+                final String roleName = visitor.getText(ctx.identifier(0));
+                final String targetName2 = visitor.getText(ctx.identifier(1));
 
                 if (ctx.USER() != null) {
                     catalog.grantRoleToUser(roleName, targetName2);
@@ -109,10 +116,10 @@ public class GrantRevokeHandler implements CommandHandler {
             } else if (ctx.globalPrivilegeList() != null) {
                 // GRANT global_privileges TO ROLE role_name
                 // identifiers: 0=role_name
-                String roleName = visitor.getText(ctx.identifier(0));
+                final String roleName = visitor.getText(ctx.identifier(0));
 
                 for (final FrostlakeParser.GlobalPrivilegeContext privCtx : ctx.globalPrivilegeList().globalPrivilege()) {
-                    String privilege = privilegeName(privCtx);
+                    final String privilege = privilegeName(privCtx);
                     catalog.grantPrivilegeToRole(privilege, "ACCOUNT", "ACCOUNT", roleName);
                     logger.trace("Granted global privilege {} to role {}", privilege, roleName);
                 }
@@ -120,8 +127,8 @@ public class GrantRevokeHandler implements CommandHandler {
             } else if (ctx.ACCOUNT() != null) {
                 // GRANT privileges ON ACCOUNT TO USER/ROLE target_name
                 // identifiers: 0=target_name
-                String targetName = visitor.getText(ctx.identifier(0));
-                boolean isUser = ctx.USER() != null;
+                final String targetName = visitor.getText(ctx.identifier(0));
+                final boolean isUser = ctx.USER() != null;
 
                 if (ctx.privilegeList().ALL() != null) {
                     if (isUser) {
@@ -133,7 +140,7 @@ public class GrantRevokeHandler implements CommandHandler {
                     }
                 } else {
                     for (final FrostlakeParser.PrivilegeContext privCtx : ctx.privilegeList().privilege()) {
-                        String privilege = privilegeName(privCtx);
+                        final String privilege = privilegeName(privCtx);
                         if (isUser) {
                             catalog.grantPrivilegeToUser(privilege, "ACCOUNT", "ACCOUNT", targetName);
                             logger.trace("Granted {} on ACCOUNT to user {}", privilege, targetName);
@@ -147,10 +154,10 @@ public class GrantRevokeHandler implements CommandHandler {
             } else if (ctx.privilegeList() != null || ctx.OWNERSHIP() != null) {
                 // GRANT privileges/OWNERSHIP ON object TO USER/ROLE target_name
                 // identifiers: 0=target_name
-                String objectName = visitor.getText(ctx.qualifiedName());
-                String targetName = visitor.getText(ctx.identifier(0));
-                String objectType = ctx.objectType().getText().toUpperCase();
-                boolean isUser = ctx.USER() != null;
+                final String objectName = visitor.getText(ctx.qualifiedName());
+                final String targetName = visitor.getText(ctx.identifier(0));
+                final String objectType = ctx.objectType().getText().toUpperCase();
+                final boolean isUser = ctx.USER() != null;
 
                 // Only an owner / administrative role may grant privileges on an object.
                 if (queryExecutor.getSecurityManager() != null) {
@@ -187,7 +194,7 @@ public class GrantRevokeHandler implements CommandHandler {
                     } else {
                         // Grant specific privileges
                         for (final FrostlakeParser.PrivilegeContext privCtx : ctx.privilegeList().privilege()) {
-                            String privilege = privilegeName(privCtx);
+                            final String privilege = privilegeName(privCtx);
                             rejectInvalidPrivilegeForObjectType(privilege, objectType);
                             // OWNERSHIP also matches the generic privilegeList alternative, which the
                             // parser prefers over the dedicated GRANT OWNERSHIP one — so the ROLES-only
@@ -224,8 +231,8 @@ public class GrantRevokeHandler implements CommandHandler {
                 // REVOKE ROLE role_name FROM USER/ROLE target_name
                 // This is the first alternative - revoking a role from a user or role
                 // identifiers: 0=role_name, 1=target_name
-                String roleName = visitor.getText(ctx.identifier(0));
-                String targetName = visitor.getText(ctx.identifier(1));
+                final String roleName = visitor.getText(ctx.identifier(0));
+                final String targetName = visitor.getText(ctx.identifier(1));
 
                 if (ctx.USER() != null) {
                     catalog.revokeRoleFromUser(roleName, targetName);
@@ -239,10 +246,10 @@ public class GrantRevokeHandler implements CommandHandler {
             } else if (ctx.globalPrivilegeList() != null) {
                 // REVOKE global_privileges FROM ROLE role_name
                 // identifiers: 0=role_name
-                String roleName = visitor.getText(ctx.identifier(0));
+                final String roleName = visitor.getText(ctx.identifier(0));
 
                 for (final FrostlakeParser.GlobalPrivilegeContext privCtx : ctx.globalPrivilegeList().globalPrivilege()) {
-                    String privilege = privilegeName(privCtx);
+                    final String privilege = privilegeName(privCtx);
                     catalog.revokePrivilegeFromRole(privilege, "ACCOUNT", "ACCOUNT", roleName);
                     logger.trace("Revoked global privilege {} from role {}", privilege, roleName);
                 }
@@ -250,8 +257,8 @@ public class GrantRevokeHandler implements CommandHandler {
             } else if (ctx.ACCOUNT() != null) {
                 // REVOKE privileges ON ACCOUNT FROM USER/ROLE target_name
                 // identifiers: 0=target_name
-                String targetName = visitor.getText(ctx.identifier(0));
-                boolean isUser = ctx.USER() != null;
+                final String targetName = visitor.getText(ctx.identifier(0));
+                final boolean isUser = ctx.USER() != null;
 
                 if (ctx.privilegeList().ALL() != null) {
                     if (isUser) {
@@ -263,7 +270,7 @@ public class GrantRevokeHandler implements CommandHandler {
                     }
                 } else {
                     for (final FrostlakeParser.PrivilegeContext privCtx : ctx.privilegeList().privilege()) {
-                        String privilege = privilegeName(privCtx);
+                        final String privilege = privilegeName(privCtx);
                         if (isUser) {
                             catalog.revokePrivilegeFromUser(privilege, "ACCOUNT", "ACCOUNT", targetName);
                             logger.trace("Revoked {} on ACCOUNT from user {}", privilege, targetName);
@@ -277,10 +284,10 @@ public class GrantRevokeHandler implements CommandHandler {
             } else if (ctx.privilegeList() != null || ctx.OWNERSHIP() != null) {
                 // REVOKE privileges/OWNERSHIP ON object FROM USER/ROLE target_name
                 // identifiers: 0=target_name
-                String objectName = visitor.getText(ctx.qualifiedName());
-                String targetName = visitor.getText(ctx.identifier(0));
-                String objectType = ctx.objectType().getText().toUpperCase();
-                boolean isUser = ctx.USER() != null;
+                final String objectName = visitor.getText(ctx.qualifiedName());
+                final String targetName = visitor.getText(ctx.identifier(0));
+                final String objectType = ctx.objectType().getText().toUpperCase();
+                final boolean isUser = ctx.USER() != null;
 
                 if (ctx.OWNERSHIP() != null) {
                     // Revoke ownership
@@ -312,7 +319,7 @@ public class GrantRevokeHandler implements CommandHandler {
                     } else {
                         // Revoke specific privileges
                         for (final FrostlakeParser.PrivilegeContext privCtx : ctx.privilegeList().privilege()) {
-                            String privilege = privilegeName(privCtx);
+                            final String privilege = privilegeName(privCtx);
                             if (isUser) {
                                 catalog.revokePrivilegeFromUser(privilege, objectType, objectName, targetName);
                                 logger.trace("Revoked {} on {} {} from user {}", privilege, objectType, objectName, targetName);

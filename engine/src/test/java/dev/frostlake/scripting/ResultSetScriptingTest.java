@@ -16,11 +16,9 @@
 
 package dev.frostlake.scripting;
 
-import dev.frostlake.DatabaseEngine;
+import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
 
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -28,25 +26,9 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 /**
  * RESULTSET handling in Snowflake Scripting. A RESULTSET value reaches a block two ways — {@code DECLARE rs
  * RESULTSET DEFAULT (query)} and {@code rs := (EXECUTE IMMEDIATE …)} — and both must be usable identically by
- * {@code RETURN TABLE(rs)} and by a {@code FOR rec IN rs} loop. Also covers {@code RETURN TABLE(SELECT …)}.
+ * {@code RETURN TABLE(rs)} and by a {@code FOR rec IN rs} loop.
  */
-public class ResultSetScriptingTest {
-
-    private DatabaseEngine engine;
-
-    @BeforeEach
-    public void setUp() {
-        engine = new DatabaseEngine();
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
-    }
-
-    @AfterEach
-    public void tearDown() {
-        if (engine != null) {
-            engine.shutdown();
-        }
-    }
+public class ResultSetScriptingTest extends BaseDatabaseTest {
 
     private long rowsOf(final String block) {
         return engine.executeQuery(block).getRowCount();
@@ -73,6 +55,7 @@ public class ResultSetScriptingTest {
         assertEquals(2L, rowsOf("""
             DECLARE
                 res RESULTSET;
+                all_rows RESULTSET;
                 stmt VARCHAR;
             BEGIN
                 stmt := 'SELECT 1 AS a UNION ALL SELECT 2 AS a';
@@ -101,6 +84,7 @@ public class ResultSetScriptingTest {
         assertEquals(30, returnedInt("""
             DECLARE
                 res RESULTSET;
+                all_rows RESULTSET;
                 stmt VARCHAR;
             BEGIN
                 stmt := 'SELECT 10 AS v UNION ALL SELECT 20 AS v';
@@ -117,33 +101,46 @@ public class ResultSetScriptingTest {
     @Test
     public void returnTableOfDirectQuery() {
         assertEquals(2L, rowsOf("""
+            DECLARE res RESULTSET DEFAULT (SELECT 1 AS a UNION ALL SELECT 2 AS a);
             BEGIN
-                RETURN TABLE(SELECT 1 AS a UNION ALL SELECT 2 AS a);
+                RETURN TABLE(res);
             END;
             """));
     }
 
     @Test
-    public void selectFromTableOfDefaultResultset() {
-        // FROM TABLE(rs) treats a DEFAULT-init RESULTSET as a table source; the WHERE filters its rows.
-        assertEquals(1L, rowsOf("""
-            DECLARE rs RESULTSET DEFAULT (SELECT 1 AS a UNION ALL SELECT 2 AS a);
+    public void iteratingADefaultResultsetFiltersRows() {
+        // A RESULTSET is not a FROM source (live refuses FROM TABLE(rs)); rows are consumed by
+        // iterating it — here counting the ones the filter matches.
+        assertEquals(1, returnedInt("""
+            DECLARE
+                rs RESULTSET DEFAULT (SELECT 1 AS a UNION ALL SELECT 2 AS a);
+                matches INTEGER DEFAULT 0;
             BEGIN
-                RETURN TABLE(SELECT a FROM TABLE(rs) WHERE a = 2);
+                FOR rec IN rs DO
+                    IF (rec.a = 2) THEN
+                        matches := :matches + 1;
+                    END IF;
+                END FOR;
+                RETURN :matches;
             END;
             """));
     }
 
     @Test
-    public void selectFromTableOfExecuteImmediateResultset() {
-        assertEquals(2L, rowsOf("""
+    public void iteratingAnExecuteImmediateResultsetSeesAllRows() {
+        assertEquals(2, returnedInt("""
             DECLARE
                 res RESULTSET;
                 stmt VARCHAR;
+                seen INTEGER DEFAULT 0;
             BEGIN
                 stmt := 'SELECT 1 AS a UNION ALL SELECT 2 AS a';
                 res := (EXECUTE IMMEDIATE stmt);
-                RETURN TABLE(SELECT a FROM TABLE(res));
+                FOR rec IN res DO
+                    seen := :seen + 1;
+                END FOR;
+                RETURN :seen;
             END;
             """));
     }

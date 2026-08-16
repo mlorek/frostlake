@@ -22,7 +22,6 @@ import dev.frostlake.types.ObjectType;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.node.ObjectNode;
 
-import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -38,17 +37,17 @@ public class ObjectInsert extends VariantAccessorFunction {
 
     @Override
     public Object evaluate(final List<Object> args) {
-        JsonNode src = ArrayFunctionHelper.parseNode(args.get(0));
+        final JsonNode src = ArrayFunctionHelper.parseNode(args.get(0));
         if (src == null || !src.isObject()) return null;
         if (args.get(1) == null) return ArrayFunctionHelper.toCanonicalVariant(src);
-        String key = args.get(1).toString();
+        final String key = args.get(1).toString();
         final Object value = args.size() > 2 ? args.get(2) : null;
         final boolean update = args.size() > 3 && args.get(3) != null
             && Boolean.parseBoolean(args.get(3).toString());
 
-        ObjectNode result = ArrayFunctionHelper.MAPPER.createObjectNode();
+        final ObjectNode result = ArrayFunctionHelper.MAPPER.createObjectNode();
         boolean existed = false;
-        Set<Map.Entry<String, JsonNode>> fields = src.properties();
+        final Set<Map.Entry<String, JsonNode>> fields = src.properties();
         for (final Map.Entry<String, JsonNode> e :  fields) {
             if (e.getKey().equals(key)) {
                 existed = true;
@@ -68,6 +67,8 @@ public class ObjectInsert extends VariantAccessorFunction {
         return ArrayFunctionHelper.toCanonicalVariant(result);
     }
 
-    @Override public int getMinArgCount() { return 3; }
-    @Override public int getMaxArgCount() { return 4; }
+    @Override
+    public int getMinArgCount() { return 3; }
+    @Override
+    public int getMaxArgCount() { return 4; }
 }

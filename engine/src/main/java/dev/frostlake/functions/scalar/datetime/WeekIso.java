@@ -18,14 +18,14 @@ package dev.frostlake.functions.scalar.datetime;
 
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
-import dev.frostlake.types.NumericType;
+import dev.frostlake.types.IntegerResultWidths;
 import java.time.LocalDateTime;
 import java.time.temporal.WeekFields;
 import java.util.List;
 
 /** WEEKISO(t) — ISO-8601 week number. */
 public class WeekIso extends BuiltInFunction {
-    public WeekIso() { super("WEEKISO", NumericType.INTEGER); }
+    public WeekIso() { super("WEEKISO", IntegerResultWidths.DATE_PART_SMALL); }
 
     @Override
     public Object evaluate(final List<Object> args) {
@@ -34,6 +34,8 @@ public class WeekIso extends BuiltInFunction {
         return (long) t.get(WeekFields.ISO.weekOfWeekBasedYear());
     }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return 1; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return 1; }
 }

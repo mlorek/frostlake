@@ -28,9 +28,9 @@ import java.util.List;
  * match against a closed set (see {@link FileContentTypes}) — not the path, not the bytes.
  *
  * <p>The set is arbitrary and must not be guessed from the family: TRUE for {@code application/zip},
- * {@code application/gzip}, {@code application/x-tar}, {@code application/vnd.rar} and
- * {@code application/x-bzip2}, but FALSE for {@code application/x-gzip} — which is what a staged
- * {@code .gz} file actually gets — and FALSE for {@code application/x-7z-compressed}, what a
+ * {@code application/gzip} — which is what a staged {@code .gz} file gets, live-verified — plus
+ * {@code application/x-tar}, {@code application/vnd.rar} and {@code application/x-bzip2}, but FALSE
+ * for the {@code application/x-gzip} spelling and for {@code application/x-7z-compressed}, what a
  * {@code .7z} gets. {@code FL_IS_COMPRESSED(NULL)} is FALSE, never NULL.
  */
 public class FlIsCompressed extends BuiltInFunction {

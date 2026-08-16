@@ -17,21 +17,21 @@
 package dev.frostlake.functions.scalar.semistructured;
 
 import dev.frostlake.functions.StructuredArgumentFunction;
-import dev.frostlake.functions.scalar.ArrayFunctionHelper;
-import tools.jackson.databind.JsonNode;
-import java.util.List;
 import dev.frostlake.types.BinaryType;
 import dev.frostlake.values.BinaryValue;
+import java.util.List;
 
 /** AS_BINARY(v) — the value when it is BINARY, else NULL (the engine's variant model carries no binary members). */
 public class AsBinary extends StructuredArgumentFunction {
-    public AsBinary() { super("AS_BINARY", BinaryType.BINARY); }
+    public AsBinary() { super("AS_BINARY", BinaryType.VARBINARY); }
 
     @Override
     public Object evaluate(final List<Object> args) {
         return args.get(0) instanceof BinaryValue ? args.get(0) : null;
     }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return 1; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return 1; }
 }

@@ -32,12 +32,12 @@ public class GetIgnoreCase extends BuiltInFunction {
     @Override
     public Object evaluate(final List<Object> args) {
         if (args.get(0) == null || args.get(1) == null) return null;
-        String key = args.get(1).toString();
-        JsonNode node = ArrayFunctionHelper.parseNode(args.get(0));
+        final String key = args.get(1).toString();
+        final JsonNode node = ArrayFunctionHelper.parseNode(args.get(0));
         if (node == null || !node.isObject()) return null;
         for (final String name : node.propertyNames()) {
             if (name.equalsIgnoreCase(key)) {
-                JsonNode v = node.get(name);
+                final JsonNode v = node.get(name);
                 if (v == null) return null;
                 // A key that IS present but holds JSON null keeps the typed VARIANT NULL_VALUE; only a
                 // missing key is SQL NULL (live:
@@ -54,6 +54,8 @@ public class GetIgnoreCase extends BuiltInFunction {
         return null;
     }
 
-    @Override public int getMinArgCount() { return 2; }
-    @Override public int getMaxArgCount() { return 2; }
+    @Override
+    public int getMinArgCount() { return 2; }
+    @Override
+    public int getMaxArgCount() { return 2; }
 }

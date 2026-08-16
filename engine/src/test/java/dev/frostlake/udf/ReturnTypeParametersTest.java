@@ -57,7 +57,7 @@ public class ReturnTypeParametersTest extends BaseJdbcTest {
         $$
         """);
 
-        ResultSet rs = statement.executeQuery("SELECT get_text()");
+        final ResultSet rs = statement.executeQuery("SELECT get_text()");
         rs.next();
         assertEquals("Hello World", rs.getString(1));
     }
@@ -81,7 +81,7 @@ public class ReturnTypeParametersTest extends BaseJdbcTest {
         $$
         """);
 
-        ResultSet rs = statement.executeQuery("SELECT get_price()");
+        final ResultSet rs = statement.executeQuery("SELECT get_price()");
         rs.next();
         assertEquals(99.99, rs.getDouble(1), 0.01);
     }
@@ -104,7 +104,7 @@ public class ReturnTypeParametersTest extends BaseJdbcTest {
         $$
         """);
 
-        ResultSet rs = statement.executeQuery("SELECT get_count()");
+        final ResultSet rs = statement.executeQuery("SELECT get_count()");
         rs.next();
         assertEquals(12345, rs.getInt(1));
     }
@@ -128,7 +128,7 @@ public class ReturnTypeParametersTest extends BaseJdbcTest {
         $$
         """);
 
-        ResultSet rs = statement.executeQuery("SELECT get_timestamp()");
+        final ResultSet rs = statement.executeQuery("SELECT get_timestamp()");
         rs.next();
         assertEquals("2024-01-01 12:00:00.123456789", rs.getString(1));
     }
@@ -152,7 +152,7 @@ public class ReturnTypeParametersTest extends BaseJdbcTest {
         $$
         """);
 
-        ResultSet rs = statement.executeQuery("SELECT get_timestamp_ntz()");
+        final ResultSet rs = statement.executeQuery("SELECT get_timestamp_ntz()");
         rs.next();
         assertEquals("2024-01-01 12:00:00.123456", rs.getString(1));
     }
@@ -239,11 +239,11 @@ public class ReturnTypeParametersTest extends BaseJdbcTest {
         $$
         """);
 
-        ResultSet rs1 = statement.executeQuery("SELECT format_number(123)");
+        final ResultSet rs1 = statement.executeQuery("SELECT format_number(123)");
         rs1.next();
         assertEquals("123", rs1.getString(1));
 
-        ResultSet rs2 = statement.executeQuery("SELECT format_number(123, 2)");
+        final ResultSet rs2 = statement.executeQuery("SELECT format_number(123, 2)");
         rs2.next();
         assertEquals("123.00", rs2.getString(1));
     }
@@ -281,7 +281,7 @@ public class ReturnTypeParametersTest extends BaseJdbcTest {
         $$
         """);
 
-        ResultSet rs = statement.executeQuery("SELECT get_version()");
+        final ResultSet rs = statement.executeQuery("SELECT get_version()");
         rs.next();
         assertEquals("v2.0 with longer version string", rs.getString(1));
     }
@@ -304,7 +304,7 @@ public class ReturnTypeParametersTest extends BaseJdbcTest {
         $$
         """);
 
-        ResultSet rs = statement.executeQuery("SELECT simple_func()");
+        final ResultSet rs = statement.executeQuery("SELECT simple_func()");
         rs.next();
         assertEquals("simple", rs.getString(1));
     }

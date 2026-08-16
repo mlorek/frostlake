@@ -25,11 +25,15 @@ import org.slf4j.LoggerFactory;
 /**
  * Example demonstrating EXECUTE IMMEDIATE command
  */
-public class ExecuteImmediateExample {
+public final class ExecuteImmediateExample {
+
+    /** Static helpers only — never instantiated. */
+    private ExecuteImmediateExample() {
+    }
     private static final Logger logger = LoggerFactory.getLogger(ExecuteImmediateExample.class);
 
     public static void main(final String[] args) {
-        DatabaseEngine engine = new DatabaseEngine();
+        final DatabaseEngine engine = new DatabaseEngine();
 
         try {
             logger.info("=== EXECUTE IMMEDIATE Examples ===\n");
@@ -57,9 +61,9 @@ public class ExecuteImmediateExample {
             // Example 3: Dynamic SELECT
             logger.info("3. Dynamic SELECT:");
             logger.info("   {}", "-".repeat(60));
-            var result1 = engine.execute("EXECUTE IMMEDIATE 'SELECT * FROM products WHERE price > 50'");
+            final var result1 = engine.execute("EXECUTE IMMEDIATE 'SELECT * FROM products WHERE price > 50'");
             if (!result1.getResultSets().isEmpty()) {
-                ResultSet rs = result1.getResultSets().get(0);
+                final ResultSet rs = result1.getResultSets().get(0);
                 logger.info("   Found {} products with price > 50:", rs.getRowCount());
                 for (final Row row : rs.getRows()) {
                     logger.info("   - {}: ${}", row.getValue(1), row.getValue(2));
@@ -73,9 +77,9 @@ public class ExecuteImmediateExample {
             engine.execute("SET my_query = 'SELECT name, price FROM products ORDER BY price DESC'");
             logger.info("   Variable set: my_query");
 
-            var result2 = engine.execute("EXECUTE IMMEDIATE my_query");
+            final var result2 = engine.execute("EXECUTE IMMEDIATE my_query");
             if (!result2.getResultSets().isEmpty()) {
-                ResultSet rs = result2.getResultSets().get(0);
+                final ResultSet rs = result2.getResultSets().get(0);
                 logger.info("   Products sorted by price:");
                 for (final Row row : rs.getRows()) {
                     logger.info("   - {}: ${}", row.getValue(0), row.getValue(1));
@@ -89,7 +93,7 @@ public class ExecuteImmediateExample {
             engine.execute("EXECUTE IMMEDIATE 'UPDATE products SET price = price * 1.1 WHERE id = 1'");
             logger.info("   ✅ Updated laptop price (10% increase)\n");
 
-            ResultSet updated = engine.executeQuery("SELECT * FROM products WHERE id = 1");
+            final ResultSet updated = engine.executeQuery("SELECT * FROM products WHERE id = 1");
             logger.info("   New laptop price: ${}\n", updated.getRows().get(0).getValue(2));
 
             // Example 6: Dynamic DELETE
@@ -98,7 +102,7 @@ public class ExecuteImmediateExample {
             engine.execute("EXECUTE IMMEDIATE 'DELETE FROM products WHERE price < 50'");
             logger.info("   ✅ Deleted products with price < $50\n");
 
-            ResultSet remaining = engine.executeQuery("SELECT COUNT(*) FROM products");
+            final ResultSet remaining = engine.executeQuery("SELECT COUNT(*) FROM products");
             logger.info("   Remaining products: {}\n", remaining.getRows().get(0).getValue(0));
 
             // Example 7: Complex Dynamic Query
@@ -111,10 +115,10 @@ public class ExecuteImmediateExample {
             engine.execute("INSERT INTO products VALUES (6, 'Phone', 800)");
 
             engine.execute("SET complex_sql = 'SELECT * FROM products WHERE price >= 100 ORDER BY price DESC LIMIT 3'");
-            var result3 = engine.execute("EXECUTE IMMEDIATE complex_sql");
+            final var result3 = engine.execute("EXECUTE IMMEDIATE complex_sql");
 
             if (!result3.getResultSets().isEmpty()) {
-                ResultSet rs = result3.getResultSets().get(0);
+                final ResultSet rs = result3.getResultSets().get(0);
                 logger.info("   Top 3 most expensive products:");
                 for (final Row row : rs.getRows()) {
                     logger.info("   - {}: ${}", row.getValue(1), row.getValue(2));
@@ -130,10 +134,10 @@ public class ExecuteImmediateExample {
 
             // Note: In real Snowflake, you'd concatenate. Here we demonstrate variable storage
             engine.execute("SET dynamic_query = 'SELECT COUNT(*) FROM products WHERE price > 300'");
-            var result4 = engine.execute("EXECUTE IMMEDIATE dynamic_query");
+            final var result4 = engine.execute("EXECUTE IMMEDIATE dynamic_query");
 
             if (!result4.getResultSets().isEmpty()) {
-                ResultSet rs = result4.getResultSets().get(0);
+                final ResultSet rs = result4.getResultSets().get(0);
                 logger.info("   Products with price > $300: {}", rs.getRows().get(0).getValue(0));
             }
             logger.info("");

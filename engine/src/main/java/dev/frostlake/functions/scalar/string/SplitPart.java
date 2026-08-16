@@ -28,16 +28,18 @@ public class SplitPart extends TextArgumentFunction {
     @Override
     public Object evaluate(final List<Object> args) {
         if (args.get(0) == null) return null;
-        String str = args.get(0).toString();
-        String delim = args.get(1) == null ? "" : args.get(1).toString();
-        int part = ((Number) args.get(2)).intValue();
+        final String str = args.get(0).toString();
+        final String delim = args.get(1) == null ? "" : args.get(1).toString();
+        final int part = ((Number) args.get(2)).intValue();
         if (delim.isEmpty()) return part == 1 ? str : "";
-        String[] parts = str.split(Pattern.quote(delim), -1);
-        int idx = part > 0 ? part - 1 : parts.length + part;
+        final String[] parts = str.split(Pattern.quote(delim), -1);
+        final int idx = part > 0 ? part - 1 : parts.length + part;
         if (idx < 0 || idx >= parts.length) return "";
         return parts[idx];
     }
 
-    @Override public int getMinArgCount() { return 3; }
-    @Override public int getMaxArgCount() { return 3; }
+    @Override
+    public int getMinArgCount() { return 3; }
+    @Override
+    public int getMaxArgCount() { return 3; }
 }

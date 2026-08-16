@@ -16,13 +16,18 @@
 
 package dev.frostlake.demo;
 
+import dev.frostlake.config.EngineConfig;
 import dev.frostlake.metastore.model.Stage;
 import dev.frostlake.storage.ResultSet;
 
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.Iterator;
+import java.util.List;
 
 /**
  * Demonstration of STAGE functionality - Local filesystem staging
@@ -41,8 +46,12 @@ public class StagesDemo extends AbstractDemo {
     @Override
     protected void runDemo() throws Exception {
 
+            // The demo's stages point at local file:// directories — opt in to the affordance the
+            // default config refuses (a real account refuses those URLs).
+            engine.getConfig().setProperty(EngineConfig.PROP_STAGE_FILE_URL_ENABLED, "true");
+
             // Create a temporary directory for our stage
-            Path stageDir = Files.createTempDirectory("demo_stage");
+            final Path stageDir = Files.createTempDirectory("demo_stage");
             System.out.println("Created temporary stage directory: " + stageDir);
 
             // Create some sample data files
@@ -55,21 +64,21 @@ public class StagesDemo extends AbstractDemo {
 
             // ==================== DEMO 2: LIST STAGE (ALL FILES) ====================
             System.out.println("\n----- DEMO 2: LIST ALL FILES IN STAGE -----");
-            ResultSet result = engine.executeQuery("LIST @my_data_stage");
+            final ResultSet result = engine.executeQuery("LIST @my_data_stage");
             System.out.println("Files in stage:");
             printResultSet(result);
 
             // ==================== DEMO 3: LIST WITH PATTERN ====================
             System.out.println("\n----- DEMO 3: LIST CSV FILES ONLY -----");
-            ResultSet csvResult = engine.executeQuery("LIST @my_data_stage PATTERN = '*.csv'");
+            final ResultSet csvResult = engine.executeQuery("LIST @my_data_stage PATTERN = '*.csv'");
             System.out.println("CSV files:");
             printResultSet(csvResult);
 
             // ==================== DEMO 4: CREATE MULTIPLE STAGES ====================
             System.out.println("\n----- DEMO 4: CREATE MULTIPLE STAGES -----");
 
-            Path csvStageDir = stageDir.resolve("csv_data");
-            Path jsonStageDir = stageDir.resolve("json_data");
+            final Path csvStageDir = stageDir.resolve("csv_data");
+            final Path jsonStageDir = stageDir.resolve("json_data");
             Files.createDirectories(csvStageDir);
             Files.createDirectories(jsonStageDir);
 
@@ -93,16 +102,16 @@ public class StagesDemo extends AbstractDemo {
             System.out.println("\n----- DEMO 5: LIST FILES IN DIFFERENT STAGES -----");
 
             System.out.println("\nCSV Stage:");
-            ResultSet csvStageResult = engine.executeQuery("LIST @csv_stage");
+            final ResultSet csvStageResult = engine.executeQuery("LIST @csv_stage");
             printResultSet(csvStageResult);
 
             System.out.println("JSON Stage:");
-            ResultSet jsonStageResult = engine.executeQuery("LIST @json_stage");
+            final ResultSet jsonStageResult = engine.executeQuery("LIST @json_stage");
             printResultSet(jsonStageResult);
 
             // ==================== DEMO 6: STAGE METADATA ====================
             System.out.println("\n----- DEMO 6: STAGE METADATA -----");
-            Stage csvStage = engine.getCatalog().getStage("csv_stage");
+            final Stage csvStage = engine.getCatalog().getStage("csv_stage");
             System.out.println("Stage Name: " + csvStage.getName());
             System.out.println("Stage Type: " + csvStage.getType());
             System.out.println("Stage URL: " + csvStage.getUrl());
@@ -112,21 +121,21 @@ public class StagesDemo extends AbstractDemo {
 
             // ==================== DEMO 7: PROGRAMMATIC FILE OPERATIONS ====================
             System.out.println("\n----- DEMO 7: PROGRAMMATIC FILE OPERATIONS -----");
-            Stage myStage = engine.getCatalog().getStage("my_data_stage");
+            final Stage myStage = engine.getCatalog().getStage("my_data_stage");
 
             // Check if file exists
-            boolean exists = myStage.fileExists("customers.csv");
+            final boolean exists = myStage.fileExists("customers.csv");
             System.out.println("customers.csv exists: " + exists);
 
             // Put a new file
-            Path newFile = Files.createTempFile("upload", ".txt");
+            final Path newFile = Files.createTempFile("upload", ".txt");
             Files.write(newFile, "This file will be uploaded to stage".getBytes());
             myStage.putFile(newFile);
             System.out.println("✓ Uploaded file: " + newFile.getFileName());
 
             // List files again
             System.out.println("\nFiles after upload:");
-            ResultSet afterUpload = engine.executeQuery("LIST @my_data_stage");
+            final ResultSet afterUpload = engine.executeQuery("LIST @my_data_stage");
             printResultSet(afterUpload);
 
             // Clean up temp file
@@ -143,7 +152,7 @@ public class StagesDemo extends AbstractDemo {
             System.out.println("✓ Created database and table");
 
             // Create staging area
-            Path etlStageDir = stageDir.resolve("etl_stage");
+            final Path etlStageDir = stageDir.resolve("etl_stage");
             Files.createDirectories(etlStageDir);
             Files.write(etlStageDir.resolve("batch1.csv"),
                 "id,name,region\n1,Alice,East\n2,Bob,West\n".getBytes());
@@ -155,7 +164,7 @@ public class StagesDemo extends AbstractDemo {
 
             // List files to process
             System.out.println("\nFiles ready for loading:");
-            ResultSet etlFiles = engine.executeQuery("LIST @etl_stage");
+            final ResultSet etlFiles = engine.executeQuery("LIST @etl_stage");
             printResultSet(etlFiles);
 
             System.out.println("\n✓ In a real ETL pipeline, you would:");
@@ -171,7 +180,7 @@ public class StagesDemo extends AbstractDemo {
 
             // ==================== DEMO 10: LIST ALL STAGES ====================
             System.out.println("\n----- DEMO 10: LIST ALL STAGES -----");
-            var allStages = engine.getCatalog().getAllStages();
+            final var allStages = engine.getCatalog().getAllStages();
             System.out.println("Total stages: " + allStages.size());
             for (final Stage stage : allStages) {
                 System.out.println("  - " + stage.getName() + " (" + stage.getType() + ")");
@@ -225,13 +234,13 @@ public class StagesDemo extends AbstractDemo {
         // Print rows
         result.reset();
         while (result.next()) {
-            String name = (String) result.getValue("name");
-            Long size = (Long) result.getValue("size");
-            String md5 = (String) result.getValue("md5");
-            String lastModified = (String) result.getValue("last_modified");
+            final String name = (String) result.getValue("name");
+            final Long size = (Long) result.getValue("size");
+            final String md5 = (String) result.getValue("md5");
+            final String lastModified = (String) result.getValue("last_modified");
 
             // Truncate last_modified for display
-            String lastModifiedShort = lastModified.length() > 30 ?
+            final String lastModifiedShort = lastModified.length() > 30 ?
                 lastModified.substring(0, 27) + "..." : lastModified;
 
             System.out.printf("  %-30s %10d %10s %-30s%n",
@@ -242,8 +251,8 @@ public class StagesDemo extends AbstractDemo {
     private void cleanup(final Path dir) {
         try {
             // Collect paths and sort them (deepest first for deletion)
-            List<Path> paths = new ArrayList<>();
-            Iterator<Path> iterator = Files.walk(dir).iterator();
+            final List<Path> paths = new ArrayList<>();
+            final Iterator<Path> iterator = Files.walk(dir).iterator();
             while (iterator.hasNext()) {
                 paths.add(iterator.next());
             }

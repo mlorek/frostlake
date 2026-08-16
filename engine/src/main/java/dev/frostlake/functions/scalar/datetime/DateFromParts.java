@@ -33,12 +33,14 @@ public class DateFromParts extends BuiltInFunction {
                 return null;
             }
         }
-        int year  = ((Number) args.get(0)).intValue();
-        int month = ((Number) args.get(1)).intValue();
-        int day   = ((Number) args.get(2)).intValue();
+        final int year  = ((Number) args.get(0)).intValue();
+        final int month = ((Number) args.get(1)).intValue();
+        final int day   = ((Number) args.get(2)).intValue();
         return LocalDate.of(year, month, day);
     }
 
-    @Override public int getMinArgCount() { return 3; }
-    @Override public int getMaxArgCount() { return 3; }
+    @Override
+    public int getMinArgCount() { return 3; }
+    @Override
+    public int getMaxArgCount() { return 3; }
 }

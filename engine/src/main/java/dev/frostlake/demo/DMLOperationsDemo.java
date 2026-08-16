@@ -172,7 +172,7 @@ public class DMLOperationsDemo extends AbstractDemo {
             printSuccess("Transaction committed\n");
 
             System.out.println("=== 14. Transaction with ROLLBACK ===");
-            int beforeCount = getRowCount("employees");
+            final int beforeCount = getRowCount("employees");
             System.out.println("Employees before transaction: " + beforeCount);
 
             engine.beginTransaction();
@@ -182,7 +182,7 @@ public class DMLOperationsDemo extends AbstractDemo {
             engine.rollback();
             printSuccess("Transaction rolled back");
 
-            int afterCount = getRowCount("employees");
+            final int afterCount = getRowCount("employees");
             System.out.println("Employees after rollback: " + afterCount);
             printSuccess("All employees restored!\n");
 

@@ -37,10 +37,28 @@ public abstract class BuiltInFunction {
         return returnType;
     }
 
+    /**
+     * Computes the function's result over its already-evaluated argument values. A SQL NULL argument
+     * arrives as Java {@code null}, and returning {@code null} makes the SQL result NULL.
+     *
+     * @param args the argument values, in call order
+     * @return the function's value for these arguments, or {@code null} for SQL NULL
+     */
     public abstract Object evaluate(final List<Object> args);
 
+    /**
+     * The fewest arguments a call to this function may pass; fewer is an argument-count error.
+     *
+     * @return the minimum accepted argument count
+     */
     public abstract int getMinArgCount();
 
+    /**
+     * The most arguments a call to this function may pass; {@link Integer#MAX_VALUE} marks a variadic
+     * function (see {@link #isVariadic}).
+     *
+     * @return the maximum accepted argument count
+     */
     public abstract int getMaxArgCount();
 
     public boolean isVariadic() {
@@ -69,6 +87,9 @@ public abstract class BuiltInFunction {
      * <p>The default is {@code NONE}, meaning UNDECLARED rather than "accepts": a function that has
      * not been measured against live Snowflake constrains nothing. Answering for every position is
      * what {@link TextArgumentFunction} and {@link NumericArgumentFunction} exist for.
+     *
+     * @param position the zero-based argument position being asked about
+     * @return the refusal this position gives a semi-structured value, or {@code NONE} when undeclared
      */
     public SemiStructuredRejection semiStructuredRejection(final int position) {
         return SemiStructuredRejection.NONE;
@@ -96,6 +117,9 @@ public abstract class BuiltInFunction {
      * from the plain behaviour.
      *
      * <p>The default is {@code NONE} for the same reason as above: undeclared means unconstrained.
+     *
+     * @param position the zero-based argument position being asked about
+     * @return the extra refusal this position gives a structured value, or {@code NONE} when undeclared
      */
     public SemiStructuredRejection structuredRejection(final int position) {
         return SemiStructuredRejection.NONE;
@@ -129,6 +153,9 @@ public abstract class BuiltInFunction {
      * {@code MIN_BY}, {@code APPROX_COUNT_DISTINCT}, the conditionals, {@code JOIN … ON a.f = b.f} and
      * the set operators all take a FILE. Only {@code MAX} / {@code MIN} / {@code MODE} refuse it among
      * the aggregates that ORDER, and they say so with their own sentence.
+     *
+     * @param position the zero-based argument position being asked about
+     * @return the refusal this position gives a FILE value; by default, the semi-structured answer
      */
     public SemiStructuredRejection fileRejection(final int position) {
         return semiStructuredRejection(position);
@@ -171,10 +198,34 @@ public abstract class BuiltInFunction {
      *
      * <p>The default is {@code NONE} for an unmeasured function, for the same reason as the other
      * three: undeclared means unconstrained.
+     *
+     * @param position the zero-based argument position being asked about
+     * @return the refusal this position gives a GEOGRAPHY or GEOMETRY value; by default, the union of
+     *     the two semi-structured answers
      */
     public SemiStructuredRejection geoRejection(final int position) {
         final SemiStructuredRejection semiStructured = semiStructuredRejection(position);
         return semiStructured != SemiStructuredRejection.NONE ? semiStructured
             : structuredRejection(position);
+    }
+
+    /**
+     * The refusal a position gives a statically BINARY-typed value.
+     *
+     * <p>A fifth question rather than a reuse of any of the four above, because BINARY sits on the
+     * opposite side of them: it is a scalar a text function is happy to be handed almost everywhere —
+     * live answers {@code LENGTH(bn)}, {@code SUBSTR(bn, 1, 1)}, {@code CONCAT(bn, bn)} — where an
+     * OBJECT is refused. Only the functions that read their argument AS TEXT and would have to decode
+     * it refuse one, and they say so themselves: {@code VALIDATE_UTF8(bn)} and
+     * {@code TRY_VALIDATE_UTF8(bn)} are "Invalid argument types for function 'TRY_VALIDATE_UTF8':
+     * (BINARY(5))" while the same call over a VARCHAR, and even over a NUMBER, returns a value.
+     *
+     * <p>The default is {@code NONE}: undeclared means unconstrained, as for the other four.
+     *
+     * @param position the zero-based argument position being asked about
+     * @return the refusal this position gives a BINARY value; by default none
+     */
+    public SemiStructuredRejection binaryRejection(final int position) {
+        return SemiStructuredRejection.NONE;
     }
 }

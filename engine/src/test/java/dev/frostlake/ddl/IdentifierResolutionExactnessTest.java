@@ -56,7 +56,9 @@ public class IdentifierResolutionExactnessTest extends BaseDatabaseTest {
 
     /** A database, schema, table and column each created with a quoted, lower-case name. */
     private void mixedCaseObjects() {
-        engine.execute("CREATE DATABASE \"mixedDb\"");
+        // OR REPLACE, as BaseDatabaseTest does for test_db: this database lives OUTSIDE test_db,
+        // so the per-test recreate never clears it and a plain CREATE fails on every rerun.
+        engine.execute("CREATE OR REPLACE DATABASE \"mixedDb\"");
         engine.execute("USE DATABASE \"mixedDb\"");
         engine.execute("CREATE SCHEMA \"mixedSch\"");
         engine.execute("CREATE TABLE \"mixedSch\".\"mixedTbl\" (\"mixedCol\" INTEGER)");

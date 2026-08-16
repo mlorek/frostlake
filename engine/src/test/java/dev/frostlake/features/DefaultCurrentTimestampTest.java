@@ -16,174 +16,115 @@
 
 package dev.frostlake.features;
 
-import dev.frostlake.DatabaseEngine;
-import dev.frostlake.metastore.model.Table;
-import dev.frostlake.metastore.model.TableColumn;
+import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
-import org.junit.jupiter.api.AfterAll;
-import org.junit.jupiter.api.BeforeAll;
-import org.junit.jupiter.api.MethodOrderer;
-import org.junit.jupiter.api.Order;
+import dev.frostlake.storage.Row;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.TestInstance;
-import org.junit.jupiter.api.TestMethodOrder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
-import java.time.LocalDate;
-import java.time.LocalDateTime;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Tests for DEFAULT constraint with CURRENT_TIMESTAMP, CURRENT_DATE, and CURRENT_TIME functions
+ * The DEFAULT constraint with CURRENT_TIMESTAMP / CURRENT_DATE (with and without parentheses),
+ * asserted through the SQL surface — the {@code DESCRIBE TABLE} default cell plus the populated
+ * values themselves, read back with server-side predicates ({@code IS NOT NULL},
+ * {@code = CURRENT_DATE}) so the clock and time zone are the executing engine's own — so every
+ * check runs against whichever engine executed the DDL/DML, embedded or live.
  */
-@TestInstance(TestInstance.Lifecycle.PER_CLASS)
-@TestMethodOrder(MethodOrderer.OrderAnnotation.class)
-public class DefaultCurrentTimestampTest {
+public class DefaultCurrentTimestampTest extends BaseDatabaseTest {
     private static final Logger logger = LoggerFactory.getLogger(DefaultCurrentTimestampTest.class);
 
-    private DatabaseEngine engine;
-
-    @BeforeAll
-    public void setUp() {
-        engine = new DatabaseEngine();
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
-        logger.info("DatabaseEngine initialized for DEFAULT CURRENT_TIMESTAMP tests");
+    private long countOf(final String sql) {
+        return ((Number) engine.executeQuery(sql).getRows().get(0).getValue(0)).longValue();
     }
 
-    @AfterAll
-    public void tearDown() {
-        if (engine != null) {
-            engine.shutdown();
-        }
+    /** Asserts the column's DESCRIBE default cell carries this fragment of the declared expression. */
+    private void assertDefaultContains(final String table, final String column, final String fragment) {
+        final String cellText = describeCell(table, column, "default");
+        assertNotNull(cellText, column + " should carry a default");
+        assertTrue(cellText.toUpperCase().contains(fragment.toUpperCase()),
+            column + "'s default cell reads: " + cellText);
+    }
+
+    private void createTimestampsTable() {
+        engine.execute("CREATE TABLE test_timestamps (id INTEGER, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, name VARCHAR)");
     }
 
     @Test
-    @Order(1)
     public void testDefaultCurrentTimestamp() {
         logger.info("Testing DEFAULT CURRENT_TIMESTAMP");
-        engine.execute("CREATE TABLE test_timestamps (id INTEGER, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, name VARCHAR)");
+        createTimestampsTable();
 
-        Table table = engine.getCatalog().resolveTable("TEST_TIMESTAMPS");
-        assertNotNull(table);
-
-        TableColumn createdAtCol = table.getColumn("created_at");
-        assertNotNull(createdAtCol.getDefaultValue());
-        assertEquals("CURRENT_TIMESTAMP", createdAtCol.getDefaultValue());
+        assertDefaultContains("test_timestamps", "CREATED_AT", "CURRENT_TIMESTAMP");
     }
 
     @Test
-    @Order(2)
     public void testDefaultCurrentTimestampInsertion() {
         logger.info("Testing DEFAULT CURRENT_TIMESTAMP auto-populates on INSERT");
-        LocalDateTime before = LocalDateTime.now();
+        createTimestampsTable();
 
         engine.execute("INSERT INTO test_timestamps (id, name) VALUES (1, 'Alice')");
 
-        LocalDateTime after = LocalDateTime.now();
-
-        ResultSet rs = engine.executeQuery("SELECT * FROM test_timestamps WHERE id = 1");
-        assertNotNull(rs);
-        assertEquals(1, rs.getRowCount());
-
-        Object timestamp = rs.getRows().get(0).getValue(1);
-        assertNotNull(timestamp);
-        assertTrue(timestamp instanceof LocalDateTime);
-
-        LocalDateTime actualTime = (LocalDateTime) timestamp;
-        assertTrue(!actualTime.isBefore(before), "Timestamp should be >= before time");
-        assertTrue(!actualTime.isAfter(after), "Timestamp should be <= after time");
-
-        logger.info("Generated timestamp: {}", actualTime);
+        assertEquals(1L, countOf(
+            "SELECT COUNT(*) FROM test_timestamps WHERE id = 1 AND created_at IS NOT NULL"));
     }
 
     @Test
-    @Order(3)
     public void testDefaultCurrentTimestampMultipleInserts() {
-        logger.info("Testing DEFAULT CURRENT_TIMESTAMP generates different values");
+        logger.info("Testing DEFAULT CURRENT_TIMESTAMP populates every inserted row");
+        createTimestampsTable();
+
         engine.execute("INSERT INTO test_timestamps (id, name) VALUES (2, 'Bob')");
-
-        try {
-            Thread.sleep(10); // Small delay to ensure different timestamps
-        } catch (final InterruptedException e) {
-            // Ignore
-        }
-
         engine.execute("INSERT INTO test_timestamps (id, name) VALUES (3, 'Charlie')");
 
-        ResultSet rs = engine.executeQuery("SELECT * FROM test_timestamps WHERE id IN (2, 3) ORDER BY id");
-        assertEquals(2, rs.getRowCount());
-
-        LocalDateTime time1 = (LocalDateTime) rs.getRows().get(0).getValue(1);
-        LocalDateTime time2 = (LocalDateTime) rs.getRows().get(1).getValue(1);
-
-        assertNotNull(time1);
-        assertNotNull(time2);
-
-        logger.info("Time1: {}, Time2: {}", time1, time2);
+        assertEquals(2L, countOf(
+            "SELECT COUNT(*) FROM test_timestamps WHERE id IN (2, 3) AND created_at IS NOT NULL"));
     }
 
     @Test
-    @Order(4)
     public void testDefaultCurrentTimestampWithExplicitValue() {
         logger.info("Testing DEFAULT CURRENT_TIMESTAMP can be overridden with NULL");
+        createTimestampsTable();
 
         engine.execute("INSERT INTO test_timestamps (id, created_at, name) VALUES (4, NULL, 'Explicit')");
 
-        ResultSet rs = engine.executeQuery("SELECT * FROM test_timestamps WHERE id = 4");
-        assertEquals(1, rs.getRowCount());
-
-        Object timestamp = rs.getRows().get(0).getValue(1);
-        // Explicit NULL should override default
-        logger.info("Explicit timestamp (NULL): {}", timestamp);
+        // Explicit NULL overrides the default.
+        assertEquals(1L, countOf(
+            "SELECT COUNT(*) FROM test_timestamps WHERE id = 4 AND created_at IS NULL"));
     }
 
     @Test
-    @Order(5)
     public void testDefaultCurrentDate() {
         logger.info("Testing DEFAULT CURRENT_DATE");
         engine.execute("CREATE TABLE test_dates (id INTEGER, date_col DATE DEFAULT CURRENT_DATE, name VARCHAR)");
 
-        Table table = engine.getCatalog().resolveTable("TEST_DATES");
-        TableColumn dateCol = table.getColumn("date_col");
-        assertEquals("CURRENT_DATE", dateCol.getDefaultValue());
+        assertDefaultContains("test_dates", "DATE_COL", "CURRENT_DATE");
 
         engine.execute("INSERT INTO test_dates (id, name) VALUES (1, 'Test')");
 
-        ResultSet rs = engine.executeQuery("SELECT * FROM test_dates WHERE id = 1");
-        assertEquals(1, rs.getRowCount());
-
-        Object date = rs.getRows().get(0).getValue(1);
-        assertNotNull(date);
-        assertTrue(date instanceof LocalDate);
-
-        LocalDate actualDate = (LocalDate) date;
-        assertEquals(LocalDate.now(), actualDate);
-
-        logger.info("Generated date: {}", actualDate);
+        // Compared server-side, so the clock and time zone are the executing engine's own.
+        assertEquals(1L, countOf(
+            "SELECT COUNT(*) FROM test_dates WHERE id = 1 AND date_col = CURRENT_DATE"));
     }
 
     @Test
-    @Order(6)
     public void testDefaultLiteralValue() {
         logger.info("Testing DEFAULT with literal values still works");
         engine.execute("CREATE TABLE test_literals (id INTEGER, status VARCHAR DEFAULT 'ACTIVE', count INTEGER DEFAULT 0)");
 
         engine.execute("INSERT INTO test_literals (id) VALUES (1)");
 
-        ResultSet rs = engine.executeQuery("SELECT * FROM test_literals WHERE id = 1");
+        final ResultSet rs = engine.executeQuery("SELECT * FROM test_literals WHERE id = 1");
         assertEquals(1, rs.getRowCount());
-
-        assertEquals("ACTIVE", rs.getRows().get(0).getValue(1));
-        assertEquals(0L, rs.getRows().get(0).getValue(2));
+        final Row row = rs.getRows().get(0);
+        assertEquals("ACTIVE", cell(rs, row, "STATUS"));
+        assertEquals("0", cell(rs, row, "COUNT"));
     }
 
     @Test
-    @Order(7)
     public void testMultipleColumnsWithDefaults() {
         logger.info("Testing multiple columns with DEFAULT constraints");
         engine.execute("""
@@ -197,104 +138,61 @@ public class DefaultCurrentTimestampTest {
 
         engine.execute("INSERT INTO test_multi_defaults (id) VALUES (1)");
 
-        ResultSet rs = engine.executeQuery("SELECT * FROM test_multi_defaults WHERE id = 1");
-        assertEquals(1, rs.getRowCount());
-
-        assertNotNull(rs.getRows().get(0).getValue(1)); // created_at
-        assertNotNull(rs.getRows().get(0).getValue(2)); // updated_at
-        assertEquals("NEW", rs.getRows().get(0).getValue(3)); // status
+        assertEquals(1L, countOf("""
+            SELECT COUNT(*) FROM test_multi_defaults
+            WHERE id = 1 AND created_at IS NOT NULL AND updated_at IS NOT NULL AND status = 'NEW'
+            """));
     }
 
     @Test
-    @Order(8)
     public void testDefaultWithColumnList() {
         logger.info("Testing DEFAULT CURRENT_TIMESTAMP with explicit column list");
+        createTimestampsTable();
+
         engine.execute("INSERT INTO test_timestamps (name, id) VALUES ('ColumnTest', 10)");
 
-        ResultSet rs = engine.executeQuery("SELECT * FROM test_timestamps WHERE id = 10");
-        assertEquals(1, rs.getRowCount());
-
-        Object timestamp = rs.getRows().get(0).getValue(1);
-        assertNotNull(timestamp);
-        assertTrue(timestamp instanceof LocalDateTime);
+        assertEquals(1L, countOf(
+            "SELECT COUNT(*) FROM test_timestamps WHERE id = 10 AND created_at IS NOT NULL"));
     }
 
     @Test
-    @Order(9)
     public void testDefaultWithMultipleValues() {
         logger.info("Testing DEFAULT CURRENT_TIMESTAMP with multiple VALUES");
+        createTimestampsTable();
+
         engine.execute("INSERT INTO test_timestamps (id, name) VALUES (20, 'Multi1'), (21, 'Multi2'), (22, 'Multi3')");
 
-        ResultSet rs = engine.executeQuery("SELECT * FROM test_timestamps WHERE id >= 20 ORDER BY id");
-        assertEquals(3, rs.getRowCount());
-
-        // All should have timestamps
-        for (int i = 0; i < 3; i++) {
-            Object timestamp = rs.getRows().get(i).getValue(1);
-            assertNotNull(timestamp);
-            assertTrue(timestamp instanceof LocalDateTime);
-        }
+        assertEquals(3L, countOf(
+            "SELECT COUNT(*) FROM test_timestamps WHERE id >= 20 AND created_at IS NOT NULL"));
     }
 
     @Test
-    @Order(10)
     public void testDefaultCurrentTimestampWithParentheses() {
         logger.info("Testing DEFAULT CURRENT_TIMESTAMP()");
         engine.execute("CREATE TABLE test_timestamps_paren (id INTEGER, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP(), name VARCHAR)");
 
-        Table table = engine.getCatalog().resolveTable("TEST_TIMESTAMPS_PAREN");
-        assertNotNull(table);
+        assertDefaultContains("test_timestamps_paren", "CREATED_AT", "CURRENT_TIMESTAMP");
 
-        TableColumn createdAtCol = table.getColumn("created_at");
-        assertNotNull(createdAtCol.getDefaultValue());
-        assertEquals("CURRENT_TIMESTAMP", createdAtCol.getDefaultValue());
-
-        LocalDateTime before = LocalDateTime.now();
         engine.execute("INSERT INTO test_timestamps_paren (id, name) VALUES (1, 'ParenTest')");
-        LocalDateTime after = LocalDateTime.now();
 
-        ResultSet rs = engine.executeQuery("SELECT * FROM test_timestamps_paren WHERE id = 1");
-        assertNotNull(rs);
-        assertEquals(1, rs.getRowCount());
-
-        Object timestamp = rs.getRows().get(0).getValue(1);
-        assertNotNull(timestamp);
-        assertTrue(timestamp instanceof LocalDateTime);
-
-        LocalDateTime actualTime = (LocalDateTime) timestamp;
-        assertTrue(!actualTime.isBefore(before), "Timestamp should be >= before time");
-        assertTrue(!actualTime.isAfter(after), "Timestamp should be <= after time");
-
-        logger.info("Generated timestamp with parentheses: {}", actualTime);
+        assertEquals(1L, countOf(
+            "SELECT COUNT(*) FROM test_timestamps_paren WHERE id = 1 AND created_at IS NOT NULL"));
     }
 
     @Test
-    @Order(11)
     public void testDefaultCurrentDateWithParentheses() {
         logger.info("Testing DEFAULT CURRENT_DATE()");
         engine.execute("CREATE TABLE test_dates_paren (id INTEGER, date_col DATE DEFAULT CURRENT_DATE(), name VARCHAR)");
 
-        Table table = engine.getCatalog().resolveTable("TEST_DATES_PAREN");
-        TableColumn dateCol = table.getColumn("date_col");
-        assertEquals("CURRENT_DATE", dateCol.getDefaultValue());
+        assertDefaultContains("test_dates_paren", "DATE_COL", "CURRENT_DATE");
 
         engine.execute("INSERT INTO test_dates_paren (id, name) VALUES (1, 'Test')");
 
-        ResultSet rs = engine.executeQuery("SELECT * FROM test_dates_paren WHERE id = 1");
-        assertEquals(1, rs.getRowCount());
-
-        Object date = rs.getRows().get(0).getValue(1);
-        assertNotNull(date);
-        assertTrue(date instanceof LocalDate);
-
-        LocalDate actualDate = (LocalDate) date;
-        assertEquals(LocalDate.now(), actualDate);
-
-        logger.info("Generated date with parentheses: {}", actualDate);
+        assertEquals(1L, countOf(
+            "SELECT COUNT(*) FROM test_dates_paren WHERE id = 1 AND date_col = CURRENT_DATE"));
     }
 
     @Test
-    @Order(12)
     public void testMixedParenthesesSyntax() {
         logger.info("Testing mixed DEFAULT syntax with and without parentheses");
         engine.execute("""
@@ -307,23 +205,18 @@ public class DefaultCurrentTimestampTest {
             )
             """);
 
-        Table table = engine.getCatalog().resolveTable("TEST_MIXED_SYNTAX");
-        assertNotNull(table);
-
-        assertEquals("CURRENT_TIMESTAMP", table.getColumn("ts_no_paren").getDefaultValue());
-        assertEquals("CURRENT_TIMESTAMP", table.getColumn("ts_with_paren").getDefaultValue());
-        assertEquals("CURRENT_DATE", table.getColumn("date_no_paren").getDefaultValue());
-        assertEquals("CURRENT_DATE", table.getColumn("date_with_paren").getDefaultValue());
+        assertDefaultContains("test_mixed_syntax", "TS_NO_PAREN", "CURRENT_TIMESTAMP");
+        assertDefaultContains("test_mixed_syntax", "TS_WITH_PAREN", "CURRENT_TIMESTAMP");
+        assertDefaultContains("test_mixed_syntax", "DATE_NO_PAREN", "CURRENT_DATE");
+        assertDefaultContains("test_mixed_syntax", "DATE_WITH_PAREN", "CURRENT_DATE");
 
         engine.execute("INSERT INTO test_mixed_syntax (id) VALUES (1)");
 
-        ResultSet rs = engine.executeQuery("SELECT * FROM test_mixed_syntax WHERE id = 1");
-        assertEquals(1, rs.getRowCount());
-
-        assertNotNull(rs.getRows().get(0).getValue(1)); // ts_no_paren
-        assertNotNull(rs.getRows().get(0).getValue(2)); // ts_with_paren
-        assertNotNull(rs.getRows().get(0).getValue(3)); // date_no_paren
-        assertNotNull(rs.getRows().get(0).getValue(4)); // date_with_paren
+        assertEquals(1L, countOf("""
+            SELECT COUNT(*) FROM test_mixed_syntax
+            WHERE id = 1 AND ts_no_paren IS NOT NULL AND ts_with_paren IS NOT NULL
+              AND date_no_paren IS NOT NULL AND date_with_paren IS NOT NULL
+            """));
 
         logger.info("Both syntax forms work correctly");
     }

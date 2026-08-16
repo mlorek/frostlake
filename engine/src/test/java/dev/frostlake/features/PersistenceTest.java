@@ -19,17 +19,18 @@ package dev.frostlake.features;
 import dev.frostlake.DatabaseEngine;
 import dev.frostlake.config.EngineConfig;
 import dev.frostlake.storage.ResultSet;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
-
 import java.io.IOException;
+import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.util.Comparator;
-
-import static org.junit.jupiter.api.Assertions.*;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Tests for data persistence functionality
@@ -57,24 +58,32 @@ public class PersistenceTest {
     }
 
     private void cleanupTestData() throws IOException {
-        Path dataDir = Paths.get(TEST_DATA_DIR);
+        final Path dataDir = Paths.get(TEST_DATA_DIR);
         if (Files.exists(dataDir)) {
-            Files.walk(dataDir)
-                .sorted(Comparator.reverseOrder())
-                .forEach((final var path) -> {
-                    try {
-                        Files.delete(path);
-                    } catch (final IOException e) {
-                        // Ignore
-                    }
-                });
+            deleteRecursively(dataDir);
+        }
+    }
+
+    /** Depth-first delete: children before the directory that holds them. */
+    private void deleteRecursively(final Path path) throws IOException {
+        if (Files.isDirectory(path)) {
+            try (DirectoryStream<Path> children = Files.newDirectoryStream(path)) {
+                for (final Path child : children) {
+                    deleteRecursively(child);
+                }
+            }
+        }
+        try {
+            Files.delete(path);
+        } catch (final IOException e) {
+            // Ignore
         }
     }
 
     @Test
     public void testBasicPersistence() {
         // Create engine and add some data
-        DatabaseEngine engine1 = new DatabaseEngine(config);
+        final DatabaseEngine engine1 = new DatabaseEngine(config);
         engine1.execute("CREATE DATABASE test_db");
         engine1.execute("USE DATABASE test_db");
         engine1.execute("CREATE TABLE users (id INTEGER, name VARCHAR)");
@@ -83,9 +92,9 @@ public class PersistenceTest {
         engine1.shutdown();
 
         // Create new engine instance and verify data is loaded
-        DatabaseEngine engine2 = new DatabaseEngine(config);
+        final DatabaseEngine engine2 = new DatabaseEngine(config);
         engine2.execute("USE DATABASE test_db");
-        ResultSet result = engine2.executeQuery("SELECT * FROM users ORDER BY id");
+        final ResultSet result = engine2.executeQuery("SELECT * FROM users ORDER BY id");
 
         assertEquals(2, result.getRowCount());
         assertTrue(result.next());
@@ -100,7 +109,7 @@ public class PersistenceTest {
 
     @Test
     public void testPersistMultipleTables() {
-        DatabaseEngine engine1 = new DatabaseEngine(config);
+        final DatabaseEngine engine1 = new DatabaseEngine(config);
         engine1.execute("CREATE DATABASE test_db");
         engine1.execute("USE DATABASE test_db");
 
@@ -114,13 +123,13 @@ public class PersistenceTest {
         engine1.shutdown();
 
         // Reload and verify both tables
-        DatabaseEngine engine2 = new DatabaseEngine(config);
+        final DatabaseEngine engine2 = new DatabaseEngine(config);
         engine2.execute("USE DATABASE test_db");
 
-        ResultSet users = engine2.executeQuery("SELECT * FROM users ORDER BY id");
+        final ResultSet users = engine2.executeQuery("SELECT * FROM users ORDER BY id");
         assertEquals(2, users.getRowCount());
 
-        ResultSet orders = engine2.executeQuery("SELECT * FROM orders ORDER BY order_id");
+        final ResultSet orders = engine2.executeQuery("SELECT * FROM orders ORDER BY order_id");
         assertEquals(2, orders.getRowCount());
 
         engine2.shutdown();
@@ -128,7 +137,7 @@ public class PersistenceTest {
 
     @Test
     public void testPersistViews() {
-        DatabaseEngine engine1 = new DatabaseEngine(config);
+        final DatabaseEngine engine1 = new DatabaseEngine(config);
         engine1.execute("CREATE DATABASE test_db");
         engine1.execute("USE DATABASE test_db");
         engine1.execute("CREATE TABLE users (id INTEGER, name VARCHAR, age INTEGER)");
@@ -137,13 +146,13 @@ public class PersistenceTest {
         engine1.shutdown();
 
         // Reload and verify view exists and works
-        DatabaseEngine engine2 = new DatabaseEngine(config);
+        final DatabaseEngine engine2 = new DatabaseEngine(config);
         engine2.execute("USE DATABASE test_db");
 
-        ResultSet views = engine2.executeQuery("SHOW VIEWS");
+        final ResultSet views = engine2.executeQuery("SHOW VIEWS");
         boolean foundView = false;
         while (views.next()) {
-            String viewName = (String) views.getValue("name");
+            final String viewName = (String) views.getValue("name");
             if ("ADULT_USERS".equalsIgnoreCase(viewName)) {
                 foundView = true;
                 break;
@@ -151,7 +160,7 @@ public class PersistenceTest {
         }
         assertTrue(foundView, "View ADULT_USERS should be persisted");
 
-        ResultSet result = engine2.executeQuery("SELECT * FROM adult_users ORDER BY id");
+        final ResultSet result = engine2.executeQuery("SELECT * FROM adult_users ORDER BY id");
         assertEquals(2, result.getRowCount());
 
         engine2.shutdown();
@@ -159,19 +168,19 @@ public class PersistenceTest {
 
     @Test
     public void testPersistWarehouses() {
-        DatabaseEngine engine1 = new DatabaseEngine(config);
+        final DatabaseEngine engine1 = new DatabaseEngine(config);
         engine1.execute("CREATE WAREHOUSE test_wh WITH WAREHOUSE_SIZE = 'MEDIUM'");
 
         engine1.shutdown();
 
         // Reload and verify warehouse exists
-        DatabaseEngine engine2 = new DatabaseEngine(config);
-        ResultSet warehouses = engine2.executeQuery("SHOW WAREHOUSES");
+        final DatabaseEngine engine2 = new DatabaseEngine(config);
+        final ResultSet warehouses = engine2.executeQuery("SHOW WAREHOUSES");
 
         boolean foundTestWh = false;
         boolean foundComputeWh = false;
         while (warehouses.next()) {
-            String whName = (String) warehouses.getValue("name");
+            final String whName = (String) warehouses.getValue("name");
             if ("TEST_WH".equalsIgnoreCase(whName)) {
                 foundTestWh = true;
                 // SHOW WAREHOUSES spells the size the way live displays it, not as the keyword.
@@ -189,16 +198,16 @@ public class PersistenceTest {
 
     @Test
     public void testPersistUsersAndRoles() {
-        DatabaseEngine engine1 = new DatabaseEngine(config);
+        final DatabaseEngine engine1 = new DatabaseEngine(config);
         engine1.execute("CREATE USER alice PASSWORD = 'pass123'");
         engine1.execute("CREATE ROLE analyst");
         engine1.execute("GRANT ROLE analyst TO USER alice");
         engine1.shutdown();
 
         // Reload and verify user and role exist
-        DatabaseEngine engine2 = new DatabaseEngine(config);
+        final DatabaseEngine engine2 = new DatabaseEngine(config);
 
-        ResultSet users = engine2.executeQuery("SHOW USERS");
+        final ResultSet users = engine2.executeQuery("SHOW USERS");
         boolean foundAlice = false;
         while (users.next()) {
             if ("ALICE".equals(users.getValue("name"))) {
@@ -208,7 +217,7 @@ public class PersistenceTest {
         }
         assertTrue(foundAlice, "User alice should be persisted");
 
-        ResultSet roles = engine2.executeQuery("SHOW ROLES");
+        final ResultSet roles = engine2.executeQuery("SHOW ROLES");
         boolean foundAnalyst = false;
         while (roles.next()) {
             if ("ANALYST".equals(roles.getValue("name"))) {
@@ -224,10 +233,10 @@ public class PersistenceTest {
     @Test
     public void testPersistenceDisabled() {
         // Create config with persistence disabled
-        EngineConfig disabledConfig = new EngineConfig();
+        final EngineConfig disabledConfig = new EngineConfig();
         disabledConfig.setProperty(EngineConfig.PROP_PERSISTENCE_ENABLED, "false");
 
-        DatabaseEngine engine1 = new DatabaseEngine(disabledConfig);
+        final DatabaseEngine engine1 = new DatabaseEngine(disabledConfig);
         engine1.execute("CREATE DATABASE test_db");
         engine1.execute("USE DATABASE test_db");
         engine1.execute("CREATE TABLE users (id INTEGER, name VARCHAR)");
@@ -235,9 +244,13 @@ public class PersistenceTest {
         engine1.shutdown();
 
         // Create new engine - should not have the data
-        DatabaseEngine engine2 = new DatabaseEngine(disabledConfig);
-        RuntimeException exception = assertThrows(RuntimeException.class, () -> {
-            engine2.execute("USE DATABASE test_db");
+        final DatabaseEngine engine2 = new DatabaseEngine(disabledConfig);
+        final RuntimeException exception = assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                engine2.execute("USE DATABASE test_db");
+                
+            }
         });
         assertTrue(exception.getMessage().contains("Database 'TEST_DB' does not exist or not authorized."));
 
@@ -246,13 +259,13 @@ public class PersistenceTest {
 
     @Test
     public void testPersistEmptyDatabase() {
-        DatabaseEngine engine1 = new DatabaseEngine(config);
+        final DatabaseEngine engine1 = new DatabaseEngine(config);
         engine1.execute("CREATE DATABASE empty_db");
         engine1.shutdown();
 
         // Reload and verify empty database exists
-        DatabaseEngine engine2 = new DatabaseEngine(config);
-        ResultSet databases = engine2.executeQuery("SHOW DATABASES");
+        final DatabaseEngine engine2 = new DatabaseEngine(config);
+        final ResultSet databases = engine2.executeQuery("SHOW DATABASES");
 
         boolean foundEmptyDb = false;
         while (databases.next()) {
@@ -268,7 +281,7 @@ public class PersistenceTest {
 
     @Test
     public void testPersistComplexDataTypes() {
-        DatabaseEngine engine1 = new DatabaseEngine(config);
+        final DatabaseEngine engine1 = new DatabaseEngine(config);
         engine1.execute("CREATE DATABASE test_db");
         engine1.execute("USE DATABASE test_db");
         engine1.execute("""
@@ -284,9 +297,9 @@ public class PersistenceTest {
         engine1.shutdown();
 
         // Reload and verify all data types
-        DatabaseEngine engine2 = new DatabaseEngine(config);
+        final DatabaseEngine engine2 = new DatabaseEngine(config);
         engine2.execute("USE DATABASE test_db");
-        ResultSet result = engine2.executeQuery("SELECT * FROM test_types");
+        final ResultSet result = engine2.executeQuery("SELECT * FROM test_types");
 
         assertTrue(result.next());
         assertEquals(42L, result.getValue("col_int"));
@@ -302,7 +315,7 @@ public class PersistenceTest {
 
     @Test
     public void testUpdatePersistedData() {
-        DatabaseEngine engine1 = new DatabaseEngine(config);
+        final DatabaseEngine engine1 = new DatabaseEngine(config);
         engine1.execute("CREATE DATABASE test_db");
         engine1.execute("USE DATABASE test_db");
         engine1.execute("CREATE TABLE users (id INTEGER, name VARCHAR)");
@@ -310,16 +323,16 @@ public class PersistenceTest {
         engine1.shutdown();
 
         // Reload, modify data, and save again
-        DatabaseEngine engine2 = new DatabaseEngine(config);
+        final DatabaseEngine engine2 = new DatabaseEngine(config);
         engine2.execute("USE DATABASE test_db");
         engine2.execute("INSERT INTO users VALUES (2, 'Bob')");
         engine2.execute("UPDATE users SET name = 'Alicia' WHERE id = 1");
         engine2.shutdown();
 
         // Reload again and verify modifications
-        DatabaseEngine engine3 = new DatabaseEngine(config);
+        final DatabaseEngine engine3 = new DatabaseEngine(config);
         engine3.execute("USE DATABASE test_db");
-        ResultSet result = engine3.executeQuery("SELECT * FROM users ORDER BY id");
+        final ResultSet result = engine3.executeQuery("SELECT * FROM users ORDER BY id");
 
         assertEquals(2, result.getRowCount());
         assertTrue(result.next());

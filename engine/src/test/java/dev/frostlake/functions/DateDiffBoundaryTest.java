@@ -16,9 +16,7 @@
 
 package dev.frostlake.functions;
 
-import dev.frostlake.DatabaseEngine;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
+import dev.frostlake.BaseDatabaseTest;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -28,22 +26,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
  * operands are truncated to the unit before differencing, so 23:00 to 01:00 the next day is one DAY
  * even though only two hours elapsed.
  */
-public class DateDiffBoundaryTest {
-
-    private DatabaseEngine engine;
-
-    @BeforeEach
-    public void setUp() {
-        engine = new DatabaseEngine();
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
-        engine.execute("USE SCHEMA public");
-    }
-
-    @AfterEach
-    public void tearDown() {
-        if (engine != null) engine.shutdown();
-    }
+public class DateDiffBoundaryTest extends BaseDatabaseTest {
 
     private long ql(final String sql) {
         return ((Number) engine.executeQuery(sql).getRows().get(0).getValue(0)).longValue();

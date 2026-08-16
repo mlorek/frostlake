@@ -34,15 +34,9 @@ public final class ParseTreeText {
     private ParseTreeText() {
     }
 
-    /** Get the effective whereClause from a selectClause (handles the list produced by the grammar). */
+    /** Get the whereClause of a selectClause, or null when absent. */
     public static FrostlakeParser.WhereClauseContext getWhereClause(final FrostlakeParser.SelectClauseContext ctx) {
-        List<FrostlakeParser.WhereClauseContext> list = ctx.whereClause();
-        if (list == null || list.isEmpty()) return null;
-        // Prefer the first non-null entry
-        for (final FrostlakeParser.WhereClauseContext wc : list) {
-            if (wc != null) return wc;
-        }
-        return null;
+        return ctx.whereClause();
     }
 
     /** Extract SelectClauseContext from a selectOperand (bare or parenthesised). */
@@ -53,7 +47,7 @@ public final class ParseTreeText {
 
     /** Collect all top-level SelectClauseContexts from selectOperands (non-parenthesised ones). */
     public static List<FrostlakeParser.SelectClauseContext> getSelectClauses(final FrostlakeParser.SelectStatementContext ctx) {
-        List<FrostlakeParser.SelectClauseContext> result = new ArrayList<>();
+        final List<FrostlakeParser.SelectClauseContext> result = new ArrayList<>();
         for (final FrostlakeParser.SelectOperandContext op : ctx.selectOperand()) {
             if (op.selectClause() != null) result.add(op.selectClause());
         }
@@ -62,6 +56,15 @@ public final class ParseTreeText {
 
     public static String getIdentifier(final FrostlakeParser.IdentifierContext ctx) {
         return SqlIdentifiers.canonical(ctx);
+    }
+
+    /** The canonical text of an ALIAS, which may be an ordinary identifier or one of the words legal
+     *  only in a name position (CASE, CAST, CONSTRAINT, CROSS, DEFAULT, INNER, JOIN, WHEN). The
+     *  keyword form is unquoted by construction, so it upper-cases directly — the same split
+     *  {@link #namePartText} makes. */
+    public static String getIdentifier(final FrostlakeParser.AliasNameContext ctx) {
+        return ctx.identifier() != null ? getIdentifier(ctx.identifier())
+            : ctx.getText().toUpperCase();
     }
 
     public static String getQualifiedName(final FrostlakeParser.QualifiedNameContext ctx) {
@@ -78,6 +81,12 @@ public final class ParseTreeText {
 
     /** See {@link #namePartText(FrostlakeParser.NameStartPartContext)} — the after-dot flavour. */
     public static String namePartText(final FrostlakeParser.NamePartContext part) {
+        return part.columnDefName() != null ? namePartText(part.columnDefName())
+            : part.getText().toUpperCase();
+    }
+
+    /** The COLUMN-DEFINITION flavour — the same vocabulary less CONSTRAINT, which leads a constraint. */
+    public static String namePartText(final FrostlakeParser.ColumnDefNameContext part) {
         return part.identifier() != null ? getIdentifier(part.identifier())
             : part.getText().toUpperCase();
     }
@@ -86,7 +95,7 @@ public final class ParseTreeText {
     public static String[] qualifiedNameParts(final FrostlakeParser.TableQualifiedNameContext ctx) {
         final List<FrostlakeParser.NamePartContext> rest = ctx.namePart();
         final String[] parts = new String[1 + rest.size()];
-        parts[0] = getIdentifier(ctx.identifier());
+        parts[0] = namePartText(ctx.nameStartPart());
         for (int i = 0; i < rest.size(); i++) {
             parts[1 + i] = namePartText(rest.get(i));
         }
@@ -95,6 +104,22 @@ public final class ParseTreeText {
 
     /** The FROM-position flavour of {@link #getQualifiedName}. */
     public static String getQualifiedName(final FrostlakeParser.TableQualifiedNameContext ctx) {
+        return String.join(".", qualifiedNameParts(ctx));
+    }
+
+    /** The {@code <name>.*} flavour: a {@code starQualifiedName}'s parts. */
+    public static String[] qualifiedNameParts(final FrostlakeParser.StarQualifiedNameContext ctx) {
+        final List<FrostlakeParser.NamePartContext> rest = ctx.namePart();
+        final String[] parts = new String[1 + rest.size()];
+        parts[0] = namePartText(ctx.nameStartPart());
+        for (int i = 0; i < rest.size(); i++) {
+            parts[1 + i] = namePartText(rest.get(i));
+        }
+        return parts;
+    }
+
+    /** The {@code <name>.*} flavour of {@link #getQualifiedName}. */
+    public static String getQualifiedName(final FrostlakeParser.StarQualifiedNameContext ctx) {
         return String.join(".", qualifiedNameParts(ctx));
     }
 
@@ -142,7 +167,7 @@ public final class ParseTreeText {
     }
 
     public static String getIdentifier(final TerminalNode node) {
-        String text = node.getText();
+        final String text = node.getText();
         if (text.startsWith("\"") && text.endsWith("\"")) {
             return text.substring(1, text.length() - 1);
         }
@@ -160,7 +185,7 @@ public final class ParseTreeText {
         } else if (ctx.FLOAT_LITERAL() != null) {
             return Double.parseDouble(ctx.FLOAT_LITERAL().getText());
         } else if (ctx.STRING_LITERAL() != null) {
-            String text = ctx.STRING_LITERAL().getText();
+            final String text = ctx.STRING_LITERAL().getText();
             return text.substring(1, text.length() - 1);
         } else if (ctx.TRUE() != null) {
             return true;

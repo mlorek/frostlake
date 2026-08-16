@@ -20,16 +20,28 @@ import dev.frostlake.executor.ParseTreeText;
 import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.udf.RoutineImports;
-import dev.frostlake.metastore.*;
-import dev.frostlake.metastore.model.*;
+import dev.frostlake.executor.udf.TemporaryObjectStatements;
+import dev.frostlake.metastore.Catalog;
+import dev.frostlake.metastore.model.ContainerType;
+import dev.frostlake.metastore.model.Function;
+import dev.frostlake.metastore.model.Parameter;
+import dev.frostlake.metastore.model.Privilege;
+import dev.frostlake.metastore.model.Procedure;
+import dev.frostlake.metastore.model.Schema;
+import dev.frostlake.metastore.model.UdfLanguage;
 import dev.frostlake.parser.FrostlakeParser;
-import dev.frostlake.types.*;
+import dev.frostlake.types.DataType;
+import dev.frostlake.types.StringType;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import org.antlr.v4.runtime.Token;
+
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 
 /**
@@ -72,9 +84,9 @@ public class CreateRoutineHandler implements CommandHandler {
     }
 
     public Object handleCreateFunction(final FrostlakeParser.CreateStatementContext ctx, final boolean ifNotExists) {
-        String qualifiedName = getText(ctx.qualifiedName(0));
-        String[] parts = qualifiedNameParts(ctx.qualifiedName(0));
-        boolean orReplace = ctx.or_replace() != null;
+        final String qualifiedName = getText(ctx.qualifiedName(0));
+        final String[] parts = qualifiedNameParts(ctx.qualifiedName(0));
+        final boolean orReplace = ctx.or_replace() != null;
 
         // Compile the body first, as Snowflake does: a SQL UDF whose body does not parse is rejected at CREATE
         // time. Deliberately OUTSIDE the try below — a compilation error is not an "already exists" condition
@@ -85,8 +97,8 @@ public class CreateRoutineHandler implements CommandHandler {
             parts[parts.length - 1]);
 
         try {
-            Schema schema;
-            String functionName;
+            final Schema schema;
+            final String functionName;
 
             if (parts.length == 1) {
                 schema = ddl.resolveCurrentSchema();
@@ -107,7 +119,7 @@ public class CreateRoutineHandler implements CommandHandler {
             ddl.checkCreatePrivilege(Privilege.CREATE_FUNCTION, ContainerType.SCHEMA, schema.getName());
 
             // Parse parameters first
-            List<Parameter> parameters = new ArrayList<>();
+            final List<Parameter> parameters = new ArrayList<>();
             if (ctx.parameterList() != null) {
                 for (final FrostlakeParser.ParameterDefContext paramCtx : ctx.parameterList().parameterDef()) {
                     parameters.add(columnParser.parseParameterDef(paramCtx));
@@ -117,7 +129,7 @@ public class CreateRoutineHandler implements CommandHandler {
             // Handle OR REPLACE - drop specific overload with matching signature
             if (orReplace) {
                 try {
-                    List<DataType> argumentTypes = new ArrayList<>();
+                    final List<DataType> argumentTypes = new ArrayList<>();
                     for (final Parameter param : parameters) {
                         argumentTypes.add(param.getDataType());
                     }
@@ -130,8 +142,8 @@ public class CreateRoutineHandler implements CommandHandler {
             }
 
             boolean isTableFunction = false;
-            DataType returnType;
-            List<Parameter> returnColumns = new ArrayList<>();
+            final DataType returnType;
+            final List<Parameter> returnColumns = new ArrayList<>();
             if (ctx.returnType() == null) {
                 throw new RuntimeException("RETURNS clause is required for CREATE FUNCTION");
             } else if (ctx.returnType().TABLE() != null) {
@@ -140,8 +152,8 @@ public class CreateRoutineHandler implements CommandHandler {
                 if (ctx.returnType().columnList() != null) {
                     for (final FrostlakeParser.ColumnOrConstraintContext colCtx : ctx.returnType().columnList().columnOrConstraint()) {
                         if (colCtx.columnDef() != null) {
-                            String colName = ParseTreeText.namePartText(colCtx.columnDef().namePart()).toUpperCase();
-                            DataType colType = columnParser.parseDataType(colCtx.columnDef().dataTypeName(), colCtx.columnDef().typeParameters());
+                            final String colName = ParseTreeText.namePartText(colCtx.columnDef().columnDefName()).toUpperCase();
+                            final DataType colType = columnParser.parseDataType(colCtx.columnDef().dataTypeName(), colCtx.columnDef().typeParameters());
                             returnColumns.add(new Parameter(colName, colType));
                         }
                     }
@@ -152,7 +164,7 @@ public class CreateRoutineHandler implements CommandHandler {
                 throw new RuntimeException("Invalid return type in CREATE FUNCTION");
             }
 
-            String body = ctx.bodyDefinition() != null ? ddl.extractBodyDefinition(ctx.bodyDefinition()) : null;
+            final String body = ctx.bodyDefinition() != null ? ddl.extractBodyDefinition(ctx.bodyDefinition()) : null;
 
             // Extract options — order-independent via functionOption*
             String language = "SQL";
@@ -161,7 +173,8 @@ public class CreateRoutineHandler implements CommandHandler {
             String nullHandling = "CALLED ON NULL INPUT";
             String volatility = "VOLATILE";
             String comment = null;
-            List<String> imports = new ArrayList<>();
+            final List<String> imports = new ArrayList<>();
+            rejectRepeatedFunctionOptions(ctx.functionOption());
             for (final FrostlakeParser.FunctionOptionContext opt : ctx.functionOption()) {
                 if (opt.languageClause() != null) {
                     language = languageOf(opt.languageClause()).name();
@@ -170,7 +183,7 @@ public class CreateRoutineHandler implements CommandHandler {
                 } else if (opt.runtimeVersionClause() != null) {
                     runtimeVersion = ddl.extractRuntimeVersion(opt.runtimeVersionClause());
                 } else if (opt.nullHandlingClause() != null) {
-                    FrostlakeParser.NullHandlingClauseContext nhCtx = opt.nullHandlingClause();
+                    final FrostlakeParser.NullHandlingClauseContext nhCtx = opt.nullHandlingClause();
                     if (nhCtx.STRICT() != null) nullHandling = "STRICT";
                     else if (nhCtx.CALLED() != null) nullHandling = "CALLED ON NULL INPUT";
                     else nullHandling = "RETURNS NULL ON NULL INPUT";
@@ -187,9 +200,14 @@ public class CreateRoutineHandler implements CommandHandler {
 
             validateRoutineProperties(language, runtimeVersion, handler);
 
-            Function function = new Function(functionName, parameters, returnType, returnColumns, body, isTableFunction, language, handler, runtimeVersion);
+            // The declared-vs-actual return-type check runs at CREATE, like the body compile above.
+            RoutineReturnTypeChecker.checkScalarSqlUdf(queryExecutor, catalog, language,
+                isTableFunction, returnType, parameters, body);
+
+            final Function function = new Function(functionName, parameters, returnType, returnColumns, body, isTableFunction, language, handler, runtimeVersion);
 
             if (ctx.SECURE() != null) function.setSecure(true);
+            function.setTemporary(TemporaryObjectStatements.isTemporary(ctx));
             function.setNullHandling(nullHandling);
             function.setVolatility(volatility);
             if (!imports.isEmpty()) function.setImports(imports);
@@ -213,9 +231,9 @@ public class CreateRoutineHandler implements CommandHandler {
     }
 
     public Object handleCreateProcedure(final FrostlakeParser.CreateStatementContext ctx, final boolean ifNotExists) {
-        String qualifiedName = getText(ctx.qualifiedName(0));
-        String[] parts = qualifiedNameParts(ctx.qualifiedName(0));
-        boolean orReplace = ctx.or_replace() != null;
+        final String qualifiedName = getText(ctx.qualifiedName(0));
+        final String[] parts = qualifiedNameParts(ctx.qualifiedName(0));
+        final boolean orReplace = ctx.or_replace() != null;
 
         // Compile the body first, as Snowflake does: a LANGUAGE SQL procedure whose body is not a scripting
         // block is rejected at CREATE time. Deliberately OUTSIDE the try below — a compilation error is not an
@@ -224,8 +242,8 @@ public class CreateRoutineHandler implements CommandHandler {
             ctx.bodyDefinition() != null ? ddl.extractBodyDefinition(ctx.bodyDefinition()) : null);
 
         try {
-            Schema schema;
-            String procedureName;
+            final Schema schema;
+            final String procedureName;
 
             if (parts.length == 1) {
                 schema = ddl.resolveCurrentSchema();
@@ -246,7 +264,7 @@ public class CreateRoutineHandler implements CommandHandler {
             ddl.checkCreatePrivilege(Privilege.CREATE_PROCEDURE, ContainerType.SCHEMA, schema.getName());
 
             // Parse parameters first
-            List<Parameter> parameters = new ArrayList<>();
+            final List<Parameter> parameters = new ArrayList<>();
             if (ctx.parameterList() != null) {
                 for (final FrostlakeParser.ParameterDefContext paramCtx : ctx.parameterList().parameterDef()) {
                     parameters.add(columnParser.parseParameterDef(paramCtx));
@@ -256,7 +274,7 @@ public class CreateRoutineHandler implements CommandHandler {
             // Handle OR REPLACE - drop specific overload with matching signature
             if (orReplace) {
                 try {
-                    List<DataType> argumentTypes = new ArrayList<>();
+                    final List<DataType> argumentTypes = new ArrayList<>();
                     for (final Parameter param : parameters) {
                         argumentTypes.add(param.getDataType());
                     }
@@ -268,8 +286,8 @@ public class CreateRoutineHandler implements CommandHandler {
                 }
             }
 
-            DataType returnType;
-            List<Parameter> procReturnColumns = new ArrayList<>();
+            final DataType returnType;
+            final List<Parameter> procReturnColumns = new ArrayList<>();
             if (ctx.returnType() == null) {
                 throw new RuntimeException("RETURNS clause is required for CREATE PROCEDURE");
             } else if (ctx.returnType().TABLE() != null) {
@@ -279,8 +297,8 @@ public class CreateRoutineHandler implements CommandHandler {
                 if (ctx.returnType().columnList() != null) {
                     for (final FrostlakeParser.ColumnOrConstraintContext colCtx : ctx.returnType().columnList().columnOrConstraint()) {
                         if (colCtx.columnDef() != null) {
-                            String colName = ParseTreeText.namePartText(colCtx.columnDef().namePart()).toUpperCase();
-                            DataType colType = columnParser.parseDataType(colCtx.columnDef().dataTypeName(), colCtx.columnDef().typeParameters());
+                            final String colName = ParseTreeText.namePartText(colCtx.columnDef().columnDefName()).toUpperCase();
+                            final DataType colType = columnParser.parseDataType(colCtx.columnDef().dataTypeName(), colCtx.columnDef().typeParameters());
                             procReturnColumns.add(new Parameter(colName, colType));
                         }
                     }
@@ -291,9 +309,9 @@ public class CreateRoutineHandler implements CommandHandler {
                 throw new RuntimeException("Invalid return type in CREATE PROCEDURE");
             }
 
-            String body = ctx.bodyDefinition() != null ? ddl.extractBodyDefinition(ctx.bodyDefinition()) : null;
+            final String body = ctx.bodyDefinition() != null ? ddl.extractBodyDefinition(ctx.bodyDefinition()) : null;
 
-            String language = languageOf(ctx.languageClause()).name();
+            final String language = languageOf(ctx.languageClause()).name();
 
             String handler = null;
             if (ctx.handlerClause() != null) {
@@ -315,26 +333,27 @@ public class CreateRoutineHandler implements CommandHandler {
 
             validateRoutineProperties(language, runtimeVersion, handler);
 
-            Procedure procedure = new Procedure(procedureName, parameters, returnType, body, language, handler, runtimeVersion, packages);
+            final Procedure procedure = new Procedure(procedureName, parameters, returnType, body, language, handler, runtimeVersion, packages);
+            procedure.setTemporary(TemporaryObjectStatements.isTemporary(ctx));
             if (!procReturnColumns.isEmpty()) {
                 procedure.setReturnColumns(procReturnColumns);
             }
 
             if (ctx.importsClause() != null) {
-                List<String> importList = new ArrayList<>();
+                final List<String> importList = new ArrayList<>();
                 for (final var sl : ctx.importsClause().stringLiteralList().STRING_LITERAL()) {
                     importList.add(ddl.extractStringLiteral(sl));
                 }
                 procedure.setImports(importList);
             }
 
-            String comment = ddl.extractCommentFromList(ctx.commentClause());
+            final String comment = ddl.extractCommentFromList(ctx.commentClause());
             if (comment != null) {
                 procedure.setComment(comment);
             }
 
             if (ctx.executeAsClause() != null) {
-                String execAs = ctx.executeAsClause().OWNER() != null ? "OWNER" : "CALLER";
+                final String execAs = ctx.executeAsClause().OWNER() != null ? "OWNER" : "CALLER";
                 procedure.setExecuteAs(execAs);
             }
 
@@ -375,6 +394,39 @@ public class CreateRoutineHandler implements CommandHandler {
      * The declared {@code LANGUAGE} of a CREATE FUNCTION, whose options are order-independent so the clause has
      * to be looked up among them. Absent clause → {@link UdfLanguage#SQL}, the Snowflake default.
      */
+    /**
+     * Each routine option may appear ONCE, and the two families are exclusive within themselves:
+     * one volatility ({@code VOLATILE} / {@code IMMUTABLE}) and one null-handling clause
+     * ({@code CALLED ON NULL INPUT} / {@code RETURNS NULL ON NULL INPUT} / {@code STRICT}).
+     * Live refuses the repeat as a syntax error; the grammar keeps its permissive
+     * {@code functionOption*} because the option ORDER is genuinely free, so the check lives here
+     * and anchors on the offending option's own first token (live anchors a token or two further
+     * along — an accepted error-point divergence). COMMENT is deliberately absent: a routine takes
+     * a repeated COMMENT live, unlike a table or a view.
+     */
+    private static void rejectRepeatedFunctionOptions(
+            final List<FrostlakeParser.FunctionOptionContext> options) {
+        final Set<String> seen = new HashSet<>();
+        for (final FrostlakeParser.FunctionOptionContext opt : options) {
+            final String family;
+            if (opt.volatilityClause() != null) {
+                family = "VOLATILITY";
+            } else if (opt.nullHandlingClause() != null) {
+                family = "NULL HANDLING";
+            } else if (opt.commentClause() != null) {
+                continue;   // repeated COMMENT is legal on a routine
+            } else {
+                family = opt.getStart().getText().toUpperCase(Locale.ROOT);
+            }
+            if (!seen.add(family)) {
+                final Token at = opt.getStart();
+                throw new RuntimeException(SqlCompilationError.of("syntax error line " + at.getLine()
+                    + " at position " + at.getCharPositionInLine()
+                    + " unexpected '" + at.getText() + "'."));
+            }
+        }
+    }
+
     private static UdfLanguage functionLanguage(final FrostlakeParser.CreateStatementContext ctx) {
         UdfLanguage language = UdfLanguage.SQL;
         for (final FrostlakeParser.FunctionOptionContext opt : ctx.functionOption()) {

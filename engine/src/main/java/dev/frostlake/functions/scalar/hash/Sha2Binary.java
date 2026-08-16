@@ -24,7 +24,7 @@ import java.util.List;
 
 /** SHA2_BINARY(msg [, bits]) — the SHA-2 digest (256 default; 224/384/512) as BINARY. */
 public class Sha2Binary extends BuiltInFunction {
-    public Sha2Binary() { super("SHA2_BINARY", BinaryType.BINARY); }
+    public Sha2Binary() { super("SHA2_BINARY", new BinaryType("VARBINARY", 64)); }
 
     @Override
     public Object evaluate(final List<Object> args) {
@@ -35,6 +35,8 @@ public class Sha2Binary extends BuiltInFunction {
             SharedFunctionHelpers.toUtf8(args.get(0))));
     }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return 2; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return 2; }
 }

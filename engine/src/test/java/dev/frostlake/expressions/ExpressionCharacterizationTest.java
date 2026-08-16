@@ -28,10 +28,12 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 /**
  * Characterization (golden) baseline for expression evaluation.
  *
- * <p>Captures the CURRENT evaluated result of representative expressions (via {@code SELECT
- * <expr>}), so the upcoming swap to the ANTLR-driven expression AST can be verified to
- * preserve behavior end-to-end. This is a starter set covering the Phase 0 slice; it should
- * be expanded with the full corpus before the Phase 2 parser swap.
+ * <p>Pins the evaluated result of representative expressions (via {@code SELECT <expr>}) so
+ * regressions in the ANTLR-driven expression AST surface as value changes.
+ *
+ * <p>Deliberately NOT on the live surface: an own-engine golden pin whose value is catching
+ * embedded evaluator drift cheaply — expression semantics themselves are live-verified by the
+ * two-sided suites.
  */
 public class ExpressionCharacterizationTest {
 
@@ -53,7 +55,7 @@ public class ExpressionCharacterizationTest {
     }
 
     private static Object eval(final String expr) {
-        ResultSet rs = engine.executeQuery("SELECT " + expr);
+        final ResultSet rs = engine.executeQuery("SELECT " + expr);
         return rs.getRows().get(0).getValue(0);
     }
 
@@ -111,14 +113,15 @@ public class ExpressionCharacterizationTest {
 
     /**
      * Row-constructor tuple IN — newly supported by the ANTLR builder (the legacy parser did
-     * not handle it). The flat right-hand list is grouped into tuples the size of the left side.
+     * not handle it). The right-hand list is parenthesized ROWS of the left side's width; the
+     * flat spelling {@code (1, 2) IN (1, 2)} is a type error (ROW compared against scalars).
      */
     @Test
     public void testTupleIn() {
-        assertEquals(true, eval("(1, 2) IN (1, 2)"));
-        assertEquals(true, eval("(1, 2) IN (3, 4, 1, 2)"));
-        assertEquals(false, eval("(1, 2) IN (3, 4)"));
-        assertEquals(true, eval("(1, 2) NOT IN (3, 4)"));
+        assertEquals(true, eval("(1, 2) IN ((1, 2))"));
+        assertEquals(true, eval("(1, 2) IN ((3, 4), (1, 2))"));
+        assertEquals(false, eval("(1, 2) IN ((3, 4))"));
+        assertEquals(true, eval("(1, 2) NOT IN ((3, 4))"));
     }
 
     /**
@@ -147,7 +150,7 @@ public class ExpressionCharacterizationTest {
     public void testBooleanProjectionFromTable() {
         engine.execute("CREATE TABLE IF NOT EXISTS bp_tbl (a INT, b INT)");
         engine.execute("INSERT INTO bp_tbl VALUES (1, 1), (1, 0), (0, 0)");
-        ResultSet rs = engine.executeQuery("SELECT a > 0 AND b > 0 AS flag FROM bp_tbl");
+        final ResultSet rs = engine.executeQuery("SELECT a > 0 AND b > 0 AS flag FROM bp_tbl");
         assertEquals(3, rs.getRows().size());
         assertEquals(true, rs.getRows().get(0).getValue(0));
         assertEquals(false, rs.getRows().get(1).getValue(0));

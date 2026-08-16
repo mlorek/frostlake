@@ -32,6 +32,8 @@ public class ToDouble extends BuiltInFunction {
         catch (final Exception e) { throw new RuntimeException("Cannot convert to DOUBLE: " + args.get(0)); }
     }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return 1; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return 1; }
 }

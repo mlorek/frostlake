@@ -64,9 +64,12 @@ public class ExpressionEvaluator {
      * threads. This offsets the per-row re-parse until operators carry the parsed AST directly.
      * Bounded (LRU + max-size guard) so sweeping distinct-literal predicates can't grow it without
      * limit; a genuinely hot expression accessed every row stays cached. See BoundedParseCache.
+     * The key cap is deliberately looser than the statement-level caches': an expression over the
+     * cap here would re-parse PER ROW (a large correlated subquery text is the common case), where
+     * an over-cap statement re-parses once per execution.
      */
     private static final BoundedParseCache<Expression> AST_CACHE =
-        new BoundedParseCache<>(2048, 4096);
+        new BoundedParseCache<>(2048, 16384);
 
     public ExpressionEvaluator(final Table table, final FunctionRegistry functionRegistry, final Catalog catalog) {
         this.table = table;
@@ -159,6 +162,26 @@ public class ExpressionEvaluator {
      * so rejection fires even over zero input rows.
      */
     public void validateStrict(final Expression expression) {
+        preparedVisitor().validateStrictArguments(expression);
+    }
+
+    /**
+     * PHASE ONE of the plan-time walk: every column reference, and nothing else. Live orders its
+     * refusals by KIND rather than by position — an invalid identifier beats an unknown function name,
+     * which beats every argument-type complaint, whichever item each of them sits in — so the select
+     * list is walked once per kind.
+     */
+    public void validateColumnScope(final Expression expression) {
+        preparedVisitor().validateColumnScopeOnly(expression);
+    }
+
+    /** PHASE TWO: every call's NAME, and nothing else. See {@link #validateColumnScope}. */
+    public void validateFunctionNames(final Expression expression) {
+        preparedVisitor().validateFunctionNamesOnly(expression);
+    }
+
+    /** The reusable visitor with this evaluator's context applied — shared by every phase. */
+    private ExpressionEvaluatorVisitor preparedVisitor() {
         if (reusableVisitor == null) {
             reusableVisitor = new ExpressionEvaluatorVisitor(table, null, functionRegistry, catalog);
         }
@@ -167,7 +190,7 @@ public class ExpressionEvaluator {
         if (multiTableAllTables != null) {
             reusableVisitor.setMultiTableContext(multiTableAliasToTable, multiTableAllTables);
         }
-        reusableVisitor.validateStrictArguments(expression);
+        return reusableVisitor;
     }
 
     /** Bare names the plan-time scope walk must not reject — the query's SELECT output aliases /
@@ -270,8 +293,30 @@ public class ExpressionEvaluator {
         try {
             return reusableVisitor.inferStaticType(expression);
         } catch (final RuntimeException undetermined) {
+            // A COMPILATION error is a refusal the channel reached on purpose — an operand pair
+            // Snowflake rejects — not the ordinary "could not determine a type" this swallows.
+            if (SqlCompilationError.isCompilationError(undetermined.getMessage())) {
+                throw undetermined;
+            }
             return null;
         }
+    }
+
+    /**
+     * How Snowflake NAMES an expression's type when it refuses it as an argument — {@code VARCHAR(7)}
+     * for a seven-character literal, {@code VARCHAR(50)} for a declared column, {@code NUMBER(1,0)},
+     * {@code DATE}. A literal is measured from its own text, so the width is the value's, not the
+     * family's maximum.
+     */
+    public String argumentTypeText(final Expression expression) {
+        if (reusableVisitor == null) {
+            reusableVisitor = new ExpressionEvaluatorVisitor(table, null, functionRegistry, catalog);
+        }
+        reusableVisitor.setQueryExecutor(queryExecutor);
+        if (multiTableAllTables != null) {
+            reusableVisitor.setMultiTableContext(multiTableAliasToTable, multiTableAllTables);
+        }
+        return reusableVisitor.argumentTypeText(expression);
     }
 
     /**
@@ -304,7 +349,7 @@ public class ExpressionEvaluator {
      * which is worse than the missing one it replaced.
      */
     private static Expression parseToAst(final String expression) {
-        Expression cached = AST_CACHE.get(expression);
+        final Expression cached = AST_CACHE.get(expression);
         if (cached != null) {
             return cached;
         }

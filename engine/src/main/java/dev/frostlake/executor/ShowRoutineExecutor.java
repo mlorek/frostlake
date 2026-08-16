@@ -20,24 +20,29 @@ import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.FunctionRegistry;
 import dev.frostlake.functions.OperatorFunctionNames;
 import dev.frostlake.metastore.Catalog;
+import dev.frostlake.metastore.model.AggregationPolicy;
+import dev.frostlake.metastore.model.Contact;
 import dev.frostlake.metastore.model.FileFormat;
 import dev.frostlake.metastore.model.Function;
+import dev.frostlake.metastore.model.JoinPolicy;
 import dev.frostlake.metastore.model.MaskingPolicy;
 import dev.frostlake.metastore.model.Parameter;
 import dev.frostlake.metastore.model.Procedure;
+import dev.frostlake.metastore.model.ProjectionPolicy;
 import dev.frostlake.metastore.model.RowAccessPolicy;
 import dev.frostlake.metastore.model.Schema;
+import dev.frostlake.metastore.model.SearchOptimizationExpression;
+import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.Tag;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
-import dev.frostlake.types.NumericType;
 import dev.frostlake.types.DateTimeType;
+import dev.frostlake.types.NumericType;
 import dev.frostlake.types.StringType;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
-import java.util.Map;
 
 /**
  * SHOW / DESCRIBE handlers for routines and metadata objects: functions, procedures, tags, file formats,
@@ -158,9 +163,10 @@ final class ShowRoutineExecutor {
     }
 
     /**
-     * The SHOW PROCEDURES column shape: the first 16 of the 20 {@link #functionColumns()}, which is to
-     * say every one of them except the four a procedure has no answer for
-     * ({@code is_external_function}, {@code language}, {@code is_memoizable}, {@code is_data_metric}).
+     * The SHOW PROCEDURES column shape: the first 16 of the 21 {@link #functionColumns()}, which is to
+     * say every one of them except the five a procedure has no answer for
+     * ({@code is_external_function}, {@code language}, {@code is_memoizable}, {@code is_data_metric},
+     * {@code is_ai_function}).
      *
      * <p>Live-verified on a real account: all six procedure listings — plain, USER, BUILTIN,
      * each with and without TERSE — return exactly these 16 names in this order.
@@ -292,16 +298,17 @@ final class ShowRoutineExecutor {
                 null, null,
                 "N",
                 func.getLanguage(),
-                "N", "N"
+                "N", "N", "N"
             )));
         }
     }
 
     /**
      * The SHOW FUNCTIONS / SHOW BUILTIN FUNCTIONS column shape, matched against a real account
-     * (both commands, and SHOW USER FUNCTIONS, return the same 20 columns in
+     * (both commands, and SHOW USER FUNCTIONS, return the same 21 columns in
      * this order). {@code secrets}, {@code external_access_integrations}, {@code is_memoizable} and
-     * {@code is_data_metric} were missing here.
+     * {@code is_data_metric} were missing here; {@code is_ai_function} is the final column and
+     * answers N on every builtin of a real account, so it is a constant here.
      */
     private List<ResultSetColumn> functionColumns() {
         return Arrays.asList(
@@ -324,7 +331,8 @@ final class ShowRoutineExecutor {
             new ResultSetColumn("is_external_function", StringType.VARCHAR),
             new ResultSetColumn("language", StringType.VARCHAR),
             new ResultSetColumn("is_memoizable", StringType.VARCHAR),
-            new ResultSetColumn("is_data_metric", StringType.VARCHAR)
+            new ResultSetColumn("is_data_metric", StringType.VARCHAR),
+            new ResultSetColumn("is_ai_function", StringType.VARCHAR)
         );
     }
 
@@ -375,7 +383,8 @@ final class ShowRoutineExecutor {
             "N",                     // is_external_function
             "SQL",                   // language
             "N",                     // is_memoizable
-            "N"                      // is_data_metric
+            "N",                     // is_data_metric
+            "N"                      // is_ai_function
         ));
     }
 
@@ -399,7 +408,7 @@ final class ShowRoutineExecutor {
 
     private String buildArgSig(final List<Parameter> params) {
         if (params == null || params.isEmpty()) return "()";
-        StringBuilder sb = new StringBuilder("(");
+        final StringBuilder sb = new StringBuilder("(");
         for (int i = 0; i < params.size(); i++) {
             if (i > 0) sb.append(", ");
             sb.append(params.get(i).getName()).append(" ").append(params.get(i).getDataType().getName());
@@ -441,7 +450,7 @@ final class ShowRoutineExecutor {
     private void appendTagRows(final Schema schema, final String dbName, final List<Row> rows) {
         final String scName = schema.getName();
         for (final Tag tag : schema.getTags()) {
-            final String av = tag.hasAllowedValues() ? String.join(", ", tag.getAllowedValues()) : null;
+            final String av = allowedValuesText(tag);
             rows.add(new Row(Arrays.asList(
                 ShowResultHelpers.createdOn(tag.getCreatedTime()),
                 tag.getName(),
@@ -455,6 +464,21 @@ final class ShowRoutineExecutor {
                 "false"
             )));
         }
+    }
+
+    /** How live spells a tag's ALLOWED_VALUES: a JSON array of the values, or NULL when unset. */
+    private static String allowedValuesText(final Tag tag) {
+        if (!tag.hasAllowedValues()) {
+            return null;
+        }
+        final StringBuilder sb = new StringBuilder("[");
+        for (final String value : tag.getAllowedValues()) {
+            if (sb.length() > 1) {
+                sb.append(',');
+            }
+            sb.append('"').append(value.replace("\\", "\\\\").replace("\"", "\\\"")).append('"');
+        }
+        return sb.append(']').toString();
     }
 
     private List<ResultSetColumn> tagColumns() {
@@ -474,20 +498,18 @@ final class ShowRoutineExecutor {
     }
 
     public ResultSet describeTag(final String tagName) {
-        List<Row> rows = new ArrayList<>();
-        List<ResultSetColumn> columns = Arrays.asList(
+        final List<Row> rows = new ArrayList<>();
+        final List<ResultSetColumn> columns = Arrays.asList(
             new ResultSetColumn("property", StringType.VARCHAR),
             new ResultSetColumn("value", StringType.VARCHAR)
         );
 
-        Tag tag = catalog.getTag(tagName);
+        final Tag tag = catalog.getTag(tagName);
         rows.add(new Row(Arrays.asList("name", tag.getName())));
 
         if (tag.hasAllowedValues()) {
-            rows.add(new Row(Arrays.asList("allowed_values", String.join(", ", tag.getAllowedValues()))));
+            rows.add(new Row(Arrays.asList("allowed_values", allowedValuesText(tag))));
         }
-
-        rows.add(new Row(Arrays.asList("masking", String.valueOf(tag.isMasking()))));
 
         if (tag.getComment() != null) {
             rows.add(new Row(Arrays.asList("comment", tag.getComment())));
@@ -582,20 +604,33 @@ final class ShowRoutineExecutor {
         return upper;
     }
 
+    /**
+     * DESC FILE FORMAT in live's four-column shape: the TYPE's whole property tree with declared
+     * options overlaid on the per-type defaults. No COMMENT row — a format's comment surfaces in
+     * SHOW FILE FORMATS instead (live-verified).
+     */
     public ResultSet describeFileFormat(final String name) {
         final FileFormat ff = resolveDescribeSchema().getFileFormat(lastSegment(name));
         if (ff == null) {
             throw new RuntimeException(SqlCompilationError.doesNotExist("File format", name));
         }
+        final List<ResultSetColumn> columns = Arrays.asList(
+            new ResultSetColumn("property", StringType.VARCHAR),
+            new ResultSetColumn("property_type", StringType.VARCHAR),
+            new ResultSetColumn("property_value", StringType.VARCHAR),
+            new ResultSetColumn("property_default", StringType.VARCHAR));
         final List<Row> rows = new ArrayList<>();
-        rows.add(new Row(Arrays.asList("TYPE", ff.getType())));
-        for (final String key : ff.getOptions().keySet()) {
-            rows.add(new Row(Arrays.asList(key, ff.getOptions().get(key))));
+        for (final FormatProperty property
+                : FileFormatSurfaces.tree(ff.getType())) {
+            String value = ff.getOptions().get(property.name);
+            if (value == null) {
+                value = "TYPE".equals(property.name) ? ff.getType() : property.valueDefault;
+            } else if ("NULL_IF".equals(property.name)) {
+                value = "[" + value.replace(",", ", ") + "]";
+            }
+            rows.add(new Row(Arrays.asList(property.name, property.type, value, property.shownDefault)));
         }
-        // No COMMENT row: live-verified on a real account, DESCRIBE FILE FORMAT lists only
-        // the FORMAT properties (TYPE, RECORD_DELIMITER, FIELD_DELIMITER, …) — a format's comment,
-        // whether given inline or by COMMENT ON FILE FORMAT, surfaces in SHOW FILE FORMATS instead.
-        return propertyValueResult(rows);
+        return new ResultSet(columns, rows);
     }
 
     public ResultSet showFileFormats(final String schemaName) {
@@ -660,16 +695,57 @@ final class ShowRoutineExecutor {
     }
 
     /** SHOW FILE FORMATS reports the format's options as a JSON object, TYPE included. */
+    /**
+     * SHOW FILE FORMATS' format_options blob, live-shaped: the TYPE's WHOLE property tree with
+     * typed JSON values — integers and booleans bare, an unset FILE_EXTENSION as null, NULL_IF as
+     * a string array — declared options overlaid on the defaults, in tree order.
+     */
     private String formatOptionsJson(final FileFormat format) {
-        final StringBuilder json = new StringBuilder("{\"TYPE\":\"").append(format.getType()).append('"');
-        for (final Map.Entry<String, String> option : format.getOptions().entrySet()) {
-            if ("TYPE".equalsIgnoreCase(option.getKey())) {
-                continue;
+        final StringBuilder json = new StringBuilder("{");
+        boolean first = true;
+        for (final FormatProperty property
+                : FileFormatSurfaces.tree(format.getType())) {
+            if (!first) {
+                json.append(',');
             }
-            json.append(",\"").append(option.getKey().toUpperCase()).append("\":");
-            json.append(option.getValue() == null ? "null" : "\"" + option.getValue() + "\"");
+            first = false;
+            json.append('"').append(property.name).append("\":");
+            String value = format.getOptions().get(property.name);
+            if (value == null) {
+                value = "TYPE".equals(property.name) ? format.getType() : property.valueDefault;
+            }
+            if ("Integer".equals(property.type) || "Long".equals(property.type)
+                    || "Boolean".equals(property.type)) {
+                json.append(value.isEmpty() ? "null" : value);
+            } else if ("List".equals(property.type)) {
+                json.append(nullIfJsonArray(format.getOptions().get(property.name), property.valueDefault));
+            } else if ("FILE_EXTENSION".equals(property.name)
+                    && format.getOptions().get(property.name) == null) {
+                json.append("null");
+            } else {
+                json.append('"').append(value.replace("\\", "\\\\").replace("\"", "\\\"")).append('"');
+            }
         }
         return json.append('}').toString();
+    }
+
+    /** NULL_IF as a JSON string array: the stored comma-joined values, or the type's default. */
+    private static String nullIfJsonArray(final String stored, final String valueDefault) {
+        if (stored == null) {
+            return "[]".equals(valueDefault) ? "[]" : "[\"\\\\N\"]";
+        }
+        if (stored.isEmpty()) {
+            return "[]";
+        }
+        final StringBuilder array = new StringBuilder("[");
+        final String[] parts = stored.split(",");
+        for (int i = 0; i < parts.length; i++) {
+            if (i > 0) {
+                array.append(',');
+            }
+            array.append('"').append(parts[i].replace("\\", "\\\\").replace("\"", "\\\"")).append('"');
+        }
+        return array.append(']').toString();
     }
 
     public ResultSet showMaskingPolicies(final String schemaName) {
@@ -763,6 +839,316 @@ final class ShowRoutineExecutor {
     }
 
     /** Shared column shape for SHOW MASKING POLICIES and SHOW ROW ACCESS POLICIES. */
+    /**
+     * {@code DESCRIBE SEARCH OPTIMIZATION ON <table>} — the configured expressions, numbered as they
+     * were handed out. A table with none answers no rows rather than refusing.
+     */
+    public ResultSet describeSearchOptimization(final String tableName) {
+        final Table table = catalog.resolveTableAsWritten(tableName, "Table");
+        final List<ResultSetColumn> columns = Arrays.asList(
+            new ResultSetColumn("expression_id", NumericType.NUMBER),
+            new ResultSetColumn("method", StringType.VARCHAR),
+            new ResultSetColumn("target", StringType.VARCHAR),
+            new ResultSetColumn("target_data_type", StringType.VARCHAR),
+            new ResultSetColumn("active", StringType.VARCHAR)
+        );
+        final List<Row> rows = new ArrayList<>();
+        for (final SearchOptimizationExpression expression : table.getSearchOptimization()) {
+            rows.add(new Row(Arrays.asList(
+                (long) expression.getExpressionId(),
+                expression.getMethod(),
+                expression.getTarget(),
+                expression.getTargetDataType(),
+                // Live builds the index asynchronously and reports the build state here; the engine
+                // configures instantly, so an expression is active as soon as it exists.
+                "true")));
+        }
+        return new ResultSet(columns, rows);
+    }
+
+    /** SHOW JOIN POLICIES — the same shape as the other two constraint-policy kinds. */
+    public ResultSet showJoinPolicies(final String schemaName) {
+        final String dbName = ShowResultHelpers.scopeDatabase(catalog, schemaName);
+        final String scName = ShowResultHelpers.scopeSchemaName(catalog, schemaName);
+        if (dbName == null || scName == null) {
+            return new ResultSet(projectionPolicyColumns(), new ArrayList<>());
+        }
+        final List<Row> rows = new ArrayList<>();
+        appendJoinPolicyRows(catalog.getDatabase(dbName).getSchema(scName), dbName, rows);
+        return new ResultSet(projectionPolicyColumns(), rows);
+    }
+
+    public ResultSet showJoinPoliciesInDatabase(final String databaseName) {
+        final String dbName = databaseName != null ? databaseName : catalog.getCurrentDatabase();
+        if (dbName == null) {
+            return new ResultSet(projectionPolicyColumns(), new ArrayList<>());
+        }
+        final List<Row> rows = new ArrayList<>();
+        for (final Schema schema : catalog.getDatabase(dbName).getAllSchemas()) {
+            appendJoinPolicyRows(schema, dbName, rows);
+        }
+        return new ResultSet(projectionPolicyColumns(), rows);
+    }
+
+    public ResultSet showJoinPoliciesInAccount() {
+        final ResultSet across = ShowResultHelpers.acrossAllDatabases(catalog, new DatabaseScopedListing() {
+            @Override
+            public ResultSet listIn(final String databaseName) {
+                return showJoinPoliciesInDatabase(databaseName);
+            }
+        });
+        return across != null ? across : showJoinPolicies(null);
+    }
+
+    private void appendJoinPolicyRows(final Schema schema, final String dbName, final List<Row> rows) {
+        for (final JoinPolicy policy : schema.getJoinPolicies()) {
+            rows.add(new Row(Arrays.asList(
+                ShowResultHelpers.createdOn(policy.getCreatedTime()),
+                policy.getName(),
+                dbName, schema.getName(),
+                "JOIN_POLICY",
+                policy.getOwner(),
+                ShowResultHelpers.text(policy.getComment()),
+                ShowResultHelpers.OWNER_ROLE_TYPE,
+                ""
+            )));
+        }
+    }
+
+    /** DESCRIBE JOIN POLICY — name, empty signature, return type and body. */
+    public ResultSet describeJoinPolicy(final String policyName) {
+        final JoinPolicy policy = catalog.findJoinPolicy(policyName);
+        if (policy == null) {
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Join policy",
+                catalog.qualifiedObjectName(policyName)));
+        }
+        final List<ResultSetColumn> columns = Arrays.asList(
+            new ResultSetColumn("name", StringType.VARCHAR),
+            new ResultSetColumn("signature", StringType.VARCHAR),
+            new ResultSetColumn("return_type", StringType.VARCHAR),
+            new ResultSetColumn("body", StringType.VARCHAR)
+        );
+        final List<Row> rows = new ArrayList<>();
+        rows.add(new Row(Arrays.asList(policy.getName(), "()", "JOIN_CONSTRAINT", policy.getBody())));
+        return new ResultSet(columns, rows);
+    }
+
+    /** SHOW AGGREGATION POLICIES — the same shape as SHOW PROJECTION POLICIES. */
+    public ResultSet showAggregationPolicies(final String schemaName) {
+        final String dbName = ShowResultHelpers.scopeDatabase(catalog, schemaName);
+        final String scName = ShowResultHelpers.scopeSchemaName(catalog, schemaName);
+        if (dbName == null || scName == null) {
+            return new ResultSet(projectionPolicyColumns(), new ArrayList<>());
+        }
+        final List<Row> rows = new ArrayList<>();
+        appendAggregationPolicyRows(catalog.getDatabase(dbName).getSchema(scName), dbName, rows);
+        return new ResultSet(projectionPolicyColumns(), rows);
+    }
+
+    public ResultSet showAggregationPoliciesInDatabase(final String databaseName) {
+        final String dbName = databaseName != null ? databaseName : catalog.getCurrentDatabase();
+        if (dbName == null) {
+            return new ResultSet(projectionPolicyColumns(), new ArrayList<>());
+        }
+        final List<Row> rows = new ArrayList<>();
+        for (final Schema schema : catalog.getDatabase(dbName).getAllSchemas()) {
+            appendAggregationPolicyRows(schema, dbName, rows);
+        }
+        return new ResultSet(projectionPolicyColumns(), rows);
+    }
+
+    public ResultSet showAggregationPoliciesInAccount() {
+        final ResultSet across = ShowResultHelpers.acrossAllDatabases(catalog, new DatabaseScopedListing() {
+            @Override
+            public ResultSet listIn(final String databaseName) {
+                return showAggregationPoliciesInDatabase(databaseName);
+            }
+        });
+        return across != null ? across : showAggregationPolicies(null);
+    }
+
+    private void appendAggregationPolicyRows(final Schema schema, final String dbName, final List<Row> rows) {
+        for (final AggregationPolicy policy : schema.getAggregationPolicies()) {
+            rows.add(new Row(Arrays.asList(
+                ShowResultHelpers.createdOn(policy.getCreatedTime()),
+                policy.getName(),
+                dbName, schema.getName(),
+                "AGGREGATION_POLICY",
+                policy.getOwner(),
+                ShowResultHelpers.text(policy.getComment()),
+                ShowResultHelpers.OWNER_ROLE_TYPE,
+                ""
+            )));
+        }
+    }
+
+    /** DESCRIBE AGGREGATION POLICY — name, empty signature, return type and body. */
+    public ResultSet describeAggregationPolicy(final String policyName) {
+        final AggregationPolicy policy = catalog.findAggregationPolicy(policyName);
+        if (policy == null) {
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Aggregation policy",
+                catalog.qualifiedObjectName(policyName)));
+        }
+        final List<ResultSetColumn> columns = Arrays.asList(
+            new ResultSetColumn("name", StringType.VARCHAR),
+            new ResultSetColumn("signature", StringType.VARCHAR),
+            new ResultSetColumn("return_type", StringType.VARCHAR),
+            new ResultSetColumn("body", StringType.VARCHAR)
+        );
+        final List<Row> rows = new ArrayList<>();
+        rows.add(new Row(Arrays.asList(policy.getName(), "()", "AGGREGATION_CONSTRAINT", policy.getBody())));
+        return new ResultSet(columns, rows);
+    }
+
+    /** SHOW PROJECTION POLICIES — the same shape as the other policy kinds, plus an options cell. */
+    public ResultSet showProjectionPolicies(final String schemaName) {
+        final String dbName = ShowResultHelpers.scopeDatabase(catalog, schemaName);
+        final String scName = ShowResultHelpers.scopeSchemaName(catalog, schemaName);
+        if (dbName == null || scName == null) {
+            return new ResultSet(projectionPolicyColumns(), new ArrayList<>());
+        }
+        final List<Row> rows = new ArrayList<>();
+        appendProjectionPolicyRows(catalog.getDatabase(dbName).getSchema(scName), dbName, rows);
+        return new ResultSet(projectionPolicyColumns(), rows);
+    }
+
+    public ResultSet showProjectionPoliciesInDatabase(final String databaseName) {
+        final String dbName = databaseName != null ? databaseName : catalog.getCurrentDatabase();
+        if (dbName == null) {
+            return new ResultSet(projectionPolicyColumns(), new ArrayList<>());
+        }
+        final List<Row> rows = new ArrayList<>();
+        for (final Schema schema : catalog.getDatabase(dbName).getAllSchemas()) {
+            appendProjectionPolicyRows(schema, dbName, rows);
+        }
+        return new ResultSet(projectionPolicyColumns(), rows);
+    }
+
+    public ResultSet showProjectionPoliciesInAccount() {
+        final ResultSet across = ShowResultHelpers.acrossAllDatabases(catalog, new DatabaseScopedListing() {
+            @Override
+            public ResultSet listIn(final String databaseName) {
+                return showProjectionPoliciesInDatabase(databaseName);
+            }
+        });
+        return across != null ? across : showProjectionPolicies(null);
+    }
+
+    private void appendProjectionPolicyRows(final Schema schema, final String dbName, final List<Row> rows) {
+        for (final ProjectionPolicy policy : schema.getProjectionPolicies()) {
+            rows.add(new Row(Arrays.asList(
+                ShowResultHelpers.createdOn(policy.getCreatedTime()),
+                policy.getName(),
+                dbName, schema.getName(),
+                "PROJECTION_POLICY",
+                policy.getOwner(),
+                ShowResultHelpers.text(policy.getComment()),
+                ShowResultHelpers.OWNER_ROLE_TYPE,
+                ""
+            )));
+        }
+    }
+
+    private List<ResultSetColumn> projectionPolicyColumns() {
+        return Arrays.asList(
+            new ResultSetColumn("created_on", DateTimeType.TIMESTAMP_LTZ),
+            new ResultSetColumn("name", StringType.VARCHAR),
+            new ResultSetColumn("database_name", StringType.VARCHAR),
+            new ResultSetColumn("schema_name", StringType.VARCHAR),
+            new ResultSetColumn("kind", StringType.VARCHAR),
+            new ResultSetColumn("owner", StringType.VARCHAR),
+            new ResultSetColumn("comment", StringType.VARCHAR),
+            new ResultSetColumn("owner_role_type", StringType.VARCHAR),
+            new ResultSetColumn("options", StringType.VARCHAR)
+        );
+    }
+
+    /** DESCRIBE PROJECTION POLICY — one row: the name, its empty signature, return type and body. */
+    public ResultSet describeProjectionPolicy(final String policyName) {
+        final ProjectionPolicy policy = catalog.findProjectionPolicy(policyName);
+        if (policy == null) {
+            throw new RuntimeException(SqlCompilationError.doesNotExist("Projection policy",
+                catalog.qualifiedObjectName(policyName)));
+        }
+        final List<ResultSetColumn> columns = Arrays.asList(
+            new ResultSetColumn("name", StringType.VARCHAR),
+            new ResultSetColumn("signature", StringType.VARCHAR),
+            new ResultSetColumn("return_type", StringType.VARCHAR),
+            new ResultSetColumn("body", StringType.VARCHAR)
+        );
+        final List<Row> rows = new ArrayList<>();
+        rows.add(new Row(Arrays.asList(policy.getName(), "()", "PROJECTION_CONSTRAINT", policy.getBody())));
+        return new ResultSet(columns, rows);
+    }
+
+    /** SHOW CONTACTS: its own shape, wider than a policy's — measured against a live account. */
+    public ResultSet showContacts(final String schemaName) {
+        final String dbName = ShowResultHelpers.scopeDatabase(catalog, schemaName);
+        final String scName = ShowResultHelpers.scopeSchemaName(catalog, schemaName);
+        if (dbName == null || scName == null) return new ResultSet(contactColumns(), new ArrayList<>());
+        final List<Row> rows = new ArrayList<>();
+        appendContactRows(catalog.getDatabase(dbName).getSchema(scName), dbName, rows);
+        return new ResultSet(contactColumns(), rows);
+    }
+
+    public ResultSet showContactsInDatabase(final String databaseName) {
+        final String dbName = databaseName != null ? databaseName : catalog.getCurrentDatabase();
+        if (dbName == null) return new ResultSet(contactColumns(), new ArrayList<>());
+        final List<Row> rows = new ArrayList<>();
+        for (final Schema schema : catalog.getDatabase(dbName).getAllSchemas()) {
+            appendContactRows(schema, dbName, rows);
+        }
+        return new ResultSet(contactColumns(), rows);
+    }
+
+    public ResultSet showContactsInAccount() {
+        final ResultSet across = ShowResultHelpers.acrossAllDatabases(catalog, new DatabaseScopedListing() {
+            @Override
+            public ResultSet listIn(final String databaseName) {
+                return showContactsInDatabase(databaseName);
+            }
+        });
+        return across != null ? across : showContacts(null);
+    }
+
+    private void appendContactRows(final Schema schema, final String dbName, final List<Row> rows) {
+        final String scName = schema.getName();
+        for (final Contact contact : schema.getContacts()) {
+            rows.add(new Row(Arrays.asList(
+                ShowResultHelpers.createdOn(contact.getCreatedTime()),
+                contact.getName(),
+                dbName, scName,
+                contact.getOwner(),
+                contact.getComment() == null ? "" : contact.getComment(),
+                "ROLE",
+                contact.getEmailDistributionList(),
+                contact.getUrl(),
+                // A contact reaches users through its email list; Frostlake models the list itself,
+                // so there are no user entries to count and the cells stay at live's empty shape.
+                0L,
+                null,
+                "[]"
+            )));
+        }
+    }
+
+    private List<ResultSetColumn> contactColumns() {
+        return Arrays.asList(
+            new ResultSetColumn("created_on", DateTimeType.TIMESTAMP_LTZ),
+            new ResultSetColumn("name", StringType.VARCHAR),
+            new ResultSetColumn("database_name", StringType.VARCHAR),
+            new ResultSetColumn("schema_name", StringType.VARCHAR),
+            new ResultSetColumn("owner", StringType.VARCHAR),
+            new ResultSetColumn("comment", StringType.VARCHAR),
+            new ResultSetColumn("owner_role_type", StringType.VARCHAR),
+            new ResultSetColumn("email_distribution_list", StringType.VARCHAR),
+            new ResultSetColumn("url", StringType.VARCHAR),
+            new ResultSetColumn("entries_in_users", NumericType.NUMBER),
+            new ResultSetColumn("users", StringType.VARCHAR),
+            new ResultSetColumn("email_list", StringType.VARCHAR)
+        );
+    }
+
     private List<ResultSetColumn> policyColumns() {
         return Arrays.asList(
             new ResultSetColumn("created_on", DateTimeType.TIMESTAMP_LTZ),

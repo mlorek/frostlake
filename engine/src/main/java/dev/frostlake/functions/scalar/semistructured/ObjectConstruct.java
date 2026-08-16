@@ -69,17 +69,19 @@ public class ObjectConstruct extends BuiltInFunction {
     }
 
     protected static Object build(final List<Object> args, final boolean keepNull) {
-        ObjectNode obj = ArrayFunctionHelper.MAPPER.createObjectNode();
+        final ObjectNode obj = ArrayFunctionHelper.MAPPER.createObjectNode();
         for (int i = 0; i + 1 < args.size(); i += 2) {
             if (args.get(i) == null) continue;
-            Object value = args.get(i + 1);
+            final Object value = args.get(i + 1);
             if (!keepNull && value == null) continue;
-            String key = args.get(i).toString();
+            final String key = args.get(i).toString();
             obj.set(key, ArrayFunctionHelper.toNode(ArrayFunctionHelper.MAPPER, value));
         }
         return ArrayFunctionHelper.toCanonicalVariant(obj);
     }
 
-    @Override public int getMinArgCount() { return 0; }
-    @Override public int getMaxArgCount() { return Integer.MAX_VALUE; }
+    @Override
+    public int getMinArgCount() { return 0; }
+    @Override
+    public int getMaxArgCount() { return Integer.MAX_VALUE; }
 }

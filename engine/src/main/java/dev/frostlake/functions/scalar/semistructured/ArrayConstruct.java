@@ -52,7 +52,7 @@ public class ArrayConstruct extends BuiltInFunction {
 
     @Override
     public Object evaluate(final List<Object> args) {
-        ArrayNode array = MAPPER.createArrayNode();
+        final ArrayNode array = MAPPER.createArrayNode();
         for (final Object arg : args) {
             // A SQL NULL argument becomes the VARIANT `undefined` element, not a JSON null — live
             // ARRAY_CONSTRUCT(1, NULL, 2) is [1,undefined,2] while
@@ -62,6 +62,8 @@ public class ArrayConstruct extends BuiltInFunction {
         return VariantValue.ofNode(array);
     }
 
-    @Override public int getMinArgCount() { return 0; }
-    @Override public int getMaxArgCount() { return Integer.MAX_VALUE; }
+    @Override
+    public int getMinArgCount() { return 0; }
+    @Override
+    public int getMaxArgCount() { return Integer.MAX_VALUE; }
 }

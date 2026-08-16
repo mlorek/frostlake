@@ -16,10 +16,8 @@
 
 package dev.frostlake.dml;
 
-import dev.frostlake.DatabaseEngine;
+import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -29,25 +27,11 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 /**
  * Tests for MERGE statement with subquery source and aliases
  */
-public class MergeSubqueryTest {
+public class MergeSubqueryTest extends BaseDatabaseTest {
     private static final Logger logger = LoggerFactory.getLogger(MergeSubqueryTest.class);
 
-    private DatabaseEngine engine;
 
-    @BeforeEach
-    public void setUp() {
-        engine = new DatabaseEngine();
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
-        logger.info("DatabaseEngine initialized for MERGE subquery tests");
-    }
 
-    @AfterEach
-    public void tearDown() {
-        if (engine != null) {
-            engine.shutdown();
-        }
-    }
 
     @Test
     public void testMergeWithSubqueryFromValues() {
@@ -55,7 +39,7 @@ public class MergeSubqueryTest {
 
         engine.execute("CREATE TABLE dst (a INTEGER, b INTEGER, c INTEGER)");
 
-        String mergeQuery = """
+        final String mergeQuery = """
             MERGE INTO dst d USING (
                 SELECT $1 AS a, $2 AS b, $3 AS c
                 FROM VALUES(1,2,3), (4,5,6)
@@ -70,7 +54,7 @@ public class MergeSubqueryTest {
 
         engine.execute(mergeQuery);
 
-        ResultSet result = engine.executeQuery("SELECT * FROM dst ORDER BY a");
+        final ResultSet result = engine.executeQuery("SELECT * FROM dst ORDER BY a");
         assertEquals(2, result.getRowCount());
         assertEquals(1L, result.getRows().get(0).getValue(0));
         assertEquals(2L, result.getRows().get(0).getValue(1));
@@ -90,7 +74,7 @@ public class MergeSubqueryTest {
         engine.execute("INSERT INTO dst VALUES (1, 10, 20)");
         engine.execute("INSERT INTO dst VALUES (2, 30, 40)");
 
-        String mergeQuery = """
+        final String mergeQuery = """
             MERGE INTO dst d USING (
                 SELECT $1 AS a, $2 AS b, $3 AS c
                 FROM VALUES(1,100,200), (3,50,60)
@@ -105,7 +89,7 @@ public class MergeSubqueryTest {
 
         engine.execute(mergeQuery);
 
-        ResultSet result = engine.executeQuery("SELECT * FROM dst ORDER BY a");
+        final ResultSet result = engine.executeQuery("SELECT * FROM dst ORDER BY a");
         assertEquals(3, result.getRowCount());
 
         // Updated row
@@ -136,7 +120,7 @@ public class MergeSubqueryTest {
         engine.execute("CREATE TABLE dst (a INTEGER, b INTEGER, c INTEGER)");
         engine.execute("INSERT INTO dst VALUES (1, 10, 20)");
 
-        String mergeQuery = """
+        final String mergeQuery = """
             MERGE INTO dst d USING (
                 SELECT id AS a, value AS b, value * 2 AS c
                 FROM source
@@ -151,7 +135,7 @@ public class MergeSubqueryTest {
 
         engine.execute(mergeQuery);
 
-        ResultSet result = engine.executeQuery("SELECT * FROM dst ORDER BY a");
+        final ResultSet result = engine.executeQuery("SELECT * FROM dst ORDER BY a");
         assertEquals(3, result.getRowCount());
 
         assertEquals(1L, result.getRows().get(0).getValue(0));
@@ -178,7 +162,7 @@ public class MergeSubqueryTest {
 
         engine.execute("CREATE TABLE dst (a INTEGER, b INTEGER, c VARCHAR)");
 
-        String mergeQuery = """
+        final String mergeQuery = """
             MERGE INTO dst d USING (
                 SELECT id AS a, value AS b, status AS c
                 FROM source
@@ -190,7 +174,7 @@ public class MergeSubqueryTest {
 
         engine.execute(mergeQuery);
 
-        ResultSet result = engine.executeQuery("SELECT * FROM dst ORDER BY a");
+        final ResultSet result = engine.executeQuery("SELECT * FROM dst ORDER BY a");
         assertEquals(2, result.getRowCount());
 
         assertEquals(1L, result.getRows().get(0).getValue(0));
@@ -214,7 +198,7 @@ public class MergeSubqueryTest {
         engine.execute("CREATE TABLE dst (a INTEGER, b INTEGER)");
         engine.execute("INSERT INTO dst VALUES (2, 200)");
 
-        String mergeQuery = """
+        final String mergeQuery = """
             MERGE INTO dst d USING (
                 SELECT id AS a, value * 10 AS b
                 FROM (
@@ -231,7 +215,7 @@ public class MergeSubqueryTest {
 
         engine.execute(mergeQuery);
 
-        ResultSet result = engine.executeQuery("SELECT * FROM dst ORDER BY a");
+        final ResultSet result = engine.executeQuery("SELECT * FROM dst ORDER BY a");
         assertEquals(3, result.getRowCount());
 
         assertEquals(2L, result.getRows().get(0).getValue(0));
@@ -259,7 +243,7 @@ public class MergeSubqueryTest {
         engine.execute("CREATE TABLE dst (id INTEGER, name VARCHAR, price INTEGER)");
         engine.execute("INSERT INTO dst VALUES (1, 'Old Name', 50)");
 
-        String mergeQuery = """
+        final String mergeQuery = """
             MERGE INTO dst d USING (
                 SELECT p.id, p.name, pr.price
                 FROM products p
@@ -275,7 +259,7 @@ public class MergeSubqueryTest {
 
         engine.execute(mergeQuery);
 
-        ResultSet result = engine.executeQuery("SELECT * FROM dst ORDER BY id");
+        final ResultSet result = engine.executeQuery("SELECT * FROM dst ORDER BY id");
         assertEquals(2, result.getRowCount());
 
         assertEquals(1L, result.getRows().get(0).getValue(0));
@@ -299,7 +283,7 @@ public class MergeSubqueryTest {
         engine.execute("CREATE TABLE customer_totals (id INTEGER, total INTEGER)");
         engine.execute("INSERT INTO customer_totals VALUES (1, 0)");
 
-        String mergeQuery = """
+        final String mergeQuery = """
             MERGE INTO customer_totals ct USING (
                 SELECT customer_id AS id, SUM(amount) AS total
                 FROM transactions
@@ -313,20 +297,20 @@ public class MergeSubqueryTest {
 
         engine.execute(mergeQuery);
 
-        ResultSet result = engine.executeQuery("SELECT * FROM customer_totals ORDER BY id");
+        final ResultSet result = engine.executeQuery("SELECT * FROM customer_totals ORDER BY id");
         assertEquals(3, result.getRowCount());
 
         assertEquals(1L, result.getRows().get(0).getValue(0));
         // SUM returns Double
-        Object total1 = result.getRows().get(0).getValue(1);
+        final Object total1 = result.getRows().get(0).getValue(1);
         assertEquals(300.0, ((Number) total1).doubleValue(), 0.01);
 
         assertEquals(2L, result.getRows().get(1).getValue(0));
-        Object total2 = result.getRows().get(1).getValue(1);
+        final Object total2 = result.getRows().get(1).getValue(1);
         assertEquals(300.0, ((Number) total2).doubleValue(), 0.01);
 
         assertEquals(3L, result.getRows().get(2).getValue(0));
-        Object total3 = result.getRows().get(2).getValue(1);
+        final Object total3 = result.getRows().get(2).getValue(1);
         assertEquals(150.0, ((Number) total3).doubleValue(), 0.01);
 
         logger.info("MERGE with subquery containing aggregation works correctly");
@@ -339,7 +323,7 @@ public class MergeSubqueryTest {
         engine.execute("CREATE TABLE dst (a INTEGER, b INTEGER)");
         engine.execute("INSERT INTO dst VALUES (1, 10), (2, 20)");
 
-        String mergeQuery = """
+        final String mergeQuery = """
             MERGE INTO dst d USING (
                 SELECT $1 AS a, $2 AS b
                 FROM VALUES(1, 100), (3, 300)
@@ -352,7 +336,7 @@ public class MergeSubqueryTest {
 
         engine.execute(mergeQuery);
 
-        ResultSet result = engine.executeQuery("SELECT * FROM dst ORDER BY a");
+        final ResultSet result = engine.executeQuery("SELECT * FROM dst ORDER BY a");
         assertEquals(3, result.getRowCount());
 
         assertEquals(1L, result.getRows().get(0).getValue(0));
@@ -373,7 +357,7 @@ public class MergeSubqueryTest {
 
         engine.execute("CREATE TABLE dst (a INTEGER, b INTEGER)");
 
-        String mergeQuery = """
+        final String mergeQuery = """
             MERGE INTO dst USING (
                 SELECT $1 AS a, $2 AS b
                 FROM VALUES(1, 10), (2, 20)
@@ -384,7 +368,7 @@ public class MergeSubqueryTest {
 
         engine.execute(mergeQuery);
 
-        ResultSet result = engine.executeQuery("SELECT * FROM dst ORDER BY a");
+        final ResultSet result = engine.executeQuery("SELECT * FROM dst ORDER BY a");
         assertEquals(2, result.getRowCount());
 
         logger.info("MERGE without destination alias works correctly");
@@ -399,7 +383,7 @@ public class MergeSubqueryTest {
 
         engine.execute("CREATE TABLE dst (a INTEGER, b INTEGER)");
 
-        String mergeQuery = """
+        final String mergeQuery = """
             MERGE INTO dst d USING (
                 WITH filtered AS (
                     SELECT id, value
@@ -415,7 +399,7 @@ public class MergeSubqueryTest {
 
         engine.execute(mergeQuery);
 
-        ResultSet result = engine.executeQuery("SELECT * FROM dst ORDER BY a");
+        final ResultSet result = engine.executeQuery("SELECT * FROM dst ORDER BY a");
         assertEquals(2, result.getRowCount());
 
         assertEquals(2L, result.getRows().get(0).getValue(0));

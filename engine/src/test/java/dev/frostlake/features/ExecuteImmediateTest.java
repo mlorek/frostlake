@@ -21,7 +21,10 @@ import dev.frostlake.storage.ResultSet;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Tests for EXECUTE IMMEDIATE command
@@ -48,7 +51,7 @@ public class ExecuteImmediateTest extends BaseDatabaseTest {
         // Now test EXECUTE IMMEDIATE with INSERT
         engine.execute("EXECUTE IMMEDIATE 'INSERT INTO products VALUES (2, ''Mouse'', 25)'");
 
-        ResultSet result = engine.executeQuery("SELECT * FROM products WHERE id = 2");
+        final ResultSet result = engine.executeQuery("SELECT * FROM products WHERE id = 2");
         assertEquals(1, result.getRowCount());
         assertEquals(2L, result.getRows().get(0).getValue(0));
         assertEquals("Mouse", result.getRows().get(0).getValue(1));
@@ -62,7 +65,7 @@ public class ExecuteImmediateTest extends BaseDatabaseTest {
         // Verify the table was created by inserting into it
         engine.execute("INSERT INTO orders VALUES (1, 'Alice')");
 
-        ResultSet result = engine.executeQuery("SELECT * FROM orders");
+        final ResultSet result = engine.executeQuery("SELECT * FROM orders");
         assertEquals(1, result.getRowCount());
         assertEquals("Alice", result.getRows().get(0).getValue(1));
     }
@@ -74,12 +77,12 @@ public class ExecuteImmediateTest extends BaseDatabaseTest {
         engine.execute("INSERT INTO products VALUES (2, 'Keyboard', 75)");
 
         // Execute SELECT using EXECUTE IMMEDIATE
-        var execResult = engine.execute("EXECUTE IMMEDIATE 'SELECT * FROM products WHERE price > 50'");
+        final var execResult = engine.execute("EXECUTE IMMEDIATE 'SELECT * FROM products WHERE price > 50'");
 
         assertTrue(execResult.isSuccess());
         assertFalse(execResult.getResultSets().isEmpty());
 
-        ResultSet result = execResult.getResultSets().get(0);
+        final ResultSet result = execResult.getResultSets().get(0);
         assertEquals(1, result.getRowCount());
         assertEquals("Keyboard", result.getRows().get(0).getValue(1));
     }
@@ -90,14 +93,14 @@ public class ExecuteImmediateTest extends BaseDatabaseTest {
         engine.execute("INSERT INTO products VALUES (1, 'Monitor', 300)");
 
         // First verify the initial price
-        ResultSet beforeUpdate = engine.executeQuery("SELECT * FROM products WHERE id = 1");
+        final ResultSet beforeUpdate = engine.executeQuery("SELECT * FROM products WHERE id = 1");
         assertEquals(300L, beforeUpdate.getRows().get(0).getValue(2)); // price is at index 2
 
         // Update using EXECUTE IMMEDIATE
         engine.execute("EXECUTE IMMEDIATE 'UPDATE products SET price = 350 WHERE id = 1'");
 
         // Check that price was updated
-        ResultSet afterUpdate = engine.executeQuery("SELECT * FROM products WHERE id = 1");
+        final ResultSet afterUpdate = engine.executeQuery("SELECT * FROM products WHERE id = 1");
         assertEquals(350L, afterUpdate.getRows().get(0).getValue(2)); // price is at index 2
     }
 
@@ -110,7 +113,7 @@ public class ExecuteImmediateTest extends BaseDatabaseTest {
         // Delete using EXECUTE IMMEDIATE
         engine.execute("EXECUTE IMMEDIATE 'DELETE FROM products WHERE price < 500'");
 
-        ResultSet result = engine.executeQuery("SELECT * FROM products");
+        final ResultSet result = engine.executeQuery("SELECT * FROM products");
         assertEquals(1, result.getRowCount());
         assertEquals("Phone", result.getRows().get(0).getValue(1));
     }
@@ -121,7 +124,7 @@ public class ExecuteImmediateTest extends BaseDatabaseTest {
         engine.execute("EXECUTE IMMEDIATE 'CREATE TABLE temp_data (id INTEGER, value VARCHAR)'");
         engine.execute("EXECUTE IMMEDIATE 'INSERT INTO temp_data VALUES (1, ''test'')'");
 
-        ResultSet result = engine.executeQuery("SELECT * FROM temp_data");
+        final ResultSet result = engine.executeQuery("SELECT * FROM temp_data");
         assertEquals(1, result.getRowCount());
         assertEquals("test", result.getRows().get(0).getValue(1));
     }
@@ -134,7 +137,7 @@ public class ExecuteImmediateTest extends BaseDatabaseTest {
         // A session variable source needs the $ prefix (live-verified)
         engine.execute("EXECUTE IMMEDIATE $my_sql");
 
-        ResultSet result = engine.executeQuery("SELECT * FROM products WHERE id = 100");
+        final ResultSet result = engine.executeQuery("SELECT * FROM products WHERE id = 100");
         assertEquals(1, result.getRowCount());
         assertEquals("Variable Insert", result.getRows().get(0).getValue(1));
 
@@ -155,14 +158,14 @@ public class ExecuteImmediateTest extends BaseDatabaseTest {
         engine.execute("INSERT INTO products VALUES (3, 'Item C', 150)");
 
         // Execute complex query with ORDER BY and LIMIT
-        var execResult = engine.execute(
+        final var execResult = engine.execute(
             "EXECUTE IMMEDIATE 'SELECT * FROM products WHERE price >= 100 ORDER BY price DESC LIMIT 2'"
         );
 
         assertTrue(execResult.isSuccess());
         assertFalse(execResult.getResultSets().isEmpty());
 
-        ResultSet result = execResult.getResultSets().get(0);
+        final ResultSet result = execResult.getResultSets().get(0);
         assertEquals(2, result.getRowCount());
         assertEquals(200L, result.getRows().get(0).getValue(2)); // Highest price first
     }

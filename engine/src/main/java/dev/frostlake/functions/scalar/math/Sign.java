@@ -28,10 +28,12 @@ public class Sign extends NumericArgumentFunction {
     @Override
     public Object evaluate(final List<Object> args) {
         if (args.get(0) == null) return null;
-        BigDecimal num = new BigDecimal(args.get(0).toString());
+        final BigDecimal num = new BigDecimal(args.get(0).toString());
         return num.signum();
     }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return 1; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return 1; }
 }

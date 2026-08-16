@@ -22,7 +22,8 @@ import java.util.List;
  * Represents a FOREIGN KEY constraint (final not enforced, final metadata only)
  */
 public class ForeignKeyConstraint {
-    private final String constraintName;
+    // Not final: ALTER TABLE … RENAME CONSTRAINT moves a declared constraint to a new name.
+    private String constraintName;
     private final List<String> columnNames;
     private final String referencedTable;
     private final List<String> referencedColumns;
@@ -57,6 +58,11 @@ public class ForeignKeyConstraint {
 
     public String getConstraintName() {
         return constraintName;
+    }
+
+    /** Rename it in place — ALTER TABLE … RENAME CONSTRAINT. */
+    public void setConstraintName(final String constraintName) {
+        this.constraintName = constraintName;
     }
 
     public List<String> getColumnNames() {

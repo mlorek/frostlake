@@ -16,10 +16,8 @@
 
 package dev.frostlake.scripting;
 
-import dev.frostlake.DatabaseEngine;
+import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -29,24 +27,9 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 /**
  * Tests for LET statement and := assignment operator
  */
-public class LetAndAssignmentTest {
+public class LetAndAssignmentTest extends BaseDatabaseTest {
 
     private static final Logger logger = LoggerFactory.getLogger(LetAndAssignmentTest.class);
-    private DatabaseEngine engine;
-
-    @BeforeEach
-    public void setUp() {
-        engine = new DatabaseEngine();
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
-    }
-
-    @AfterEach
-    public void tearDown() {
-        if (engine != null) {
-            engine.shutdown();
-        }
-    }
 
     @Test
     public void testLetStatement() {
@@ -55,13 +38,13 @@ public class LetAndAssignmentTest {
         engine.execute("CREATE TABLE results (value INTEGER)");
 
         engine.execute("""
-            LET x INTEGER := 42;
             BEGIN
+                LET x INTEGER := 42;
                 INSERT INTO results VALUES (:x);
             END;
             """);
 
-        ResultSet rs = engine.executeQuery("SELECT * FROM results");
+        final ResultSet rs = engine.executeQuery("SELECT * FROM results");
         assertEquals(1, rs.getRowCount());
         assertEquals(42L, ((Number) rs.getRows().get(0).getValue(0)).longValue());
     }
@@ -80,7 +63,7 @@ public class LetAndAssignmentTest {
             END;
             """);
 
-        ResultSet rs = engine.executeQuery("SELECT * FROM results");
+        final ResultSet rs = engine.executeQuery("SELECT * FROM results");
         assertEquals(1, rs.getRowCount());
         assertEquals(20L, ((Number) rs.getRows().get(0).getValue(0)).longValue());
     }
@@ -99,7 +82,7 @@ public class LetAndAssignmentTest {
             END;
             """);
 
-        ResultSet rs = engine.executeQuery("SELECT * FROM results");
+        final ResultSet rs = engine.executeQuery("SELECT * FROM results");
         assertEquals(1, rs.getRowCount());
         assertEquals(30L, ((Number) rs.getRows().get(0).getValue(0)).longValue());
     }
@@ -122,7 +105,7 @@ public class LetAndAssignmentTest {
             END;
             """);
 
-        ResultSet rs = engine.executeQuery("SELECT * FROM results");
+        final ResultSet rs = engine.executeQuery("SELECT * FROM results");
         assertEquals(1, rs.getRowCount());
         assertEquals(6L, ((Number) rs.getRows().get(0).getValue(0)).longValue());
     }
@@ -144,7 +127,7 @@ public class LetAndAssignmentTest {
             END;
             """);
 
-        ResultSet rs = engine.executeQuery("SELECT * FROM results");
+        final ResultSet rs = engine.executeQuery("SELECT * FROM results");
         assertEquals(1, rs.getRowCount());
         assertEquals(6L, ((Number) rs.getRows().get(0).getValue(0)).longValue());
         assertEquals(20L, ((Number) rs.getRows().get(0).getValue(1)).longValue());
@@ -160,14 +143,14 @@ public class LetAndAssignmentTest {
             DECLARE x INTEGER := 1;
             BEGIN
                 INSERT INTO results VALUES (:x);
-            END;
-            LET x INTEGER := 100;
-            BEGIN
-                INSERT INTO results VALUES (:x);
+                BEGIN
+                    LET x INTEGER := 100;
+                    INSERT INTO results VALUES (:x);
+                END;
             END;
             """);
 
-        ResultSet rs = engine.executeQuery("SELECT * FROM results ORDER BY value");
+        final ResultSet rs = engine.executeQuery("SELECT * FROM results ORDER BY value");
         assertEquals(2, rs.getRowCount());
         assertEquals(1L, ((Number) rs.getRows().get(0).getValue(0)).longValue());
         assertEquals(100L, ((Number) rs.getRows().get(1).getValue(0)).longValue());
@@ -193,7 +176,7 @@ public class LetAndAssignmentTest {
             END;
             """);
 
-        ResultSet rs = engine.executeQuery("SELECT * FROM results");
+        final ResultSet rs = engine.executeQuery("SELECT * FROM results");
         assertEquals(1, rs.getRowCount());
         // a = 1, b = 2, c = 3
         // a := a + b => a = 3
@@ -219,7 +202,7 @@ public class LetAndAssignmentTest {
             END;
             """);
 
-        ResultSet rs = engine.executeQuery("SELECT * FROM results");
+        final ResultSet rs = engine.executeQuery("SELECT * FROM results");
         assertEquals(1, rs.getRowCount());
         // (10 + 5) * 2 - 10 = 15 * 2 - 10 = 30 - 10 = 20
         assertEquals(20L, ((Number) rs.getRows().get(0).getValue(0)).longValue());

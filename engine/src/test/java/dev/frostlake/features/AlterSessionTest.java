@@ -16,195 +16,113 @@
 
 package dev.frostlake.features;
 
-import dev.frostlake.DatabaseEngine;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
+import dev.frostlake.BaseDatabaseTest;
+import dev.frostlake.FrostlakeJdbc;
+import dev.frostlake.storage.ResultSet;
+
 import org.junit.jupiter.api.Test;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 
 /**
- * Tests for ALTER SESSION statement with session parameters
+ * ALTER SESSION SET/UNSET observed through {@code SHOW PARAMETERS} — the SQL surface a real
+ * account exposes, so the value round-trips run on every transport. The
+ * {@code MULTI_STATEMENT_COUNT} cells stay on the plain embedded engine only: on a gated
+ * transport (live, or the direct driver) a session count of 5 refuses every follow-up
+ * single-statement request including the read-back, and {@code JdbcMultiStatementTest} owns
+ * that two-sided surface via statement-scoped parameters. Engine-internal typing of stored
+ * values (Long/Boolean/String) and {@code SessionContext.reset()} are pinned embedded-only.
  */
-public class AlterSessionTest {
-    private static final Logger logger = LoggerFactory.getLogger(AlterSessionTest.class);
+public class AlterSessionTest extends BaseDatabaseTest {
 
-    private DatabaseEngine engine;
-
-    @BeforeEach
-    public void setUp() {
-        engine = new DatabaseEngine();
-        logger.info("DatabaseEngine initialized for ALTER SESSION tests");
+    /** The {@code value} column of {@code SHOW PARAMETERS LIKE '<name>'} (session scope). */
+    private String parameterValue(final String name) {
+        final ResultSet rs = engine.executeQuery("SHOW PARAMETERS LIKE '" + name + "'");
+        assertEquals(1, rs.getRowCount(), name);
+        return String.valueOf(rs.getRows().get(0).getValue(1));
     }
 
-    @AfterEach
-    public void tearDown() {
-        if (engine != null) {
-            engine.shutdown();
-        }
+    /** True when statements ride a transport whose multi-statement gate refuses lone reads. */
+    private static boolean multiStatementGated() {
+        return isLiveSnowflake() || FrostlakeJdbc.enabled();
     }
 
     @Test
-    public void testAlterSessionSetMultiStatementCountZero() {
-        logger.info("Testing ALTER SESSION SET MULTI_STATEMENT_COUNT = 0");
-
-        // Verify default value
-        Object defaultValue = engine.getSessionContext().getSessionParameter("MULTI_STATEMENT_COUNT");
-        assertEquals(1, defaultValue);
-
-        // Set to 0
-        engine.execute("ALTER SESSION SET MULTI_STATEMENT_COUNT = 0");
-
-        // Verify the value was set
-        Object value = engine.getSessionContext().getSessionParameter("MULTI_STATEMENT_COUNT");
-        assertNotNull(value);
-        assertEquals(0L, value);
-
-        logger.info("MULTI_STATEMENT_COUNT set to: {}", value);
-    }
-
-    @Test
-    public void testAlterSessionSetMultiStatementCountOne() {
-        logger.info("Testing ALTER SESSION SET MULTI_STATEMENT_COUNT = 1");
-
-        // Set to 0 first
-        engine.execute("ALTER SESSION SET MULTI_STATEMENT_COUNT = 0");
-
-        // Set back to 1
-        engine.execute("ALTER SESSION SET MULTI_STATEMENT_COUNT = 1");
-
-        // Verify the value was set
-        Object value = engine.getSessionContext().getSessionParameter("MULTI_STATEMENT_COUNT");
-        assertNotNull(value);
-        assertEquals(1L, value);
-
-        logger.info("MULTI_STATEMENT_COUNT set to: {}", value);
-    }
-
-    @Test
-    public void testAlterSessionSetMultiStatementCountMultiple() {
-        logger.info("Testing ALTER SESSION SET MULTI_STATEMENT_COUNT with multiple values");
-
-        // Set to 5
-        engine.execute("ALTER SESSION SET MULTI_STATEMENT_COUNT = 5");
-        assertEquals(5L, engine.getSessionContext().getSessionParameter("MULTI_STATEMENT_COUNT"));
-
-        // Set to 10
-        engine.execute("ALTER SESSION SET MULTI_STATEMENT_COUNT = 10");
-        assertEquals(10L, engine.getSessionContext().getSessionParameter("MULTI_STATEMENT_COUNT"));
-
-        // Set back to 0
-        engine.execute("ALTER SESSION SET MULTI_STATEMENT_COUNT = 0");
-        assertEquals(0L, engine.getSessionContext().getSessionParameter("MULTI_STATEMENT_COUNT"));
-
-        logger.info("Multiple MULTI_STATEMENT_COUNT values set successfully");
-    }
-
-    @Test
-    public void testAlterSessionSetCustomParameter() {
-        logger.info("Testing ALTER SESSION SET with custom parameter");
-
-        // Set a custom parameter
+    public void queryTagRoundTripsThroughShowParameters() {
         engine.execute("ALTER SESSION SET QUERY_TAG = 'test_query'");
-
-        // Verify the value was set
-        Object value = engine.getSessionContext().getSessionParameter("QUERY_TAG");
-        assertNotNull(value);
-        assertEquals("test_query", value);
-
-        logger.info("Custom parameter QUERY_TAG set to: {}", value);
+        assertEquals("test_query", parameterValue("QUERY_TAG"));
+        engine.execute("ALTER SESSION UNSET QUERY_TAG");
+        assertEquals("", parameterValue("QUERY_TAG"));
     }
 
     @Test
-    public void testAlterSessionSetNumericParameter() {
-        logger.info("Testing ALTER SESSION SET with numeric parameter");
-
-        // Set a numeric parameter
+    public void numericParameterRoundTripsThroughShowParameters() {
         engine.execute("ALTER SESSION SET STATEMENT_TIMEOUT_IN_SECONDS = 3600");
-
-        // Verify the value was set
-        Object value = engine.getSessionContext().getSessionParameter("STATEMENT_TIMEOUT_IN_SECONDS");
-        assertNotNull(value);
-        assertEquals(3600L, value);
-
-        logger.info("Numeric parameter set to: {}", value);
+        assertEquals("3600", parameterValue("STATEMENT_TIMEOUT_IN_SECONDS"));
+        engine.execute("ALTER SESSION UNSET STATEMENT_TIMEOUT_IN_SECONDS");
     }
 
     @Test
-    public void testAlterSessionSetBooleanParameter() {
-        logger.info("Testing ALTER SESSION SET with boolean parameter");
-
-        // Set a boolean parameter
+    public void booleanParameterRoundTripsThroughShowParameters() {
         engine.execute("ALTER SESSION SET AUTOCOMMIT = TRUE");
-
-        // Verify the value was set
-        Object value = engine.getSessionContext().getSessionParameter("AUTOCOMMIT");
-        assertNotNull(value);
-        assertEquals(true, value);
-
-        logger.info("Boolean parameter set to: {}", value);
+        assertEquals("true", parameterValue("AUTOCOMMIT"));
     }
 
     @Test
-    public void testSessionParametersPersistAcrossStatements() {
-        logger.info("Testing session parameters persist across statements");
-
-        // Set parameter
-        engine.execute("ALTER SESSION SET MULTI_STATEMENT_COUNT = 7");
-
-        // Execute other statements
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
-        engine.execute("CREATE TABLE test_table (id INTEGER)");
-
-        // Verify parameter still set
-        Object value = engine.getSessionContext().getSessionParameter("MULTI_STATEMENT_COUNT");
-        assertEquals(7L, value);
-
-        logger.info("Session parameter persisted across statements");
+    public void sessionParametersPersistAcrossStatements() {
+        engine.execute("ALTER SESSION SET QUERY_TAG = 'persist_tag'");
+        engine.execute("CREATE TABLE alter_session_t (id INTEGER)");
+        assertEquals("persist_tag", parameterValue("QUERY_TAG"));
+        engine.execute("ALTER SESSION UNSET QUERY_TAG");
     }
 
     @Test
-    public void testGetAllSessionParameters() {
-        logger.info("Testing getAllSessionParameters");
+    public void multiStatementCountRoundTripsThroughShowParameters() {
+        if (multiStatementGated()) {
+            return;
+        }
+        assertEquals("1", parameterValue("MULTI_STATEMENT_COUNT"));
+        engine.execute("ALTER SESSION SET MULTI_STATEMENT_COUNT = 0");
+        assertEquals("0", parameterValue("MULTI_STATEMENT_COUNT"));
+        engine.execute("ALTER SESSION SET MULTI_STATEMENT_COUNT = 5");
+        assertEquals("5", parameterValue("MULTI_STATEMENT_COUNT"));
+        engine.execute("ALTER SESSION SET MULTI_STATEMENT_COUNT = 10");
+        assertEquals("10", parameterValue("MULTI_STATEMENT_COUNT"));
+        engine.execute("ALTER SESSION UNSET MULTI_STATEMENT_COUNT");
+        assertEquals("1", parameterValue("MULTI_STATEMENT_COUNT"));
+    }
 
-        // Set multiple parameters
-        engine.execute("ALTER SESSION SET MULTI_STATEMENT_COUNT = 3");
+    @Test
+    public void storedSessionParameterValuesKeepTheirTypes() {
+        if (multiStatementGated()) {
+            return;
+        }
+        engine.execute("ALTER SESSION SET MULTI_STATEMENT_COUNT = 5");
+        assertEquals(5L,
+            engine.getSessionContext().getSessionParameter("MULTI_STATEMENT_COUNT"));
         engine.execute("ALTER SESSION SET QUERY_TAG = 'test'");
+        assertEquals("test", engine.getSessionContext().getSessionParameter("QUERY_TAG"));
         engine.execute("ALTER SESSION SET AUTOCOMMIT = FALSE");
+        assertEquals(false, engine.getSessionContext().getSessionParameter("AUTOCOMMIT"));
 
-        // Get all parameters
-        var params = engine.getSessionContext().getAllSessionParameters();
+        final var params = engine.getSessionContext().getAllSessionParameters();
         assertNotNull(params);
-        assertEquals(3L, params.get("MULTI_STATEMENT_COUNT"));
+        assertEquals(5L, params.get("MULTI_STATEMENT_COUNT"));
         assertEquals("test", params.get("QUERY_TAG"));
         assertEquals(false, params.get("AUTOCOMMIT"));
-
-        logger.info("Retrieved all session parameters: {}", params);
     }
 
     @Test
-    public void testSessionParametersResetAfterReset() {
-        logger.info("Testing session parameters reset after session reset");
-
-        // Set parameters
+    public void sessionResetRestoresDefaults() {
+        if (multiStatementGated()) {
+            return;
+        }
         engine.execute("ALTER SESSION SET MULTI_STATEMENT_COUNT = 5");
         engine.execute("ALTER SESSION SET QUERY_TAG = 'test'");
-
-        // Reset session
         engine.getSessionContext().reset();
-
-        // Verify default value restored
-        Object value = engine.getSessionContext().getSessionParameter("MULTI_STATEMENT_COUNT");
-        assertEquals(1, value);
-
-        // Verify custom parameter cleared
-        Object customParam = engine.getSessionContext().getSessionParameter("QUERY_TAG");
-        assertEquals(null, customParam);
-
-        logger.info("Session parameters reset successfully");
+        assertEquals(1, engine.getSessionContext().getSessionParameter("MULTI_STATEMENT_COUNT"));
+        assertNull(engine.getSessionContext().getSessionParameter("QUERY_TAG"));
     }
 }

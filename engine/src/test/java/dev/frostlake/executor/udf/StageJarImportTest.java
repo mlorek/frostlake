@@ -25,9 +25,6 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import javax.tools.JavaCompiler;
-import javax.tools.StandardJavaFileManager;
-import javax.tools.ToolProvider;
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
@@ -36,6 +33,9 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.jar.JarEntry;
 import java.util.jar.JarOutputStream;
+import javax.tools.JavaCompiler;
+import javax.tools.StandardJavaFileManager;
+import javax.tools.ToolProvider;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -104,7 +104,7 @@ public class StageJarImportTest {
         final ResultSet rs = engine.executeQuery("LIST @jar_stage");
         boolean found = false;
         for (final Row row : rs.getRows()) {
-            if ("handlers.jar".equals(String.valueOf(row.getValue(0)))) {
+            if ("jar_stage/handlers.jar".equals(String.valueOf(row.getValue(0)))) {
                 found = true;
             }
         }

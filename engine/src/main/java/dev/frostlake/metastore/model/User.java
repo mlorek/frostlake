@@ -122,8 +122,13 @@ public class User {
     }
 
     public void grantPrivilege(final String objectType, final String objectName, final Privilege privilege) {
-        String key = objectType.toUpperCase() + ":" + objectName.toUpperCase();
-        objectPrivileges.computeIfAbsent(key, (final var k) -> new HashSet<>()).add(privilege);
+        final String key = objectType.toUpperCase() + ":" + objectName.toUpperCase();
+        Set<Privilege> granted = objectPrivileges.get(key);
+        if (granted == null) {
+            granted = new HashSet<>();
+            objectPrivileges.put(key, granted);
+        }
+        granted.add(privilege);
     }
 
     // ── Grantor tracking (who ran the GRANT) — parallel to the privilege/role sets ──
@@ -156,8 +161,8 @@ public class User {
     }
 
     public void revokePrivilege(final String objectType, final String objectName, final Privilege privilege) {
-        String key = objectType.toUpperCase() + ":" + objectName.toUpperCase();
-        Set<Privilege> privileges = objectPrivileges.get(key);
+        final String key = objectType.toUpperCase() + ":" + objectName.toUpperCase();
+        final Set<Privilege> privileges = objectPrivileges.get(key);
         if (privileges != null) {
             privileges.remove(privilege);
             if (privileges.isEmpty()) {
@@ -167,13 +172,13 @@ public class User {
     }
 
     public boolean hasPrivilege(final String objectType, final String objectName, final Privilege privilege) {
-        String key = objectType.toUpperCase() + ":" + objectName.toUpperCase();
-        Set<Privilege> privileges = objectPrivileges.get(key);
+        final String key = objectType.toUpperCase() + ":" + objectName.toUpperCase();
+        final Set<Privilege> privileges = objectPrivileges.get(key);
         return privileges != null && privileges.contains(privilege);
     }
 
     public Set<Privilege> getPrivileges(final String objectType, final String objectName) {
-        String key = objectType.toUpperCase() + ":" + objectName.toUpperCase();
+        final String key = objectType.toUpperCase() + ":" + objectName.toUpperCase();
         return objectPrivileges.getOrDefault(key, new HashSet<>());
     }
 
@@ -182,17 +187,26 @@ public class User {
     }
 
     public void grantColumnPrivilege(final String objectType, final String objectName, final String columnName, final Privilege privilege) {
-        String key = objectType.toUpperCase() + ":" + objectName.toUpperCase();
-        columnPrivileges.computeIfAbsent(key, (final var k) -> new HashMap<>())
-            .computeIfAbsent(columnName.toUpperCase(), (final var k) -> new HashSet<>())
-            .add(privilege);
+        final String key = objectType.toUpperCase() + ":" + objectName.toUpperCase();
+        Map<String, Set<Privilege>> byColumn = columnPrivileges.get(key);
+        if (byColumn == null) {
+            byColumn = new HashMap<>();
+            columnPrivileges.put(key, byColumn);
+        }
+        final String upperColumn = columnName.toUpperCase();
+        Set<Privilege> granted = byColumn.get(upperColumn);
+        if (granted == null) {
+            granted = new HashSet<>();
+            byColumn.put(upperColumn, granted);
+        }
+        granted.add(privilege);
     }
 
     public void revokeColumnPrivilege(final String objectType, final String objectName, final String columnName, final Privilege privilege) {
-        String key = objectType.toUpperCase() + ":" + objectName.toUpperCase();
-        Map<String, Set<Privilege>> columns = columnPrivileges.get(key);
+        final String key = objectType.toUpperCase() + ":" + objectName.toUpperCase();
+        final Map<String, Set<Privilege>> columns = columnPrivileges.get(key);
         if (columns != null) {
-            Set<Privilege> privileges = columns.get(columnName.toUpperCase());
+            final Set<Privilege> privileges = columns.get(columnName.toUpperCase());
             if (privileges != null) {
                 privileges.remove(privilege);
                 if (privileges.isEmpty()) {
@@ -212,19 +226,19 @@ public class User {
         }
 
         // Then check column-level privilege
-        String key = objectType.toUpperCase() + ":" + objectName.toUpperCase();
-        Map<String, Set<Privilege>> columns = columnPrivileges.get(key);
+        final String key = objectType.toUpperCase() + ":" + objectName.toUpperCase();
+        final Map<String, Set<Privilege>> columns = columnPrivileges.get(key);
         if (columns != null) {
-            Set<Privilege> privileges = columns.get(columnName.toUpperCase());
+            final Set<Privilege> privileges = columns.get(columnName.toUpperCase());
             return privileges != null && privileges.contains(privilege);
         }
         return false;
     }
 
     public Set<String> getColumnsWithPrivilege(final String objectType, final String objectName, final Privilege privilege) {
-        Set<String> result = new HashSet<>();
-        String key = objectType.toUpperCase() + ":" + objectName.toUpperCase();
-        Map<String, Set<Privilege>> columns = columnPrivileges.get(key);
+        final Set<String> result = new HashSet<>();
+        final String key = objectType.toUpperCase() + ":" + objectName.toUpperCase();
+        final Map<String, Set<Privilege>> columns = columnPrivileges.get(key);
         if (columns != null) {
             for (final Map.Entry<String, Set<Privilege>> entry : columns.entrySet()) {
                 if (entry.getValue().contains(privilege)) {
@@ -236,7 +250,7 @@ public class User {
     }
 
     public Map<String, Map<String, Set<Privilege>>> getAllColumnPrivileges() {
-        Map<String, Map<String, Set<Privilege>>> result = new HashMap<>();
+        final Map<String, Map<String, Set<Privilege>>> result = new HashMap<>();
         for (final Map.Entry<String, Map<String, Set<Privilege>>> entry : columnPrivileges.entrySet()) {
             result.put(entry.getKey(), new HashMap<>(entry.getValue()));
         }

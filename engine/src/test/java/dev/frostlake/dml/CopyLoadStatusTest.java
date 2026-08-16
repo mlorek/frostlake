@@ -117,7 +117,7 @@ public class CopyLoadStatusTest {
     private void stage(final String fileName, final String content) throws IOException {
         final Path file = localDir.resolve(fileName);
         Files.write(file, content.getBytes(StandardCharsets.UTF_8));
-        engine.executeQuery("PUT file://" + file + " @%t");
+        engine.executeQuery("PUT file://" + file + " @%t AUTO_COMPRESS=FALSE");
     }
 
     private ResultSet copy(final String options) {

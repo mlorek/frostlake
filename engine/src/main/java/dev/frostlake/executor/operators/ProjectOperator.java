@@ -18,9 +18,9 @@ package dev.frostlake.executor.operators;
 
 import dev.frostlake.executor.ExpressionEvaluator;
 import dev.frostlake.executor.expressions.Expression;
-import dev.frostlake.executor.expressions.SourcePosition;
 import dev.frostlake.executor.expressions.ExpressionSource;
 import dev.frostlake.executor.expressions.RowOrdinal;
+import dev.frostlake.executor.expressions.SourcePosition;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.storage.Row;
 import org.slf4j.Logger;
@@ -130,10 +130,10 @@ public class ProjectOperator implements Operator {
         logger.debug("Projecting {} expressions across {} rows",
             projectionExpressions.size(), input.size());
 
-        List<Row> projectedRows = new ArrayList<>();
+        final List<Row> projectedRows = new ArrayList<>();
 
         // Parse each projection once; evaluate the AST per row (no per-row re-parse).
-        List<Expression> parsedExpressions = new ArrayList<>(projectionExpressions.size());
+        final List<Expression> parsedExpressions = new ArrayList<>(projectionExpressions.size());
         for (final String e : projectionExpressions) {
             parsedExpressions.add(ExpressionEvaluator.parse(e.trim()));
         }
@@ -145,7 +145,7 @@ public class ProjectOperator implements Operator {
             // projection runs its own operators, which number their own rows.
             final Long displacedOrdinal = RowOrdinal.begin(rowIndex);
             try {
-            List<Object> projectedValues = new ArrayList<>();
+            final List<Object> projectedValues = new ArrayList<>();
             // The running map of this row's already-computed aliases. When a shared sink was provided it IS
             // that map (the evaluator reads it as its lateral context, so a later item's expression can
             // reference an earlier alias, e.g. `x + 1 AS y` after `... AS x`); otherwise a private map that
@@ -157,8 +157,8 @@ public class ProjectOperator implements Operator {
             }
 
             for (int i = 0; i < projectionExpressions.size(); i++) {
-                String expr = projectionExpressions.get(i).trim();
-                Object value;
+                final String expr = projectionExpressions.get(i).trim();
+                final Object value;
                 // If the expression is exactly a previously-defined alias, reuse that value — but only
                 // when no FROM-source column has that name: the real column takes precedence over a
                 // same-named sibling alias (what makes a swap projection `SELECT t AS s, s AS t` read
@@ -169,7 +169,7 @@ public class ProjectOperator implements Operator {
                     // Note where this item began in the statement, so a message about an unresolvable
                     // column inside it can carry the position live always reports. A star-expanded
                     // item has no origin — nobody wrote it — and reports none.
-                    final SourcePosition displaced = ExpressionSource.begin(originOf(i));
+                    final SourcePosition displaced = ExpressionSource.beginNested(originOf(i));
                     try {
                         value = evaluateExpression(parsedExpressions.get(i), row);
                     } finally {

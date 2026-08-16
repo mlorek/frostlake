@@ -30,6 +30,8 @@ public class Bitnot extends NumericArgumentFunction {
         return ~((Number) args.get(0)).longValue();
     }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return 1; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return 1; }
 }

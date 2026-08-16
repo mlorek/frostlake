@@ -16,17 +16,18 @@
 
 package dev.frostlake.executor;
 
+import dev.frostlake.executor.expressions.DefaultMarkerExpression;
 import dev.frostlake.executor.expressions.Expression;
+import dev.frostlake.executor.expressions.ExpressionSource;
+import dev.frostlake.executor.expressions.SourcePosition;
 import dev.frostlake.executor.expressions.SqlTruth;
 import dev.frostlake.metastore.model.Privilege;
 import dev.frostlake.metastore.model.SecurableObjectType;
 import dev.frostlake.metastore.model.Table;
-import dev.frostlake.executor.expressions.ExpressionSource;
-import dev.frostlake.executor.expressions.SourcePosition;
 import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.Row;
-import dev.frostlake.storage.StorageEngine;
+import dev.frostlake.storage.TableStorage;
 import dev.frostlake.transaction.TransactionWriteSet;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -73,10 +74,10 @@ final class UpdateDeleteExecutor {
             // WITH-prefixed DML is not Snowflake syntax (live-verified).
             final Map<String, ResultSet> cteResults = null;
 
-            String tableName = ctx.objectName().KW_IDENTIFIER() != null
+            final String tableName = ctx.objectName().KW_IDENTIFIER() != null
                 ? executor.resolveObjectName(ctx.objectName())
                 : executor.getQualifiedName(ctx.objectName().qualifiedName());
-            Table table = executor.getCatalog().resolveTableAsWritten(tableName, "Object");
+            final Table table = executor.getCatalog().resolveTableAsWritten(tableName, "Object");
 
             // Check UPDATE permission
             if (executor.getSecurityManager() != null) {
@@ -84,17 +85,17 @@ final class UpdateDeleteExecutor {
             }
 
             // Parse assignments
-            Map<String, String> assignments = new HashMap<>();
+            final Map<String, String> assignments = new HashMap<>();
             // Where each SET value begins in the statement, so an unknown name inside it reports the
             // place it was written. The assignments themselves are keyed by column, which loses the
             // parse context, so the origins travel alongside.
             final Map<String, SourcePosition> assignmentOrigins = new HashMap<>();
             for (final FrostlakeParser.AssignmentContext assign : ctx.assignmentList().assignment()) {
                 // Handle qualified identifiers (table.column) or simple identifiers
-                String colName = ParseTreeText.namePartText(assign.namePart());
+                final String colName = ParseTreeText.namePartText(assign.namePart());
                 // getOriginalText (not getText) so whitespace is preserved — a value like
                 // (SELECT MAX(value) FROM test) must stay parseable when re-evaluated.
-                String value = executor.getOriginalText(assign.expression());
+                final String value = executor.getOriginalText(assign.expression());
                 assignments.put(colName, value);
                 assignmentOrigins.put(colName, new SourcePosition(
                     assign.expression().getStart().getLine(),
@@ -108,7 +109,14 @@ final class UpdateDeleteExecutor {
             }
 
             // Get all rows - use fully qualified name
-            String fullyQualifiedName = executor.getFullyQualifiedTableName(tableName);
+            final String fullyQualifiedName = executor.getFullyQualifiedTableName(tableName);
+
+            // The PARTITIONS lock registers per STATEMENT KIND, not per matched row — a rewrite
+            // matching nothing still locks its table (live-verified).
+            final var rewriteTxn = executor.getTransactionManager().getCurrentTransaction();
+            if (rewriteTxn != null) {
+                rewriteTxn.recordTableTouch(fullyQualifiedName);
+            }
 
             // UPDATE … FROM <source(s)>: join the target with the source rows on the WHERE predicate.
             if (ctx.tableReference() != null && !ctx.tableReference().isEmpty()) {
@@ -126,7 +134,7 @@ final class UpdateDeleteExecutor {
 
             final String updateTargetAlias = ctx.identifier() != null ? executor.getIdentifier(ctx.identifier()) : null;
             if (executor.isDeferredApply()) {
-                int n = executeUpdateDeferred(table, fullyQualifiedName, updateTargetAlias, assignments,
+                final int n = executeUpdateDeferred(table, fullyQualifiedName, updateTargetAlias, assignments,
                     ctx.whereClause() != null ? executor.getOriginalText(ctx.whereClause().booleanExpr()) : null,
                     cteResults, assignmentOrigins,
                     ctx.whereClause() != null ? originOf(ctx.whereClause()) : null);
@@ -134,13 +142,13 @@ final class UpdateDeleteExecutor {
                 return executor.updateCountResult(n);
             }
 
-            List<Row> rows = executor.getStorageEngine().getTableStorage(fullyQualifiedName).scan();
+            final List<Row> rows = executor.getStorageEngine().getTableStorage(fullyQualifiedName).scan();
 
             // Apply WHERE clause to find matching rows
             List<Row> matchingRows = rows;
             if (ctx.whereClause() != null) {
-                String whereExpr = executor.getOriginalText(ctx.whereClause().booleanExpr());
-                final SourcePosition displacedWhere = ExpressionSource.begin(originOf(ctx.whereClause()));
+                final String whereExpr = executor.getOriginalText(ctx.whereClause().booleanExpr());
+                final SourcePosition displacedWhere = ExpressionSource.beginNested(originOf(ctx.whereClause()));
                 try {
                     matchingRows = cteResults != null
                         ? executor.filterRowsWithCTEs(rows, table, updateTargetAlias, whereExpr, cteResults)
@@ -157,35 +165,54 @@ final class UpdateDeleteExecutor {
                 executor.setCurrentCteContext(cteResults);
             }
             try {
+                // Each SET column's index is a per-STATEMENT fact — resolve once, not per row.
+                final Map<String, Integer> setIndexes = new HashMap<>();
+                for (final String setColumn : assignments.keySet()) {
+                    setIndexes.put(setColumn, executor.getColumnIndex(table, setColumn));
+                }
+                final TableStorage updateStorage =
+                    executor.getStorageEngine().getTableStorage(fullyQualifiedName);
+                final Map<Row, Integer> rowPositions = firstPositionsOf(rows);
                 for (final Row row : matchingRows) {
-                    Row oldRow = row.copy();
-                    int rowIndex = rows.indexOf(row);
+                    // REPLACE, never mutate: the stored row stays frozen (time-travel snapshots are
+                    // pointer copies because of this), and the untouched original IS the old image.
+                    final Row oldRow = row;
+                    final int rowIndex = rowPositions.get(row).intValue();
+                    final Row updatedRow = row.copy();
 
                     for (final Map.Entry<String, String> entry : assignments.entrySet()) {
-                        String colName = entry.getKey();
-                        String valueExpr = entry.getValue();
+                        final String colName = entry.getKey();
+                        final String valueExpr = entry.getValue();
 
-                        int colIndex = executor.getColumnIndex(table, colName);
+                        final int colIndex = setIndexes.get(colName).intValue();
                         final SourcePosition displaced =
-                            ExpressionSource.begin(assignmentOrigins.get(colName));
+                            ExpressionSource.beginNested(assignmentOrigins.get(colName));
                         final Object newValue;
                         try {
-                            newValue = executor.evaluateExpression(valueExpr, row, table);
+                            // A bare DEFAULT writes the column's DECLARED default — or NULL when it has
+                            // none, which a NOT NULL column then refuses, exactly as live does. Read
+                            // from the parse tree: anything larger than the lone word evaluates, and
+                            // raises the "invalid identifier 'DEFAULT'" live gives `SET c = DEFAULT + 1`.
+                            newValue = ExpressionEvaluator.parse(valueExpr)
+                                    instanceof DefaultMarkerExpression
+                                ? executor.declaredDefaultFor(table, colIndex, fullyQualifiedName)
+                                : executor.evaluateExpression(valueExpr, updatedRow, table);
                         } finally {
                             ExpressionSource.end(displaced);
                         }
-                        row.setValue(colIndex, newValue);
+                        updatedRow.setValue(colIndex, newValue);
                     }
-                    executor.enforceColumnConstraintsForDml(table, row);
+                    executor.enforceColumnConstraintsForDml(table, updatedRow);
+                    updateStorage.replaceRow(rowIndex, updatedRow);
 
                     // Log transaction
                     if (executor.getTransactionManager().hasActiveTransaction()) {
-                        executor.getTransactionManager().getCurrentTransaction().logUpdate(fullyQualifiedName, rowIndex, oldRow, row);
+                        executor.getTransactionManager().getCurrentTransaction().logUpdate(fullyQualifiedName, rowIndex, oldRow, updatedRow);
                     }
 
                     // Track stream changes with fully qualified name
                     if (executor.getStreamManager() != null) {
-                        executor.getStreamManager().trackUpdate(fullyQualifiedName, oldRow, row);
+                        executor.getStreamManager().trackUpdate(fullyQualifiedName, oldRow, updatedRow);
                     }
 
                     rowsUpdated++;
@@ -218,10 +245,10 @@ final class UpdateDeleteExecutor {
             // WITH-prefixed DML is not Snowflake syntax (live-verified).
             final Map<String, ResultSet> cteResults = null;
 
-            String tableName = ctx.objectName().KW_IDENTIFIER() != null
+            final String tableName = ctx.objectName().KW_IDENTIFIER() != null
                 ? executor.resolveObjectName(ctx.objectName())
                 : executor.getQualifiedName(ctx.objectName().qualifiedName());
-            Table table = executor.getCatalog().resolveTableAsWritten(tableName, "Object");
+            final Table table = executor.getCatalog().resolveTableAsWritten(tableName, "Object");
 
             // Check DELETE permission
             if (executor.getSecurityManager() != null) {
@@ -229,7 +256,14 @@ final class UpdateDeleteExecutor {
             }
 
             // Get all rows - use fully qualified name
-            String fullyQualifiedName = executor.getFullyQualifiedTableName(tableName);
+            final String fullyQualifiedName = executor.getFullyQualifiedTableName(tableName);
+
+            // The PARTITIONS lock registers per STATEMENT KIND, not per matched row — a DELETE
+            // matching nothing still locks its table (live-verified).
+            final var rewriteTxn = executor.getTransactionManager().getCurrentTransaction();
+            if (rewriteTxn != null) {
+                rewriteTxn.recordTableTouch(fullyQualifiedName);
+            }
 
             // DELETE … USING <source(s)>: join the target with the source rows on the WHERE predicate.
             if (ctx.tableReference() != null && !ctx.tableReference().isEmpty()) {
@@ -243,46 +277,45 @@ final class UpdateDeleteExecutor {
 
             final String deleteTargetAlias = ctx.identifier() != null ? executor.getIdentifier(ctx.identifier()) : null;
             if (executor.isDeferredApply()) {
-                int n = executeDeleteDeferred(table, fullyQualifiedName, deleteTargetAlias,
+                final int n = executeDeleteDeferred(table, fullyQualifiedName, deleteTargetAlias,
                     ctx.whereClause() != null ? executor.getOriginalText(ctx.whereClause().booleanExpr()) : null,
                     cteResults, ctx.whereClause() != null ? originOf(ctx.whereClause()) : null);
                 logger.trace("Deleted {} rows (deferred) from table: {}", n, tableName);
                 return executor.dmlCountResult("number of rows deleted", n);
             }
 
-            List<Row> rows = executor.getStorageEngine().getTableStorage(fullyQualifiedName).scan();
+            final List<Row> rows = executor.getStorageEngine().getTableStorage(fullyQualifiedName).scan();
 
             // Apply WHERE clause (with CTE support)
             List<Row> rowsToDelete = rows;
             if (ctx.whereClause() != null) {
-                String whereExpr = executor.getOriginalText(ctx.whereClause().booleanExpr());
+                final String whereExpr = executor.getOriginalText(ctx.whereClause().booleanExpr());
                 rowsToDelete = cteResults != null
                     ? executor.filterRowsWithCTEs(rows, table, deleteTargetAlias, whereExpr, cteResults)
                     : executor.filterRows(rows, table, deleteTargetAlias, whereExpr);
             }
 
             // Collect indices to delete (in reverse order to avoid shifting)
-            List<Integer> indicesToDelete = new ArrayList<>();
+            final List<Integer> indicesToDelete = new ArrayList<>();
+            final Map<Row, Integer> deletePositions = firstPositionsOf(rows);
             for (final Row row : rowsToDelete) {
-                int rowIndex = rows.indexOf(row);
-                if (rowIndex >= 0) {
+                final Integer rowIndex = deletePositions.get(row);
+                if (rowIndex != null) {
                     indicesToDelete.add(rowIndex);
                 }
             }
 
-            // Sort in reverse order and delete
+            // Sort in reverse order; log each row first, then delete ALL in one compaction pass.
             indicesToDelete.sort(Collections.reverseOrder());
             int rowsDeleted = 0;
             for (final int index : indicesToDelete) {
-                Row deletedRow = rows.get(index);
-
-                // Log transaction before deleting
+                final Row deletedRow = rows.get(index);
                 if (executor.getTransactionManager().hasActiveTransaction()) {
                     executor.getTransactionManager().getCurrentTransaction().logDelete(fullyQualifiedName, index, deletedRow);
                 }
-
-                executor.getStorageEngine().getTableStorage(fullyQualifiedName).delete(index);
-
+            }
+            executor.getStorageEngine().getTableStorage(fullyQualifiedName).deleteAll(indicesToDelete);
+            for (int deleteOrdinal = 0; deleteOrdinal < indicesToDelete.size(); deleteOrdinal++) {
                 // Track stream changes with fully qualified name
                 if (executor.getStreamManager() != null) {
                     executor.getStreamManager().trackDelete(fullyQualifiedName, rowsToDelete.get(rowsDeleted));
@@ -313,21 +346,22 @@ final class UpdateDeleteExecutor {
             final Map<String, ResultSet> cteResults,
             final Map<String, SourcePosition> assignmentOrigins, final SourcePosition whereOrigin) {
         final TransactionWriteSet writeSet = executor.getTransactionManager().getCurrentTransaction().getWriteSet();
-        final StorageEngine.TableStorage tableStorage = executor.getStorageEngine().getTableStorage(fullyQualifiedName);
+        final TableStorage tableStorage = executor.getStorageEngine().getTableStorage(fullyQualifiedName);
 
         // This transaction's effective view of committed base rows (pending updates applied, pending deletes
         // removed), tracking each row's stable id so the change can be recorded by id.
-        final List<Row> baseRows = tableStorage.scan();
-        final List<Long> baseIds = tableStorage.getRowIds();
-        final List<Row> effective = new ArrayList<>(baseRows.size());
-        final List<Long> effectiveIds = new ArrayList<>(baseRows.size());
-        for (int i = 0; i < baseRows.size(); i++) {
-            final long id = baseIds.get(i);
+        // Index iteration under the engine lock — the scan()/getRowIds() copies were pure waste
+        // when the effective lists are built row by row anyway.
+        final int baseCount = tableStorage.getRowCount();
+        final List<Row> effective = new ArrayList<>(baseCount);
+        final List<Long> effectiveIds = new ArrayList<>(baseCount);
+        for (int i = 0; i < baseCount; i++) {
+            final long id = tableStorage.getRowId(i);
             if (writeSet.isDeleted(fullyQualifiedName, id)) {
                 continue;
             }
             final Row pending = writeSet.pendingUpdate(fullyQualifiedName, id);
-            effective.add(pending != null ? pending : baseRows.get(i));
+            effective.add(pending != null ? pending : tableStorage.getRow(i));
             effectiveIds.add(id);
         }
 
@@ -335,7 +369,7 @@ final class UpdateDeleteExecutor {
 
         List<Row> matching = effective;
         if (whereExpr != null) {
-            final SourcePosition displaced = ExpressionSource.begin(whereOrigin);
+            final SourcePosition displaced = ExpressionSource.beginNested(whereOrigin);
             try {
                 matching = cteResults != null
                     ? executor.filterRowsWithCTEs(effective, table, targetAlias, whereExpr, cteResults)
@@ -361,18 +395,25 @@ final class UpdateDeleteExecutor {
             executor.setCurrentCteContext(cteResults);
         }
         try {
+            // Each SET column's index is a per-STATEMENT fact — resolve once, not per row.
+            final Map<String, Integer> setIndexes = new HashMap<>();
+            for (final String setColumn : assignments.keySet()) {
+                setIndexes.put(setColumn, executor.getColumnIndex(table, setColumn));
+            }
+            final Map<Row, Integer> effectivePositions = firstPositionsOf(effective);
             for (final Row row : matching) {
-                final int idx = effective.indexOf(row);
-                if (idx >= 0) {
-                    writeSet.recordUpdate(fullyQualifiedName, effectiveIds.get(idx),
-                        buildUpdatedRow(row, table, assignments, assignmentOrigins));
+                final Integer idx = effectivePositions.get(row);
+                if (idx != null) {
+                    writeSet.recordUpdate(fullyQualifiedName, effectiveIds.get(idx.intValue()),
+                        buildUpdatedRow(row, table, assignments, assignmentOrigins, setIndexes));
                     rowsUpdated++;
                 }
             }
+            final Map<Row, Integer> pendingPositions = firstPositionsOf(pendingInserts);
             for (final Row row : matchingPending) {
-                final int idx = pendingInserts.indexOf(row);
-                if (idx >= 0) {
-                    writeSet.setPendingInsert(fullyQualifiedName, idx, buildUpdatedRow(row, table, assignments, assignmentOrigins));
+                final Integer idx = pendingPositions.get(row);
+                if (idx != null) {
+                    writeSet.setPendingInsert(fullyQualifiedName, idx.intValue(), buildUpdatedRow(row, table, assignments, assignmentOrigins, setIndexes));
                     rowsUpdated++;
                 }
             }
@@ -393,19 +434,20 @@ final class UpdateDeleteExecutor {
             final String whereExpr, final Map<String, ResultSet> cteResults,
             final SourcePosition whereOrigin) {
         final TransactionWriteSet writeSet = executor.getTransactionManager().getCurrentTransaction().getWriteSet();
-        final StorageEngine.TableStorage tableStorage = executor.getStorageEngine().getTableStorage(fullyQualifiedName);
+        final TableStorage tableStorage = executor.getStorageEngine().getTableStorage(fullyQualifiedName);
 
-        final List<Row> baseRows = tableStorage.scan();
-        final List<Long> baseIds = tableStorage.getRowIds();
-        final List<Row> effective = new ArrayList<>(baseRows.size());
-        final List<Long> effectiveIds = new ArrayList<>(baseRows.size());
-        for (int i = 0; i < baseRows.size(); i++) {
-            final long id = baseIds.get(i);
+        // Index iteration under the engine lock — the scan()/getRowIds() copies were pure waste
+        // when the effective lists are built row by row anyway.
+        final int baseCount = tableStorage.getRowCount();
+        final List<Row> effective = new ArrayList<>(baseCount);
+        final List<Long> effectiveIds = new ArrayList<>(baseCount);
+        for (int i = 0; i < baseCount; i++) {
+            final long id = tableStorage.getRowId(i);
             if (writeSet.isDeleted(fullyQualifiedName, id)) {
                 continue;
             }
             final Row pending = writeSet.pendingUpdate(fullyQualifiedName, id);
-            effective.add(pending != null ? pending : baseRows.get(i));
+            effective.add(pending != null ? pending : tableStorage.getRow(i));
             effectiveIds.add(id);
         }
 
@@ -413,7 +455,7 @@ final class UpdateDeleteExecutor {
 
         List<Row> matching = effective;
         if (whereExpr != null) {
-            final SourcePosition displaced = ExpressionSource.begin(whereOrigin);
+            final SourcePosition displaced = ExpressionSource.beginNested(whereOrigin);
             try {
                 matching = cteResults != null
                     ? executor.filterRowsWithCTEs(effective, table, targetAlias, whereExpr, cteResults)
@@ -422,10 +464,11 @@ final class UpdateDeleteExecutor {
                 ExpressionSource.end(displaced);
             }
         }
+        final Map<Row, Integer> effectivePositions = firstPositionsOf(effective);
         for (final Row row : matching) {
-            final int idx = effective.indexOf(row);
-            if (idx >= 0) {
-                writeSet.recordDelete(fullyQualifiedName, effectiveIds.get(idx));
+            final Integer idx = effectivePositions.get(row);
+            if (idx != null) {
+                writeSet.recordDelete(fullyQualifiedName, effectiveIds.get(idx.intValue()));
                 rowsDeleted++;
             }
         }
@@ -439,9 +482,10 @@ final class UpdateDeleteExecutor {
                 : executor.filterRows(pendingInserts, table, targetAlias, whereExpr);
         }
         final List<Integer> pendingIndices = new ArrayList<>();
+        final Map<Row, Integer> pendingPositions = firstPositionsOf(pendingInserts);
         for (final Row row : matchingPending) {
-            final int idx = pendingInserts.indexOf(row);
-            if (idx >= 0) {
+            final Integer idx = pendingPositions.get(row);
+            if (idx != null) {
                 pendingIndices.add(idx);
             }
         }
@@ -454,19 +498,36 @@ final class UpdateDeleteExecutor {
         return rowsDeleted;
     }
 
+    /** First-occurrence position of every row VALUE in {@code rows} — one pass replacing the
+     *  per-matched-row indexOf equals-scan, reproducing its first-equal-wins answer exactly. */
+    private static Map<Row, Integer> firstPositionsOf(final List<Row> rows) {
+        final Map<Row, Integer> positions = new HashMap<>();
+        for (int i = 0; i < rows.size(); i++) {
+            if (!positions.containsKey(rows.get(i))) {
+                positions.put(rows.get(i), Integer.valueOf(i));
+            }
+        }
+        return positions;
+    }
+
     /** Build a copy of {@code source} with the UPDATE assignments applied (never mutates the base row). */
     private Row buildUpdatedRow(final Row source, final Table table, final Map<String, String> assignments,
-                                final Map<String, SourcePosition> origins) {
+                                final Map<String, SourcePosition> origins,
+                                final Map<String, Integer> setIndexes) {
         final Row newRow = source.copy();
         for (final Map.Entry<String, String> entry : assignments.entrySet()) {
-            final int colIndex = executor.getColumnIndex(table, entry.getKey());
+            final int colIndex = setIndexes.get(entry.getKey()).intValue();
             // Each value is evaluated under ITS OWN origin, so an unknown name inside one SET value
             // reports that value's place rather than the statement's or the previous assignment's.
             final SourcePosition displaced =
-                ExpressionSource.begin(origins == null ? null : origins.get(entry.getKey()));
+                ExpressionSource.beginNested(origins == null ? null : origins.get(entry.getKey()));
             final Object newValue;
             try {
-                newValue = executor.evaluateExpression(entry.getValue(), newRow, table);
+                // The bare DML DEFAULT, as in the other assignment path — see there for the rule.
+                newValue = ExpressionEvaluator.parse(entry.getValue())
+                        instanceof DefaultMarkerExpression
+                    ? executor.declaredDefaultFor(table, colIndex, table.getName())
+                    : executor.evaluateExpression(entry.getValue(), newRow, table);
             } finally {
                 ExpressionSource.end(displaced);
             }
@@ -515,7 +576,7 @@ final class UpdateDeleteExecutor {
 
         final TransactionWriteSet writeSet = executor.isDeferredApply()
             ? executor.getTransactionManager().getCurrentTransaction().getWriteSet() : null;
-        final StorageEngine.TableStorage tableStorage = executor.getStorageEngine().getTableStorage(targetFqn);
+        final TableStorage tableStorage = executor.getStorageEngine().getTableStorage(targetFqn);
         final List<Row> baseRows = tableStorage.scan();
         final List<Long> baseIds = tableStorage.getRowIds();
 
@@ -587,7 +648,7 @@ final class UpdateDeleteExecutor {
 
         final TransactionWriteSet writeSet = executor.isDeferredApply()
             ? executor.getTransactionManager().getCurrentTransaction().getWriteSet() : null;
-        final StorageEngine.TableStorage tableStorage = executor.getStorageEngine().getTableStorage(targetFqn);
+        final TableStorage tableStorage = executor.getStorageEngine().getTableStorage(targetFqn);
         final List<Row> baseRows = tableStorage.scan();
         final List<Long> baseIds = tableStorage.getRowIds();
 
@@ -612,14 +673,16 @@ final class UpdateDeleteExecutor {
         }
         if (!executor.isDeferredApply()) {
             immediateDeletes.sort(Collections.reverseOrder());
+            // Log every row first, then delete ALL in one compaction pass, then track.
             for (final int idx : immediateDeletes) {
-                final Row del = baseRows.get(idx);
                 if (executor.getTransactionManager().hasActiveTransaction()) {
-                    executor.getTransactionManager().getCurrentTransaction().logDelete(targetFqn, idx, del);
+                    executor.getTransactionManager().getCurrentTransaction().logDelete(targetFqn, idx, baseRows.get(idx));
                 }
-                tableStorage.delete(idx);
+            }
+            tableStorage.deleteAll(immediateDeletes);
+            for (final int idx : immediateDeletes) {
                 if (executor.getStreamManager() != null) {
-                    executor.getStreamManager().trackDelete(targetFqn, del);
+                    executor.getStreamManager().trackDelete(targetFqn, baseRows.get(idx));
                 }
                 deleted++;
             }

@@ -29,8 +29,8 @@ public class AsVarchar extends StructuredArgumentFunction {
     @Override
     public Object evaluate(final List<Object> args) {
         if (args.get(0) == null) return null;
-        Object v = args.get(0);
-        JsonNode node = JsonTypeHelper.parse(v);
+        final Object v = args.get(0);
+        final JsonNode node = JsonTypeHelper.parse(v);
         if (node != null) {
             if (node.isTextual()) return node.asText();
             if (node.isValueNode()) return node.asText();
@@ -39,6 +39,8 @@ public class AsVarchar extends StructuredArgumentFunction {
         return v.toString();
     }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return 1; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return 1; }
 }

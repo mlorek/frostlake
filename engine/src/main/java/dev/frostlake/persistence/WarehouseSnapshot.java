@@ -28,7 +28,7 @@ public class WarehouseSnapshot implements Serializable {
     public String name;
     public String size;
     public String state;
-    public int autoSuspend;
+    public Integer autoSuspend;
     public boolean autoResume;
     public String comment;
     public LocalDateTime createdAt;

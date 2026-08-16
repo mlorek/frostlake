@@ -28,15 +28,19 @@ import java.sql.Statement;
 /**
  * Demo showing dollar-quoted string literals for procedures and functions
  */
-public class DollarQuotedDemo {
+public final class DollarQuotedDemo {
+
+    /** Static helpers only — never instantiated. */
+    private DollarQuotedDemo() {
+    }
     private static final Logger logger = LoggerFactory.getLogger(DollarQuotedDemo.class);
 
     public static void main(final String[] args) throws Exception {
         logger.info("=== Dollar-Quoted String Literals Demo ===\n");
 
-        DatabaseEngine engine = new DatabaseEngine();
-        Connection conn = new DirectConnection(engine);
-        Statement stmt = conn.createStatement();
+        final DatabaseEngine engine = new DatabaseEngine();
+        final Connection conn = new DirectConnection(engine);
+        final Statement stmt = conn.createStatement();
 
         // Setup
         stmt.execute("DROP DATABASE IF EXISTS demo_db");

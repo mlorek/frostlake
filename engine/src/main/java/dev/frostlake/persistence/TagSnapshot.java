@@ -20,13 +20,12 @@ import java.io.Serializable;
 import java.util.ArrayList;
 import java.util.List;
 
-/** Serializable snapshot of a TAG definition (allowed values + masking flag). */
+/** Serializable snapshot of a TAG definition (allowed values + comment). */
 public class TagSnapshot implements Serializable {
     private static final long serialVersionUID = 1L;
 
     public String name;
     public List<String> allowedValues = new ArrayList<>();
-    public boolean masking;
     public String comment;
     public String owner;
 }

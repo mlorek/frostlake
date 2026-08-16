@@ -16,24 +16,18 @@
 
 package dev.frostlake.features;
 
-import dev.frostlake.DatabaseEngine;
+import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 
-public class JoinUsingTest {
+public class JoinUsingTest extends BaseDatabaseTest {
 
-    private DatabaseEngine engine;
-
-    @BeforeEach
-    public void setUp() {
-        engine = new DatabaseEngine();
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
-        engine.execute("USE SCHEMA public");
+    @Override
+    protected void setupTest() {
         engine.execute("CREATE TABLE employees (id INTEGER, name VARCHAR, dept_id INTEGER)");
         engine.execute("CREATE TABLE departments (dept_id INTEGER, dept_name VARCHAR)");
         engine.execute("INSERT INTO employees VALUES (1, 'Alice', 10)");
@@ -43,14 +37,9 @@ public class JoinUsingTest {
         engine.execute("INSERT INTO departments VALUES (20, 'Marketing')");
     }
 
-    @AfterEach
-    public void tearDown() {
-        if (engine != null) engine.shutdown();
-    }
-
     @Test
     public void testInnerJoinUsing() {
-        ResultSet rs = engine.executeQuery(
+        final ResultSet rs = engine.executeQuery(
             "SELECT name, dept_name FROM employees JOIN departments USING (dept_id) ORDER BY name");
         assertNotNull(rs);
         assertEquals(3, rs.getRowCount());
@@ -61,7 +50,7 @@ public class JoinUsingTest {
     @Test
     public void testLeftJoinUsing() {
         engine.execute("INSERT INTO employees VALUES (4, 'Dave', 99)");
-        ResultSet rs = engine.executeQuery(
+        final ResultSet rs = engine.executeQuery(
             "SELECT name, dept_name FROM employees LEFT JOIN departments USING (dept_id) ORDER BY name");
         assertNotNull(rs);
         assertEquals(4, rs.getRowCount());
@@ -80,7 +69,7 @@ public class JoinUsingTest {
         engine.execute("INSERT INTO t1 VALUES (1, 2, 'x')");
         engine.execute("INSERT INTO t1 VALUES (1, 3, 'y')");
         engine.execute("INSERT INTO t2 VALUES (1, 2, 'matched')");
-        ResultSet rs = engine.executeQuery(
+        final ResultSet rs = engine.executeQuery(
             "SELECT val, info FROM t1 JOIN t2 USING (a, b)");
         assertNotNull(rs);
         assertEquals(1, rs.getRowCount());

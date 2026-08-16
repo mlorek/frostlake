@@ -16,10 +16,8 @@
 
 package dev.frostlake.scripting;
 
-import dev.frostlake.DatabaseEngine;
+import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 import org.slf4j.Logger;
@@ -40,27 +38,9 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
  * in doc-example compatibility. Includes the nested-block shadow/restore and unquoted-body cases that
  * previously diverged from Snowflake.
  */
-public class ScriptingDocExamplesTest {
+public class ScriptingDocExamplesTest extends BaseDatabaseTest {
 
     private static final Logger logger = LoggerFactory.getLogger(ScriptingDocExamplesTest.class);
-
-    private DatabaseEngine engine;
-
-    @BeforeEach
-    public void setUp() {
-        engine = new DatabaseEngine();
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
-        engine.execute("CREATE SCHEMA test_schema");
-        engine.execute("USE SCHEMA test_schema");
-    }
-
-    @AfterEach
-    public void tearDown() {
-        if (engine != null) {
-            engine.shutdown();
-        }
-    }
 
     /** Run a scripting block / CALL and return the first cell of its result as a String. */
     private String scalar(final String sql) {
@@ -512,9 +492,10 @@ public class ScriptingDocExamplesTest {
 
     @Test
     public void continueHandlerInLoopResumesNextIteration() {
-        logger.info("Doc example: a CONTINUE handler catches a loop-body error and resumes next iteration");
-        // i=2 raises (10/0) before its increment, so that iteration's += is skipped: 1 + (skip) + 3 + 4 = 8.
-        assertEquals(8L, asLong(scalar("""
+        logger.info("Doc example: a CONTINUE handler catches a loop-body error and resumes at the next statement");
+        // The handler resumes AFTER the raising statement, so i=2's increment still runs:
+        // 1 + 2 + 3 + 4 = 10 (live-verified).
+        assertEquals(10L, asLong(scalar("""
             DECLARE
               total INTEGER DEFAULT 0;
             BEGIN

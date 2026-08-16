@@ -34,12 +34,14 @@ public class IsInteger extends StructuredArgumentFunction {
             }
         }
         if (args.get(0) == null) return false;
-        Object v = args.get(0);
+        final Object v = args.get(0);
         if (v instanceof Long || v instanceof Integer) return true;
-        JsonNode node = JsonTypeHelper.parse(v);
+        final JsonNode node = JsonTypeHelper.parse(v);
         return node != null && node.isIntegralNumber();
     }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return 1; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return 1; }
 }

@@ -16,10 +16,8 @@
 
 package dev.frostlake.features;
 
-import dev.frostlake.DatabaseEngine;
+import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -31,34 +29,22 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
  * Tests for CAST expressions with type parameters
  * Format: CAST(expr AS datatype(params)) and expr::datatype(params)
  */
-public class CastWithTypeParametersTest {
+public class CastWithTypeParametersTest extends BaseDatabaseTest {
     private static final Logger logger = LoggerFactory.getLogger(CastWithTypeParametersTest.class);
 
-    private DatabaseEngine engine;
-
-    @BeforeEach
-    public void setUp() {
-        engine = new DatabaseEngine();
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
+    @Override
+    protected void setupTest() {
         engine.execute("CREATE TABLE test_data (id INTEGER, name VARCHAR, value NUMBER)");
         engine.execute("INSERT INTO test_data VALUES (1, 'Alice', 123.456)");
         engine.execute("INSERT INTO test_data VALUES (2, 'Bob', 789.012)");
         logger.info("DatabaseEngine initialized for CAST with type parameters tests");
     }
 
-    @AfterEach
-    public void tearDown() {
-        if (engine != null) {
-            engine.shutdown();
-        }
-    }
-
     @Test
     public void testCastToVarcharWithLength() {
         logger.info("Testing CAST to VARCHAR with length parameter");
 
-        ResultSet result = engine.executeQuery("SELECT CAST(id AS VARCHAR(10)) as id_str FROM test_data WHERE id = 1");
+        final ResultSet result = engine.executeQuery("SELECT CAST(id AS VARCHAR(10)) as id_str FROM test_data WHERE id = 1");
 
         assertNotNull(result);
         assertEquals(1, result.getRowCount());
@@ -71,7 +57,7 @@ public class CastWithTypeParametersTest {
     public void testCastToVarcharWithLargeLength() {
         logger.info("Testing CAST to VARCHAR with large length parameter");
 
-        ResultSet result = engine.executeQuery("SELECT CAST(name AS VARCHAR(16777216)) as name_str FROM test_data WHERE id = 1");
+        final ResultSet result = engine.executeQuery("SELECT CAST(name AS VARCHAR(16777216)) as name_str FROM test_data WHERE id = 1");
 
         assertNotNull(result);
         assertEquals(1, result.getRowCount());
@@ -84,7 +70,7 @@ public class CastWithTypeParametersTest {
     public void testCastToDecimalWithPrecision() {
         logger.info("Testing CAST to DECIMAL with precision parameter");
 
-        ResultSet result = engine.executeQuery("SELECT CAST(value AS DECIMAL(10)) as decimal_val FROM test_data WHERE id = 1");
+        final ResultSet result = engine.executeQuery("SELECT CAST(value AS DECIMAL(10)) as decimal_val FROM test_data WHERE id = 1");
 
         assertNotNull(result);
         assertEquals(1, result.getRowCount());
@@ -96,7 +82,7 @@ public class CastWithTypeParametersTest {
     public void testCastToDecimalWithPrecisionAndScale() {
         logger.info("Testing CAST to DECIMAL with precision and scale parameters");
 
-        ResultSet result = engine.executeQuery("SELECT CAST(value AS DECIMAL(10, 2)) as decimal_val FROM test_data WHERE id = 1");
+        final ResultSet result = engine.executeQuery("SELECT CAST(value AS DECIMAL(10, 2)) as decimal_val FROM test_data WHERE id = 1");
 
         assertNotNull(result);
         assertEquals(1, result.getRowCount());
@@ -108,7 +94,7 @@ public class CastWithTypeParametersTest {
     public void testCastToNumberWithPrecision() {
         logger.info("Testing CAST to NUMBER with precision parameter");
 
-        ResultSet result = engine.executeQuery("SELECT CAST(value AS NUMBER(15)) as num_val FROM test_data WHERE id = 1");
+        final ResultSet result = engine.executeQuery("SELECT CAST(value AS NUMBER(15)) as num_val FROM test_data WHERE id = 1");
 
         assertNotNull(result);
         assertEquals(1, result.getRowCount());
@@ -120,7 +106,7 @@ public class CastWithTypeParametersTest {
     public void testCastToNumberWithPrecisionAndScale() {
         logger.info("Testing CAST to NUMBER with precision and scale parameters");
 
-        ResultSet result = engine.executeQuery("SELECT CAST(value AS NUMBER(15, 3)) as num_val FROM test_data WHERE id = 1");
+        final ResultSet result = engine.executeQuery("SELECT CAST(value AS NUMBER(15, 3)) as num_val FROM test_data WHERE id = 1");
 
         assertNotNull(result);
         assertEquals(1, result.getRowCount());
@@ -132,7 +118,7 @@ public class CastWithTypeParametersTest {
     public void testDoubleColonCastWithVarcharLength() {
         logger.info("Testing :: cast operator to VARCHAR with length parameter");
 
-        ResultSet result = engine.executeQuery("SELECT id::VARCHAR(50) as id_str FROM test_data WHERE id = 2");
+        final ResultSet result = engine.executeQuery("SELECT id::VARCHAR(50) as id_str FROM test_data WHERE id = 2");
 
         assertNotNull(result);
         assertEquals(1, result.getRowCount());
@@ -145,7 +131,7 @@ public class CastWithTypeParametersTest {
     public void testDoubleColonCastWithDecimal() {
         logger.info("Testing :: cast operator to DECIMAL with parameters");
 
-        ResultSet result = engine.executeQuery("SELECT value::DECIMAL(20, 5) as decimal_val FROM test_data WHERE id = 1");
+        final ResultSet result = engine.executeQuery("SELECT value::DECIMAL(20, 5) as decimal_val FROM test_data WHERE id = 1");
 
         assertNotNull(result);
         assertEquals(1, result.getRowCount());
@@ -157,7 +143,7 @@ public class CastWithTypeParametersTest {
     public void testCastWithTypeParametersInExpression() {
         logger.info("Testing CAST with type parameters in complex expression");
 
-        ResultSet result = engine.executeQuery("SELECT CAST((id + 100) AS VARCHAR(100)) as result FROM test_data WHERE id = 1");
+        final ResultSet result = engine.executeQuery("SELECT CAST((id + 100) AS VARCHAR(100)) as result FROM test_data WHERE id = 1");
 
         assertNotNull(result);
         assertEquals(1, result.getRowCount());
@@ -170,7 +156,7 @@ public class CastWithTypeParametersTest {
     public void testMultipleCastsWithTypeParameters() {
         logger.info("Testing multiple CAST operations with type parameters in one query");
 
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT
                 CAST(id AS VARCHAR(20)) as id_str,
                 CAST(value AS DECIMAL(10, 2)) as value_decimal
@@ -189,7 +175,7 @@ public class CastWithTypeParametersTest {
     public void testCastInConcatenationWithTypeParameters() {
         logger.info("Testing CAST with type parameters in concatenation");
 
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT 'ID: ' || CAST(id AS VARCHAR(10)) as result
             FROM test_data
             WHERE id = 1
@@ -206,7 +192,7 @@ public class CastWithTypeParametersTest {
     public void testNestedCastWithTypeParameters() {
         logger.info("Testing nested CAST with type parameters");
 
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT CAST(CAST(id AS VARCHAR(50)) AS INTEGER) as result
             FROM test_data
             WHERE id = 1
@@ -223,7 +209,7 @@ public class CastWithTypeParametersTest {
     public void testCastToTimestampWithPrecision() {
         logger.info("Testing CAST to TIMESTAMP with precision parameter");
 
-        ResultSet result = engine.executeQuery("SELECT CAST('2024-01-01 12:00:00' AS TIMESTAMP(6)) as ts_val FROM test_data WHERE id = 1");
+        final ResultSet result = engine.executeQuery("SELECT CAST('2024-01-01 12:00:00' AS TIMESTAMP(6)) as ts_val FROM test_data WHERE id = 1");
 
         assertNotNull(result);
         assertEquals(1, result.getRowCount());
@@ -235,7 +221,7 @@ public class CastWithTypeParametersTest {
     public void testCastMixedWithAndWithoutTypeParameters() {
         logger.info("Testing mix of CAST with and without type parameters");
 
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT
                 CAST(id AS INTEGER) as int_val,
                 CAST(name AS VARCHAR(100)) as name_str
@@ -255,7 +241,7 @@ public class CastWithTypeParametersTest {
     public void testDoubleColonCastWithNumber() {
         logger.info("Testing :: cast operator to NUMBER with parameters");
 
-        ResultSet result = engine.executeQuery("SELECT value::NUMBER(18, 4) as num_val FROM test_data WHERE id = 2");
+        final ResultSet result = engine.executeQuery("SELECT value::NUMBER(18, 4) as num_val FROM test_data WHERE id = 2");
 
         assertNotNull(result);
         assertEquals(1, result.getRowCount());

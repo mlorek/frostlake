@@ -69,6 +69,8 @@ public class SplitTextRecursiveCharacter extends BuiltInFunction {
         return VariantValue.of(chunks.toString());
     }
 
-    @Override public int getMinArgCount() { return 3; }
-    @Override public int getMaxArgCount() { return 5; }
+    @Override
+    public int getMinArgCount() { return 3; }
+    @Override
+    public int getMaxArgCount() { return 5; }
 }

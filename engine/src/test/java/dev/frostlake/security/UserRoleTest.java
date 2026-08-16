@@ -41,7 +41,7 @@ public class UserRoleTest extends BaseDatabaseTest {
     public void testCreateUser() {
         engine.execute("CREATE USER alice");
 
-        ResultSet users = engine.executeQuery("SHOW USERS");
+        final ResultSet users = engine.executeQuery("SHOW USERS");
         assertTrue(users.getRowCount() >= 1);
 
         boolean found = false;
@@ -58,7 +58,7 @@ public class UserRoleTest extends BaseDatabaseTest {
     public void testCreateUserWithPassword() {
         engine.execute("CREATE USER bob PASSWORD = 'secret123'");
 
-        ResultSet users = engine.executeQuery("SHOW USERS");
+        final ResultSet users = engine.executeQuery("SHOW USERS");
         boolean found = false;
         for (int i = 0; i < users.getRowCount(); i++) {
             if ("BOB".equals(users.getRows().get(i).getValue(0))) {
@@ -74,7 +74,7 @@ public class UserRoleTest extends BaseDatabaseTest {
         engine.execute("CREATE USER temp_user");
         engine.execute("DROP USER temp_user");
 
-        ResultSet users = engine.executeQuery("SHOW USERS");
+        final ResultSet users = engine.executeQuery("SHOW USERS");
         for (int i = 0; i < users.getRowCount(); i++) {
             assertNotEquals("TEMP_USER", users.getRows().get(i).getValue(0),
                 "User TEMP_USER should not exist after DROP");
@@ -85,7 +85,7 @@ public class UserRoleTest extends BaseDatabaseTest {
     public void testCreateRole() {
         engine.execute("CREATE ROLE analyst");
 
-        ResultSet roles = engine.executeQuery("SHOW ROLES");
+        final ResultSet roles = engine.executeQuery("SHOW ROLES");
         assertTrue(roles.getRowCount() >= 1);
 
         boolean found = false;
@@ -103,7 +103,7 @@ public class UserRoleTest extends BaseDatabaseTest {
         engine.execute("CREATE ROLE temp_role");
         engine.execute("DROP ROLE temp_role");
 
-        ResultSet roles = engine.executeQuery("SHOW ROLES");
+        final ResultSet roles = engine.executeQuery("SHOW ROLES");
         for (int i = 0; i < roles.getRowCount(); i++) {
             assertNotEquals("TEMP_ROLE", roles.getRows().get(i).getValue(roles.getColumnIndex("name")),
                 "Role TEMP_ROLE should not exist after DROP");
@@ -116,7 +116,7 @@ public class UserRoleTest extends BaseDatabaseTest {
         engine.execute("CREATE ROLE developer");
         engine.execute("GRANT ROLE developer TO USER charlie");
 
-        ResultSet grants = engine.executeQuery("SHOW GRANTS TO USER charlie");
+        final ResultSet grants = engine.executeQuery("SHOW GRANTS TO USER charlie");
         assertTrue(grants.getRowCount() >= 1);
 
         boolean found = false;
@@ -136,7 +136,7 @@ public class UserRoleTest extends BaseDatabaseTest {
         engine.execute("GRANT ROLE tester TO USER dave");
         engine.execute("REVOKE ROLE tester FROM USER dave");
 
-        ResultSet grants = engine.executeQuery("SHOW GRANTS TO USER dave");
+        final ResultSet grants = engine.executeQuery("SHOW GRANTS TO USER dave");
         for (int i = 0; i < grants.getRowCount(); i++) {
             assertNotEquals("TESTER", grants.getRows().get(i).getValue(3),
                 "TESTER role should not be granted to dave after REVOKE");
@@ -159,7 +159,7 @@ public class UserRoleTest extends BaseDatabaseTest {
         });
         engine.execute("GRANT USAGE ON DATABASE priv_test_db TO ROLE data_reader");
 
-        ResultSet grants = engine.executeQuery("SHOW GRANTS TO ROLE data_reader");
+        final ResultSet grants = engine.executeQuery("SHOW GRANTS TO ROLE data_reader");
         assertTrue(grants.getRowCount() >= 1);
 
         boolean found = false;
@@ -180,7 +180,7 @@ public class UserRoleTest extends BaseDatabaseTest {
         engine.execute("GRANT INSERT ON TABLE products TO ROLE writer");
         engine.execute("REVOKE INSERT ON TABLE products FROM ROLE writer");
 
-        ResultSet grants = engine.executeQuery("SHOW GRANTS TO ROLE writer");
+        final ResultSet grants = engine.executeQuery("SHOW GRANTS TO ROLE writer");
         for (int i = 0; i < grants.getRowCount(); i++) {
             if ("INSERT".equals(grants.getRows().get(i).getValue(1))) {
                 assertNotEquals("PRODUCTS", grants.getRows().get(i).getValue(3),
@@ -191,7 +191,7 @@ public class UserRoleTest extends BaseDatabaseTest {
 
     @Test
     public void testShowSystemRoles() {
-        ResultSet roles = engine.executeQuery("SHOW ROLES");
+        final ResultSet roles = engine.executeQuery("SHOW ROLES");
         assertTrue(roles.getRowCount() >= 4, "Should have at least 4 system roles");
 
         // Check for system roles
@@ -201,7 +201,7 @@ public class UserRoleTest extends BaseDatabaseTest {
         boolean hasPublic = false;
 
         for (int i = 0; i < roles.getRowCount(); i++) {
-            String roleName = (String) roles.getRows().get(i).getValue(roles.getColumnIndex("name"));
+            final String roleName = (String) roles.getRows().get(i).getValue(roles.getColumnIndex("name"));
             if ("SYSADMIN".equals(roleName)) hasSysadmin = true;
             if ("USERADMIN".equals(roleName)) hasUseradmin = true;
             if ("SECURITYADMIN".equals(roleName)) hasSecurityadmin = true;
@@ -220,7 +220,7 @@ public class UserRoleTest extends BaseDatabaseTest {
         engine.execute("CREATE ROLE wh_user");
         engine.execute("GRANT USAGE ON WAREHOUSE grant_test_wh TO ROLE wh_user");
 
-        ResultSet grants = engine.executeQuery("SHOW GRANTS ON WAREHOUSE grant_test_wh");
+        final ResultSet grants = engine.executeQuery("SHOW GRANTS ON WAREHOUSE grant_test_wh");
         assertTrue(grants.getRowCount() >= 1);
 
         boolean found = false;
@@ -240,7 +240,7 @@ public class UserRoleTest extends BaseDatabaseTest {
         engine.execute("CREATE ROLE admin_role");
         engine.execute("GRANT ALL ON TABLE all_priv_test TO ROLE admin_role");
 
-        ResultSet grants = engine.executeQuery("SHOW GRANTS TO ROLE admin_role");
+        final ResultSet grants = engine.executeQuery("SHOW GRANTS TO ROLE admin_role");
         assertTrue(grants.getRowCount() >= 1);
 
         // GRANT ALL expands (live-verified): SELECT on the table appears as its own row and NO

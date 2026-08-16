@@ -17,6 +17,7 @@
 package dev.frostlake.functions.scalar;
 
 import dev.frostlake.values.BinaryValue;
+import dev.frostlake.values.TypedScalarNode;
 import dev.frostlake.values.VariantUndefined;
 import dev.frostlake.values.VariantValue;
 
@@ -29,6 +30,7 @@ import tools.jackson.databind.node.ObjectNode;
 
 import java.math.BigDecimal;
 import java.math.BigInteger;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.util.ArrayList;
@@ -37,7 +39,11 @@ import java.util.Iterator;
 import java.util.List;
 
 /** Shared helpers for array/object scalar functions. */
-public class ArrayFunctionHelper {
+public final class ArrayFunctionHelper {
+
+    /** Static helpers only — never instantiated. */
+    private ArrayFunctionHelper() {
+    }
 
     public static final ObjectMapper MAPPER = JsonMapper.builder().enable(JsonNodeFeature.USE_BIG_DECIMAL_FOR_FLOATS).build();
 
@@ -53,7 +59,7 @@ public class ArrayFunctionHelper {
 
     /** Parse value as ArrayNode, or return null. */
     public static ArrayNode parseArray(final Object value) {
-        JsonNode node = parseNode(value);
+        final JsonNode node = parseNode(value);
         return (node != null && node.isArray()) ? (ArrayNode) node : null;
     }
 
@@ -82,14 +88,17 @@ public class ArrayFunctionHelper {
         if (value instanceof BigDecimal) return mapper.getNodeFactory().numberNode((BigDecimal) value);
         if (value instanceof BigInteger) return mapper.getNodeFactory().numberNode((BigInteger) value);
         if (value instanceof Number) return mapper.getNodeFactory().numberNode(((Number) value).doubleValue());
-        if (value instanceof LocalDateTime || value instanceof LocalTime) {
+        if (value instanceof LocalDate || value instanceof LocalDateTime || value instanceof LocalTime) {
             // A temporal embedded in a VARIANT keeps Snowflake's default output text (space + FF3), not
-            // java.time's T-separated form.
-            return mapper.getNodeFactory().textNode(SharedFunctionHelpers.textOf(value));
+            // java.time's T-separated form — and, in a container, its own type: live reports
+            // TYPEOF(OBJECT_CONSTRUCT('d', <date>):d) as DATE, not VARCHAR. TypedScalarNode carries the
+            // typed value alongside that exact text, so the JSON stays byte-identical.
+            return new TypedScalarNode(SharedFunctionHelpers.textOf(value), value);
         }
         if (value instanceof BinaryValue) {
-            // A BINARY embedded in a VARIANT becomes its hex text, Snowflake's JSON rendering of binary.
-            return mapper.getNodeFactory().textNode(((BinaryValue) value).toHex());
+            // A BINARY embedded in a VARIANT becomes its hex text, Snowflake's JSON rendering of binary,
+            // and keeps its BINARY type for TYPEOF / AS_BINARY (see TypedScalarNode).
+            return new TypedScalarNode(((BinaryValue) value).toHex(), value);
         }
         final String s = value.toString();
         // In this engine's value model a VARIANT JSON null IS the text "null" (path extraction of a
@@ -99,12 +108,12 @@ public class ArrayFunctionHelper {
         if ("null".equals(s)) {
             return mapper.getNodeFactory().nullNode();
         }
-        // Trim only for the is-it-structural check — the EMBEDDED text keeps its exact whitespace
-        // (a code/script value legitimately ends in a newline; trimming silently corrupted it).
+        // A VARCHAR stays a STRING member however much its text looks like JSON. Live:
+        // ARRAY_CONSTRUCT('[1,2]') is ["[1,2]"], OBJECT_CONSTRUCT('a','[1,2]') is {"a":"[1,2]"}, and
+        // TYPEOF of either member is VARCHAR — the same rule PARSE_JSON follows for its argument. A
+        // value that really IS semi-structured arrives as a VariantValue and was handled above; text
+        // was being re-read as structure here, which made ARRAY_CONSTRUCT('[1,2]')[0] an ARRAY.
         final String trimmed = s.trim();
-        if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
-            try { return mapper.readTree(trimmed); } catch (final Exception ignored) {}
-        }
         // A path access over {"v": "[]"} or {"v": "null"} yields the QUOTED carrier form ("\"[]\"") so
         // a string whose content merely LOOKS structural — or IS the JSON-null marker text — stays
         // distinguishable from a real array/object/null (see JsonPathExtractor). Embedding the carrier
@@ -182,6 +191,10 @@ public class ArrayFunctionHelper {
     /** Convert a JsonNode back to a plain Java value. Objects/arrays become typed semi-structured values. */
     public static Object fromNode(final JsonNode node) {
         if (node == null || node.isNull()) return null;
+        // A member that kept its extended type (DATE/TIME/TIMESTAMP/BINARY) yields that typed value,
+        // which is what makes TYPEOF and the AS_*/IS_* family answer like live.
+        final Object typed = TypedScalarNode.typedValueOf(node);
+        if (typed != null) return typed;
         if (node.isTextual()) return node.asText();
         if (node.isBoolean()) return node.asBoolean();
         if (node.isLong() || node.isInt()) return node.asLong();

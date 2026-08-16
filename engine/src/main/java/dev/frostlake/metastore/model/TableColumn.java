@@ -46,6 +46,7 @@ public class TableColumn implements Taggable {
 
     // Security policy references
     private String maskingPolicyName;  // qualified name of attached masking policy, or null
+    private String projectionPolicyName;  // qualified name of attached projection policy, or null
 
     // Object tags applied via ALTER TABLE ... ALTER COLUMN ... SET TAG (canonical upper-cased name -> value)
     private final Map<String, String> tags = new HashMap<>();
@@ -117,6 +118,25 @@ public class TableColumn implements Taggable {
         copy.maskingPolicyName = maskingPolicyName;
         copy.tags.putAll(tags);
         copy.hiddenFromStar = true;
+        copy.staticallyTyped = staticallyTyped;
+        return copy;
+    }
+
+    /** A copy of this column that accepts NULL — the null-extended side of an outer join, where the
+     *  shared catalog instance must keep its own NOT NULL. */
+    public TableColumn nullableCopy() {
+        final TableColumn copy = new TableColumn(name, dataType, true, defaultValue, primaryKey,
+            unique, autoIncrement, identityStart, identityIncrement);
+        copy.comment = comment;
+        copy.collation = collation;
+        copy.referencedTable = referencedTable;
+        copy.referencedColumn = referencedColumn;
+        copy.onDelete = onDelete;
+        copy.onUpdate = onUpdate;
+        copy.rely = rely;
+        copy.maskingPolicyName = maskingPolicyName;
+        copy.tags.putAll(tags);
+        copy.hiddenFromStar = hiddenFromStar;
         copy.staticallyTyped = staticallyTyped;
         return copy;
     }
@@ -240,6 +260,13 @@ public class TableColumn implements Taggable {
 
     public void setRely(final Boolean rely) {
         this.rely = rely;
+    }
+
+    /** The projection policy attached to this column, fully qualified, or null. */
+    public String getProjectionPolicyName() { return projectionPolicyName; }
+    public void setProjectionPolicyName(final String name) { this.projectionPolicyName = name; }
+    public boolean hasProjectionPolicy() {
+        return projectionPolicyName != null && !projectionPolicyName.isEmpty();
     }
 
     public String getMaskingPolicyName() { return maskingPolicyName; }

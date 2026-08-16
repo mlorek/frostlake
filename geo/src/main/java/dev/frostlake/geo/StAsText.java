@@ -32,6 +32,8 @@ public class StAsText extends BuiltInFunction {
         return geo == null ? null : GeoShapes.toWkt(geo.node());
     }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return 1; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return 1; }
 }

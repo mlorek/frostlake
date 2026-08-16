@@ -16,46 +16,34 @@
 
 package dev.frostlake.features;
 
-import dev.frostlake.DatabaseEngine;
+import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
-public class NestedObjectAccessTest {
+public class NestedObjectAccessTest extends BaseDatabaseTest {
 
-    private DatabaseEngine engine;
 
-    @BeforeEach
-    public void setUp() {
-        engine = new DatabaseEngine();
-        engine.execute("CREATE DATABASE IF NOT EXISTS test_db");
-        engine.execute("USE DATABASE test_db");
-        engine.execute("USE SCHEMA public");
-    }
 
-    @AfterEach
-    public void tearDown() {
-        if (engine != null) engine.shutdown();
-    }
 
     @Test
     public void testDeepNestedObjectColonDotAccess() {
         engine.execute("CREATE TABLE obj3 (d VARIANT)");
         engine.execute("INSERT INTO obj3 SELECT PARSE_JSON('{\"a\": {\"b\": {\"c\": 1}}}')");
-        ResultSet rs = engine.executeQuery("SELECT d:a.b.c AS e FROM obj3");
+        final ResultSet rs = engine.executeQuery("SELECT d:a.b.c AS e FROM obj3");
         assertNotNull(rs);
         assertEquals(1, rs.getRowCount());
-        Object val = rs.getRows().get(0).getValue(0);
+        final Object val = rs.getRows().get(0).getValue(0);
         assertNotNull(val, "d:a.b.c should return 1");
         assertEquals(1L, Long.parseLong(val.toString()));
     }
 
     @Test
     public void testSingleColonAccess() {
-        ResultSet rs = engine.executeQuery(
+        final ResultSet rs = engine.executeQuery(
             "WITH t AS (SELECT {'x': 42} AS d) SELECT d:x AS v FROM t");
         assertNotNull(rs);
         assertEquals(1, rs.getRowCount());
@@ -67,7 +55,7 @@ public class NestedObjectAccessTest {
         engine.execute("CREATE TABLE obj_mixed (d VARIANT)");
         engine.execute("INSERT INTO obj_mixed SELECT PARSE_JSON('{\"a\": {\"b\": {\"c\": 1}}}')");
         // d:a.b.c, d:a:b:c, d:a.b:c should all return 1
-        ResultSet rs = engine.executeQuery("SELECT d:a.b.c AS e1, d:a:b:c AS e2, d:a.b:c AS e3 FROM obj_mixed");
+        final ResultSet rs = engine.executeQuery("SELECT d:a.b.c AS e1, d:a:b:c AS e2, d:a.b:c AS e3 FROM obj_mixed");
         assertNotNull(rs);
         assertEquals(1, rs.getRowCount());
         assertEquals(1L, Long.parseLong(rs.getRows().get(0).getValue(0).toString()));
@@ -79,7 +67,7 @@ public class NestedObjectAccessTest {
     public void testSingleColonAccessFromTable() {
         engine.execute("CREATE TABLE jt (d VARIANT)");
         engine.execute("INSERT INTO jt SELECT PARSE_JSON('{\"x\": 42}')");
-        ResultSet rs = engine.executeQuery("SELECT d:x AS v FROM jt");
+        final ResultSet rs = engine.executeQuery("SELECT d:x AS v FROM jt");
         assertNotNull(rs);
         assertEquals(1, rs.getRowCount());
         assertEquals(42L, Long.parseLong(rs.getRows().get(0).getValue(0).toString()));
@@ -89,7 +77,7 @@ public class NestedObjectAccessTest {
     public void testDotChainFromTable() {
         engine.execute("CREATE TABLE jt2 (d VARIANT)");
         engine.execute("INSERT INTO jt2 SELECT PARSE_JSON('{\"a\": {\"b\": \"hello\"}}')");
-        ResultSet rs = engine.executeQuery("SELECT d:a.b AS v FROM jt2");
+        final ResultSet rs = engine.executeQuery("SELECT d:a.b AS v FROM jt2");
         assertNotNull(rs);
         assertEquals(1, rs.getRowCount());
         assertEquals("hello", rs.getRows().get(0).getValue(0).toString());
@@ -98,7 +86,7 @@ public class NestedObjectAccessTest {
     @Test
     public void testCteRawValue() {
         // Verify CTE stores the JSON object
-        ResultSet rs = engine.executeQuery("WITH t AS (SELECT {'a': {'b': 'hello'}} AS d) SELECT d FROM t");
+        final ResultSet rs = engine.executeQuery("WITH t AS (SELECT {'a': {'b': 'hello'}} AS d) SELECT d FROM t");
         assertNotNull(rs);
         assertEquals(1, rs.getRowCount());
         assertNotNull(rs.getRows().get(0).getValue(0), "CTE JSON column should not be null");
@@ -109,7 +97,7 @@ public class NestedObjectAccessTest {
         // Use a real table instead of CTE to avoid CTE projection issues
         engine.execute("CREATE TABLE obj2 (d VARIANT)");
         engine.execute("INSERT INTO obj2 SELECT PARSE_JSON('{\"a\": {\"b\": \"hello\"}}')");
-        ResultSet rs = engine.executeQuery("SELECT d:a.b AS v FROM obj2");
+        final ResultSet rs = engine.executeQuery("SELECT d:a.b AS v FROM obj2");
         assertNotNull(rs);
         assertEquals(1, rs.getRowCount());
         assertEquals("hello", rs.getRows().get(0).getValue(0).toString());

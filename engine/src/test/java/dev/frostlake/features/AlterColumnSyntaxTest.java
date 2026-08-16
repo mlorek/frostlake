@@ -16,40 +16,28 @@
 
 package dev.frostlake.features;
 
-import dev.frostlake.DatabaseEngine;
-import dev.frostlake.metastore.model.Table;
-import dev.frostlake.metastore.model.TableColumn;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
+import dev.frostlake.BaseDatabaseTest;
 import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Tests for different ALTER COLUMN syntax variations
- * Format: ALTER COLUMN col [ [ SET DATA ] TYPE ] datatype
+ * The ALTER COLUMN retype spellings — {@code ALTER COLUMN col [ [ SET DATA ] TYPE ] datatype} —
+ * asserted through the SQL surface: the {@code DESCRIBE TABLE} type cell, matched by its family
+ * prefix, tolerant of the parameter suffixes the engines spell differently. Every retype here is
+ * one Snowflake permits (a widening or a restatement), so the checks run against whichever engine
+ * executed the DDL, embedded or live.
  */
-public class AlterColumnSyntaxTest {
+public class AlterColumnSyntaxTest extends BaseDatabaseTest {
     private static final Logger logger = LoggerFactory.getLogger(AlterColumnSyntaxTest.class);
 
-    private DatabaseEngine engine;
-
-    @BeforeEach
-    public void setUp() {
-        engine = new DatabaseEngine();
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
-        logger.info("DatabaseEngine initialized for ALTER COLUMN syntax tests");
-    }
-
-    @AfterEach
-    public void tearDown() {
-        if (engine != null) {
-            engine.shutdown();
-        }
+    /** Asserts one column's DESCRIBE type cell starts with the expected family spelling. */
+    private void assertColumnTypeStartsWith(final String table, final String column, final String prefix) {
+        final String type = describeCell(table, column, "type");
+        assertTrue(type.startsWith(prefix),
+            column + " should be a " + prefix + " but its type reads: " + type);
     }
 
     @Test
@@ -59,11 +47,7 @@ public class AlterColumnSyntaxTest {
         engine.execute("CREATE TABLE test1 (id INTEGER, col1 VARCHAR(10))");
         engine.execute("ALTER TABLE test1 ALTER COLUMN col1 SET DATA TYPE VARCHAR");
 
-        Table table = engine.getCatalog().resolveTable("TEST1");
-        assertNotNull(table);
-
-        TableColumn column = table.getColumn("col1");
-        assertEquals("VARCHAR", column.getDataType().getName());
+        assertColumnTypeStartsWith("test1", "COL1", "VARCHAR");
 
         logger.info("ALTER COLUMN with SET DATA TYPE works correctly");
     }
@@ -75,11 +59,7 @@ public class AlterColumnSyntaxTest {
         engine.execute("CREATE TABLE test2 (id INTEGER, col1 VARCHAR(10))");
         engine.execute("ALTER TABLE test2 ALTER COLUMN col1 TYPE VARCHAR");
 
-        Table table = engine.getCatalog().resolveTable("TEST2");
-        assertNotNull(table);
-
-        TableColumn column = table.getColumn("col1");
-        assertEquals("VARCHAR", column.getDataType().getName());
+        assertColumnTypeStartsWith("test2", "COL1", "VARCHAR");
 
         logger.info("ALTER COLUMN with TYPE works correctly");
     }
@@ -91,11 +71,7 @@ public class AlterColumnSyntaxTest {
         engine.execute("CREATE TABLE test3 (id INTEGER, col1 VARCHAR(10))");
         engine.execute("ALTER TABLE test3 ALTER COLUMN col1 VARCHAR");
 
-        Table table = engine.getCatalog().resolveTable("TEST3");
-        assertNotNull(table);
-
-        TableColumn column = table.getColumn("col1");
-        assertEquals("VARCHAR", column.getDataType().getName());
+        assertColumnTypeStartsWith("test3", "COL1", "VARCHAR");
 
         logger.info("ALTER COLUMN without TYPE keyword works correctly");
     }
@@ -107,11 +83,7 @@ public class AlterColumnSyntaxTest {
         engine.execute("CREATE TABLE test4 (id INTEGER, col1 VARCHAR(10))");
         engine.execute("ALTER TABLE test4 ALTER COLUMN col1 SET DATA TYPE VARCHAR(100)");
 
-        Table table = engine.getCatalog().resolveTable("TEST4");
-        assertNotNull(table);
-
-        TableColumn column = table.getColumn("col1");
-        assertEquals("VARCHAR", column.getDataType().getName());
+        assertColumnTypeStartsWith("test4", "COL1", "VARCHAR");
 
         logger.info("ALTER COLUMN with SET DATA TYPE and parameters works correctly");
     }
@@ -120,14 +92,10 @@ public class AlterColumnSyntaxTest {
     public void testAlterColumnWithTypeAndParameters() {
         logger.info("Testing ALTER COLUMN with TYPE and type parameters");
 
-        engine.execute("CREATE TABLE test5 (id INTEGER, col1 INTEGER)");
+        engine.execute("CREATE TABLE test5 (id INTEGER, col1 DECIMAL(8, 2))");
         engine.execute("ALTER TABLE test5 ALTER COLUMN col1 TYPE DECIMAL(10, 2)");
 
-        Table table = engine.getCatalog().resolveTable("TEST5");
-        assertNotNull(table);
-
-        TableColumn column = table.getColumn("col1");
-        assertEquals("NUMBER", column.getDataType().getName());
+        assertColumnTypeStartsWith("test5", "COL1", "NUMBER");
 
         logger.info("ALTER COLUMN with TYPE and parameters works correctly");
     }
@@ -139,11 +107,7 @@ public class AlterColumnSyntaxTest {
         engine.execute("CREATE TABLE test6 (id INTEGER, col1 VARCHAR(100))");
         engine.execute("ALTER TABLE test6 ALTER COLUMN col1 VARCHAR(500)");
 
-        Table table = engine.getCatalog().resolveTable("TEST6");
-        assertNotNull(table);
-
-        TableColumn column = table.getColumn("col1");
-        assertEquals("VARCHAR", column.getDataType().getName());
+        assertColumnTypeStartsWith("test6", "COL1", "VARCHAR");
 
         logger.info("ALTER COLUMN without TYPE keyword and parameters works correctly");
     }
@@ -158,12 +122,9 @@ public class AlterColumnSyntaxTest {
         engine.execute("ALTER TABLE test7 ALTER COLUMN col2 TYPE DATE");
         engine.execute("ALTER TABLE test7 ALTER COLUMN col3 TIMESTAMP");
 
-        Table table = engine.getCatalog().resolveTable("TEST7");
-        assertNotNull(table);
-
-        assertEquals("VARCHAR", table.getColumn("col1").getDataType().getName());
-        assertEquals("DATE", table.getColumn("col2").getDataType().getName());
-        assertEquals("TIMESTAMP", table.getColumn("col3").getDataType().getName());
+        assertColumnTypeStartsWith("test7", "COL1", "VARCHAR");
+        assertColumnTypeStartsWith("test7", "COL2", "DATE");
+        assertColumnTypeStartsWith("test7", "COL3", "TIMESTAMP");
 
         logger.info("Multiple columns with different syntax variations work correctly");
     }
@@ -175,11 +136,7 @@ public class AlterColumnSyntaxTest {
         engine.execute("CREATE TABLE test8 (id INTEGER, col1 VARCHAR(10))");
         engine.execute("ALTER TABLE IF EXISTS test8 ALTER COLUMN col1 TYPE VARCHAR");
 
-        Table table = engine.getCatalog().resolveTable("TEST8");
-        assertNotNull(table);
-
-        TableColumn column = table.getColumn("col1");
-        assertEquals("VARCHAR", column.getDataType().getName());
+        assertColumnTypeStartsWith("test8", "COL1", "VARCHAR");
 
         logger.info("ALTER COLUMN with IF EXISTS works correctly");
     }
@@ -188,32 +145,24 @@ public class AlterColumnSyntaxTest {
     public void testAlterColumnWithQualifiedTableName() {
         logger.info("Testing ALTER COLUMN with schema-qualified table name");
 
-        engine.execute("CREATE SCHEMA test_schema");
-        engine.execute("CREATE TABLE test_schema.test9 (id INTEGER, col1 VARCHAR(10))");
+        engine.execute("CREATE SCHEMA alter_syntax_schema");
+        engine.execute("CREATE TABLE alter_syntax_schema.test9 (id INTEGER, col1 VARCHAR(10))");
 
-        engine.execute("ALTER TABLE test_schema.test9 ALTER COLUMN col1 TYPE VARCHAR");
+        engine.execute("ALTER TABLE alter_syntax_schema.test9 ALTER COLUMN col1 TYPE VARCHAR");
 
-        Table table = engine.getCatalog().resolveTable("TEST_SCHEMA.TEST9");
-        assertNotNull(table);
-
-        TableColumn column = table.getColumn("col1");
-        assertEquals("VARCHAR", column.getDataType().getName());
+        assertColumnTypeStartsWith("alter_syntax_schema.test9", "COL1", "VARCHAR");
 
         logger.info("ALTER COLUMN with qualified name works correctly");
     }
 
     @Test
     public void testAlterColumnWithComplexDataType() {
-        logger.info("Testing ALTER COLUMN with complex data type");
+        logger.info("Testing ALTER COLUMN restating a parameterized timestamp subtype");
 
-        engine.execute("CREATE TABLE test10 (id INTEGER, col1 TIMESTAMP)");
-        engine.execute("ALTER TABLE test10 ALTER COLUMN col1 TYPE TIMESTAMP_LTZ");
+        engine.execute("CREATE TABLE test10 (id INTEGER, col1 TIMESTAMP_LTZ)");
+        engine.execute("ALTER TABLE test10 ALTER COLUMN col1 TYPE TIMESTAMP_LTZ(9)");
 
-        Table table = engine.getCatalog().resolveTable("TEST10");
-        assertNotNull(table);
-
-        TableColumn column = table.getColumn("col1");
-        assertEquals("TIMESTAMP_LTZ", column.getDataType().getName());
+        assertColumnTypeStartsWith("test10", "COL1", "TIMESTAMP_LTZ");
 
         logger.info("ALTER COLUMN with complex data type works correctly");
     }
@@ -228,12 +177,9 @@ public class AlterColumnSyntaxTest {
         engine.execute("ALTER TABLE test11 ALTER COLUMN col2 TYPE VARCHAR");
         engine.execute("ALTER TABLE test11 ALTER COLUMN col3 VARCHAR");
 
-        Table table = engine.getCatalog().resolveTable("TEST11");
-        assertNotNull(table);
-
-        assertEquals("VARCHAR", table.getColumn("col1").getDataType().getName());
-        assertEquals("VARCHAR", table.getColumn("col2").getDataType().getName());
-        assertEquals("VARCHAR", table.getColumn("col3").getDataType().getName());
+        assertColumnTypeStartsWith("test11", "COL1", "VARCHAR");
+        assertColumnTypeStartsWith("test11", "COL2", "VARCHAR");
+        assertColumnTypeStartsWith("test11", "COL3", "VARCHAR");
 
         logger.info("All syntax variations produce the same result");
     }
@@ -242,14 +188,10 @@ public class AlterColumnSyntaxTest {
     public void testAlterColumnWithoutTypeKeywordWithDecimal() {
         logger.info("Testing ALTER COLUMN without TYPE keyword with DECIMAL");
 
-        engine.execute("CREATE TABLE test12 (id INTEGER, col1 INTEGER)");
+        engine.execute("CREATE TABLE test12 (id INTEGER, col1 DECIMAL(10, 3))");
         engine.execute("ALTER TABLE test12 ALTER COLUMN col1 DECIMAL(15, 3)");
 
-        Table table = engine.getCatalog().resolveTable("TEST12");
-        assertNotNull(table);
-
-        TableColumn column = table.getColumn("col1");
-        assertEquals("NUMBER", column.getDataType().getName());
+        assertColumnTypeStartsWith("test12", "COL1", "NUMBER");
 
         logger.info("ALTER COLUMN without TYPE keyword with DECIMAL works correctly");
     }
@@ -258,14 +200,10 @@ public class AlterColumnSyntaxTest {
     public void testAlterColumnSetDataTypeWithDecimal() {
         logger.info("Testing ALTER COLUMN SET DATA TYPE with DECIMAL");
 
-        engine.execute("CREATE TABLE test13 (id INTEGER, col1 INTEGER)");
+        engine.execute("CREATE TABLE test13 (id INTEGER, col1 DECIMAL(12, 5))");
         engine.execute("ALTER TABLE test13 ALTER COLUMN col1 SET DATA TYPE DECIMAL(20, 5)");
 
-        Table table = engine.getCatalog().resolveTable("TEST13");
-        assertNotNull(table);
-
-        TableColumn column = table.getColumn("col1");
-        assertEquals("NUMBER", column.getDataType().getName());
+        assertColumnTypeStartsWith("test13", "COL1", "NUMBER");
 
         logger.info("ALTER COLUMN SET DATA TYPE with DECIMAL works correctly");
     }

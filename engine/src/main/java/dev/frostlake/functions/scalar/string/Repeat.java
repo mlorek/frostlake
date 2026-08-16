@@ -27,12 +27,14 @@ public class Repeat extends TextArgumentFunction {
     @Override
     public Object evaluate(final List<Object> args) {
         if (args.get(0) == null) return null;
-        String s = args.get(0).toString();
-        int n = ((Number) args.get(1)).intValue();
+        final String s = args.get(0).toString();
+        final int n = ((Number) args.get(1)).intValue();
         if (n <= 0) return "";
         return s.repeat(n);
     }
 
-    @Override public int getMinArgCount() { return 2; }
-    @Override public int getMaxArgCount() { return 2; }
+    @Override
+    public int getMinArgCount() { return 2; }
+    @Override
+    public int getMaxArgCount() { return 2; }
 }

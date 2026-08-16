@@ -23,7 +23,11 @@ import java.io.FileWriter;
 import java.io.IOException;
 import java.nio.file.Path;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Tests for EngineConfig
@@ -32,7 +36,7 @@ public class EngineConfigTest {
 
     @Test
     public void testDefaultConfiguration() {
-        EngineConfig config = new EngineConfig();
+        final EngineConfig config = new EngineConfig();
 
         // Test defaults
         assertEquals(8080, config.getHttpPort());
@@ -48,7 +52,7 @@ public class EngineConfigTest {
     @Test
     public void testCustomConfiguration(@TempDir final Path tempDir) throws IOException {
         // Create custom config file
-        Path configFile = tempDir.resolve("test.properties");
+        final Path configFile = tempDir.resolve("test.properties");
         try (FileWriter writer = new FileWriter(configFile.toFile())) {
             writer.write("http.port=9090\n");
             writer.write("http.host=0.0.0.0\n");
@@ -61,7 +65,7 @@ public class EngineConfigTest {
         }
 
         // Load custom config
-        EngineConfig config = new EngineConfig(configFile.toString());
+        final EngineConfig config = new EngineConfig(configFile.toString());
 
         // Verify custom values
         assertEquals(9090, config.getHttpPort());
@@ -76,7 +80,7 @@ public class EngineConfigTest {
 
     @Test
     public void testGetIntProperty() {
-        EngineConfig config = new EngineConfig();
+        final EngineConfig config = new EngineConfig();
         config.setProperty("test.int", "12345");
 
         assertEquals(12345, config.getIntProperty("test.int", 0));
@@ -85,7 +89,7 @@ public class EngineConfigTest {
 
     @Test
     public void testGetBooleanProperty() {
-        EngineConfig config = new EngineConfig();
+        final EngineConfig config = new EngineConfig();
         config.setProperty("test.bool.true", "true");
         config.setProperty("test.bool.false", "false");
 
@@ -96,7 +100,7 @@ public class EngineConfigTest {
 
     @Test
     public void testSetProperty() {
-        EngineConfig config = new EngineConfig();
+        final EngineConfig config = new EngineConfig();
 
         config.setProperty("custom.property", "custom.value");
         assertEquals("custom.value", config.getProperty("custom.property", "default"));
@@ -104,7 +108,7 @@ public class EngineConfigTest {
 
     @Test
     public void testInvalidIntProperty() {
-        EngineConfig config = new EngineConfig();
+        final EngineConfig config = new EngineConfig();
         config.setProperty("test.invalid", "not-a-number");
 
         // Should return default value when parse fails
@@ -114,7 +118,7 @@ public class EngineConfigTest {
     @Test
     public void testLoadNonExistentFile() {
         // Should not throw exception, just use defaults
-        EngineConfig config = new EngineConfig("/nonexistent/path/config.properties");
+        final EngineConfig config = new EngineConfig("/nonexistent/path/config.properties");
 
         // Should still have defaults
         assertEquals(8080, config.getHttpPort());
@@ -122,7 +126,7 @@ public class EngineConfigTest {
 
     @Test
     public void testPropertyOverride() {
-        EngineConfig config = new EngineConfig();
+        final EngineConfig config = new EngineConfig();
 
         // Initial value
         assertEquals(8080, config.getHttpPort());
@@ -134,17 +138,17 @@ public class EngineConfigTest {
 
     @Test
     public void testGetProperties() {
-        EngineConfig config = new EngineConfig();
+        final EngineConfig config = new EngineConfig();
         config.setProperty("test.key", "test.value");
 
-        var properties = config.getProperties();
+        final var properties = config.getProperties();
         assertNotNull(properties);
         assertEquals("test.value", properties.getProperty("test.key"));
     }
 
     @Test
     public void testAccountIdConfiguration() {
-        EngineConfig config = new EngineConfig();
+        final EngineConfig config = new EngineConfig();
 
         // Test default account ID
         assertEquals("ABC12345", config.getAccountId());
@@ -171,7 +175,7 @@ public class EngineConfigTest {
 
     @Test
     public void defaultPersistenceDirectoryIsNotCurrentWorkingDir() {
-        EngineConfig config = new EngineConfig();
+        final EngineConfig config = new EngineConfig();
         // The default is now the resolved data dir (env var or home), no longer the CWD-relative ./data.
         assertNotEquals("./data", config.getPersistenceDirectory());
         assertNotEquals("./data/wal.log", config.getWalFile());

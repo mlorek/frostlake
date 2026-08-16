@@ -17,26 +17,22 @@
 package dev.frostlake.ddl;
 
 import dev.frostlake.BaseDatabaseTest;
-import dev.frostlake.metastore.model.Schema;
-import dev.frostlake.metastore.model.Table;
-import dev.frostlake.metastore.model.TableColumn;
 import dev.frostlake.storage.ResultSet;
-import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 
-import java.util.List;
-
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
- * Tests for composite (multi-column) PRIMARY KEY constraints
+ * Composite (multi-column) PRIMARY KEY metadata, asserted through the SQL surface —
+ * {@code SHOW PRIMARY KEYS IN TABLE} (one row per key column, numbered by {@code key_sequence},
+ * sharing one constraint) and {@code DESCRIBE TABLE}'s {@code primary key} cells — so every check
+ * runs against whichever engine executed the DDL, embedded or live.
  */
 public class CompositePrimaryKeyTest extends BaseDatabaseTest {
 
-    private static final String CATALOG_ASSERTIONS =
-        "asserts through engine.getCatalog(), which under SF_LIVE still reads the embedded engine — "
-        + "the CREATE TABLE went to Snowflake, so the embedded catalog never saw the table; the DDL "
-        + "itself is still submitted to the account";
+    private ResultSet primaryKeys(final String table) {
+        return engine.executeQuery("SHOW PRIMARY KEYS IN TABLE " + table);
+    }
 
     @Test
     public void testCompositePrimaryKeyTwoColumns() {
@@ -49,34 +45,18 @@ public class CompositePrimaryKeyTest extends BaseDatabaseTest {
             )
             """);
 
-        Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_ASSERTIONS);
-        Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
-        Table table = schema.getTable("order_items");
+        assertEquals(3, engine.executeQuery("DESCRIBE TABLE order_items").getRowCount());
+        assertEquals("Y", describeCell("order_items", "ORDER_ID", "primary key"),
+            "order_id should be part of primary key");
+        assertEquals("Y", describeCell("order_items", "ITEM_ID", "primary key"),
+            "item_id should be part of primary key");
+        assertEquals("N", describeCell("order_items", "QUANTITY", "primary key"),
+            "quantity should NOT be part of primary key");
 
-        assertNotNull(table);
-        assertEquals(3, table.getColumns().size());
-
-        // Check that both columns are marked as primary keys
-        TableColumn orderIdCol = table.getColumn("order_id");
-        TableColumn itemIdCol = table.getColumn("item_id");
-        TableColumn quantityCol = table.getColumn("quantity");
-
-        assertTrue(orderIdCol.isPrimaryKey(), "order_id should be part of primary key");
-        assertTrue(itemIdCol.isPrimaryKey(), "item_id should be part of primary key");
-        assertFalse(quantityCol.isPrimaryKey(), "quantity should NOT be part of primary key");
-
-        // Check primary keys list
-        List<String> primaryKeys = table.getPrimaryKeys();
-        assertEquals(2, primaryKeys.size(), "Should have 2 primary key columns");
-
-        // Verify both keys are in the list (case-insensitive)
-        boolean hasOrderId = primaryKeys.stream()
-            .anyMatch((final var pk) -> pk.equalsIgnoreCase("order_id"));
-        boolean hasItemId = primaryKeys.stream()
-            .anyMatch((final var pk) -> pk.equalsIgnoreCase("item_id"));
-
-        assertTrue(hasOrderId, "Primary keys should include order_id");
-        assertTrue(hasItemId, "Primary keys should include item_id");
+        final ResultSet pk = primaryKeys("order_items");
+        assertEquals(2, pk.getRowCount(), "Should have 2 primary key columns");
+        soleRowWhere(pk, "column_name", "ORDER_ID");
+        soleRowWhere(pk, "column_name", "ITEM_ID");
     }
 
     @Test
@@ -91,21 +71,13 @@ public class CompositePrimaryKeyTest extends BaseDatabaseTest {
             )
             """);
 
-        Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_ASSERTIONS);
-        Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
-        Table table = schema.getTable("inventory");
+        assertEquals(4, engine.executeQuery("DESCRIBE TABLE inventory").getRowCount());
+        assertEquals("Y", describeCell("inventory", "WAREHOUSE_ID", "primary key"));
+        assertEquals("Y", describeCell("inventory", "PRODUCT_ID", "primary key"));
+        assertEquals("Y", describeCell("inventory", "LOCATION", "primary key"));
+        assertEquals("N", describeCell("inventory", "QUANTITY", "primary key"));
 
-        assertEquals(4, table.getColumns().size());
-
-        // Verify all three columns are primary keys
-        assertTrue(table.getColumn("warehouse_id").isPrimaryKey());
-        assertTrue(table.getColumn("product_id").isPrimaryKey());
-        assertTrue(table.getColumn("location").isPrimaryKey());
-        assertFalse(table.getColumn("quantity").isPrimaryKey());
-
-        // Check count
-        List<String> primaryKeys = table.getPrimaryKeys();
-        assertEquals(3, primaryKeys.size(), "Should have 3 primary key columns");
+        assertEquals(3, primaryKeys("inventory").getRowCount(), "Should have 3 primary key columns");
     }
 
     @Test
@@ -120,19 +92,13 @@ public class CompositePrimaryKeyTest extends BaseDatabaseTest {
             )
             """);
 
-        Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_ASSERTIONS);
-        Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
-        Table table = schema.getTable("user_roles");
+        assertEquals("Y", describeCell("user_roles", "USER_ID", "primary key"));
+        assertEquals("Y", describeCell("user_roles", "ROLE_ID", "primary key"));
+        assertEquals("N", describeCell("user_roles", "USER_ID", "null?"));
+        assertEquals("N", describeCell("user_roles", "ROLE_ID", "null?"));
 
-        TableColumn userIdCol = table.getColumn("user_id");
-        TableColumn roleIdCol = table.getColumn("role_id");
-
-        assertTrue(userIdCol.isPrimaryKey());
-        assertTrue(roleIdCol.isPrimaryKey());
-        assertFalse(userIdCol.isNullable());
-        assertFalse(roleIdCol.isNullable());
-
-        assertEquals("system", table.getColumn("granted_by").getDefaultValue());
+        // The default cell shows the EXPRESSION as written — quotes included (live-verified).
+        assertEquals("'system'", describeCell("user_roles", "GRANTED_BY", "default"));
     }
 
     @Test
@@ -151,7 +117,7 @@ public class CompositePrimaryKeyTest extends BaseDatabaseTest {
         engine.execute("INSERT INTO order_items VALUES (1, 102, 3)");
         engine.execute("INSERT INTO order_items VALUES (2, 101, 2)");
 
-        ResultSet result = engine.executeQuery("SELECT * FROM order_items ORDER BY order_id, item_id");
+        final ResultSet result = engine.executeQuery("SELECT * FROM order_items ORDER BY order_id, item_id");
         assertEquals(3, result.getRowCount());
 
         result.next();
@@ -172,8 +138,7 @@ public class CompositePrimaryKeyTest extends BaseDatabaseTest {
 
     @Test
     public void testMixedPrimaryKeys() {
-        // Test table with one column-level PK and one table-level composite PK
-        // Should combine both
+        // A single column-level PRIMARY KEY reads back as a one-column constraint.
         engine.execute("""
             CREATE TABLE test_mixed (
             id INTEGER PRIMARY KEY,
@@ -182,12 +147,8 @@ public class CompositePrimaryKeyTest extends BaseDatabaseTest {
             )
             """);
 
-        Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_ASSERTIONS);
-        Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
-        Table table = schema.getTable("test_mixed");
-
-        assertTrue(table.getColumn("id").isPrimaryKey());
-        assertEquals(1, table.getPrimaryKeys().size());
+        assertEquals("Y", describeCell("test_mixed", "ID", "primary key"));
+        assertEquals(1, primaryKeys("test_mixed").getRowCount());
     }
 
     @Test
@@ -202,16 +163,12 @@ public class CompositePrimaryKeyTest extends BaseDatabaseTest {
             )
             """);
 
-        Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_ASSERTIONS);
-        Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
-        Table table = schema.getTable("test");
+        assertEquals("Y", describeCell("test", "COL_A", "primary key"));
+        assertEquals("N", describeCell("test", "COL_B", "primary key"));
+        assertEquals("Y", describeCell("test", "COL_C", "primary key"));
+        assertEquals("N", describeCell("test", "COL_D", "primary key"));
 
-        assertTrue(table.getColumn("col_a").isPrimaryKey());
-        assertFalse(table.getColumn("col_b").isPrimaryKey());
-        assertTrue(table.getColumn("col_c").isPrimaryKey());
-        assertFalse(table.getColumn("col_d").isPrimaryKey());
-
-        assertEquals(2, table.getPrimaryKeys().size());
+        assertEquals(2, primaryKeys("test").getRowCount());
     }
 
     @Test
@@ -225,15 +182,10 @@ public class CompositePrimaryKeyTest extends BaseDatabaseTest {
             )
             """);
 
-        Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_ASSERTIONS);
-        Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
-        Table table = schema.getTable("users");
+        assertEquals("Y", describeCell("users", "ID", "primary key"));
+        assertEquals("N", describeCell("users", "NAME", "primary key"));
 
-        assertTrue(table.getColumn("id").isPrimaryKey());
-        assertFalse(table.getColumn("name").isPrimaryKey());
-
-        List<String> primaryKeys = table.getPrimaryKeys();
-        assertEquals(1, primaryKeys.size());
+        assertEquals(1, primaryKeys("users").getRowCount());
     }
 
     @Test
@@ -248,14 +200,10 @@ public class CompositePrimaryKeyTest extends BaseDatabaseTest {
             )
             """);
 
-        Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_ASSERTIONS);
-        Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
-        Table table = schema.getTable("multi_key");
-
-        assertTrue(table.getColumn("int_key").isPrimaryKey());
-        assertTrue(table.getColumn("varchar_key").isPrimaryKey());
-        assertTrue(table.getColumn("date_key").isPrimaryKey());
-        assertFalse(table.getColumn("data").isPrimaryKey());
+        assertEquals("Y", describeCell("multi_key", "INT_KEY", "primary key"));
+        assertEquals("Y", describeCell("multi_key", "VARCHAR_KEY", "primary key"));
+        assertEquals("Y", describeCell("multi_key", "DATE_KEY", "primary key"));
+        assertEquals("N", describeCell("multi_key", "DATA", "primary key"));
     }
 
     @Test
@@ -268,17 +216,12 @@ public class CompositePrimaryKeyTest extends BaseDatabaseTest {
             )
             """);
 
-        Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_ASSERTIONS);
-        Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
-        Table table = schema.getTable("lookup");
-
         // All columns should be primary keys
-        for (final TableColumn col : table.getColumns()) {
-            assertTrue(col.isPrimaryKey(), col.getName() + " should be primary key");
-        }
+        assertEquals("Y", describeCell("lookup", "KEY1", "primary key"));
+        assertEquals("Y", describeCell("lookup", "KEY2", "primary key"));
 
-        assertEquals(2, table.getPrimaryKeys().size());
-        assertEquals(2, table.getColumns().size());
+        assertEquals(2, primaryKeys("lookup").getRowCount());
+        assertEquals(2, engine.executeQuery("DESCRIBE TABLE lookup").getRowCount());
     }
 
     @Test
@@ -292,12 +235,8 @@ public class CompositePrimaryKeyTest extends BaseDatabaseTest {
             )
             """);
 
-        Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_ASSERTIONS);
-        Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
-        Table table = schema.getTable("composite_test");
-
-        assertTrue(table.getColumn("id1").isPrimaryKey());
-        assertTrue(table.getColumn("id2").isPrimaryKey());
-        assertFalse(table.getColumn("value").isPrimaryKey());
+        assertEquals("Y", describeCell("composite_test", "ID1", "primary key"));
+        assertEquals("Y", describeCell("composite_test", "ID2", "primary key"));
+        assertEquals("N", describeCell("composite_test", "VALUE", "primary key"));
     }
 }

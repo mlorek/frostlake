@@ -21,6 +21,7 @@ package dev.frostlake.executor.expressions;
  */
 public interface ExpressionVisitor<T> {
     T visitLiteral(final LiteralExpression expr);
+    T visitDefaultMarker(final DefaultMarkerExpression expr);
     T visitColumnReference(final ColumnReferenceExpression expr);
     T visitBinaryOperation(final BinaryOperationExpression expr);
     T visitUnaryOperation(final UnaryOperationExpression expr);

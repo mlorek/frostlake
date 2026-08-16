@@ -17,6 +17,7 @@
 package dev.frostlake.persistence;
 
 import dev.frostlake.DatabaseEngine;
+import dev.frostlake.config.EngineConfig;
 import dev.frostlake.storage.ResultSet;
 
 import org.junit.jupiter.api.AfterEach;
@@ -54,6 +55,9 @@ public class EngineStateCloneTest {
     @Test
     public void checkpointRestoreClonesAWorkingIsolatedEngine() throws Exception {
         final DatabaseEngine original = new DatabaseEngine();
+        // The tests point stages at local file:// directories - opt in to the affordance the
+        // default config refuses (a real account refuses those URLs).
+        original.getConfig().setProperty(EngineConfig.PROP_STAGE_FILE_URL_ENABLED, "true");
         original.execute("CREATE DATABASE seed");
         original.execute("USE DATABASE seed");
         original.execute("CREATE SCHEMA s");
@@ -73,6 +77,9 @@ public class EngineStateCloneTest {
         original.checkpointStateTo(dir);
 
         final DatabaseEngine clone = new DatabaseEngine();
+        // The tests point stages at local file:// directories - opt in to the affordance the
+        // default config refuses (a real account refuses those URLs).
+        clone.getConfig().setProperty(EngineConfig.PROP_STAGE_FILE_URL_ENABLED, "true");
         clone.restoreStateFrom(dir);
         clone.execute("USE DATABASE seed");
         clone.execute("USE SCHEMA s");
@@ -110,6 +117,9 @@ public class EngineStateCloneTest {
     @Test
     public void cloneInstanceIsAOneCallIndependentTwin() throws Exception {
         final DatabaseEngine original = new DatabaseEngine();
+        // The tests point stages at local file:// directories - opt in to the affordance the
+        // default config refuses (a real account refuses those URLs).
+        original.getConfig().setProperty(EngineConfig.PROP_STAGE_FILE_URL_ENABLED, "true");
         original.execute("CREATE DATABASE d");
         original.execute("USE DATABASE d");
         original.execute("CREATE SCHEMA s");

@@ -25,7 +25,6 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
 
 public class InlineJavaFunctionTest extends BaseJdbcTest {
     private static final Logger logger = LoggerFactory.getLogger(InlineJavaFunctionTest.class);
@@ -34,7 +33,7 @@ public class InlineJavaFunctionTest extends BaseJdbcTest {
     public void testCreateInlineJavaFunction() throws SQLException {
         logger.info("Testing CREATE FUNCTION with inline Java code");
 
-        String createFunction = """
+        final String createFunction = """
         CREATE OR REPLACE FUNCTION jfn()
         RETURNS STRING
         LANGUAGE JAVA
@@ -50,9 +49,9 @@ public class InlineJavaFunctionTest extends BaseJdbcTest {
 
         statement.execute(createFunction);
 
-        ResultSet rs = statement.executeQuery("SELECT jfn()");
+        final ResultSet rs = statement.executeQuery("SELECT jfn()");
         rs.next();
-        String result = rs.getString(1);
+        final String result = rs.getString(1);
         assertEquals("hello", result);
     }
 
@@ -60,7 +59,7 @@ public class InlineJavaFunctionTest extends BaseJdbcTest {
     public void testJavaFunctionWithStringParameter() throws SQLException {
         logger.info("Testing Java function with String parameter");
 
-        String createFunction = """
+        final String createFunction = """
         CREATE OR REPLACE FUNCTION greet(name STRING)
         RETURNS STRING
         LANGUAGE JAVA
@@ -76,9 +75,9 @@ public class InlineJavaFunctionTest extends BaseJdbcTest {
 
         statement.execute(createFunction);
 
-        ResultSet rs = statement.executeQuery("SELECT greet('World')");
+        final ResultSet rs = statement.executeQuery("SELECT greet('World')");
         rs.next();
-        String result = rs.getString(1);
+        final String result = rs.getString(1);
         assertEquals("Hello, World", result);
     }
 
@@ -86,7 +85,7 @@ public class InlineJavaFunctionTest extends BaseJdbcTest {
     public void testJavaFunctionWithIntegerParameter() throws SQLException {
         logger.info("Testing Java function with Integer parameter");
 
-        String createFunction = """
+        final String createFunction = """
         CREATE OR REPLACE FUNCTION double_value(x INTEGER)
         RETURNS INTEGER
         LANGUAGE JAVA
@@ -102,9 +101,9 @@ public class InlineJavaFunctionTest extends BaseJdbcTest {
 
         statement.execute(createFunction);
 
-        ResultSet rs = statement.executeQuery("SELECT double_value(5)");
+        final ResultSet rs = statement.executeQuery("SELECT double_value(5)");
         rs.next();
-        int result = rs.getInt(1);
+        final int result = rs.getInt(1);
         assertEquals(10, result);
     }
 
@@ -112,7 +111,7 @@ public class InlineJavaFunctionTest extends BaseJdbcTest {
     public void testJavaFunctionWithMultipleParameters() throws SQLException {
         logger.info("Testing Java function with multiple parameters");
 
-        String createFunction = """
+        final String createFunction = """
         CREATE OR REPLACE FUNCTION add_numbers(a INTEGER, b INTEGER)
         RETURNS INTEGER
         LANGUAGE JAVA
@@ -128,9 +127,9 @@ public class InlineJavaFunctionTest extends BaseJdbcTest {
 
         statement.execute(createFunction);
 
-        ResultSet rs = statement.executeQuery("SELECT add_numbers(10, 20)");
+        final ResultSet rs = statement.executeQuery("SELECT add_numbers(10, 20)");
         rs.next();
-        int result = rs.getInt(1);
+        final int result = rs.getInt(1);
         assertEquals(30, result);
     }
 
@@ -138,7 +137,7 @@ public class InlineJavaFunctionTest extends BaseJdbcTest {
     public void testJavaFunctionInWhereClause() throws SQLException {
         logger.info("Testing Java function in WHERE clause");
 
-        String createFunction = """
+        final String createFunction = """
         CREATE OR REPLACE FUNCTION is_even(n INTEGER)
         RETURNS BOOLEAN
         LANGUAGE JAVA
@@ -159,11 +158,11 @@ public class InlineJavaFunctionTest extends BaseJdbcTest {
         statement.execute("INSERT INTO numbers VALUES (2, 15)");
         statement.execute("INSERT INTO numbers VALUES (3, 20)");
 
-        ResultSet rs = statement.executeQuery("SELECT id, value FROM numbers WHERE is_even(value)");
+        final ResultSet rs = statement.executeQuery("SELECT id, value FROM numbers WHERE is_even(value)");
         int count = 0;
         while (rs.next()) {
             count++;
-            int value = rs.getInt(2);
+            final int value = rs.getInt(2);
             assertEquals(0, value % 2);
         }
         assertEquals(2, count);
@@ -173,7 +172,7 @@ public class InlineJavaFunctionTest extends BaseJdbcTest {
     public void testJavaFunctionInSelectList() throws SQLException {
         logger.info("Testing Java function in SELECT list");
 
-        String createFunction = """
+        final String createFunction = """
         CREATE OR REPLACE FUNCTION format_name(firstname STRING, lastname STRING)
         RETURNS STRING
         LANGUAGE JAVA
@@ -193,12 +192,15 @@ public class InlineJavaFunctionTest extends BaseJdbcTest {
         statement.execute("INSERT INTO people VALUES ('John', 'Doe')");
         statement.execute("INSERT INTO people VALUES ('Jane', 'Smith')");
 
-        ResultSet rs = statement.executeQuery("SELECT format_name(first_name, last_name) as formatted FROM people");
+        // ORDER BY pins the row order: an unordered SELECT's order is not promised (a live
+        // account returns these two rows either way round).
+        final ResultSet rs = statement.executeQuery(
+            "SELECT format_name(first_name, last_name) as formatted FROM people ORDER BY last_name");
         rs.next();
-        String result1 = rs.getString(1);
+        final String result1 = rs.getString(1);
         assertEquals("Doe, John", result1);
         rs.next();
-        String result2 = rs.getString(1);
+        final String result2 = rs.getString(1);
         assertEquals("Smith, Jane", result2);
     }
 
@@ -206,7 +208,7 @@ public class InlineJavaFunctionTest extends BaseJdbcTest {
     public void testJavaFunctionWithComplexLogic() throws SQLException {
         logger.info("Testing Java function with complex logic");
 
-        String createFunction = """
+        final String createFunction = """
         CREATE OR REPLACE FUNCTION factorial(n INTEGER)
         RETURNS INTEGER
         LANGUAGE JAVA
@@ -229,9 +231,9 @@ public class InlineJavaFunctionTest extends BaseJdbcTest {
 
         statement.execute(createFunction);
 
-        ResultSet rs = statement.executeQuery("SELECT factorial(5)");
+        final ResultSet rs = statement.executeQuery("SELECT factorial(5)");
         rs.next();
-        int result = rs.getInt(1);
+        final int result = rs.getInt(1);
         assertEquals(120, result);
     }
 
@@ -239,7 +241,7 @@ public class InlineJavaFunctionTest extends BaseJdbcTest {
     public void testJavaFunctionReturnsNull() throws SQLException {
         logger.info("Testing Java function returning null");
 
-        String createFunction = """
+        final String createFunction = """
         CREATE OR REPLACE FUNCTION get_nullable()
         RETURNS STRING
         LANGUAGE JAVA
@@ -255,9 +257,9 @@ public class InlineJavaFunctionTest extends BaseJdbcTest {
 
         statement.execute(createFunction);
 
-        ResultSet rs = statement.executeQuery("SELECT get_nullable()");
+        final ResultSet rs = statement.executeQuery("SELECT get_nullable()");
         rs.next();
-        String result = rs.getString(1);
+        final String result = rs.getString(1);
         assertEquals(null, result);
     }
 
@@ -265,7 +267,7 @@ public class InlineJavaFunctionTest extends BaseJdbcTest {
     public void testMultipleJavaFunctions() throws SQLException {
         logger.info("Testing multiple Java functions");
 
-        String createFunction1 = """
+        final String createFunction1 = """
         CREATE OR REPLACE FUNCTION func1()
         RETURNS STRING
         LANGUAGE JAVA
@@ -279,7 +281,7 @@ public class InlineJavaFunctionTest extends BaseJdbcTest {
         $$
         """;
 
-        String createFunction2 = """
+        final String createFunction2 = """
         CREATE OR REPLACE FUNCTION func2()
         RETURNS STRING
         LANGUAGE JAVA
@@ -296,7 +298,7 @@ public class InlineJavaFunctionTest extends BaseJdbcTest {
         statement.execute(createFunction1);
         statement.execute(createFunction2);
 
-        ResultSet rs = statement.executeQuery("SELECT func1(), func2()");
+        final ResultSet rs = statement.executeQuery("SELECT func1(), func2()");
         rs.next();
         assertEquals("function1", rs.getString(1));
         assertEquals("function2", rs.getString(2));
@@ -306,7 +308,7 @@ public class InlineJavaFunctionTest extends BaseJdbcTest {
     public void testJavaFunctionWithCombinedBuiltInFunction() throws SQLException {
         logger.info("Testing Java function combined with built-in function");
 
-        String createFunction = """
+        final String createFunction = """
         CREATE OR REPLACE FUNCTION add_prefix(text STRING)
         RETURNS STRING
         LANGUAGE JAVA
@@ -322,9 +324,9 @@ public class InlineJavaFunctionTest extends BaseJdbcTest {
 
         statement.execute(createFunction);
 
-        ResultSet rs = statement.executeQuery("SELECT UPPER(add_prefix('test'))");
+        final ResultSet rs = statement.executeQuery("SELECT UPPER(add_prefix('test'))");
         rs.next();
-        String result = rs.getString(1);
+        final String result = rs.getString(1);
         assertEquals("PREFIX_TEST", result);
     }
 }

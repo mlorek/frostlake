@@ -1,0 +1,158 @@
+<?xml version="1.0"?>
+<!DOCTYPE module PUBLIC
+    "-//Checkstyle//DTD Checkstyle Configuration 1.3//EN"
+    "https://checkstyle.org/dtds/configuration_1_3.dtd">
+
+<!--
+  Frostlake's OWN house rules, not a generic ruleset. Every module here corresponds to a rule stated in
+  CLAUDE.md; nothing is included merely because a standard profile ships with it, and nothing about
+  layout or formatting is checked at all — this is a checker, never a formatter.
+
+  SEVERITIES ARE DELIBERATE. A rule the tree already satisfies is an `error` and fails the build. A rule
+  with a known backlog is a `warning`, so the count is visible on every run without blocking, and is
+  promoted to `error` as each backlog is cleared. The counts recorded below were measured when the rule
+  was added.
+-->
+<module name="Checker">
+    <property name="severity" value="error"/>
+    <property name="fileExtensions" value="java"/>
+
+    <!-- Narrow, written-down exceptions where the rule is wrong for the code. Not a backlog. -->
+    <module name="SuppressionFilter">
+        <property name="file" value="${checkstyle.suppressions.file}"/>
+    </module>
+
+    <!-- Generated ANTLR sources live under target/ and are not ours to style. -->
+    <module name="BeforeExecutionExclusionFileFilter">
+        <property name="fileNamePattern" value=".*[\\/]target[\\/].*"/>
+    </module>
+
+    <module name="TreeWalker">
+
+        <!-- ── Imports: explicit only. The ORDERING half of this rule is enforced by the gate's
+             imports-sweep.py instead, which encodes "each contiguous run sorted" exactly; Checkstyle's
+             import-order modules describe groups differently and the two would disagree. ── -->
+        <module name="AvoidStarImport">
+            <property name="allowStaticMemberImports" value="false"/>
+        </module>
+        <module name="UnusedImports">
+            <property name="processJavadoc" value="true"/>
+        </module>
+        <module name="RedundantImport"/>
+
+        <!-- No functional interfaces and no streams: the custom evaluator interfaces
+             (RowExpressionEvaluator, JoinConditionEvaluator, AggregateEvaluator …) exist precisely so
+             neither is needed. Banning the imports is AST-based and cannot false-positive on text. -->
+        <module name="IllegalImport">
+            <property name="illegalPkgs" value="java.util.function,java.util.stream"/>
+        </module>
+
+        <!-- One top-level type per file: enums and interfaces get their own files. -->
+        <module name="OneTopLevelClass"/>
+        <module name="InterfaceIsType"/>
+
+
+        <!-- ── Bug catchers. Every one of these was measured at ZERO violations when added, so each is
+             an error from day one and nothing can introduce the first instance. ── -->
+        <module name="StringLiteralEquality"/>   <!-- == on strings -->
+        <module name="EqualsHashCode"/>          <!-- equals without hashCode, or the reverse -->
+        <module name="CovariantEquals"/>         <!-- equals(SomeType) without equals(Object) -->
+        <module name="FallThrough"/>             <!-- a switch case falling into the next -->
+        <module name="DefaultComesLast"/>
+        <module name="NoFinalizer"/>
+        <module name="SimplifyBooleanExpression"/>
+        <module name="SimplifyBooleanReturn"/>
+        <module name="ModifierOrder"/>           <!-- public static final, not static public final -->
+        <module name="ArrayTypeStyle"/>          <!-- String[] x, never String x[] -->
+        <module name="UpperEll"/>                <!-- 1L, never 1l -->
+
+
+        <module name="FinalLocalVariable">
+            <property name="tokens" value="VARIABLE_DEF"/>
+            <property name="validateEnhancedForLoopVariable" value="true"/>
+            </module>
+        <module name="OneStatementPerLine">
+            </module>
+        <module name="HideUtilityClassConstructor"/>
+        <module name="FinalClass"/>
+        <module name="MultipleVariableDeclarations"/>
+        <module name="EmptyCatchBlock">
+            <property name="exceptionVariableName"
+                      value="ignored|expected|unused|notA.*|undetermined|cleanupFailure|notMaterialized|noExisting.*|unresolvable"/>
+        </module>
+        <module name="AnnotationLocation">
+            <property name="allowSamelineSingleParameterlessAnnotation" value="false"/>
+            <property name="allowSamelineParameterizedAnnotation" value="false"/>
+            <property name="allowSamelineMultipleAnnotations" value="false"/>
+        </module>
+        <!-- ── The backlogs. Each is real and measured; each fails nothing until its cleanup lands. ── -->
+
+        <!-- No lambda expressions. AST-based via the LAMBDA token, so a `->` inside a string or a
+             comment is not mistaken for one. Measured 2026-08-15: 278 across all modules, mostly
+             computeIfAbsent(key, (final var k) -> new …). -->
+        <module name="IllegalToken">
+            <property name="tokens" value="LAMBDA"/>
+            </module>
+
+        <!-- No static nested types — extract them to their own file. Checkstyle has no built-in for
+             this, so it is a line pattern with comments ignored, keyed on the word `static`.
+
+             IT CANNOT BE WIDENED TO CATCH THE IMPLICITLY-STATIC ONES, and the reason is worth keeping:
+             a nested INTERFACE or ENUM is implicitly static and never writes the keyword, so a pattern
+             that would see them has to match a bare indented `class|enum|interface` — and
+             RegexpSinglelineJava cannot see STRING LITERALS. This codebase embeds Java, JavaScript,
+             Python and Scala source inside SQL text blocks for its UDF tests, so such a pattern fires
+             on `class JavaFn{` inside a $$…$$ body: 214 hits, essentially all of them string content.
+             ignoreComments has no string-literal counterpart. Catching implicitly-static members needs
+             a real AST check, not a line regex — the same wall the provenance rule hit.
+
+             A declaration whose modifiers are split across lines is missed too, so the count is a
+             FLOOR. Cleared to zero 2026-08-15 (was 44). -->
+        <module name="RegexpSinglelineJava">
+            <property name="format" value="^\s*(public\s+|protected\s+|private\s+)?static\s+(final\s+)?(class|enum|interface)\s"/>
+            <property name="message" value="Static nested type: extract it to its own file."/>
+            <property name="ignoreComments" value="true"/>
+        </module>
+
+        <!-- A stream pipeline reached WITHOUT importing the package — a chained .stream() on a
+             collection needs no import, so IllegalImport above cannot see it. Narrow on purpose:
+             Frostlake has its own Stream domain object (a SQL stream), so a looser pattern would fire
+             on Stream.consume() and friends. Measured 2026-08-15: 18. -->
+        <module name="RegexpSinglelineJava">
+            <property name="format" value="\.stream\(\)"/>
+            <property name="message" value="Streams are not used in this codebase; use an explicit for loop."/>
+            <property name="ignoreComments" value="true"/>
+        </module>
+
+        <!-- final on every parameter-like binding: method and constructor parameters, and catch
+             clauses. The for-each and lambda halves of the rule have no Checkstyle module.
+
+             THIS ONE STAYS A WARNING PERMANENTLY. The house rule exempts "any binding reassigned in
+             its body", and FinalParameters cannot express that exemption — ALL FOUR it reports are
+             exactly such reassignments (GetPath.navigatePath walks its node parameter; QueryExecutor
+             strips parentheses from a qualifiedName and trims an expr). Promoting it would demand
+             `final` on parameters the rule itself says must not have it. -->
+        <module name="FinalParameters">
+            <property name="tokens" value="METHOD_DEF,CTOR_DEF,LITERAL_CATCH"/>
+            <property name="severity" value="warning"/>
+        </module>
+
+    </module>
+
+    <!-- Tests log through SLF4J, never System.out/err. TESTS ONLY: the console clients and the demos
+         print to stdout because that is their whole job, so the rule is suppressed for main sources
+         rather than being written to guess at intent. -->
+    <module name="RegexpSingleline">
+        <property name="format" value="System\.(out|err)\.print"/>
+        <property name="message" value="Log through SLF4J rather than System.out/System.err."/>
+    </module>
+    <!-- The pattern names the CHECK CLASS, and is written to distinguish two similar ones. `checks`
+         is a regex matched against the check's class name, so a bare "RegexpSingleline" also silences
+         RegexpSinglelineJavaCheck — quietly disabling the static-nested-type and stream checks across
+         every main source — while "^RegexpSingleline$" matches neither, since the name ends in Check. -->
+    <module name="SuppressionSingleFilter">
+        <property name="checks" value="RegexpSinglelineCheck$"/>
+        <property name="files" value=".*[\\/]src[\\/]main[\\/].*"/>
+    </module>
+
+</module>

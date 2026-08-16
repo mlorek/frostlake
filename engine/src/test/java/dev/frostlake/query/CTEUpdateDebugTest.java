@@ -16,23 +16,18 @@
 
 package dev.frostlake.query;
 
-import dev.frostlake.DatabaseEngine;
-import org.junit.jupiter.api.BeforeEach;
+import dev.frostlake.BaseDatabaseTest;
 import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
-public class CTEUpdateDebugTest {
+public class CTEUpdateDebugTest extends BaseDatabaseTest {
     private static final Logger logger = LoggerFactory.getLogger(CTEUpdateDebugTest.class);
-    private DatabaseEngine engine;
 
-    @BeforeEach
-    public void setUp() {
-        engine = new DatabaseEngine();
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
+    @Override
+    protected void setupTest() {
         engine.execute("CREATE TABLE test_table (id INTEGER, value VARCHAR)");
         engine.execute("INSERT INTO test_table VALUES (1, 'A')");
         engine.execute("CREATE TABLE target (id INTEGER, value VARCHAR)");
@@ -56,7 +51,7 @@ public class CTEUpdateDebugTest {
     @Test
     public void testUpdateWithCTE() {
         logger.info("Testing UPDATE with CTE");
-        String sql = """
+        final String sql = """
             WITH cte AS (
                 SELECT value FROM test_table WHERE id = 1
             )
@@ -74,7 +69,7 @@ public class CTEUpdateDebugTest {
     @Test
     public void testUpdateWithCTEAndQualifiedColumn() {
         logger.info("Testing UPDATE with CTE and qualified columns");
-        String sql = """
+        final String sql = """
             WITH cte AS (
                 SELECT id, value FROM test_table WHERE id = 1
             )

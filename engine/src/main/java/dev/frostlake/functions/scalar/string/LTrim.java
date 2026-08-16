@@ -33,7 +33,7 @@ public class LTrim extends TextArgumentFunction {
         // Snowflake LTRIM(expr [, chars]): trims every character in the set (default whitespace).
         final String chars = args.size() > 1 && args.get(1) != null ? args.get(1).toString() : null;
         int start = 0;
-        int end = str.length();
+        final int end = str.length();
         while (start < end && trimmed(str.charAt(start), chars)) { start++; }
         
         return str.substring(start, end);

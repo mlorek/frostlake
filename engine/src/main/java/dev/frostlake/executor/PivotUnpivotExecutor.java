@@ -53,17 +53,17 @@ final class PivotUnpivotExecutor {
     ResultSet executePivot(final FrostlakeParser.SelectClauseContext ctx, final Table table, final List<Row> rows, final FrostlakeParser.PivotClauseContext pivotCtx) {
 
         // Extract PIVOT components
-        String aggFuncName = pivotCtx.aggregateFunction().functionName().getText().toUpperCase();
-        String aggColumn = pivotCtx.aggregateFunction().expression().getText();
-        String pivotColumn = ParseTreeText.getIdentifier(pivotCtx.identifier());
+        final String aggFuncName = pivotCtx.aggregateFunction().functionName().getText().toUpperCase();
+        final String aggColumn = pivotCtx.aggregateFunction().expression().getText();
+        final String pivotColumn = ParseTreeText.getIdentifier(pivotCtx.identifier());
 
         // Get column indices
-        int aggColIndex = table.getColumnIndex(aggColumn);
-        int pivotColIndex = table.getColumnIndex(pivotColumn);
+        final int aggColIndex = table.getColumnIndex(aggColumn);
+        final int pivotColIndex = table.getColumnIndex(pivotColumn);
 
         // Get pivot values: an explicit list, ANY (dynamic: the distinct FOR-column values), or a subquery.
-        List<String> pivotValues = new ArrayList<>();
-        Map<String, String> pivotAliases = new HashMap<>();
+        final List<String> pivotValues = new ArrayList<>();
+        final Map<String, String> pivotAliases = new HashMap<>();
         final FrostlakeParser.PivotInListContext inList = pivotCtx.pivotInList();
         if (inList.pivotValueList() != null) {
             for (final FrostlakeParser.PivotValueContext pvCtx : inList.pivotValueList().pivotValue()) {
@@ -112,7 +112,7 @@ final class PivotUnpivotExecutor {
             ? evaluateConstant(pivotCtx.expression()) : null;
 
         // Get all non-pivot/non-agg columns for grouping
-        List<Integer> groupByColIndices = new ArrayList<>();
+        final List<Integer> groupByColIndices = new ArrayList<>();
         for (int i = 0; i < table.getColumns().size(); i++) {
             if (i != aggColIndex && i != pivotColIndex) {
                 groupByColIndices.add(i);
@@ -121,12 +121,12 @@ final class PivotUnpivotExecutor {
 
         // Group rows by the non-pivot columns. Buckets use canonicalized keys (so equal numbers with
         // different runtime types group together); output rows keep the first row's raw values.
-        Map<List<Object>, Map<String, List<Object>>> groups = new LinkedHashMap<>();
-        Map<List<Object>, List<Object>> groupKeyDisplayValues = new HashMap<>();
+        final Map<List<Object>, Map<String, List<Object>>> groups = new LinkedHashMap<>();
+        final Map<List<Object>, List<Object>> groupKeyDisplayValues = new HashMap<>();
         for (final Row row : rows) {
             // Build group key from non-pivot columns
-            List<Object> rawKey = new ArrayList<>();
-            List<Object> groupKey = new ArrayList<>();
+            final List<Object> rawKey = new ArrayList<>();
+            final List<Object> groupKey = new ArrayList<>();
             for (final int idx : groupByColIndices) {
                 final Object value = row.getValue(idx);
                 rawKey.add(value);
@@ -134,10 +134,10 @@ final class PivotUnpivotExecutor {
             }
 
             // Get pivot column value
-            String pivotValue = row.getValue(pivotColIndex).toString();
+            final String pivotValue = row.getValue(pivotColIndex).toString();
 
             // Get aggregate column value
-            Object aggValue = row.getValue(aggColIndex);
+            final Object aggValue = row.getValue(aggColIndex);
 
             Map<String, List<Object>> groupBuckets = groups.get(groupKey);
             if (groupBuckets == null) {
@@ -154,23 +154,23 @@ final class PivotUnpivotExecutor {
         }
 
         // Build result columns
-        List<ResultSetColumn> resultColumns = new ArrayList<>();
+        final List<ResultSetColumn> resultColumns = new ArrayList<>();
         for (final int idx : groupByColIndices) {
-            TableColumn col = table.getColumns().get(idx);
+            final TableColumn col = table.getColumns().get(idx);
             resultColumns.add(new ResultSetColumn(col.getName(), col.getDataType(), null));
         }
         for (final String pivotValue : pivotValues) {
-            String colName = pivotAliases.get(pivotValue);
+            final String colName = pivotAliases.get(pivotValue);
             resultColumns.add(new ResultSetColumn(colName, NumericType.BIGINT, null));
         }
 
         // Build result rows
-        List<Row> resultRows = new ArrayList<>();
+        final List<Row> resultRows = new ArrayList<>();
         for (final Map.Entry<List<Object>, Map<String, List<Object>>> entry : groups.entrySet()) {
-            List<Object> rowValues = new ArrayList<>(groupKeyDisplayValues.get(entry.getKey()));
+            final List<Object> rowValues = new ArrayList<>(groupKeyDisplayValues.get(entry.getKey()));
 
             for (final String pivotValue : pivotValues) {
-                List<Object> values = entry.getValue().getOrDefault(pivotValue, new ArrayList<>());
+                final List<Object> values = entry.getValue().getOrDefault(pivotValue, new ArrayList<>());
                 Object aggResult = AggregateFunctions.applyAggregateFunction(aggFuncName, values);
                 if (aggResult == null && defaultOnNull != null) {
                     aggResult = defaultOnNull;
@@ -190,23 +190,23 @@ final class PivotUnpivotExecutor {
     ResultSet executeUnpivot(final FrostlakeParser.SelectClauseContext ctx, final Table table, final List<Row> rows, final FrostlakeParser.UnpivotClauseContext unpivotCtx) {
 
         // Extract UNPIVOT components
-        String valueColumn = ParseTreeText.getIdentifier(unpivotCtx.identifier(0)); // value_column
-        String nameColumn = ParseTreeText.getIdentifier(unpivotCtx.identifier(1));  // name_column
+        final String valueColumn = ParseTreeText.getIdentifier(unpivotCtx.identifier(0)); // value_column
+        final String nameColumn = ParseTreeText.getIdentifier(unpivotCtx.identifier(1));  // name_column
 
         // Get columns to unpivot
-        List<String> unpivotColumns = new ArrayList<>();
+        final List<String> unpivotColumns = new ArrayList<>();
         for (final FrostlakeParser.IdentifierContext idCtx : unpivotCtx.unpivotColumnList().identifier()) {
             unpivotColumns.add(ParseTreeText.getIdentifier(idCtx));
         }
 
         // Get column indices for unpivot columns
-        List<Integer> unpivotColIndices = new ArrayList<>();
+        final List<Integer> unpivotColIndices = new ArrayList<>();
         for (final String colName : unpivotColumns) {
             unpivotColIndices.add(table.getColumnIndex(colName));
         }
 
         // Get indices of columns to preserve
-        List<Integer> preserveColIndices = new ArrayList<>();
+        final List<Integer> preserveColIndices = new ArrayList<>();
         for (int i = 0; i < table.getColumns().size(); i++) {
             if (!unpivotColIndices.contains(i)) {
                 preserveColIndices.add(i);
@@ -214,15 +214,15 @@ final class PivotUnpivotExecutor {
         }
 
         // Build result columns: preserved columns + name column + value column
-        List<ResultSetColumn> resultColumns = new ArrayList<>();
+        final List<ResultSetColumn> resultColumns = new ArrayList<>();
         for (final int idx : preserveColIndices) {
-            TableColumn col = table.getColumns().get(idx);
+            final TableColumn col = table.getColumns().get(idx);
             resultColumns.add(new ResultSetColumn(col.getName(), col.getDataType(), null));
         }
         resultColumns.add(new ResultSetColumn(nameColumn, StringType.VARCHAR, null));
 
         // Use the data type of the first unpivot column for the value column
-        DataType valueColumnType = table.getColumns().get(unpivotColIndices.get(0)).getDataType();
+        final DataType valueColumnType = table.getColumns().get(unpivotColIndices.get(0)).getDataType();
         resultColumns.add(new ResultSetColumn(valueColumn, valueColumnType, null));
 
         // Snowflake EXCLUDEs NULL values by default (a row is emitted only for a non-NULL unpivoted
@@ -231,7 +231,7 @@ final class PivotUnpivotExecutor {
             && unpivotCtx.unpivotNulls().INCLUDE() != null;
 
         // Build result rows
-        List<Row> resultRows = new ArrayList<>();
+        final List<Row> resultRows = new ArrayList<>();
         for (final Row row : rows) {
             // For each unpivot column, create a new row
             for (int i = 0; i < unpivotColumns.size(); i++) {
@@ -239,7 +239,7 @@ final class PivotUnpivotExecutor {
                 if (value == null && !includeNulls) {
                     continue;
                 }
-                List<Object> rowValues = new ArrayList<>();
+                final List<Object> rowValues = new ArrayList<>();
 
                 // Add preserved column values
                 for (final int idx : preserveColIndices) {

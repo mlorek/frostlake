@@ -19,8 +19,6 @@ package dev.frostlake.features;
 import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.executor.StatementClock;
 
-import java.time.Instant;
-import java.time.ZoneId;
 
 import org.junit.jupiter.api.Test;
 
@@ -81,12 +79,21 @@ public class StatementClockTest extends BaseDatabaseTest {
      */
     @Test
     public void sysdateIsTheSameInstantRenderedInUtc() {
-        final int offsetSeconds =
-            ZoneId.systemDefault().getRules().getOffset(Instant.now()).getTotalSeconds();
-        final Object delta = scalar("SELECT DATEDIFF(second, SYSDATE(), CURRENT_TIMESTAMP())");
-        assertEquals(offsetSeconds, ((Number) delta).intValue(),
-            "CURRENT_TIMESTAMP leads SYSDATE by exactly the zone offset");
-        assertEquals(offsetSeconds == 0 ? Boolean.TRUE : Boolean.FALSE,
+        final int delta = ((Number) scalar(
+            "SELECT DATEDIFF(second, SYSDATE(), CURRENT_TIMESTAMP())")).intValue();
+        if (isLiveSnowflake()) {
+            // The SESSION's zone decides the lead, and it is the account's, not the runner's
+            // (America/Los_Angeles here vs the JVM's). Assert what holds in every zone: the lead is a
+            // real zone offset — a whole number of quarter-hours within +/-14h — and the two are equal
+            // exactly when that offset is zero.
+            assertEquals(0, delta % 900, "a zone offset is a whole number of quarter-hours: " + delta);
+            assertTrue(Math.abs(delta) <= 14 * 3600, "zone offset within +/-14h: " + delta);
+        } else {
+            // Embedded: the engine's session zone IS UTC (its TIMEZONE parameter), so SYSDATE and
+            // CURRENT_TIMESTAMP render the same instant identically whatever zone the host runs in.
+            assertEquals(0, delta, "the engine's session zone is UTC, so the lead is zero");
+        }
+        assertEquals(delta == 0 ? Boolean.TRUE : Boolean.FALSE,
             scalar("SELECT SYSDATE() = CURRENT_TIMESTAMP()"));
     }
 

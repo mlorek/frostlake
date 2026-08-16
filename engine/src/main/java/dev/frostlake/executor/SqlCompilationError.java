@@ -51,9 +51,80 @@ public final class SqlCompilationError {
         return PREFIX + "\n" + detail;
     }
 
+    /**
+     * Whether a message is one of these — a COMPILE-time refusal rather than a failure that only
+     * showed up while rows were being produced. The distinction matters wherever Frostlake reaches an
+     * answer by executing something Snowflake merely plans.
+     *
+     * @param message the exception message, which may be null
+     * @return true when the message carries this prefix
+     */
+    public static boolean isCompilationError(final String message) {
+        return message != null && message.startsWith(PREFIX);
+    }
+
     /** A compilation error that reports a source position, which stays on the FIRST line. */
     public static String at(final int line, final int position, final String detail) {
-        return PREFIX + " error line " + line + " at position " + position + "\n" + detail;
+        // Past any LEADING comment: a statement that opens with one reports from its first real token,
+        // so the place computed against the raw text is shifted back here — see LeadingCommentOffset.
+        final int[] shown = LeadingCommentOffset.rebase(line, position);
+        return PREFIX + " error line " + shown[0] + " at position " + shown[1] + "\n" + detail;
+    }
+
+
+    /**
+     * A property given twice in one statement. The trailing semicolon is a real account's, not a
+     * typo, and the name is the property's INTERNAL spelling where the two differ (a sequence's
+     * {@code START} reports as {@code SEQUENCE_START}).
+     */
+    public static String duplicateProperty(final String name) {
+        return of("duplicate property '" + name + "';");
+    }
+
+    /**
+     * A file-format parameter given twice. A different shape from {@link #duplicateProperty}, and
+     * measured: the detail stays on the FIRST line, after a space, with no closing punctuation.
+     */
+    public static String conflictingFileFormatParameter(final String name) {
+        return PREFIX + " conflicting values file format parameter '" + name + "'";
+    }
+
+    /** A copy option given twice — first line like the file-format twin, then a trailing newline. */
+    public static String conflictingCopyOption(final String name) {
+        return PREFIX + " conflicting values for copy option '" + name + "'\n";
+    }
+
+    /**
+     * A column carrying more than one DEFAULT / AUTOINCREMENT / IDENTITY. Its shape is a third one
+     * again — a space AFTER the colon, then the newline, and the sentence ends in a period.
+     */
+    public static String multipleDefaultOrAutoincrement(final String column) {
+        return PREFIX + " \nMultiple DEFAULT or AUTOINCREMENT expressions declared for column "
+            + column + ".";
+    }
+
+    /** A second PRIMARY KEY on one table, inline or table-level. */
+    public static String primaryKeyAlreadyExists(final String table) {
+        return of("primary key already exists for table '" + table + "'");
+    }
+
+    /** A second constraint over the same columns — live names neither constraint. */
+    public static String duplicateConstraintSignature(final String table) {
+        return of("constraint with the same signature already exists on table '" + table + "'");
+    }
+
+    /**
+     * The invalid-VALUE refusal for a parameter, brackets around the rendered value. What sits in
+     * the brackets follows the surface that raised it: format and copy options echo a quoted
+     * string WITH its quotes, session parameters strip them, integers and barewords stay bare.
+     */
+    public static String invalidValueForParameter(final String rendered, final String parameter) {
+        return of("invalid value [" + rendered + "] for parameter '" + parameter + "'");
+    }
+
+    /** The property-flavored twin, single-quoted — warehouse numerics and the sequence increment. */
+    public static String invalidValueForProperty(final String value, final String property) {
+        return of("invalid value '" + value + "' for property '" + property + "'");
     }
 
     /**
@@ -82,7 +153,11 @@ public final class SqlCompilationError {
     }
 
     public static String doesNotExist(final String kind, final String name) {
-        return of(kind + " '" + name + "' does not exist or not authorized.");
+        // The name is spelled the way every refusal spells one: quoted only where it has to be, part
+        // by part. Live reads Object '"kw"' for a lower-case relation and TEST_DB.TEST_SCHEMA."kw"
+        // when the whole path is named, where an ordinary upper-case name stays bare.
+        return of(kind + " '" + SqlIdentifiers.spellCanonicalPath(name)
+            + "' does not exist or not authorized.");
     }
 
     /**

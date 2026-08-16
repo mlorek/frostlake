@@ -20,6 +20,7 @@ import java.time.DateTimeException;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
+import java.util.regex.Pattern;
 
 /**
  * Snowflake's AUTO date/time input detection: a lenient field scanner for the timestamp and date forms
@@ -48,6 +49,13 @@ import java.time.LocalTime;
  */
 public final class AutoTemporalParser {
 
+    // Compiled once — hasOverWideIsoFields ran two String.matches (fresh Pattern compiles) per call.
+    private static final Pattern DASHED_TRIPLE = Pattern.compile("\\d+-\\d+-\\d+.*");
+    private static final Pattern ISO_WIDTHS = Pattern.compile(
+        "\\d{1,4}-\\d{1,2}-\\d{1,2}"
+        + "([ T]+\\d{1,2}:\\d{1,2}(:\\d{1,2}(\\.\\d+)?)?)?"
+        + "\\s*(Z|[+-]\\d{1,2}(:?\\d{1,2})?)?");
+
     private AutoTemporalParser() {
     }
 
@@ -73,12 +81,10 @@ public final class AutoTemporalParser {
             return false;
         }
         final String text = raw.trim();
-        if (!text.matches("\\d+-\\d+-\\d+.*")) {
+        if (!DASHED_TRIPLE.matcher(text).matches()) {
             return false;
         }
-        return !text.matches("\\d{1,4}-\\d{1,2}-\\d{1,2}"
-            + "([ T]+\\d{1,2}:\\d{1,2}(:\\d{1,2}(\\.\\d+)?)?)?"
-            + "\\s*(Z|[+-]\\d{1,2}(:?\\d{1,2})?)?");
+        return !ISO_WIDTHS.matcher(text).matches();
     }
 
     /** Parse a date + optional time (+ optional, ignored zone offset); null if unrecognised. */

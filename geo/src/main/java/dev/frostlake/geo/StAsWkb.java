@@ -33,6 +33,8 @@ public class StAsWkb extends BuiltInFunction {
         return geo == null ? null : BinaryValue.of(GeoShapes.toWkb(geo.node()));
     }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return 1; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return 1; }
 }

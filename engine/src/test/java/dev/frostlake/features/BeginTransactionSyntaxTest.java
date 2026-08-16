@@ -16,13 +16,11 @@
 
 package dev.frostlake.features;
 
-import dev.frostlake.DatabaseEngine;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
+import dev.frostlake.BaseDatabaseTest;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 
 /**
@@ -30,32 +28,24 @@ import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
  * Both "BEGIN" and "BEGIN TRANSACTION" should be syntactically valid
  * Note: These tests only verify syntax acceptance, not transaction semantics
  */
-public class BeginTransactionSyntaxTest {
+public class BeginTransactionSyntaxTest extends BaseDatabaseTest {
     private static final Logger logger = LoggerFactory.getLogger(BeginTransactionSyntaxTest.class);
 
-    private DatabaseEngine engine;
-
-    @BeforeEach
-    public void setUp() {
-        engine = new DatabaseEngine();
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
+    @Override
+    protected void setupTest() {
         logger.info("DatabaseEngine initialized for BEGIN TRANSACTION syntax tests");
-    }
-
-    @AfterEach
-    public void tearDown() {
-        if (engine != null) {
-            engine.shutdown();
-        }
     }
 
     @Test
     public void testBeginSyntax() {
         logger.info("Testing BEGIN syntax is accepted");
 
-        assertDoesNotThrow(() -> {
-            engine.execute("BEGIN");
+        assertDoesNotThrow(new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                engine.execute("BEGIN");
+                
+            }
         });
 
         logger.info("BEGIN syntax is valid");
@@ -65,8 +55,12 @@ public class BeginTransactionSyntaxTest {
     public void testBeginTransactionSyntax() {
         logger.info("Testing BEGIN TRANSACTION syntax is accepted");
 
-        assertDoesNotThrow(() -> {
-            engine.execute("BEGIN TRANSACTION");
+        assertDoesNotThrow(new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                engine.execute("BEGIN TRANSACTION");
+                
+            }
         });
 
         logger.info("BEGIN TRANSACTION syntax is valid");
@@ -76,8 +70,12 @@ public class BeginTransactionSyntaxTest {
     public void testBeginWithSemicolon() {
         logger.info("Testing BEGIN with semicolon");
 
-        assertDoesNotThrow(() -> {
-            engine.execute("BEGIN;");
+        assertDoesNotThrow(new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                engine.execute("BEGIN;");
+                
+            }
         });
 
         logger.info("BEGIN; syntax is valid");
@@ -87,8 +85,12 @@ public class BeginTransactionSyntaxTest {
     public void testBeginTransactionWithSemicolon() {
         logger.info("Testing BEGIN TRANSACTION with semicolon");
 
-        assertDoesNotThrow(() -> {
-            engine.execute("BEGIN TRANSACTION;");
+        assertDoesNotThrow(new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                engine.execute("BEGIN TRANSACTION;");
+                
+            }
         });
 
         logger.info("BEGIN TRANSACTION; syntax is valid");
@@ -98,20 +100,36 @@ public class BeginTransactionSyntaxTest {
     public void testMultipleBeginStatements() {
         logger.info("Testing multiple BEGIN statements");
 
-        assertDoesNotThrow(() -> {
-            engine.execute("BEGIN");
+        assertDoesNotThrow(new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                engine.execute("BEGIN");
+                
+            }
         });
 
-        assertDoesNotThrow(() -> {
-            engine.execute("BEGIN TRANSACTION");
+        assertDoesNotThrow(new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                engine.execute("BEGIN TRANSACTION");
+                
+            }
         });
 
-        assertDoesNotThrow(() -> {
-            engine.execute("BEGIN;");
+        assertDoesNotThrow(new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                engine.execute("BEGIN;");
+                
+            }
         });
 
-        assertDoesNotThrow(() -> {
-            engine.execute("BEGIN TRANSACTION;");
+        assertDoesNotThrow(new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                engine.execute("BEGIN TRANSACTION;");
+                
+            }
         });
 
         logger.info("Multiple BEGIN statement syntaxes are valid");
@@ -121,8 +139,12 @@ public class BeginTransactionSyntaxTest {
     public void testBeginUpperCase() {
         logger.info("Testing BEGIN in uppercase");
 
-        assertDoesNotThrow(() -> {
-            engine.execute("BEGIN");
+        assertDoesNotThrow(new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                engine.execute("BEGIN");
+                
+            }
         });
 
         logger.info("BEGIN uppercase syntax is valid");
@@ -132,8 +154,12 @@ public class BeginTransactionSyntaxTest {
     public void testBeginTransactionUpperCase() {
         logger.info("Testing BEGIN TRANSACTION in uppercase");
 
-        assertDoesNotThrow(() -> {
-            engine.execute("BEGIN TRANSACTION");
+        assertDoesNotThrow(new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                engine.execute("BEGIN TRANSACTION");
+                
+            }
         });
 
         logger.info("BEGIN TRANSACTION uppercase syntax is valid");
@@ -143,8 +169,12 @@ public class BeginTransactionSyntaxTest {
     public void testBeginLowerCase() {
         logger.info("Testing begin in lowercase");
 
-        assertDoesNotThrow(() -> {
-            engine.execute("begin");
+        assertDoesNotThrow(new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                engine.execute("begin");
+                
+            }
         });
 
         logger.info("begin lowercase syntax is valid");
@@ -154,8 +184,12 @@ public class BeginTransactionSyntaxTest {
     public void testBeginTransactionLowerCase() {
         logger.info("Testing begin transaction in lowercase");
 
-        assertDoesNotThrow(() -> {
-            engine.execute("begin transaction");
+        assertDoesNotThrow(new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                engine.execute("begin transaction");
+                
+            }
         });
 
         logger.info("begin transaction lowercase syntax is valid");
@@ -165,8 +199,12 @@ public class BeginTransactionSyntaxTest {
     public void testBeginMixedCase() {
         logger.info("Testing Begin in mixed case");
 
-        assertDoesNotThrow(() -> {
-            engine.execute("Begin");
+        assertDoesNotThrow(new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                engine.execute("Begin");
+                
+            }
         });
 
         logger.info("Begin mixed case syntax is valid");
@@ -176,8 +214,12 @@ public class BeginTransactionSyntaxTest {
     public void testBeginTransactionMixedCase() {
         logger.info("Testing Begin Transaction in mixed case");
 
-        assertDoesNotThrow(() -> {
-            engine.execute("Begin Transaction");
+        assertDoesNotThrow(new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                engine.execute("Begin Transaction");
+                
+            }
         });
 
         logger.info("Begin Transaction mixed case syntax is valid");
@@ -187,8 +229,12 @@ public class BeginTransactionSyntaxTest {
     public void testBeginWithWhitespace() {
         logger.info("Testing BEGIN with extra whitespace");
 
-        assertDoesNotThrow(() -> {
-            engine.execute("  BEGIN  ");
+        assertDoesNotThrow(new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                engine.execute("  BEGIN  ");
+                
+            }
         });
 
         logger.info("BEGIN with whitespace syntax is valid");
@@ -198,8 +244,12 @@ public class BeginTransactionSyntaxTest {
     public void testBeginTransactionWithWhitespace() {
         logger.info("Testing BEGIN TRANSACTION with extra whitespace");
 
-        assertDoesNotThrow(() -> {
-            engine.execute("  BEGIN   TRANSACTION  ");
+        assertDoesNotThrow(new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                engine.execute("  BEGIN   TRANSACTION  ");
+                
+            }
         });
 
         logger.info("BEGIN TRANSACTION with whitespace syntax is valid");
@@ -209,12 +259,20 @@ public class BeginTransactionSyntaxTest {
     public void testBeginSequentialCalls() {
         logger.info("Testing sequential BEGIN calls");
 
-        assertDoesNotThrow(() -> {
-            engine.execute("BEGIN");
+        assertDoesNotThrow(new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                engine.execute("BEGIN");
+                
+            }
         });
 
-        assertDoesNotThrow(() -> {
-            engine.execute("BEGIN TRANSACTION");
+        assertDoesNotThrow(new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                engine.execute("BEGIN TRANSACTION");
+                
+            }
         });
 
         logger.info("Sequential BEGIN calls are syntactically valid");
@@ -224,8 +282,12 @@ public class BeginTransactionSyntaxTest {
     public void testBeginWithNewlines() {
         logger.info("Testing BEGIN with newlines");
 
-        assertDoesNotThrow(() -> {
-            engine.execute("\nBEGIN\n");
+        assertDoesNotThrow(new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                engine.execute("\nBEGIN\n");
+                
+            }
         });
 
         logger.info("BEGIN with newlines syntax is valid");
@@ -235,8 +297,12 @@ public class BeginTransactionSyntaxTest {
     public void testBeginTransactionWithNewlines() {
         logger.info("Testing BEGIN TRANSACTION with newlines");
 
-        assertDoesNotThrow(() -> {
-            engine.execute("\nBEGIN TRANSACTION\n");
+        assertDoesNotThrow(new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                engine.execute("\nBEGIN TRANSACTION\n");
+                
+            }
         });
 
         logger.info("BEGIN TRANSACTION with newlines syntax is valid");

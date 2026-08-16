@@ -18,6 +18,7 @@ package dev.frostlake.executor;
 
 import dev.frostlake.parser.FrostlakeParser;
 import org.antlr.v4.runtime.ParserRuleContext;
+import org.antlr.v4.runtime.Token;
 
 import java.util.Collections;
 import java.util.List;
@@ -119,33 +120,114 @@ public final class SelectItemAccessors {
         return be instanceof FrostlakeParser.ValueExprContext ? ((FrostlakeParser.ValueExprContext) be).expression() : null;
     }
 
-    public static FrostlakeParser.IdentifierContext getItemAlias(final FrostlakeParser.SelectItemContext item) {
-        if (item instanceof FrostlakeParser.ExprItemContext) return ((FrostlakeParser.ExprItemContext) item).identifier();
-        if (item instanceof FrostlakeParser.ObjectStarItemContext) return ((FrostlakeParser.ObjectStarItemContext) item).identifier();
+    /**
+     * The expression under any number of wrapping parentheses; a parenthesized BOOLEAN body
+     * ({@code (a AND b)}) stays put. Snowflake treats a parenthesized column reference exactly like
+     * the bare one when naming and validating a select item — {@code SELECT (amount)} projects a
+     * column named {@code AMOUNT}, and a CTAS accepts it without an alias (both live-verified).
+     */
+    public static FrostlakeParser.ExpressionContext unwrapParens(final FrostlakeParser.ExpressionContext expr) {
+        FrostlakeParser.ExpressionContext current = expr;
+        while (current instanceof FrostlakeParser.ParenExprContext) {
+            final FrostlakeParser.ExpressionContext inner =
+                unwrapValue(((FrostlakeParser.ParenExprContext) current).booleanExpr());
+            if (inner == null) {
+                return current;
+            }
+            current = inner;
+        }
+        return current;
+    }
+
+    /**
+     * Whether this select item is an EXPRESSION with no name of its own: unaliased and not a column
+     * reference. A (possibly parenthesized, possibly qualified) column reference and a
+     * {@code CONNECT_BY_ROOT col} item take the column's name; every other unaliased expression has
+     * only its source text. CTAS and CREATE VIEW refuse such items with "Missing column
+     * specification" (live-verified) because the projection cannot supply a declared column name.
+     * A boolean-bodied item ({@code SELECT a AND b}) has no value expression and no name either.
+     */
+    public static boolean isUnnamedExpressionItem(final FrostlakeParser.SelectItemContext item) {
+        if (!isExprItem(item) || getItemAlias(item) != null) {
+            return false;
+        }
+        final FrostlakeParser.ExpressionContext valueExpr = getItemValueExpr(item);
+        if (valueExpr == null) {
+            return true;
+        }
+        final FrostlakeParser.ExpressionContext simple = unwrapParens(valueExpr);
+        return !(simple instanceof FrostlakeParser.QualifiedNameExprContext)
+            && !(simple instanceof FrostlakeParser.ConnectByRootExprContext);
+    }
+
+    /**
+     * A select item's alias as CANONICAL TEXT, or null when it has none. Text rather than a parse
+     * context because the two spellings reach different rules: `AS x` matches the wider aliasName
+     * (which admits CASE, CAST, CONSTRAINT, CROSS, DEFAULT, INNER, JOIN and WHEN, all live-legal
+     * there), while the bare `x` matches identifier. Every caller wanted the canonical name anyway.
+     */
+    public static String getItemAlias(final FrostlakeParser.SelectItemContext item) {
+        if (item instanceof FrostlakeParser.ExprItemContext) {
+            final FrostlakeParser.ExprItemContext expr = (FrostlakeParser.ExprItemContext) item;
+            if (expr.aliasName() != null) {
+                return ParseTreeText.getIdentifier(expr.aliasName());
+            }
+            return expr.identifier() != null ? ParseTreeText.getIdentifier(expr.identifier()) : null;
+        }
+        if (item instanceof FrostlakeParser.ObjectStarItemContext) {
+            final FrostlakeParser.ObjectStarItemContext star = (FrostlakeParser.ObjectStarItemContext) item;
+            if (star.aliasName() != null) {
+                return ParseTreeText.getIdentifier(star.aliasName());
+            }
+            return star.identifier() != null ? ParseTreeText.getIdentifier(star.identifier()) : null;
+        }
         return null;
     }
 
     /** The EXCLUDE/RENAME/REPLACE/ILIKE modifiers on a {@code *}, {@code t.*} or {@code {*}} item (empty if none). */
     public static List<FrostlakeParser.StarModifierContext> getStarModifiers(final FrostlakeParser.SelectItemContext item) {
         if (item instanceof FrostlakeParser.StarItemContext) {
-            return ((FrostlakeParser.StarItemContext) item).starModifier();
+            return validateModifierOrder(((FrostlakeParser.StarItemContext) item).starModifier());
         }
         if (item instanceof FrostlakeParser.QualifiedStarItemContext) {
-            return ((FrostlakeParser.QualifiedStarItemContext) item).starModifier();
+            return validateModifierOrder(((FrostlakeParser.QualifiedStarItemContext) item).starModifier());
         }
         if (item instanceof FrostlakeParser.ObjectStarItemContext) {
-            return ((FrostlakeParser.ObjectStarItemContext) item).starModifier();
+            return validateModifierOrder(((FrostlakeParser.ObjectStarItemContext) item).starModifier());
         }
         return Collections.emptyList();
+    }
+
+    /**
+     * The modifiers come in ONE fixed sequence — ILIKE-or-EXCLUDE (mutually exclusive), then
+     * REPLACE, then RENAME, each at most once. Anything out of order, repeated, or combining ILIKE
+     * with EXCLUDE is a syntax error at the offending keyword, live-verified cell by cell
+     * ({@code * RENAME … EXCLUDE …}, {@code * ILIKE … EXCLUDE …}, {@code * EXCLUDE … EXCLUDE …} and
+     * {@code * RENAME … REPLACE …} all refuse; {@code * EXCLUDE … REPLACE … RENAME …} runs).
+     */
+    private static List<FrostlakeParser.StarModifierContext> validateModifierOrder(
+            final List<FrostlakeParser.StarModifierContext> modifiers) {
+        int previousRank = -1;
+        for (final FrostlakeParser.StarModifierContext modifier : modifiers) {
+            final int rank = modifier.REPLACE() != null ? 1 : modifier.RENAME() != null ? 2 : 0;
+            if (rank <= previousRank) {
+                final Token start = modifier.getStart();
+                throw new RuntimeException(SqlCompilationError.of("syntax error line "
+                    + start.getLine() + " at position " + start.getCharPositionInLine()
+                    + " unexpected '" + start.getText() + "'."));
+            }
+            previousRank = rank;
+        }
+        return modifiers;
     }
 
     /** Returns qualifier for the {@code t.*} / {@code {t.*}} forms, or null for a bare star. */
     public static String getItemQualifier(final FrostlakeParser.SelectItemContext item) {
         if (item instanceof FrostlakeParser.QualifiedStarItemContext)
-            return ((FrostlakeParser.QualifiedStarItemContext) item).qualifiedName().getText();
+            return ((FrostlakeParser.QualifiedStarItemContext) item).starQualifiedName().getText();
         if (item instanceof FrostlakeParser.ObjectStarItemContext
-                && ((FrostlakeParser.ObjectStarItemContext) item).qualifiedName() != null)
-            return ((FrostlakeParser.ObjectStarItemContext) item).qualifiedName().getText();
+                && ((FrostlakeParser.ObjectStarItemContext) item).starQualifiedName() != null)
+            return ((FrostlakeParser.ObjectStarItemContext) item).starQualifiedName().getText();
         return null;
     }
 
@@ -156,12 +238,15 @@ public final class SelectItemAccessors {
      */
     public static String objectStarLabel(final FrostlakeParser.SelectItemContext item) {
         final FrostlakeParser.ObjectStarItemContext star = (FrostlakeParser.ObjectStarItemContext) item;
-        if (star.identifier() != null) {
-            return ParseTreeText.getIdentifier(star.identifier());
+        // Either spelling of the alias wins over the echoed source form: `AS x` reaches the wider
+        // aliasName rule, the bare `x` reaches identifier.
+        final String alias = getItemAlias(item);
+        if (alias != null) {
+            return alias;
         }
         final StringBuilder label = new StringBuilder("{");
-        if (star.qualifiedName() != null) {
-            label.append(ParseTreeText.getQualifiedName(star.qualifiedName())).append('.');
+        if (star.starQualifiedName() != null) {
+            label.append(ParseTreeText.getQualifiedName(star.starQualifiedName())).append('.');
         }
         label.append('*');
         for (final FrostlakeParser.StarModifierContext modifier : star.starModifier()) {

@@ -57,9 +57,9 @@ public class LateralJoinDemo extends AbstractDemo {
         setupDatabase("lateral_demo_db");
 
         // Drop tables if they exist (silently ignore if they don't)
-        try { engine.execute("DROP TABLE employees"); } catch (final Exception e) {}
-        try { engine.execute("DROP TABLE departments"); } catch (final Exception e) {}
-        try { engine.execute("DROP TABLE projects"); } catch (final Exception e) {}
+        try { engine.execute("DROP TABLE employees"); } catch (final Exception ignored) {}
+        try { engine.execute("DROP TABLE departments"); } catch (final Exception ignored) {}
+        try { engine.execute("DROP TABLE projects"); } catch (final Exception ignored) {}
 
         // Create and populate employees
         engine.execute("CREATE TABLE employees (id INTEGER, name VARCHAR, dept_id INTEGER, salary INTEGER)");
@@ -90,7 +90,7 @@ public class LateralJoinDemo extends AbstractDemo {
         System.out.println("This correlates each employee with their department name.");
         System.out.println("The subquery references e.dept_id from the outer query.\n");
 
-        ResultSet rs = engine.executeQuery(
+        final ResultSet rs = engine.executeQuery(
             "SELECT * FROM employees e, LATERAL (SELECT dept_name FROM departments d WHERE d.dept_id = e.dept_id) dept"
         );
 
@@ -103,7 +103,7 @@ public class LateralJoinDemo extends AbstractDemo {
         System.out.println("Query: SELECT * FROM employees e CROSS JOIN LATERAL (SELECT dept_name FROM departments d WHERE d.dept_id = e.dept_id) dept\n");
         System.out.println("Same as Demo 1 but using explicit CROSS JOIN LATERAL syntax.\n");
 
-        ResultSet rs = engine.executeQuery(
+        final ResultSet rs = engine.executeQuery(
             "SELECT * FROM employees e CROSS JOIN LATERAL (SELECT dept_name FROM departments d WHERE d.dept_id = e.dept_id) dept"
         );
 
@@ -116,7 +116,7 @@ public class LateralJoinDemo extends AbstractDemo {
         System.out.println("Query: SELECT * FROM employees e, LATERAL (SELECT dept_name FROM departments d WHERE d.dept_id = e.dept_id AND d.dept_id = 10) dept\n");
         System.out.println("This only returns employees in department 10.\n");
 
-        ResultSet rs = engine.executeQuery(
+        final ResultSet rs = engine.executeQuery(
             "SELECT * FROM employees e, LATERAL (SELECT dept_name FROM departments d WHERE d.dept_id = e.dept_id AND d.dept_id = 10) dept"
         );
 
@@ -133,7 +133,7 @@ public class LateralJoinDemo extends AbstractDemo {
         System.out.println("            LATERAL (SELECT proj_name FROM projects p WHERE p.dept_id = e.dept_id) proj\n");
         System.out.println("This correlates employees with their department and projects.\n");
 
-        ResultSet rs = engine.executeQuery(
+        final ResultSet rs = engine.executeQuery(
             "SELECT e.name, dept.dept_name, proj.proj_name " +
             "FROM employees e, " +
             "LATERAL (SELECT dept_name FROM departments d WHERE d.dept_id = e.dept_id) dept, " +

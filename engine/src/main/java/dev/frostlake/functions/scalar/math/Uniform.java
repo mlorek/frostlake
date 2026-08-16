@@ -64,6 +64,8 @@ public class Uniform extends NumericArgumentFunction {
 
     // Snowflake requires the generator argument: UNIFORM(5, 10) errors "not enough arguments for
     // function [UNIFORM(5, 10)], expected 3, got 2" (live-verified) — RANDOM() is the usual third.
-    @Override public int getMinArgCount() { return 3; }
-    @Override public int getMaxArgCount() { return 3; }
+    @Override
+    public int getMinArgCount() { return 3; }
+    @Override
+    public int getMaxArgCount() { return 3; }
 }

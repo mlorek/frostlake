@@ -25,7 +25,7 @@ public class TryDecrypt extends BuiltInFunction {
 
     private static final Decrypt BASE = new Decrypt();
 
-    public TryDecrypt() { super("TRY_DECRYPT", BinaryType.BINARY); }
+    public TryDecrypt() { super("TRY_DECRYPT", BinaryType.VARBINARY); }
 
     @Override
     public Object evaluate(final List<Object> args) {
@@ -36,6 +36,8 @@ public class TryDecrypt extends BuiltInFunction {
         }
     }
 
-    @Override public int getMinArgCount() { return 2; }
-    @Override public int getMaxArgCount() { return 3; }
+    @Override
+    public int getMinArgCount() { return 2; }
+    @Override
+    public int getMaxArgCount() { return 3; }
 }

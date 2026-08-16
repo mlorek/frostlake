@@ -16,10 +16,8 @@
 
 package dev.frostlake.query;
 
-import dev.frostlake.DatabaseEngine;
+import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -27,30 +25,15 @@ import org.slf4j.LoggerFactory;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 
-public class DistinctAggregateTest {
+public class DistinctAggregateTest extends BaseDatabaseTest {
 
     private static final Logger logger = LoggerFactory.getLogger(DistinctAggregateTest.class);
-    private DatabaseEngine engine;
-
-    @BeforeEach
-    public void setUp() {
-        engine = new DatabaseEngine();
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
-    }
-
-    @AfterEach
-    public void tearDown() {
-        if (engine != null) {
-            engine.shutdown();
-        }
-    }
 
     @Test
     public void testCountDistinct() {
         logger.info("Testing COUNT(DISTINCT column)");
 
-        ResultSet rs = engine.executeQuery(
+        final ResultSet rs = engine.executeQuery(
             "SELECT COUNT(*), COUNT(DISTINCT i) FROM VALUES(1, 2), (1, 2), (2, 3) AS t(i, j)");
 
         assertNotNull(rs, "Result set should not be null");
@@ -67,7 +50,7 @@ public class DistinctAggregateTest {
         logger.info("Testing user's exact query with COUNT(*) and COUNT(DISTINCT i)");
 
         // User's exact query: select i,j, count(*), count(distinct i) from values (1,2),(1,2) as t(i,j) group by i,j
-        ResultSet rs = engine.executeQuery(
+        final ResultSet rs = engine.executeQuery(
             "select i,j, count(*), count(distinct i) from values (1,2),(1,2) as t(i,j) group by i,j");
 
         assertNotNull(rs, "Result set should not be null");
@@ -85,7 +68,7 @@ public class DistinctAggregateTest {
     public void testSumDistinct() {
         logger.info("Testing SUM(DISTINCT column)");
 
-        ResultSet rs = engine.executeQuery(
+        final ResultSet rs = engine.executeQuery(
             "SELECT SUM(i), SUM(DISTINCT i) FROM VALUES(1), (1), (2) AS t(i)");
 
         assertNotNull(rs, "Result set should not be null");
@@ -100,7 +83,7 @@ public class DistinctAggregateTest {
     public void testAvgDistinct() {
         logger.info("Testing AVG(DISTINCT column)");
 
-        ResultSet rs = engine.executeQuery(
+        final ResultSet rs = engine.executeQuery(
             "SELECT AVG(i), AVG(DISTINCT i) FROM VALUES(1), (1), (2), (4) AS t(i)");
 
         assertNotNull(rs, "Result set should not be null");
@@ -122,7 +105,7 @@ public class DistinctAggregateTest {
         engine.execute("INSERT INTO sales VALUES ('Clothing', 'Shirt', 50)");
         engine.execute("INSERT INTO sales VALUES ('Clothing', 'Shirt', 50)");
 
-        ResultSet rs = engine.executeQuery(
+        final ResultSet rs = engine.executeQuery(
             "SELECT category, COUNT(*), COUNT(DISTINCT product) FROM sales GROUP BY category ORDER BY category");
 
         assertNotNull(rs, "Result set should not be null");
@@ -143,7 +126,7 @@ public class DistinctAggregateTest {
     public void testCountDistinctWithNulls() {
         logger.info("Testing COUNT(DISTINCT) with NULL values");
 
-        ResultSet rs = engine.executeQuery(
+        final ResultSet rs = engine.executeQuery(
             "SELECT COUNT(i), COUNT(DISTINCT i) FROM VALUES(1), (1), (2), (NULL) AS t(i)");
 
         assertNotNull(rs, "Result set should not be null");
@@ -158,7 +141,7 @@ public class DistinctAggregateTest {
     public void testMultipleDistinctAggregates() {
         logger.info("Testing multiple DISTINCT aggregates in same query");
 
-        ResultSet rs = engine.executeQuery(
+        final ResultSet rs = engine.executeQuery(
             "SELECT COUNT(DISTINCT i), COUNT(DISTINCT j) FROM VALUES(1, 2), (1, 3), (2, 2) AS t(i, j)");
 
         assertNotNull(rs, "Result set should not be null");

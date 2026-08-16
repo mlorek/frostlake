@@ -30,27 +30,9 @@ public class BoolAndAgg extends AggregateFunction {
     @Override
     public Object evaluate(final List<Object> args) { return null; }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return 1; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return 1; }
 
-    private static class BoolAndAccumulator implements Accumulator {
-        private boolean result = true; private boolean hasValue = false;
-
-        @Override
-        public void accumulate(final Object v) {
-            if (v == null) return; hasValue = true; result = result && BoolOrAgg.isTruthy(v);
-        }
-
-        @Override
-        public Object getResult() { return hasValue ? result : null; }
-
-        @Override
-        public void reset() { result = true; hasValue = false; }
-
-        @Override
-        public void merge(final Accumulator other) {
-            BoolAndAccumulator o = (BoolAndAccumulator) other;
-            if (o.hasValue) { hasValue = true; result = result && o.result; }
-        }
-    }
 }

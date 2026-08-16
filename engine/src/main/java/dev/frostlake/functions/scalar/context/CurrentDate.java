@@ -20,7 +20,6 @@ import dev.frostlake.executor.StatementClock;
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.types.DateTimeType;
 
-import java.time.LocalDate;
 import java.util.List;
 
 public class CurrentDate extends BuiltInFunction {
@@ -29,6 +28,8 @@ public class CurrentDate extends BuiltInFunction {
     @Override
     public Object evaluate(final List<Object> args) { return StatementClock.now().toLocalDate(); }
 
-    @Override public int getMinArgCount() { return 0; }
-    @Override public int getMaxArgCount() { return 0; }
+    @Override
+    public int getMinArgCount() { return 0; }
+    @Override
+    public int getMaxArgCount() { return 0; }
 }

@@ -45,7 +45,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * (live-verified): only EARLIER aliases are visible, so naming a later item's alias is
  * {@code invalid identifier}; and because a real column outranks a same-named alias, a select item that
  * reads a column which is neither grouped nor aggregated fails to compile. Both are exercised below, next
- * to the shapes that deliberately stay permissive (star items, subqueries, GROUP BY ALL, super-groups).
+ * to the shapes that deliberately stay permissive (star items, subqueries, GROUP BY ALL). Super-groups
+ * enforce the same rule against the union of their grouping sets, covered in
+ * {@code GroupingSetsSelectListValidationTest}.
  */
 public class GroupByLateralAliasTest extends BaseDatabaseTest {
 
@@ -294,9 +296,10 @@ public class GroupByLateralAliasTest extends BaseDatabaseTest {
     }
 
     @Test
-    public void superGroupsAcceptEveryItem() {
-        // A ROLLUP / CUBE / GROUPING SETS row aggregates some dimensions away by design, so the
-        // grouped-or-aggregated test does not apply to them.
+    public void superGroupsAcceptEveryItemOfTheirKeyUnion() {
+        // A ROLLUP / CUBE / GROUPING SETS row aggregates some dimensions away by design; a select
+        // item is legal when its column appears in ANY of the grouping sets (the union), which
+        // every item here does.
         assertEquals(3, q("SELECT city, COUNT(1) AS n FROM orders GROUP BY ROLLUP(city)").getRowCount());
         assertEquals(5, q("SELECT city, qty, COUNT(1) AS n FROM orders "
             + "GROUP BY GROUPING SETS ((city), (qty))").getRowCount());
@@ -305,8 +308,9 @@ public class GroupByLateralAliasTest extends BaseDatabaseTest {
     }
 
     @Test
-    public void aStarItemIsNeverRejected() {
-        // Star expansion happens after this check, so `*` is left alone rather than guessed at.
+    public void aFullyGroupedStarIsAccepted() {
+        // The star expands to (city, qty) — both grouped — so the query is legal, exactly as live
+        // accepts it. A star covering an UNGROUPED column is refused; see GroupedStarProjectionTest.
         assertEquals(3, q("SELECT *, COUNT(1) OVER () AS n FROM orders GROUP BY city, qty").getRowCount());
     }
 

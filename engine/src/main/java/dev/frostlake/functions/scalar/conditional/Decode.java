@@ -33,11 +33,11 @@ public class Decode extends BuiltInFunction {
     @Override
     public Object evaluate(final List<Object> args) {
         if (args.isEmpty()) return null;
-        Object subject = args.get(0);
-        int pairs = (args.size() - 1) / 2;
+        final Object subject = args.get(0);
+        final int pairs = (args.size() - 1) / 2;
         for (int i = 0; i < pairs; i++) {
-            Object search = args.get(1 + i * 2);
-            Object result = args.get(2 + i * 2);
+            final Object search = args.get(1 + i * 2);
+            final Object result = args.get(2 + i * 2);
             if (nullSafeEqual(subject, search)) return result;
         }
         // default: last arg when count is even (subject + odd number of remaining = default present)
@@ -54,6 +54,8 @@ public class Decode extends BuiltInFunction {
         return a.toString().equals(b.toString());
     }
 
-    @Override public int getMinArgCount() { return 3; }
-    @Override public int getMaxArgCount() { return Integer.MAX_VALUE; }
+    @Override
+    public int getMinArgCount() { return 3; }
+    @Override
+    public int getMaxArgCount() { return Integer.MAX_VALUE; }
 }

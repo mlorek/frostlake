@@ -23,9 +23,12 @@ import dev.frostlake.storage.ResultSet;
 import java.util.Map;
 
 /**
- * RESULT_SCAN table function - retrieves cached query results by query ID
- * Syntax: SELECT * FROM TABLE(RESULT_SCAN('<query_id>'))
- *        SELECT * FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))
+ * RESULT_SCAN table function - retrieves cached query results by query ID.
+ *
+ * <pre>
+ *   SELECT * FROM TABLE(RESULT_SCAN('&lt;query_id&gt;'))
+ *   SELECT * FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))
+ * </pre>
  */
 public class ResultScan extends TableFunction {
 
@@ -51,7 +54,7 @@ public class ResultScan extends TableFunction {
     public ResultSet execute(final String queryId) {
         validateQueryId(queryId);
 
-        ResultSet result = resultCache.getResult(queryId);
+        final ResultSet result = resultCache.getResult(queryId);
         if (result == null) {
             throw new RuntimeException("Query ID not found or result no longer available: " + queryId);
         }
@@ -75,7 +78,7 @@ public class ResultScan extends TableFunction {
 
         // Snowflake query IDs are UUIDs
         // Format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
-        String trimmed = queryId.trim();
+        final String trimmed = queryId.trim();
         if (!trimmed.matches("[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")) {
             throw new RuntimeException("Invalid query ID format: " + queryId);
         }

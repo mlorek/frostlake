@@ -21,9 +21,7 @@ import dev.frostlake.storage.ResultSet;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class ConditionalFunctionsTest extends BaseDatabaseTest {
 
@@ -42,7 +40,7 @@ public class ConditionalFunctionsTest extends BaseDatabaseTest {
 
     @Test
     public void testNullIfEqual() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT name, NULLIF(value, 100) as adjusted_value FROM test_data WHERE id = 1"
         );
         assertEquals(1, result.getRowCount());
@@ -52,7 +50,7 @@ public class ConditionalFunctionsTest extends BaseDatabaseTest {
 
     @Test
     public void testNullIfNotEqual() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT name, NULLIF(value, 100) as adjusted_value FROM test_data WHERE id = 2"
         );
         assertEquals(1, result.getRowCount());
@@ -62,7 +60,7 @@ public class ConditionalFunctionsTest extends BaseDatabaseTest {
 
     @Test
     public void testNullIfWithNull() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT name, NULLIF(value, 100) as adjusted_value FROM test_data WHERE id = 4"
         );
         assertEquals(1, result.getRowCount());
@@ -72,7 +70,7 @@ public class ConditionalFunctionsTest extends BaseDatabaseTest {
 
     @Test
     public void testNullIfStrings() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT id, NULLIF(name, 'Bob') as filtered_name FROM test_data WHERE id IN (1, 2)"
         );
         assertEquals(2, result.getRowCount());
@@ -86,7 +84,7 @@ public class ConditionalFunctionsTest extends BaseDatabaseTest {
 
     @Test
     public void testIffTrue() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT name, IFF(flag, 'Active', 'Inactive') as status FROM test_data WHERE id = 1"
         );
         assertEquals(1, result.getRowCount());
@@ -95,7 +93,7 @@ public class ConditionalFunctionsTest extends BaseDatabaseTest {
 
     @Test
     public void testIffFalse() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT name, IFF(flag, 'Active', 'Inactive') as status FROM test_data WHERE id = 2"
         );
         assertEquals(1, result.getRowCount());
@@ -104,7 +102,7 @@ public class ConditionalFunctionsTest extends BaseDatabaseTest {
 
     @Test
     public void testIffWithNull() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT name, IFF(flag, 'Active', 'Inactive') as status FROM test_data WHERE id = 4"
         );
         assertEquals(1, result.getRowCount());
@@ -114,7 +112,7 @@ public class ConditionalFunctionsTest extends BaseDatabaseTest {
 
     @Test
     public void testIffWithComparison() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT name, IFF(value > 150, 'High', 'Low') as category FROM test_data WHERE id IN (1, 2)"
         );
         assertEquals(2, result.getRowCount());
@@ -124,7 +122,7 @@ public class ConditionalFunctionsTest extends BaseDatabaseTest {
 
     @Test
     public void testIffWithNullValues() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT name, IFF(value > 150, value, NULL) as high_values FROM test_data WHERE id IN (1, 2, 5)"
         );
         assertEquals(3, result.getRowCount());
@@ -137,7 +135,7 @@ public class ConditionalFunctionsTest extends BaseDatabaseTest {
 
     @Test
     public void testGreatestTwoValues() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT GREATEST(100, 200) as max_val FROM test_data WHERE id = 1"
         );
         assertEquals(1, result.getRowCount());
@@ -146,7 +144,7 @@ public class ConditionalFunctionsTest extends BaseDatabaseTest {
 
     @Test
     public void testGreatestMultipleValues() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT GREATEST(50, 200, 75, 300, 150) as max_val FROM test_data WHERE id = 1"
         );
         assertEquals(1, result.getRowCount());
@@ -155,7 +153,7 @@ public class ConditionalFunctionsTest extends BaseDatabaseTest {
 
     @Test
     public void testGreatestWithColumns() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT name, GREATEST(value, 150) as max_val FROM test_data WHERE id IN (1, 2)"
         );
         assertEquals(2, result.getRowCount());
@@ -168,7 +166,7 @@ public class ConditionalFunctionsTest extends BaseDatabaseTest {
     @Test
     public void testGreatestWithNull() {
         // Snowflake: GREATEST returns NULL when ANY argument is NULL; GREATEST_IGNORE_NULLS skips.
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT GREATEST(100, NULL, 200) as max_val, GREATEST_IGNORE_NULLS(100, NULL, 200) as max_skip FROM test_data WHERE id = 1"
         );
         assertEquals(1, result.getRowCount());
@@ -178,7 +176,7 @@ public class ConditionalFunctionsTest extends BaseDatabaseTest {
 
     @Test
     public void testGreatestStrings() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT GREATEST('Alice', 'Bob', 'Charlie') as max_name FROM test_data WHERE id = 1"
         );
         assertEquals(1, result.getRowCount());
@@ -190,7 +188,7 @@ public class ConditionalFunctionsTest extends BaseDatabaseTest {
 
     @Test
     public void testLeastTwoValues() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT LEAST(100, 200) as min_val FROM test_data WHERE id = 1"
         );
         assertEquals(1, result.getRowCount());
@@ -199,7 +197,7 @@ public class ConditionalFunctionsTest extends BaseDatabaseTest {
 
     @Test
     public void testLeastMultipleValues() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT LEAST(50, 200, 75, 300, 25) as min_val FROM test_data WHERE id = 1"
         );
         assertEquals(1, result.getRowCount());
@@ -208,7 +206,7 @@ public class ConditionalFunctionsTest extends BaseDatabaseTest {
 
     @Test
     public void testLeastWithColumns() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT name, LEAST(value, 150) as min_val FROM test_data WHERE id IN (1, 2)"
         );
         assertEquals(2, result.getRowCount());
@@ -222,7 +220,7 @@ public class ConditionalFunctionsTest extends BaseDatabaseTest {
     public void testLeastWithNull() {
         // Snowflake: LEAST returns NULL when ANY argument is NULL — the loader idiom
         // LEAST(MAX(conf), 100) must stay NULL for an all-NULL group; LEAST_IGNORE_NULLS skips.
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT LEAST(100, NULL, 200) as min_val, LEAST_IGNORE_NULLS(100, NULL, 200) as min_skip FROM test_data WHERE id = 1"
         );
         assertEquals(1, result.getRowCount());
@@ -232,7 +230,7 @@ public class ConditionalFunctionsTest extends BaseDatabaseTest {
 
     @Test
     public void testLeastStrings() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT LEAST('Alice', 'Bob', 'Charlie') as min_name FROM test_data WHERE id = 1"
         );
         assertEquals(1, result.getRowCount());
@@ -244,7 +242,7 @@ public class ConditionalFunctionsTest extends BaseDatabaseTest {
 
     @Test
     public void testCombinedFunctions() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT name, " +
             "  IFF(value > 150, GREATEST(value, 250), LEAST(value, 50)) as adjusted " +
             "FROM test_data WHERE id IN (1, 2, 5)"
@@ -257,7 +255,7 @@ public class ConditionalFunctionsTest extends BaseDatabaseTest {
 
     @Test
     public void testNullIfWithGreatest() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT name, NULLIF(GREATEST(value, 100), 100) as result FROM test_data WHERE id IN (1, 2)"
         );
         assertEquals(2, result.getRowCount());

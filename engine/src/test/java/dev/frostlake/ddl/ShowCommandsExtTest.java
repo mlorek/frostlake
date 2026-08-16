@@ -16,37 +16,29 @@
 
 package dev.frostlake.ddl;
 
-import dev.frostlake.DatabaseEngine;
+import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
-public class ShowCommandsExtTest {
+public class ShowCommandsExtTest extends BaseDatabaseTest {
 
-    private DatabaseEngine engine;
-
-    @BeforeEach
-    public void setUp() {
-        engine = new DatabaseEngine();
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
-        engine.execute("USE SCHEMA public");
-    }
-
-    @AfterEach
-    public void tearDown() {
-        if (engine != null) engine.shutdown();
-    }
+    /** SHOW ORGANIZATION ACCOUNTS returns nothing without the ORGADMIN role, which the test account lacks. */
+    private static final String NEEDS_ORGADMIN =
+        "SHOW ORGANIZATION ACCOUNTS needs the ORGADMIN role to return any row";
 
     // ── SHOW PARAMETERS ───────────────────────────────────────────────────────
 
     @Test
     public void testShowParameters() {
-        ResultSet rs = engine.executeQuery("SHOW PARAMETERS");
+        final ResultSet rs = engine.executeQuery("SHOW PARAMETERS");
         assertNotNull(rs);
         assertTrue(rs.getRowCount() > 0, "SHOW PARAMETERS should return rows");
         assertNotNull(rs.getColumnIndex("key"));
@@ -57,9 +49,9 @@ public class ShowCommandsExtTest {
 
     @Test
     public void testShowParametersContainsTimezone() {
-        ResultSet rs = engine.executeQuery("SHOW PARAMETERS");
+        final ResultSet rs = engine.executeQuery("SHOW PARAMETERS");
         boolean found = false;
-        int keyIdx = rs.getColumnIndex("key");
+        final int keyIdx = rs.getColumnIndex("key");
         for (int i = 0; i < rs.getRowCount(); i++) {
             if ("TIMEZONE".equalsIgnoreCase(rs.getRows().get(i).getValue(keyIdx).toString())) {
                 found = true;
@@ -71,9 +63,9 @@ public class ShowCommandsExtTest {
 
     @Test
     public void testShowParametersContainsAutocommit() {
-        ResultSet rs = engine.executeQuery("SHOW PARAMETERS");
+        final ResultSet rs = engine.executeQuery("SHOW PARAMETERS");
         boolean found = false;
-        int keyIdx = rs.getColumnIndex("key");
+        final int keyIdx = rs.getColumnIndex("key");
         for (int i = 0; i < rs.getRowCount(); i++) {
             if ("AUTOCOMMIT".equalsIgnoreCase(rs.getRows().get(i).getValue(keyIdx).toString())) {
                 found = true;
@@ -85,11 +77,11 @@ public class ShowCommandsExtTest {
 
     @Test
     public void testShowParametersLikeFilter() {
-        ResultSet rs = engine.executeQuery("SHOW PARAMETERS LIKE 'TIMEZONE%'");
+        final ResultSet rs = engine.executeQuery("SHOW PARAMETERS LIKE 'TIMEZONE%'");
         assertNotNull(rs);
-        int keyIdx = rs.getColumnIndex("key");
+        final int keyIdx = rs.getColumnIndex("key");
         for (int i = 0; i < rs.getRowCount(); i++) {
-            String key = rs.getRows().get(i).getValue(keyIdx).toString().toUpperCase();
+            final String key = rs.getRows().get(i).getValue(keyIdx).toString().toUpperCase();
             assertTrue(key.startsWith("TIMEZONE"),
                 "LIKE filter should only return TIMEZONE* params, got: " + key);
         }
@@ -97,14 +89,14 @@ public class ShowCommandsExtTest {
 
     @Test
     public void testShowParametersInSession() {
-        ResultSet rs = engine.executeQuery("SHOW PARAMETERS IN SESSION");
+        final ResultSet rs = engine.executeQuery("SHOW PARAMETERS IN SESSION");
         assertNotNull(rs);
         assertTrue(rs.getRowCount() >= 0);
     }
 
     @Test
     public void testShowParametersInAccount() {
-        ResultSet rs = engine.executeQuery("SHOW PARAMETERS IN ACCOUNT");
+        final ResultSet rs = engine.executeQuery("SHOW PARAMETERS IN ACCOUNT");
         assertNotNull(rs);
         assertTrue(rs.getRowCount() > 0);
     }
@@ -146,7 +138,7 @@ public class ShowCommandsExtTest {
         engine.execute("CREATE TABLE t1 (id INTEGER)");
         engine.execute("CREATE VIEW v1 AS SELECT * FROM t1");
 
-        ResultSet rs = engine.executeQuery("SHOW OBJECTS");
+        final ResultSet rs = engine.executeQuery("SHOW OBJECTS");
         assertNotNull(rs);
         assertTrue(rs.getRowCount() >= 2);
         assertNotNull(rs.getColumnIndex("name"));
@@ -156,9 +148,9 @@ public class ShowCommandsExtTest {
     @Test
     public void testShowObjectsContainsTable() {
         engine.execute("CREATE TABLE my_table (id INTEGER)");
-        ResultSet rs = engine.executeQuery("SHOW OBJECTS");
-        int nameIdx = rs.getColumnIndex("name");
-        int kindIdx = rs.getColumnIndex("kind");
+        final ResultSet rs = engine.executeQuery("SHOW OBJECTS");
+        final int nameIdx = rs.getColumnIndex("name");
+        final int kindIdx = rs.getColumnIndex("kind");
         boolean found = false;
         for (int i = 0; i < rs.getRowCount(); i++) {
             if ("MY_TABLE".equalsIgnoreCase(rs.getRows().get(i).getValue(nameIdx).toString())
@@ -173,9 +165,9 @@ public class ShowCommandsExtTest {
     public void testShowObjectsContainsView() {
         engine.execute("CREATE TABLE base (id INTEGER)");
         engine.execute("CREATE VIEW my_view AS SELECT * FROM base");
-        ResultSet rs = engine.executeQuery("SHOW OBJECTS");
-        int nameIdx = rs.getColumnIndex("name");
-        int kindIdx = rs.getColumnIndex("kind");
+        final ResultSet rs = engine.executeQuery("SHOW OBJECTS");
+        final int nameIdx = rs.getColumnIndex("name");
+        final int kindIdx = rs.getColumnIndex("kind");
         boolean found = false;
         for (int i = 0; i < rs.getRowCount(); i++) {
             if ("MY_VIEW".equalsIgnoreCase(rs.getRows().get(i).getValue(nameIdx).toString())
@@ -189,9 +181,9 @@ public class ShowCommandsExtTest {
     @Test
     public void testShowObjectsContainsProcedure() {
         engine.execute("CREATE PROCEDURE my_proc() RETURNS VARCHAR LANGUAGE SQL AS $$ BEGIN RETURN 'x'; END $$");
-        ResultSet rs = engine.executeQuery("SHOW OBJECTS");
-        int nameIdx = rs.getColumnIndex("name");
-        int kindIdx = rs.getColumnIndex("kind");
+        final ResultSet rs = engine.executeQuery("SHOW OBJECTS");
+        final int nameIdx = rs.getColumnIndex("name");
+        final int kindIdx = rs.getColumnIndex("kind");
         boolean found = false;
         for (int i = 0; i < rs.getRowCount(); i++) {
             if ("MY_PROC".equalsIgnoreCase(rs.getRows().get(i).getValue(nameIdx).toString())
@@ -209,9 +201,9 @@ public class ShowCommandsExtTest {
         engine.execute("CREATE TABLE other_table (id INTEGER)");
         engine.execute("USE SCHEMA public");
 
-        ResultSet rs = engine.executeQuery("SHOW OBJECTS IN SCHEMA other_schema");
+        final ResultSet rs = engine.executeQuery("SHOW OBJECTS IN SCHEMA other_schema");
         assertNotNull(rs);
-        int nameIdx = rs.getColumnIndex("name");
+        final int nameIdx = rs.getColumnIndex("name");
         boolean found = false;
         for (int i = 0; i < rs.getRowCount(); i++) {
             if ("OTHER_TABLE".equalsIgnoreCase(rs.getRows().get(i).getValue(nameIdx).toString())) {
@@ -227,54 +219,111 @@ public class ShowCommandsExtTest {
 
     @Test
     public void testShowLocksEmpty() {
-        ResultSet rs = engine.executeQuery("SHOW LOCKS");
+        // Live's exact column set, in order; an idle session holds nothing.
+        final ResultSet rs = engine.executeQuery("SHOW LOCKS");
         assertNotNull(rs);
         assertEquals(0, rs.getRowCount(), "No active transactions → no locks");
-        assertNotNull(rs.getColumnIndex("transaction"));
-        assertNotNull(rs.getColumnIndex("status"));
+        final String[] expected = {"resource", "type", "transaction", "transaction_started_on",
+            "status", "acquired_on", "query_id"};
+        assertEquals(expected.length, rs.getColumns().size());
+        for (int i = 0; i < expected.length; i++) {
+            assertEquals(expected[i], rs.getColumns().get(i).getName());
+        }
     }
 
     @Test
     public void testShowLocksWithActiveTransaction() {
+        // Live-verified: partition-rewriting DML — UPDATE, DELETE (even matching no rows), MERGE —
+        // holds one PARTITIONS lock per (transaction, table), however many statements rewrite the
+        // table; an append-only INSERT holds NO lock; COMMIT releases them.
         engine.execute("CREATE TABLE lock_test (id INTEGER)");
+        engine.execute("CREATE TABLE lock_test2 (id INTEGER)");
+        engine.execute("INSERT INTO lock_test2 VALUES (0)");
         engine.setAutoCommit(false);
         engine.execute("BEGIN");
         engine.execute("INSERT INTO lock_test VALUES (1)");
-        ResultSet rs = engine.executeQuery("SHOW LOCKS");
-        assertNotNull(rs);
-        assertTrue(rs.getRowCount() >= 1, "Active transaction should produce a lock row");
+        assertEquals(0, engine.executeQuery("SHOW LOCKS").getRowCount(),
+            "an append-only INSERT holds no lock");
+
+        engine.execute("UPDATE lock_test2 SET id = 1");
+        final ResultSet rs = engine.executeQuery("SHOW LOCKS");
+        assertEquals(1, rs.getRowCount(), "an UPDATE holds a lock on its table");
+        assertEquals("TEST_DB.TEST_SCHEMA.LOCK_TEST2",
+            rs.getRows().get(0).getValue(rs.getColumnIndex("resource")));
+        assertEquals("PARTITIONS", rs.getRows().get(0).getValue(rs.getColumnIndex("type")));
+        assertEquals("HOLDING", rs.getRows().get(0).getValue(rs.getColumnIndex("status")));
+        assertNotNull(rs.getRows().get(0).getValue(rs.getColumnIndex("query_id")));
+        assertNotNull(rs.getRows().get(0).getValue(rs.getColumnIndex("acquired_on")));
+
+        // A second rewrite of the SAME table stays one row; a DELETE on another table adds one.
+        engine.execute("UPDATE lock_test2 SET id = 9");
+        assertEquals(1, engine.executeQuery("SHOW LOCKS").getRowCount());
+        engine.execute("DELETE FROM lock_test WHERE id = 1");
+        assertEquals(2, engine.executeQuery("SHOW LOCKS").getRowCount());
+
+        // IN ACCOUNT prepends a session column; the rows are otherwise the same.
+        final ResultSet account = engine.executeQuery("SHOW LOCKS IN ACCOUNT");
+        assertEquals("session", account.getColumns().get(0).getName());
+        assertEquals("resource", account.getColumns().get(1).getName());
+        assertEquals(2, account.getRowCount());
+        assertNotNull(account.getRows().get(0).getValue(0));
+
         engine.execute("COMMIT");
         engine.setAutoCommit(true);
+        assertEquals(0, engine.executeQuery("SHOW LOCKS").getRowCount(),
+            "COMMIT releases every lock");
     }
 
     // ── SHOW TRANSACTIONS ─────────────────────────────────────────────────────
 
     @Test
     public void testShowTransactionsEmpty() {
-        ResultSet rs = engine.executeQuery("SHOW TRANSACTIONS");
+        // Live's exact column set, in order; only OPEN transactions are listed, so idle is empty.
+        final ResultSet rs = engine.executeQuery("SHOW TRANSACTIONS");
         assertNotNull(rs);
-        assertNotNull(rs.getColumnIndex("id"));
-        assertNotNull(rs.getColumnIndex("status"));
+        assertEquals(0, rs.getRowCount(), "no open transaction → no rows");
+        final String[] expected = {"id", "user", "session", "name", "started_on", "state", "scope"};
+        assertEquals(expected.length, rs.getColumns().size());
+        for (int i = 0; i < expected.length; i++) {
+            assertEquals(expected[i], rs.getColumns().get(i).getName());
+        }
     }
 
     @Test
     public void testShowTransactionsActive() {
         engine.execute("CREATE TABLE txn_test (id INTEGER)");
+        engine.execute("INSERT INTO txn_test VALUES (0)");
         engine.setAutoCommit(false);
         engine.execute("BEGIN");
         engine.execute("INSERT INTO txn_test VALUES (1)");
-        ResultSet rs = engine.executeQuery("SHOW TRANSACTIONS");
-        assertNotNull(rs);
-        assertTrue(rs.getRowCount() >= 1);
+        final ResultSet rs = engine.executeQuery("SHOW TRANSACTIONS");
+        assertEquals(1, rs.getRowCount());
+        // state is lowercase "running", scope is 0, the name is a system-generated UUID, and the
+        // id carries the start instant at nanosecond scale (all live-verified shapes).
+        assertEquals("running", rs.getRows().get(0).getValue(rs.getColumnIndex("state")));
+        assertEquals(0L, ((Number) rs.getRows().get(0).getValue(rs.getColumnIndex("scope"))).longValue());
+        final String name = String.valueOf(rs.getRows().get(0).getValue(rs.getColumnIndex("name")));
+        assertEquals(36, name.length(), "system-generated transaction name is a UUID: " + name);
+        final long id = ((Number) rs.getRows().get(0).getValue(rs.getColumnIndex("id"))).longValue();
+        assertTrue(id / 1_000_000L > 1_500_000_000_000L, "id is the start instant in epoch nanos: " + id);
+
+        // The lock a rewrite takes references the SAME transaction id (an INSERT alone holds none).
+        engine.execute("UPDATE txn_test SET id = 9 WHERE id = 0");
+        final ResultSet locks = engine.executeQuery("SHOW LOCKS");
+        assertEquals(id, ((Number) locks.getRows().get(0)
+            .getValue(locks.getColumnIndex("transaction"))).longValue());
+
         engine.execute("ROLLBACK");
         engine.setAutoCommit(true);
+        assertEquals(0, engine.executeQuery("SHOW TRANSACTIONS").getRowCount(),
+            "ROLLBACK ends the listed transaction");
     }
 
     // ── SHOW VARIABLES ────────────────────────────────────────────────────────
 
     @Test
     public void testShowVariablesEmpty() {
-        ResultSet rs = engine.executeQuery("SHOW VARIABLES");
+        final ResultSet rs = engine.executeQuery("SHOW VARIABLES");
         assertNotNull(rs);
         assertNotNull(rs.getColumnIndex("name"));
         assertNotNull(rs.getColumnIndex("value"));
@@ -284,13 +333,13 @@ public class ShowCommandsExtTest {
 
     @Test
     public void testShowAccounts() {
-        ResultSet rs = engine.executeQuery("SHOW ACCOUNTS");
+        final ResultSet rs = engine.executeQuery("SHOW ACCOUNTS");
         assertNotNull(rs);
         assertTrue(rs.getRowCount() >= 1, "Should return at least one account");
-        int orgIdx = rs.getColumnIndex("organization_name");
-        int accIdx = rs.getColumnIndex("account_name");
-        int editionIdx = rs.getColumnIndex("edition");
-        int regionIdx = rs.getColumnIndex("snowflake_region");
+        final int orgIdx = rs.getColumnIndex("organization_name");
+        final int accIdx = rs.getColumnIndex("account_name");
+        final int editionIdx = rs.getColumnIndex("edition");
+        final int regionIdx = rs.getColumnIndex("snowflake_region");
         assertNotNull(rs.getRows().get(0).getValue(orgIdx));
         assertNotNull(rs.getRows().get(0).getValue(accIdx));
         assertNotNull(rs.getRows().get(0).getValue(editionIdx));
@@ -299,13 +348,14 @@ public class ShowCommandsExtTest {
 
     @Test
     public void testShowOrganizationAccounts() {
-        ResultSet rs = engine.executeQuery("SHOW ORGANIZATION ACCOUNTS");
+        Assumptions.assumeFalse(isLiveSnowflake(), NEEDS_ORGADMIN);
+        final ResultSet rs = engine.executeQuery("SHOW ORGANIZATION ACCOUNTS");
         assertNotNull(rs);
         assertTrue(rs.getRowCount() >= 1, "Should return at least one account");
-        int orgIdx = rs.getColumnIndex("organization_name");
-        int accIdx = rs.getColumnIndex("account_name");
-        int editionIdx = rs.getColumnIndex("edition");
-        int isOrgAdminIdx = rs.getColumnIndex("is_org_admin");
+        final int orgIdx = rs.getColumnIndex("organization_name");
+        final int accIdx = rs.getColumnIndex("account_name");
+        final int editionIdx = rs.getColumnIndex("edition");
+        final int isOrgAdminIdx = rs.getColumnIndex("is_org_admin");
         assertNotNull(rs.getRows().get(0).getValue(orgIdx), "organization_name must be non-null");
         assertNotNull(rs.getRows().get(0).getValue(accIdx), "account_name must be non-null");
         assertNotNull(rs.getRows().get(0).getValue(editionIdx), "edition must be non-null");

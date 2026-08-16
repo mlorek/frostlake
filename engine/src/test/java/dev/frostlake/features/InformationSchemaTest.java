@@ -17,12 +17,15 @@
 package dev.frostlake.features;
 
 import dev.frostlake.BaseJdbcTest;
-import org.junit.jupiter.api.Test;
-
 import java.sql.ResultSet;
 import java.sql.SQLException;
-
-import static org.junit.jupiter.api.Assertions.*;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Tests for INFORMATION_SCHEMA system views
@@ -35,12 +38,12 @@ public class InformationSchemaTest extends BaseJdbcTest {
         statement.execute("CREATE DATABASE sample_db");
 
         // Query INFORMATION_SCHEMA.DATABASES (INFORMATION_SCHEMA is a schema in current database)
-        ResultSet rs = statement.executeQuery("SELECT * FROM INFORMATION_SCHEMA.DATABASES");
+        final ResultSet rs = statement.executeQuery("SELECT * FROM INFORMATION_SCHEMA.DATABASES");
 
         boolean foundTestDb = false;
         boolean foundSampleDb = false;
         while (rs.next()) {
-            String dbName = rs.getString("DATABASE_NAME");
+            final String dbName = rs.getString("DATABASE_NAME");
             if ("TEST_DB".equals(dbName)) {
                 foundTestDb = true;
             }
@@ -60,13 +63,13 @@ public class InformationSchemaTest extends BaseJdbcTest {
         statement.execute("CREATE SCHEMA test_schema");
 
         // Query INFORMATION_SCHEMA.SCHEMATA
-        ResultSet rs = statement.executeQuery("SELECT * FROM INFORMATION_SCHEMA.SCHEMATA");
+        final ResultSet rs = statement.executeQuery("SELECT * FROM INFORMATION_SCHEMA.SCHEMATA");
 
         boolean foundPublicSchema = false;
         boolean foundTestSchema = false;
         while (rs.next()) {
-            String schemaName = rs.getString("SCHEMA_NAME");
-            String catalogName = rs.getString("CATALOG_NAME");
+            final String schemaName = rs.getString("SCHEMA_NAME");
+            final String catalogName = rs.getString("CATALOG_NAME");
             if ("PUBLIC".equalsIgnoreCase(schemaName) && "TEST_DB".equalsIgnoreCase(catalogName)) {
                 foundPublicSchema = true;
             }
@@ -88,15 +91,15 @@ public class InformationSchemaTest extends BaseJdbcTest {
 
         // Query INFORMATION_SCHEMA.TABLES. Filter to the PUBLIC schema: on real Snowflake the
         // catalog filter alone also surfaces the INFORMATION_SCHEMA views, which are not BASE TABLEs.
-        ResultSet rs = statement.executeQuery("""
+        final ResultSet rs = statement.executeQuery("""
             SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_CATALOG = 'TEST_DB' AND TABLE_SCHEMA = 'PUBLIC'
             """);
 
         boolean foundUsers = false;
         boolean foundProducts = false;
         while (rs.next()) {
-            String tableName = rs.getString("TABLE_NAME");
-            String tableType = rs.getString("TABLE_TYPE");
+            final String tableName = rs.getString("TABLE_NAME");
+            final String tableType = rs.getString("TABLE_TYPE");
             assertEquals("BASE TABLE", tableType, "Table type should be BASE TABLE");
             if ("users".equalsIgnoreCase(tableName)) {
                 foundUsers = true;
@@ -117,7 +120,7 @@ public class InformationSchemaTest extends BaseJdbcTest {
         statement.execute("CREATE TABLE employees (id INTEGER, name VARCHAR, salary DECIMAL)");
 
         // Query INFORMATION_SCHEMA.COLUMNS
-        ResultSet rs = statement.executeQuery(
+        final ResultSet rs = statement.executeQuery(
             "SELECT * FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'EMPLOYEES' ORDER BY ORDINAL_POSITION"
         );
 
@@ -154,11 +157,11 @@ public class InformationSchemaTest extends BaseJdbcTest {
         statement.execute("CREATE VIEW test_view AS SELECT * FROM base_table WHERE id > 10");
 
         // Query INFORMATION_SCHEMA.VIEWS
-        ResultSet rs = statement.executeQuery("SELECT * FROM INFORMATION_SCHEMA.VIEWS");
+        final ResultSet rs = statement.executeQuery("SELECT * FROM INFORMATION_SCHEMA.VIEWS");
 
         boolean foundTestView = false;
         while (rs.next()) {
-            String viewName = rs.getString("TABLE_NAME");
+            final String viewName = rs.getString("TABLE_NAME");
             if ("test_view".equalsIgnoreCase(viewName)) {
                 foundTestView = true;
                 assertEquals("TEST_DB", rs.getString("TABLE_CATALOG"));
@@ -175,19 +178,19 @@ public class InformationSchemaTest extends BaseJdbcTest {
     @Test
     public void testInformationSchemaQualifiedAccess() throws SQLException {
         // Test schema.view qualification (INFORMATION_SCHEMA is a schema)
-        ResultSet rs1 = statement.executeQuery("SELECT * FROM INFORMATION_SCHEMA.DATABASES");
+        final ResultSet rs1 = statement.executeQuery("SELECT * FROM INFORMATION_SCHEMA.DATABASES");
         assertTrue(rs1.next(), "Should be able to query INFORMATION_SCHEMA");
         rs1.close();
 
         // Test fully qualified database.schema.view
-        ResultSet rs2 = statement.executeQuery("SELECT * FROM TEST_DB.INFORMATION_SCHEMA.TABLES");
+        final ResultSet rs2 = statement.executeQuery("SELECT * FROM TEST_DB.INFORMATION_SCHEMA.TABLES");
         assertNotNull(rs2, "Should be able to query with full qualification");
         rs2.close();
 
         // INFORMATION_SCHEMA exists in every database
         statement.execute("CREATE DATABASE other_db");
         statement.execute("USE DATABASE other_db");
-        ResultSet rs3 = statement.executeQuery("SELECT * FROM INFORMATION_SCHEMA.DATABASES");
+        final ResultSet rs3 = statement.executeQuery("SELECT * FROM INFORMATION_SCHEMA.DATABASES");
         assertTrue(rs3.next(), "INFORMATION_SCHEMA should exist in other_db too");
         rs3.close();
     }
@@ -195,24 +198,30 @@ public class InformationSchemaTest extends BaseJdbcTest {
     @Test
     public void testInformationSchemaCannotBeDropped() throws SQLException {
         // Attempt to drop INFORMATION_SCHEMA schema
-        assertThrows(SQLException.class, () ->
-            statement.execute("DROP SCHEMA INFORMATION_SCHEMA"),
-            "Should not be able to drop INFORMATION_SCHEMA schema"
-        );
+        assertThrows(SQLException.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                statement.execute("DROP SCHEMA INFORMATION_SCHEMA");
+            }
+        }, "Should not be able to drop INFORMATION_SCHEMA schema");
     }
 
     @Test
     public void testSystemViewsCannotBeDropped() throws SQLException {
         // Attempt to drop system views
-        assertThrows(SQLException.class, () ->
-            statement.execute("DROP VIEW INFORMATION_SCHEMA.DATABASES"),
-            "Should not be able to drop system view DATABASES"
-        );
+        assertThrows(SQLException.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                statement.execute("DROP VIEW INFORMATION_SCHEMA.DATABASES");
+            }
+        }, "Should not be able to drop system view DATABASES");
 
-        assertThrows(SQLException.class, () ->
-            statement.execute("DROP VIEW INFORMATION_SCHEMA.COLUMNS"),
-            "Should not be able to drop system view COLUMNS"
-        );
+        assertThrows(SQLException.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                statement.execute("DROP VIEW INFORMATION_SCHEMA.COLUMNS");
+            }
+        }, "Should not be able to drop system view COLUMNS");
     }
 
     @Test
@@ -221,7 +230,7 @@ public class InformationSchemaTest extends BaseJdbcTest {
         statement.execute("CREATE TABLE orders (id INTEGER, product_id INTEGER)");
 
         // Query with joins between INFORMATION_SCHEMA views
-        ResultSet rs = statement.executeQuery("""
+        final ResultSet rs = statement.executeQuery("""
             SELECT t.TABLE_NAME, c.COLUMN_NAME, c.DATA_TYPE
             FROM INFORMATION_SCHEMA.TABLES t
             INNER JOIN INFORMATION_SCHEMA.COLUMNS c
@@ -232,7 +241,7 @@ public class InformationSchemaTest extends BaseJdbcTest {
         int count = 0;
         while (rs.next()) {
             count++;
-            String tableName = rs.getString("TABLE_NAME");
+            final String tableName = rs.getString("TABLE_NAME");
             assertTrue("orders".equalsIgnoreCase(tableName), "Table name should be orders");
         }
 

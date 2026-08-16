@@ -16,41 +16,38 @@
 
 package dev.frostlake.features;
 
-import dev.frostlake.DatabaseEngine;
-import dev.frostlake.metastore.model.Table;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
+import dev.frostlake.BaseDatabaseTest;
+import dev.frostlake.storage.ResultSet;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Tests for TRANSIENT table type in CREATE TABLE statement
- * TRANSIENT tables have limited Time Travel and no Fail-safe
+ * The TRANSIENT table type, asserted through the SQL surface — the {@code SHOW TABLES} kind cell
+ * (TRANSIENT vs TABLE, including through CLONE), plus the comment, cluster_by and DESCRIBE cells
+ * of the co-declared options — so every check runs against whichever engine executed the DDL,
+ * embedded or live.
  */
-public class TransientTableTest {
+public class TransientTableTest extends BaseDatabaseTest {
     private static final Logger logger = LoggerFactory.getLogger(TransientTableTest.class);
 
-    private DatabaseEngine engine;
-
-    @BeforeEach
-    public void setUp() {
-        engine = new DatabaseEngine();
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
-        logger.info("DatabaseEngine initialized for TRANSIENT table tests");
+    /** One SHOW TABLES cell for the given table, optionally schema-qualified. */
+    private String tableCell(final String table, final String column) {
+        final String bareName = table.contains(".")
+            ? table.substring(table.lastIndexOf('.') + 1) : table;
+        final String scope = table.contains(".")
+            ? " IN SCHEMA " + table.substring(0, table.lastIndexOf('.')) : "";
+        final ResultSet rs = engine.executeQuery("SHOW TABLES LIKE '" + bareName + "'" + scope);
+        return cell(rs, soleRowWhere(rs, "name", bareName.toUpperCase()), column);
     }
 
-    @AfterEach
-    public void tearDown() {
-        if (engine != null) {
-            engine.shutdown();
-        }
+    private String kind(final String table) {
+        return tableCell(table, "kind");
     }
 
     @Test
@@ -59,10 +56,7 @@ public class TransientTableTest {
 
         engine.execute("CREATE TRANSIENT TABLE test1 (id INTEGER, name VARCHAR)");
 
-        Table table = engine.getCatalog().resolveTable("TEST1");
-        assertNotNull(table);
-        assertTrue(table.isTransient());
-        assertFalse(table.isTemporary());
+        assertEquals("TRANSIENT", kind("test1"));
 
         logger.info("CREATE TRANSIENT TABLE works correctly");
     }
@@ -73,10 +67,7 @@ public class TransientTableTest {
 
         engine.execute("CREATE TABLE test2 (id INTEGER, name VARCHAR)");
 
-        Table table = engine.getCatalog().resolveTable("TEST2");
-        assertNotNull(table);
-        assertFalse(table.isTransient());
-        assertFalse(table.isTemporary());
+        assertEquals("TABLE", kind("test2"));
 
         logger.info("Regular table is not transient");
     }
@@ -87,9 +78,7 @@ public class TransientTableTest {
 
         engine.execute("CREATE TRANSIENT TABLE IF NOT EXISTS test3 (id INTEGER, name VARCHAR)");
 
-        Table table = engine.getCatalog().resolveTable("TEST3");
-        assertNotNull(table);
-        assertTrue(table.isTransient());
+        assertEquals("TRANSIENT", kind("test3"));
 
         // Executing again should not throw error
         engine.execute("CREATE TRANSIENT TABLE IF NOT EXISTS test3 (id INTEGER, name VARCHAR)");
@@ -101,12 +90,10 @@ public class TransientTableTest {
     public void testTransientTableWithQualifiedName() {
         logger.info("Testing CREATE TRANSIENT TABLE with qualified name");
 
-        engine.execute("CREATE SCHEMA test_schema");
-        engine.execute("CREATE TRANSIENT TABLE test_schema.test4 (id INTEGER, name VARCHAR)");
+        engine.execute("CREATE SCHEMA transient_schema");
+        engine.execute("CREATE TRANSIENT TABLE transient_schema.test4 (id INTEGER, name VARCHAR)");
 
-        Table table = engine.getCatalog().resolveTable("TEST_SCHEMA.TEST4");
-        assertNotNull(table);
-        assertTrue(table.isTransient());
+        assertEquals("TRANSIENT", kind("transient_schema.test4"));
 
         logger.info("TRANSIENT table with qualified name works correctly");
     }
@@ -117,10 +104,8 @@ public class TransientTableTest {
 
         engine.execute("CREATE TRANSIENT TABLE test5 (id INTEGER, name VARCHAR) COMMENT = 'Test transient table'");
 
-        Table table = engine.getCatalog().resolveTable("TEST5");
-        assertNotNull(table);
-        assertTrue(table.isTransient());
-        assertEquals("Test transient table", table.getComment());
+        assertEquals("TRANSIENT", kind("test5"));
+        assertEquals("Test transient table", tableCell("test5", "comment"));
 
         logger.info("TRANSIENT table with COMMENT works correctly");
     }
@@ -131,10 +116,8 @@ public class TransientTableTest {
 
         engine.execute("CREATE TRANSIENT TABLE test6 COMMENT = 'Comment position test' (id INTEGER)");
 
-        Table table = engine.getCatalog().resolveTable("TEST6");
-        assertNotNull(table);
-        assertTrue(table.isTransient());
-        assertEquals("Comment position test", table.getComment());
+        assertEquals("TRANSIENT", kind("test6"));
+        assertEquals("Comment position test", tableCell("test6", "comment"));
 
         logger.info("TRANSIENT table with COMMENT after table name works correctly");
     }
@@ -151,11 +134,8 @@ public class TransientTableTest {
             ) CLUSTER BY (date)
             """);
 
-        Table table = engine.getCatalog().resolveTable("TEST7");
-        assertNotNull(table);
-        assertTrue(table.isTransient());
-        assertEquals(1, table.getClusterKeys().size());
-        assertEquals("date", table.getClusterKeys().get(0));
+        assertEquals("TRANSIENT", kind("test7"));
+        assertEquals("LINEAR(date)", tableCell("test7", "cluster_by"));
 
         logger.info("TRANSIENT table with CLUSTER BY works correctly");
     }
@@ -173,11 +153,8 @@ public class TransientTableTest {
             )
             """);
 
-        Table table = engine.getCatalog().resolveTable("TEST8");
-        assertNotNull(table);
-        assertTrue(table.isTransient());
-        assertEquals(1, table.getPrimaryKeys().size());
-        assertEquals("ID", table.getPrimaryKeys().get(0));
+        assertEquals("TRANSIENT", kind("test8"));
+        assertEquals("Y", describeCell("test8", "ID", "primary key"));
 
         logger.info("TRANSIENT table with constraints works correctly");
     }
@@ -187,15 +164,10 @@ public class TransientTableTest {
         logger.info("Testing CLONE preserves TRANSIENT flag");
 
         engine.execute("CREATE TRANSIENT TABLE source (id INTEGER, name VARCHAR)");
-        engine.execute("CREATE TABLE test9 CLONE source");
+        engine.execute("CREATE TRANSIENT TABLE test9 CLONE source");
 
-        Table sourceTable = engine.getCatalog().resolveTable("SOURCE");
-        Table clonedTable = engine.getCatalog().resolveTable("TEST9");
-
-        assertNotNull(sourceTable);
-        assertNotNull(clonedTable);
-        assertTrue(sourceTable.isTransient());
-        assertTrue(clonedTable.isTransient());
+        assertEquals("TRANSIENT", kind("source"));
+        assertEquals("TRANSIENT", kind("test9"));
 
         logger.info("CLONE preserves TRANSIENT flag correctly");
     }
@@ -207,33 +179,32 @@ public class TransientTableTest {
         engine.execute("CREATE TABLE source2 (id INTEGER, name VARCHAR)");
         engine.execute("CREATE TRANSIENT TABLE test10 CLONE source2");
 
-        Table sourceTable = engine.getCatalog().resolveTable("SOURCE2");
-        Table clonedTable = engine.getCatalog().resolveTable("TEST10");
-
-        assertNotNull(sourceTable);
-        assertNotNull(clonedTable);
-        assertFalse(sourceTable.isTransient());
-        assertTrue(clonedTable.isTransient());
+        assertEquals("TABLE", kind("source2"));
+        assertEquals("TRANSIENT", kind("test10"));
 
         logger.info("CLONE regular table as TRANSIENT works correctly");
     }
 
     @Test
-    public void testCloneTransientTableAsRegular() {
-        logger.info("Testing CLONE transient table without TRANSIENT keyword");
+    public void testCloneTransientTableAsRegularIsRefused() {
+        logger.info("Testing CLONE of a transient table into a permanent one is refused");
 
         engine.execute("CREATE TRANSIENT TABLE source3 (id INTEGER, name VARCHAR)");
-        engine.execute("CREATE TABLE test11 CLONE source3");
 
-        Table sourceTable = engine.getCatalog().resolveTable("SOURCE3");
-        Table clonedTable = engine.getCatalog().resolveTable("TEST11");
+        // A transient table cannot become permanent by cloning (live-verified). The reverse —
+        // cloning a permanent table INTO a transient one — is allowed, as testCloneRegularTableAsTransient shows.
+        final RuntimeException e = assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.execute("CREATE TABLE test11 CLONE source3");
+            }
+        });
+        assertTrue(e.getMessage().contains("Transient object cannot be cloned to a permanent object."),
+            e.getMessage());
 
-        assertNotNull(sourceTable);
-        assertNotNull(clonedTable);
-        assertTrue(sourceTable.isTransient());
-        assertTrue(clonedTable.isTransient());
+        assertEquals(0, engine.executeQuery("SHOW TABLES LIKE 'test11'").getRowCount());
 
-        logger.info("CLONE without explicit TRANSIENT inherits from source");
+        logger.info("Transient-to-permanent clone is refused");
     }
 
     @Test
@@ -251,10 +222,8 @@ public class TransientTableTest {
             )
             """);
 
-        Table table = engine.getCatalog().resolveTable("TEST12");
-        assertNotNull(table);
-        assertTrue(table.isTransient());
-        assertEquals(6, table.getColumns().size());
+        assertEquals("TRANSIENT", kind("test12"));
+        assertEquals(6, engine.executeQuery("DESCRIBE TABLE test12").getRowCount());
 
         logger.info("TRANSIENT table with multiple columns works correctly");
     }
@@ -270,10 +239,9 @@ public class TransientTableTest {
             )
             """);
 
-        Table table = engine.getCatalog().resolveTable("TEST13");
-        assertNotNull(table);
-        assertTrue(table.isTransient());
-        assertEquals("utf8", table.getColumn("name").getCollation());
+        assertEquals("TRANSIENT", kind("test13"));
+        final String nameType = describeCell("test13", "NAME", "type");
+        assertTrue(nameType.contains("COLLATE 'utf8'"), nameType);
 
         logger.info("TRANSIENT table with COLLATE works correctly");
     }
@@ -282,9 +250,9 @@ public class TransientTableTest {
     public void testTransientTableAllFeaturesCombined() {
         logger.info("Testing CREATE TRANSIENT TABLE with all features combined");
 
-        engine.execute("CREATE SCHEMA test_schema");
+        engine.execute("CREATE SCHEMA transient_schema");
         engine.execute("""
-            CREATE TRANSIENT TABLE IF NOT EXISTS test_schema.test14
+            CREATE TRANSIENT TABLE IF NOT EXISTS transient_schema.test14
             COMMENT = 'Full featured transient table'
             (
                 id INTEGER PRIMARY KEY,
@@ -294,15 +262,11 @@ public class TransientTableTest {
                 date DATE
             )
             CLUSTER BY (date)
-            COMMENT = 'End comment'
             """);
 
-        Table table = engine.getCatalog().resolveTable("TEST_SCHEMA.TEST14");
-        assertNotNull(table);
-        assertTrue(table.isTransient());
-        assertEquals("Full featured transient table", table.getComment());
-        assertEquals(1, table.getClusterKeys().size());
-        assertEquals("date", table.getClusterKeys().get(0));
+        assertEquals("TRANSIENT", kind("transient_schema.test14"));
+        assertEquals("Full featured transient table", tableCell("transient_schema.test14", "comment"));
+        assertEquals("LINEAR(date)", tableCell("transient_schema.test14", "cluster_by"));
 
         logger.info("TRANSIENT table with all features works correctly");
     }
@@ -316,10 +280,10 @@ public class TransientTableTest {
         engine.execute("CREATE TRANSIENT TABLE transient2 (id INTEGER)");
         engine.execute("CREATE TABLE regular2 (id INTEGER)");
 
-        assertTrue(engine.getCatalog().resolveTable("TRANSIENT1").isTransient());
-        assertFalse(engine.getCatalog().resolveTable("REGULAR1").isTransient());
-        assertTrue(engine.getCatalog().resolveTable("TRANSIENT2").isTransient());
-        assertFalse(engine.getCatalog().resolveTable("REGULAR2").isTransient());
+        assertEquals("TRANSIENT", kind("transient1"));
+        assertEquals("TABLE", kind("regular1"));
+        assertEquals("TRANSIENT", kind("transient2"));
+        assertEquals("TABLE", kind("regular2"));
 
         logger.info("Multiple TRANSIENT tables work correctly");
     }
@@ -336,10 +300,9 @@ public class TransientTableTest {
             )
             """);
 
-        Table table = engine.getCatalog().resolveTable("TEST15");
-        assertNotNull(table);
-        assertTrue(table.isTransient());
-        assertTrue(table.getColumn("parent_id").hasForeignKey());
+        assertEquals("TRANSIENT", kind("test15"));
+        final ResultSet keys = engine.executeQuery("SHOW IMPORTED KEYS IN TABLE test15");
+        soleRowWhere(keys, "fk_column_name", "PARENT_ID");
 
         logger.info("TRANSIENT table with FOREIGN KEY works correctly");
     }

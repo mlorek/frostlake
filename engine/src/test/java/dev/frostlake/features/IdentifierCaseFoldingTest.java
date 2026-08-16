@@ -16,10 +16,8 @@
 
 package dev.frostlake.features;
 
-import dev.frostlake.DatabaseEngine;
+import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -30,23 +28,13 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
  * INFORMATION_SCHEMA, SHOW output and result-set column labels match Snowflake — e.g. an existence check
  * that compares {@code COLUMN_NAME} to an upper-case literal.
  */
-public class IdentifierCaseFoldingTest {
+public class IdentifierCaseFoldingTest extends BaseDatabaseTest {
 
-    private DatabaseEngine engine;
-
-    @BeforeEach
-    public void setUp() {
-        engine = new DatabaseEngine();
+    @Override
+    protected void setupTest() {
         engine.execute("CREATE DATABASE test");
         engine.execute("USE DATABASE test");
         engine.execute("CREATE SCHEMA app");
-    }
-
-    @AfterEach
-    public void tearDown() {
-        if (engine != null) {
-            engine.shutdown();
-        }
     }
 
     private Object scalar(final String sql) {

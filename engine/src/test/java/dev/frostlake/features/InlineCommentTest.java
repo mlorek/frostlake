@@ -16,41 +16,38 @@
 
 package dev.frostlake.features;
 
-import dev.frostlake.DatabaseEngine;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
+import dev.frostlake.BaseDatabaseTest;
 import org.junit.jupiter.api.Test;
-import static org.junit.jupiter.api.Assertions.*;
+import org.junit.jupiter.api.function.Executable;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 
-public class InlineCommentTest {
+public class InlineCommentTest extends BaseDatabaseTest {
 
-    private DatabaseEngine engine;
-
-    @BeforeEach
-    public void setUp() {
-        engine = new DatabaseEngine();
+    @Override
+    protected void setupTest() {
         engine.execute("CREATE DATABASE IF NOT EXISTS test_db");
-        engine.execute("USE DATABASE test_db");
-        engine.execute("USE SCHEMA public");
         engine.execute("CREATE TABLE t (i INTEGER)");
         engine.execute("INSERT INTO t VALUES (1)");
         engine.execute("INSERT INTO t VALUES (2)");
     }
 
-    @AfterEach
-    public void tearDown() {
-        if (engine != null) engine.shutdown();
-    }
-
     @Test
     public void testInlineCommentInsideInClause() {
-        assertDoesNotThrow(() ->
-            engine.execute("DELETE FROM t WHERE i IN (1 -- comment\n )"));
+        assertDoesNotThrow(new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                engine.execute("DELETE FROM t WHERE i IN (1 -- comment\n )");
+            }
+        });
     }
 
     @Test
     public void testInlineCommentInsideSelect() {
-        assertDoesNotThrow(() ->
-            engine.executeQuery("SELECT * FROM t WHERE i IN (\n  1, -- first\n  2  -- second\n)"));
+        assertDoesNotThrow(new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                engine.executeQuery("SELECT * FROM t WHERE i IN (\n  1, -- first\n  2  -- second\n)");
+            }
+        });
     }
 }

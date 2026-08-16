@@ -26,13 +26,15 @@ public class VarSamp extends AggregateFunction {
     public VarSamp() { super("VAR_SAMP", NumericType.DOUBLE); }
 
     @Override
-    public Accumulator createAccumulator() { return new Variance.VarianceAccumulator(); }
+    public Accumulator createAccumulator() { return new VarianceAccumulator(); }
 
     @Override
     public Object evaluate(final List<Object> args) { return null; }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return 1; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return 1; }
 
     /** Live: "Invalid argument types for function '*': (OBJECT, OBJECT)" — see {@link StdDev}. */
     @Override

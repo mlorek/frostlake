@@ -20,21 +20,20 @@ import dev.frostlake.DatabaseEngine;
 import dev.frostlake.metastore.model.Function;
 import dev.frostlake.metastore.model.Parameter;
 import dev.frostlake.metastore.model.Schema;
-import dev.frostlake.types.NumericType;
-import dev.frostlake.types.StringType;
 import dev.frostlake.rt.js.JavaScriptExecutor;
 import dev.frostlake.rt.py.PythonExecutor;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
+import dev.frostlake.types.NumericType;
+import dev.frostlake.types.StringType;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assertions;
-
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -72,8 +71,8 @@ public class JavaScriptUDFTest {
             $$
             """);
 
-        Schema schema = engine.getCatalog().getDatabase("TEST_DB").getSchema("PUBLIC");
-        Function func = schema.getFunction("js_double");
+        final Schema schema = engine.getCatalog().getDatabase("TEST_DB").getSchema("PUBLIC");
+        final Function func = schema.getFunction("js_double");
 
         assertNotNull(func, "Function should be created");
         assertEquals("JS_DOUBLE", func.getName());
@@ -96,8 +95,8 @@ public class JavaScriptUDFTest {
             $$
             """);
 
-        Schema schema = engine.getCatalog().getDatabase("TEST_DB").getSchema("PUBLIC");
-        Function func = schema.getFunction("js_add");
+        final Schema schema = engine.getCatalog().getDatabase("TEST_DB").getSchema("PUBLIC");
+        final Function func = schema.getFunction("js_add");
 
         assertNotNull(func, "Function should be created");
         assertEquals("JS_ADD", func.getName());
@@ -118,8 +117,8 @@ public class JavaScriptUDFTest {
             $$
             """);
 
-        Schema schema = engine.getCatalog().getDatabase("TEST_DB").getSchema("PUBLIC");
-        Function func = schema.getFunction("js_uppercase");
+        final Schema schema = engine.getCatalog().getDatabase("TEST_DB").getSchema("PUBLIC");
+        final Function func = schema.getFunction("js_uppercase");
 
         assertNotNull(func, "Function should be created");
         assertEquals("JS_UPPERCASE", func.getName());
@@ -130,14 +129,14 @@ public class JavaScriptUDFTest {
     public void testExecuteJavaScriptFunction() {
         logger.info("Testing JavaScript function execution");
 
-        List<Parameter> parameters = new ArrayList<>();
+        final List<Parameter> parameters = new ArrayList<>();
         parameters.add(new Parameter("x", NumericType.INTEGER));
 
-        Function func = new Function("test_double", parameters, NumericType.INTEGER,
+        final Function func = new Function("test_double", parameters, NumericType.INTEGER,
                                     "return x * 2;", false, "JAVASCRIPT");
 
-        List<Object> args = Arrays.asList(21);
-        Object result = JavaScriptExecutor.executeJavaScriptFunction(func, args);
+        final List<Object> args = Arrays.asList(21);
+        final Object result = JavaScriptExecutor.executeJavaScriptFunction(func, args);
 
         assertNotNull(result, "Result should not be null");
         logger.info("Result: {}", result);
@@ -148,15 +147,15 @@ public class JavaScriptUDFTest {
     public void testExecuteJavaScriptFunctionWithMultipleArgs() {
         logger.info("Testing JavaScript function execution with multiple arguments");
 
-        List<Parameter> parameters = new ArrayList<>();
+        final List<Parameter> parameters = new ArrayList<>();
         parameters.add(new Parameter("a", NumericType.INTEGER));
         parameters.add(new Parameter("b", NumericType.INTEGER));
 
-        Function func = new Function("test_add", parameters, NumericType.INTEGER,
+        final Function func = new Function("test_add", parameters, NumericType.INTEGER,
                                     "return a + b;", false, "JAVASCRIPT");
 
-        List<Object> args = Arrays.asList(10, 32);
-        Object result = JavaScriptExecutor.executeJavaScriptFunction(func, args);
+        final List<Object> args = Arrays.asList(10, 32);
+        final Object result = JavaScriptExecutor.executeJavaScriptFunction(func, args);
 
         assertNotNull(result, "Result should not be null");
         logger.info("Result: {}", result);
@@ -167,14 +166,14 @@ public class JavaScriptUDFTest {
     public void testExecuteJavaScriptFunctionWithStringArg() {
         logger.info("Testing JavaScript function execution with string argument");
 
-        List<Parameter> parameters = new ArrayList<>();
+        final List<Parameter> parameters = new ArrayList<>();
         parameters.add(new Parameter("s", StringType.VARCHAR));
 
-        Function func = new Function("test_upper", parameters, StringType.VARCHAR,
+        final Function func = new Function("test_upper", parameters, StringType.VARCHAR,
                                     "return s.toUpperCase();", false, "JAVASCRIPT");
 
-        List<Object> args = Arrays.asList("hello");
-        Object result = JavaScriptExecutor.executeJavaScriptFunction(func, args);
+        final List<Object> args = Arrays.asList("hello");
+        final Object result = JavaScriptExecutor.executeJavaScriptFunction(func, args);
 
         assertNotNull(result, "Result should not be null");
         logger.info("Result: {}", result);
@@ -185,25 +184,25 @@ public class JavaScriptUDFTest {
     public void testJavaScriptFunctionWithComplexLogic() {
         logger.info("Testing JavaScript function with complex logic");
 
-        List<Parameter> parameters = new ArrayList<>();
+        final List<Parameter> parameters = new ArrayList<>();
         parameters.add(new Parameter("n", NumericType.INTEGER));
 
-        String body = """
+        final String body = """
             if (n <= 1) {
                 return 1;
             }
             return n * 2;
             """;
 
-        Function func = new Function("test_conditional", parameters, NumericType.INTEGER,
+        final Function func = new Function("test_conditional", parameters, NumericType.INTEGER,
                                     body, false, "JAVASCRIPT");
 
-        List<Object> args1 = Arrays.asList(1);
-        Object result1 = JavaScriptExecutor.executeJavaScriptFunction(func, args1);
+        final List<Object> args1 = Arrays.asList(1);
+        final Object result1 = JavaScriptExecutor.executeJavaScriptFunction(func, args1);
         assertEquals(1, ((Number) result1).intValue(), "Result for n=1 should be 1");
 
-        List<Object> args2 = Arrays.asList(5);
-        Object result2 = JavaScriptExecutor.executeJavaScriptFunction(func, args2);
+        final List<Object> args2 = Arrays.asList(5);
+        final Object result2 = JavaScriptExecutor.executeJavaScriptFunction(func, args2);
         assertEquals(10, ((Number) result2).intValue(), "Result for n=5 should be 10");
     }
 
@@ -218,8 +217,8 @@ public class JavaScriptUDFTest {
             AS 'x * 2'
             """);
 
-        Schema schema = engine.getCatalog().getDatabase("TEST_DB").getSchema("PUBLIC");
-        Function func = schema.getFunction("sql_double");
+        final Schema schema = engine.getCatalog().getDatabase("TEST_DB").getSchema("PUBLIC");
+        final Function func = schema.getFunction("sql_double");
 
         assertNotNull(func, "Function should be created");
         assertEquals("SQL_DOUBLE", func.getName());
@@ -237,8 +236,8 @@ public class JavaScriptUDFTest {
             AS 'x + 1'
             """);
 
-        Schema schema = engine.getCatalog().getDatabase("TEST_DB").getSchema("PUBLIC");
-        Function func = schema.getFunction("default_func");
+        final Schema schema = engine.getCatalog().getDatabase("TEST_DB").getSchema("PUBLIC");
+        final Function func = schema.getFunction("default_func");
 
         assertNotNull(func, "Function should be created");
         assertEquals("DEFAULT_FUNC", func.getName());
@@ -256,15 +255,19 @@ public class JavaScriptUDFTest {
             AS 'return x;'
             """);
 
-        Schema schema = engine.getCatalog().getDatabase("TEST_DB").getSchema("PUBLIC");
+        final Schema schema = engine.getCatalog().getDatabase("TEST_DB").getSchema("PUBLIC");
         assertNotNull(schema.getFunction("js_test"), "Function should exist");
 
         engine.execute("DROP FUNCTION js_test(INTEGER)");
 
-        RuntimeException exception = Assertions.assertThrows(
+        final RuntimeException exception = Assertions.assertThrows(
             RuntimeException.class,
-            () -> schema.getFunction("js_test")
-        );
+            new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                schema.getFunction("js_test");
+            }
+        });
         assertTrue(exception.getMessage().contains("does not exist"));
     }
 
@@ -284,8 +287,8 @@ def multiply_handler(x, y):
             $$
             """);
 
-        Schema schema = engine.getCatalog().getDatabase("TEST_DB").getSchema("PUBLIC");
-        Function func = schema.getFunction("py_multiply");
+        final Schema schema = engine.getCatalog().getDatabase("TEST_DB").getSchema("PUBLIC");
+        final Function func = schema.getFunction("py_multiply");
 
         assertNotNull(func, "Function should be created");
         assertEquals("PY_MULTIPLY", func.getName());
@@ -301,20 +304,20 @@ def multiply_handler(x, y):
     public void testExecutePythonFunctionWithHandler() {
         logger.info("Testing Python function execution with HANDLER");
 
-        List<Parameter> parameters = new ArrayList<>();
+        final List<Parameter> parameters = new ArrayList<>();
         parameters.add(new Parameter("x", NumericType.INTEGER));
         parameters.add(new Parameter("y", NumericType.INTEGER));
 
-        String body = """
+        final String body = """
 def multiply_handler(x, y):
     return x * y
 """;
 
-        Function func = new Function("test_multiply", parameters, NumericType.INTEGER,
+        final Function func = new Function("test_multiply", parameters, NumericType.INTEGER,
                                     body, false, "PYTHON", "multiply_handler", "3.8");
 
-        List<Object> args = Arrays.asList(6, 7);
-        Object result = PythonExecutor.executePythonFunction(func, args);
+        final List<Object> args = Arrays.asList(6, 7);
+        final Object result = PythonExecutor.executePythonFunction(func, args);
 
         assertNotNull(result, "Result should not be null");
         logger.info("Result: {}", result);
@@ -337,8 +340,8 @@ def square_it(x):
             $$
             """);
 
-        Schema schema = engine.getCatalog().getDatabase("TEST_DB").getSchema("PUBLIC");
-        Function func = schema.getFunction("py_square");
+        final Schema schema = engine.getCatalog().getDatabase("TEST_DB").getSchema("PUBLIC");
+        final Function func = schema.getFunction("py_square");
 
         assertNotNull(func, "Function should be created");
         assertEquals("PY_SQUARE", func.getName());
@@ -351,10 +354,10 @@ def square_it(x):
     public void testExecutePythonFunctionWithHandlerComplexLogic() {
         logger.info("Testing Python function with HANDLER and complex logic");
 
-        List<Parameter> parameters = new ArrayList<>();
+        final List<Parameter> parameters = new ArrayList<>();
         parameters.add(new Parameter("n", NumericType.INTEGER));
 
-        String body = """
+        final String body = """
 def fibonacci(n):
     if n <= 1:
         return n
@@ -364,11 +367,11 @@ def fibonacci(n):
     return b
 """;
 
-        Function func = new Function("test_fib", parameters, NumericType.INTEGER,
+        final Function func = new Function("test_fib", parameters, NumericType.INTEGER,
                                     body, false, "PYTHON", "fibonacci", "3.8");
 
-        List<Object> args = Arrays.asList(10);
-        Object result = PythonExecutor.executePythonFunction(func, args);
+        final List<Object> args = Arrays.asList(10);
+        final Object result = PythonExecutor.executePythonFunction(func, args);
 
         assertNotNull(result, "Result should not be null");
         logger.info("Fibonacci(10) = {}", result);

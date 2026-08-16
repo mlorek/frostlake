@@ -24,7 +24,9 @@ import org.slf4j.LoggerFactory;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class TableConstraintsTest extends BaseJdbcTest {
     private static final Logger logger = LoggerFactory.getLogger(TableConstraintsTest.class);
@@ -35,7 +37,7 @@ public class TableConstraintsTest extends BaseJdbcTest {
 
         statement.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, name VARCHAR)");
 
-        ResultSet rs = statement.executeQuery(
+        final ResultSet rs = statement.executeQuery(
             "SELECT * FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS WHERE TABLE_NAME = 'USERS' AND CONSTRAINT_TYPE = 'PRIMARY KEY'"
         );
 
@@ -65,7 +67,7 @@ public class TableConstraintsTest extends BaseJdbcTest {
 
         statement.execute("CREATE TABLE products (id INTEGER, code VARCHAR UNIQUE, name VARCHAR)");
 
-        ResultSet rs = statement.executeQuery(
+        final ResultSet rs = statement.executeQuery(
             "SELECT * FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS WHERE TABLE_NAME = 'PRODUCTS' AND CONSTRAINT_TYPE = 'UNIQUE'"
         );
 
@@ -87,7 +89,7 @@ public class TableConstraintsTest extends BaseJdbcTest {
         statement.execute("CREATE TABLE departments (id INTEGER PRIMARY KEY, name VARCHAR)");
         statement.execute("CREATE TABLE employees (id INTEGER, dept_id INTEGER REFERENCES departments(id), name VARCHAR)");
 
-        ResultSet rs = statement.executeQuery(
+        final ResultSet rs = statement.executeQuery(
             "SELECT * FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS WHERE TABLE_NAME = 'EMPLOYEES' AND CONSTRAINT_TYPE = 'FOREIGN KEY'"
         );
 
@@ -107,7 +109,7 @@ public class TableConstraintsTest extends BaseJdbcTest {
 
         statement.execute("CREATE TABLE orders (id INTEGER PRIMARY KEY, order_number VARCHAR UNIQUE, customer_id INTEGER)");
 
-        ResultSet rs = statement.executeQuery(
+        final ResultSet rs = statement.executeQuery(
             "SELECT CONSTRAINT_TYPE FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS WHERE TABLE_NAME = 'ORDERS' ORDER BY CONSTRAINT_TYPE"
         );
 
@@ -127,7 +129,7 @@ public class TableConstraintsTest extends BaseJdbcTest {
 
         statement.execute("CREATE TABLE logs (timestamp INTEGER, message VARCHAR)");
 
-        ResultSet rs = statement.executeQuery(
+        final ResultSet rs = statement.executeQuery(
             "SELECT * FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS WHERE TABLE_NAME = 'LOGS'"
         );
 
@@ -145,7 +147,7 @@ public class TableConstraintsTest extends BaseJdbcTest {
         statement.execute("CREATE SCHEMA schema2");
         statement.execute("CREATE TABLE schema2.table2 (id INTEGER PRIMARY KEY)");
 
-        ResultSet rs = statement.executeQuery(
+        final ResultSet rs = statement.executeQuery(
             "SELECT TABLE_SCHEMA, TABLE_NAME FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS WHERE CONSTRAINT_TYPE = 'PRIMARY KEY' ORDER BY TABLE_SCHEMA, TABLE_NAME"
         );
 
@@ -153,8 +155,8 @@ public class TableConstraintsTest extends BaseJdbcTest {
         boolean foundSchema2 = false;
 
         while (rs.next()) {
-            String schema = rs.getString("TABLE_SCHEMA");
-            String table = rs.getString("TABLE_NAME");
+            final String schema = rs.getString("TABLE_SCHEMA");
+            final String table = rs.getString("TABLE_NAME");
             if ("schema1".equalsIgnoreCase(schema) && "table1".equalsIgnoreCase(table)) {
                 foundSchema1 = true;
             }
@@ -174,7 +176,7 @@ public class TableConstraintsTest extends BaseJdbcTest {
 
         statement.execute("CREATE TABLE items (id INTEGER PRIMARY KEY, name VARCHAR)");
 
-        ResultSet rs = statement.executeQuery("""
+        final ResultSet rs = statement.executeQuery("""
             SELECT t.TABLE_NAME, tc.CONSTRAINT_TYPE
             FROM INFORMATION_SCHEMA.TABLES t
             INNER JOIN INFORMATION_SCHEMA.TABLE_CONSTRAINTS tc
@@ -198,7 +200,7 @@ public class TableConstraintsTest extends BaseJdbcTest {
         statement.execute("CREATE TABLE t2 (id INTEGER PRIMARY KEY)");
         statement.execute("CREATE TABLE t3 (id INTEGER, code VARCHAR UNIQUE)");
 
-        ResultSet rs = statement.executeQuery(
+        final ResultSet rs = statement.executeQuery(
             "SELECT COUNT(*) AS cnt FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS WHERE CONSTRAINT_TYPE = 'PRIMARY KEY' AND TABLE_NAME IN ('T1', 'T2', 'T3')"
         );
 
@@ -213,7 +215,7 @@ public class TableConstraintsTest extends BaseJdbcTest {
 
         statement.execute("CREATE TABLE test_table (id INTEGER PRIMARY KEY)");
 
-        ResultSet rs = statement.executeQuery(
+        final ResultSet rs = statement.executeQuery(
             "SELECT * FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS WHERE TABLE_NAME = 'TEST_TABLE'"
         );
 

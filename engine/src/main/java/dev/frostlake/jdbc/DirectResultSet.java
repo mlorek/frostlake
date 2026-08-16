@@ -20,15 +20,29 @@ import dev.frostlake.DatabaseEngine;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.types.DataType;
-import dev.frostlake.values.TemporalText;
 import dev.frostlake.values.BinaryValue;
+import dev.frostlake.values.TemporalText;
 import dev.frostlake.values.VariantValue;
 
 import java.io.InputStream;
 import java.io.Reader;
 import java.math.BigDecimal;
 import java.net.URL;
-import java.sql.*;
+import java.sql.Array;
+import java.sql.Blob;
+import java.sql.Clob;
+import java.sql.Date;
+import java.sql.NClob;
+import java.sql.Ref;
+import java.sql.ResultSetMetaData;
+import java.sql.RowId;
+import java.sql.SQLException;
+import java.sql.SQLFeatureNotSupportedException;
+import java.sql.SQLWarning;
+import java.sql.SQLXML;
+import java.sql.Statement;
+import java.sql.Time;
+import java.sql.Timestamp;
 import java.util.ArrayList;
 import java.util.Calendar;
 import java.util.HashMap;
@@ -93,7 +107,7 @@ public class DirectResultSet implements java.sql.ResultSet {
     @Override
     public boolean next() throws SQLException {
         checkClosed();
-        boolean hasNext = engineResultSet.next();
+        final boolean hasNext = engineResultSet.next();
         if (hasNext) {
             positionRow++;
             // Clear updated values when moving to new row
@@ -109,10 +123,10 @@ public class DirectResultSet implements java.sql.ResultSet {
 
     private void captureCurrentRowValues() throws SQLException {
         currentRowValues.clear();
-        List<ResultSetColumn> columns = engineResultSet.getColumns();
+        final List<ResultSetColumn> columns = engineResultSet.getColumns();
         for (int i = 0; i < columns.size(); i++) {
-            String columnName = columns.get(i).getName();
-            Object value = engineResultSet.getValue(i);
+            final String columnName = columns.get(i).getName();
+            final Object value = engineResultSet.getValue(i);
             currentRowValues.put(columnName.toUpperCase(), value);
         }
     }
@@ -149,7 +163,7 @@ public class DirectResultSet implements java.sql.ResultSet {
     @Override
     public int getInt(final int columnIndex) throws SQLException {
         checkClosed();
-        Object value = readValue(columnIndex);
+        final Object value = readValue(columnIndex);
         if (value == null) return 0;
         if (value instanceof Number) {
             return ((Number) value).intValue();
@@ -160,7 +174,7 @@ public class DirectResultSet implements java.sql.ResultSet {
     @Override
     public int getInt(final String columnLabel) throws SQLException {
         checkClosed();
-        Object value = readValue(columnLabel);
+        final Object value = readValue(columnLabel);
         if (value == null) return 0;
         if (value instanceof Number) {
             return ((Number) value).intValue();
@@ -192,6 +206,11 @@ public class DirectResultSet implements java.sql.ResultSet {
         return value;
     }
 
+    /** The engine-native result this JDBC view wraps — for embedders needing the typed columns. */
+    public ResultSet getEngineResultSet() {
+        return engineResultSet;
+    }
+
     @Override
     public void close() throws SQLException {
         closed = true;
@@ -216,7 +235,7 @@ public class DirectResultSet implements java.sql.ResultSet {
     }
 
     private String getColumnName(final int columnIndex) throws SQLException {
-        List<ResultSetColumn> columns = engineResultSet.getColumns();
+        final List<ResultSetColumn> columns = engineResultSet.getColumns();
         if (columnIndex < 1 || columnIndex > columns.size()) {
             throw new SQLException("Invalid column index: " + columnIndex);
         }
@@ -257,7 +276,7 @@ public class DirectResultSet implements java.sql.ResultSet {
 
     @Override
     public boolean getBoolean(final int columnIndex) throws SQLException {
-        Object value = readValue(columnIndex);
+        final Object value = readValue(columnIndex);
         if (value == null) return false;
         if (value instanceof Boolean) return (Boolean) value;
         return Boolean.parseBoolean(value.toString());
@@ -265,7 +284,7 @@ public class DirectResultSet implements java.sql.ResultSet {
 
     @Override
     public byte getByte(final int columnIndex) throws SQLException {
-        Object value = readValue(columnIndex);
+        final Object value = readValue(columnIndex);
         if (value == null) return 0;
         if (value instanceof Number) return ((Number) value).byteValue();
         return Byte.parseByte(value.toString());
@@ -273,7 +292,7 @@ public class DirectResultSet implements java.sql.ResultSet {
 
     @Override
     public short getShort(final int columnIndex) throws SQLException {
-        Object value = readValue(columnIndex);
+        final Object value = readValue(columnIndex);
         if (value == null) return 0;
         if (value instanceof Number) return ((Number) value).shortValue();
         return Short.parseShort(value.toString());
@@ -281,7 +300,7 @@ public class DirectResultSet implements java.sql.ResultSet {
 
     @Override
     public long getLong(final int columnIndex) throws SQLException {
-        Object value = readValue(columnIndex);
+        final Object value = readValue(columnIndex);
         if (value == null) return 0;
         if (value instanceof Number) return ((Number) value).longValue();
         return Long.parseLong(value.toString());
@@ -289,7 +308,7 @@ public class DirectResultSet implements java.sql.ResultSet {
 
     @Override
     public float getFloat(final int columnIndex) throws SQLException {
-        Object value = readValue(columnIndex);
+        final Object value = readValue(columnIndex);
         if (value == null) return 0;
         if (value instanceof Number) return ((Number) value).floatValue();
         return Float.parseFloat(value.toString());
@@ -297,7 +316,7 @@ public class DirectResultSet implements java.sql.ResultSet {
 
     @Override
     public double getDouble(final int columnIndex) throws SQLException {
-        Object value = readValue(columnIndex);
+        final Object value = readValue(columnIndex);
         if (value == null) return 0;
         if (value instanceof Number) return ((Number) value).doubleValue();
         return Double.parseDouble(value.toString());
@@ -305,7 +324,7 @@ public class DirectResultSet implements java.sql.ResultSet {
 
     @Override
     public BigDecimal getBigDecimal(final int columnIndex, final int scale) throws SQLException {
-        Object value = readValue(columnIndex);
+        final Object value = readValue(columnIndex);
         if (value == null) return null;
         if (value instanceof BigDecimal) return (BigDecimal) value;
         return new BigDecimal(value.toString());
@@ -352,7 +371,7 @@ public class DirectResultSet implements java.sql.ResultSet {
 
     @Override
     public boolean getBoolean(final String columnLabel) throws SQLException {
-        Object value = readValue(columnLabel);
+        final Object value = readValue(columnLabel);
         if (value == null) return false;
         if (value instanceof Boolean) return (Boolean) value;
         return Boolean.parseBoolean(value.toString());
@@ -360,7 +379,7 @@ public class DirectResultSet implements java.sql.ResultSet {
 
     @Override
     public byte getByte(final String columnLabel) throws SQLException {
-        Object value = readValue(columnLabel);
+        final Object value = readValue(columnLabel);
         if (value == null) return 0;
         if (value instanceof Number) return ((Number) value).byteValue();
         return Byte.parseByte(value.toString());
@@ -368,7 +387,7 @@ public class DirectResultSet implements java.sql.ResultSet {
 
     @Override
     public short getShort(final String columnLabel) throws SQLException {
-        Object value = readValue(columnLabel);
+        final Object value = readValue(columnLabel);
         if (value == null) return 0;
         if (value instanceof Number) return ((Number) value).shortValue();
         return Short.parseShort(value.toString());
@@ -376,7 +395,7 @@ public class DirectResultSet implements java.sql.ResultSet {
 
     @Override
     public long getLong(final String columnLabel) throws SQLException {
-        Object value = readValue(columnLabel);
+        final Object value = readValue(columnLabel);
         if (value == null) return 0;
         if (value instanceof Number) return ((Number) value).longValue();
         return Long.parseLong(value.toString());
@@ -384,7 +403,7 @@ public class DirectResultSet implements java.sql.ResultSet {
 
     @Override
     public float getFloat(final String columnLabel) throws SQLException {
-        Object value = readValue(columnLabel);
+        final Object value = readValue(columnLabel);
         if (value == null) return 0;
         if (value instanceof Number) return ((Number) value).floatValue();
         return Float.parseFloat(value.toString());
@@ -392,7 +411,7 @@ public class DirectResultSet implements java.sql.ResultSet {
 
     @Override
     public double getDouble(final String columnLabel) throws SQLException {
-        Object value = readValue(columnLabel);
+        final Object value = readValue(columnLabel);
         if (value == null) return 0;
         if (value instanceof Number) return ((Number) value).doubleValue();
         return Double.parseDouble(value.toString());
@@ -400,7 +419,7 @@ public class DirectResultSet implements java.sql.ResultSet {
 
     @Override
     public BigDecimal getBigDecimal(final String columnLabel, final int scale) throws SQLException {
-        Object value = readValue(columnLabel);
+        final Object value = readValue(columnLabel);
         if (value == null) return null;
         if (value instanceof BigDecimal) return (BigDecimal) value;
         return new BigDecimal(value.toString());
@@ -469,7 +488,7 @@ public class DirectResultSet implements java.sql.ResultSet {
 
     @Override
     public int findColumn(final String columnLabel) throws SQLException {
-        List<ResultSetColumn> columns = engineResultSet.getColumns();
+        final List<ResultSetColumn> columns = engineResultSet.getColumns();
         for (int i = 0; i < columns.size(); i++) {
             if (columns.get(i).getName().equalsIgnoreCase(columnLabel)) {
                 return i + 1;
@@ -490,7 +509,7 @@ public class DirectResultSet implements java.sql.ResultSet {
 
     @Override
     public BigDecimal getBigDecimal(final int columnIndex) throws SQLException {
-        Object value = readValue(columnIndex);
+        final Object value = readValue(columnIndex);
         if (value == null) return null;
         if (value instanceof BigDecimal) return (BigDecimal) value;
         return new BigDecimal(value.toString());
@@ -498,7 +517,7 @@ public class DirectResultSet implements java.sql.ResultSet {
 
     @Override
     public BigDecimal getBigDecimal(final String columnLabel) throws SQLException {
-        Object value = readValue(columnLabel);
+        final Object value = readValue(columnLabel);
         if (value == null) return null;
         if (value instanceof BigDecimal) return (BigDecimal) value;
         return new BigDecimal(value.toString());
@@ -607,7 +626,7 @@ public class DirectResultSet implements java.sql.ResultSet {
     @Override
     public void updateNull(final int columnIndex) throws SQLException {
         checkUpdatable();
-        String columnName = getColumnName(columnIndex);
+        final String columnName = getColumnName(columnIndex);
         if (onInsertRow) {
             insertRowValues.put(columnName, null);
         } else {
@@ -618,7 +637,7 @@ public class DirectResultSet implements java.sql.ResultSet {
     @Override
     public void updateBoolean(final int columnIndex, final boolean x) throws SQLException {
         checkUpdatable();
-        String columnName = getColumnName(columnIndex);
+        final String columnName = getColumnName(columnIndex);
         if (onInsertRow) {
             insertRowValues.put(columnName, x);
         } else {
@@ -629,7 +648,7 @@ public class DirectResultSet implements java.sql.ResultSet {
     @Override
     public void updateByte(final int columnIndex, final byte x) throws SQLException {
         checkUpdatable();
-        String columnName = getColumnName(columnIndex);
+        final String columnName = getColumnName(columnIndex);
         if (onInsertRow) {
             insertRowValues.put(columnName, x);
         } else {
@@ -640,7 +659,7 @@ public class DirectResultSet implements java.sql.ResultSet {
     @Override
     public void updateShort(final int columnIndex, final short x) throws SQLException {
         checkUpdatable();
-        String columnName = getColumnName(columnIndex);
+        final String columnName = getColumnName(columnIndex);
         if (onInsertRow) {
             insertRowValues.put(columnName, x);
         } else {
@@ -651,7 +670,7 @@ public class DirectResultSet implements java.sql.ResultSet {
     @Override
     public void updateInt(final int columnIndex, final int x) throws SQLException {
         checkUpdatable();
-        String columnName = getColumnName(columnIndex);
+        final String columnName = getColumnName(columnIndex);
         if (onInsertRow) {
             insertRowValues.put(columnName, x);
         } else {
@@ -662,7 +681,7 @@ public class DirectResultSet implements java.sql.ResultSet {
     @Override
     public void updateLong(final int columnIndex, final long x) throws SQLException {
         checkUpdatable();
-        String columnName = getColumnName(columnIndex);
+        final String columnName = getColumnName(columnIndex);
         if (onInsertRow) {
             insertRowValues.put(columnName, x);
         } else {
@@ -673,7 +692,7 @@ public class DirectResultSet implements java.sql.ResultSet {
     @Override
     public void updateFloat(final int columnIndex, final float x) throws SQLException {
         checkUpdatable();
-        String columnName = getColumnName(columnIndex);
+        final String columnName = getColumnName(columnIndex);
         if (onInsertRow) {
             insertRowValues.put(columnName, x);
         } else {
@@ -684,7 +703,7 @@ public class DirectResultSet implements java.sql.ResultSet {
     @Override
     public void updateDouble(final int columnIndex, final double x) throws SQLException {
         checkUpdatable();
-        String columnName = getColumnName(columnIndex);
+        final String columnName = getColumnName(columnIndex);
         if (onInsertRow) {
             insertRowValues.put(columnName, x);
         } else {
@@ -695,7 +714,7 @@ public class DirectResultSet implements java.sql.ResultSet {
     @Override
     public void updateBigDecimal(final int columnIndex, final BigDecimal x) throws SQLException {
         checkUpdatable();
-        String columnName = getColumnName(columnIndex);
+        final String columnName = getColumnName(columnIndex);
         if (onInsertRow) {
             insertRowValues.put(columnName, x);
         } else {
@@ -706,7 +725,7 @@ public class DirectResultSet implements java.sql.ResultSet {
     @Override
     public void updateString(final int columnIndex, final String x) throws SQLException {
         checkUpdatable();
-        String columnName = getColumnName(columnIndex);
+        final String columnName = getColumnName(columnIndex);
         if (onInsertRow) {
             insertRowValues.put(columnName, x);
         } else {
@@ -757,7 +776,7 @@ public class DirectResultSet implements java.sql.ResultSet {
     @Override
     public void updateObject(final int columnIndex, final Object x) throws SQLException {
         checkUpdatable();
-        String columnName = getColumnName(columnIndex);
+        final String columnName = getColumnName(columnIndex);
         if (onInsertRow) {
             insertRowValues.put(columnName, x);
         } else {
@@ -946,9 +965,9 @@ public class DirectResultSet implements java.sql.ResultSet {
         }
 
         // Build INSERT statement
-        StringBuilder sql = new StringBuilder("INSERT INTO ");
+        final StringBuilder sql = new StringBuilder("INSERT INTO ");
         sql.append(tableName).append(" (");
-        StringBuilder values = new StringBuilder(" VALUES (");
+        final StringBuilder values = new StringBuilder(" VALUES (");
 
         boolean first = true;
         for (final Map.Entry<String, Object> entry : insertRowValues.entrySet()) {
@@ -986,7 +1005,7 @@ public class DirectResultSet implements java.sql.ResultSet {
         }
 
         // Build UPDATE statement
-        StringBuilder sql = new StringBuilder("UPDATE ");
+        final StringBuilder sql = new StringBuilder("UPDATE ");
         sql.append(tableName).append(" SET ");
 
         boolean first = true;
@@ -1004,7 +1023,7 @@ public class DirectResultSet implements java.sql.ResultSet {
             if (!first) {
                 sql.append(" AND ");
             }
-            Object keyValue = currentRowValues.get(keyCol.toUpperCase());
+            final Object keyValue = currentRowValues.get(keyCol.toUpperCase());
             sql.append(keyCol).append(" = ").append(formatValue(keyValue));
             first = false;
         }
@@ -1030,7 +1049,7 @@ public class DirectResultSet implements java.sql.ResultSet {
         }
 
         // Build DELETE statement
-        StringBuilder sql = new StringBuilder("DELETE FROM ");
+        final StringBuilder sql = new StringBuilder("DELETE FROM ");
         sql.append(tableName).append(" WHERE ");
 
         boolean first = true;
@@ -1038,7 +1057,7 @@ public class DirectResultSet implements java.sql.ResultSet {
             if (!first) {
                 sql.append(" AND ");
             }
-            Object keyValue = currentRowValues.get(keyCol.toUpperCase());
+            final Object keyValue = currentRowValues.get(keyCol.toUpperCase());
             sql.append(keyCol).append(" = ").append(formatValue(keyValue));
             first = false;
         }

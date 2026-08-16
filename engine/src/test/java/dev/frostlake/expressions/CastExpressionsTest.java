@@ -19,7 +19,7 @@ package dev.frostlake.expressions;
 import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
 import org.junit.jupiter.api.Test;
-
+import org.junit.jupiter.api.function.Executable;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -39,21 +39,21 @@ public class CastExpressionsTest extends BaseDatabaseTest {
 
     @Test
     public void testCastIntegerToVarchar() {
-        ResultSet result = engine.executeQuery("SELECT CAST(id AS VARCHAR) as id_str FROM cast_test WHERE id = 1");
+        final ResultSet result = engine.executeQuery("SELECT CAST(id AS VARCHAR) as id_str FROM cast_test WHERE id = 1");
         assertEquals(1, result.getRowCount());
         assertEquals("1", result.getRows().get(0).getValue(result.getColumnIndex("id_str")).toString());
     }
 
     @Test
     public void testCastStringToInteger() {
-        ResultSet result = engine.executeQuery("SELECT CAST(name AS INTEGER) as name_int FROM cast_test WHERE id = 3");
+        final ResultSet result = engine.executeQuery("SELECT CAST(name AS INTEGER) as name_int FROM cast_test WHERE id = 3");
         assertEquals(1, result.getRowCount());
         assertEquals(123, ((Number) result.getRows().get(0).getValue(result.getColumnIndex("name_int"))).intValue());
     }
 
     @Test
     public void testCastNumberToInteger() {
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT CAST(salary AS INTEGER) as salary_int FROM cast_test WHERE id = 3
             """);
         assertEquals(1, result.getRowCount());
@@ -63,21 +63,21 @@ public class CastExpressionsTest extends BaseDatabaseTest {
 
     @Test
     public void testCastIntegerToFloat() {
-        ResultSet result = engine.executeQuery("SELECT CAST(id AS FLOAT) as id_float FROM cast_test WHERE id = 1");
+        final ResultSet result = engine.executeQuery("SELECT CAST(id AS FLOAT) as id_float FROM cast_test WHERE id = 1");
         assertEquals(1, result.getRowCount());
         assertEquals(1.0, ((Number) result.getRows().get(0).getValue(result.getColumnIndex("id_float"))).doubleValue(), 0.001);
     }
 
     @Test
     public void testCastIntegerToDouble() {
-        ResultSet result = engine.executeQuery("SELECT CAST(id AS DOUBLE) as id_double FROM cast_test WHERE id = 2");
+        final ResultSet result = engine.executeQuery("SELECT CAST(id AS DOUBLE) as id_double FROM cast_test WHERE id = 2");
         assertEquals(1, result.getRowCount());
         assertEquals(2.0, ((Number) result.getRows().get(0).getValue(result.getColumnIndex("id_double"))).doubleValue(), 0.001);
     }
 
     @Test
     public void testCastStringToBoolean() {
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT CAST('true' AS BOOLEAN) as bool_val FROM cast_test WHERE id = 1
             """);
         assertEquals(1, result.getRowCount());
@@ -86,14 +86,14 @@ public class CastExpressionsTest extends BaseDatabaseTest {
 
     @Test
     public void testCastIntegerToBoolean() {
-        ResultSet result = engine.executeQuery("SELECT CAST(1 AS BOOLEAN) as bool_val FROM cast_test WHERE id = 1");
+        final ResultSet result = engine.executeQuery("SELECT CAST(1 AS BOOLEAN) as bool_val FROM cast_test WHERE id = 1");
         assertEquals(1, result.getRowCount());
         assertTrue((Boolean) result.getRows().get(0).getValue(result.getColumnIndex("bool_val")));
     }
 
     @Test
     public void testCastBooleanToVarchar() {
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT CAST(active AS VARCHAR) as active_str FROM cast_test WHERE id = 1
             """);
         assertEquals(1, result.getRowCount());
@@ -102,14 +102,14 @@ public class CastExpressionsTest extends BaseDatabaseTest {
 
     @Test
     public void testCastOperatorSyntax() {
-        ResultSet result = engine.executeQuery("SELECT id::VARCHAR as id_str FROM cast_test WHERE id = 1");
+        final ResultSet result = engine.executeQuery("SELECT id::VARCHAR as id_str FROM cast_test WHERE id = 1");
         assertEquals(1, result.getRowCount());
         assertEquals("1", result.getRows().get(0).getValue(result.getColumnIndex("id_str")).toString());
     }
 
     @Test
     public void testCastOperatorWithExpression() {
-        ResultSet result = engine.executeQuery("SELECT (id + 10)::VARCHAR as result FROM cast_test WHERE id = 1");
+        final ResultSet result = engine.executeQuery("SELECT (id + 10)::VARCHAR as result FROM cast_test WHERE id = 1");
         assertEquals(1, result.getRowCount());
         // Integer arithmetic returns Long, which casts to "11" not "11.0"
         assertEquals("11", result.getRows().get(0).getValue(result.getColumnIndex("result")).toString());
@@ -117,14 +117,14 @@ public class CastExpressionsTest extends BaseDatabaseTest {
 
     @Test
     public void testCastWithNullValue() {
-        ResultSet result = engine.executeQuery("SELECT CAST(name AS INTEGER) as name_int FROM cast_test WHERE id = 4");
+        final ResultSet result = engine.executeQuery("SELECT CAST(name AS INTEGER) as name_int FROM cast_test WHERE id = 4");
         assertEquals(1, result.getRowCount());
         assertNull(result.getRows().get(0).getValue(result.getColumnIndex("name_int")));
     }
 
     @Test
     public void testCastNullSalaryToVarchar() {
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT CAST(salary AS VARCHAR) as salary_str FROM cast_test WHERE id = 4
             """);
         assertEquals(1, result.getRowCount());
@@ -133,14 +133,14 @@ public class CastExpressionsTest extends BaseDatabaseTest {
 
     @Test
     public void testCastInWhereClause() {
-        ResultSet result = engine.executeQuery("SELECT name FROM cast_test WHERE CAST(id AS VARCHAR) = '1'");
+        final ResultSet result = engine.executeQuery("SELECT name FROM cast_test WHERE CAST(id AS VARCHAR) = '1'");
         assertEquals(1, result.getRowCount());
         assertEquals("Alice", result.getRows().get(0).getValue(result.getColumnIndex("name")));
     }
 
     @Test
     public void testCastInConcatenation() {
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT 'ID: ' || CAST(id AS VARCHAR) as result FROM cast_test WHERE id = 1
             """);
         assertEquals(1, result.getRowCount());
@@ -149,7 +149,7 @@ public class CastExpressionsTest extends BaseDatabaseTest {
 
     @Test
     public void testCastFloatToInteger() {
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT CAST(75000.75 AS INTEGER) as int_val FROM cast_test WHERE id = 1
             """);
         assertEquals(1, result.getRowCount());
@@ -178,7 +178,7 @@ public class CastExpressionsTest extends BaseDatabaseTest {
 
     @Test
     public void testCastToNumber() {
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT CAST('123.45' AS NUMBER) as num_val FROM cast_test WHERE id = 1
             """);
         assertEquals(1, result.getRowCount());
@@ -188,7 +188,7 @@ public class CastExpressionsTest extends BaseDatabaseTest {
 
     @Test
     public void testCastChaining() {
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT CAST(CAST(id AS VARCHAR) AS INTEGER) as result FROM cast_test WHERE id = 1
             """);
         assertEquals(1, result.getRowCount());
@@ -197,14 +197,18 @@ public class CastExpressionsTest extends BaseDatabaseTest {
 
     @Test
     public void testInvalidCastStringToInteger() {
-        assertThrows(RuntimeException.class, () -> {
-            engine.executeQuery("SELECT CAST(name AS INTEGER) FROM cast_test WHERE id = 1");
+        assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                engine.executeQuery("SELECT CAST(name AS INTEGER) FROM cast_test WHERE id = 1");
+                
+            }
         });
     }
 
     @Test
     public void testCastWithCaseExpression() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT CASE WHEN id = 1 THEN CAST(id AS VARCHAR) ELSE 'other' END as result FROM cast_test WHERE id = 1"
         );
         assertEquals(1, result.getRowCount());
@@ -213,7 +217,7 @@ public class CastExpressionsTest extends BaseDatabaseTest {
 
     @Test
     public void testMultipleCastsInSelect() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT CAST(id AS VARCHAR) as id_str, CAST(salary AS INTEGER) as salary_int FROM cast_test WHERE id = 1"
         );
         assertEquals(1, result.getRowCount());

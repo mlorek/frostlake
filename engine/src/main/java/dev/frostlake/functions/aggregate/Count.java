@@ -17,13 +17,13 @@
 package dev.frostlake.functions.aggregate;
 
 import dev.frostlake.functions.AggregateFunction;
-import dev.frostlake.types.NumericType;
+import dev.frostlake.types.IntegerResultWidths;
 
 import java.util.List;
 
 public class Count extends AggregateFunction {
     public Count() {
-        super("COUNT", NumericType.INTEGER);
+        super("COUNT", IntegerResultWidths.COUNTER);
     }
 
     @Override
@@ -42,23 +42,4 @@ public class Count extends AggregateFunction {
     @Override
     public int getMaxArgCount() { return 1; }
 
-    private static class CountAccumulator implements Accumulator {
-        private long count = 0;
-
-        @Override
-        public void accumulate(final Object value) {
-            if (value != null) count++;
-        }
-
-        @Override
-        public Object getResult() { return count; }
-
-        @Override
-        public void reset() { count = 0; }
-
-        @Override
-        public void merge(final Accumulator other) {
-            count += ((CountAccumulator) other).count;
-        }
-    }
 }

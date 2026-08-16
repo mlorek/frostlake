@@ -61,6 +61,8 @@ public class ArrayConstructCompact extends BuiltInFunction {
         return CONSTRUCT.evaluate(present);
     }
 
-    @Override public int getMinArgCount() { return 0; }
-    @Override public int getMaxArgCount() { return Integer.MAX_VALUE; }
+    @Override
+    public int getMinArgCount() { return 0; }
+    @Override
+    public int getMaxArgCount() { return Integer.MAX_VALUE; }
 }

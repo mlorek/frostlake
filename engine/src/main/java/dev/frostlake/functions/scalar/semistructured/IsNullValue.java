@@ -27,14 +27,16 @@ public class IsNullValue extends StructuredArgumentFunction {
 
     @Override
     public Object evaluate(final List<Object> args) {
-        Object v = args.get(0);
+        final Object v = args.get(0);
         // A SQL NULL input yields SQL NULL; only a JSON null (which now arrives as the VARIANT text "null",
         // not a Java null) yields TRUE (Snowflake). A missing JSON value is a SQL NULL, so it yields NULL too.
         if (v == null) return null;
-        JsonNode node = JsonTypeHelper.parse(v);
+        final JsonNode node = JsonTypeHelper.parse(v);
         return node != null && node.isNull();
     }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return 1; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return 1; }
 }

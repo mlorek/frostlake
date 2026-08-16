@@ -34,26 +34,35 @@ public class DateTrunc extends BuiltInFunction {
     @Override
     public Object evaluate(final List<Object> args) {
         if (args.get(1) == null) return null;
-        final String unit = args.get(0).toString().toUpperCase().replaceAll("S$", "");
+        final String unit = SharedFunctionHelpers.stripPluralS(args.get(0).toString().toUpperCase());
         final LocalDateTime dt = SharedFunctionHelpers.toLocalDateTime(args.get(1));
         final LocalDateTime result;
         boolean dayOrLarger = true;
         switch (unit) {
-            case "YEAR": case "YYYY": case "Y": result = dt.withDayOfYear(1).truncatedTo(ChronoUnit.DAYS); break;
+            case "YEAR": case "YYYY": case "Y": result = dt.withDayOfYear(1).truncatedTo(ChronoUnit.DAYS);
+            break;
             case "QUARTER": case "Q": {
                 final int m = ((dt.getMonthValue() - 1) / 3) * 3 + 1;
                 result = dt.withMonth(m).withDayOfMonth(1).truncatedTo(ChronoUnit.DAYS);
                 break;
             }
-            case "MONTH": case "MM": result = dt.withDayOfMonth(1).truncatedTo(ChronoUnit.DAYS); break;
+            case "MONTH": case "MM": result = dt.withDayOfMonth(1).truncatedTo(ChronoUnit.DAYS);
+            break;
             case "WEEK": case "WK": {
                 result = dt.with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY)).truncatedTo(ChronoUnit.DAYS);
                 break;
             }
-            case "DAY": case "DD": result = dt.truncatedTo(ChronoUnit.DAYS); break;
-            case "HOUR": case "H":  result = dt.truncatedTo(ChronoUnit.HOURS); dayOrLarger = false; break;
-            case "MINUTE": case "MIN": result = dt.truncatedTo(ChronoUnit.MINUTES); dayOrLarger = false; break;
-            case "SECOND": case "SEC": result = dt.truncatedTo(ChronoUnit.SECONDS); dayOrLarger = false; break;
+            case "DAY": case "DD": result = dt.truncatedTo(ChronoUnit.DAYS);
+            break;
+            case "HOUR": case "H":  result = dt.truncatedTo(ChronoUnit.HOURS);
+            dayOrLarger = false;
+            break;
+            case "MINUTE": case "MIN": result = dt.truncatedTo(ChronoUnit.MINUTES);
+            dayOrLarger = false;
+            break;
+            case "SECOND": case "SEC": result = dt.truncatedTo(ChronoUnit.SECONDS);
+            dayOrLarger = false;
+            break;
             default: throw new RuntimeException("Unsupported unit for DATE_TRUNC: " + unit);
         }
         // A DATE-only input keeps DATE type for a day-or-larger unit; a sub-day truncation or a timestamp
@@ -64,6 +73,8 @@ public class DateTrunc extends BuiltInFunction {
         return result;
     }
 
-    @Override public int getMinArgCount() { return 2; }
-    @Override public int getMaxArgCount() { return 2; }
+    @Override
+    public int getMinArgCount() { return 2; }
+    @Override
+    public int getMaxArgCount() { return 2; }
 }

@@ -40,8 +40,10 @@ public class ListAgg extends AggregateFunction {
     @Override
     public Object evaluate(final List<Object> args) { return null; }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return 2; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return 2; }
 
     /**
      * LISTAGG joins its input as text, so neither position takes a semi-structured value. Live

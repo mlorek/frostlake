@@ -50,15 +50,15 @@ public class NextVal extends BuiltInFunction {
         }
 
         // Resolve sequence from current schema
-        String dbName = catalog.getCurrentDatabase();
-        String schemaName = catalog.getCurrentSchema();
+        final String dbName = catalog.getCurrentDatabase();
+        final String schemaName = catalog.getCurrentSchema();
 
         if (dbName == null || schemaName == null) {
             throw new RuntimeException("No database or schema selected");
         }
 
         try {
-            Sequence sequence = catalog.getDatabase(dbName).getSchema(schemaName).getSequence(sequenceName);
+            final Sequence sequence = catalog.getDatabase(dbName).getSchema(schemaName).getSequence(sequenceName);
             return sequence.nextVal();
         } catch (final Exception e) {
             throw new RuntimeException("Failed to get next value from sequence '" + sequenceName + "': " + e.getMessage(), e);

@@ -18,21 +18,28 @@ package dev.frostlake.functions.scalar.datetime;
 
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
-import dev.frostlake.types.NumericType;
+import dev.frostlake.types.IntegerResultWidths;
 
 import java.time.LocalDateTime;
 import java.time.temporal.ChronoUnit;
 import java.util.List;
 
 public class DateDiff extends BuiltInFunction {
-    public DateDiff() { super("DATEDIFF", NumericType.INTEGER); }
+    public DateDiff() { super("DATEDIFF", IntegerResultWidths.POSITION); }
+
+    /** A TIME value anchors on the epoch day; toString would drop zero seconds. */
+    private static LocalDateTime anchored(final Object v) {
+        return v instanceof java.time.LocalTime
+            ? java.time.LocalDate.EPOCH.atTime((java.time.LocalTime) v)
+            : SharedFunctionHelpers.toLocalDateTime(v);
+    }
 
     @Override
     public Object evaluate(final List<Object> args) {
         if (args.get(1) == null || args.get(2) == null) return null;
-        String unit = args.get(0).toString().toUpperCase().replaceAll("S$", "");
-        LocalDateTime start = SharedFunctionHelpers.toLocalDateTime(args.get(1));
-        LocalDateTime end   = SharedFunctionHelpers.toLocalDateTime(args.get(2));
+        final String unit = SharedFunctionHelpers.stripPluralS(args.get(0).toString().toUpperCase());
+        final LocalDateTime start = anchored(args.get(1));
+        final LocalDateTime end   = anchored(args.get(2));
         // Snowflake DATEDIFF counts unit BOUNDARIES crossed, not elapsed whole units: both operands are
         // truncated to the unit first, so DATEDIFF(DAY, '23:00', '01:00 next day') = 1 and
         // DATEDIFF(HOUR, 10:59, 11:01) = 1. Weeks start on Monday (default WEEK_START).
@@ -63,6 +70,8 @@ public class DateDiff extends BuiltInFunction {
         }
     }
 
-    @Override public int getMinArgCount() { return 3; }
-    @Override public int getMaxArgCount() { return 3; }
+    @Override
+    public int getMinArgCount() { return 3; }
+    @Override
+    public int getMaxArgCount() { return 3; }
 }

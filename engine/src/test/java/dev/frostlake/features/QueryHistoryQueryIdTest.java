@@ -44,11 +44,11 @@ public class QueryHistoryQueryIdTest extends BaseDatabaseTest {
         engine.executeQuery("SELECT 1 as value");
 
         // Get the last query ID
-        ResultSet lastQueryIdResult = engine.executeQuery("SELECT LAST_QUERY_ID() as query_id");
-        String lastQueryId = (String) lastQueryIdResult.getRows().get(0).getValues().get(0);
+        final ResultSet lastQueryIdResult = engine.executeQuery("SELECT LAST_QUERY_ID() as query_id");
+        final String lastQueryId = (String) lastQueryIdResult.getRows().get(0).getValues().get(0);
 
         // Get the query ID from history
-        ResultSet historyResult = engine.executeQuery("""
+        final ResultSet historyResult = engine.executeQuery("""
             SELECT query_id
             FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY())
             WHERE query_text = 'SELECT 1 as value'
@@ -59,7 +59,7 @@ public class QueryHistoryQueryIdTest extends BaseDatabaseTest {
         assertNotNull(historyResult);
         assertEquals(1, historyResult.getRowCount());
 
-        String historyQueryId = (String) historyResult.getRows().get(0).getValues().get(0);
+        final String historyQueryId = (String) historyResult.getRows().get(0).getValues().get(0);
 
         // They should match
         assertEquals(lastQueryId, historyQueryId,
@@ -76,13 +76,13 @@ public class QueryHistoryQueryIdTest extends BaseDatabaseTest {
 
         // Execute first query
         engine.executeQuery("SELECT 100");
-        ResultSet result1 = engine.executeQuery("SELECT LAST_QUERY_ID() as qid");
-        String queryId1 = (String) result1.getRows().get(0).getValues().get(0);
+        final ResultSet result1 = engine.executeQuery("SELECT LAST_QUERY_ID() as qid");
+        final String queryId1 = (String) result1.getRows().get(0).getValues().get(0);
 
         // Execute second query
         engine.executeQuery("SELECT 200");
-        ResultSet result2 = engine.executeQuery("SELECT LAST_QUERY_ID() as qid");
-        String queryId2 = (String) result2.getRows().get(0).getValues().get(0);
+        final ResultSet result2 = engine.executeQuery("SELECT LAST_QUERY_ID() as qid");
+        final String queryId2 = (String) result2.getRows().get(0).getValues().get(0);
 
         // Query IDs should be different
         assertNotNull(queryId1);
@@ -91,7 +91,7 @@ public class QueryHistoryQueryIdTest extends BaseDatabaseTest {
         logger.info("Query ID 2: {}", queryId2);
 
         // Verify both are in history with correct IDs
-        ResultSet history = engine.executeQuery("""
+        final ResultSet history = engine.executeQuery("""
             SELECT query_id, query_text
             FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY())
             WHERE query_text IN ('SELECT 100', 'SELECT 200')
@@ -100,8 +100,8 @@ public class QueryHistoryQueryIdTest extends BaseDatabaseTest {
 
         assertEquals(2, history.getRowCount());
 
-        String historyQid1 = (String) history.getRows().get(0).getValues().get(0);
-        String historyQid2 = (String) history.getRows().get(1).getValues().get(0);
+        final String historyQid1 = (String) history.getRows().get(0).getValues().get(0);
+        final String historyQid2 = (String) history.getRows().get(1).getValues().get(0);
 
         assertEquals(queryId1, historyQid1, "First query ID should match");
         assertEquals(queryId2, historyQid2, "Second query ID should match");
@@ -121,15 +121,15 @@ public class QueryHistoryQueryIdTest extends BaseDatabaseTest {
 
         // Create table and insert
         engine.execute("CREATE TABLE test_qid (id INTEGER)");
-        ResultSet createQueryId = engine.executeQuery("SELECT LAST_QUERY_ID() as qid");
-        String createQid = (String) createQueryId.getRows().get(0).getValues().get(0);
+        final ResultSet createQueryId = engine.executeQuery("SELECT LAST_QUERY_ID() as qid");
+        final String createQid = (String) createQueryId.getRows().get(0).getValues().get(0);
 
         engine.execute("INSERT INTO test_qid VALUES (1)");
-        ResultSet insertQueryId = engine.executeQuery("SELECT LAST_QUERY_ID() as qid");
-        String insertQid = (String) insertQueryId.getRows().get(0).getValues().get(0);
+        final ResultSet insertQueryId = engine.executeQuery("SELECT LAST_QUERY_ID() as qid");
+        final String insertQid = (String) insertQueryId.getRows().get(0).getValues().get(0);
 
         // Verify in history
-        ResultSet history = engine.executeQuery("""
+        final ResultSet history = engine.executeQuery("""
             SELECT query_id, query_type
             FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY())
             WHERE query_type IN ('CREATE', 'INSERT')
@@ -138,8 +138,8 @@ public class QueryHistoryQueryIdTest extends BaseDatabaseTest {
 
         assertEquals(2, history.getRowCount());
 
-        String historyCreateQid = (String) history.getRows().get(0).getValues().get(0);
-        String historyInsertQid = (String) history.getRows().get(1).getValues().get(0);
+        final String historyCreateQid = (String) history.getRows().get(0).getValues().get(0);
+        final String historyInsertQid = (String) history.getRows().get(1).getValues().get(0);
 
         assertEquals(createQid, historyCreateQid, "CREATE query ID should match");
         assertEquals(insertQid, historyInsertQid, "INSERT query ID should match");
@@ -161,7 +161,7 @@ public class QueryHistoryQueryIdTest extends BaseDatabaseTest {
         engine.execute("DELETE FROM qid_test WHERE id > 11");
 
         // Verify all have non-null query IDs
-        ResultSet history = engine.executeQuery("""
+        final ResultSet history = engine.executeQuery("""
             SELECT query_id, query_type
             FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY())
             WHERE query_id IS NOT NULL
@@ -171,7 +171,7 @@ public class QueryHistoryQueryIdTest extends BaseDatabaseTest {
         assertTrue(history.getRowCount() >= 5);
 
         for (int i = 0; i < history.getRowCount(); i++) {
-            String queryId = (String) history.getRows().get(i).getValues().get(0);
+            final String queryId = (String) history.getRows().get(i).getValues().get(0);
             assertNotNull(queryId, "Query ID should not be null");
             assertFalse(queryId.isEmpty());
         }
@@ -189,20 +189,20 @@ public class QueryHistoryQueryIdTest extends BaseDatabaseTest {
         engine.executeQuery("SELECT 42 as answer");
 
         // Get the last query ID
-        ResultSet lastQueryIdResult = engine.executeQuery("SELECT LAST_QUERY_ID() as qid");
-        String lastQueryId = (String) lastQueryIdResult.getRows().get(0).getValues().get(0);
+        final ResultSet lastQueryIdResult = engine.executeQuery("SELECT LAST_QUERY_ID() as qid");
+        final String lastQueryId = (String) lastQueryIdResult.getRows().get(0).getValues().get(0);
 
         // Use RESULT_SCAN with the same query ID
-        ResultSet resultScan = engine.executeQuery("SELECT * FROM TABLE(RESULT_SCAN('" + lastQueryId + "'))");
+        final ResultSet resultScan = engine.executeQuery("SELECT * FROM TABLE(RESULT_SCAN('" + lastQueryId + "'))");
 
         assertNotNull(resultScan);
         assertEquals(1, resultScan.getRowCount());
 
-        Object value = resultScan.getRows().get(0).getValues().get(0);
+        final Object value = resultScan.getRows().get(0).getValues().get(0);
         assertEquals(42L, ((Number) value).longValue());
 
         // Verify the query ID is in history
-        ResultSet history = engine.executeQuery("""
+        final ResultSet history = engine.executeQuery("""
             SELECT query_id
             FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY())
             WHERE query_text = 'SELECT 42 as answer'
@@ -210,7 +210,7 @@ public class QueryHistoryQueryIdTest extends BaseDatabaseTest {
             """);
 
         assertEquals(1, history.getRowCount());
-        String historyQueryId = (String) history.getRows().get(0).getValues().get(0);
+        final String historyQueryId = (String) history.getRows().get(0).getValues().get(0);
 
         assertEquals(lastQueryId, historyQueryId, "Query IDs should match");
 
@@ -231,11 +231,11 @@ public class QueryHistoryQueryIdTest extends BaseDatabaseTest {
         }
 
         // The failed query should still have gotten a query ID from the cache
-        ResultSet lastQueryIdResult = engine.executeQuery("SELECT LAST_QUERY_ID() as qid");
-        String lastQueryId = (String) lastQueryIdResult.getRows().get(0).getValues().get(0);
+        final ResultSet lastQueryIdResult = engine.executeQuery("SELECT LAST_QUERY_ID() as qid");
+        final String lastQueryId = (String) lastQueryIdResult.getRows().get(0).getValues().get(0);
 
         // Check history
-        ResultSet history = engine.executeQuery("""
+        final ResultSet history = engine.executeQuery("""
             SELECT query_id, execution_status
             FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY())
             WHERE execution_status = 'FAILED'
@@ -244,7 +244,7 @@ public class QueryHistoryQueryIdTest extends BaseDatabaseTest {
             """);
 
         if (history.getRowCount() > 0) {
-            String historyQueryId = (String) history.getRows().get(0).getValues().get(0);
+            final String historyQueryId = (String) history.getRows().get(0).getValues().get(0);
             assertNotNull(historyQueryId, "Failed query should have a query ID");
             logger.info("Failed query has query ID: {}", historyQueryId);
         }

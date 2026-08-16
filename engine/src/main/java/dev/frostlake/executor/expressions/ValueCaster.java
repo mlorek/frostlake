@@ -38,7 +38,7 @@ final class ValueCaster {
         }
 
         String baseType = targetType.toUpperCase();
-        int parenIndex = baseType.indexOf('(');
+        final int parenIndex = baseType.indexOf('(');
         if (parenIndex > 0) {
             baseType = baseType.substring(0, parenIndex).trim();
         }
@@ -84,7 +84,7 @@ final class ValueCaster {
                 if (value instanceof Boolean) {
                     return value;
                 }
-                String strVal = value.toString().trim().toUpperCase();
+                final String strVal = value.toString().trim().toUpperCase();
                 return strVal.equals("TRUE") || strVal.equals("1") || strVal.equals("T");
 
             case ARRAY:

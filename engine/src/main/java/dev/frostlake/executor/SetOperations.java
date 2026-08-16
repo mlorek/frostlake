@@ -74,15 +74,15 @@ public final class SetOperations {
         final List<Row> rightRows = coerceToFirstBranchTypes(leftRows, rightRowsRaw, leadingColumns);
         if (all) {
             // UNION ALL: keep all rows
-            List<Row> result = new ArrayList<>(leftRows);
+            final List<Row> result = new ArrayList<>(leftRows);
             result.addAll(rightRows);
             return result;
         }
 
         // UNION: distinct rows — left in order, then rows from right not already present.
         final SetOpColumnCoercion[] coercions = columnCoercions(leftRows, rightRows);
-        List<Row> result = new ArrayList<>();
-        Set<List<Object>> seen = new HashSet<>();
+        final List<Row> result = new ArrayList<>();
+        final Set<List<Object>> seen = new HashSet<>();
         for (final Row row : leftRows) {
             if (seen.add(rowKey(row, coercions))) {
                 result.add(row);
@@ -247,8 +247,12 @@ public final class SetOperations {
         return value;
     }
 
-    /** One later-branch STRING converted to the leading branch's runtime type, or null to leave it. */
-    private static Object coerceStringToLeadingType(final Object leading, final String text) {
+    /**
+     * One later-branch STRING converted to the leading branch's runtime type, or null to leave it.
+     * Shared with the ordering conditionals (GREATEST / LEAST), which coerce a string operand toward
+     * the other family exactly as a set operation's arms do — same rule, same sentences.
+     */
+    public static Object coerceStringToLeadingType(final Object leading, final String text) {
         if (leading instanceof Boolean) {
             return toBooleanBranchValue(text);
         }
@@ -364,14 +368,14 @@ public final class SetOperations {
             return emptyLeftResult();
         }
         final SetOpColumnCoercion[] coercions = columnCoercions(leftRows, rightRows);
-        List<Row> result = new ArrayList<>();
+        final List<Row> result = new ArrayList<>();
 
         if (all) {
             // INTERSECT ALL: for each left row, include min(count_left, count_right) occurrences.
-            Map<List<Object>, Integer> rightCounts = countByKey(rightRows, coercions);
+            final Map<List<Object>, Integer> rightCounts = countByKey(rightRows, coercions);
             for (final Row leftRow : leftRows) {
-                List<Object> key = rowKey(leftRow, coercions);
-                Integer remaining = rightCounts.get(key);
+                final List<Object> key = rowKey(leftRow, coercions);
+                final Integer remaining = rightCounts.get(key);
                 if (remaining != null && remaining > 0) {
                     result.add(leftRow);
                     rightCounts.put(key, remaining - 1);
@@ -379,10 +383,10 @@ public final class SetOperations {
             }
         } else {
             // INTERSECT: distinct left rows that also exist in right.
-            Set<List<Object>> rightKeys = keySet(rightRows, coercions);
-            Set<List<Object>> seen = new HashSet<>();
+            final Set<List<Object>> rightKeys = keySet(rightRows, coercions);
+            final Set<List<Object>> seen = new HashSet<>();
             for (final Row leftRow : leftRows) {
-                List<Object> key = rowKey(leftRow, coercions);
+                final List<Object> key = rowKey(leftRow, coercions);
                 if (rightKeys.contains(key) && seen.add(key)) {
                     result.add(leftRow);
                 }
@@ -401,14 +405,14 @@ public final class SetOperations {
             return emptyLeftResult();
         }
         final SetOpColumnCoercion[] coercions = columnCoercions(leftRows, rightRows);
-        List<Row> result = new ArrayList<>();
+        final List<Row> result = new ArrayList<>();
 
         if (all) {
             // EXCEPT ALL: include each left row unless a remaining right occurrence cancels it.
-            Map<List<Object>, Integer> rightCounts = countByKey(rightRows, coercions);
+            final Map<List<Object>, Integer> rightCounts = countByKey(rightRows, coercions);
             for (final Row leftRow : leftRows) {
-                List<Object> key = rowKey(leftRow, coercions);
-                Integer remaining = rightCounts.get(key);
+                final List<Object> key = rowKey(leftRow, coercions);
+                final Integer remaining = rightCounts.get(key);
                 if (remaining != null && remaining > 0) {
                     rightCounts.put(key, remaining - 1);
                 } else {
@@ -417,10 +421,10 @@ public final class SetOperations {
             }
         } else {
             // EXCEPT: distinct left rows that do not exist in right.
-            Set<List<Object>> rightKeys = keySet(rightRows, coercions);
-            Set<List<Object>> seen = new HashSet<>();
+            final Set<List<Object>> rightKeys = keySet(rightRows, coercions);
+            final Set<List<Object>> seen = new HashSet<>();
             for (final Row leftRow : leftRows) {
-                List<Object> key = rowKey(leftRow, coercions);
+                final List<Object> key = rowKey(leftRow, coercions);
                 if (!rightKeys.contains(key) && seen.add(key)) {
                     result.add(leftRow);
                 }
@@ -436,8 +440,8 @@ public final class SetOperations {
      */
     public static List<Row> applyDistinct(final List<Row> rows) {
         final SetOpColumnCoercion[] coercions = columnCoercions(rows, null);
-        List<Row> distinctRows = new ArrayList<>();
-        Set<List<Object>> seen = new HashSet<>();
+        final List<Row> distinctRows = new ArrayList<>();
+        final Set<List<Object>> seen = new HashSet<>();
         for (final Row row : rows) {
             if (seen.add(rowKey(row, coercions))) {
                 distinctRows.add(row);
@@ -462,9 +466,10 @@ public final class SetOperations {
         return key;
     }
 
+
     /** Distinct set of row keys (membership tests for INTERSECT/EXCEPT). */
     static Set<List<Object>> keySet(final List<Row> rows, final SetOpColumnCoercion[] coercions) {
-        Set<List<Object>> keys = new HashSet<>();
+        final Set<List<Object>> keys = new HashSet<>();
         for (final Row row : rows) {
             keys.add(rowKey(row, coercions));
         }
@@ -473,10 +478,10 @@ public final class SetOperations {
 
     /** Multiset of row keys (occurrence counts) for the ALL variants of INTERSECT/EXCEPT. */
     static Map<List<Object>, Integer> countByKey(final List<Row> rows, final SetOpColumnCoercion[] coercions) {
-        Map<List<Object>, Integer> counts = new HashMap<>();
+        final Map<List<Object>, Integer> counts = new HashMap<>();
         for (final Row row : rows) {
-            List<Object> key = rowKey(row, coercions);
-            Integer c = counts.get(key);
+            final List<Object> key = rowKey(row, coercions);
+            final Integer c = counts.get(key);
             counts.put(key, c == null ? 1 : c + 1);
         }
         return counts;

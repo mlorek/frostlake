@@ -16,38 +16,27 @@
 
 package dev.frostlake.features;
 
-import dev.frostlake.DatabaseEngine;
+import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 
-public class LateralFlattenTest {
+public class LateralFlattenTest extends BaseDatabaseTest {
 
-    private DatabaseEngine engine;
-
-    @BeforeEach
-    public void setUp() {
-        engine = new DatabaseEngine();
+    @Override
+    protected void setupTest() {
         engine.execute("CREATE DATABASE IF NOT EXISTS test_db");
-        engine.execute("USE DATABASE test_db");
-        engine.execute("USE SCHEMA public");
         engine.execute("CREATE TABLE events (id INTEGER, tags VARIANT)");
         engine.execute("INSERT INTO events SELECT 1, PARSE_JSON('[\"a\",\"b\",\"c\"]')");
         engine.execute("INSERT INTO events SELECT 2, PARSE_JSON('[\"x\",\"y\"]')");
     }
 
-    @AfterEach
-    public void tearDown() {
-        if (engine != null) engine.shutdown();
-    }
-
     @Test
     public void testLateralFlattenShorthand() {
         // LATERAL FLATTEN without TABLE(...)
-        ResultSet rs = engine.executeQuery(
+        final ResultSet rs = engine.executeQuery(
             "SELECT e.id, f.value FROM events e, LATERAL FLATTEN(INPUT => e.tags) f ORDER BY e.id, f.value");
         assertNotNull(rs);
         assertEquals(5, rs.getRowCount());
@@ -64,7 +53,7 @@ public class LateralFlattenTest {
         } catch (final RuntimeException expected) {
             assertNotNull(expected.getMessage());
         }
-        ResultSet rs = engine.executeQuery(
+        final ResultSet rs = engine.executeQuery(
             "SELECT e.id, f.value FROM events e, LATERAL FLATTEN(INPUT => e.tags) f ORDER BY e.id, f.value");
         assertNotNull(rs);
         assertEquals(5, rs.getRowCount());

@@ -55,6 +55,8 @@ public class LastDay extends BuiltInFunction {
         return LocalDate.of(d.getYear(), lastMonthOfQuarter, 1).with(TemporalAdjusters.lastDayOfMonth());
     }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return 2; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return 2; }
 }

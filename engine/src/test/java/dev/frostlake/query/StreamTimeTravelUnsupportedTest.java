@@ -68,10 +68,12 @@ public class StreamTimeTravelUnsupportedTest extends BaseDatabaseTest {
 
     @Test
     public void timeTravelOnRegularTableIsUnaffected() {
+        // OFFSET => 0 (now): a negative offset would race the table's own creation instant, which
+        // time travel refuses on any transport once the offset reaches back past it.
         assertDoesNotThrow(new Executable() {
             @Override
             public void execute() {
-                engine.executeQuery("SELECT * FROM base AT(OFFSET => -1)");
+                engine.executeQuery("SELECT * FROM base AT(OFFSET => 0)");
             }
         });
     }

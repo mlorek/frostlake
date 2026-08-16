@@ -29,8 +29,6 @@ import dev.frostlake.security.SecurityManager;
 import dev.frostlake.storage.Row;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 import org.antlr.v4.runtime.CharStreams;
 import org.antlr.v4.runtime.CommonTokenStream;
 import org.antlr.v4.runtime.Token;
@@ -63,7 +61,7 @@ final class MaskingPolicyApplier {
     List<String> applyMaskingPolicies(final List<String> exprs, final Table table) {
         final SecurityManager securityManager = executor.getSecurityManager();
         if (securityManager == null) return exprs;
-        String role = securityManager.getSessionContext().getCurrentRole();
+        final String role = securityManager.getSessionContext().getCurrentRole();
         // ACCOUNTADMIN and SYSADMIN see unmasked data
         if ("ACCOUNTADMIN".equalsIgnoreCase(role) || "SYSADMIN".equalsIgnoreCase(role)) return exprs;
 
@@ -159,18 +157,18 @@ final class MaskingPolicyApplier {
     private String resolveMaskingPolicyBody(final String policyQualifiedName, final String columnExpr, final String tableName) {
         final Catalog catalog = executor.getCatalog();
         try {
-            String[] parts = QualifiedName.parse(policyQualifiedName).parts();
-            Schema schema = parts.length == 1 ? catalog.getDatabase(catalog.getCurrentDatabase())
+            final String[] parts = QualifiedName.parse(policyQualifiedName).parts();
+            final Schema schema = parts.length == 1 ? catalog.getDatabase(catalog.getCurrentDatabase())
                     .getSchema(catalog.getCurrentSchema())
                 : parts.length == 2 ? catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0])
                 : catalog.getDatabase(parts[0]).getSchema(parts[1]);
-            String pname = parts[parts.length - 1].toUpperCase();
-            MaskingPolicy policy = schema.getMaskingPolicy(pname);
+            final String pname = parts[parts.length - 1].toUpperCase();
+            final MaskingPolicy policy = schema.getMaskingPolicy(pname);
             if (policy == null) return null;
             // Substitute the first parameter name with the actual column expression
             String body = policy.getBody();
             if (!policy.getParameters().isEmpty()) {
-                String paramName = policy.getParameters().get(0).getName();
+                final String paramName = policy.getParameters().get(0).getName();
                 body = SqlIdentifierSubstitution.substitute(body, paramName, columnExpr);
             }
             // Resolve tag-context functions against the column/table being masked.
@@ -189,16 +187,44 @@ final class MaskingPolicyApplier {
         return out;
     }
 
+    /**
+     * Locates {@code SYSTEM$<fnName>('<tag>')} by TOKEN shape (word, '(', string literal, ')') and
+     * splices the rewritten call over the original character span — a regex over the body text broke
+     * on an escaped quote inside the tag literal ({@code 'o''brien_tag'}) and on a comment before
+     * the argument, both of which the lexer handles for free.
+     */
     private String rewriteTagFn(final String body, final String fnName, final String objectName, final String domain) {
-        final Matcher m = Pattern.compile("SYSTEM\\$" + fnName + "\\s*\\(\\s*('[^']*')\\s*\\)", Pattern.CASE_INSENSITIVE).matcher(body);
-        final StringBuilder sb = new StringBuilder();
-        while (m.find()) {
-            final String tagArg = m.group(1);
-            m.appendReplacement(sb, Matcher.quoteReplacement(
-                "SYSTEM$GET_TAG(" + tagArg + ", '" + objectName + "', '" + domain + "')"));
+        final FrostlakeLexer lexer = new FrostlakeLexer(CharStreams.fromString(body));
+        lexer.removeErrorListeners();
+        final CommonTokenStream stream = new CommonTokenStream(lexer);
+        stream.fill();
+        final List<Token> toks = stream.getTokens();
+        final String target = "SYSTEM$" + fnName;
+        final StringBuilder out = new StringBuilder(body.length());
+        int cursor = 0;
+        for (int i = 0; i < toks.size(); i++) {
+            final Token t = toks.get(i);
+            if (t.getType() == Token.EOF) {
+                break;
+            }
+            if (!SqlTokens.isWord(t) || !t.getText().equalsIgnoreCase(target)) {
+                continue;
+            }
+            if (i + 3 >= toks.size()
+                    || toks.get(i + 1).getType() != FrostlakeLexer.LPAREN
+                    || toks.get(i + 2).getType() != FrostlakeLexer.STRING_LITERAL
+                    || toks.get(i + 3).getType() != FrostlakeLexer.RPAREN) {
+                continue;
+            }
+            final String tagArg = toks.get(i + 2).getText();
+            out.append(body, cursor, t.getStartIndex());
+            out.append("SYSTEM$GET_TAG(").append(tagArg).append(", '").append(objectName)
+                .append("', '").append(domain).append("')");
+            cursor = toks.get(i + 3).getStopIndex() + 1;
+            i += 3;
         }
-        m.appendTail(sb);
-        return sb.toString();
+        out.append(body, cursor, body.length());
+        return out.toString();
     }
 
     /**
@@ -210,27 +236,27 @@ final class MaskingPolicyApplier {
         if (!table.hasRowAccessPolicy()) return rows;
         final SecurityManager securityManager = executor.getSecurityManager();
         if (securityManager == null) return rows;
-        String role = securityManager.getSessionContext().getCurrentRole();
+        final String role = securityManager.getSessionContext().getCurrentRole();
         if ("ACCOUNTADMIN".equalsIgnoreCase(role) || "SYSADMIN".equalsIgnoreCase(role)) return rows;
 
         final Catalog catalog = executor.getCatalog();
         try {
-            String[] parts = table.getRowAccessPolicyName().split("\\.");
-            Schema schema = parts.length == 1 ? catalog.getDatabase(catalog.getCurrentDatabase())
+            final String[] parts = table.getRowAccessPolicyName().split("\\.");
+            final Schema schema = parts.length == 1 ? catalog.getDatabase(catalog.getCurrentDatabase())
                     .getSchema(catalog.getCurrentSchema())
                 : parts.length == 2 ? catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0])
                 : catalog.getDatabase(parts[0]).getSchema(parts[1]);
-            String pname = parts[parts.length - 1].toUpperCase();
-            RowAccessPolicy policy = schema.getRowAccessPolicy(pname);
+            final String pname = parts[parts.length - 1].toUpperCase();
+            final RowAccessPolicy policy = schema.getRowAccessPolicy(pname);
             if (policy == null) return rows;
 
             // Build predicate by substituting policy parameters with actual column names
             String body = policy.getBody();
-            List<String> policyCols = table.getRowAccessPolicyColumns();
-            List<Parameter> params = policy.getParameters();
+            final List<String> policyCols = table.getRowAccessPolicyColumns();
+            final List<Parameter> params = policy.getParameters();
             for (int i = 0; i < Math.min(params.size(), policyCols.size()); i++) {
-                String paramName = params.get(i).getName();
-                String colRef = policyCols.get(i);
+                final String paramName = params.get(i).getName();
+                final String colRef = policyCols.get(i);
                 body = SqlIdentifierSubstitution.substitute(body, paramName, colRef);
             }
 

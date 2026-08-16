@@ -24,13 +24,28 @@ package dev.frostlake.executor.expressions;
 public class BindVariableExpression implements Expression {
 
     private final String varName;
+    private final SourcePosition position;
 
     public BindVariableExpression(final String varName) {
+        this(varName, null);
+    }
+
+    public BindVariableExpression(final String varName, final SourcePosition position) {
         this.varName = varName;
+        this.position = position;
     }
 
     public String getVarName() {
         return varName;
+    }
+
+    /**
+     * Where the reference begins, relative to the fragment being parsed — the COLON's offset, which
+     * is what live reports for an unresolvable one: {@code :nope} in
+     * {@code BEGIN RETURN :nope; END} is position 13, the colon, not the name after it.
+     */
+    public SourcePosition getPosition() {
+        return position;
     }
 
     @Override

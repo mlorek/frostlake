@@ -33,6 +33,8 @@ public class ToGeography extends BuiltInFunction {
         return GeoShapes.parse(args.get(0).toString(), true);
     }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return 2; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return 2; }
 }

@@ -34,14 +34,16 @@ public class IsVarchar extends StructuredArgumentFunction {
             }
         }
         if (args.get(0) == null) return false;
-        Object v = args.get(0);
+        final Object v = args.get(0);
         // Try to parse as JSON first — PARSE_JSON output arrives as a JSON-encoded string
-        JsonNode node = JsonTypeHelper.parse(v);
+        final JsonNode node = JsonTypeHelper.parse(v);
         if (node != null) return node.isTextual();
         // If not valid JSON, it's a bare Java String = VARCHAR
         return v instanceof String;
     }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return 1; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return 1; }
 }

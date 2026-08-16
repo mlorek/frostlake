@@ -28,30 +28,19 @@ import java.util.List;
 public class Tag extends SqlObject {
 
     private final List<String> allowedValues;
-    private boolean masking;
 
     public Tag(final String name) {
-        this(name, new ArrayList<>(), false, null);
+        this(name, new ArrayList<>(), null);
     }
 
-    public Tag(final String name, final List<String> allowedValues, final boolean masking, final String comment) {
+    public Tag(final String name, final List<String> allowedValues, final String comment) {
         super(name);
         this.allowedValues = new ArrayList<>(allowedValues);
-        this.masking = masking;
         this.comment = comment;
     }
 
     public List<String> getAllowedValues() {
         return new ArrayList<>(allowedValues);
-    }
-
-    public boolean isMasking() {
-        return masking;
-    }
-
-    /** Mark this tag as a masking tag (ALTER TAG … SET MASKING = …). */
-    public void setMasking(final boolean masking) {
-        this.masking = masking;
     }
 
     public void addAllowedValue(final String value) {
@@ -83,13 +72,10 @@ public class Tag extends SqlObject {
 
     @Override
     public String toString() {
-        StringBuilder sb = new StringBuilder();
+        final StringBuilder sb = new StringBuilder();
         sb.append("Tag{name='").append(getName()).append("'");
         if (hasAllowedValues()) {
             sb.append(", allowedValues=").append(allowedValues);
-        }
-        if (masking) {
-            sb.append(", masking=true");
         }
         if (comment != null) {
             sb.append(", comment='").append(comment).append("'");

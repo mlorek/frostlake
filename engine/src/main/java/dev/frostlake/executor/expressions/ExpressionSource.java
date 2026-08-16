@@ -47,6 +47,27 @@ public final class ExpressionSource {
         return previous;
     }
 
+    /**
+     * Note a fragment that lives INSIDE the fragment already in force, composing the two origins.
+     *
+     * <p>Needed wherever a body is re-parsed from its own text and then walked item by item: a view's
+     * definition sits at some offset in the CREATE statement, and each select item sits at some offset
+     * in that definition, so a node's place in the STATEMENT is the two composed. {@link #begin}
+     * replaces the origin outright, which is right for one level and silently wrong for two — the inner
+     * origin would win and the body's own offset would vanish.
+     *
+     * <p>Composition is {@link #resolve}'s arithmetic applied to the origin itself, so the line/column
+     * rule is stated in exactly one place: a fragment starting on the outer fragment's FIRST line is
+     * displaced by its column, one starting later keeps its own.
+     *
+     * @param within where the inner fragment begins, relative to the fragment currently in force
+     * @return whatever origin it displaced, for {@link #end}
+     */
+    public static SourcePosition beginNested(final SourcePosition within) {
+        final SourcePosition composed = ORIGIN.get() == null ? within : resolve(within);
+        return begin(composed);
+    }
+
     /** Put back whatever {@link #begin} displaced; null clears. */
     public static void end(final SourcePosition previous) {
         if (previous == null) {

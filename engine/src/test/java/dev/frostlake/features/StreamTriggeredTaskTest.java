@@ -16,11 +16,10 @@
 
 package dev.frostlake.features;
 
-import dev.frostlake.DatabaseEngine;
+import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
 
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -31,27 +30,18 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
  * data; otherwise the WHEN condition is false and the run is skipped. {@code EXECUTE TASK} triggers a run
  * deterministically (no scheduler timing), and the WHEN condition is re-evaluated on every execution.
  */
-public class StreamTriggeredTaskTest {
+public class StreamTriggeredTaskTest extends BaseDatabaseTest {
 
-    private DatabaseEngine engine;
+    /** Live EXECUTE TASK is asynchronous — the body's rows land after the statement returns, so
+     *  same-statement row-count assertions only hold on the embedded engine. */
+    private static final String LIVE_TASKS_ASYNC =
+        "live EXECUTE TASK runs asynchronously; immediate row counts are embedded-only";
 
-    @BeforeEach
-    public void setUp() {
-        engine = new DatabaseEngine();
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
-        engine.execute("CREATE SCHEMA test_schema");
-        engine.execute("USE SCHEMA test_schema");
+    @Override
+    protected void setupTest() {
         engine.execute("CREATE TABLE src (id INTEGER, name VARCHAR)");
         engine.execute("CREATE STREAM src_stream ON TABLE src");
         engine.execute("CREATE TABLE tgt (id INTEGER, name VARCHAR)");
-    }
-
-    @AfterEach
-    public void tearDown() {
-        if (engine != null) {
-            engine.shutdown();
-        }
     }
 
     private long count(final String table) {
@@ -76,6 +66,7 @@ public class StreamTriggeredTaskTest {
 
     @Test
     public void taskRunsWhenStreamHasData() {
+        Assumptions.assumeFalse(isLiveSnowflake(), LIVE_TASKS_ASYNC);
         engine.execute("""
             CREATE TASK load_tgt
             WAREHOUSE = 'compute_wh'
@@ -92,6 +83,7 @@ public class StreamTriggeredTaskTest {
 
     @Test
     public void whenConditionReevaluatedEachExecution() {
+        Assumptions.assumeFalse(isLiveSnowflake(), LIVE_TASKS_ASYNC);
         engine.execute("""
             CREATE TASK load_tgt
             WAREHOUSE = 'compute_wh'
@@ -111,6 +103,7 @@ public class StreamTriggeredTaskTest {
 
     @Test
     public void streamConsumingTaskBodyLoadsChangedRows() {
+        Assumptions.assumeFalse(isLiveSnowflake(), LIVE_TASKS_ASYNC);
         // The canonical idiom: the body consumes the stream itself.
         engine.execute("""
             CREATE TASK load_tgt

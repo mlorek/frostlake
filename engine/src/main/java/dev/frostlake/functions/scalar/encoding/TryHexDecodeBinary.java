@@ -24,7 +24,7 @@ import java.util.List;
 
 /** TRY_HEX_DECODE_BINARY(string) — HEX_DECODE_BINARY that returns NULL instead of erroring. */
 public class TryHexDecodeBinary extends BuiltInFunction {
-    public TryHexDecodeBinary() { super("TRY_HEX_DECODE_BINARY", BinaryType.BINARY); }
+    public TryHexDecodeBinary() { super("TRY_HEX_DECODE_BINARY", BinaryType.VARBINARY); }
 
     @Override
     public Object evaluate(final List<Object> args) {
@@ -36,6 +36,8 @@ public class TryHexDecodeBinary extends BuiltInFunction {
         }
     }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return 1; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return 1; }
 }

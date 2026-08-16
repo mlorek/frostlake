@@ -26,10 +26,13 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
- * Golden / characterization corpus for expression evaluation — the safety net for the
- * string-evaluator migration. Each assertion captures the CURRENT evaluated behavior of the
- * live engine (whatever path produces it: ANTLR builder or the gated legacy parser). Later
- * migration steps must keep these values unchanged.
+ * Golden / characterization corpus for expression evaluation. Each assertion pins the
+ * evaluated behavior of the ANTLR-driven expression AST; evaluator changes must keep these
+ * values unchanged.
+ *
+ * <p>Deliberately NOT on the live surface: an own-engine golden pin whose value is catching
+ * embedded evaluator drift cheaply — expression semantics themselves are live-verified by the
+ * two-sided suites.
  *
  * <p>Conventions: constant expressions via {@code SELECT <expr>}; predicates via
  * {@code COUNT(*) ... WHERE}; column expressions via the fixture row {@code id = 1}. Numeric
@@ -60,17 +63,17 @@ public class ExpressionGoldenCorpusTest {
     }
 
     private static Object eval(final String expr) {
-        ResultSet rs = engine.executeQuery("SELECT " + expr);
+        final ResultSet rs = engine.executeQuery("SELECT " + expr);
         return rs.getRows().get(0).getValue(0);
     }
 
     private static long countWhere(final String predicate) {
-        ResultSet rs = engine.executeQuery("SELECT COUNT(*) FROM g WHERE " + predicate);
+        final ResultSet rs = engine.executeQuery("SELECT COUNT(*) FROM g WHERE " + predicate);
         return ((Number) rs.getRows().get(0).getValue(0)).longValue();
     }
 
     private static Object evalCol(final String expr) {
-        ResultSet rs = engine.executeQuery("SELECT " + expr + " FROM g WHERE id = 1");
+        final ResultSet rs = engine.executeQuery("SELECT " + expr + " FROM g WHERE id = 1");
         return rs.getRows().get(0).getValue(0);
     }
 
@@ -147,8 +150,8 @@ public class ExpressionGoldenCorpusTest {
         assertEquals(true, eval("15 NOT BETWEEN 1 AND 10"));
         assertEquals(true, eval("'abc' LIKE 'a%'"));
         assertEquals(true, eval("'abc' NOT LIKE 'z%'"));
-        assertEquals(true, eval("(1, 2) IN (3, 4, 1, 2)"));
-        assertEquals(false, eval("(1, 2) IN (3, 4)"));
+        assertEquals(true, eval("(1, 2) IN ((3, 4), (1, 2))"));
+        assertEquals(false, eval("(1, 2) IN ((3, 4))"));
     }
 
     // ---- Predicates over the fixture table ----
@@ -164,7 +167,7 @@ public class ExpressionGoldenCorpusTest {
         assertEquals(1L, countWhere("name LIKE 'A%'"));
         assertEquals(1L, countWhere("name ILIKE 'a%'"));
         assertEquals(2L, countWhere("name NOT LIKE 'A%'"));
-        assertEquals(1L, countWhere("(id, qty) IN (1, 10)"));
+        assertEquals(1L, countWhere("(id, qty) IN ((1, 10))"));
     }
 
     // ---- Column expressions over the fixture row id = 1 ----

@@ -17,7 +17,7 @@
 package dev.frostlake.functions.scalar.string;
 
 import dev.frostlake.functions.TextArgumentFunction;
-import dev.frostlake.types.NumericType;
+import dev.frostlake.types.IntegerResultWidths;
 
 import java.util.List;
 import java.util.regex.Matcher;
@@ -27,7 +27,7 @@ import java.util.regex.Matcher;
  * at or after {@code position} (1-based, default 1). An invalid pattern is an error.
  */
 public class RegexpCount extends TextArgumentFunction {
-    public RegexpCount() { super("REGEXP_COUNT", NumericType.INTEGER); }
+    public RegexpCount() { super("REGEXP_COUNT", IntegerResultWidths.COUNTER); }
 
     @Override
     public Object evaluate(final List<Object> args) {
@@ -60,6 +60,8 @@ public class RegexpCount extends TextArgumentFunction {
         return count;
     }
 
-    @Override public int getMinArgCount() { return 2; }
-    @Override public int getMaxArgCount() { return 4; }
+    @Override
+    public int getMinArgCount() { return 2; }
+    @Override
+    public int getMaxArgCount() { return 4; }
 }

@@ -19,24 +19,36 @@ package dev.frostlake.executor.commands;
 import dev.frostlake.executor.QueryExecutor;
 import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.SqlStringLiterals;
-import dev.frostlake.metastore.*;
-import dev.frostlake.metastore.model.*;
+import dev.frostlake.metastore.Catalog;
+import dev.frostlake.metastore.DroppedObject;
+import dev.frostlake.metastore.QualifiedName;
+import dev.frostlake.metastore.SqlObject;
+import dev.frostlake.metastore.model.ContainerType;
+import dev.frostlake.metastore.model.Database;
+import dev.frostlake.metastore.model.DynamicTable;
+import dev.frostlake.metastore.model.Function;
+import dev.frostlake.metastore.model.MaterializedView;
+import dev.frostlake.metastore.model.Privilege;
+import dev.frostlake.metastore.model.Procedure;
 import dev.frostlake.metastore.model.ScalingPolicy;
-import dev.frostlake.metastore.model.ScheduleType;
-import dev.frostlake.metastore.model.StageType;
+import dev.frostlake.metastore.model.Schema;
+import dev.frostlake.metastore.model.Sequence;
+import dev.frostlake.metastore.model.State;
+import dev.frostlake.metastore.model.Stream;
 import dev.frostlake.metastore.model.StreamSourceType;
 import dev.frostlake.metastore.model.StreamType;
+import dev.frostlake.metastore.model.Table;
+import dev.frostlake.metastore.model.Tag;
+import dev.frostlake.metastore.model.View;
+import dev.frostlake.metastore.model.Warehouse;
 import dev.frostlake.metastore.model.WarehouseSize;
 import dev.frostlake.metastore.model.WarehouseState;
 import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.security.SecurityManager;
-import dev.frostlake.storage.ResultSet;
-import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
 import dev.frostlake.storage.StorageEngine;
 import dev.frostlake.stream.StreamManager;
 import dev.frostlake.task.TaskScheduler;
-import dev.frostlake.types.*;
 import java.time.LocalDateTime;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -88,7 +100,12 @@ public class DDLCommandHandler implements CommandHandler {
         dropHandler.setStreamManager(streamManager);
     }
 
-    /** The shared column/constraint parser, reused by ALTER TABLE ADD COLUMN so it honours DEFAULT / NOT NULL. */
+    /**
+     * The shared column/constraint parser, reused by ALTER TABLE ADD COLUMN so it honours
+     * DEFAULT / NOT NULL.
+     *
+     * @return the column-definition parser this handler and its create handlers share
+     */
     public ColumnDefinitionParser getColumnParser() {
         return columnParser;
     }
@@ -131,13 +148,18 @@ public class DDLCommandHandler implements CommandHandler {
         return extractStringLiteral(ctx.STRING_LITERAL());
     }
 
-    /** DROP statements are handled by {@link DropCommandHandler}. */
+    /**
+     * DROP statements are handled by {@link DropCommandHandler}.
+     *
+     * @param ctx the DROP statement's parse tree, forwarded unchanged
+     * @return the drop handler's result (null — the executor renders the standard status message)
+     */
     public Object handleDropStatement(final FrostlakeParser.DropStatementContext ctx) {
         return dropHandler.handleDropStatement(ctx);
     }
 
     public Object handleCreateStatement(final FrostlakeParser.CreateStatementContext ctx) {
-        boolean ifNotExists = ctx.if_not_exists() != null;
+        final boolean ifNotExists = ctx.if_not_exists() != null;
         if (ifNotExists && ctx.or_replace() != null) {
             // Live-verified Snowflake rejection, for every object type.
             throw new RuntimeException("options IF NOT EXISTS and OR REPLACE are incompatible.");
@@ -180,6 +202,14 @@ public class DDLCommandHandler implements CommandHandler {
                 return securityHandler.handleCreateMaskingPolicy(ctx, ifNotExists);
             } else if (ctx.ROW() != null && ctx.ACCESS() != null && ctx.POLICY() != null) {
                 return securityHandler.handleCreateRowAccessPolicy(ctx, ifNotExists);
+            } else if (ctx.CONTACT() != null) {
+                return securityHandler.handleCreateContact(ctx, ifNotExists);
+            } else if (ctx.PROJECTION() != null && ctx.POLICY() != null) {
+                return securityHandler.handleCreateProjectionPolicy(ctx, ifNotExists);
+            } else if (ctx.AGGREGATION() != null && ctx.POLICY() != null) {
+                return securityHandler.handleCreateAggregationPolicy(ctx, ifNotExists);
+            } else if (ctx.JOIN() != null && ctx.POLICY() != null) {
+                return securityHandler.handleCreateJoinPolicy(ctx, ifNotExists);
             } else if (ctx.FUNCTION() != null) {
                 return routineHandler.handleCreateFunction(ctx, ifNotExists);
             } else if (ctx.PROCEDURE() != null) {
@@ -211,13 +241,13 @@ public class DDLCommandHandler implements CommandHandler {
     }
 
     private Object handleCreateStream(final FrostlakeParser.CreateStatementContext ctx, final boolean ifNotExists) {
-        String streamQualifiedName = getText(ctx.qualifiedName(0));
-        String streamName = extractObjectName(streamQualifiedName).toUpperCase();
-        boolean orReplace = ctx.or_replace() != null;
-        String sourceName = getText(ctx.qualifiedName(1));
+        final String streamQualifiedName = getText(ctx.qualifiedName(0));
+        final String streamName = extractObjectName(streamQualifiedName).toUpperCase();
+        final boolean orReplace = ctx.or_replace() != null;
+        final String sourceName = getText(ctx.qualifiedName(1));
 
         // Determine source type (TABLE or VIEW)
-        StreamSourceType sourceType;
+        final StreamSourceType sourceType;
         if (ctx.TABLE() != null) {
             sourceType = StreamSourceType.TABLE;
         } else if (ctx.VIEW() != null) {
@@ -227,17 +257,17 @@ public class DDLCommandHandler implements CommandHandler {
         }
 
         // Parse qualified source name
-        String[] sourceParts = qualifiedNameParts(ctx.qualifiedName(1));
-        Schema sourceSchema;
-        String sourceObjectName;
+        final String[] sourceParts = qualifiedNameParts(ctx.qualifiedName(1));
+        final Schema sourceSchema;
+        final String sourceObjectName;
 
         if (sourceParts.length == 1) {
             sourceSchema = resolveCurrentSchema();
             sourceObjectName = sourceParts[0];
         } else if (sourceParts.length == 2) {
-            String schemaName = sourceParts[0];
+            final String schemaName = sourceParts[0];
             sourceObjectName = sourceParts[1];
-            String dbName = catalog.getCurrentDatabase();
+            final String dbName = catalog.getCurrentDatabase();
             sourceSchema = catalog.getDatabase(dbName).getSchema(schemaName);
         } else {
             throw new RuntimeException("Invalid qualified name: " + sourceName);
@@ -247,10 +277,13 @@ public class DDLCommandHandler implements CommandHandler {
         View sourceView = null;
         if (sourceType == StreamSourceType.TABLE) {
             // Check if table exists
-            Table table = sourceSchema.getTable(sourceObjectName);
+            final Table table = sourceSchema.getTable(sourceObjectName);
             if (table == null) {
                 throw new RuntimeException(SqlCompilationError.doesNotExist("Table", sourceName));
             }
+            // Creating a stream enables change tracking on its base table implicitly (SHOW TABLES
+            // flips change_tracking OFF→ON), live-verified — and it stays on after the stream goes.
+            table.setChangeTracking(true);
         } else {
             // Check if view exists. Snowflake words this one specifically — live-verified on a real
             // account: CREATE STREAM s ON VIEW non_existent_view fails "SQL compilation
@@ -283,18 +316,18 @@ public class DDLCommandHandler implements CommandHandler {
                 }
             }
 
-            StreamType type = appendOnly ? StreamType.APPEND_ONLY : StreamType.STANDARD;
-            Stream stream = new Stream(streamName, sourceName, sourceType, type, showInitialRows);
+            final StreamType type = appendOnly ? StreamType.APPEND_ONLY : StreamType.STANDARD;
+            final Stream stream = new Stream(streamName, sourceName, sourceType, type, showInitialRows);
             if (viewBaseTables != null) {
                 stream.setBaseTableNames(viewBaseTables);
             }
 
-            String comment = extractCommentFromList(ctx.commentClause());
+            final String comment = extractCommentFromList(ctx.commentClause());
             if (comment != null) {
                 stream.setComment(comment);
             }
 
-            Schema schema = resolveSchemaFromQualifiedName(streamQualifiedName);
+            final Schema schema = resolveSchemaFromQualifiedName(streamQualifiedName);
             checkCreatePrivilege(Privilege.CREATE_STREAM, ContainerType.SCHEMA, schema.getName());
             if (orReplace) {
                 try { schema.dropStream(streamName); } catch (final RuntimeException ignored) {}
@@ -342,8 +375,10 @@ public class DDLCommandHandler implements CommandHandler {
     private Object handleAlterRoutine(final FrostlakeParser.AlterStatementContext ctx, final boolean isFunction) {
         final String qualifiedName = getText(ctx.qualifiedName());
         final Schema schema = resolveSchemaFromQualifiedName(qualifiedName);
-        final String name = qualifiedName.contains(".")
-            ? qualifiedName.substring(qualifiedName.lastIndexOf('.') + 1) : qualifiedName;
+        // The simple name comes from the parse tree's last identifier part — never by re-splitting
+        // the flattened text, which breaks a quoted name containing a dot.
+        final String[] nameParts = qualifiedNameParts(ctx.qualifiedName());
+        final String name = nameParts[nameParts.length - 1];
         final SqlObject routine;
         try {
             routine = isFunction ? schema.getFunction(name) : schema.getProcedure(name);
@@ -355,9 +390,8 @@ public class DDLCommandHandler implements CommandHandler {
         }
         final FrostlakeParser.RoutineAlterActionContext action = ctx.routineAlterAction();
         if (action.RENAME() != null) {
-            final String newName = getText(action.qualifiedName());
-            final String newSimple = newName.contains(".")
-                ? newName.substring(newName.lastIndexOf('.') + 1) : newName;
+            final String[] newParts = qualifiedNameParts(action.qualifiedName());
+            final String newSimple = newParts[newParts.length - 1];
             if (isFunction) {
                 schema.dropFunction(name);
                 routine.setName(newSimple);
@@ -376,11 +410,11 @@ public class DDLCommandHandler implements CommandHandler {
     }
 
     private Object handleAlterMaterializedView(final FrostlakeParser.AlterStatementContext ctx) {
-        String qualifiedName = getText(ctx.qualifiedName());
-        String[] parts = qualifiedNameParts(ctx.qualifiedName());
+        final String qualifiedName = getText(ctx.qualifiedName());
+        final String[] parts = qualifiedNameParts(ctx.qualifiedName());
 
-        Schema schema;
-        String mvName;
+        final Schema schema;
+        final String mvName;
 
         if (parts.length == 1) {
             schema = resolveCurrentSchema();
@@ -398,8 +432,8 @@ public class DDLCommandHandler implements CommandHandler {
             throw new RuntimeException("Invalid materialized view name: " + qualifiedName);
         }
 
-        MaterializedView mv = schema.getMaterializedView(mvName);
-        FrostlakeParser.MaterializedViewActionContext action = ctx.materializedViewAction();
+        final MaterializedView mv = schema.getMaterializedView(mvName);
+        final FrostlakeParser.MaterializedViewActionContext action = ctx.materializedViewAction();
 
         if (action.SUSPEND() != null) {
             mv.setSuspended(true);
@@ -411,7 +445,7 @@ public class DDLCommandHandler implements CommandHandler {
             mv.setLastRefreshedTime(LocalDateTime.now());
             logger.trace("Refreshed materialized view: {}", qualifiedName);
         } else if (action.RENAME() != null) {
-            String newName = getText(action.identifier());
+            final String newName = getText(action.identifier());
             // Re-key the schema map (drop old, add under new name) — otherwise the MV stays
             // findable only by its old name. Mirrors Catalog.renameTable's drop/rename/add.
             schema.dropMaterializedView(mvName);
@@ -419,7 +453,7 @@ public class DDLCommandHandler implements CommandHandler {
             schema.addMaterializedView(mv);
             logger.trace("Renamed materialized view {} to {}", qualifiedName, newName);
         } else if (action.SET() != null && action.COMMENT() != null) {
-            String comment = extractStringLiteral(action.STRING_LITERAL());
+            final String comment = extractStringLiteral(action.STRING_LITERAL());
             mv.setComment(comment);
             logger.trace("Set comment on materialized view: {}", qualifiedName);
         }
@@ -428,20 +462,21 @@ public class DDLCommandHandler implements CommandHandler {
     }
 
     private Object handleAlterDynamicTable(final FrostlakeParser.AlterStatementContext ctx) {
-        String qn = getText(ctx.qualifiedName()); String[] parts = qualifiedNameParts(ctx.qualifiedName());
-        Schema schema = parts.length == 1 ? resolveCurrentSchema()
+        final String qn = getText(ctx.qualifiedName());
+        final String[] parts = qualifiedNameParts(ctx.qualifiedName());
+        final Schema schema = parts.length == 1 ? resolveCurrentSchema()
             : parts.length == 2 ? catalog.getDatabase(catalog.getCurrentDatabase()).getSchema(parts[0])
             : catalog.getDatabase(parts[0]).getSchema(parts[1]);
-        String dtName = parts[parts.length - 1].toUpperCase();
-        DynamicTable dt = schema.getDynamicTable(dtName);
-        FrostlakeParser.DynamicTableActionContext action = ctx.dynamicTableAction();
+        final String dtName = parts[parts.length - 1].toUpperCase();
+        final DynamicTable dt = schema.getDynamicTable(dtName);
+        final FrostlakeParser.DynamicTableActionContext action = ctx.dynamicTableAction();
 
         if (action.SUSPEND() != null) {
-            dt.setState(DynamicTable.State.SUSPENDED);
+            dt.setState(State.SUSPENDED);
             dt.setSchedulingState("SUSPENDED");
             logger.trace("Suspended dynamic table: {}", qn);
         } else if (action.RESUME() != null) {
-            dt.setState(DynamicTable.State.RUNNING);
+            dt.setState(State.RUNNING);
             dt.setSchedulingState("ACTIVE");
             logger.trace("Resumed dynamic table: {}", qn);
         } else if (action.REFRESH() != null) {
@@ -449,14 +484,16 @@ public class DDLCommandHandler implements CommandHandler {
             logger.trace("Refreshed dynamic table: {}", qn);
         } else if (action.SET() != null) {
             if (action.TARGET_LAG() != null) {
-                String lag = action.DOWNSTREAM() != null ? "DOWNSTREAM" : extractStringLiteral(action.STRING_LITERAL());
+                final String lag = action.DOWNSTREAM() != null ? "DOWNSTREAM"
+                    : TargetLag.canonicalize(extractStringLiteral(action.STRING_LITERAL()));
                 dt.setTargetLag(lag);
             } else if (action.WAREHOUSE() != null && action.identifier() != null) {
                 dt.setWarehouse(getText(action.identifier()).toUpperCase());
             } else if (action.REFRESH_MODE() != null) {
-                if (action.FULL() != null) dt.setRefreshMode(DynamicTable.RefreshMode.FULL);
-                else if (action.INCREMENTAL() != null) dt.setRefreshMode(DynamicTable.RefreshMode.INCREMENTAL);
-                else dt.setRefreshMode(DynamicTable.RefreshMode.AUTO);
+                // The refresh mode is fixed at creation — Snowflake refuses the property on
+                // ALTER (live-verified wording).
+                throw new RuntimeException(
+                    SqlCompilationError.of("invalid property 'REFRESH_MODE' for 'DYNAMIC_TABLE'"));
             } else if (action.DATA_RETENTION_TIME_IN_DAYS() != null) {
                 dt.setDataRetentionDays(Integer.parseInt(action.INTEGER_LITERAL().getText()));
             } else if (action.COMMENT() != null) {
@@ -467,11 +504,11 @@ public class DDLCommandHandler implements CommandHandler {
     }
 
     private Object handleAlterSequence(final FrostlakeParser.AlterStatementContext ctx) {
-        String qualifiedName = getText(ctx.qualifiedName());
-        String[] parts = qualifiedNameParts(ctx.qualifiedName());
+        final String qualifiedName = getText(ctx.qualifiedName());
+        final String[] parts = qualifiedNameParts(ctx.qualifiedName());
 
-        Schema schema;
-        String seqName;
+        final Schema schema;
+        final String seqName;
 
         if (parts.length == 1) {
             schema = resolveCurrentSchema();
@@ -489,12 +526,12 @@ public class DDLCommandHandler implements CommandHandler {
             throw new RuntimeException("Invalid sequence name: " + qualifiedName);
         }
 
-        Sequence sequence = schema.getSequence(seqName);
-        FrostlakeParser.SequenceActionContext action = ctx.sequenceAction();
+        final Sequence sequence = schema.getSequence(seqName);
+        final FrostlakeParser.SequenceActionContext action = ctx.sequenceAction();
 
         if (action.SET() != null && action.INCREMENT() != null) {
-            long value = Long.parseLong(action.INTEGER_LITERAL().getText());
-            long newIncrement = action.MINUS() != null ? -value : value;
+            final long value = Long.parseLong(action.INTEGER_LITERAL().getText());
+            final long newIncrement = action.MINUS() != null ? -value : value;
             sequence.setIncrement(newIncrement);
             logger.trace("Set increment of sequence {} to {}", qualifiedName, newIncrement);
         }
@@ -504,21 +541,22 @@ public class DDLCommandHandler implements CommandHandler {
 
     public Object handleUseStatement(final FrostlakeParser.UseStatementContext ctx) {
         if (ctx.DATABASE() != null) {
-            String dbName = queryExecutor.resolveObjectName(ctx.objectName());
+            final String dbName = queryExecutor.resolveObjectName(ctx.objectName());
             catalog.useDatabase(dbName);
             logger.trace("Using database: {}", dbName);
         } else if (ctx.SCHEMA() != null) {
-            String schemaName = queryExecutor.resolveObjectName(ctx.objectName());
-            if (schemaName != null && schemaName.contains(".")) {
-                String[] parts = schemaName.split("\\.");
+            // Parts come from the parse tree (or the IDENTIFIER() value per dotted level): a quoted
+            // schema name containing a dot is ONE part, not a database.schema pair.
+            final String[] parts = queryExecutor.resolveObjectNameParts(ctx.objectName());
+            if (parts.length >= 2) {
                 catalog.useDatabase(parts[0]);
                 catalog.useSchema(parts[1]);
             } else {
-                catalog.useSchema(schemaName);
+                catalog.useSchema(parts[0]);
             }
-            logger.trace("Using schema: {}", schemaName);
+            logger.trace("Using schema: {}", String.join(".", parts));
         } else if (ctx.WAREHOUSE() != null) {
-            String warehouseName = queryExecutor.resolveObjectName(ctx.objectName());
+            final String warehouseName = queryExecutor.resolveObjectName(ctx.objectName());
             catalog.useWarehouse(warehouseName);
             logger.trace("Using warehouse: {}", warehouseName);
         } else if (ctx.SECONDARY() != null) {
@@ -533,7 +571,7 @@ public class DDLCommandHandler implements CommandHandler {
                 }
             }
         } else if (ctx.ROLE() != null) {
-            String roleName = queryExecutor.resolveObjectName(ctx.objectName());
+            final String roleName = queryExecutor.resolveObjectName(ctx.objectName());
             catalog.useRole(roleName);
             logger.trace("Using role: {}", roleName);
         }
@@ -655,8 +693,8 @@ public class DDLCommandHandler implements CommandHandler {
     void handleIfNotExists(final boolean ifNotExists, final RuntimeException e, final String objectName) {
         if (!ifNotExists) throw e;
         // IF NOT EXISTS: suppress "already exists" but re-throw "not found" / "does not exist" errors
-        String msg = e.getMessage() != null ? e.getMessage().toLowerCase() : "";
-        boolean schemaOrDbNotFound =
+        final String msg = e.getMessage() != null ? e.getMessage().toLowerCase() : "";
+        final boolean schemaOrDbNotFound =
             (msg.contains("schema") || msg.contains("database"))
             && (msg.contains("does not exist") || msg.contains("not found") || msg.contains("no database selected") || msg.contains("no schema selected"));
         if (schemaOrDbNotFound) {
@@ -666,8 +704,8 @@ public class DDLCommandHandler implements CommandHandler {
     }
 
     Schema resolveSchemaFromQualifiedName(final String qualifiedName) {
-        String[] parts = QualifiedName.parse(qualifiedName).parts();
-        String dbName = catalog.getCurrentDatabase();
+        final String[] parts = QualifiedName.parse(qualifiedName).parts();
+        final String dbName = catalog.getCurrentDatabase();
         if (dbName == null) throw new RuntimeException("No database selected");
         if (parts.length == 3) {
             return catalog.getDatabase(parts[0]).getSchema(parts[1]);
@@ -679,13 +717,13 @@ public class DDLCommandHandler implements CommandHandler {
 
     /** Extract just the object name (last part) from a qualified name, preserving case. */
     String extractObjectName(final String qualifiedName) {
-        String[] parts = QualifiedName.parse(qualifiedName).parts();
+        final String[] parts = QualifiedName.parse(qualifiedName).parts();
         return parts[parts.length - 1];
     }
 
     Schema resolveCurrentSchema() {
-        String dbName = catalog.getCurrentDatabase();
-        String schemaName = catalog.getCurrentSchema();
+        final String dbName = catalog.getCurrentDatabase();
+        final String schemaName = catalog.getCurrentSchema();
 
         if (dbName == null || schemaName == null) {
             throw new RuntimeException("No database or schema selected");
@@ -698,17 +736,17 @@ public class DDLCommandHandler implements CommandHandler {
      * Helper to resolve fully qualified name
      */
     String resolveFullyQualifiedName(final String qualifiedName) {
-        String[] parts = QualifiedName.parse(qualifiedName).parts();
+        final String[] parts = QualifiedName.parse(qualifiedName).parts();
 
         if (parts.length == 1) {
-            String dbName = catalog.getCurrentDatabase();
-            String schemaName = catalog.getCurrentSchema();
+            final String dbName = catalog.getCurrentDatabase();
+            final String schemaName = catalog.getCurrentSchema();
             if (dbName == null || schemaName == null) {
                 throw new RuntimeException("No database or schema selected");
             }
             return dbName.toUpperCase() + "." + schemaName.toUpperCase() + "." + parts[0].toUpperCase();
         } else if (parts.length == 2) {
-            String dbName = catalog.getCurrentDatabase();
+            final String dbName = catalog.getCurrentDatabase();
             if (dbName == null) {
                 throw new RuntimeException("No database selected");
             }
@@ -728,9 +766,9 @@ public class DDLCommandHandler implements CommandHandler {
             return extractStringLiteral(ctx.STRING_LITERAL());
         }
         if (ctx.SESSION_VAR_REF() != null) {
-            String varName = ctx.SESSION_VAR_REF().getText().substring(1).toUpperCase();
-            SecurityManager sm = queryExecutor != null ? queryExecutor.getSecurityManager() : null;
-            Object val = sm != null ? sm.getSessionContext().getSessionParameter(varName)
+            final String varName = ctx.SESSION_VAR_REF().getText().substring(1).toUpperCase();
+            final SecurityManager sm = queryExecutor != null ? queryExecutor.getSecurityManager() : null;
+            final Object val = sm != null ? sm.getSessionContext().getSessionParameter(varName)
                                     : (queryExecutor != null ? queryExecutor.getSessionVariables().get(varName) : null);
             return val != null ? val.toString() : varName;
         }
@@ -753,13 +791,13 @@ public class DDLCommandHandler implements CommandHandler {
 
     void cloneSchemaData(final String sourceDb, final String sourceSchema,
                                   final String targetDb, final String targetSchema) {
-        Schema src = catalog.getDatabase(sourceDb).getSchema(sourceSchema);
-        Schema tgt = catalog.getDatabase(targetDb).getSchema(targetSchema);
-        StorageEngine storage = queryExecutor.getStorageEngine();
+        final Schema src = catalog.getDatabase(sourceDb).getSchema(sourceSchema);
+        final Schema tgt = catalog.getDatabase(targetDb).getSchema(targetSchema);
+        final StorageEngine storage = queryExecutor.getStorageEngine();
 
         for (final Table table : tgt.getTables()) {
-            String srcKey = sourceDb + "." + sourceSchema + "." + table.getName().toUpperCase();
-            String tgtKey = targetDb + "." + targetSchema + "." + table.getName().toUpperCase();
+            final String srcKey = sourceDb + "." + sourceSchema + "." + table.getName().toUpperCase();
+            final String tgtKey = targetDb + "." + targetSchema + "." + table.getName().toUpperCase();
             if (!storage.hasTable(tgtKey)) {
                 storage.createTable(tgtKey, table);
             }
@@ -770,10 +808,10 @@ public class DDLCommandHandler implements CommandHandler {
     }
 
     void cloneDatabaseData(final String sourceDb, final String targetDb) {
-        Database tgt = catalog.getDatabase(targetDb);
+        final Database tgt = catalog.getDatabase(targetDb);
         for (final Schema schema : tgt.getAllSchemas()) {
             if ("INFORMATION_SCHEMA".equals(schema.getName())) continue;
-            String sn = schema.getName().toUpperCase();
+            final String sn = schema.getName().toUpperCase();
             cloneSchemaData(sourceDb, sn, targetDb, sn);
         }
     }
@@ -782,7 +820,7 @@ public class DDLCommandHandler implements CommandHandler {
         if (ctx.STRING_LITERAL() != null) {
             return extractStringLiteral(ctx.STRING_LITERAL());
         } else if (ctx.DOLLAR_QUOTED_STRING() != null) {
-            String text = ctx.DOLLAR_QUOTED_STRING().getText();
+            final String text = ctx.DOLLAR_QUOTED_STRING().getText();
             if (text.startsWith("$$") && text.endsWith("$$")) {
                 return text.substring(2, text.length() - 2);
             }
@@ -849,6 +887,13 @@ public class DDLCommandHandler implements CommandHandler {
     }
 
     void applyWarehouseProperties(final Warehouse warehouse, final FrostlakeParser.WarehousePropertiesContext ctx) {
+        // A warehouse property may be given ONCE (live-verified on WAREHOUSE_SIZE and AUTO_SUSPEND);
+        // the property's name is its first token, read off the parse tree.
+        final List<String> keys = new ArrayList<>();
+        for (final FrostlakeParser.WarehousePropertyContext prop : ctx.warehouseProperty()) {
+            keys.add(prop.getStart().getText());
+        }
+        PropertyDuplicates.reject(keys);
         for (final FrostlakeParser.WarehousePropertyContext prop : ctx.warehouseProperty()) {
             applyWarehouseProperty(warehouse, prop);
         }
@@ -860,16 +905,24 @@ public class DDLCommandHandler implements CommandHandler {
 
     private void applyWarehouseProperty(final Warehouse warehouse, final FrostlakeParser.WarehousePropertyContext prop) {
         if (prop.WAREHOUSE_TYPE() != null) {
-            String type = prop.STANDARD() != null ? "STANDARD" : extractStringLiteral(prop.STRING_LITERAL());
+            final String type = prop.STANDARD() != null ? "STANDARD" : extractStringLiteral(prop.STRING_LITERAL());
             warehouse.setWarehouseType(type);
         } else if (prop.WAREHOUSE_SIZE() != null) {
             warehouse.setSize(parseWarehouseSizeString(warehouseSizeValue(prop)));
         } else if (prop.AUTO_SUSPEND() != null) {
-            warehouse.setAutoSuspendSeconds(Integer.parseInt(prop.INTEGER_LITERAL().getText()));
+            // A negative suspend interval is ACCEPTED on a real account, so it parses and stores.
+            final int suspendSeconds = Integer.parseInt(prop.INTEGER_LITERAL().getText());
+            warehouse.setAutoSuspendSeconds(prop.MINUS() != null ? -suspendSeconds : suspendSeconds);
         } else if (prop.AUTO_RESUME() != null) {
             warehouse.setAutoResume(prop.booleanValue().TRUE() != null);
         } else if (prop.MIN_CLUSTER_COUNT() != null) {
-            warehouse.setMinClusterCount(Integer.parseInt(prop.INTEGER_LITERAL().getText()));
+            final int minCount = Integer.parseInt(prop.INTEGER_LITERAL().getText());
+            // Zero clusters refuses with the single-quoted property shape, live-verified.
+            if (minCount < 1) {
+                throw new RuntimeException(SqlCompilationError.invalidValueForProperty(
+                    String.valueOf(minCount), "MIN_CLUSTER_COUNT"));
+            }
+            warehouse.setMinClusterCount(minCount);
         } else if (prop.MAX_CLUSTER_COUNT() != null) {
             warehouse.setMaxClusterCount(Integer.parseInt(prop.INTEGER_LITERAL().getText()));
         } else if (prop.SCALING_POLICY() != null) {

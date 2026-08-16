@@ -17,13 +17,13 @@
 package dev.frostlake.functions.scalar.string;
 
 import dev.frostlake.functions.TextArgumentFunction;
-import dev.frostlake.types.NumericType;
+import dev.frostlake.types.IntegerResultWidths;
 import dev.frostlake.values.BinaryValue;
 
 import java.util.List;
 
 public class Len extends TextArgumentFunction {
-    public Len() { super("LEN", NumericType.INTEGER); }
+    public Len() { super("LEN", IntegerResultWidths.COUNTER); }
 
     @Override
     public Object evaluate(final List<Object> args) {
@@ -35,6 +35,8 @@ public class Len extends TextArgumentFunction {
         return (long) args.get(0).toString().length();
     }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return 1; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return 1; }
 }

@@ -30,6 +30,8 @@ public class AsDate extends StructuredArgumentFunction {
         return args.get(0) instanceof LocalDate ? args.get(0) : null;
     }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return 1; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return 1; }
 }

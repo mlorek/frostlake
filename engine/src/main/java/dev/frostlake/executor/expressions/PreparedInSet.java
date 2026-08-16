@@ -31,7 +31,9 @@ import java.util.Set;
  * <p>It reproduces exactly the equality used by {@code ExpressionEvaluatorVisitor.equals}: two Numbers
  * compare numerically and scale-insensitively (like {@code BigDecimal.compareTo} — so {@code 5},
  * {@code 5L}, {@code 5.0} are equal), while any comparison involving a non-Number compares the
- * operands' {@code toString()}; NULL matches only NULL. To honour both rules with one structure every
+ * operands' {@code toString()}. The three-valued NULL rules live in the CALLER: it never probes a
+ * NULL, and turns a miss into UNKNOWN when {@link #hasNull()} says the set held a NULL member. To
+ * honour both equality rules with one structure every
  * numeric value is indexed under a canonical numeric key <em>and</em> every value under its
  * {@code toString()}: a Number probe checks the numeric key (numeric-vs-numeric) or the string key
  * (numeric-vs-non-numeric), and a non-Number probe checks only the string key.
@@ -59,6 +61,11 @@ public class PreparedInSet {
             }
         }
         return set;
+    }
+
+    /** True when the indexed subquery column contained at least one NULL member. */
+    public boolean hasNull() {
+        return containsNull;
     }
 
     /** True iff {@code value} would equal some indexed value under the engine's IN equality. */

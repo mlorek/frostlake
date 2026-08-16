@@ -18,6 +18,9 @@ package dev.frostlake.executor;
 
 import dev.frostlake.parser.FrostlakeParser;
 
+import java.util.ArrayList;
+import java.util.List;
+
 /**
  * Canonical form of a SQL identifier, matching Snowflake's identifier resolution:
  *
@@ -84,11 +87,99 @@ public final class SqlIdentifiers {
      * <p>Only for names that have NOT been through {@link #canonical}: that one already stripped the
      * quotes, so folding its output again would upper-case a name that was written quoted.
      */
+    /**
+     * One name part spelled the way live ECHOES it in a refusal: a quoted token stays verbatim, quotes
+     * and case intact, and an unquoted one folds to upper case. {@code "a"} and {@code a} name
+     * different columns, so the two cannot be printed alike.
+     */
+    public static String spellAsWritten(final String rawToken) {
+        if (rawToken == null) {
+            return null;
+        }
+        if (!rawToken.startsWith("\"") || !rawToken.endsWith("\"") || rawToken.length() <= 1) {
+            return rawToken.toUpperCase();
+        }
+        // A quoted name is echoed WITH its quotes only when it needs them. Live drops them for a name
+        // that could have been written bare and kept them otherwise, measured spelling by spelling:
+        //   "Q" -> Q      "A_B" -> A_B     "A1" -> A1      "$X" -> $X
+        //   "qQ" -> "qQ"  "1A" -> "1A"     "NO SUCH" -> "NO SUCH"
+        final String inner = rawToken.substring(1, rawToken.length() - 1);
+        return writableWithoutQuotes(inner) ? inner : rawToken;
+    }
+
+    /**
+     * A CANONICAL name spelled the way a refusal prints it: bare when it could have been written
+     * without quotes, quoted otherwise. The same rule {@link #spellAsWritten} applies to a raw token,
+     * for callers that hold a name already resolved — an object's stored identity, a folded function
+     * name, the relation and column of the grouped sentence.
+     *
+     * @param name the canonical name
+     * @return the name as a refusal spells it
+     */
+    public static String spellCanonical(final String name) {
+        if (name == null) {
+            return null;
+        }
+        return writableWithoutQuotes(name) ? name : "\"" + name + "\"";
+    }
+
+    /**
+     * {@link #spellCanonical} applied part by part to a dotted path, so a qualified name quotes only
+     * the parts that need it — live spells a missing table {@code TEST_DB.TEST_SCHEMA."kw"}.
+     *
+     * @param path the canonical dotted name
+     * @return the path as a refusal spells it
+     */
+    public static String spellCanonicalPath(final String path) {
+        if (path == null || path.indexOf('.') < 0) {
+            return spellCanonical(path);
+        }
+        final String[] parts = canonicalTextParts(path);
+        final StringBuilder spelled = new StringBuilder();
+        for (int i = 0; i < parts.length; i++) {
+            if (i > 0) {
+                spelled.append('.');
+            }
+            spelled.append(spellCanonical(parts[i]));
+        }
+        return spelled.toString();
+    }
+
+    /**
+     * Whether a name could have been written without quotes and still mean itself: upper-case letters,
+     * digits, underscore and dollar, with a digit never leading.
+     *
+     * @param name the text between the quotes
+     * @return true when the quotes carry no meaning
+     */
+    private static boolean writableWithoutQuotes(final String name) {
+        if (name.isEmpty() || name.charAt(0) >= '0' && name.charAt(0) <= '9') {
+            return false;
+        }
+        for (int i = 0; i < name.length(); i++) {
+            final char c = name.charAt(i);
+            if (!(c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_' || c == '$')) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     public static String canonicalText(final String text) {
         if (text == null || text.isEmpty()) {
             return text;
         }
-        final StringBuilder out = new StringBuilder(text.length());
+        return String.join(".", canonicalTextParts(text));
+    }
+
+    /**
+     * The canonical PARTS of a runtime-string object name — {@link #canonicalText} without the
+     * rejoin, for callers that resolve per level: a double-quoted part containing a dot survives
+     * as ONE part here, where the joined spelling can no longer show where its dots came from.
+     * The same not-already-canonicalised caveat as {@link #canonicalText} applies.
+     */
+    public static String[] canonicalTextParts(final String text) {
+        final List<String> parts = new ArrayList<>();
         final StringBuilder part = new StringBuilder();
         boolean quoted = false;
         boolean wasQuoted = false;
@@ -105,14 +196,14 @@ public final class SqlIdentifiers {
                 continue;
             }
             if (ch == '.' && !quoted) {
-                out.append(wasQuoted ? part.toString() : part.toString().toUpperCase()).append('.');
+                parts.add(wasQuoted ? part.toString() : part.toString().toUpperCase());
                 part.setLength(0);
                 wasQuoted = false;
                 continue;
             }
             part.append(ch);
         }
-        out.append(wasQuoted ? part.toString() : part.toString().toUpperCase());
-        return out.toString();
+        parts.add(wasQuoted ? part.toString() : part.toString().toUpperCase());
+        return parts.toArray(new String[0]);
     }
 }

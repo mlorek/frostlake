@@ -57,6 +57,8 @@ public class CortexCountTokens extends BuiltInFunction {
         return Long.valueOf(tokens);
     }
 
-    @Override public int getMinArgCount() { return 2; }
-    @Override public int getMaxArgCount() { return 2; }
+    @Override
+    public int getMinArgCount() { return 2; }
+    @Override
+    public int getMaxArgCount() { return 2; }
 }

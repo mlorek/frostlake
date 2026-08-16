@@ -30,15 +30,17 @@ public class ToTime extends BuiltInFunction {
     @Override
     public Object evaluate(final List<Object> args) {
         if (args.get(0) == null) return null;
-        Object v = args.get(0);
+        final Object v = args.get(0);
         if (v instanceof LocalTime) return v;
         if (v instanceof LocalDateTime) return ((LocalDateTime) v).toLocalTime();
-        String s = v.toString().trim();
+        final String s = v.toString().trim();
         try { return LocalTime.parse(s); } catch (final Exception ignored) {}
         try { return LocalTime.parse(s, DateTimeFormatter.ofPattern("HH:mm")); } catch (final Exception ignored) {}
         throw new RuntimeException("Cannot parse time: " + s);
     }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return 1; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return 1; }
 }

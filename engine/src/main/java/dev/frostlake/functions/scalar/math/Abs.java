@@ -22,16 +22,23 @@ import dev.frostlake.types.NumericType;
 import java.math.BigDecimal;
 import java.util.List;
 
+/**
+ * ABS(n) — the absolute value of the numeric input, computed exactly over {@link BigDecimal} so a
+ * fixed-point argument keeps its scale. NULL yields NULL.
+ */
 public class Abs extends NumericArgumentFunction {
+    /** Registers the function as {@code ABS} returning NUMBER. */
     public Abs() { super("ABS", NumericType.NUMBER); }
 
     @Override
     public Object evaluate(final List<Object> args) {
         if (args.get(0) == null) return null;
-        BigDecimal num = new BigDecimal(args.get(0).toString());
+        final BigDecimal num = new BigDecimal(args.get(0).toString());
         return num.abs();
     }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return 1; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return 1; }
 }

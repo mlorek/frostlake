@@ -16,41 +16,43 @@
 
 package dev.frostlake.features;
 
-import dev.frostlake.DatabaseEngine;
-import dev.frostlake.metastore.model.Table;
-import dev.frostlake.metastore.model.TableColumn;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
+import dev.frostlake.BaseDatabaseTest;
+import dev.frostlake.storage.ResultSet;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Tests for COLLATE clause in column definitions
- * Format: column_name datatype COLLATE 'collation_name'
+ * The COLLATE clause in column definitions, asserted through the SQL surface — a collated column
+ * carries {@code COLLATE '<spec>'} inside its {@code DESCRIBE TABLE} type cell — so every check
+ * runs against whichever engine executed the DDL, embedded or live. The specs used here are all
+ * valid Snowflake collation specifications ({@code utf8}, locale specs like {@code en-ci}).
  */
-public class ColumnCollationTest {
+public class ColumnCollationTest extends BaseDatabaseTest {
     private static final Logger logger = LoggerFactory.getLogger(ColumnCollationTest.class);
 
-    private DatabaseEngine engine;
-
-    @BeforeEach
-    public void setUp() {
-        engine = new DatabaseEngine();
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
-        logger.info("DatabaseEngine initialized for COLLATE tests");
+    /** The DESCRIBE TABLE type cell for one column. */
+    private String columnType(final String table, final String column) {
+        return describeCell(table, column, "type");
     }
 
-    @AfterEach
-    public void tearDown() {
-        if (engine != null) {
-            engine.shutdown();
-        }
+    /** Asserts the column's type cell carries exactly this collation spec. */
+    private void assertCollation(final String table, final String column, final String spec) {
+        final String type = columnType(table, column);
+        assertTrue(type.toUpperCase().contains("COLLATE '" + spec.toUpperCase() + "'"),
+            column + " should be collated '" + spec + "' but its type reads: " + type);
+    }
+
+    private void assertNoCollation(final String table, final String column) {
+        final String type = columnType(table, column);
+        assertFalse(type.toUpperCase().contains("COLLATE"),
+            column + " should carry no collation but its type reads: " + type);
     }
 
     @Test
@@ -59,12 +61,7 @@ public class ColumnCollationTest {
 
         engine.execute("CREATE TABLE test1 (id INTEGER, name VARCHAR COLLATE 'utf8')");
 
-        Table table = engine.getCatalog().resolveTable("TEST1");
-        assertNotNull(table);
-
-        TableColumn nameColumn = table.getColumn("name");
-        assertNotNull(nameColumn);
-        assertEquals("utf8", nameColumn.getCollation());
+        assertCollation("test1", "NAME", "utf8");
 
         logger.info("Single column with COLLATE works correctly");
     }
@@ -77,22 +74,14 @@ public class ColumnCollationTest {
             CREATE TABLE test2 (
                 id INTEGER,
                 name VARCHAR COLLATE 'utf8',
-                description VARCHAR COLLATE 'utf8_unicode_ci',
+                description VARCHAR COLLATE 'en-ci',
                 code VARCHAR
             )
             """);
 
-        Table table = engine.getCatalog().resolveTable("TEST2");
-        assertNotNull(table);
-
-        TableColumn nameColumn = table.getColumn("name");
-        assertEquals("utf8", nameColumn.getCollation());
-
-        TableColumn descColumn = table.getColumn("description");
-        assertEquals("utf8_unicode_ci", descColumn.getCollation());
-
-        TableColumn codeColumn = table.getColumn("code");
-        assertNull(codeColumn.getCollation());
+        assertCollation("test2", "NAME", "utf8");
+        assertCollation("test2", "DESCRIPTION", "en-ci");
+        assertNoCollation("test2", "CODE");
 
         logger.info("Multiple columns with COLLATE work correctly");
     }
@@ -101,13 +90,9 @@ public class ColumnCollationTest {
     public void testCollationWithTypeParameters() {
         logger.info("Testing COLLATE with type parameters");
 
-        engine.execute("CREATE TABLE test3 (id INTEGER, name VARCHAR(100) COLLATE 'utf8_bin')");
+        engine.execute("CREATE TABLE test3 (id INTEGER, name VARCHAR(100) COLLATE 'en-cs')");
 
-        Table table = engine.getCatalog().resolveTable("TEST3");
-        assertNotNull(table);
-
-        TableColumn nameColumn = table.getColumn("name");
-        assertEquals("utf8_bin", nameColumn.getCollation());
+        assertCollation("test3", "NAME", "en-cs");
 
         logger.info("COLLATE with type parameters works correctly");
     }
@@ -120,20 +105,15 @@ public class ColumnCollationTest {
             CREATE TABLE test4 (
                 id INTEGER PRIMARY KEY,
                 name VARCHAR NOT NULL COLLATE 'utf8',
-                email VARCHAR UNIQUE COLLATE 'utf8_general_ci'
+                email VARCHAR UNIQUE COLLATE 'fr-ci'
             )
             """);
 
-        Table table = engine.getCatalog().resolveTable("TEST4");
-        assertNotNull(table);
+        assertCollation("test4", "NAME", "utf8");
+        assertEquals("N", describeCell("test4", "NAME", "null?"));
 
-        TableColumn nameColumn = table.getColumn("name");
-        assertEquals("utf8", nameColumn.getCollation());
-        assertEquals(false, nameColumn.isNullable());
-
-        TableColumn emailColumn = table.getColumn("email");
-        assertEquals("utf8_general_ci", emailColumn.getCollation());
-        assertEquals(true, emailColumn.isUnique());
+        assertCollation("test4", "EMAIL", "fr-ci");
+        assertEquals("Y", describeCell("test4", "EMAIL", "unique key"));
 
         logger.info("COLLATE with constraints works correctly");
     }
@@ -145,16 +125,12 @@ public class ColumnCollationTest {
         engine.execute("""
             CREATE TABLE test5 (
                 id INTEGER,
-                status VARCHAR DEFAULT 'active' COLLATE 'utf8'
+                status VARCHAR COLLATE 'utf8' DEFAULT 'active'
             )
             """);
 
-        Table table = engine.getCatalog().resolveTable("TEST5");
-        assertNotNull(table);
-
-        TableColumn statusColumn = table.getColumn("status");
-        assertEquals("utf8", statusColumn.getCollation());
-        assertNotNull(statusColumn.getDefaultValue());
+        assertCollation("test5", "STATUS", "utf8");
+        assertEquals("'active'", describeCell("test5", "STATUS", "default"));
 
         logger.info("COLLATE with DEFAULT works correctly");
     }
@@ -166,16 +142,12 @@ public class ColumnCollationTest {
         engine.execute("""
             CREATE TABLE test6 (
                 id INTEGER,
-                name VARCHAR COLLATE 'utf8' COMMENT = 'User name'
+                name VARCHAR COLLATE 'utf8' COMMENT 'User name'
             )
             """);
 
-        Table table = engine.getCatalog().resolveTable("TEST6");
-        assertNotNull(table);
-
-        TableColumn nameColumn = table.getColumn("name");
-        assertEquals("utf8", nameColumn.getCollation());
-        assertEquals("User name", nameColumn.getComment());
+        assertCollation("test6", "NAME", "utf8");
+        assertEquals("User name", describeCell("test6", "NAME", "comment"));
 
         logger.info("COLLATE with COMMENT works correctly");
     }
@@ -184,13 +156,9 @@ public class ColumnCollationTest {
     public void testCollationCaseInsensitive() {
         logger.info("Testing COLLATE case-insensitive names");
 
-        engine.execute("CREATE TABLE test7 (id INTEGER, name VARCHAR COLLATE 'UTF8_UNICODE_CI')");
+        engine.execute("CREATE TABLE test7 (id INTEGER, name VARCHAR COLLATE 'EN-CI')");
 
-        Table table = engine.getCatalog().resolveTable("TEST7");
-        assertNotNull(table);
-
-        TableColumn nameColumn = table.getColumn("name");
-        assertEquals("UTF8_UNICODE_CI", nameColumn.getCollation());
+        assertCollation("test7", "NAME", "en-ci");
 
         logger.info("COLLATE case-insensitive names work correctly");
     }
@@ -199,19 +167,15 @@ public class ColumnCollationTest {
     public void testCollationWithQualifiedTableName() {
         logger.info("Testing COLLATE with qualified table name");
 
-        engine.execute("CREATE SCHEMA test_schema");
+        engine.execute("CREATE SCHEMA collation_schema");
         engine.execute("""
-            CREATE TABLE test_schema.test8 (
+            CREATE TABLE collation_schema.test8 (
                 id INTEGER,
                 name VARCHAR COLLATE 'utf8'
             )
             """);
 
-        Table table = engine.getCatalog().resolveTable("TEST_SCHEMA.TEST8");
-        assertNotNull(table);
-
-        TableColumn nameColumn = table.getColumn("name");
-        assertEquals("utf8", nameColumn.getCollation());
+        assertCollation("collation_schema.test8", "NAME", "utf8");
 
         logger.info("COLLATE with qualified table name works correctly");
     }
@@ -224,21 +188,13 @@ public class ColumnCollationTest {
             CREATE TABLE source (
                 id INTEGER,
                 name VARCHAR COLLATE 'utf8',
-                description VARCHAR COLLATE 'utf8_bin'
+                description VARCHAR COLLATE 'en-cs'
             )
             """);
         engine.execute("CREATE TABLE test9 CLONE source");
 
-        Table sourceTable = engine.getCatalog().resolveTable("SOURCE");
-        Table clonedTable = engine.getCatalog().resolveTable("TEST9");
-
-        assertNotNull(sourceTable);
-        assertNotNull(clonedTable);
-
-        assertEquals(sourceTable.getColumn("name").getCollation(),
-                     clonedTable.getColumn("name").getCollation());
-        assertEquals(sourceTable.getColumn("description").getCollation(),
-                     clonedTable.getColumn("description").getCollation());
+        assertCollation("test9", "NAME", "utf8");
+        assertCollation("test9", "DESCRIPTION", "en-cs");
 
         logger.info("COLLATE preserved during CLONE correctly");
     }
@@ -254,11 +210,7 @@ public class ColumnCollationTest {
             )
             """);
 
-        Table table = engine.getCatalog().resolveTable("TEST10");
-        assertNotNull(table);
-
-        TableColumn nameColumn = table.getColumn("name");
-        assertEquals("utf8", nameColumn.getCollation());
+        assertCollation("test10", "NAME", "utf8");
 
         logger.info("COLLATE with IF NOT EXISTS works correctly");
     }
@@ -270,19 +222,15 @@ public class ColumnCollationTest {
         engine.execute("""
             CREATE TABLE test11 (
                 id INTEGER PRIMARY KEY,
-                name VARCHAR(200) NOT NULL UNIQUE DEFAULT 'unknown' COLLATE 'utf8' COMMENT = 'User name'
+                name VARCHAR(200) NOT NULL UNIQUE COLLATE 'utf8' DEFAULT 'unknown' COMMENT 'User name'
             )
             """);
 
-        Table table = engine.getCatalog().resolveTable("TEST11");
-        assertNotNull(table);
-
-        TableColumn nameColumn = table.getColumn("name");
-        assertEquals("utf8", nameColumn.getCollation());
-        assertEquals(false, nameColumn.isNullable());
-        assertEquals(true, nameColumn.isUnique());
-        assertNotNull(nameColumn.getDefaultValue());
-        assertEquals("User name", nameColumn.getComment());
+        assertCollation("test11", "NAME", "utf8");
+        assertEquals("N", describeCell("test11", "NAME", "null?"));
+        assertEquals("Y", describeCell("test11", "NAME", "unique key"));
+        assertEquals("'unknown'", describeCell("test11", "NAME", "default"));
+        assertEquals("User name", describeCell("test11", "NAME", "comment"));
 
         logger.info("COLLATE with all constraints works correctly");
     }
@@ -293,13 +241,9 @@ public class ColumnCollationTest {
 
         engine.execute("CREATE TABLE test12 (id INTEGER, name VARCHAR)");
 
-        Table table = engine.getCatalog().resolveTable("TEST12");
-        assertNotNull(table);
+        assertNoCollation("test12", "NAME");
 
-        TableColumn nameColumn = table.getColumn("name");
-        assertNull(nameColumn.getCollation());
-
-        logger.info("Column without COLLATE has null collation");
+        logger.info("Column without COLLATE has no collation");
     }
 
     @Test
@@ -310,41 +254,74 @@ public class ColumnCollationTest {
             CREATE TABLE test13 (
                 id INTEGER,
                 varchar_col VARCHAR COLLATE 'utf8',
-                text_col VARCHAR(1000) COLLATE 'utf8_bin',
+                text_col VARCHAR(1000) COLLATE 'en-cs',
                 number_col NUMBER
             )
             """);
 
-        Table table = engine.getCatalog().resolveTable("TEST13");
-        assertNotNull(table);
-
-        assertEquals("utf8", table.getColumn("varchar_col").getCollation());
-        assertEquals("utf8_bin", table.getColumn("text_col").getCollation());
-        assertNull(table.getColumn("number_col").getCollation());
+        assertCollation("test13", "VARCHAR_COL", "utf8");
+        assertCollation("test13", "TEXT_COL", "en-cs");
+        assertNoCollation("test13", "NUMBER_COL");
 
         logger.info("COLLATE with different data types works correctly");
     }
 
     @Test
     public void testCollationPreservedDuringAlterColumn() {
-        logger.info("Testing COLLATE preserved during ALTER COLUMN");
+        logger.info("Testing COLLATE carried through ALTER COLUMN by restating it");
 
         engine.execute("""
             CREATE TABLE test14 (
                 id INTEGER,
-                name VARCHAR COLLATE 'utf8'
+                name VARCHAR(100) COLLATE 'utf8'
             )
             """);
 
-        Table table = engine.getCatalog().resolveTable("TEST14");
-        assertEquals("utf8", table.getColumn("name").getCollation());
+        assertCollation("test14", "NAME", "utf8");
 
-        engine.execute("ALTER TABLE test14 ALTER COLUMN name VARCHAR(200)");
+        // A collated column's retype must RESTATE the collation (live-verified).
+        engine.execute("ALTER TABLE test14 ALTER COLUMN name VARCHAR(200) COLLATE 'utf8'");
 
-        table = engine.getCatalog().resolveTable("TEST14");
-        assertEquals("utf8", table.getColumn("name").getCollation());
+        assertCollation("test14", "NAME", "utf8");
 
         logger.info("COLLATE preserved during ALTER COLUMN correctly");
+    }
+
+    @Test
+    public void testRetypeWithoutRestatingCollationIsRefused() {
+        engine.execute("CREATE TABLE test17 (id INTEGER, name VARCHAR(100) COLLATE 'utf8')");
+
+        // Dropping, changing or adding a collation in a retype is refused, and the message
+        // QUOTES both types (live-verified).
+        final RuntimeException dropped = assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.execute("ALTER TABLE test17 ALTER COLUMN name SET DATA TYPE VARCHAR(200)");
+            }
+        });
+        assertTrue(dropped.getMessage().contains(
+            "cannot change column NAME from type \"VARCHAR(100) COLLATE 'utf8'\" to \"VARCHAR(200)\""
+            + " because they have incompatible collations."), dropped.getMessage());
+
+        final RuntimeException changed = assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.execute("ALTER TABLE test17 ALTER COLUMN name SET DATA TYPE VARCHAR(300) COLLATE 'en-ci'");
+            }
+        });
+        assertTrue(changed.getMessage().contains("because they have incompatible collations."),
+            changed.getMessage());
+
+        engine.execute("CREATE TABLE test18 (id INTEGER, name VARCHAR(100))");
+        final RuntimeException added = assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.execute("ALTER TABLE test18 ALTER COLUMN name SET DATA TYPE VARCHAR(200) COLLATE 'utf8'");
+            }
+        });
+        assertTrue(added.getMessage().contains(
+            "cannot change column NAME from type \"VARCHAR(100)\" to \"VARCHAR(200) COLLATE 'utf8'\""
+            + " because they have incompatible collations."), added.getMessage());
     }
 
     @Test
@@ -359,11 +336,10 @@ public class ColumnCollationTest {
             ) CLUSTER BY (date)
             """);
 
-        Table table = engine.getCatalog().resolveTable("TEST15");
-        assertNotNull(table);
-
-        assertEquals("utf8", table.getColumn("name").getCollation());
-        assertEquals(1, table.getClusterKeys().size());
+        assertCollation("test15", "NAME", "utf8");
+        final ResultSet tables = engine.executeQuery("SHOW TABLES LIKE 'test15'");
+        assertEquals("LINEAR(date)",
+            cell(tables, soleRowWhere(tables, "name", "TEST15"), "cluster_by"));
 
         logger.info("COLLATE with CLUSTER BY works correctly");
     }
@@ -379,11 +355,10 @@ public class ColumnCollationTest {
             ) COMMENT = 'Test table'
             """);
 
-        Table table = engine.getCatalog().resolveTable("TEST16");
-        assertNotNull(table);
-
-        assertEquals("utf8", table.getColumn("name").getCollation());
-        assertEquals("Test table", table.getComment());
+        assertCollation("test16", "NAME", "utf8");
+        final ResultSet tables = engine.executeQuery("SHOW TABLES LIKE 'test16'");
+        assertEquals("Test table",
+            cell(tables, soleRowWhere(tables, "name", "TEST16"), "comment"));
 
         logger.info("COLLATE with table COMMENT works correctly");
     }

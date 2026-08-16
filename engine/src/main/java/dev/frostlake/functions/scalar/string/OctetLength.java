@@ -17,14 +17,14 @@
 package dev.frostlake.functions.scalar.string;
 
 import dev.frostlake.functions.TextArgumentFunction;
-import dev.frostlake.types.NumericType;
+import dev.frostlake.types.IntegerResultWidths;
 import dev.frostlake.values.BinaryValue;
 
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 
 public class OctetLength extends TextArgumentFunction {
-    public OctetLength() { super("OCTET_LENGTH", NumericType.INTEGER); }
+    public OctetLength() { super("OCTET_LENGTH", IntegerResultWidths.COUNTER); }
 
     @Override
     public Object evaluate(final List<Object> args) {
@@ -35,6 +35,8 @@ public class OctetLength extends TextArgumentFunction {
         return (long) args.get(0).toString().getBytes(StandardCharsets.UTF_8).length;
     }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return 1; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return 1; }
 }

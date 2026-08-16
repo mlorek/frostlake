@@ -18,7 +18,7 @@ package dev.frostlake.functions.scalar.semistructured;
 
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
-import dev.frostlake.types.NumericType;
+import dev.frostlake.types.IntegerResultWidths;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.node.ArrayNode;
 
@@ -26,7 +26,7 @@ import java.util.List;
 
 /** ARRAY_POSITION(value, array) — 0-based index of the first element equal to value, or NULL. */
 public class ArrayPosition extends BuiltInFunction {
-    public ArrayPosition() { super("ARRAY_POSITION", NumericType.INTEGER); }
+    public ArrayPosition() { super("ARRAY_POSITION", IntegerResultWidths.POSITION); }
 
     @Override
     public Object evaluate(final List<Object> args) {
@@ -46,6 +46,8 @@ public class ArrayPosition extends BuiltInFunction {
         return null;
     }
 
-    @Override public int getMinArgCount() { return 2; }
-    @Override public int getMaxArgCount() { return 2; }
+    @Override
+    public int getMinArgCount() { return 2; }
+    @Override
+    public int getMaxArgCount() { return 2; }
 }

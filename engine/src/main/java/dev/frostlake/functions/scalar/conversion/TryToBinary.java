@@ -29,14 +29,20 @@ import java.util.List;
 public class TryToBinary extends BuiltInFunction {
     private final ToBinary base = new ToBinary();
 
-    public TryToBinary() { super("TRY_TO_BINARY", BinaryType.BINARY); }
+    public TryToBinary() { super("TRY_TO_BINARY", BinaryType.VARBINARY); }
 
     @Override
     public Object evaluate(final List<Object> args) {
         if (args.get(0) == null) return null;
-        try { return base.evaluate(args); } catch (final Exception e) { return null; }
+        try {
+            return base.evaluate(args);
+        } catch (final Exception e) {
+            return null;
+        }
     }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return 2; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return 2; }
 }

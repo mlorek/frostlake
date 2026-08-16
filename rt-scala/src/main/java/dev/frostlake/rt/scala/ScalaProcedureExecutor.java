@@ -38,22 +38,26 @@ import java.util.List;
  *
  * Requires scalac to be available on PATH, or the scala.home system property set.
  */
-public class ScalaProcedureExecutor {
+public final class ScalaProcedureExecutor {
+
+    /** Static helpers only — never instantiated. */
+    private ScalaProcedureExecutor() {
+    }
 
     private static final Logger logger = LoggerFactory.getLogger(ScalaProcedureExecutor.class);
 
     public static Object executeScalaProcedure(final Procedure procedure,
                                                 final List<Object> arguments,
                                                 final DatabaseEngine engine) {
-        String handler = procedure.getHandler();
+        final String handler = procedure.getHandler();
         if (handler == null || !handler.contains(".")) {
             throw new RuntimeException(
                 "HANDLER must be 'ClassName.methodName' for LANGUAGE SCALA procedures");
         }
 
-        int dot = handler.lastIndexOf('.');
-        String className = handler.substring(0, dot);
-        String methodName = handler.substring(dot + 1);
+        final int dot = handler.lastIndexOf('.');
+        final String className = handler.substring(0, dot);
+        final String methodName = handler.substring(dot + 1);
 
         try {
             // Inline bodies compile ONCE (cached); jar handlers load from IMPORTS. Avoids per-row recompiles.
@@ -76,22 +80,22 @@ public class ScalaProcedureExecutor {
                                          final List<Object> arguments,
                                          final List<Parameter> parameters,
                                          final DatabaseEngine engine, final boolean ownersRights) throws Exception {
-        Session session = new Session(engine, ownersRights);
+        final Session session = new Session(engine, ownersRights);
 
-        Object[] args = new Object[arguments.size() + 1];
+        final Object[] args = new Object[arguments.size() + 1];
         args[0] = session;
         for (int i = 0; i < arguments.size(); i++) args[i + 1] = arguments.get(i);
 
         // Scala objects have a MODULE$ singleton field
         Object instance;
         try {
-            Field moduleField = clazz.getField("MODULE$");
+            final Field moduleField = clazz.getField("MODULE$");
             instance = moduleField.get(null);
         } catch (final NoSuchFieldException e) {
             instance = clazz.getDeclaredConstructor().newInstance();
         }
 
-        Method target = findMethod(clazz, methodName, args.length);
+        final Method target = findMethod(clazz, methodName, args.length);
         UdfConsoleCapture.enter();
         try {
             return target.invoke(instance, args);

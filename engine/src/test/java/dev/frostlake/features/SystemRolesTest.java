@@ -16,41 +16,77 @@
 
 package dev.frostlake.features;
 
-import dev.frostlake.DatabaseEngine;
-import dev.frostlake.metastore.model.Role;
+import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
+import dev.frostlake.storage.Row;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Tests for Snowflake system roles
+ * The six Snowflake system roles, asserted through the SQL surface — {@code SHOW ROLES} cells
+ * (name, comment), {@code SHOW GRANTS TO ROLE} for the hierarchy edges, and the CREATE/DROP
+ * refusals that guard them — so every check runs against whichever engine executed the
+ * statements, embedded or live.
  */
-public class SystemRolesTest {
+public class SystemRolesTest extends BaseDatabaseTest {
 
-    private DatabaseEngine engine;
-
-    @BeforeEach
-    public void setup() {
-        engine = new DatabaseEngine();
-        engine.execute("CREATE DATABASE IF NOT EXISTS test_db");
-        engine.execute("USE DATABASE test_db");
-        engine.execute("USE SCHEMA public");
+    @Override
+    protected void teardownTest() {
+        engine.execute("DROP ROLE IF EXISTS my_custom_role");
+        engine.execute("DROP ROLE IF EXISTS test_role");
+        engine.execute("DROP ROLE IF EXISTS admin");
+        engine.execute("DROP ROLE IF EXISTS my_role");
     }
 
-    @AfterEach
-    public void teardown() {
-        if (engine != null) {
-            engine.shutdown();
+    /** One SHOW ROLES cell for the given role, matched by its name column. */
+    private String roleCell(final String role, final String column) {
+        final ResultSet rs = engine.executeQuery("SHOW ROLES LIKE '" + role + "'");
+        return cell(rs, soleRowWhere(rs, "name", role.toUpperCase()), column);
+    }
+
+    private int roleCount(final String name) {
+        return engine.executeQuery("SHOW ROLES LIKE '" + name + "'").getRowCount();
+    }
+
+    /** Whether SHOW GRANTS TO ROLE lists {@code granted} as a role granted to {@code grantee}. */
+    private boolean roleGranted(final String grantee, final String granted) {
+        final ResultSet rs = engine.executeQuery("SHOW GRANTS TO ROLE " + grantee);
+        for (final Row row : rs.getRows()) {
+            if ("ROLE".equalsIgnoreCase(cell(rs, row, "granted_on"))
+                    && granted.equalsIgnoreCase(cell(rs, row, "name"))) {
+                return true;
+            }
         }
+        return false;
+    }
+
+    private void assertDropRoleRefused(final String spelling) {
+        assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.execute("DROP ROLE " + spelling);
+            }
+        }, "DROP ROLE " + spelling + " must be refused");
+    }
+
+    private void assertCreateRoleRefused(final String name) {
+        assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.execute("CREATE ROLE " + name);
+            }
+        }, "CREATE ROLE " + name + " must be refused");
     }
 
     @Test
     public void testAllSystemRolesExist() {
-        // Verify all 6 system roles exist
-        String[] systemRoles = {
+        final String[] systemRoles = {
             "ORGADMIN",
             "ACCOUNTADMIN",
             "SECURITYADMIN",
@@ -59,234 +95,170 @@ public class SystemRolesTest {
             "PUBLIC"
         };
 
+        final ResultSet rs = engine.executeQuery("SHOW ROLES");
         for (final String roleName : systemRoles) {
-            Role role = engine.getCatalog().getRole(roleName);
-            assertNotNull(role, roleName + " should exist");
-            assertEquals(roleName, role.getName());
+            final Row row = soleRowWhere(rs, "name", roleName);
+            assertEquals(roleName, cell(rs, row, "name"));
         }
     }
 
     @Test
     public void testOrgAdminRoleExists() {
-        Role role = engine.getCatalog().getRole("ORGADMIN");
-        assertNotNull(role);
-        assertEquals("ORGADMIN", role.getName());
-        assertNotNull(role.getComment());
-        assertTrue(role.getComment().contains("Organization administrator"));
+        assertEquals("ORGADMIN", roleCell("orgadmin", "name"));
+        assertTrue(roleCell("orgadmin", "comment").contains("Organization administrator"));
     }
 
     @Test
     public void testAccountAdminRoleExists() {
-        Role role = engine.getCatalog().getRole("ACCOUNTADMIN");
-        assertNotNull(role);
-        assertEquals("ACCOUNTADMIN", role.getName());
-        assertNotNull(role.getComment());
-        assertTrue(role.getComment().contains("Account administrator"));
+        assertEquals("ACCOUNTADMIN", roleCell("accountadmin", "name"));
+        assertTrue(roleCell("accountadmin", "comment").contains("Account administrator"));
     }
 
     @Test
     public void testSecurityAdminRoleExists() {
-        Role role = engine.getCatalog().getRole("SECURITYADMIN");
-        assertNotNull(role);
-        assertEquals("SECURITYADMIN", role.getName());
-        assertNotNull(role.getComment());
-        assertTrue(role.getComment().contains("Security administrator"));
+        assertEquals("SECURITYADMIN", roleCell("securityadmin", "name"));
+        assertTrue(roleCell("securityadmin", "comment").contains("Security administrator"));
     }
 
     @Test
     public void testUserAdminRoleExists() {
-        Role role = engine.getCatalog().getRole("USERADMIN");
-        assertNotNull(role);
-        assertEquals("USERADMIN", role.getName());
-        assertNotNull(role.getComment());
-        assertTrue(role.getComment().contains("User administrator"));
+        assertEquals("USERADMIN", roleCell("useradmin", "name"));
+        assertTrue(roleCell("useradmin", "comment").contains("User administrator"));
     }
 
     @Test
     public void testSysAdminRoleExists() {
-        Role role = engine.getCatalog().getRole("SYSADMIN");
-        assertNotNull(role);
-        assertEquals("SYSADMIN", role.getName());
-        assertNotNull(role.getComment());
-        assertTrue(role.getComment().contains("System administrator"));
+        assertEquals("SYSADMIN", roleCell("sysadmin", "name"));
+        assertTrue(roleCell("sysadmin", "comment").contains("System administrator"));
     }
 
     @Test
     public void testPublicRoleExists() {
-        Role role = engine.getCatalog().getRole("PUBLIC");
-        assertNotNull(role);
-        assertEquals("PUBLIC", role.getName());
-        assertNotNull(role.getComment());
-        assertTrue(role.getComment().contains("Public role"));
+        assertEquals("PUBLIC", roleCell("public", "name"));
+        assertTrue(roleCell("public", "comment").contains("Public role"));
     }
 
     @Test
     public void testRoleHierarchy() {
-        // Test role hierarchy relationships
-        Role orgAdmin = engine.getCatalog().getRole("ORGADMIN");
-        Role accountAdmin = engine.getCatalog().getRole("ACCOUNTADMIN");
-        Role securityAdmin = engine.getCatalog().getRole("SECURITYADMIN");
-        Role userAdmin = engine.getCatalog().getRole("USERADMIN");
-
-        // ORGADMIN should have ACCOUNTADMIN
-        assertTrue(orgAdmin.hasRole("ACCOUNTADMIN"),
-            "ORGADMIN should have ACCOUNTADMIN role granted");
-
-        // ACCOUNTADMIN should have SECURITYADMIN and SYSADMIN
-        assertTrue(accountAdmin.hasRole("SECURITYADMIN"),
+        // SHOW GRANTS TO ROLE ACCOUNTADMIN enumerates every ownership grant the account has ever
+        // accumulated, and on the shared harness account that no longer completes within its
+        // 300-second statement timeout — so the hierarchy edges are asserted embedded only.
+        // ORGADMIN's empty listing (the next test) returns instantly and stays live.
+        Assumptions.assumeFalse(isLiveSnowflake(),
+            "SHOW GRANTS TO ROLE ACCOUNTADMIN exceeds the shared account's statement timeout");
+        assertTrue(roleGranted("ACCOUNTADMIN", "SECURITYADMIN"),
             "ACCOUNTADMIN should have SECURITYADMIN role granted");
-        assertTrue(accountAdmin.hasRole("SYSADMIN"),
+        assertTrue(roleGranted("ACCOUNTADMIN", "SYSADMIN"),
             "ACCOUNTADMIN should have SYSADMIN role granted");
-
-        // SECURITYADMIN should have USERADMIN
-        assertTrue(securityAdmin.hasRole("USERADMIN"),
+        assertTrue(roleGranted("SECURITYADMIN", "USERADMIN"),
             "SECURITYADMIN should have USERADMIN role granted");
     }
 
     @Test
+    public void testOrgAdminStandsOutsideTheHierarchy() {
+        // ORGADMIN is granted no ROLE at all — it is not ACCOUNTADMIN's parent (live-verified).
+        // Its own object privileges are a separate matter and are not asserted here.
+        assertFalse(roleGranted("ORGADMIN", "ACCOUNTADMIN"),
+            "ORGADMIN must not hold ACCOUNTADMIN");
+
+        final ResultSet grants = engine.executeQuery("SHOW GRANTS TO ROLE ORGADMIN");
+        assertEquals(0, rowsWhere(grants, "granted_on", "ROLE").size(),
+            "ORGADMIN should hold no role grants");
+    }
+
+    @Test
     public void testCannotDropOrgAdmin() {
-        RuntimeException exception = assertThrows(RuntimeException.class, () -> {
-            engine.execute("DROP ROLE ORGADMIN");
-        });
-        assertTrue(exception.getMessage().contains("Cannot drop system role"));
+        assertDropRoleRefused("ORGADMIN");
     }
 
     @Test
     public void testCannotDropAccountAdmin() {
-        RuntimeException exception = assertThrows(RuntimeException.class, () -> {
-            engine.execute("DROP ROLE ACCOUNTADMIN");
-        });
-        assertTrue(exception.getMessage().contains("Cannot drop system role"));
+        assertDropRoleRefused("ACCOUNTADMIN");
     }
 
     @Test
     public void testCannotDropSecurityAdmin() {
-        RuntimeException exception = assertThrows(RuntimeException.class, () -> {
-            engine.execute("DROP ROLE SECURITYADMIN");
-        });
-        assertTrue(exception.getMessage().contains("Cannot drop system role"));
+        assertDropRoleRefused("SECURITYADMIN");
     }
 
     @Test
     public void testCannotDropUserAdmin() {
-        RuntimeException exception = assertThrows(RuntimeException.class, () -> {
-            engine.execute("DROP ROLE USERADMIN");
-        });
-        assertTrue(exception.getMessage().contains("Cannot drop system role"));
+        assertDropRoleRefused("USERADMIN");
     }
 
     @Test
     public void testCannotDropSysAdmin() {
-        RuntimeException exception = assertThrows(RuntimeException.class, () -> {
-            engine.execute("DROP ROLE SYSADMIN");
-        });
-        assertTrue(exception.getMessage().contains("Cannot drop system role"));
+        assertDropRoleRefused("SYSADMIN");
     }
 
     @Test
     public void testCannotDropPublicRole() {
-        RuntimeException exception = assertThrows(RuntimeException.class, () -> {
-            engine.execute("DROP ROLE PUBLIC");
-        });
-        assertTrue(exception.getMessage().contains("Cannot drop system role"));
+        assertDropRoleRefused("PUBLIC");
     }
 
     @Test
     public void testCannotCreateSystemRole() {
-        RuntimeException exception = assertThrows(RuntimeException.class, () -> {
-            engine.execute("CREATE ROLE SYSADMIN");
-        });
-        assertTrue(exception.getMessage().contains("Cannot create system role") ||
-                   exception.getMessage().contains("Role already exists"));
+        assertCreateRoleRefused("SYSADMIN");
     }
 
     @Test
     public void testCannotCreateOrgAdmin() {
-        RuntimeException exception = assertThrows(RuntimeException.class, () -> {
-            engine.execute("CREATE ROLE ORGADMIN");
-        });
-        assertTrue(exception.getMessage().contains("Cannot create system role") ||
-                   exception.getMessage().contains("Role already exists"));
+        assertCreateRoleRefused("ORGADMIN");
     }
 
     @Test
     public void testCannotCreateAccountAdmin() {
-        RuntimeException exception = assertThrows(RuntimeException.class, () -> {
-            engine.execute("CREATE ROLE ACCOUNTADMIN");
-        });
-        assertTrue(exception.getMessage().contains("Cannot create system role") ||
-                   exception.getMessage().contains("Role already exists"));
+        assertCreateRoleRefused("ACCOUNTADMIN");
     }
 
     @Test
     public void testShowRolesIncludesSystemRoles() {
-        ResultSet result = engine.executeQuery("SHOW ROLES");
+        final ResultSet rs = engine.executeQuery("SHOW ROLES");
 
-        boolean foundOrgAdmin = false;
-        boolean foundAccountAdmin = false;
-        boolean foundSecurityAdmin = false;
-        boolean foundUserAdmin = false;
-        boolean foundSysAdmin = false;
-        boolean foundPublic = false;
-
-        while (result.next()) {
-            String roleName = (String) result.getValue("name");
-            if ("ORGADMIN".equals(roleName)) foundOrgAdmin = true;
-            if ("ACCOUNTADMIN".equals(roleName)) foundAccountAdmin = true;
-            if ("SECURITYADMIN".equals(roleName)) foundSecurityAdmin = true;
-            if ("USERADMIN".equals(roleName)) foundUserAdmin = true;
-            if ("SYSADMIN".equals(roleName)) foundSysAdmin = true;
-            if ("PUBLIC".equals(roleName)) foundPublic = true;
-        }
-
-        assertTrue(foundOrgAdmin, "SHOW ROLES should include ORGADMIN");
-        assertTrue(foundAccountAdmin, "SHOW ROLES should include ACCOUNTADMIN");
-        assertTrue(foundSecurityAdmin, "SHOW ROLES should include SECURITYADMIN");
-        assertTrue(foundUserAdmin, "SHOW ROLES should include USERADMIN");
-        assertTrue(foundSysAdmin, "SHOW ROLES should include SYSADMIN");
-        assertTrue(foundPublic, "SHOW ROLES should include PUBLIC");
+        soleRowWhere(rs, "name", "ORGADMIN");
+        soleRowWhere(rs, "name", "ACCOUNTADMIN");
+        soleRowWhere(rs, "name", "SECURITYADMIN");
+        soleRowWhere(rs, "name", "USERADMIN");
+        soleRowWhere(rs, "name", "SYSADMIN");
+        soleRowWhere(rs, "name", "PUBLIC");
     }
 
     @Test
     public void testCanCreateCustomRoles() {
-        // Creating custom roles should still work
         engine.execute("CREATE ROLE my_custom_role");
 
-        Role role = engine.getCatalog().getRole("MY_CUSTOM_ROLE");
-        assertNotNull(role);
-        assertEquals("MY_CUSTOM_ROLE", role.getName());
+        assertEquals("MY_CUSTOM_ROLE", roleCell("my_custom_role", "name"));
     }
 
     @Test
     public void testCanDropCustomRoles() {
-        // Creating and dropping custom roles should work
         engine.execute("CREATE ROLE test_role");
         engine.execute("DROP ROLE test_role");
 
-        RuntimeException exception = assertThrows(RuntimeException.class, () -> {
-            engine.getCatalog().getRole("TEST_ROLE");
-        });
-        assertTrue(exception.getMessage().contains("Role 'TEST_ROLE' does not exist or not authorized."));
+        assertEquals(0, roleCount("test_role"));
     }
 
     @Test
     public void testSystemRoleCaseInsensitive() {
-        // System roles should be recognized in any case
-        assertTrue(engine.getCatalog().isSystemRole("ORGADMIN"));
-        assertTrue(engine.getCatalog().isSystemRole("orgadmin"));
-        assertTrue(engine.getCatalog().isSystemRole("OrgAdmin"));
-        assertTrue(engine.getCatalog().isSystemRole("ACCOUNTADMIN"));
-        assertTrue(engine.getCatalog().isSystemRole("accountadmin"));
-        assertTrue(engine.getCatalog().isSystemRole("SYSADMIN"));
-        assertTrue(engine.getCatalog().isSystemRole("sysadmin"));
-        assertTrue(engine.getCatalog().isSystemRole("PUBLIC"));
-        assertTrue(engine.getCatalog().isSystemRole("public"));
+        // The guard recognizes system roles in any spelling: every cased DROP is refused.
+        assertDropRoleRefused("orgadmin");
+        assertDropRoleRefused("OrgAdmin");
+        assertDropRoleRefused("accountadmin");
+        assertDropRoleRefused("AccountAdmin");
+        assertDropRoleRefused("sysadmin");
+        assertDropRoleRefused("public");
     }
 
     @Test
     public void testNonSystemRoleNotRecognized() {
-        assertFalse(engine.getCatalog().isSystemRole("CUSTOM_ROLE"));
-        assertFalse(engine.getCatalog().isSystemRole("MY_ROLE"));
-        assertFalse(engine.getCatalog().isSystemRole("ADMIN"));
+        // Non-system names pass the guard: they can be created and dropped freely.
+        engine.execute("CREATE ROLE admin");
+        assertEquals(1, roleCount("admin"));
+        engine.execute("DROP ROLE admin");
+        assertEquals(0, roleCount("admin"));
+
+        engine.execute("CREATE ROLE my_role");
+        engine.execute("DROP ROLE my_role");
+        assertEquals(0, roleCount("my_role"));
     }
 }

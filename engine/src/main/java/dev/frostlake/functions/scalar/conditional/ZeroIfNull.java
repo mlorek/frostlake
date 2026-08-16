@@ -26,11 +26,13 @@ public class ZeroIfNull extends NumericArgumentFunction {
 
     @Override
     public Object evaluate(final List<Object> args) {
-        Object v = args.get(0);
+        final Object v = args.get(0);
         if (v == null) return 0L;
         return v;
     }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return 1; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return 1; }
 }

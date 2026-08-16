@@ -17,6 +17,7 @@
 package dev.frostlake.executor.commands;
 
 import dev.frostlake.executor.QueryExecutor;
+import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.executor.expressions.AntlrExpressionParser;
 import dev.frostlake.executor.udf.JavaFunctionCompiler;
 import dev.frostlake.executor.udf.UdfLanguageRuntime;
@@ -99,6 +100,13 @@ final class RoutineBodyCompiler {
         if (queryExecutor.isProceduralBlock(trimmed)) {
             return;
         }
+        // A scripting condition written without its parentheses is positively known bad — a real
+        // account rejects the procedure at CREATE with the two syntax-error lines the scanner
+        // rebuilds (see BareScriptingConditionScanner).
+        final String bareCondition = BareScriptingConditionScanner.describe(body, false);
+        if (bareCondition != null) {
+            throw new RuntimeException(SqlCompilationError.of(bareCondition));
+        }
         // Reject ONLY the positively-known-bad shape: a body that is a single plain SQL statement
         // ('SELECT a + b', 'UPDATE …'), which Snowflake rejects live. Anything else is left alone —
         // Frostlake's grammar is a SUBSET of Snowflake's, so a body it cannot fully read (a long
@@ -155,8 +163,16 @@ final class RoutineBodyCompiler {
         try {
             expression = AntlrExpressionParser.parseTree(trimmed);
         } catch (final RuntimeException notAnExpression) {
-            // FAIL-OPEN, for the same reason as the procedure check: a body the engine's grammar cannot
-            // read is unknown, not invalid. Rejecting it would break bodies the account itself accepts.
+            // A scripting condition without its parentheses is positively known bad even here — a
+            // real account rejects the function at CREATE, anchored on the condition keyword.
+            final String bareCondition = BareScriptingConditionScanner.describe(body, true);
+            if (bareCondition != null) {
+                throw new RuntimeException(
+                    "Compilation of SQL UDF failed: " + SqlCompilationError.of(bareCondition));
+            }
+            // Otherwise FAIL-OPEN, for the same reason as the procedure check: a body the engine's
+            // grammar cannot read is unknown, not invalid. Rejecting it would break bodies the
+            // account itself accepts.
             return;
         }
         validator.rejectScriptingUdfCalls(expression);

@@ -16,9 +16,21 @@
 
 package dev.frostlake.jdbc;
 
+import dev.frostlake.executor.SqlIdentifiers;
+import dev.frostlake.http.ResultSetData;
 import dev.frostlake.http.SqlResponse;
+import dev.frostlake.parser.FrostlakeLexer;
 
-import java.sql.*;
+import org.antlr.v4.runtime.CharStreams;
+import org.antlr.v4.runtime.Token;
+
+import java.sql.BatchUpdateException;
+import java.sql.Connection;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.sql.SQLFeatureNotSupportedException;
+import java.sql.SQLWarning;
+import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -32,8 +44,9 @@ public class DatabaseStatement implements Statement {
     protected DatabaseResultSet currentResultSet;
     // Every result set produced by the last (possibly multi-statement) execute, plus a cursor into them so
     // getMoreResults() walks past the first — a batch like "SELECT …; SELECT …" exposes every result.
-    protected List<SqlResponse.ResultSetData> pendingResultData = new ArrayList<>();
+    protected List<ResultSetData> pendingResultData = new ArrayList<>();
     protected int resultDataIndex = 0;
+    protected final List<String> batchedSql = new ArrayList<>();
     protected int updateCount;
     protected int maxRows;
 
@@ -45,10 +58,55 @@ public class DatabaseStatement implements Statement {
         this.maxRows = 0;
     }
 
-    @Override
+
+    /** Per-statement MULTI_STATEMENT_COUNT set via {@link #setParameter}, overriding the session's. */
+    private Integer statementMultiCount;
+
+    /**
+     * The real driver's per-statement parameter surface ({@code unwrap(...).setParameter(...)});
+     * MULTI_STATEMENT_COUNT is the one parameter this driver understands.
+     */
+    public void setParameter(final String name, final int value) throws SQLException {
+        if (!"MULTI_STATEMENT_COUNT".equalsIgnoreCase(name)) {
+            throw new SQLException("Unknown statement parameter: " + name);
+        }
+        this.statementMultiCount = Integer.valueOf(value);
+    }
+
+    /**
+     * The multi-statement gate the real driver runs before executing (live-verified): the pack's
+     * statement count must EQUAL the desired count — per-statement parameter first, else the
+     * connection's session value — with 0 meaning any. An exact ALTER SESSION SET/UNSET
+     * MULTI_STATEMENT_COUNT statement passes through and moves the connection's value.
+     */
+    private void applyMultiStatementGate(final String sql) throws SQLException {
+        // The ALTER SESSION statement is gated like any other (live-verified: under count 2 even
+        // the UNSET refuses as 1 vs 2 — the per-statement parameter is the escape hatch); its
+        // assignment takes effect only once it passes.
+        gate(sql);
+        final Integer assigned = JdbcMultiStatement.sessionCountAssignment(sql);
+        if (assigned != null) {
+            connection.setMultiStatementCount(assigned.intValue());
+            return;
+        }
+    }
+
+    private void gate(final String sql) throws SQLException {
+        final int desired = statementMultiCount != null
+            ? statementMultiCount.intValue() : connection.getMultiStatementCount();
+        if (desired == 0) {
+            return;
+        }
+        final int actual = JdbcMultiStatement.countStatements(sql);
+        if (actual != desired) {
+            throw JdbcMultiStatement.countMismatch(actual, desired);
+        }
+    }
+
     public ResultSet executeQuery(final String sql) throws SQLException {
         checkClosed();
-        SqlResponse response = httpClient.execute(sql);
+        applyMultiStatementGate(sql);
+        final SqlResponse response = httpClient.execute(sql);
         pendingResultData = response.getResultSets() != null ? response.getResultSets() : new ArrayList<>();
         resultDataIndex = 0;
 
@@ -64,7 +122,8 @@ public class DatabaseStatement implements Statement {
     @Override
     public int executeUpdate(final String sql) throws SQLException {
         checkClosed();
-        SqlResponse response = httpClient.execute(sql);
+        applyMultiStatementGate(sql);
+        final SqlResponse response = httpClient.execute(sql);
         updateContextFromSql(sql);
 
         // DML statements report their affected-row count as a Snowflake-style result set
@@ -80,7 +139,7 @@ public class DatabaseStatement implements Statement {
             return 0;
         }
         long total = 0;
-        for (final SqlResponse.ResultSetData data : response.getResultSets()) {
+        for (final ResultSetData data : response.getResultSets()) {
             if (data.getColumns() == null || data.getRows() == null || data.getRows().isEmpty()) {
                 continue;
             }
@@ -171,7 +230,8 @@ public class DatabaseStatement implements Statement {
     @Override
     public boolean execute(final String sql) throws SQLException {
         checkClosed();
-        SqlResponse response = httpClient.execute(sql);
+        applyMultiStatementGate(sql);
+        final SqlResponse response = httpClient.execute(sql);
         updateContextFromSql(sql);
         pendingResultData = response.getResultSets() != null ? response.getResultSets() : new ArrayList<>();
         resultDataIndex = 0;
@@ -187,17 +247,54 @@ public class DatabaseStatement implements Statement {
         }
     }
 
-    /** Update the connection's cached catalog/schema when USE DATABASE/SCHEMA is executed. */
+    /**
+     * Update the connection's cached catalog/schema when USE DATABASE/SCHEMA is executed. Decided
+     * from LEXER TOKENS, not string offsets: the former prefix check ran on whitespace-NORMALIZED
+     * text while its substring offsets indexed the RAW text, so extra whitespace cut into the name
+     * — and a quoted name kept its quotes and was then case-folded. Only the exact single-statement
+     * shapes update the cache; USE SCHEMA db.sc updates both halves.
+     */
     protected void updateContextFromSql(final String sql) {
         if (sql == null || connection == null) return;
-        String upper = sql.trim().toUpperCase().replaceAll("\\s+", " ");
-        if (upper.startsWith("USE DATABASE ")) {
-            String db = sql.trim().substring("USE DATABASE ".length()).trim().replaceAll(";$", "").trim();
-            connection.updateCatalog(db.toUpperCase());
-        } else if (upper.startsWith("USE SCHEMA ")) {
-            String schema = sql.trim().substring("USE SCHEMA ".length()).trim().replaceAll(";$", "").trim();
-            connection.updateSchema(schema.toUpperCase());
+        final List<Token> tokens = new ArrayList<>();
+        try {
+            final FrostlakeLexer lexer = new FrostlakeLexer(CharStreams.fromString(sql));
+            lexer.removeErrorListeners();
+            for (Token t = lexer.nextToken(); t.getType() != Token.EOF; t = lexer.nextToken()) {
+                if (t.getChannel() == Token.DEFAULT_CHANNEL) {
+                    tokens.add(t);
+                }
+            }
+        } catch (final RuntimeException notLexable) {
+            return;
         }
+        if (tokens.isEmpty() || tokens.get(0).getType() != FrostlakeLexer.USE) {
+            return;
+        }
+        if (tokens.get(tokens.size() - 1).getType() == FrostlakeLexer.SEMI) {
+            tokens.remove(tokens.size() - 1);
+        }
+        if (tokens.size() < 3) {
+            return;
+        }
+        final int kw = tokens.get(1).getType();
+        if (kw == FrostlakeLexer.DATABASE && tokens.size() == 3 && isUseNamePart(tokens.get(2))) {
+            connection.updateCatalog(SqlIdentifiers.canonicalText(tokens.get(2).getText()));
+        } else if (kw == FrostlakeLexer.SCHEMA && tokens.size() == 3 && isUseNamePart(tokens.get(2))) {
+            connection.updateSchema(SqlIdentifiers.canonicalText(tokens.get(2).getText()));
+        } else if (kw == FrostlakeLexer.SCHEMA && tokens.size() == 5
+                && isUseNamePart(tokens.get(2))
+                && tokens.get(3).getType() == FrostlakeLexer.DOT
+                && isUseNamePart(tokens.get(4))) {
+            connection.updateCatalog(SqlIdentifiers.canonicalText(tokens.get(2).getText()));
+            connection.updateSchema(SqlIdentifiers.canonicalText(tokens.get(4).getText()));
+        }
+    }
+
+    /** A token that can serve as the name in USE DATABASE/SCHEMA — anything but punctuation. */
+    private boolean isUseNamePart(final Token token) {
+        final int type = token.getType();
+        return type != FrostlakeLexer.SEMI && type != FrostlakeLexer.DOT;
     }
 
     @Override
@@ -260,17 +357,46 @@ public class DatabaseStatement implements Statement {
 
     @Override
     public void addBatch(final String sql) throws SQLException {
-        throw new SQLFeatureNotSupportedException("Batch updates not supported");
+        checkClosed();
+        batchedSql.add(sql);
     }
 
     @Override
     public void clearBatch() throws SQLException {
-        throw new SQLFeatureNotSupportedException("Batch updates not supported");
+        checkClosed();
+        batchedSql.clear();
     }
 
     @Override
+    /**
+     * Live runs every batched statement even when one fails: each entry reports its real
+     * affected-row count (not SUCCESS_NO_INFO), a failed entry is marked {@code EXECUTE_FAILED},
+     * and after the batch a {@link BatchUpdateException} carries the FIRST failure's message,
+     * SQLSTATE and error code together with the complete update-count array.
+     */
     public int[] executeBatch() throws SQLException {
-        throw new SQLFeatureNotSupportedException("Batch updates not supported");
+        checkClosed();
+        final int[] counts = new int[batchedSql.size()];
+        SQLException firstFailure = null;
+        try {
+            for (int i = 0; i < batchedSql.size(); i++) {
+                try {
+                    counts[i] = executeUpdate(batchedSql.get(i));
+                } catch (final SQLException e) {
+                    counts[i] = EXECUTE_FAILED;
+                    if (firstFailure == null) {
+                        firstFailure = e;
+                    }
+                }
+            }
+        } finally {
+            batchedSql.clear();
+        }
+        if (firstFailure != null) {
+            throw new BatchUpdateException(firstFailure.getMessage(), firstFailure.getSQLState(),
+                    firstFailure.getErrorCode(), counts, firstFailure);
+        }
+        return counts;
     }
 
     @Override

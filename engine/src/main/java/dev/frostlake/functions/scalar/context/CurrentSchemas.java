@@ -37,6 +37,8 @@ public class CurrentSchemas extends BuiltInFunction {
         return "[\"" + catalog.getCurrentDatabase() + "." + catalog.getCurrentSchema() + "\"]";
     }
 
-    @Override public int getMinArgCount() { return 0; }
-    @Override public int getMaxArgCount() { return 0; }
+    @Override
+    public int getMinArgCount() { return 0; }
+    @Override
+    public int getMaxArgCount() { return 0; }
 }

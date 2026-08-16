@@ -40,22 +40,21 @@ public class SessionContext {
     private final Map<String, Object> sessionVariables;
 
     public SessionContext() {
-        this.sessionId = UUID.randomUUID().toString();
-        this.createdAt = System.currentTimeMillis();
-        this.lastAccessTime = new AtomicLong(System.currentTimeMillis());
-        this.currentDatabase = "SNOWFLAKE";
-        this.currentSchema = "PUBLIC";
-        this.autoCommit = true;
-        this.inTransaction = false;
-        this.sessionVariables = new HashMap<>();
+        this(UUID.randomUUID().toString(), "SNOWFLAKE", "PUBLIC");
     }
 
     public SessionContext(final String sessionId) {
+        this(sessionId, "SNOWFLAKE", "PUBLIC");
+    }
+
+    /** A session starting where the server's configured defaults point. */
+    public SessionContext(final String sessionId, final String defaultDatabase,
+                          final String defaultSchema) {
         this.sessionId = sessionId;
         this.createdAt = System.currentTimeMillis();
         this.lastAccessTime = new AtomicLong(System.currentTimeMillis());
-        this.currentDatabase = "SNOWFLAKE";
-        this.currentSchema = "PUBLIC";
+        this.currentDatabase = defaultDatabase;
+        this.currentSchema = defaultSchema;
         this.autoCommit = true;
         this.inTransaction = false;
         this.sessionVariables = new HashMap<>();

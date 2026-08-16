@@ -38,7 +38,7 @@ import javax.crypto.spec.SecretKeySpec;
  */
 public class DecryptRaw extends BuiltInFunction {
 
-    public DecryptRaw() { super("DECRYPT_RAW", BinaryType.BINARY); }
+    public DecryptRaw() { super("DECRYPT_RAW", BinaryType.VARBINARY); }
 
     @Override
     public Object evaluate(final List<Object> args) {
@@ -53,15 +53,15 @@ public class DecryptRaw extends BuiltInFunction {
         if (tagArg == null) {
             throw new RuntimeException("Decryption mode requires an AEAD tag as parameter");
         }
-        final byte[] tag = RawCipherSupport.hexToBytes("DECRYPT_RAW", tagArg.toString());
+        final byte[] tag = RawCipherSupport.binaryBytes("DECRYPT_RAW", tagArg);
         if (tag.length != RawCipherSupport.GCM_TAG_BITS / 8) {
             throw new RuntimeException("Wrong AEAD tag size. Expected "
                 + (RawCipherSupport.GCM_TAG_BITS / 8) + ", but got " + tag.length);
         }
         try {
-            final byte[] ciphertext = RawCipherSupport.hexToBytes("DECRYPT_RAW", args.get(0).toString());
-            final byte[] key = RawCipherSupport.hexToBytes("DECRYPT_RAW", args.get(1).toString());
-            final byte[] iv = RawCipherSupport.hexToBytes("DECRYPT_RAW", args.get(2).toString());
+            final byte[] ciphertext = RawCipherSupport.binaryBytes("DECRYPT_RAW", args.get(0));
+            final byte[] key = RawCipherSupport.binaryBytes("DECRYPT_RAW", args.get(1));
+            final byte[] iv = RawCipherSupport.binaryBytes("DECRYPT_RAW", args.get(2));
             // Java's GCM cipher expects the tag appended to the ciphertext; reassemble the two.
             final byte[] combined = new byte[ciphertext.length + tag.length];
             System.arraycopy(ciphertext, 0, combined, 0, ciphertext.length);
@@ -70,7 +70,7 @@ public class DecryptRaw extends BuiltInFunction {
             cipher.init(Cipher.DECRYPT_MODE, new SecretKeySpec(key, "AES"),
                 new GCMParameterSpec(RawCipherSupport.GCM_TAG_BITS, iv));
             if (aadArg != null) {
-                cipher.updateAAD(RawCipherSupport.hexToBytes("DECRYPT_RAW", aadArg.toString()));
+                cipher.updateAAD(RawCipherSupport.binaryBytes("DECRYPT_RAW", aadArg));
             }
             return BinaryValue.of(cipher.doFinal(combined));
         } catch (final Exception e) {
@@ -78,6 +78,8 @@ public class DecryptRaw extends BuiltInFunction {
         }
     }
 
-    @Override public int getMinArgCount() { return 3; }
-    @Override public int getMaxArgCount() { return 6; }
+    @Override
+    public int getMinArgCount() { return 3; }
+    @Override
+    public int getMaxArgCount() { return 6; }
 }

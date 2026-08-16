@@ -19,6 +19,8 @@ package dev.frostlake.functions.scalar.crypto;
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
 import dev.frostlake.types.VariantType;
+import dev.frostlake.values.BinaryValue;
+import dev.frostlake.values.TypedScalarNode;
 import tools.jackson.databind.node.ObjectNode;
 
 import java.util.Arrays;
@@ -48,12 +50,12 @@ public class EncryptRaw extends BuiltInFunction {
             return null;
         }
         final byte[] aad = args.size() >= 4 && args.get(3) != null
-            ? RawCipherSupport.hexToBytes("ENCRYPT_RAW", args.get(3).toString()) : null;
+            ? RawCipherSupport.binaryBytes("ENCRYPT_RAW", args.get(3)) : null;
         RawCipherSupport.requireGcm("ENCRYPT_RAW", args.size() >= 5 ? args.get(4) : null);
         try {
-            final byte[] plaintext = RawCipherSupport.hexToBytes("ENCRYPT_RAW", args.get(0).toString());
-            final byte[] key = RawCipherSupport.hexToBytes("ENCRYPT_RAW", args.get(1).toString());
-            final byte[] iv = RawCipherSupport.hexToBytes("ENCRYPT_RAW", args.get(2).toString());
+            final byte[] plaintext = RawCipherSupport.binaryBytes("ENCRYPT_RAW", args.get(0));
+            final byte[] key = RawCipherSupport.binaryBytes("ENCRYPT_RAW", args.get(1));
+            final byte[] iv = RawCipherSupport.binaryBytes("ENCRYPT_RAW", args.get(2));
             final Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
             cipher.init(Cipher.ENCRYPT_MODE, new SecretKeySpec(key, "AES"),
                 new GCMParameterSpec(RawCipherSupport.GCM_TAG_BITS, iv));
@@ -65,15 +67,27 @@ public class EncryptRaw extends BuiltInFunction {
             final byte[] ciphertext = Arrays.copyOfRange(out, 0, out.length - RawCipherSupport.GCM_TAG_BYTES);
             final byte[] tag = Arrays.copyOfRange(out, out.length - RawCipherSupport.GCM_TAG_BYTES, out.length);
             final ObjectNode result = ArrayFunctionHelper.MAPPER.createObjectNode();
-            result.put("ciphertext", RawCipherSupport.bytesToHex(ciphertext));
-            result.put("iv", RawCipherSupport.bytesToHex(iv));
-            result.put("tag", RawCipherSupport.bytesToHex(tag));
-            return result.toString();
+            // The members keep their BINARY type (live: TYPEOF(o:ciphertext) is BINARY and
+            // AS_BINARY over it returns the bytes) while rendering as the same hex text.
+            result.set("ciphertext", binaryMember(ciphertext));
+            result.set("iv", binaryMember(iv));
+            result.set("tag", binaryMember(tag));
+            // Return the typed variant, not its text: as text the members' BINARY typing would be
+            // discarded before the caller ever sees them (TYPEOF/AS_BINARY then say VARCHAR/NULL).
+            return dev.frostlake.values.VariantValue.ofNode(result);
         } catch (final Exception e) {
             throw new RuntimeException("ENCRYPT_RAW failed: " + e.getMessage());
         }
     }
 
-    @Override public int getMinArgCount() { return 3; }
-    @Override public int getMaxArgCount() { return 5; }
+
+    /** One BINARY member of the returned object: hex text on the wire, BINARY to TYPEOF / AS_BINARY. */
+    private static TypedScalarNode binaryMember(final byte[] bytes) {
+        return new TypedScalarNode(RawCipherSupport.bytesToHex(bytes), BinaryValue.of(bytes));
+    }
+
+    @Override
+    public int getMinArgCount() { return 3; }
+    @Override
+    public int getMaxArgCount() { return 5; }
 }

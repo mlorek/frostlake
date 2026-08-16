@@ -22,6 +22,7 @@ import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -37,6 +38,12 @@ public class Generator extends TableFunction {
         super("GENERATOR");
     }
 
+    /** A positional argument is not one GENERATOR can use, and live answers zero rows rather than refuse. */
+    @Override
+    public ResultSet execute(final List<Object> positionalArgs) {
+        return execute(new HashMap<String, Object>());
+    }
+
     @Override
     public ResultSet execute(final Map<String, Object> namedArgs) {
         validateArgs(namedArgs);
@@ -44,7 +51,7 @@ public class Generator extends TableFunction {
         // Get rowcount parameter
         Integer rowCount = null;
         if (namedArgs.containsKey("ROWCOUNT")) {
-            Object value = namedArgs.get("ROWCOUNT");
+            final Object value = namedArgs.get("ROWCOUNT");
             if (value instanceof Number) {
                 rowCount = ((Number) value).intValue();
             } else if (value instanceof String) {
@@ -55,7 +62,7 @@ public class Generator extends TableFunction {
         // Get timelimit parameter (in seconds)
         Integer timeLimit = null;
         if (namedArgs.containsKey("TIMELIMIT")) {
-            Object value = namedArgs.get("TIMELIMIT");
+            final Object value = namedArgs.get("TIMELIMIT");
             if (value instanceof Number) {
                 timeLimit = ((Number) value).intValue();
             } else if (value instanceof String) {
@@ -65,9 +72,9 @@ public class Generator extends TableFunction {
 
         // Snowflake's GENERATOR produces ZERO columns (live-verified: SELECT * over it fails with
         // "SELECT with no columns") — consumers project literals/expressions over the row count.
-        List<ResultSetColumn> columns = new ArrayList<>();
+        final List<ResultSetColumn> columns = new ArrayList<>();
 
-        List<Row> rows = new ArrayList<>();
+        final List<Row> rows = new ArrayList<>();
 
         if (rowCount != null) {
             // Generate specified number of rows
@@ -76,8 +83,8 @@ public class Generator extends TableFunction {
             }
         } else if (timeLimit != null) {
             // Generate rows for specified time period
-            long startTime = System.currentTimeMillis();
-            long endTime = startTime + (timeLimit * 1000L);
+            final long startTime = System.currentTimeMillis();
+            final long endTime = startTime + (timeLimit * 1000L);
             int generated = 0;
 
             while (System.currentTimeMillis() < endTime) {
@@ -99,26 +106,20 @@ public class Generator extends TableFunction {
         return new ResultSet(columns, rows);
     }
 
+    /**
+     * GENERATOR is the permissive end of the table-function family: it IGNORES what it does not
+     * recognise instead of refusing it. Live answers zero rows — not an error — for
+     * {@code GENERATOR()}, for the positional {@code GENERATOR(3)} and for
+     * {@code GENERATOR(NOSUCH =&gt; 3)} alike, so an argument it cannot use simply leaves the row count
+     * unset. Only the values of ROWCOUNT and TIMELIMIT are judged.
+     */
     @Override
     public void validateArgs(final Map<String, Object> namedArgs) {
-        if (namedArgs.isEmpty()) {
-            throw new RuntimeException("GENERATOR function requires at least one argument (ROWCOUNT or TIMELIMIT)");
-        }
-
-        // Check for valid argument names
-        for (final String key : namedArgs.keySet()) {
-            String upperKey = key.toUpperCase();
-            if (!upperKey.equals("ROWCOUNT") && !upperKey.equals("TIMELIMIT")) {
-                throw new RuntimeException("Invalid argument for GENERATOR: " + key +
-                    ". Valid arguments are ROWCOUNT and TIMELIMIT");
-            }
-        }
-
         // Validate ROWCOUNT
         if (namedArgs.containsKey("ROWCOUNT")) {
-            Object value = namedArgs.get("ROWCOUNT");
+            final Object value = namedArgs.get("ROWCOUNT");
             try {
-                int rowCount;
+                final int rowCount;
                 if (value instanceof Number) {
                     rowCount = ((Number) value).intValue();
                 } else if (value instanceof String) {
@@ -136,9 +137,9 @@ public class Generator extends TableFunction {
 
         // Validate TIMELIMIT
         if (namedArgs.containsKey("TIMELIMIT")) {
-            Object value = namedArgs.get("TIMELIMIT");
+            final Object value = namedArgs.get("TIMELIMIT");
             try {
-                int timeLimit;
+                final int timeLimit;
                 if (value instanceof Number) {
                     timeLimit = ((Number) value).intValue();
                 } else if (value instanceof String) {

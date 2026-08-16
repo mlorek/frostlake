@@ -39,7 +39,7 @@ public class JsonArrayExpression implements Expression {
 
     @Override
     public String toString() {
-        StringBuilder sb = new StringBuilder("[");
+        final StringBuilder sb = new StringBuilder("[");
         for (int i = 0; i < elements.size(); i++) {
             if (i > 0) sb.append(", ");
             sb.append(elements.get(i));

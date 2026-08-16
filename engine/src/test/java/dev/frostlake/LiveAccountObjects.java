@@ -26,7 +26,6 @@ import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
-import java.util.Locale;
 import java.util.Set;
 
 /**
@@ -119,7 +118,7 @@ public final class LiveAccountObjects {
                 if (before.contains(name)) {
                     continue;
                 }
-                if (WORKING_DATABASE.equals(name) && "DATABASE".equals(KINDS[i][1])) {
+                if (WORKING_DATABASE.equalsIgnoreCase(name) && "DATABASE".equals(KINDS[i][1])) {
                     continue;
                 }
                 drop(connection, KINDS[i][1], name);
@@ -141,7 +140,12 @@ public final class LiveAccountObjects {
         try (final Statement statement = connection.createStatement();
              final ResultSet rs = statement.executeQuery("SHOW " + showTarget)) {
             while (rs.next()) {
-                names.add(rs.getString("name").toUpperCase(Locale.ROOT));
+                // The name is kept EXACTLY as SHOW reports it. Uppercasing it here and then
+                // quoting it in drop() produced DROP DATABASE IF EXISTS "MIXEDDB" for a database
+                // actually named mixedDb: an exact-match miss that IF EXISTS turns into a silent
+                // no-op, so every quoted mixed-case object leaked for good. Baseline and current
+                // listings both come from here, so they still compare like for like.
+                names.add(rs.getString("name"));
             }
         } catch (final SQLException e) {
             logger.warn("Live cleanup: cannot list {} ({}) — that kind will not be cleaned up",

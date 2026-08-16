@@ -48,6 +48,16 @@ public class DatePartEpochTest extends BaseDatabaseTest {
     }
 
     @Test
+    public void epochOfCurrentTimestampIsTheTrueInstant() {
+        // The TRUE instant, not a host-zone-shifted wall reading: on a real account the epoch of
+        // CURRENT_TIMESTAMP is the server's Unix time regardless of session or host time zone.
+        final long engineEpoch = scalar("SELECT DATE_PART(epoch_second, CURRENT_TIMESTAMP())");
+        final long localEpoch = System.currentTimeMillis() / 1000L;
+        assertTrue(Math.abs(engineEpoch - localEpoch) < 120,
+            "engine epoch " + engineEpoch + " vs local " + localEpoch);
+    }
+
+    @Test
     public void epochFamilyDeterministic() {
         assertEquals(1704067200L, epochOf("epoch_second"));
         assertEquals(1704067200L, epochOf("epoch"));               // EPOCH is a synonym of EPOCH_SECOND

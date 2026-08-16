@@ -22,7 +22,6 @@ import dev.frostlake.types.NumericType;
 
 import java.sql.ResultSetMetaData;
 import java.sql.SQLException;
-import java.sql.Types;
 import java.util.List;
 
 /**
@@ -55,7 +54,7 @@ class DirectResultSetMetaData implements ResultSetMetaData {
 
     @Override
     public int getColumnType(final int column) throws SQLException {
-        return JdbcMarshaling.toSqlType(columns.get(column - 1).getDataType().getName());
+        return JdbcMarshaling.toSqlType(columns.get(column - 1).getDataType());
     }
 
     @Override
@@ -85,7 +84,12 @@ class DirectResultSetMetaData implements ResultSetMetaData {
 
     @Override
     public int isNullable(final int column) throws SQLException {
-        return columnNullable;
+        // The driver's rule is NOT the catalog surfaces' rule (live-measured against the account's own
+        // driver): columnNullable only for a column KNOWN to accept NULL, and columnNoNulls for
+        // everything else — a NOT NULL column, an expression over one, and a literal alike. So
+        // SELECT UPPER(v) reads columnNoNulls here while INFORMATION_SCHEMA reports it nullable.
+        final ResultSetColumn described = columns.get(column - 1);
+        return described.isNullabilityKnown() && described.isNullable() ? columnNullable : columnNoNulls;
     }
 
     @Override
@@ -106,13 +110,19 @@ class DirectResultSetMetaData implements ResultSetMetaData {
     @Override
     public int getPrecision(final int column) throws SQLException {
         final DataType type = columns.get(column - 1).getDataType();
-        return type instanceof NumericType ? ((NumericType) type).getPrecision() : 0;
+        // The APPROXIMATE family carries no precision: Snowflake's own driver answers 0 for a FLOAT
+        // column, and every metadata surface agrees with it — SHOW COLUMNS prints {"type":"REAL",
+        // "nullable":true} with no numbers at all, and INFORMATION_SCHEMA leaves both cells NULL.
+        // The engine keeps a nominal pair internally; it must not reach a client through here.
+        return type instanceof NumericType && !NumericType.isApproximate(type)
+            ? ((NumericType) type).getPrecision() : 0;
     }
 
     @Override
     public int getScale(final int column) throws SQLException {
         final DataType type = columns.get(column - 1).getDataType();
-        return type instanceof NumericType ? ((NumericType) type).getScale() : 0;
+        return type instanceof NumericType && !NumericType.isApproximate(type)
+            ? ((NumericType) type).getScale() : 0;
     }
 
     @Override

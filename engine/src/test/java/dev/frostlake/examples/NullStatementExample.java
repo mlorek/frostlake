@@ -34,7 +34,7 @@ public class NullStatementExample {
 
     @Test
     public void demonstrateNullStatement() {
-        DatabaseEngine engine = new DatabaseEngine();
+        final DatabaseEngine engine = new DatabaseEngine();
 
         try {
             engine.execute("CREATE DATABASE demo_db");
@@ -96,7 +96,7 @@ public class NullStatementExample {
 
     @Test
     public void demonstrateNullStatementUseCase() {
-        DatabaseEngine engine = new DatabaseEngine();
+        final DatabaseEngine engine = new DatabaseEngine();
 
         try {
             engine.execute("CREATE DATABASE demo_db");

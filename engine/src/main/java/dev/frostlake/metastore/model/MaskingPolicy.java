@@ -45,5 +45,6 @@ public class MaskingPolicy extends SqlObject {
     public String getReturnType() { return returnType; }
     public String getBody() { return body; }
 
-    @Override public String getObjectType() { return "MASKING POLICY"; }
+    @Override
+    public String getObjectType() { return "MASKING POLICY"; }
 }

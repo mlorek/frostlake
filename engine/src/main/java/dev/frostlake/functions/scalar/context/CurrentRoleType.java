@@ -28,6 +28,8 @@ public class CurrentRoleType extends BuiltInFunction {
     @Override
     public Object evaluate(final List<Object> args) { return "ROLE"; }
 
-    @Override public int getMinArgCount() { return 0; }
-    @Override public int getMaxArgCount() { return 0; }
+    @Override
+    public int getMinArgCount() { return 0; }
+    @Override
+    public int getMaxArgCount() { return 0; }
 }

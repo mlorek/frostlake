@@ -16,7 +16,7 @@
 
 package dev.frostlake.jdbc;
 
-import dev.frostlake.http.SqlResponse;
+import dev.frostlake.http.ColumnData;
 
 import java.sql.ResultSetMetaData;
 import java.sql.SQLException;
@@ -26,9 +26,9 @@ import java.util.List;
  * JDBC ResultSetMetaData implementation for Frostlake SQL Engine
  */
 public class DatabaseResultSetMetaData implements ResultSetMetaData {
-    private final List<SqlResponse.ColumnData> columns;
+    private final List<ColumnData> columns;
 
-    public DatabaseResultSetMetaData(final List<SqlResponse.ColumnData> columns) {
+    public DatabaseResultSetMetaData(final List<ColumnData> columns) {
         this.columns = columns;
     }
 
@@ -59,12 +59,20 @@ public class DatabaseResultSetMetaData implements ResultSetMetaData {
 
     @Override
     public int isNullable(final int column) throws SQLException {
-        return columnNullableUnknown;
+        // The same rule the in-process transport applies (live-measured against the account's own
+        // driver): columnNullable only for a column KNOWN to accept NULL, columnNoNulls for a NOT NULL
+        // column and for every expression and literal alike. A server that predates the wire field
+        // sends nothing, and that stays honestly unknown rather than being guessed either way.
+        final Boolean nullable = columns.get(column - 1).getNullable();
+        if (nullable == null) {
+            return columnNullableUnknown;
+        }
+        return nullable.booleanValue() ? columnNullable : columnNoNulls;
     }
 
     @Override
     public boolean isSigned(final int column) throws SQLException {
-        String type = getColumnTypeName(column);
+        final String type = getColumnTypeName(column);
         return type.contains("INT") || type.contains("DECIMAL") || type.contains("FLOAT") || type.contains("DOUBLE");
     }
 
@@ -113,8 +121,9 @@ public class DatabaseResultSetMetaData implements ResultSetMetaData {
 
     @Override
     public int getColumnType(final int column) throws SQLException {
-        String typeName = getColumnTypeName(column);
-        return mapToSqlType(typeName);
+        // The scale travels on the wire beside the name, and it is what separates an integer column
+        // from a decimal one now that every integer alias is NUMBER — so both transports answer alike.
+        return JdbcMarshaling.toSqlType(getColumnTypeName(column), columns.get(column - 1).getScale());
     }
 
     @Override

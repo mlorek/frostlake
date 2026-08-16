@@ -27,16 +27,18 @@ public class WidthBucket extends NumericArgumentFunction {
     @Override
     public Object evaluate(final List<Object> args) {
         if (args.get(0) == null) return null;
-        double val   = ((Number) args.get(0)).doubleValue();
-        double lo    = ((Number) args.get(1)).doubleValue();
-        double hi    = ((Number) args.get(2)).doubleValue();
-        long   count = ((Number) args.get(3)).longValue();
+        final double val   = ((Number) args.get(0)).doubleValue();
+        final double lo    = ((Number) args.get(1)).doubleValue();
+        final double hi    = ((Number) args.get(2)).doubleValue();
+        final long   count = ((Number) args.get(3)).longValue();
         if (count <= 0) throw new RuntimeException("WIDTH_BUCKET: bucket count must be positive");
         if (val < lo) return 0L;
         if (val >= hi) return count + 1;
         return (long) Math.floor(count * (val - lo) / (hi - lo)) + 1;
     }
 
-    @Override public int getMinArgCount() { return 4; }
-    @Override public int getMaxArgCount() { return 4; }
+    @Override
+    public int getMinArgCount() { return 4; }
+    @Override
+    public int getMaxArgCount() { return 4; }
 }

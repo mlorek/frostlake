@@ -16,34 +16,20 @@
 
 package dev.frostlake.functions;
 
-import dev.frostlake.DatabaseEngine;
-import dev.frostlake.metastore.model.Function;
+import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import static org.junit.jupiter.api.Assertions.*;
-
-public class UserDefinedTableFunctionTest {
+public class UserDefinedTableFunctionTest extends BaseDatabaseTest {
 
     private static final Logger logger = LoggerFactory.getLogger(UserDefinedTableFunctionTest.class);
-    private DatabaseEngine engine;
-
-    @BeforeEach
-    public void setUp() {
-        engine = new DatabaseEngine();
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
-        engine.execute("USE SCHEMA public");
-    }
-
-    @AfterEach
-    public void tearDown() {
-        if (engine != null) engine.shutdown();
-    }
 
     @Test
     public void testCreateAndCallBasicUdtf() {
@@ -58,12 +44,18 @@ public class UserDefinedTableFunctionTest {
                 $$
             """);
 
-        ResultSet rs = engine.executeQuery("SELECT * FROM TABLE(t())");
+        final ResultSet rs = engine.executeQuery("SELECT * FROM TABLE(t())");
         assertNotNull(rs);
         assertEquals(2, rs.getRowCount());
         logger.info("UDTF result: {} rows", rs.getRowCount());
     }
 
+    /**
+     * The declared RETURNS TABLE column reaches the result set under its own name, folded to upper
+     * case. Asserted through SQL rather than off the catalog object: a catalog assertion reads the
+     * EMBEDDED metastore even on a live run, where the function was created on the account, so it
+     * could only ever have tested one side.
+     */
     @Test
     public void testUdtfReturnColumnNames() {
         engine.execute("""
@@ -74,13 +66,10 @@ public class UserDefinedTableFunctionTest {
                 $$
             """);
 
-        String db = engine.getCatalog().getCurrentDatabase();
-        String sc = engine.getCatalog().getCurrentSchema();
-        Function f = engine.getCatalog().getDatabase(db).getSchema(sc).getFunction("GREET");
-        assertNotNull(f);
-        assertTrue(f.isTableFunction());
-        assertEquals(1, f.getReturnColumns().size());
-        assertEquals("MSG", f.getReturnColumns().get(0).getName());
+        final ResultSet rs = engine.executeQuery("SELECT * FROM TABLE(greet())");
+        assertEquals(1, rs.getColumns().size());
+        assertEquals("MSG", rs.getColumns().get(0).getName());
+        assertEquals(2, rs.getRowCount());
     }
 
     @Test
@@ -88,7 +77,7 @@ public class UserDefinedTableFunctionTest {
         engine.execute("CREATE FUNCTION t() RETURNS TABLE(v VARCHAR) AS $$ SELECT 'v1' $$");
         engine.execute("CREATE OR REPLACE FUNCTION t() RETURNS TABLE(v VARCHAR) AS $$ SELECT 'v2' $$");
 
-        ResultSet rs = engine.executeQuery("SELECT * FROM TABLE(t())");
+        final ResultSet rs = engine.executeQuery("SELECT * FROM TABLE(t())");
         assertEquals(1, rs.getRowCount());
         assertEquals("v2", rs.getRows().get(0).getValue(0).toString());
     }
@@ -103,7 +92,7 @@ public class UserDefinedTableFunctionTest {
                 $$
             """);
 
-        ResultSet rs = engine.executeQuery("SELECT * FROM TABLE(repeat_msg(3))");
+        final ResultSet rs = engine.executeQuery("SELECT * FROM TABLE(repeat_msg(3))");
         assertNotNull(rs);
         assertTrue(rs.getRowCount() >= 1);
     }
@@ -119,7 +108,7 @@ public class UserDefinedTableFunctionTest {
                 AS $$ SELECT 'x' UNION SELECT 'y' $$
             """);
 
-        ResultSet rs = engine.executeQuery("""
+        final ResultSet rs = engine.executeQuery("""
             SELECT i.name
             FROM items i, TABLE(two_rows()) f
             """);
@@ -140,7 +129,7 @@ public class UserDefinedTableFunctionTest {
                 $$
             """);
 
-        ResultSet rs = engine.executeQuery("SELECT * FROM TABLE(multi())");
+        final ResultSet rs = engine.executeQuery("SELECT * FROM TABLE(multi())");
         assertNotNull(rs);
         assertEquals(2, rs.getRowCount());
         assertEquals(2, rs.getColumnCount());
@@ -151,7 +140,11 @@ public class UserDefinedTableFunctionTest {
         engine.execute("CREATE FUNCTION to_drop() RETURNS TABLE(v VARCHAR) AS $$ SELECT 'x' $$");
         engine.execute("DROP FUNCTION to_drop()");
 
-        assertThrows(RuntimeException.class, () ->
-            engine.executeQuery("SELECT * FROM TABLE(to_drop())"));
+        assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                engine.executeQuery("SELECT * FROM TABLE(to_drop())");
+            }
+        });
     }
 }

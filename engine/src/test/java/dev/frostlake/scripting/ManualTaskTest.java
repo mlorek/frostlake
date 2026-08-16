@@ -21,13 +21,18 @@ import dev.frostlake.ExecutionResult;
 import dev.frostlake.metastore.model.Task;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.Row;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Tests for manual-only tasks (tasks without schedules) and EXECUTE TASK command
@@ -35,6 +40,7 @@ import static org.junit.jupiter.api.Assertions.*;
 public class ManualTaskTest {
 
     private static final Logger logger = LoggerFactory.getLogger(ManualTaskTest.class);
+
     private DatabaseEngine engine;
 
     @BeforeEach
@@ -44,6 +50,13 @@ public class ManualTaskTest {
         engine.execute("USE DATABASE test_db");
         engine.execute("CREATE SCHEMA test_schema");
         engine.execute("USE SCHEMA test_schema");
+    }
+
+    @AfterEach
+    public void tearDown() {
+        if (engine != null) {
+            engine.shutdown();
+        }
     }
 
     @Test
@@ -62,7 +75,7 @@ public class ManualTaskTest {
             """);
 
         // Verify task was created
-        Task task = engine.getCatalog()
+        final Task task = engine.getCatalog()
             .getDatabase("TEST_DB")
             .getSchema("TEST_SCHEMA")
             .getTask("MY_MANUAL_TASK");
@@ -89,7 +102,7 @@ public class ManualTaskTest {
             """);
 
         // Verify task was created with schedule
-        Task task = engine.getCatalog()
+        final Task task = engine.getCatalog()
             .getDatabase("TEST_DB")
             .getSchema("TEST_SCHEMA")
             .getTask("MY_SCHEDULED_TASK");
@@ -150,10 +163,10 @@ public class ManualTaskTest {
         engine.execute("EXECUTE TASK my_manual_task");
 
         // Verify three rows were inserted
-        ExecutionResult result = engine.execute("SELECT COUNT(*) as cnt FROM task_log");
-        ResultSet rs = result.getResultSets().get(0);
+        final ExecutionResult result = engine.execute("SELECT COUNT(*) as cnt FROM task_log");
+        final ResultSet rs = result.getResultSets().get(0);
         assertEquals(1, rs.getRows().size());
-        Row row = rs.getRows().get(0);
+        final Row row = rs.getRows().get(0);
         assertEquals(3L, row.getValues().get(0), "Task should have inserted three rows");
     }
 
@@ -173,10 +186,10 @@ public class ManualTaskTest {
         // Execute with qualified name
         engine.execute("EXECUTE TASK test_schema.my_manual_task");
 
-        ExecutionResult result = engine.execute("SELECT COUNT(*) as cnt FROM task_log");
-        ResultSet rs = result.getResultSets().get(0);
+        final ExecutionResult result = engine.execute("SELECT COUNT(*) as cnt FROM task_log");
+        final ResultSet rs = result.getResultSets().get(0);
         assertEquals(1, rs.getRows().size());
-        Row row = rs.getRows().get(0);
+        final Row row = rs.getRows().get(0);
         assertEquals(1L, row.getValues().get(0), "Task should have inserted one row");
     }
 
@@ -184,7 +197,7 @@ public class ManualTaskTest {
     public void testExecuteNonExistentTask() {
         logger.info("Testing EXECUTE TASK on non-existent task");
 
-        Exception exception = assertThrows(Exception.class, new Executable() {
+        final Exception exception = assertThrows(Exception.class, new Executable() {
             @Override
             public void execute() throws Throwable {
                 engine.execute("EXECUTE TASK non_existent_task");
@@ -229,10 +242,10 @@ public class ManualTaskTest {
         engine.execute("EXECUTE TASK summarize_task");
 
         // Verify results
-        ExecutionResult result = engine.execute("SELECT total, distinct_count FROM summary");
-        ResultSet rs = result.getResultSets().get(0);
+        final ExecutionResult result = engine.execute("SELECT total, distinct_count FROM summary");
+        final ResultSet rs = result.getResultSets().get(0);
         assertEquals(1, rs.getRows().size());
-        Row row = rs.getRows().get(0);
+        final Row row = rs.getRows().get(0);
         assertEquals(3L, row.getValues().get(0), "Should count all rows");
         assertEquals(2L, row.getValues().get(1), "Should count distinct values");
     }
@@ -255,7 +268,7 @@ public class ManualTaskTest {
         engine.execute("EXECUTE TASK my_manual_task");
 
         // Check task execution history
-        Task task = engine.getCatalog()
+        final Task task = engine.getCatalog()
             .getDatabase("TEST_DB")
             .getSchema("TEST_SCHEMA")
             .getTask("MY_MANUAL_TASK");
@@ -281,7 +294,7 @@ public class ManualTaskTest {
         engine.execute("EXECUTE TASK failing_task");
 
         // Task should still exist and have recorded the failure
-        Task task = engine.getCatalog()
+        final Task task = engine.getCatalog()
             .getDatabase("TEST_DB")
             .getSchema("TEST_SCHEMA")
             .getTask("FAILING_TASK");

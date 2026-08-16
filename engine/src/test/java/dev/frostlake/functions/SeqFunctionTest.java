@@ -19,6 +19,7 @@ package dev.frostlake.functions;
 import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.types.NumericType;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
@@ -134,6 +135,7 @@ public class SeqFunctionTest extends BaseDatabaseTest {
      */
     @Test
     public void eachWidthDeclaresItsOwnDigits() {
+        Assumptions.assumeFalse(isLiveSnowflake(), NO_STATIC_TYPES);
         assertEquals("3,0", typeOf("SEQ1()"));
         assertEquals("5,0", typeOf("SEQ2()"));
         assertEquals("10,0", typeOf("SEQ4()"));
@@ -143,9 +145,15 @@ public class SeqFunctionTest extends BaseDatabaseTest {
     /** And the sign does not widen it: SEQ1(1) reaches -128 inside NUMBER(3,0). */
     @Test
     public void theSignDoesNotChangeTheDeclaredType() {
+        Assumptions.assumeFalse(isLiveSnowflake(), NO_STATIC_TYPES);
         assertEquals(typeOf("SEQ1()"), typeOf("SEQ1(1)"));
         assertEquals(typeOf("SEQ8()"), typeOf("SEQ8(1)"));
     }
+
+    /** The declared (p,s) is read off the engine's own column metadata, which the live
+     *  harness does not carry — the JDBC result set reports no static type at all. */
+    private static final String NO_STATIC_TYPES =
+        "the live harness carries no declared static types (precision/scale unreadable)";
 
     private String typeOf(final String call) {
         final ResultSet rs = engine.executeQuery("SELECT " + call + " FROM nums");

@@ -23,11 +23,20 @@ import java.util.List;
 
 /** LAST_TRANSACTION() — the last transaction id (ids are not exposed; NULL). */
 public class LastTransaction extends BuiltInFunction {
-    public LastTransaction() { super("LAST_TRANSACTION", StringType.VARCHAR); }
+    private final dev.frostlake.security.SessionContext sessionContext;
+
+    public LastTransaction(final dev.frostlake.security.SessionContext sessionContext) {
+        super("LAST_TRANSACTION", StringType.VARCHAR);
+        this.sessionContext = sessionContext;
+    }
 
     @Override
-    public Object evaluate(final List<Object> args) { return null; }
+    public Object evaluate(final List<Object> args) {
+        return sessionContext != null ? sessionContext.getLastTransactionId() : null;
+    }
 
-    @Override public int getMinArgCount() { return 0; }
-    @Override public int getMaxArgCount() { return 0; }
+    @Override
+    public int getMinArgCount() { return 0; }
+    @Override
+    public int getMaxArgCount() { return 0; }
 }

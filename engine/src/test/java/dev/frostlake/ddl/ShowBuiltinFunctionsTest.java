@@ -45,7 +45,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  *       leaves nothing on the SHOW BUILTIN FUNCTIONS side and only the UDF on the other, so SHOW FUNCTIONS
  *       is exactly SHOW BUILTIN FUNCTIONS plus the user functions in scope;</li>
  *   <li>{@code SHOW BUILTIN FUNCTIONS LIKE '<that udf>'} returns nothing;</li>
- *   <li>both listings, and SHOW USER FUNCTIONS, carry the same 20 columns;</li>
+ *   <li>both listings, and SHOW USER FUNCTIONS, carry the same 21 columns;</li>
  *   <li>{@code SHOW BUILTIN USER FUNCTIONS} and {@code SHOW USER BUILTIN FUNCTIONS} are syntax errors —
  *       the two modifiers are mutually exclusive.</li>
  * </ul>
@@ -55,13 +55,13 @@ public class ShowBuiltinFunctionsTest extends BaseDatabaseTest {
     private static final int NAME = 1;
     private static final int IS_BUILTIN = 3;
 
-    /** The 20 columns a real account returns, in order (live-verified). */
+    /** The 21 columns a real account returns, in order (live-verified). */
     private static final String[] LIVE_COLUMNS = {
         "created_on", "name", "schema_name", "is_builtin", "is_aggregate", "is_ansi",
         "min_num_arguments", "max_num_arguments", "arguments", "description", "catalog_name",
         "is_table_function", "valid_for_clustering", "is_secure", "secrets",
         "external_access_integrations", "is_external_function", "language", "is_memoizable",
-        "is_data_metric"
+        "is_data_metric", "is_ai_function"
     };
 
     private Set<String> names(final ResultSet rs) {
@@ -90,7 +90,7 @@ public class ShowBuiltinFunctionsTest extends BaseDatabaseTest {
     public void columnShapeMatchesLiveSnowflake() {
         final ResultSet rs = engine.executeQuery("SHOW BUILTIN FUNCTIONS");
         assertEquals(LIVE_COLUMNS.length, rs.getColumns().size(),
-            "SHOW BUILTIN FUNCTIONS should return the 20 columns a real account returns");
+            "SHOW BUILTIN FUNCTIONS should return the 21 columns a real account returns");
         for (int i = 0; i < LIVE_COLUMNS.length; i++) {
             assertEquals(LIVE_COLUMNS[i], rs.getColumns().get(i).getName(),
                 "column " + (i + 1) + " should match the live column order");
@@ -101,7 +101,7 @@ public class ShowBuiltinFunctionsTest extends BaseDatabaseTest {
     public void showFunctionsHasTheSameColumnShape() {
         final ResultSet rs = engine.executeQuery("SHOW FUNCTIONS");
         assertEquals(LIVE_COLUMNS.length, rs.getColumns().size(),
-            "SHOW FUNCTIONS returns the same 20 columns as SHOW BUILTIN FUNCTIONS on a real account");
+            "SHOW FUNCTIONS returns the same 21 columns as SHOW BUILTIN FUNCTIONS on a real account");
         for (int i = 0; i < LIVE_COLUMNS.length; i++) {
             assertEquals(LIVE_COLUMNS[i], rs.getColumns().get(i).getName(),
                 "column " + (i + 1) + " should match the live column order");

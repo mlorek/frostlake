@@ -50,10 +50,10 @@ public class LogicalOperatorASTTest extends BaseDatabaseTest {
         //   ├── BinaryOperationExpression(GREATER_THAN): age > 18
         //   └── BinaryOperationExpression(EQUAL): status = 'active'
 
-        ExecutionResult result = engine.execute(
+        final ExecutionResult result = engine.execute(
             "SELECT id FROM users WHERE age > 18 AND status = 'active'"
         );
-        ResultSet rs = result.getResultSets().get(0);
+        final ResultSet rs = result.getResultSets().get(0);
 
         assertEquals(2, rs.getRows().size());
         assertEquals(1L, rs.getRows().get(0).getValue(0)); // id=1, age=25, active
@@ -69,10 +69,10 @@ public class LogicalOperatorASTTest extends BaseDatabaseTest {
         //   ├── BinaryOperationExpression(EQUAL): city = 'NYC'
         //   └── BinaryOperationExpression(EQUAL): city = 'LA'
 
-        ExecutionResult result = engine.execute(
+        final ExecutionResult result = engine.execute(
             "SELECT id FROM users WHERE city = 'NYC' OR city = 'LA'"
         );
-        ResultSet rs = result.getResultSets().get(0);
+        final ResultSet rs = result.getResultSets().get(0);
 
         assertEquals(4, rs.getRows().size()); // ids 1,2,3,4
     }
@@ -85,10 +85,10 @@ public class LogicalOperatorASTTest extends BaseDatabaseTest {
         // UnaryOperationExpression(NOT)
         //   └── BinaryOperationExpression(EQUAL): status = 'deleted'
 
-        ExecutionResult result = engine.execute(
+        final ExecutionResult result = engine.execute(
             "SELECT id FROM users WHERE NOT (status = 'deleted')"
         );
-        ResultSet rs = result.getResultSets().get(0);
+        final ResultSet rs = result.getResultSets().get(0);
 
         assertEquals(4, rs.getRows().size()); // All except id=5
     }
@@ -104,10 +104,10 @@ public class LogicalOperatorASTTest extends BaseDatabaseTest {
         //   │   └── BinaryOperationExpression(EQUAL): city = 'LA'
         //   └── BinaryOperationExpression(GREATER_THAN): age > 20
 
-        ExecutionResult result = engine.execute(
+        final ExecutionResult result = engine.execute(
             "SELECT id FROM users WHERE (city = 'NYC' OR city = 'LA') AND age > 20"
         );
-        ResultSet rs = result.getResultSets().get(0);
+        final ResultSet rs = result.getResultSets().get(0);
 
         assertEquals(3, rs.getRows().size()); // ids 1,3,4 (age>20 in NYC/LA)
     }
@@ -124,10 +124,10 @@ public class LogicalOperatorASTTest extends BaseDatabaseTest {
         //       ├── BinaryOperationExpression(EQUAL): city = 'NYC'
         //       └── BinaryOperationExpression(EQUAL): status = 'active'
 
-        ExecutionResult result = engine.execute(
+        final ExecutionResult result = engine.execute(
             "SELECT id FROM users WHERE NOT (age < 18) AND (city = 'NYC' OR status = 'active')"
         );
-        ResultSet rs = result.getResultSets().get(0);
+        final ResultSet rs = result.getResultSets().get(0);
 
         // Should match:
         // id=1: age=25 (>=18), city=NYC ✓
@@ -152,10 +152,10 @@ public class LogicalOperatorASTTest extends BaseDatabaseTest {
         //       ├── BinaryOperationExpression(EQUAL): city = 'NYC'
         //       └── BinaryOperationExpression(EQUAL): status = 'active'
 
-        ExecutionResult result = engine.execute(
+        final ExecutionResult result = engine.execute(
             "SELECT id FROM users WHERE age > 18 OR city = 'NYC' AND status = 'active'"
         );
-        ResultSet rs = result.getResultSets().get(0);
+        final ResultSet rs = result.getResultSets().get(0);
 
         // Should match:
         // id=1: age=25 (>18) ✓
@@ -176,10 +176,10 @@ public class LogicalOperatorASTTest extends BaseDatabaseTest {
         //   └── UnaryOperationExpression(NOT)
         //       └── BinaryOperationExpression(GREATER_THAN): age > 18
 
-        ExecutionResult result = engine.execute(
+        final ExecutionResult result = engine.execute(
             "SELECT id FROM users WHERE NOT (NOT (age > 18))"
         );
-        ResultSet rs = result.getResultSets().get(0);
+        final ResultSet rs = result.getResultSets().get(0);
 
         // Double NOT = original condition
         assertEquals(4, rs.getRows().size()); // age > 18: ids 1,3,4,5
@@ -191,10 +191,10 @@ public class LogicalOperatorASTTest extends BaseDatabaseTest {
 
         // NOT (status = 'deleted') AND (age > 25 OR city = 'LA')
 
-        ExecutionResult result = engine.execute(
+        final ExecutionResult result = engine.execute(
             "SELECT id FROM users WHERE NOT (status = 'deleted') AND (age > 25 OR city = 'LA')"
         );
-        ResultSet rs = result.getResultSets().get(0);
+        final ResultSet rs = result.getResultSets().get(0);
 
         // Should match:
         // id=2: age=17 (not>25), city=LA ✓, status=active ✓

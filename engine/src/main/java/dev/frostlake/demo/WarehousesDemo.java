@@ -44,7 +44,7 @@ public class WarehousesDemo extends AbstractDemo {
             printSectionHeader("DEFAULT WAREHOUSE");
 
             printSubsection("1. Default Warehouse (COMPUTE_WH)");
-            Warehouse defaultWh = engine.getCatalog().getWarehouse("COMPUTE_WH");
+            final Warehouse defaultWh = engine.getCatalog().getWarehouse("COMPUTE_WH");
             printWarehouseInfo(defaultWh);
 
             // ==================== CREATE WAREHOUSES ====================
@@ -100,7 +100,7 @@ public class WarehousesDemo extends AbstractDemo {
 
             System.out.println("=== 6. Resume Warehouse (Start Compute) ===");
             engine.execute("ALTER WAREHOUSE prod_wh RESUME");
-            Warehouse prodWh = engine.getCatalog().getWarehouse("prod_wh");
+            final Warehouse prodWh = engine.getCatalog().getWarehouse("prod_wh");
             System.out.println("✓ Warehouse PROD_WH resumed");
             System.out.println("  State: " + prodWh.getState());
             System.out.println("  Can execute queries: " + prodWh.canExecuteQueries());
@@ -118,7 +118,7 @@ public class WarehousesDemo extends AbstractDemo {
             System.out.println("╚════════════════════════════════════════════════════╝\n");
 
             System.out.println("=== 8. Resize Warehouse (Scale Up) ===");
-            Warehouse devWh = engine.getCatalog().getWarehouse("dev_wh");
+            final Warehouse devWh = engine.getCatalog().getWarehouse("dev_wh");
             System.out.println("Before resize:");
             System.out.println("  Size: " + devWh.getSize().getDisplayName());
             System.out.println("  Servers: " + devWh.getSize().getServers());
@@ -133,7 +133,7 @@ public class WarehousesDemo extends AbstractDemo {
 
             System.out.println("\n=== 9. Adjust Auto-Suspend ===");
             engine.execute("ALTER WAREHOUSE analytics_wh SET AUTO_SUSPEND = 120");
-            Warehouse analyticsWh = engine.getCatalog().getWarehouse("analytics_wh");
+            final Warehouse analyticsWh = engine.getCatalog().getWarehouse("analytics_wh");
             System.out.println("✓ Set auto-suspend to 120 seconds (2 minutes)");
             System.out.println("  Warehouse will auto-suspend after 2 minutes of inactivity");
 
@@ -185,13 +185,13 @@ public class WarehousesDemo extends AbstractDemo {
             engine.execute("USE WAREHOUSE dev_wh");
             engine.execute("ALTER WAREHOUSE dev_wh RESUME");
             System.out.println("Using DEV_WH for simple query:");
-            ResultSet result1 = engine.executeQuery("SELECT * FROM sales WHERE region = 'East'");
+            final ResultSet result1 = engine.executeQuery("SELECT * FROM sales WHERE region = 'East'");
             System.out.println("  Found " + result1.getRowCount() + " sales in East region");
 
             engine.execute("USE WAREHOUSE analytics_wh");
             engine.execute("ALTER WAREHOUSE analytics_wh RESUME");
             System.out.println("\nUsing ANALYTICS_WH for analytical query:");
-            ResultSet result2 = engine.executeQuery(
+            final ResultSet result2 = engine.executeQuery(
                 "SELECT region, COUNT(*), SUM(amount) " +
                 "FROM sales " +
                 "GROUP BY region " +
@@ -207,10 +207,10 @@ public class WarehousesDemo extends AbstractDemo {
             System.out.println("=== 12. Track Query Execution ===");
 
             // Record some query executions
-            Warehouse trackWh = engine.getCatalog().getWarehouse("analytics_wh");
-            LocalDateTime now = LocalDateTime.now();
+            final Warehouse trackWh = engine.getCatalog().getWarehouse("analytics_wh");
+            final LocalDateTime now = LocalDateTime.now();
 
-            QueryExecution exec1 = new QueryExecution(
+            final QueryExecution exec1 = new QueryExecution(
                 "query-001",
                 "SELECT * FROM sales",
                 now,
@@ -221,7 +221,7 @@ public class WarehousesDemo extends AbstractDemo {
             );
             trackWh.recordQueryExecution(exec1);
 
-            QueryExecution exec2 = new QueryExecution(
+            final QueryExecution exec2 = new QueryExecution(
                 "query-002",
                 "SELECT region, SUM(amount) FROM sales GROUP BY region",
                 now.plusSeconds(5),
@@ -243,7 +243,7 @@ public class WarehousesDemo extends AbstractDemo {
             System.out.println("╚════════════════════════════════════════════════════╝\n");
 
             System.out.println("=== 13. Configure Multi-Cluster Scaling ===");
-            Warehouse multiClusterWh = engine.getCatalog().getWarehouse("prod_wh");
+            final Warehouse multiClusterWh = engine.getCatalog().getWarehouse("prod_wh");
 
             multiClusterWh.setMinClusterCount(2);
             multiClusterWh.setMaxClusterCount(10);

@@ -16,50 +16,35 @@
 
 package dev.frostlake.query;
 
-import dev.frostlake.DatabaseEngine;
+import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Test JOIN operations and LATERAL keyword functionality
  */
-public class JoinAndLateralTest {
+public class JoinAndLateralTest extends BaseDatabaseTest {
 
-    private DatabaseEngine engine;
-
-    @BeforeEach
-    public void setup() {
-        engine = new DatabaseEngine();
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
+    @Override
+    protected void setupTest() {
         engine.execute("USE SCHEMA PUBLIC");
-
-        // Create test tables
         engine.execute("CREATE TABLE employees (id INT, name VARCHAR, dept_id INT)");
         engine.execute("INSERT INTO employees VALUES (1, 'Alice', 10)");
         engine.execute("INSERT INTO employees VALUES (2, 'Bob', 20)");
         engine.execute("INSERT INTO employees VALUES (3, 'Charlie', 10)");
-
         engine.execute("CREATE TABLE departments (dept_id INT, dept_name VARCHAR)");
         engine.execute("INSERT INTO departments VALUES (10, 'Engineering')");
         engine.execute("INSERT INTO departments VALUES (20, 'Sales')");
         engine.execute("INSERT INTO departments VALUES (30, 'Marketing')");
     }
 
-    @AfterEach
-    public void teardown() {
-        if (engine != null) {
-            engine.shutdown();
-        }
-    }
-
     @Test
     public void testCrossJoin() {
-        ResultSet rs = engine.executeQuery(
+        final ResultSet rs = engine.executeQuery(
             "SELECT * FROM employees CROSS JOIN departments"
         );
 
@@ -70,7 +55,7 @@ public class JoinAndLateralTest {
 
     @Test
     public void testInnerJoin() {
-        ResultSet rs = engine.executeQuery(
+        final ResultSet rs = engine.executeQuery(
             "SELECT * FROM employees JOIN departments ON employees.dept_id = departments.dept_id"
         );
 
@@ -85,7 +70,7 @@ public class JoinAndLateralTest {
 
     @Test
     public void testInnerJoinExplicit() {
-        ResultSet rs = engine.executeQuery(
+        final ResultSet rs = engine.executeQuery(
             "SELECT * FROM employees INNER JOIN departments ON employees.dept_id = departments.dept_id"
         );
 
@@ -97,7 +82,7 @@ public class JoinAndLateralTest {
         // Add an employee with no department
         engine.execute("INSERT INTO employees VALUES (4, 'David', 99)");
 
-        ResultSet rs = engine.executeQuery(
+        final ResultSet rs = engine.executeQuery(
             "SELECT * FROM employees LEFT JOIN departments ON employees.dept_id = departments.dept_id"
         );
 
@@ -119,7 +104,7 @@ public class JoinAndLateralTest {
         // Add an employee with no department
         engine.execute("INSERT INTO employees VALUES (4, 'David', 99)");
 
-        ResultSet rs = engine.executeQuery(
+        final ResultSet rs = engine.executeQuery(
             "SELECT * FROM employees LEFT OUTER JOIN departments ON employees.dept_id = departments.dept_id"
         );
 
@@ -129,7 +114,7 @@ public class JoinAndLateralTest {
     @Test
     public void testLateralWithSubquery() {
         // LATERAL allows the subquery to reference columns from the left table
-        ResultSet rs = engine.executeQuery(
+        final ResultSet rs = engine.executeQuery(
             "SELECT * FROM employees e, LATERAL (SELECT dept_name FROM departments d WHERE d.dept_id = e.dept_id) dept"
         );
 
@@ -147,7 +132,7 @@ public class JoinAndLateralTest {
 
     @Test
     public void testLateralWithCrossJoin() {
-        ResultSet rs = engine.executeQuery("""
+        final ResultSet rs = engine.executeQuery("""
             SELECT * FROM employees e CROSS JOIN LATERAL (SELECT dept_name FROM departments d WHERE d.dept_id = e.dept_id) dept
             """);
 
@@ -161,7 +146,7 @@ public class JoinAndLateralTest {
         engine.execute("INSERT INTO projects VALUES (100, 'Project A', 1)");
         engine.execute("INSERT INTO projects VALUES (200, 'Project B', 2)");
 
-        ResultSet rs = engine.executeQuery("""
+        final ResultSet rs = engine.executeQuery("""
             SELECT * FROM employees e
             JOIN departments d ON e.dept_id = d.dept_id
             JOIN projects p ON p.emp_id = e.id
@@ -173,7 +158,7 @@ public class JoinAndLateralTest {
 
     @Test
     public void testJoinWithTableAliases() {
-        ResultSet rs = engine.executeQuery(
+        final ResultSet rs = engine.executeQuery(
             "SELECT * FROM employees e JOIN departments d ON e.dept_id = d.dept_id"
         );
 
@@ -182,7 +167,7 @@ public class JoinAndLateralTest {
 
     @Test
     public void testSubqueryInFrom() {
-        ResultSet rs = engine.executeQuery(
+        final ResultSet rs = engine.executeQuery(
             "SELECT * FROM (SELECT * FROM employees WHERE dept_id = 10) e"
         );
 
@@ -191,7 +176,7 @@ public class JoinAndLateralTest {
 
     @Test
     public void testJoinWithSubquery() {
-        ResultSet rs = engine.executeQuery(
+        final ResultSet rs = engine.executeQuery(
             "SELECT * FROM employees e JOIN (SELECT * FROM departments WHERE dept_id < 30) d ON e.dept_id = d.dept_id"
         );
 
@@ -200,7 +185,7 @@ public class JoinAndLateralTest {
 
     @Test
     public void testLateralWithFilter() {
-        ResultSet rs = engine.executeQuery("""
+        final ResultSet rs = engine.executeQuery("""
             SELECT * FROM employees e, LATERAL (SELECT dept_name FROM departments d WHERE d.dept_id = e.dept_id AND d.dept_id = 10) dept
             """);
 
@@ -210,7 +195,7 @@ public class JoinAndLateralTest {
 
     @Test
     public void testJoinWithWhereClause() {
-        ResultSet rs = engine.executeQuery(
+        final ResultSet rs = engine.executeQuery(
             "SELECT * FROM employees e JOIN departments d ON e.dept_id = d.dept_id WHERE e.name = 'Alice'"
         );
 
@@ -223,7 +208,7 @@ public class JoinAndLateralTest {
     @Test
     public void testCrossJoinWithoutKeyword() {
         // Traditional comma-separated table syntax (equivalent to CROSS JOIN)
-        ResultSet rs = engine.executeQuery(
+        final ResultSet rs = engine.executeQuery(
             "SELECT * FROM employees, departments"
         );
 
@@ -235,7 +220,7 @@ public class JoinAndLateralTest {
         // Add a department with no employees
         engine.execute("INSERT INTO departments VALUES (40, 'HR')");
 
-        ResultSet rs = engine.executeQuery(
+        final ResultSet rs = engine.executeQuery(
             "SELECT * FROM employees e RIGHT JOIN departments d ON e.dept_id = d.dept_id"
         );
 
@@ -261,7 +246,7 @@ public class JoinAndLateralTest {
         engine.execute("INSERT INTO employees VALUES (4, 'David', 99)");
         engine.execute("INSERT INTO departments VALUES (40, 'HR')");
 
-        ResultSet rs = engine.executeQuery(
+        final ResultSet rs = engine.executeQuery(
             "SELECT * FROM employees e FULL OUTER JOIN departments d ON e.dept_id = d.dept_id"
         );
 
@@ -271,7 +256,7 @@ public class JoinAndLateralTest {
 
     @Test
     public void testComplexJoinCondition() {
-        ResultSet rs = engine.executeQuery(
+        final ResultSet rs = engine.executeQuery(
             "SELECT * FROM employees e JOIN departments d ON e.dept_id = d.dept_id AND d.dept_id >= 10"
         );
 
@@ -280,7 +265,7 @@ public class JoinAndLateralTest {
 
     @Test
     public void testJoinWithMultipleConditions() {
-        ResultSet rs = engine.executeQuery(
+        final ResultSet rs = engine.executeQuery(
             "SELECT * FROM employees e JOIN departments d ON e.dept_id = d.dept_id AND e.dept_id < 30"
         );
 

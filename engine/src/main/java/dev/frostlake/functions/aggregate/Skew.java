@@ -20,8 +20,6 @@ import dev.frostlake.functions.AggregateFunction;
 import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.types.NumericType;
 
-import java.math.BigDecimal;
-import java.util.ArrayList;
 import java.util.List;
 
 public class Skew extends AggregateFunction {
@@ -33,8 +31,10 @@ public class Skew extends AggregateFunction {
     @Override
     public Object evaluate(final List<Object> args) { return null; }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return 1; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return 1; }
 
     /** Live: "Invalid argument types for function '*': (OBJECT, OBJECT)" — see {@link StdDev}. */
     @Override
@@ -42,30 +42,4 @@ public class Skew extends AggregateFunction {
         return SemiStructuredRejection.MULTIPLY_OPERANDS;
     }
 
-    private static class SkewAccumulator implements Accumulator {
-        private final List<Double> values = new ArrayList<>();
-
-        @Override
-        public void accumulate(final Object v) {
-            if (v != null) values.add(new BigDecimal(v.toString()).doubleValue());
-        }
-
-        @Override
-        public Object getResult() {
-            int n = values.size();
-            if (n < 3) return null;
-            double mean = values.stream().mapToDouble(Double::doubleValue).average().orElse(0);
-            double variance = values.stream().mapToDouble((final var d) -> Math.pow(d - mean, 2)).sum() / (n - 1);
-            if (variance == 0) return 0.0;
-            double stddev = Math.sqrt(variance);
-            double sum3 = values.stream().mapToDouble((final var d) -> Math.pow((d - mean) / stddev, 3)).sum();
-            return sum3 * n / ((n - 1.0) * (n - 2.0));
-        }
-
-        @Override
-        public void reset() { values.clear(); }
-
-        @Override
-        public void merge(final Accumulator other) { values.addAll(((SkewAccumulator) other).values); }
-    }
 }

@@ -16,28 +16,40 @@
 
 package dev.frostlake.executor;
 
-import dev.frostlake.metastore.model.Privilege;
+import dev.frostlake.executor.expressions.BinaryOperationExpression;
 import dev.frostlake.executor.expressions.CastExpression;
+import dev.frostlake.executor.expressions.DefaultMarkerExpression;
 import dev.frostlake.executor.expressions.Expression;
+import dev.frostlake.executor.expressions.ExpressionSource;
 import dev.frostlake.executor.expressions.FunctionCallExpression;
 import dev.frostlake.executor.expressions.JsonArrayExpression;
 import dev.frostlake.executor.expressions.JsonObjectExpression;
+import dev.frostlake.executor.expressions.SourcePosition;
 import dev.frostlake.executor.expressions.SqlTruth;
+import dev.frostlake.executor.expressions.UnaryOperationExpression;
 import dev.frostlake.functions.BuiltInFunction;
-import dev.frostlake.types.ArrayType;
-import dev.frostlake.types.GeographyType;
-import dev.frostlake.types.GeometryType;
-import dev.frostlake.types.ObjectType;
-import dev.frostlake.types.VariantType;
-import dev.frostlake.types.VectorType;
+import dev.frostlake.metastore.model.Privilege;
 import dev.frostlake.metastore.model.SecurableObjectType;
 import dev.frostlake.metastore.model.Table;
 import dev.frostlake.metastore.model.TableColumn;
 import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.storage.ResultSet;
+import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
-import dev.frostlake.storage.StorageEngine;
+import dev.frostlake.storage.TableStorage;
 import dev.frostlake.transaction.TransactionWriteSet;
+import dev.frostlake.types.ArrayType;
+import dev.frostlake.types.BinaryType;
+import dev.frostlake.types.BooleanType;
+import dev.frostlake.types.DataType;
+import dev.frostlake.types.DateTimeType;
+import dev.frostlake.types.GeographyType;
+import dev.frostlake.types.GeometryType;
+import dev.frostlake.types.NumericType;
+import dev.frostlake.types.ObjectType;
+import dev.frostlake.types.StringType;
+import dev.frostlake.types.VariantType;
+import dev.frostlake.types.VectorType;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
@@ -82,10 +94,10 @@ final class InsertExecutor {
             // only inside its subqueries.
             final Map<String, ResultSet> cteResults = null;
 
-            String tableName = ctx.objectName().KW_IDENTIFIER() != null
+            final String tableName = ctx.objectName().KW_IDENTIFIER() != null
                 ? executor.resolveObjectName(ctx.objectName())
                 : executor.getQualifiedName(ctx.objectName().qualifiedName());
-            Table table = executor.getCatalog().resolveTableAsWritten(tableName, "Table");
+            final Table table = executor.getCatalog().resolveTableAsWritten(tableName, "Table");
 
             // Check INSERT permission
             if (executor.getSecurityManager() != null) {
@@ -96,7 +108,7 @@ final class InsertExecutor {
             // rows have been produced: a self-referencing INSERT OVERWRITE INTO t … SELECT … FROM t reads the
             // table it overwrites, so truncating first made the source SELECT see an empty table and the
             // statement silently wiped the data (0 rows in, 0 rows out).
-            boolean isOverwrite = ctx.OVERWRITE() != null;
+            final boolean isOverwrite = ctx.OVERWRITE() != null;
 
             // Get column names if specified
             List<String> columnNames = null;
@@ -114,27 +126,44 @@ final class InsertExecutor {
             }
 
             // Parse values - either from VALUES clause or SELECT statement
-            List<List<Object>> valuesList = new ArrayList<>();
+            final List<List<Object>> valuesList = new ArrayList<>();
 
             if (ctx.valueTupleList() != null) {
-                // INSERT ... VALUES
+                // INSERT ... VALUES — one evaluator serves every cell (the dummy table and row carry
+                // no per-cell state, so per-cell construction was pure allocation).
+                final Table dummyTable = new Table("DUMMY", new ArrayList<>(), false);
+                final Row dummyRow = new Row(new ArrayList<>());
+                // No scripting variables are offered to the evaluator: INSERT is an embedded SQL
+                // statement, where a stored-procedure parameter / DECLAREd / LET name must be
+                // written :name (a bare one is an identifier — live: "invalid identifier 'V'").
+                final ExpressionEvaluator evaluator = new ExpressionEvaluator(dummyTable, executor.getFunctionRegistry(), executor.getCatalog(), executor);
                 for (final FrostlakeParser.ValueTupleContext tuple : ctx.valueTupleList().valueTuple()) {
-                    List<Object> values = new ArrayList<>();
+                    final List<Object> values = new ArrayList<>();
                     // Parse each value as an expression (supports literals, JSON objects, arrays, etc.)
                     int valuePosition = 0;
                     for (final FrostlakeParser.ExpressionContext expr : tuple.valueList().expression()) {
                         rejectStringLiteralIntoSemiStructured(table, columnNames, valuePosition, expr);
                         valuePosition++;
-                        String exprText = executor.getOriginalText(expr);
+                        final String exprText = executor.getOriginalText(expr);
                         rejectSemiStructuredValueExpression(exprText);
-                        // Create dummy table/row for expression evaluation
-                        Table dummyTable = new Table("DUMMY", new ArrayList<>(), false);
-                        Row dummyRow = new Row(new ArrayList<>());
-                        // No scripting variables are offered to the evaluator: INSERT is an embedded SQL
-                        // statement, where a stored-procedure parameter / DECLAREd / LET name must be
-                        // written :name (a bare one is an identifier — live: "invalid identifier 'V'").
-                        ExpressionEvaluator evaluator = new ExpressionEvaluator(dummyTable, executor.getFunctionRegistry(), executor.getCatalog(), executor);
-                        Object value = evaluator.evaluate(exprText, dummyRow);
+                        // Where this value starts in the statement, so a refusal raised while evaluating
+                        // it can report live's position — an unresolvable :bind in a VALUES list is
+                        // reported at the colon, which is this fragment's own origin.
+                        final SourcePosition displaced = ExpressionSource.beginNested(new SourcePosition(
+                            expr.getStart().getLine(), expr.getStart().getCharPositionInLine()));
+                        final Object value;
+                        try {
+                            // The bare DML DEFAULT is not a value: it means "this column's declared
+                            // default", which only the row builder knows, so the MARKER travels in the
+                            // value list and is substituted there. Read from the parse tree, never from
+                            // the text — and evaluating it would raise the refusal live gives a DEFAULT
+                            // that is not standing alone.
+                            final Expression parsed = ExpressionEvaluator.parse(exprText);
+                            value = parsed instanceof DefaultMarkerExpression
+                                ? parsed : evaluator.evaluate(exprText, dummyRow);
+                        } finally {
+                            ExpressionSource.end(displaced);
+                        }
                         values.add(value);
                     }
                     valuesList.add(values);
@@ -142,7 +171,8 @@ final class InsertExecutor {
             } else if (ctx.selectStatement() != null) {
                 // INSERT ... SELECT. A stream read in this subquery is consumed when the txn commits (the DML
                 // window is marked centrally in SQLCommandVisitor.visitDmlStatement); pass CTE results along.
-                ResultSet selectResult = executor.executeSelectFromContextWithCTEs(ctx.selectStatement(), null, cteResults);
+                final ResultSet selectResult = executor.executeSelectFromContextWithCTEs(ctx.selectStatement(), null, cteResults);
+                rejectMismatchedSelectColumnTypes(table, columnNames, selectResult.getColumns());
                 for (final Row row : selectResult.getRows()) {
                     valuesList.add(row.getValues());
                 }
@@ -151,7 +181,7 @@ final class InsertExecutor {
             // Insert rows
             int rowsInserted = 0;
             // Use fully qualified name for storage access
-            String fullyQualifiedName = executor.getFullyQualifiedTableName(tableName);
+            final String fullyQualifiedName = executor.getFullyQualifiedTableName(tableName);
 
             // The source rows are now materialized, so it is safe to replace the table's contents. Route through
             // the same transaction-aware path as TRUNCATE: clearing the base store directly left rows this
@@ -162,9 +192,21 @@ final class InsertExecutor {
                 logger.trace("Truncated table {} due to INSERT OVERWRITE", tableName);
             }
 
+            // Statement-scoped hoists: the column mapping and (in deferred mode) the duplicate-key
+            // guard's prefetched sets serve every row. The guard is created AFTER the OVERWRITE
+            // truncation so its pending-insert prefetch sees the post-truncate write set.
+            final int[] valueIndexes = insertValueIndexes(table, columnNames);
+            final DeferredInsertGuard guard = executor.isDeferredApply()
+                ? new DeferredInsertGuard(table,
+                    executor.getStorageEngine().getTableStorage(fullyQualifiedName),
+                    executor.getTransactionManager().getCurrentTransaction().getWriteSet(),
+                    fullyQualifiedName,
+                    executor.getStorageEngine().isEnforcePrimaryKey(),
+                    executor.getStorageEngine().isEnforceUniqueKey())
+                : null;
             for (final List<Object> values : valuesList) {
-                final Row row = buildInsertRow(table, fullyQualifiedName, columnNames, values);
-                insertRowInto(table, fullyQualifiedName, row);
+                final Row row = buildInsertRow(table, fullyQualifiedName, columnNames, valueIndexes, values);
+                insertRowInto(table, fullyQualifiedName, row, guard);
                 rowsInserted++;
             }
 
@@ -176,6 +218,163 @@ final class InsertExecutor {
         } catch (final Exception e) {
             throw StatementErrors.propagate(e);
         }
+    }
+
+    /**
+     * Snowflake's compile-time INSERT ... SELECT type matching (live-verified matrix): a source
+     * column whose STATIC type family cannot implicitly convert to its target column's family is
+     * refused before any row is written — {@code Expression type does not match column data type,
+     * expecting <target> but got <source> for column <name>}, both types spelled with their
+     * parameters. VARCHAR still converts to numbers, booleans, temporals and BINARY at row time
+     * (value-parse errors), and VARIANT casts to any scalar or container at row time — but a
+     * VARCHAR, temporal or BINARY source never reaches a VARIANT column, containers never leave
+     * their own family except through VARIANT, and BINARY accepts nothing but strings. A TIME
+     * source against a TIMESTAMP column has its own sentence:
+     * {@code incompatible types: [TIME(9)] and [TIMESTAMP_NTZ(9)]}. A column with NO audited
+     * static type is left alone — the channel never guesses.
+     */
+    private void rejectMismatchedSelectColumnTypes(final Table table, final List<String> columnNames,
+                                                   final List<ResultSetColumn> sourceColumns) {
+        final int pairs = columnNames != null
+            ? Math.min(columnNames.size(), sourceColumns.size())
+            : Math.min(table.getColumns().size(), sourceColumns.size());
+        for (int i = 0; i < pairs; i++) {
+            final TableColumn target = columnNames != null
+                ? table.getColumn(columnNames.get(i)) : table.getColumns().get(i);
+            if (target == null) {
+                continue;
+            }
+            final DataType sourceType = sourceColumns.get(i).getStaticType();
+            if (sourceType == null) {
+                continue;
+            }
+            final String targetFamily = typeFamily(target.getDataType());
+            final String sourceFamily = typeFamily(sourceType);
+            if (targetFamily == null || sourceFamily == null) {
+                continue;
+            }
+            if ("TIMESTAMP".equals(targetFamily) && "TIME".equals(sourceFamily)) {
+                throw new RuntimeException(SqlCompilationError.of("incompatible types: ["
+                    + spellType(sourceType) + "] and [" + spellType(target.getDataType()) + "]"));
+            }
+            if (!insertFamilyAccepts(targetFamily, sourceFamily)) {
+                throw new RuntimeException(SqlCompilationError.of(
+                    "Expression type does not match column data type, expecting "
+                    + spellType(target.getDataType()) + " but got " + spellType(sourceType)
+                    + " for column " + target.getName()));
+            }
+        }
+    }
+
+    /**
+     * The conversion families the type-matching rule reasons in; null means the type takes no part
+     * in the rule (GEOGRAPHY, VECTOR, FILE and other engine-specific types keep their own paths).
+     */
+    private String typeFamily(final DataType type) {
+        if (type instanceof NumericType) {
+            return "NUMBER";
+        }
+        if (type instanceof StringType) {
+            return "STRING";
+        }
+        if (type instanceof BooleanType) {
+            return "BOOLEAN";
+        }
+        if (type instanceof DateTimeType) {
+            final String name = type.getName().toUpperCase();
+            if (name.equals("DATE")) {
+                return "DATE";
+            }
+            if (name.equals("TIME")) {
+                return "TIME";
+            }
+            return "TIMESTAMP";
+        }
+        if (type instanceof BinaryType) {
+            return "BINARY";
+        }
+        if (type instanceof ArrayType) {
+            return "ARRAY";
+        }
+        if (type instanceof ObjectType) {
+            return "OBJECT";
+        }
+        if (type instanceof VariantType) {
+            return "VARIANT";
+        }
+        return null;
+    }
+
+    /** Whether a source family reaches a target column family without a compile refusal. */
+    private boolean insertFamilyAccepts(final String target, final String source) {
+        if (target.equals(source)) {
+            return true;
+        }
+        if ("VARIANT".equals(source)) {
+            // A VARIANT source casts at row time into every family except BINARY.
+            return !"BINARY".equals(target);
+        }
+        if ("NUMBER".equals(target) || "BOOLEAN".equals(target)) {
+            return "STRING".equals(source)
+                || ("BOOLEAN".equals(target) && "NUMBER".equals(source));
+        }
+        if ("STRING".equals(target)) {
+            return "NUMBER".equals(source) || "BOOLEAN".equals(source) || "DATE".equals(source)
+                || "TIME".equals(source) || "TIMESTAMP".equals(source);
+        }
+        if ("DATE".equals(target)) {
+            return "STRING".equals(source) || "TIMESTAMP".equals(source);
+        }
+        if ("TIME".equals(target)) {
+            return "STRING".equals(source) || "TIMESTAMP".equals(source);
+        }
+        if ("TIMESTAMP".equals(target)) {
+            return "STRING".equals(source) || "DATE".equals(source);
+        }
+        if ("BINARY".equals(target)) {
+            return "STRING".equals(source);
+        }
+        if ("VARIANT".equals(target)) {
+            return "NUMBER".equals(source) || "BOOLEAN".equals(source)
+                || "ARRAY".equals(source) || "OBJECT".equals(source);
+        }
+        // ARRAY and OBJECT accept only themselves and VARIANT, both handled above.
+        return false;
+    }
+
+    /** A type spelled the way live's type-matching refusal spells it, parameters included. */
+    private String spellType(final DataType type) {
+        if (type instanceof NumericType) {
+            final NumericType numeric = (NumericType) type;
+            final String name = numeric.getName().toUpperCase();
+            if (name.equals("FLOAT") || name.equals("DOUBLE")) {
+                return "FLOAT";
+            }
+            return "NUMBER(" + numeric.getPrecision() + "," + numeric.getScale() + ")";
+        }
+        if (type instanceof StringType) {
+            final int length = ((StringType) type).getMaxLength();
+            return "VARCHAR(" + (length > 0 ? length : 16777216) + ")";
+        }
+        if (type instanceof DateTimeType) {
+            final String name = type.getName().toUpperCase();
+            if (name.equals("DATE")) {
+                return "DATE";
+            }
+            final int precision = ((DateTimeType) type).getPrecision();
+            if (name.equals("TIME")) {
+                return "TIME(" + precision + ")";
+            }
+            if (name.equals("DATETIME") || name.equals("TIMESTAMP")) {
+                return "TIMESTAMP_NTZ(" + precision + ")";
+            }
+            return name + "(" + precision + ")";
+        }
+        if (type instanceof BinaryType) {
+            final int length = ((BinaryType) type).getMaxLength();
+            return "BINARY(" + (length > 0 ? length : 8388608) + ")";
+        }
+        return type.getName().toUpperCase();
     }
 
     /** Build a row in table-column order from positional or column-listed values (auto-increment + defaults applied). */
@@ -243,23 +442,67 @@ final class InsertExecutor {
                 || fn.getReturnType() instanceof ObjectType || fn.getReturnType() instanceof ArrayType
                 || fn.getReturnType() instanceof GeographyType || fn.getReturnType() instanceof GeometryType);
             // Beyond the semi-structured families, live rejects a further per-FUNCTION set in VALUES —
-            // measured (Probe169b): COMPRESS, MD5_BINARY, HEX_DECODE_BINARY, SHA2 and
+            // measured: COMPRESS, MD5_BINARY, HEX_DECODE_BINARY, SHA2 and
             // RANDOM all raise the same sentence, while TO_BINARY and UPPER pass. The boundary is not
             // a return-type rule (SHA2 returns VARCHAR and is rejected; TO_BINARY returns BINARY and
             // passes), so only the measured names are listed.
             semiStructured = semiStructured || VALUES_REJECTED_FUNCTIONS.contains(name);
         }
+        // A rejected function poisons the whole item wherever it sits, not only at the top: live
+        // refuses UPPER(UUID_STRING()) and CONCAT('p', RANDOM()) too, naming the OUTER expression.
+        semiStructured = semiStructured || containsRejectedFunction(ast);
         if (semiStructured) {
             throw new RuntimeException("Invalid expression [" + exprText + "] in VALUES clause");
         }
     }
 
-    /** The measured non-semi-structured functions live refuses inside a VALUES clause. */
+    /**
+     * The measured non-semi-structured functions live refuses inside a VALUES clause.
+     *
+     * <p>Membership is by NAME, not by determinism: the two-argument {@code UUID_STRING(ns, name)} is
+     * an exact RFC 4122 function and is refused all the same, while {@code CURRENT_TIMESTAMP()},
+     * {@code CURRENT_DATE()}, {@code CURRENT_USER()} and {@code UPPER()} all pass. {@code UNIFORM} is
+     * refused even with constant arguments ({@code UNIFORM(1, 10, 5)}), so it is the function and not
+     * its randomness. SEQ2 is the one entry inferred rather than measured — SEQ1, SEQ4 and SEQ8 were
+     * each refused, and the family is uniform.
+     *
+     * <p>{@code INSERT ... SELECT} is the supported route for every one of them.
+     */
     private static final Set<String> VALUES_REJECTED_FUNCTIONS = new HashSet<>(Arrays.asList(
-        "COMPRESS", "MD5_BINARY", "HEX_DECODE_BINARY", "SHA2", "RANDOM"));
+        "COMPRESS", "MD5_BINARY", "HEX_DECODE_BINARY", "SHA2", "RANDOM",
+        "UUID_STRING", "UNIFORM", "SEQ1", "SEQ2", "SEQ4", "SEQ8",
+        "ENCRYPT", "ENCRYPT_RAW", "NORMAL", "ZIPF"));
+
+    /** Whether a refused function appears ANYWHERE under {@code node}. */
+    private static boolean containsRejectedFunction(final Expression node) {
+        if (node instanceof FunctionCallExpression) {
+            final FunctionCallExpression call = (FunctionCallExpression) node;
+            if (VALUES_REJECTED_FUNCTIONS.contains(call.getFunctionName().toUpperCase())) {
+                return true;
+            }
+            for (final Expression argument : call.getArguments()) {
+                if (containsRejectedFunction(argument)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        if (node instanceof CastExpression) {
+            return containsRejectedFunction(((CastExpression) node).getExpression());
+        }
+        if (node instanceof BinaryOperationExpression) {
+            return containsRejectedFunction(((BinaryOperationExpression) node).getLeft())
+                || containsRejectedFunction(((BinaryOperationExpression) node).getRight());
+        }
+        if (node instanceof UnaryOperationExpression) {
+            return containsRejectedFunction(((UnaryOperationExpression) node).getOperand());
+        }
+        return false;
+    }
 
     Row buildInsertRow(final Table table, final String fullyQualifiedName,
-                               final List<String> columnNames, final List<Object> values) {
+                               final List<String> columnNames, final int[] valueIndexes,
+                               final List<Object> values) {
         // Snowflake requires the value count to match exactly — both with an explicit column list
         // and positionally (live-verified: "Insert value list does not match column list"); defaults
         // apply only to columns omitted from an explicit list.
@@ -267,50 +510,79 @@ final class InsertExecutor {
             throw new RuntimeException("INSERT value count (" + values.size()
                 + ") does not match the number of target columns (" + columnNames.size() + ")");
         }
-        if (columnNames == null && values.size() != table.getColumns().size()) {
+        if (columnNames == null && values.size() != table.columnCount()) {
             throw new RuntimeException("Insert value list does not match column list expecting "
-                + table.getColumns().size() + " but got " + values.size());
+                + table.columnCount() + " but got " + values.size());
         }
-        final List<Object> rowValues = new ArrayList<>();
-        if (columnNames != null) {
-            final Map<String, Object> valueMap = new HashMap<>();
-            for (int i = 0; i < columnNames.size(); i++) {
-                valueMap.put(columnNames.get(i).toUpperCase(), values.get(i));
-            }
-            for (final TableColumn col : table.getColumns()) {
-                final String key = col.getName().toUpperCase();
-                // Snowflake applies DEFAULT / AUTOINCREMENT only to columns OMITTED from the insert's
-                // column list. A listed column keeps its explicit value — including an explicit NULL
-                // (which must NOT be silently replaced by the column default).
-                if (valueMap.containsKey(key)) {
-                    rowValues.add(valueMap.get(key));
-                } else {
-                    rowValues.add(executor.insertColumnValue(col, fullyQualifiedName, null));
-                }
-            }
-        } else {
-            for (int i = 0; i < table.getColumns().size(); i++) {
-                final TableColumn col = table.getColumns().get(i);
-                // Positionally covered columns are explicit (even NULL); only the missing trailing
-                // columns are omitted and take DEFAULT / AUTOINCREMENT.
-                if (i < values.size()) {
-                    rowValues.add(values.get(i));
-                } else {
-                    rowValues.add(executor.insertColumnValue(col, fullyQualifiedName, null));
-                }
+        final List<TableColumn> cols = table.columnsView();
+        final List<Object> rowValues = new ArrayList<>(valueIndexes.length);
+        for (int c = 0; c < valueIndexes.length; c++) {
+            final int at = valueIndexes[c];
+            // Snowflake applies DEFAULT / AUTOINCREMENT only to columns OMITTED from the insert's
+            // column list (or, positionally, missing trailing columns). A covered column keeps its
+            // explicit value — including an explicit NULL (which must NOT be silently replaced by
+            // the column default).
+            if (at >= 0 && !(values.get(at) instanceof DefaultMarkerExpression)) {
+                rowValues.add(values.get(at));
+            } else {
+                // An OMITTED column and an explicit DEFAULT take the same path — live writes the
+                // declared default for both, the AUTOINCREMENT value where there is one, and NULL when
+                // the column has neither (which a NOT NULL column then refuses, as live does).
+                rowValues.add(executor.insertColumnValue(cols.get(c), fullyQualifiedName, null));
             }
         }
         return new Row(rowValues);
     }
 
-    /** Insert one fully-built row: enforce constraints, then buffer (deferred-apply) or write + log + track streams. */
+    /**
+     * Table-column → value-position mapping for one INSERT statement: entry {@code c} is the index in
+     * the value list that fills table column {@code c}, or -1 when the column is omitted and takes
+     * its DEFAULT / AUTOINCREMENT. Computed once per statement so the per-row builder does no name
+     * lookups; with a name duplicated in the column list the last occurrence wins.
+     */
+    private int[] insertValueIndexes(final Table table, final List<String> columnNames) {
+        final int[] mapping = new int[table.columnCount()];
+        if (columnNames == null) {
+            // Positional: the exact-count rule (checked per row before this mapping is consulted)
+            // means column c is always fed by value c.
+            for (int c = 0; c < mapping.length; c++) {
+                mapping[c] = c;
+            }
+            return mapping;
+        }
+        final Map<String, Integer> positionByName = new HashMap<>();
+        for (int i = 0; i < columnNames.size(); i++) {
+            positionByName.put(columnNames.get(i).toUpperCase(), i);
+        }
+        final List<TableColumn> cols = table.columnsView();
+        for (int c = 0; c < mapping.length; c++) {
+            final Integer position = positionByName.get(cols.get(c).getName().toUpperCase());
+            mapping[c] = position == null ? -1 : position;
+        }
+        return mapping;
+    }
+
+    /** Single-row variant of {@link #insertRowInto(Table, String, Row, DeferredInsertGuard)}: builds a fresh guard when deferred. */
     void insertRowInto(final Table table, final String fullyQualifiedName, final Row row) {
+        insertRowInto(table, fullyQualifiedName, row, null);
+    }
+
+    /**
+     * Insert one fully-built row: enforce constraints, then buffer (deferred-apply) or write + log +
+     * track streams. In deferred mode duplicate keys are refused by {@code guard}; a caller inserting
+     * many rows passes one statement-scoped guard, a null builds a single-row one here.
+     */
+    void insertRowInto(final Table table, final String fullyQualifiedName, final Row row,
+                       final DeferredInsertGuard guard) {
         executor.enforceColumnConstraintsForDml(table, row);
         if (executor.isDeferredApply()) {
-            final StorageEngine.TableStorage base = executor.getStorageEngine().getTableStorage(fullyQualifiedName);
+            final TableStorage base = executor.getStorageEngine().getTableStorage(fullyQualifiedName);
             final TransactionWriteSet writeSet = executor.getTransactionManager().getCurrentTransaction().getWriteSet();
-            validateDeferredInsertPrimaryKey(table, base, writeSet, fullyQualifiedName, row);
-            validateDeferredInsertUniqueKey(table, base, writeSet, fullyQualifiedName, row);
+            final DeferredInsertGuard rowGuard = guard != null ? guard
+                : new DeferredInsertGuard(table, base, writeSet, fullyQualifiedName,
+                    executor.getStorageEngine().isEnforcePrimaryKey(),
+                    executor.getStorageEngine().isEnforceUniqueKey());
+            rowGuard.validate(row);
             writeSet.recordInsert(fullyQualifiedName, row);
         } else {
             final int insertIndex = executor.getStorageEngine().getTableStorage(fullyQualifiedName).getRowCount();
@@ -399,7 +671,8 @@ final class InsertExecutor {
                     } else {
                         values = srcRow.getValues();
                     }
-                    insertRowInto(target, fqn, buildInsertRow(target, fqn, columnNames, values));
+                    insertRowInto(target, fqn,
+                        buildInsertRow(target, fqn, columnNames, insertValueIndexes(target, columnNames), values));
                     rowsInserted++;
                 }
             }
@@ -432,61 +705,6 @@ final class InsertExecutor {
         final Object result = evaluateRowExpression(condCtx, sourceTable, srcRow);
         return SqlTruth.isTrue(result)
             ? true : result != null && Boolean.parseBoolean(String.valueOf(result));
-    }
-
-    private void validateDeferredInsertPrimaryKey(final Table table, final StorageEngine.TableStorage base,
-            final TransactionWriteSet writeSet, final String fullyQualifiedName, final Row row) {
-        if (!executor.getStorageEngine().isEnforcePrimaryKey() || table.getPrimaryKeys().isEmpty()) {
-            return;
-        }
-        final Object pk = base.primaryKeyOf(row);
-        if (pk == null) {
-            return;
-        }
-        if (base.getRowByPrimaryKey(pk) != null) {
-            throw new RuntimeException("Duplicate primary key: " + pk);
-        }
-        for (final Row pending : writeSet.pendingInserts(fullyQualifiedName)) {
-            if (pk.equals(base.primaryKeyOf(pending))) {
-                throw new RuntimeException("Duplicate primary key: " + pk);
-            }
-        }
-    }
-
-    /**
-     * Enforce UNIQUE constraints at statement time for a deferred INSERT, but only when the opt-in
-     * {@code constraints.enforce.uniqueKey} flag is on (off by default — UNIQUE is otherwise
-     * informational, matching Snowflake). Each UNIQUE column's non-null value must not already appear
-     * in the committed base or this transaction's pending inserts. UNIQUE is modeled per column, so a
-     * composite UNIQUE is enforced column by column. Scans the rows — unique indexes are intentionally
-     * not implemented.
-     */
-    private void validateDeferredInsertUniqueKey(final Table table, final StorageEngine.TableStorage base,
-            final TransactionWriteSet writeSet, final String fullyQualifiedName, final Row row) {
-        if (!executor.getStorageEngine().isEnforceUniqueKey()) {
-            return;
-        }
-        final List<TableColumn> cols = table.getColumns();
-        for (int i = 0; i < cols.size(); i++) {
-            final TableColumn col = cols.get(i);
-            if (!col.isUnique() || col.isPrimaryKey() || i >= row.getValues().size()) {
-                continue; // PK columns are covered by the primary-key check; NULLs below are unconstrained
-            }
-            final Object value = row.getValue(i);
-            if (value == null) {
-                continue;
-            }
-            for (final Row existing : base.scan()) {
-                if (i < existing.getValues().size() && value.equals(existing.getValue(i))) {
-                    throw new RuntimeException("Duplicate unique key on column '" + col.getName() + "': " + value);
-                }
-            }
-            for (final Row pending : writeSet.pendingInserts(fullyQualifiedName)) {
-                if (i < pending.getValues().size() && value.equals(pending.getValue(i))) {
-                    throw new RuntimeException("Duplicate unique key on column '" + col.getName() + "': " + value);
-                }
-            }
-        }
     }
 
     /**

@@ -27,9 +27,9 @@ public class EditDistance extends TextArgumentFunction {
     @Override
     public Object evaluate(final List<Object> args) {
         if (args.get(0) == null || args.get(1) == null) return null;
-        String a = args.get(0).toString();
-        String b = args.get(1).toString();
-        int[][] dp = new int[a.length() + 1][b.length() + 1];
+        final String a = args.get(0).toString();
+        final String b = args.get(1).toString();
+        final int[][] dp = new int[a.length() + 1][b.length() + 1];
         for (int i = 0; i <= a.length(); i++) dp[i][0] = i;
         for (int j = 0; j <= b.length(); j++) dp[0][j] = j;
         for (int i = 1; i <= a.length(); i++) {
@@ -42,6 +42,8 @@ public class EditDistance extends TextArgumentFunction {
         return (long) dp[a.length()][b.length()];
     }
 
-    @Override public int getMinArgCount() { return 2; }
-    @Override public int getMaxArgCount() { return 2; }
+    @Override
+    public int getMinArgCount() { return 2; }
+    @Override
+    public int getMaxArgCount() { return 2; }
 }

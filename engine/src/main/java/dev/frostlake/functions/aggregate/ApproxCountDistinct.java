@@ -22,7 +22,14 @@ import dev.frostlake.types.NumericType;
 
 import java.util.List;
 
+/**
+ * APPROX_COUNT_DISTINCT(expr) — an approximate count of the distinct non-NULL values in the group,
+ * estimated with the {@link HllAccumulator} HyperLogLog sketch (~0.8% standard error, near-exact at
+ * low cardinality). NULLs are ignored, and a group with no non-NULL value counts 0. HLL names the
+ * same registered object.
+ */
 public class ApproxCountDistinct extends AggregateFunction {
+    /** Registers the aggregate as {@code APPROX_COUNT_DISTINCT} returning BIGINT. */
     public ApproxCountDistinct() { super("APPROX_COUNT_DISTINCT", NumericType.BIGINT); }
 
     @Override
@@ -47,6 +54,8 @@ public class ApproxCountDistinct extends AggregateFunction {
     @Override
     public Object evaluate(final List<Object> args) { return null; }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return 1; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return 1; }
 }

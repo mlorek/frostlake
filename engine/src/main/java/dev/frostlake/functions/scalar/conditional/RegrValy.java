@@ -29,6 +29,8 @@ public class RegrValy extends BuiltInFunction {
         return args.get(0) == null || args.get(1) == null ? null : args.get(0);
     }
 
-    @Override public int getMinArgCount() { return 2; }
-    @Override public int getMaxArgCount() { return 2; }
+    @Override
+    public int getMinArgCount() { return 2; }
+    @Override
+    public int getMaxArgCount() { return 2; }
 }

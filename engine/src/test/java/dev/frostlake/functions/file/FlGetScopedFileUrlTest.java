@@ -20,7 +20,6 @@ import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assumptions.assumeFalse;
 
 /**
  * {@code FL_GET_SCOPED_FILE_URL(file)} — the descriptor's {@code SCOPED_FILE_URL} field.
@@ -65,7 +64,6 @@ public class FlGetScopedFileUrlTest extends StagedFileTestSupport {
      */
     @Test
     public void realStagedFileReturnsNullForBothUrlAccessors() {
-        assumeFalse(isLiveSnowflake(), stageOnlyReason());
         stage("hello.txt", "hello world\nsecond line\n");
 
         assertNull(scopedFileUrl("TO_FILE('@st/hello.txt')"));

@@ -42,6 +42,8 @@ public class BoolAnd extends BuiltInFunction {
         return Boolean.TRUE;
     }
 
-    @Override public int getMinArgCount() { return 2; }
-    @Override public int getMaxArgCount() { return 2; }
+    @Override
+    public int getMinArgCount() { return 2; }
+    @Override
+    public int getMaxArgCount() { return 2; }
 }

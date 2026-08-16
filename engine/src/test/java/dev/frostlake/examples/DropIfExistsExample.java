@@ -23,13 +23,17 @@ import org.slf4j.LoggerFactory;
 /**
  * Example demonstrating DROP IF EXISTS statements
  */
-public class DropIfExistsExample {
+public final class DropIfExistsExample {
+
+    /** Static helpers only — never instantiated. */
+    private DropIfExistsExample() {
+    }
     private static final Logger logger = LoggerFactory.getLogger(DropIfExistsExample.class);
     public static void main(final String[] args) {
         try {
             logger.info("=== DROP IF EXISTS Example ===\n");
 
-            DatabaseEngine engine = new DatabaseEngine();
+            final DatabaseEngine engine = new DatabaseEngine();
 
             // Setup - use IF EXISTS to make example idempotent
             engine.execute("DROP DATABASE IF EXISTS demo_db");
@@ -119,7 +123,7 @@ public class DropIfExistsExample {
             logger.info("   Created: t1, t2, v1");
 
             // Cleanup script - can run multiple times without errors
-            String cleanupScript = """
+            final String cleanupScript = """
                 DROP VIEW IF EXISTS v1;
                 DROP TABLE IF EXISTS t1;
                 DROP TABLE IF EXISTS t2;
@@ -164,7 +168,7 @@ public class DropIfExistsExample {
             logger.info("5. Use case: Safe database migrations:");
             logger.info("   " + "-".repeat(60));
 
-            String migrationScript = """
+            final String migrationScript = """
                 -- Safe to run multiple times
                 DROP TABLE IF EXISTS old_users;
                 DROP TABLE IF EXISTS legacy_data;
@@ -182,7 +186,7 @@ public class DropIfExistsExample {
                 sql = sql.trim();
                 if (!sql.isEmpty() && !sql.startsWith("--")) {
                     engine.execute(sql);
-                    String shortSql = sql.length() > 50 ? sql.substring(0, 47) + "..." : sql;
+                    final String shortSql = sql.length() > 50 ? sql.substring(0, 47) + "..." : sql;
                     logger.info("     " + shortSql);
                 }
             }

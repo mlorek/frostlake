@@ -16,7 +16,6 @@
 
 package dev.frostlake.executor;
 
-import dev.frostlake.parser.FrostlakeLexer;
 import dev.frostlake.executor.expressions.BinaryOperationExpression;
 import dev.frostlake.executor.expressions.BinaryOperator;
 import dev.frostlake.executor.expressions.CastExpression;
@@ -24,9 +23,8 @@ import dev.frostlake.executor.expressions.Expression;
 import dev.frostlake.executor.expressions.ExpressionEvaluatorVisitor;
 import dev.frostlake.executor.expressions.UnaryOperationExpression;
 import dev.frostlake.executor.expressions.UnaryOperator;
+import dev.frostlake.executor.procedural.BaseExpression;
 import dev.frostlake.executor.procedural.BinaryExpression;
-import dev.frostlake.functions.scalar.ArrayFunctionHelper;
-import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.executor.procedural.CallStatement;
 import dev.frostlake.executor.procedural.CaseStatement;
 import dev.frostlake.executor.procedural.CloseStatement;
@@ -36,7 +34,6 @@ import dev.frostlake.executor.procedural.DeclareExceptionStatement;
 import dev.frostlake.executor.procedural.DeclareResultSetStatement;
 import dev.frostlake.executor.procedural.DeclareStatement;
 import dev.frostlake.executor.procedural.ExecuteImmediateExpression;
-import dev.frostlake.executor.procedural.BaseExpression;
 import dev.frostlake.executor.procedural.FetchStatement;
 import dev.frostlake.executor.procedural.ForStatement;
 import dev.frostlake.executor.procedural.FunctionCallExpression;
@@ -63,7 +60,10 @@ import dev.frostlake.executor.procedural.UserDefinedException;
 import dev.frostlake.executor.procedural.VariableExpression;
 import dev.frostlake.executor.procedural.WhenClause;
 import dev.frostlake.executor.procedural.WhileStatement;
+import dev.frostlake.functions.scalar.ArrayFunctionHelper;
+import dev.frostlake.functions.scalar.SharedFunctionHelpers;
 import dev.frostlake.jdbc.JdbcMarshaling;
+import dev.frostlake.parser.FrostlakeLexer;
 import dev.frostlake.security.SecurityManager;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
@@ -79,9 +79,19 @@ import tools.jackson.databind.node.ArrayNode;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
-import java.util.*;
-import org.antlr.v4.runtime.CommonTokenStream;
+import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Deque;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
+import java.util.TreeMap;
 import org.antlr.v4.runtime.CharStreams;
+import org.antlr.v4.runtime.CommonTokenStream;
 
 public class ProceduralExecutor {
 
@@ -100,7 +110,10 @@ public class ProceduralExecutor {
      * The one script-supplied name that is NUMERIC. Its siblings SQLCODE, SQLSTATE and SQLERRM are
      * text, so only this one keeps its number when RETURN names it directly.
      */
-    private static final String NUMERIC_SCRIPT_VARIABLE = "SQLROWCOUNT";
+    /** Script-supplied variables that carry their OWN type (so RETURN of one is not text):
+     *  the numeric SQLROWCOUNT/ACTIVITY_COUNT and the boolean SQLFOUND/SQLNOTFOUND. */
+    private static final Set<String> TYPED_SCRIPT_VARIABLES = new HashSet<String>(
+        Arrays.asList("SQLROWCOUNT", "ACTIVITY_COUNT", "SQLFOUND", "SQLNOTFOUND"));
     private final Map<String, UserDefinedException> userExceptions = new HashMap<>();
     // Exceptions currently being handled (a stack for nested handlers) so a bare RAISE; can re-raise the one
     // it is handling rather than throwing a fresh generic error.
@@ -118,6 +131,10 @@ public class ProceduralExecutor {
     // leave the return state set so the ENCLOSING block propagates it; only the outermost block (depth 1)
     // consumes the return into a result. Without this a RETURN inside a nested BEGIN…END was swallowed.
     private int blockDepth;
+    // Where the statement that is currently failing stood, for the uncaught-exception message the
+    // outermost block builds; -1 when no failure is in flight.
+    private int failureLine = -1;
+    private int failurePosition = -1;
     private QueryExecutor queryExecutor;
     private final BindVariableSubstitutor bindSubstitutor;
     private static final Row EMPTY_ROW = new Row(new ArrayList<>());
@@ -170,16 +187,49 @@ public class ProceduralExecutor {
      * to its next iteration; otherwise propagate (an EXIT handler / no match unwinds the loop as before).
      */
     private void executeLoopBody(final ProceduralBlock block) {
+        // Live's WHEN … CONTINUE resumption is per STATEMENT, not per iteration: the handler runs
+        // and execution proceeds with the statement AFTER the one whose execution raised, so the
+        // REST of the same iteration still runs — a raising IF is followed by the increment after
+        // it (measured: the loop totals 10, not 8).
+        enterScope();
         try {
-            executeBlock(block);
-        } catch (final RuntimeException e) {
-            if (!tryContinueHandler(e)) {
-                throw e;
+            for (final Statement stmt : block.getStatements()) {
+                try {
+                    executeStatement(stmt);
+                } catch (final RuntimeException e) {
+                    if (!tryContinueHandler(e)) {
+                        throw e;
+                    }
+                }
+                if (breakFlag || continueFlag || returnFlag) {
+                    break;
+                }
             }
+        } finally {
+            exitScope();
         }
     }
 
+    /**
+     * Run one statement, remembering WHERE it stood if it fails: an error escaping the block names the
+     * failing statement's own line and position, and the INNERMOST one wins because the record is taken
+     * as the exception unwinds and a later (outer) record is ignored. A statement that completes clears
+     * the record, so a handled failure does not label a later, unrelated one.
+     */
     public void executeStatement(final Statement stmt) {
+        try {
+            dispatchStatement(stmt);
+        } catch (final RuntimeException failure) {
+            recordStatementFailure(stmt.getSourceLine(), stmt.getSourcePosition());
+            throw failure;
+        }
+        clearStatementFailure();
+    }
+
+    private void dispatchStatement(final Statement stmt) {
+        // Each procedural statement reads its own clock (live-verified) — including each
+        // iteration of a loop body, which live treats as fresh statements.
+        StatementClock.advance();
         switch (stmt.getType()) {
             case DECLARE:
                 executeDeclare((DeclareStatement) stmt);
@@ -302,7 +352,7 @@ public class ProceduralExecutor {
 
     private void executeIf(final IfStatement stmt) {
         for (final IfCondition condition : stmt.getConditions()) {
-            Object result = evaluateExpression(condition.getCondition());
+            final Object result = evaluateExpression(condition.getCondition());
             if (isTrue(result)) {
                 executeBlock(condition.getBlock());
                 return;
@@ -314,13 +364,13 @@ public class ProceduralExecutor {
     }
 
     private void executeCase(final CaseStatement stmt) {
-        Object switchValue = stmt.getSwitchExpression() != null
+        final Object switchValue = stmt.getSwitchExpression() != null
             ? evaluateExpression(stmt.getSwitchExpression())
             : null;
 
         for (final WhenClause when : stmt.getWhenClauses()) {
-            Object whenValue = evaluateExpression(when.getCondition());
-            boolean matches = switchValue != null
+            final Object whenValue = evaluateExpression(when.getCondition());
+            final boolean matches = switchValue != null
                 ? Objects.equals(switchValue, whenValue)
                 : isTrue(whenValue);
 
@@ -390,15 +440,15 @@ public class ProceduralExecutor {
             return;
         }
         // Check if the iterable resolves to a cursor name
-        String iterableName = getIterableName(stmt.getIterable());
-        Cursor cursor = iterableName != null ? cursorManager.cursors().get(iterableName.toUpperCase()) : null;
+        final String iterableName = getIterableName(stmt.getIterable());
+        final Cursor cursor = iterableName != null ? cursorManager.cursors().get(iterableName.toUpperCase()) : null;
 
         if (cursor != null) {
             // FOR rec IN cursorName DO — implicit open, iterate, close
             if (!cursor.isOpen()) {
                 openCursorWithQuery(cursor);
             }
-            String varName = stmt.getVariableName();
+            final String varName = stmt.getVariableName();
             try {
                 Row row;
                 while ((row = cursor.fetch()) != null) {
@@ -509,7 +559,7 @@ public class ProceduralExecutor {
         if (expr == null) return null;
         if (expr instanceof VariableExpression) return ((VariableExpression) expr).getName();
         if (expr instanceof LiteralExpression) {
-            Object v = ((LiteralExpression) expr).getValue();
+            final Object v = ((LiteralExpression) expr).getValue();
             return v instanceof String ? (String) v : null;
         }
         return null;
@@ -533,8 +583,8 @@ public class ProceduralExecutor {
         if (!positionalBinds.isEmpty()) {
             sql = JdbcMarshaling.substitutePlaceholders(sql, positionalBinds);
         }
-        List<ResultSet> result = queryExecutor.execute(sql);
-        ResultSet rs = (result != null && !result.isEmpty()) ? result.get(0) : new ResultSet(new ArrayList<>());
+        final List<ResultSet> result = queryExecutor.execute(sql);
+        final ResultSet rs = (result != null && !result.isEmpty()) ? result.get(0) : new ResultSet(new ArrayList<>());
         cursor.open(rs);
     }
 
@@ -549,8 +599,8 @@ public class ProceduralExecutor {
                                   final ResultSet rs) {
         if (rs == null) return;
         for (int i = 0; i < rs.getColumns().size(); i++) {
-            String colName = rs.getColumns().get(i).getName();
-            Object val = i < row.getValues().size() ? row.getValue(i) : null;
+            final String colName = rs.getColumns().get(i).getName();
+            final Object val = i < row.getValues().size() ? row.getValue(i) : null;
             scope.variables().put((varName + "." + colName).toUpperCase(), val);
             scope.variables().put((varName + "." + colName), val);
         }
@@ -596,7 +646,7 @@ public class ProceduralExecutor {
             return false;
         }
         final String canonical = name.toUpperCase();
-        return !NUMERIC_SCRIPT_VARIABLE.equals(canonical) && !variableTypes.containsKey(canonical);
+        return !TYPED_SCRIPT_VARIABLES.contains(canonical) && !variableTypes.containsKey(canonical);
     }
 
     /**
@@ -675,8 +725,17 @@ public class ProceduralExecutor {
 
     private void executeSql(final SqlStatement stmt) {
         if (queryExecutor != null && stmt.getSql() != null && !stmt.getSql().isBlank()) {
+            boolean sawResult = false;
             for (final ResultSet result : queryExecutor.execute(substituteBindVariables(stmt.getSql()))) {
                 recordSqlRowCount(result);
+                if (result != null) {
+                    sawResult = true;
+                }
+            }
+            if (!sawResult) {
+                // TRUNCATE and some DDL complete without a result set here; live still resets the
+                // DML trio and counts the statement's one status line.
+                recordStatementWithoutResult();
             }
             // Snowflake runs each statement of a stored procedure in its own autocommit transaction
             // (unless an explicit BEGIN is open) — commit here exactly as the top-level entry does.
@@ -685,30 +744,54 @@ public class ProceduralExecutor {
     }
 
     /**
-     * Set Snowflake's {@code SQLROWCOUNT} (rows affected by the last DML statement) when {@code result}
-     * is a DML count — a result carrying a "number of rows …" (inserted / updated / deleted) column.
-     * A non-DML result (a SELECT, DDL, …) leaves SQLROWCOUNT unchanged. Called after each statement in a
-     * procedural block (top-level blocks execute their statements via the visitor, not {@code executeSql}).
+     * Record the DML-status globals after one executed SQL statement. A DML result — one carrying
+     * "number of rows …" (inserted / updated / deleted) columns — sets {@code SQLROWCOUNT} to the
+     * affected total, {@code SQLFOUND}/{@code SQLNOTFOUND} to whether that total is non-zero, and
+     * {@code ACTIVITY_COUNT} to the same total. EVERY OTHER completed statement — a SELECT, DDL,
+     * and TRUNCATE TABLE too — resets the three DML variables to NULL and sets
+     * {@code ACTIVITY_COUNT} to its own result's row count (a DDL status line counts 1, a SELECT
+     * its rows). All four start NULL. Live-verified, including the reset: a SELECT between the DML
+     * and the read answers NULL for the trio, and scripting-internal statements (LET, assignments,
+     * control flow) touch none of them. Called after each statement in a procedural block
+     * (top-level blocks execute their statements via the visitor, not {@code executeSql}).
      */
     public void recordSqlRowCount(final ResultSet result) {
-        if (result == null || result.getColumns() == null || result.getRows().isEmpty()) {
+        if (result == null || result.getColumns() == null) {
             return;
         }
         long total = 0;
         boolean found = false;
-        for (int i = 0; i < result.getColumns().size(); i++) {
-            final String name = result.getColumns().get(i).getName();
-            if (name != null && name.toLowerCase().startsWith("number of rows")) {
-                final Object v = result.getRows().get(0).getValue(i);
-                if (v instanceof Number) {
-                    total += ((Number) v).longValue();
-                    found = true;
+        if (!result.getRows().isEmpty()) {
+            for (int i = 0; i < result.getColumns().size(); i++) {
+                final String name = result.getColumns().get(i).getName();
+                if (name != null && name.toLowerCase().startsWith("number of rows")) {
+                    final Object v = result.getRows().get(0).getValue(i);
+                    if (v instanceof Number) {
+                        total += ((Number) v).longValue();
+                        found = true;
+                    }
                 }
             }
         }
         if (found) {
             setVariable("SQLROWCOUNT", total);
+            setVariable("SQLFOUND", total > 0);
+            setVariable("SQLNOTFOUND", total == 0);
+            setVariable("ACTIVITY_COUNT", total);
+        } else {
+            setVariable("SQLROWCOUNT", null);
+            setVariable("SQLFOUND", null);
+            setVariable("SQLNOTFOUND", null);
+            setVariable("ACTIVITY_COUNT", (long) result.getRows().size());
         }
+    }
+
+    /** The DML-status effect of a completed statement whose result never surfaced as a result set. */
+    public void recordStatementWithoutResult() {
+        setVariable("SQLROWCOUNT", null);
+        setVariable("SQLFOUND", null);
+        setVariable("SQLNOTFOUND", null);
+        setVariable("ACTIVITY_COUNT", 1L);
     }
 
     private void executeCall(final CallStatement stmt) {
@@ -791,6 +874,11 @@ public class ProceduralExecutor {
         }
     }
 
+    /** How many BEGIN…END blocks are currently open; 1 inside the outermost. */
+    public int getBlockDepth() {
+        return blockDepth;
+    }
+
     /** The exception currently being handled, or null if not inside an exception handler. */
     public Exception getCurrentHandledException() {
         return handledExceptions.peek();
@@ -798,21 +886,24 @@ public class ProceduralExecutor {
 
     private void executeRaise(final RaiseStatement stmt) {
         if (stmt.isUserDefinedException()) {
-            String exceptionName = stmt.getExceptionName().toUpperCase();
-            UserDefinedException exception = userExceptions.get(exceptionName);
+            final String exceptionName = stmt.getExceptionName().toUpperCase();
+            final UserDefinedException exception = userExceptions.get(exceptionName);
             if (exception == null) {
                 throw new RuntimeException("Undefined exception: " + exceptionName);
             }
-            throw new ProceduralException(exception.getErrorCode(), exception.getMessage(), exceptionName);
+            final ProceduralException raised =
+                new ProceduralException(exception.getErrorCode(), exception.getMessage(), exceptionName);
+            raised.setSourcePosition(stmt.getSourceLine(), stmt.getSourcePosition());
+            throw raised;
         } else {
-            String message = evaluateExpression(stmt.getMessage()).toString();
+            final String message = evaluateExpression(stmt.getMessage()).toString();
             throw new ProceduralException(message);
         }
     }
 
     private void executeDeclareException(final DeclareExceptionStatement stmt) {
-        String name = stmt.getExceptionName().toUpperCase();
-        UserDefinedException exception = new UserDefinedException(name, stmt.getErrorCode(), stmt.getMessage());
+        final String name = stmt.getExceptionName().toUpperCase();
+        final UserDefinedException exception = new UserDefinedException(name, stmt.getErrorCode(), stmt.getMessage());
         userExceptions.put(name, exception);
     }
 
@@ -827,12 +918,12 @@ public class ProceduralExecutor {
         } else if (expr instanceof SqlScalarExpression) {
             return evaluateSqlScalar((SqlScalarExpression) expr);
         } else if (expr instanceof SessionVarRefExpression) {
-            String varName = ((SessionVarRefExpression) expr).getName().toUpperCase();
+            final String varName = ((SessionVarRefExpression) expr).getName().toUpperCase();
             // First check local procedural scope, then fall back to session variables
-            Object localVal = scope.variables().get(varName);
+            final Object localVal = scope.variables().get(varName);
             if (localVal != null) return localVal;
             if (queryExecutor != null) {
-                SecurityManager sm = queryExecutor.getSecurityManager();
+                final SecurityManager sm = queryExecutor.getSecurityManager();
                 if (sm != null && sm.getSessionContext() != null) {
                     return sm.getSessionContext().getSessionParameter(varName);
                 }
@@ -842,13 +933,13 @@ public class ProceduralExecutor {
         } else if (expr instanceof VariableExpression) {
             return getVariable(((VariableExpression) expr).getName());
         } else if (expr instanceof BinaryExpression) {
-            BinaryExpression binExpr = (BinaryExpression) expr;
-            Object left = evaluateExpression(binExpr.getLeft());
-            Object right = evaluateExpression(binExpr.getRight());
+            final BinaryExpression binExpr = (BinaryExpression) expr;
+            final Object left = evaluateExpression(binExpr.getLeft());
+            final Object right = evaluateExpression(binExpr.getRight());
             return evaluateBinaryOperation(binExpr.getOperator(), left, right);
         } else if (expr instanceof ExecuteImmediateExpression) {
-            ExecuteImmediateExpression execExpr = (ExecuteImmediateExpression) expr;
-            Object sqlValue = evaluateExpression(execExpr.getSqlExpression());
+            final ExecuteImmediateExpression execExpr = (ExecuteImmediateExpression) expr;
+            final Object sqlValue = evaluateExpression(execExpr.getSqlExpression());
             String sqlText = sqlValue != null ? sqlValue.toString() : "";
 
             // Bind USING (...) values positionally to the ? placeholders (Snowflake style).
@@ -864,13 +955,13 @@ public class ProceduralExecutor {
             if (queryExecutor == null) {
                 throw new RuntimeException("QueryExecutor not available for EXECUTE IMMEDIATE");
             }
-            List<ResultSet> result = queryExecutor.execute(sqlText);
+            final List<ResultSet> result = queryExecutor.execute(sqlText);
             return result.isEmpty() ? result : result.get(0);
         } else if (expr instanceof UnaryExpression) {
-            UnaryExpression unaryExpr = (UnaryExpression) expr;
+            final UnaryExpression unaryExpr = (UnaryExpression) expr;
             return evaluateUnaryOperation(unaryExpr);
         } else if (expr instanceof FunctionCallExpression) {
-            FunctionCallExpression funcExpr = (FunctionCallExpression) expr;
+            final FunctionCallExpression funcExpr = (FunctionCallExpression) expr;
             // RESULTSET_FROM_CURSOR(<cursor>) — surface an (opened) cursor's result set as a RESULTSET so
             // it can be RETURN TABLE(...)'d or FOR-iterated. The argument names a cursor, not a value.
             if ("RESULTSET_FROM_CURSOR".equalsIgnoreCase(funcExpr.getFunctionName())
@@ -884,16 +975,16 @@ public class ProceduralExecutor {
             if (queryExecutor != null) {
                 try {
                     // Build argument list
-                    List<Object> argValues = new ArrayList<>();
+                    final List<Object> argValues = new ArrayList<>();
                     for (final BaseExpression arg : funcExpr.getArguments()) {
                         argValues.add(evaluateExpression(arg));
                     }
                     // Delegate to QueryExecutor expression evaluation via re-building the SQL
-                    StringBuilder callExpr = new StringBuilder(funcExpr.getFunctionName()).append("(");
+                    final StringBuilder callExpr = new StringBuilder(funcExpr.getFunctionName()).append("(");
                     final List<BaseExpression> argExprs = funcExpr.getArguments();
                     for (int i = 0; i < argValues.size(); i++) {
                         if (i > 0) callExpr.append(", ");
-                        Object av = argValues.get(i);
+                        final Object av = argValues.get(i);
                         // A bare name that is NOT a declared variable is a KEYWORD ARGUMENT, not a value: the
                         // idiomatic DATEADD(MINUTE, 30, …) / DATE_TRUNC(MONTH, …) / DATE_PART(WEEK, …) parse
                         // their date part as an identifier, which evaluates to null. Emitting NULL for it made
@@ -952,9 +1043,9 @@ public class ProceduralExecutor {
                     }
                     callExpr.append(")");
                     // Execute as SELECT expression
-                    List<ResultSet> results = queryExecutor.execute("SELECT " + callExpr);
+                    final List<ResultSet> results = queryExecutor.execute("SELECT " + callExpr);
                     if (!results.isEmpty()) {
-                        ResultSet rset = results.get(0);
+                        final ResultSet rset = results.get(0);
                         if (rset.getRowCount() > 0) return rset.getRows().get(0).getValue(0);
                     }
                 } catch (final Exception e) {
@@ -1006,6 +1097,11 @@ public class ProceduralExecutor {
         final Map<String, Object> varContext = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
         varContext.putAll(scope.variables());
         ev.setResultContext(varContext);
+        // No ExpressionSource origin is set here on purpose. A subquery in this position is re-parsed
+        // and run as a NESTED query, which sets an origin of its own relative to the subquery's text;
+        // supplying the outer one produced a confidently WRONG position (13 where live says 21) rather
+        // than the honest absence of one. Positioning these needs the outer offset threaded through
+        // nested query execution — see the task that records the two remaining cells.
         return ev.evaluate(expr.getExpression(), EMPTY_ROW);
     }
 
@@ -1052,7 +1148,7 @@ public class ProceduralExecutor {
             throw new RuntimeException("Cannot evaluate EXISTS: QueryExecutor not available");
         }
 
-        List<ResultSet> result = queryExecutor.execute(substituteBindVariables(subquery));
+        final List<ResultSet> result = queryExecutor.execute(substituteBindVariables(subquery));
         return !result.isEmpty() && result.get(0).getRowCount() > 0;
     }
 
@@ -1061,7 +1157,7 @@ public class ProceduralExecutor {
         if (value instanceof Boolean) return (Boolean) value;
         if (value instanceof Number) return ((Number) value).doubleValue() != 0;
         if (value instanceof String) {
-            String s = ((String) value).trim();
+            final String s = ((String) value).trim();
             if (s.equalsIgnoreCase("true") || s.equals("1") || s.equalsIgnoreCase("Y")) return true;
             if (s.equalsIgnoreCase("false") || s.equals("0") || s.equalsIgnoreCase("N")) return false;
             return !s.isEmpty();
@@ -1166,8 +1262,48 @@ public class ProceduralExecutor {
     }
 
     /** Mark that a BEGIN…END block handler has started (nesting depth++). */
+    /** Remember where a failing statement stood — the FIRST record of a propagation wins, so the
+     *  innermost statement names itself and the enclosing constructs it unwinds through do not. */
+    public void recordStatementFailure(final int line, final int position) {
+        if (failureLine < 0 && line > 0) {
+            failureLine = line;
+            failurePosition = position;
+        }
+    }
+
+    /** Forget the last failure — a statement that COMPLETED means nothing is propagating any more. */
+    public void clearStatementFailure() {
+        failureLine = -1;
+        failurePosition = -1;
+    }
+
+    /** 1-based line of the statement that is failing, or -1 when none is. */
+    public int getFailureLine() {
+        return failureLine;
+    }
+
+    /** 0-based column of the statement that is failing. */
+    public int getFailurePosition() {
+        return failurePosition;
+    }
+
     public void enterBlock() {
         blockDepth++;
+        if (blockDepth == 1) {
+            initializeDmlStatusVariables();
+        }
+    }
+
+    /**
+     * The DML-status globals exist from the block's first statement — a read before any DML answers
+     * NULL (live-verified), not an unresolved identifier.
+     */
+    private void initializeDmlStatusVariables() {
+        for (final String name : TYPED_SCRIPT_VARIABLES) {
+            if (!hasVariable(name)) {
+                setVariable(name, null);
+            }
+        }
     }
 
     /** Mark that a BEGIN…END block handler has finished (nesting depth--). */
@@ -1194,23 +1330,23 @@ public class ProceduralExecutor {
 
     // Cursor operations
     private void executeDeclareCursor(final DeclareCursorStatement stmt) {
-        String cursorName = stmt.getCursorName().toUpperCase();
+        final String cursorName = stmt.getCursorName().toUpperCase();
         if (cursorManager.cursors().containsKey(cursorName)) {
             throw new RuntimeException("Cursor already declared: " + cursorName);
         }
-        Cursor cursor = new Cursor(cursorName, stmt.getSelectQuery(), stmt.getResultSetVariableName());
+        final Cursor cursor = new Cursor(cursorName, stmt.getSelectQuery(), stmt.getResultSetVariableName());
         cursorManager.cursors().put(cursorName, cursor);
     }
 
     private void executeDeclareResultSet(final DeclareResultSetStatement stmt) {
-        String resultSetName = stmt.getResultSetName().toUpperCase();
+        final String resultSetName = stmt.getResultSetName().toUpperCase();
         // Store as a special variable
         scope.variables().put(resultSetName, new ResultSetVariable(stmt.getSelectQuery()));
     }
 
     private void executeOpen(final OpenStatement stmt) {
-        String cursorName = stmt.getCursorName().toUpperCase();
-        Cursor cursor = cursorManager.cursors().get(cursorName);
+        final String cursorName = stmt.getCursorName().toUpperCase();
+        final Cursor cursor = cursorManager.cursors().get(cursorName);
         if (cursor == null) {
             throw new RuntimeException("Cursor not declared: " + cursorName);
         }
@@ -1224,16 +1360,16 @@ public class ProceduralExecutor {
     }
 
     private void executeFetch(final FetchStatement stmt) {
-        String cursorName = stmt.getCursorName().toUpperCase();
-        Cursor cursor = cursorManager.cursors().get(cursorName);
+        final String cursorName = stmt.getCursorName().toUpperCase();
+        final Cursor cursor = cursorManager.cursors().get(cursorName);
         if (cursor == null) {
             throw new RuntimeException("Cursor not declared: " + cursorName);
         }
 
-        Row row = cursor.fetch();
+        final Row row = cursor.fetch();
         if (row != null) {
             // Assign row values to target variables, coerced to each target's declared type
-            List<String> targetVars = stmt.getTargetVariables();
+            final List<String> targetVars = stmt.getTargetVariables();
             for (int i = 0; i < Math.min(targetVars.size(), row.getValues().size()); i++) {
                 setVariable(targetVars.get(i),
                     coerceToType(row.getValue(i), variableTypes.get(targetVars.get(i).toUpperCase())));
@@ -1247,14 +1383,21 @@ public class ProceduralExecutor {
     }
 
     private void executeClose(final CloseStatement stmt) {
-        String cursorName = stmt.getCursorName().toUpperCase();
-        Cursor cursor = cursorManager.cursors().get(cursorName);
+        final String cursorName = stmt.getCursorName().toUpperCase();
+        final Cursor cursor = cursorManager.cursors().get(cursorName);
         if (cursor == null) {
             throw new RuntimeException("Cursor not declared: " + cursorName);
         }
-        if (cursor.isOpen()) {
-            cursor.close();
+        if (!cursor.isOpen()) {
+            if (!cursor.wasEverOpened()) {
+                // Live raises here — closing a cursor that was NEVER opened is a statement error,
+                // catchable by a WHEN STATEMENT_ERROR handler. A cursor a FOR loop already opened
+                // and closed tolerates the CLOSE (measured: close-after-FOR runs clean).
+                throw new RuntimeException("CURSOR " + cursorName + " is not open");
+            }
+            return;
         }
+        cursor.close();
     }
 
     /** Clear cursors, exceptions, and declared variable types from a prior invocation so
@@ -1329,6 +1472,15 @@ public class ProceduralExecutor {
             return parsed.setScale(0, RoundingMode.HALF_UP).longValue();
         }
         return parsed.setScale(type.getScale(), RoundingMode.HALF_UP);
+    }
+
+    /**
+     * The exception names declared so far. A nested block is validated as its own block when it runs,
+     * so the names an enclosing block declared have to be handed to it — and an exception is not a
+     * variable, so it would otherwise vanish from that seed.
+     */
+    public Set<String> declaredExceptionNames() {
+        return new HashSet<>(userExceptions.keySet());
     }
 
     public Set<String> saveCursorNames() {

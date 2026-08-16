@@ -26,7 +26,7 @@ public class IntervalExample {
 
     @Test
     public void demonstrateIntervalExpressions() {
-        DatabaseEngine engine = new DatabaseEngine();
+        final DatabaseEngine engine = new DatabaseEngine();
 
         try {
             engine.execute("CREATE DATABASE demo_db");

@@ -46,6 +46,8 @@ public class CortexTranslate extends BuiltInFunction {
             Double.valueOf(0.0), null).trim();
     }
 
-    @Override public int getMinArgCount() { return 3; }
-    @Override public int getMaxArgCount() { return 3; }
+    @Override
+    public int getMinArgCount() { return 3; }
+    @Override
+    public int getMaxArgCount() { return 3; }
 }

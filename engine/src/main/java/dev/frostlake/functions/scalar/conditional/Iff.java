@@ -27,15 +27,17 @@ public class Iff extends BuiltInFunction {
 
     @Override
     public Object evaluate(final List<Object> args) {
-        Object condition = args.get(0);
-        Object trueValue = args.get(1);
-        Object falseValue = args.get(2);
+        final Object condition = args.get(0);
+        final Object trueValue = args.get(1);
+        final Object falseValue = args.get(2);
 
         // Snowflake coerces the condition like any boolean position ('false' text is FALSE, numbers
         // by zero/non-zero) — treating every non-null value as TRUE sent IFF('false', a, b) to a.
         return SqlTruth.isTrue(condition) ? trueValue : falseValue;
     }
 
-    @Override public int getMinArgCount() { return 3; }
-    @Override public int getMaxArgCount() { return 3; }
+    @Override
+    public int getMinArgCount() { return 3; }
+    @Override
+    public int getMaxArgCount() { return 3; }
 }

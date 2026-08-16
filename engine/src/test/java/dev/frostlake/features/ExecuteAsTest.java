@@ -16,30 +16,15 @@
 
 package dev.frostlake.features;
 
-import dev.frostlake.DatabaseEngine;
+import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
-public class ExecuteAsTest {
-
-    private DatabaseEngine engine;
-
-    @BeforeEach
-    public void setUp() {
-        engine = new DatabaseEngine();
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
-        engine.execute("USE SCHEMA public");
-    }
-
-    @AfterEach
-    public void tearDown() {
-        if (engine != null) engine.shutdown();
-    }
+public class ExecuteAsTest extends BaseDatabaseTest {
 
     /**
      * The recorded EXECUTE AS of a procedure, read where a real account reports it.
@@ -127,8 +112,8 @@ public class ExecuteAsTest {
             "EXECUTE AS OWNER " +
             "AS $$ BEGIN RETURN 'hello'; END $$"
         );
-        ResultSet rs = engine.executeQuery("SHOW PROCEDURES");
-        int commentIdx = rs.getColumnIndex("description");
+        final ResultSet rs = engine.executeQuery("SHOW PROCEDURES");
+        final int commentIdx = rs.getColumnIndex("description");
         boolean found = false;
         for (int i = 0; i < rs.getRowCount(); i++) {
             if ("COMMENTED_PROC".equalsIgnoreCase(rs.getRows().get(i).getValue(1).toString())) {

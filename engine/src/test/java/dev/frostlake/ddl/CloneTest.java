@@ -16,32 +16,27 @@
 
 package dev.frostlake.ddl;
 
-import dev.frostlake.DatabaseEngine;
+import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
-
-import static org.junit.jupiter.api.Assertions.*;
+import org.junit.jupiter.api.function.Executable;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Tests for CLONE functionality
  */
-public class CloneTest {
+public class CloneTest extends BaseDatabaseTest {
 
-    private DatabaseEngine engine;
+    /** A Snowflake external stage must be a cloud URL; {@code file://} is a Frostlake convenience. */
+    private static final String LOCAL_FILE_STAGE =
+        "builds a file:// stage, which Snowflake refuses as an invalid URL prefix";
 
-    @BeforeEach
-    public void setup() {
-        engine = new DatabaseEngine();
-    }
-
-    @AfterEach
-    public void teardown() {
-        if (engine != null) {
-            engine.shutdown();
-        }
-    }
+    /** An inline Java handler compiles on the ACCOUNT, where it needs PACKAGES = snowpark declared. */
+    private static final String ACCOUNT_JAVA_HANDLER =
+        "an inline Java handler needs PACKAGES = ('com.snowflake:snowpark:latest') on the account";
 
     @Test
     public void testCloneDatabase() {
@@ -56,10 +51,10 @@ public class CloneTest {
         engine.execute("CREATE DATABASE cloned_db CLONE source_db");
 
         // Verify cloned database exists
-        ResultSet databases = engine.executeQuery("SHOW DATABASES");
+        final ResultSet databases = engine.executeQuery("SHOW DATABASES");
         boolean foundCloned = false;
         while (databases.next()) {
-            String dbName = (String) databases.getValue("name");
+            final String dbName = (String) databases.getValue("name");
             if ("CLONED_DB".equalsIgnoreCase(dbName)) {
                 foundCloned = true;
                 break;
@@ -69,10 +64,10 @@ public class CloneTest {
 
         // Verify table structure exists in cloned database
         engine.execute("USE DATABASE cloned_db");
-        ResultSet tables = engine.executeQuery("SHOW TABLES");
+        final ResultSet tables = engine.executeQuery("SHOW TABLES");
         boolean foundUsers = false;
         while (tables.next()) {
-            String tableName = (String) tables.getValue("name");
+            final String tableName = (String) tables.getValue("name");
             if ("USERS".equalsIgnoreCase(tableName)) {
                 foundUsers = true;
                 break;
@@ -87,8 +82,6 @@ public class CloneTest {
     @Test
     public void testCloneSchema() {
         // Create source schema with content
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
         engine.execute("CREATE SCHEMA source_schema");
         engine.execute("USE SCHEMA source_schema");
         engine.execute("CREATE TABLE products (id INTEGER, name VARCHAR, price FLOAT)");
@@ -98,10 +91,10 @@ public class CloneTest {
         engine.execute("CREATE SCHEMA cloned_schema CLONE source_schema");
 
         // Verify cloned schema exists
-        ResultSet schemas = engine.executeQuery("SHOW SCHEMAS");
+        final ResultSet schemas = engine.executeQuery("SHOW SCHEMAS");
         boolean foundCloned = false;
         while (schemas.next()) {
-            String schemaName = (String) schemas.getValue("name");
+            final String schemaName = (String) schemas.getValue("name");
             if ("CLONED_SCHEMA".equalsIgnoreCase(schemaName)) {
                 foundCloned = true;
                 break;
@@ -111,10 +104,10 @@ public class CloneTest {
 
         // Verify table structure exists
         engine.execute("USE SCHEMA cloned_schema");
-        ResultSet tables = engine.executeQuery("SHOW TABLES");
+        final ResultSet tables = engine.executeQuery("SHOW TABLES");
         boolean foundProducts = false;
         while (tables.next()) {
-            String tableName = (String) tables.getValue("name");
+            final String tableName = (String) tables.getValue("name");
             if ("PRODUCTS".equalsIgnoreCase(tableName)) {
                 foundProducts = true;
                 break;
@@ -126,8 +119,6 @@ public class CloneTest {
     @Test
     public void testCloneTable() {
         // Create source table with data
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
         engine.execute("CREATE TABLE source_table (id INTEGER, value VARCHAR, amount FLOAT)");
         engine.execute("INSERT INTO source_table VALUES (1, 'A', 100.0), (2, 'B', 200.0), (3, 'C', 300.0)");
 
@@ -135,10 +126,10 @@ public class CloneTest {
         engine.execute("CREATE TABLE cloned_table CLONE source_table");
 
         // Verify cloned table exists
-        ResultSet tables = engine.executeQuery("SHOW TABLES");
+        final ResultSet tables = engine.executeQuery("SHOW TABLES");
         boolean foundCloned = false;
         while (tables.next()) {
-            String tableName = (String) tables.getValue("name");
+            final String tableName = (String) tables.getValue("name");
             if ("CLONED_TABLE".equalsIgnoreCase(tableName)) {
                 foundCloned = true;
                 break;
@@ -147,7 +138,7 @@ public class CloneTest {
         assertTrue(foundCloned, "Cloned table should exist");
 
         // Verify cloned table has same structure
-        ResultSet columns = engine.executeQuery("SHOW COLUMNS IN TABLE cloned_table");
+        final ResultSet columns = engine.executeQuery("SHOW COLUMNS IN TABLE cloned_table");
         int colCount = 0;
         while (columns.next()) {
             colCount++;
@@ -155,7 +146,7 @@ public class CloneTest {
         assertEquals(3, colCount, "Cloned table should have same columns");
 
         // Verify cloned table has same data
-        ResultSet data = engine.executeQuery("SELECT * FROM cloned_table ORDER BY id");
+        final ResultSet data = engine.executeQuery("SELECT * FROM cloned_table ORDER BY id");
         assertEquals(3, data.getRowCount(), "Cloned table should have same number of rows");
 
         assertTrue(data.next());
@@ -177,8 +168,6 @@ public class CloneTest {
     @Test
     public void testCloneTableIndependence() {
         // Create and clone a table
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
         engine.execute("CREATE TABLE original (id INTEGER, name VARCHAR)");
         engine.execute("INSERT INTO original VALUES (1, 'Original')");
         engine.execute("CREATE TABLE copy CLONE original");
@@ -187,19 +176,17 @@ public class CloneTest {
         engine.execute("INSERT INTO original VALUES (2, 'NewRow')");
 
         // Verify original has 2 rows
-        ResultSet originalData = engine.executeQuery("SELECT * FROM original");
+        final ResultSet originalData = engine.executeQuery("SELECT * FROM original");
         assertEquals(2, originalData.getRowCount(), "Original should have 2 rows");
 
         // Verify clone still has 1 row (independent copy)
-        ResultSet copyData = engine.executeQuery("SELECT * FROM copy");
+        final ResultSet copyData = engine.executeQuery("SELECT * FROM copy");
         assertEquals(1, copyData.getRowCount(), "Clone should still have 1 row");
     }
 
     @Test
     public void testCloneTableWithPrimaryKey() {
         // Create table with primary key
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
         engine.execute("CREATE TABLE source_pk (id INTEGER PRIMARY KEY, data VARCHAR)");
         engine.execute("INSERT INTO source_pk VALUES (1, 'Data1'), (2, 'Data2')");
 
@@ -207,10 +194,10 @@ public class CloneTest {
         engine.execute("CREATE TABLE cloned_pk CLONE source_pk");
 
         // Verify primary key constraint is cloned
-        ResultSet columns = engine.executeQuery("SHOW COLUMNS IN TABLE cloned_pk");
+        final ResultSet columns = engine.executeQuery("SHOW COLUMNS IN TABLE cloned_pk");
         boolean foundPrimaryKey = false;
         while (columns.next()) {
-            String colName = (String) columns.getValue("column_name");
+            final String colName = (String) columns.getValue("column_name");
             if ("ID".equalsIgnoreCase(colName)) {
                 // Check if it's marked as primary key (implementation-specific)
                 foundPrimaryKey = true;
@@ -220,15 +207,13 @@ public class CloneTest {
         assertTrue(foundPrimaryKey, "Primary key column should exist in cloned table");
 
         // Verify data was cloned
-        ResultSet data = engine.executeQuery("SELECT * FROM cloned_pk ORDER BY id");
+        final ResultSet data = engine.executeQuery("SELECT * FROM cloned_pk ORDER BY id");
         assertEquals(2, data.getRowCount());
     }
 
     @Test
     public void testCloneTableQualifiedNames() {
         // Create source in one schema
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
         engine.execute("CREATE SCHEMA schema1");
         engine.execute("CREATE TABLE schema1.source_table (id INTEGER, value VARCHAR)");
         engine.execute("INSERT INTO schema1.source_table VALUES (1, 'Test')");
@@ -238,7 +223,7 @@ public class CloneTest {
         engine.execute("CREATE TABLE schema2.cloned_table CLONE schema1.source_table");
 
         // Verify cloned table exists in schema2
-        ResultSet data = engine.executeQuery("SELECT * FROM schema2.cloned_table");
+        final ResultSet data = engine.executeQuery("SELECT * FROM schema2.cloned_table");
         assertEquals(1, data.getRowCount());
         assertTrue(data.next());
         assertEquals("Test", data.getValue("value"));
@@ -256,10 +241,10 @@ public class CloneTest {
         engine.execute("CREATE SCHEMA cloned_schema CLONE source_schema");
 
         // Verify schema was cloned
-        ResultSet schemas = engine.executeQuery("SHOW SCHEMAS");
+        final ResultSet schemas = engine.executeQuery("SHOW SCHEMAS");
         boolean found = false;
         while (schemas.next()) {
-            String schemaName = (String) schemas.getValue("name");
+            final String schemaName = (String) schemas.getValue("name");
             if ("CLONED_SCHEMA".equalsIgnoreCase(schemaName)) {
                 found = true;
                 break;
@@ -277,10 +262,10 @@ public class CloneTest {
         engine.execute("CREATE DATABASE IF NOT EXISTS cloned_db CLONE source_db");
 
         // Verify only one cloned_db exists
-        ResultSet databases = engine.executeQuery("SHOW DATABASES");
+        final ResultSet databases = engine.executeQuery("SHOW DATABASES");
         int count = 0;
         while (databases.next()) {
-            String dbName = (String) databases.getValue("name");
+            final String dbName = (String) databases.getValue("name");
             if ("CLONED_DB".equalsIgnoreCase(dbName)) {
                 count++;
             }
@@ -291,21 +276,17 @@ public class CloneTest {
     @Test
     public void testCloneEmptyTable() {
         // Create empty table and clone it
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
         engine.execute("CREATE TABLE empty_table (id INTEGER, name VARCHAR)");
         engine.execute("CREATE TABLE cloned_empty CLONE empty_table");
 
         // Verify cloned table exists and is empty
-        ResultSet data = engine.executeQuery("SELECT * FROM cloned_empty");
+        final ResultSet data = engine.executeQuery("SELECT * FROM cloned_empty");
         assertEquals(0, data.getRowCount(), "Cloned empty table should be empty");
     }
 
     @Test
     public void testCloneTableWithComment() {
         // Create table with comment
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
         engine.execute("CREATE TABLE source_table (id INTEGER) COMMENT = 'Source table comment'");
         engine.execute("INSERT INTO source_table VALUES (1)");
 
@@ -313,27 +294,33 @@ public class CloneTest {
         engine.execute("CREATE TABLE cloned_table CLONE source_table");
 
         // Verify table was cloned
-        ResultSet data = engine.executeQuery("SELECT * FROM cloned_table");
+        final ResultSet data = engine.executeQuery("SELECT * FROM cloned_table");
         assertEquals(1, data.getRowCount());
     }
 
     @Test
     public void testCloneNonExistentSource() {
         // Try to clone a non-existent database
-        RuntimeException exception = assertThrows(RuntimeException.class, () -> {
-            engine.execute("CREATE DATABASE cloned_db CLONE non_existent_db");
+        final RuntimeException exception = assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                engine.execute("CREATE DATABASE cloned_db CLONE non_existent_db");
+                
+            }
         });
         assertTrue(exception.getMessage().contains("does not exist"));
     }
 
     @Test
     public void testCloneNonExistentTable() {
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
 
         // Try to clone a non-existent table
-        RuntimeException exception = assertThrows(RuntimeException.class, () -> {
-            engine.execute("CREATE TABLE cloned_table CLONE non_existent_table");
+        final RuntimeException exception = assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                engine.execute("CREATE TABLE cloned_table CLONE non_existent_table");
+                
+            }
         });
         assertTrue(exception.getMessage().contains("does not exist"));
     }
@@ -344,8 +331,12 @@ public class CloneTest {
         engine.execute("CREATE DATABASE target_db");
 
         // Try to clone to an existing database name
-        RuntimeException exception = assertThrows(RuntimeException.class, () -> {
-            engine.execute("CREATE DATABASE target_db CLONE source_db");
+        final RuntimeException exception = assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                engine.execute("CREATE DATABASE target_db CLONE source_db");
+                
+            }
         });
         assertTrue(exception.getMessage().contains("already exists"));
     }
@@ -361,7 +352,7 @@ public class CloneTest {
 
         engine.execute("USE DATABASE cloned_db");
         engine.execute("USE SCHEMA public");
-        ResultSet rs = engine.executeQuery("SELECT * FROM users ORDER BY id");
+        final ResultSet rs = engine.executeQuery("SELECT * FROM users ORDER BY id");
         assertEquals(2, rs.getRowCount(), "Cloned database should contain data");
         assertEquals("Alice", rs.getRows().get(0).getValue(1));
         assertEquals("Bob", rs.getRows().get(1).getValue(1));
@@ -383,15 +374,13 @@ public class CloneTest {
 
         engine.execute("USE DATABASE cloned_db");
         engine.execute("USE SCHEMA public");
-        ResultSet rs = engine.executeQuery("SELECT COUNT(*) FROM items");
+        final ResultSet rs = engine.executeQuery("SELECT COUNT(*) FROM items");
         assertEquals(1L, ((Number) rs.getRows().get(0).getValue(0)).longValue(),
             "Cloned database data must be independent of source");
     }
 
     @Test
     public void testCloneSchemaCopiesData() {
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
         engine.execute("CREATE SCHEMA src");
         engine.execute("USE SCHEMA src");
         engine.execute("CREATE TABLE orders (id INTEGER, amount FLOAT)");
@@ -400,15 +389,13 @@ public class CloneTest {
         engine.execute("CREATE SCHEMA dst CLONE src");
 
         engine.execute("USE SCHEMA dst");
-        ResultSet rs = engine.executeQuery("SELECT COUNT(*) FROM orders");
+        final ResultSet rs = engine.executeQuery("SELECT COUNT(*) FROM orders");
         assertEquals(3L, ((Number) rs.getRows().get(0).getValue(0)).longValue(),
             "Cloned schema should contain all rows from source");
     }
 
     @Test
     public void testCloneSchemaDataIndependence() {
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
         engine.execute("CREATE SCHEMA src");
         engine.execute("USE SCHEMA src");
         engine.execute("CREATE TABLE kv (k VARCHAR, v INTEGER)");
@@ -421,7 +408,7 @@ public class CloneTest {
         engine.execute("DELETE FROM kv WHERE k = 'a'");
 
         engine.execute("USE SCHEMA dst");
-        ResultSet rs = engine.executeQuery("SELECT COUNT(*) FROM kv");
+        final ResultSet rs = engine.executeQuery("SELECT COUNT(*) FROM kv");
         assertEquals(1L, ((Number) rs.getRows().get(0).getValue(0)).longValue(),
             "Cloned schema data must be independent of source");
     }
@@ -443,11 +430,11 @@ public class CloneTest {
 
         engine.execute("USE DATABASE tgt_db");
         engine.execute("USE SCHEMA public");
-        ResultSet r1 = engine.executeQuery("SELECT COUNT(*) FROM t1");
+        final ResultSet r1 = engine.executeQuery("SELECT COUNT(*) FROM t1");
         assertEquals(2L, ((Number) r1.getRows().get(0).getValue(0)).longValue());
 
         engine.execute("USE SCHEMA extra");
-        ResultSet r2 = engine.executeQuery("SELECT COUNT(*) FROM t2");
+        final ResultSet r2 = engine.executeQuery("SELECT COUNT(*) FROM t2");
         assertEquals(3L, ((Number) r2.getRows().get(0).getValue(0)).longValue());
     }
 
@@ -476,6 +463,7 @@ public class CloneTest {
     /** The same for procedures: a cloned non-SQL procedure must keep its LANGUAGE, not default to SQL. */
     @Test
     public void testCloneKeepsNonSqlProcedureLanguage() {
+        Assumptions.assumeFalse(isLiveSnowflake(), ACCOUNT_JAVA_HANDLER);
         engine.execute("CREATE DATABASE pr_src");
         engine.execute("USE DATABASE pr_src");
         engine.execute("CREATE SCHEMA utils");
@@ -502,6 +490,7 @@ public class CloneTest {
 
     @Test
     public void testCloneDatabaseKeepsStagesAndFileFormats() {
+        Assumptions.assumeFalse(isLiveSnowflake(), LOCAL_FILE_STAGE);
         // Snowflake's CLONE keeps stage and file-format definitions. Dropping stages silently broke
         // every jar-backed UDF in a cloned database — the IMPORTS reference fell back to a relative
         // local path and failed with "class not found" at first invocation.
@@ -515,8 +504,10 @@ public class CloneTest {
         engine.execute("USE DATABASE st_tgt");
         engine.execute("USE SCHEMA depot");
 
+        final ResultSet stages = engine.executeQuery("SHOW STAGES LIKE 'jar_stage'");
         assertEquals("file:///tmp/frostlake_clone_stage_test",
-            engine.getCatalog().getStage("DEPOT.JAR_STAGE").getUrl());
-        assertEquals("CSV", engine.getCatalog().getFileFormat("DEPOT.CSV_FMT").getType());
+            cell(stages, soleRowWhere(stages, "name", "jar_stage"), "url"));
+        final ResultSet formats = engine.executeQuery("SHOW FILE FORMATS LIKE 'csv_fmt'");
+        assertEquals("CSV", cell(formats, soleRowWhere(formats, "name", "csv_fmt"), "type"));
     }
 }

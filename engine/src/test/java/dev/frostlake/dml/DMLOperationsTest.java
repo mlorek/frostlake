@@ -16,35 +16,23 @@
 
 package dev.frostlake.dml;
 
-import dev.frostlake.DatabaseEngine;
+import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.Row;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
-public class DMLOperationsTest {
-
-    private DatabaseEngine engine;
-
-    @BeforeEach
-    public void setup() {
-        engine = new DatabaseEngine();
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
-        engine.execute("USE SCHEMA PUBLIC");
-    }
-
-    @AfterEach
-    public void teardown() {
-        if (engine != null) {
-            engine.shutdown();
-        }
-    }
+/**
+ * INSERT / UPDATE / DELETE and their combinations, asserted through query results alone, so every
+ * check runs against whichever engine executed the DML — embedded or live. Transactions use the
+ * SQL surface (BEGIN / COMMIT / ROLLBACK), never the engine's Java transaction API.
+ */
+public class DMLOperationsTest extends BaseDatabaseTest {
 
     // ==================== INSERT TESTS ====================
 
@@ -53,7 +41,7 @@ public class DMLOperationsTest {
         engine.execute("CREATE TABLE users (id INTEGER, name VARCHAR, age INTEGER)");
         engine.execute("INSERT INTO users VALUES (1, 'Alice', 30)");
 
-        ResultSet result = engine.executeQuery("SELECT * FROM users");
+        final ResultSet result = engine.executeQuery("SELECT * FROM users");
         assertEquals(1, result.getRowCount());
     }
 
@@ -62,7 +50,7 @@ public class DMLOperationsTest {
         engine.execute("CREATE TABLE users (id INTEGER, name VARCHAR, age INTEGER)");
         engine.execute("INSERT INTO users VALUES (1, 'Alice', 30), (2, 'Bob', 25), (3, 'Charlie', 35)");
 
-        ResultSet result = engine.executeQuery("SELECT * FROM users");
+        final ResultSet result = engine.executeQuery("SELECT * FROM users");
         assertEquals(3, result.getRowCount());
     }
 
@@ -71,10 +59,10 @@ public class DMLOperationsTest {
         engine.execute("CREATE TABLE users (id INTEGER, name VARCHAR, age INTEGER, city VARCHAR)");
         engine.execute("INSERT INTO users (id, name, age) VALUES (1, 'Alice', 30)");
 
-        ResultSet result = engine.executeQuery("SELECT * FROM users");
+        final ResultSet result = engine.executeQuery("SELECT * FROM users");
         assertEquals(1, result.getRowCount());
 
-        Row row = result.getRows().get(0);
+        final Row row = result.getRows().get(0);
         assertEquals(1L, row.getValue(0));
         assertEquals("Alice", row.getValue(1));
         assertEquals(30L, row.getValue(2));
@@ -94,10 +82,10 @@ public class DMLOperationsTest {
 
         engine.execute("INSERT INTO test_types VALUES (42, 'hello', true, 3.14)");
 
-        ResultSet result = engine.executeQuery("SELECT * FROM test_types");
+        final ResultSet result = engine.executeQuery("SELECT * FROM test_types");
         assertEquals(1, result.getRowCount());
 
-        Row row = result.getRows().get(0);
+        final Row row = result.getRows().get(0);
         assertEquals(42L, row.getValue(0));
         assertEquals("hello", row.getValue(1));
         assertEquals(true, row.getValue(2));
@@ -109,10 +97,10 @@ public class DMLOperationsTest {
         engine.execute("CREATE TABLE users (id INTEGER, name VARCHAR, age INTEGER)");
         engine.execute("INSERT INTO users VALUES (1, 'Alice', null)");
 
-        ResultSet result = engine.executeQuery("SELECT * FROM users");
+        final ResultSet result = engine.executeQuery("SELECT * FROM users");
         assertEquals(1, result.getRowCount());
 
-        Row row = result.getRows().get(0);
+        final Row row = result.getRows().get(0);
         assertNull(row.getValue(2));
     }
 
@@ -124,8 +112,8 @@ public class DMLOperationsTest {
         engine.execute("INSERT INTO users VALUES (1, 'Alice', 30)");
         engine.execute("UPDATE users SET age = 31");
 
-        ResultSet result = engine.executeQuery("SELECT * FROM users");
-        Row row = result.getRows().get(0);
+        final ResultSet result = engine.executeQuery("SELECT * FROM users");
+        final Row row = result.getRows().get(0);
         assertEquals(31L, row.getValue(2));
     }
 
@@ -153,8 +141,8 @@ public class DMLOperationsTest {
 
         engine.execute("UPDATE users SET name = 'Alicia', age = 31 WHERE id = 1");
 
-        ResultSet result = engine.executeQuery("SELECT * FROM users");
-        Row row = result.getRows().get(0);
+        final ResultSet result = engine.executeQuery("SELECT * FROM users");
+        final Row row = result.getRows().get(0);
         assertEquals("Alicia", row.getValue(1));
         assertEquals(31L, row.getValue(2));
     }
@@ -166,7 +154,7 @@ public class DMLOperationsTest {
 
         engine.execute("UPDATE users SET age = 100 WHERE age > 28 AND age < 35");
 
-        ResultSet result = engine.executeQuery("SELECT * FROM users WHERE age = 100");
+        final ResultSet result = engine.executeQuery("SELECT * FROM users WHERE age = 100");
         assertEquals(1, result.getRowCount());
     }
 
@@ -178,8 +166,8 @@ public class DMLOperationsTest {
         engine.execute("UPDATE users SET age = 40 WHERE id = 999");
 
         // Original value should be unchanged
-        ResultSet result = engine.executeQuery("SELECT * FROM users");
-        Row row = result.getRows().get(0);
+        final ResultSet result = engine.executeQuery("SELECT * FROM users");
+        final Row row = result.getRows().get(0);
         assertEquals(30L, row.getValue(2));
     }
 
@@ -191,8 +179,8 @@ public class DMLOperationsTest {
         // Update price with calculation
         engine.execute("UPDATE products SET price = 150 WHERE id = 1");
 
-        ResultSet result = engine.executeQuery("SELECT * FROM products WHERE id = 1");
-        Row row = result.getRows().get(0);
+        final ResultSet result = engine.executeQuery("SELECT * FROM products WHERE id = 1");
+        final Row row = result.getRows().get(0);
         assertEquals(150L, row.getValue(2));
     }
 
@@ -205,7 +193,7 @@ public class DMLOperationsTest {
 
         engine.execute("DELETE FROM users WHERE id = 1");
 
-        ResultSet result = engine.executeQuery("SELECT * FROM users");
+        final ResultSet result = engine.executeQuery("SELECT * FROM users");
         assertEquals(0, result.getRowCount());
     }
 
@@ -216,7 +204,7 @@ public class DMLOperationsTest {
 
         engine.execute("DELETE FROM users WHERE age < 30");
 
-        ResultSet result = engine.executeQuery("SELECT * FROM users");
+        final ResultSet result = engine.executeQuery("SELECT * FROM users");
         assertEquals(2, result.getRowCount());
     }
 
@@ -229,13 +217,23 @@ public class DMLOperationsTest {
 
         engine.execute("DELETE FROM users WHERE age > 25 AND age < 35");
 
-        ResultSet result = engine.executeQuery("SELECT * FROM users");
+        final ResultSet result = engine.executeQuery("SELECT * FROM users");
         assertEquals(2, result.getRowCount());
 
         // Verify remaining rows
-        List<Row> rows = result.getRows();
-        assertTrue(rows.stream().anyMatch((final var r) -> r.getValue(1).equals("Bob")));
-        assertTrue(rows.stream().anyMatch((final var r) -> r.getValue(1).equals("Charlie")));
+        final List<Row> rows = result.getRows();
+        boolean sawBob = false;
+        boolean sawCharlie = false;
+        for (final Row r : rows) {
+            if ("Bob".equals(r.getValue(1))) {
+                sawBob = true;
+            }
+            if ("Charlie".equals(r.getValue(1))) {
+                sawCharlie = true;
+            }
+        }
+        assertTrue(sawBob);
+        assertTrue(sawCharlie);
     }
 
     @Test
@@ -245,7 +243,7 @@ public class DMLOperationsTest {
 
         engine.execute("DELETE FROM users WHERE id = 999");
 
-        ResultSet result = engine.executeQuery("SELECT * FROM users");
+        final ResultSet result = engine.executeQuery("SELECT * FROM users");
         assertEquals(1, result.getRowCount());
     }
 
@@ -256,7 +254,7 @@ public class DMLOperationsTest {
 
         engine.execute("DELETE FROM users");
 
-        ResultSet result = engine.executeQuery("SELECT * FROM users");
+        final ResultSet result = engine.executeQuery("SELECT * FROM users");
         assertEquals(0, result.getRowCount());
     }
 
@@ -269,7 +267,7 @@ public class DMLOperationsTest {
 
         engine.execute("DELETE FROM users WHERE age = 30 OR age > 33");
 
-        ResultSet result = engine.executeQuery("SELECT * FROM users");
+        final ResultSet result = engine.executeQuery("SELECT * FROM users");
         assertEquals(2, result.getRowCount());
     }
 
@@ -325,20 +323,19 @@ public class DMLOperationsTest {
     @Test
     public void testTransactionalDML() {
         engine.execute("CREATE TABLE users (id INTEGER, name VARCHAR)");
-        engine.setAutoCommit(false);
 
-        engine.beginTransaction();
+        engine.execute("BEGIN");
         engine.execute("INSERT INTO users VALUES (1, 'Alice')");
         engine.execute("INSERT INTO users VALUES (2, 'Bob')");
-        engine.commit();
+        engine.execute("COMMIT");
 
         ResultSet result = engine.executeQuery("SELECT * FROM users");
         assertEquals(2, result.getRowCount());
 
         // Rollback must undo the DELETE — both rows remain.
-        engine.beginTransaction();
+        engine.execute("BEGIN");
         engine.execute("DELETE FROM users WHERE id = 1");
-        engine.rollback();
+        engine.execute("ROLLBACK");
         result = engine.executeQuery("SELECT * FROM users");
         assertEquals(2, result.getRowCount());
     }

@@ -16,6 +16,8 @@
 
 package com.snowflake.snowpark_java.types;
 
+import java.util.Locale;
+
 /** One column of a {@link StructType}: its name, its type, and whether it admits NULL. */
 public class StructField {
 
@@ -24,9 +26,20 @@ public class StructField {
     private final boolean nullable;
 
     public StructField(final String name, final DataType dataType, final boolean nullable) {
-        this.name = name;
+        this.name = normalizeName(name);
         this.dataType = dataType;
         this.nullable = nullable;
+    }
+
+    /**
+     * A field name follows SQL identifier folding: given unquoted it is upper-cased, given already
+     * quoted it is kept verbatim, quotes and case included. Live-verified.
+     */
+    private static String normalizeName(final String given) {
+        if (given.length() > 1 && given.charAt(0) == '"' && given.charAt(given.length() - 1) == '"') {
+            return given;
+        }
+        return given.toUpperCase(Locale.ROOT);
     }
 
     /** Snowpark defaults a field to nullable. */
@@ -48,7 +61,7 @@ public class StructField {
 
     @Override
     public String toString() {
-        return "StructField(" + name + ", " + dataType.typeName() + ", Nullable = " + nullable + ")";
+        return "StructField(" + name + ", " + dataType.shortName() + ", Nullable = " + nullable + ")";
     }
 
     @Override

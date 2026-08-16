@@ -24,7 +24,15 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.List;
 
+/**
+ * ADD_MONTHS(input, n) — shifts a date or timestamp by {@code n} months, preserving end-of-month: an
+ * input on the last day of its month lands on the last day of the target month. The result type
+ * follows the input — a DATE stays DATE, a TIMESTAMP keeps its time of day, and a VARCHAR is
+ * implicitly cast to TIMESTAMP_NTZ (a date-only string becomes midnight). NULL in either argument
+ * yields NULL.
+ */
 public class AddMonths extends BuiltInFunction {
+    /** Registers the function as {@code ADD_MONTHS} returning TIMESTAMP_NTZ. */
     public AddMonths() { super("ADD_MONTHS", DateTimeType.TIMESTAMP_NTZ); }
 
     @Override
@@ -55,6 +63,8 @@ public class AddMonths extends BuiltInFunction {
         return result;
     }
 
-    @Override public int getMinArgCount() { return 2; }
-    @Override public int getMaxArgCount() { return 2; }
+    @Override
+    public int getMinArgCount() { return 2; }
+    @Override
+    public int getMaxArgCount() { return 2; }
 }

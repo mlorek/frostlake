@@ -28,11 +28,13 @@ public class Mod extends NumericArgumentFunction {
     @Override
     public Object evaluate(final List<Object> args) {
         if (args.get(0) == null || args.get(1) == null) return null;
-        BigDecimal dividend = new BigDecimal(args.get(0).toString());
-        BigDecimal divisor = new BigDecimal(args.get(1).toString());
+        final BigDecimal dividend = new BigDecimal(args.get(0).toString());
+        final BigDecimal divisor = new BigDecimal(args.get(1).toString());
         return dividend.remainder(divisor);
     }
 
-    @Override public int getMinArgCount() { return 2; }
-    @Override public int getMaxArgCount() { return 2; }
+    @Override
+    public int getMinArgCount() { return 2; }
+    @Override
+    public int getMaxArgCount() { return 2; }
 }

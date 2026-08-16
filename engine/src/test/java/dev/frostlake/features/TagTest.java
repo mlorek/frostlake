@@ -16,289 +16,267 @@
 
 package dev.frostlake.features;
 
-import dev.frostlake.DatabaseEngine;
-import dev.frostlake.metastore.model.Tag;
+import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
-import org.junit.jupiter.api.AfterAll;
-import org.junit.jupiter.api.BeforeAll;
-import org.junit.jupiter.api.MethodOrderer;
-import org.junit.jupiter.api.Order;
+import dev.frostlake.storage.Row;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.TestInstance;
-import org.junit.jupiter.api.TestMethodOrder;
+import org.junit.jupiter.api.function.Executable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Tests for TAG functionality (metadata management)
+ * TAG DDL, asserted through the SQL surface — {@code SHOW TAGS} cells (name, allowed_values as a
+ * ", "-joined list, comment) — so every check runs against whichever engine executed the DDL,
+ * embedded or live. Each test creates the tags it reads, so there is no cross-test ordering.
+ *
+ * <p>{@code MASKING} is not a tag property: Snowflake refuses it at compile time with
+ * {@code invalid property 'MASKING' for 'TAG'}, live-verified, and so does this engine.
  */
-@TestInstance(TestInstance.Lifecycle.PER_CLASS)
-@TestMethodOrder(MethodOrderer.OrderAnnotation.class)
-public class TagTest {
+public class TagTest extends BaseDatabaseTest {
+
     private static final Logger logger = LoggerFactory.getLogger(TagTest.class);
 
-    private DatabaseEngine engine;
+    private static final String DESCRIBE_TAG_EDITION_GATED =
+        "DESCRIBE TAG answers \"Unsupported feature 'TAG'\" on a Standard-edition account, so its "
+        + "shape is asserted embedded only";
 
-    @BeforeAll
-    public void setUp() {
-        engine = new DatabaseEngine();
-        engine.execute("CREATE DATABASE IF NOT EXISTS test_db");
-        engine.execute("USE DATABASE test_db");
-        engine.execute("USE SCHEMA public");
-        logger.info("DatabaseEngine initialized for TAG tests");
+    /** One SHOW TAGS cell for the given tag, or null when the cell carries no value. */
+    private String tagCell(final String tag, final String column) {
+        final ResultSet rs = engine.executeQuery("SHOW TAGS LIKE '" + tag + "'");
+        return cell(rs, soleRowWhere(rs, "name", tag.toUpperCase()), column);
     }
 
-    @AfterAll
-    public void tearDown() {
-        if (engine != null) {
-            engine.shutdown();
-        }
+    private int tagCount(final String name) {
+        return engine.executeQuery("SHOW TAGS LIKE '" + name + "'").getRowCount();
     }
 
     @Test
-    @Order(1)
     public void testCreateSimpleTag() {
         logger.info("Testing CREATE TAG");
         engine.execute("CREATE TAG cost_center");
 
-        Tag tag = engine.getCatalog().getTag("cost_center");
-        assertNotNull(tag);
-        assertEquals("COST_CENTER", tag.getName());
-        assertFalse(tag.hasAllowedValues());
-        assertFalse(tag.isMasking());
+        assertEquals("COST_CENTER", tagCell("cost_center", "name"));
+        assertNull(tagCell("cost_center", "allowed_values"), "no ALLOWED_VALUES were declared");
     }
 
     @Test
-    @Order(2)
     public void testCreateTagWithAllowedValues() {
         logger.info("Testing CREATE TAG with ALLOWED_VALUES");
         engine.execute("CREATE TAG department ALLOWED_VALUES 'HR', 'IT', 'FINANCE', 'SALES'");
 
-        Tag tag = engine.getCatalog().getTag("department");
-        assertNotNull(tag);
-        assertEquals("DEPARTMENT", tag.getName());
-        assertTrue(tag.hasAllowedValues());
-        assertEquals(4, tag.getAllowedValues().size());
-        assertTrue(tag.isValueAllowed("HR"));
-        assertTrue(tag.isValueAllowed("IT"));
-        assertFalse(tag.isValueAllowed("UNKNOWN"));
+        assertEquals("DEPARTMENT", tagCell("department", "name"));
+        assertEquals("[\"HR\",\"IT\",\"FINANCE\",\"SALES\"]", tagCell("department", "allowed_values"));
     }
 
     @Test
-    @Order(3)
-    public void testCreateTagWithMasking() {
-        logger.info("Testing CREATE TAG with MASKING");
-        engine.execute("CREATE TAG sensitive_data MASKING = TRUE");
+    public void testCreateTagWithMaskingIsRefused() {
+        logger.info("Testing CREATE TAG … MASKING is refused as an invalid property");
+        final RuntimeException e = assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.execute("CREATE TAG sensitive_data MASKING = TRUE");
+            }
+        });
+        assertTrue(e.getMessage().contains("invalid property 'MASKING' for 'TAG'"), e.getMessage());
 
-        Tag tag = engine.getCatalog().getTag("sensitive_data");
-        assertNotNull(tag);
-        assertEquals("SENSITIVE_DATA", tag.getName());
-        assertTrue(tag.isMasking());
+        // The refusal is a compilation error, so no tag is left behind.
+        assertEquals(0, tagCount("sensitive_data"));
     }
 
     @Test
-    @Order(4)
+    public void testAlterTagSetMaskingIsRefused() {
+        logger.info("Testing ALTER TAG … SET MASKING is refused as an invalid property");
+        engine.execute("CREATE TAG alter_mask_tag");
+
+        final RuntimeException e = assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.execute("ALTER TAG alter_mask_tag SET MASKING = TRUE");
+            }
+        });
+        assertTrue(e.getMessage().contains("invalid property 'MASKING' for 'TAG'"), e.getMessage());
+    }
+
+    @Test
     public void testCreateTagWithComment() {
         logger.info("Testing CREATE TAG with COMMENT");
         engine.execute("CREATE TAG project_code COMMENT = 'Project identifier tag'");
 
-        Tag tag = engine.getCatalog().getTag("project_code");
-        assertNotNull(tag);
-        assertEquals("PROJECT_CODE", tag.getName());
-        assertEquals("Project identifier tag", tag.getComment());
+        assertEquals("PROJECT_CODE", tagCell("project_code", "name"));
+        assertEquals("Project identifier tag", tagCell("project_code", "comment"));
     }
 
     @Test
-    @Order(5)
     public void testCreateTagIfNotExists() {
         logger.info("Testing CREATE TAG IF NOT EXISTS");
+        engine.execute("CREATE TAG cost_center");
         engine.execute("CREATE TAG IF NOT EXISTS cost_center");
 
-        Tag tag = engine.getCatalog().getTag("cost_center");
-        assertNotNull(tag);
+        assertEquals(1, tagCount("cost_center"));
     }
 
     @Test
-    @Order(6)
     public void testCreateDuplicateTagFails() {
         logger.info("Testing duplicate CREATE TAG fails");
-        assertThrows(RuntimeException.class, () -> {
-            engine.execute("CREATE TAG cost_center");
+        engine.execute("CREATE TAG cost_center");
+        assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.execute("CREATE TAG cost_center");
+            }
         });
     }
 
     @Test
-    @Order(7)
     public void testShowTags() {
         logger.info("Testing SHOW TAGS");
-        ResultSet rs = engine.executeQuery("SHOW TAGS");
+        engine.execute("CREATE TAG cost_center");
+        engine.execute("CREATE TAG department");
 
-        assertNotNull(rs);
-        assertTrue(rs.getRows().size() >= 4);
-
-        boolean foundCostCenter = false;
-        boolean foundDepartment = false;
-        int nameIdx = rs.getColumnIndex("name");
-        for (int i = 0; i < rs.getRows().size(); i++) {
-            String tagName = (String) rs.getRows().get(i).getValue(nameIdx);
-            if ("cost_center".equalsIgnoreCase(tagName)) {
-                foundCostCenter = true;
-            }
-            if ("department".equalsIgnoreCase(tagName)) {
-                foundDepartment = true;
-            }
-        }
-        assertTrue(foundCostCenter);
-        assertTrue(foundDepartment);
+        final ResultSet rs = engine.executeQuery("SHOW TAGS");
+        soleRowWhere(rs, "name", "COST_CENTER");
+        soleRowWhere(rs, "name", "DEPARTMENT");
     }
 
     @Test
-    @Order(8)
-    public void testDescribeTag() {
-        logger.info("Testing DESCRIBE TAG");
-        ResultSet rs = engine.executeQuery("DESCRIBE TAG department");
+    public void testShowTagsCarriesDatabaseAndSchema() {
+        logger.info("Testing SHOW TAGS names the tag's container");
+        engine.execute("CREATE TAG department ALLOWED_VALUES 'HR', 'IT'");
 
-        assertNotNull(rs);
-        assertTrue(rs.getRows().size() > 0);
-
-        String nameProperty = (String) rs.getRows().get(0).getValues().get(0);
-        String nameValue = (String) rs.getRows().get(0).getValues().get(1);
-        assertEquals("name", nameProperty);
-        assertEquals("DEPARTMENT", nameValue);
+        final ResultSet rs = engine.executeQuery("SHOW TAGS LIKE 'department'");
+        final Row tag = soleRowWhere(rs, "name", "DEPARTMENT");
+        assertEquals("TEST_DB", cell(rs, tag, "database_name"));
+        assertEquals("TEST_SCHEMA", cell(rs, tag, "schema_name"));
     }
 
     @Test
-    @Order(9)
     public void testAlterTagAddAllowedValues() {
         logger.info("Testing ALTER TAG ADD ALLOWED_VALUES");
+        engine.execute("CREATE TAG department ALLOWED_VALUES 'HR', 'IT', 'FINANCE', 'SALES'");
         engine.execute("ALTER TAG department ADD ALLOWED_VALUES 'MARKETING', 'OPERATIONS'");
 
-        Tag tag = engine.getCatalog().getTag("department");
-        assertEquals(6, tag.getAllowedValues().size());
-        assertTrue(tag.isValueAllowed("MARKETING"));
-        assertTrue(tag.isValueAllowed("OPERATIONS"));
+        assertEquals("[\"HR\",\"IT\",\"FINANCE\",\"SALES\",\"MARKETING\",\"OPERATIONS\"]",
+            tagCell("department", "allowed_values"));
     }
 
     @Test
-    @Order(10)
     public void testAlterTagDropAllowedValues() {
         logger.info("Testing ALTER TAG DROP ALLOWED_VALUES");
+        engine.execute("CREATE TAG department ALLOWED_VALUES 'HR', 'IT', 'FINANCE', 'SALES'");
         engine.execute("ALTER TAG department DROP ALLOWED_VALUES 'SALES'");
 
-        Tag tag = engine.getCatalog().getTag("department");
-        assertEquals(5, tag.getAllowedValues().size());
-        assertFalse(tag.isValueAllowed("SALES"));
+        assertEquals("[\"HR\",\"IT\",\"FINANCE\"]", tagCell("department", "allowed_values"));
     }
 
     @Test
-    @Order(11)
     public void testAlterTagUnsetAllowedValues() {
         logger.info("Testing ALTER TAG UNSET ALLOWED_VALUES");
+        engine.execute("CREATE TAG department ALLOWED_VALUES 'HR', 'IT'");
         engine.execute("ALTER TAG department UNSET ALLOWED_VALUES");
 
-        Tag tag = engine.getCatalog().getTag("department");
-        assertFalse(tag.hasAllowedValues());
+        assertNull(tagCell("department", "allowed_values"));
     }
 
     @Test
-    @Order(12)
     public void testAlterTagSetComment() {
         logger.info("Testing ALTER TAG SET COMMENT");
+        engine.execute("CREATE TAG cost_center");
         engine.execute("ALTER TAG cost_center SET COMMENT = 'Updated cost center tag'");
 
-        Tag tag = engine.getCatalog().getTag("cost_center");
-        assertEquals("Updated cost center tag", tag.getComment());
+        assertEquals("Updated cost center tag", tagCell("cost_center", "comment"));
     }
 
     @Test
-    @Order(13)
     public void testCommentOnTag() {
         logger.info("Testing COMMENT ON TAG");
+        engine.execute("CREATE TAG project_code");
         engine.execute("COMMENT ON TAG project_code IS 'Project tracking identifier'");
 
-        Tag tag = engine.getCatalog().getTag("project_code");
-        assertEquals("Project tracking identifier", tag.getComment());
+        assertEquals("Project tracking identifier", tagCell("project_code", "comment"));
     }
 
     @Test
-    @Order(14)
     public void testCommentOnTagIfExists() {
         logger.info("Testing COMMENT IF EXISTS ON TAG");
         engine.execute("COMMENT IF EXISTS ON TAG nonexistent_tag IS 'This should not fail'");
     }
 
     @Test
-    @Order(15)
     public void testAlterTagRename() {
         logger.info("Testing ALTER TAG RENAME");
+        engine.execute("CREATE TAG project_code");
         engine.execute("ALTER TAG project_code RENAME TO project_id");
 
-        assertFalse(engine.getCatalog().hasTag("project_code"));
-        assertTrue(engine.getCatalog().hasTag("project_id"));
-
-        Tag tag = engine.getCatalog().getTag("project_id");
-        assertEquals("PROJECT_ID", tag.getName());
+        assertEquals(0, tagCount("project_code"));
+        assertEquals(1, tagCount("project_id"));
+        assertEquals("PROJECT_ID", tagCell("project_id", "name"));
     }
 
     @Test
-    @Order(16)
     public void testDropTag() {
         logger.info("Testing DROP TAG");
+        engine.execute("CREATE TAG sensitive_data");
         engine.execute("DROP TAG sensitive_data");
 
-        assertFalse(engine.getCatalog().hasTag("sensitive_data"));
+        assertEquals(0, tagCount("sensitive_data"));
     }
 
     @Test
-    @Order(17)
     public void testDropTagIfExists() {
         logger.info("Testing DROP TAG IF EXISTS");
         engine.execute("DROP TAG IF EXISTS nonexistent_tag");
     }
 
     @Test
-    @Order(18)
     public void testDropNonexistentTagFails() {
         logger.info("Testing DROP nonexistent TAG fails");
-        assertThrows(RuntimeException.class, () -> {
-            engine.execute("DROP TAG nonexistent_tag");
+        assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.execute("DROP TAG nonexistent_tag");
+            }
         });
     }
 
     @Test
-    @Order(19)
-    public void testDescribeNonexistentTagFails() {
-        logger.info("Testing DESCRIBE nonexistent TAG fails");
-        assertThrows(RuntimeException.class, () -> {
-            engine.executeQuery("DESCRIBE TAG nonexistent_tag");
-        });
-    }
-
-    @Test
-    @Order(20)
     public void testAlterNonexistentTagFails() {
         logger.info("Testing ALTER nonexistent TAG fails");
-        assertThrows(RuntimeException.class, () -> {
-            engine.execute("ALTER TAG nonexistent_tag SET COMMENT = 'test'");
+        assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.execute("ALTER TAG nonexistent_tag SET COMMENT = 'test'");
+            }
         });
     }
 
     @Test
-    public void testAlterTagSetMasking() {
-        logger.info("Testing ALTER TAG SET MASKING toggles the masking flag");
-        engine.execute("CREATE TAG alter_mask_tag");
-        assertFalse(engine.getCatalog().getTag("alter_mask_tag").isMasking());
+    public void testDescribeTag() {
+        Assumptions.assumeFalse(isLiveSnowflake(), DESCRIBE_TAG_EDITION_GATED);
 
-        engine.execute("ALTER TAG alter_mask_tag SET MASKING = TRUE");
-        assertTrue(engine.getCatalog().getTag("alter_mask_tag").isMasking());
+        logger.info("Testing DESCRIBE TAG");
+        engine.execute("CREATE TAG department ALLOWED_VALUES 'HR', 'IT'");
+        final ResultSet rs = engine.executeQuery("DESCRIBE TAG department");
 
-        engine.execute("ALTER TAG alter_mask_tag SET MASKING = FALSE");
-        assertFalse(engine.getCatalog().getTag("alter_mask_tag").isMasking());
+        assertEquals("name", cell(rs, rs.getRows().get(0), "property"));
+        assertEquals("DEPARTMENT", cell(rs, rs.getRows().get(0), "value"));
+    }
+
+    @Test
+    public void testDescribeNonexistentTagFails() {
+        Assumptions.assumeFalse(isLiveSnowflake(), DESCRIBE_TAG_EDITION_GATED);
+
+        logger.info("Testing DESCRIBE nonexistent TAG fails");
+        assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.executeQuery("DESCRIBE TAG nonexistent_tag");
+            }
+        });
     }
 }

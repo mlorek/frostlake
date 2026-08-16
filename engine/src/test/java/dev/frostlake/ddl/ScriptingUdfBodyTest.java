@@ -408,7 +408,7 @@ public class ScriptingUdfBodyTest extends BaseDatabaseTest {
             @Override
             public void execute() {
                 engine.execute("CREATE FUNCTION f_table() RETURNS TABLE(x INT) AS "
-                    + "$$ BEGIN RETURN TABLE(SELECT v FROM tf_src); END $$");
+                    + "$$ BEGIN RETURN (SELECT COUNT(*) FROM tf_src); END $$");
             }
         });
         assertTrue(failure.getMessage().contains("Compilation of SQL UDF failed"), failure.getMessage());

@@ -16,146 +16,121 @@
 
 package dev.frostlake.features;
 
-import dev.frostlake.DatabaseEngine;
-import dev.frostlake.metastore.model.Database;
-import dev.frostlake.metastore.model.Schema;
+import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Tests for default database and schema initialization
+ * Default database and schema semantics, asserted through the SQL surface — the SNOWFLAKE
+ * database is always visible, every new database is born with PUBLIC and INFORMATION_SCHEMA,
+ * PUBLIC is droppable like any schema while INFORMATION_SCHEMA is protected — so every check runs
+ * against whichever engine executed the statements, embedded or live. The fresh-engine bootstrap
+ * state (which database and schema a brand-new engine starts in) lives in
+ * {@code EngineBootstrapDefaultsTest}.
  */
-public class DefaultInitializationTest {
-
-    private DatabaseEngine engine;
-
-    @BeforeEach
-    public void setup() {
-        engine = new DatabaseEngine();
-    }
-
-    @AfterEach
-    public void teardown() {
-        if (engine != null) {
-            engine.shutdown();
-        }
-    }
+public class DefaultInitializationTest extends BaseDatabaseTest {
 
     @Test
     public void testDefaultSnowflakeDatabaseExists() {
-        // SNOWFLAKE database should exist by default
-        ResultSet result = engine.executeQuery("SHOW DATABASES");
-        boolean found = false;
-        while (result.next()) {
-            if ("SNOWFLAKE".equals(result.getValue("name"))) {
-                found = true;
-                break;
-            }
-        }
-        assertTrue(found, "SNOWFLAKE database should exist by default");
-    }
-
-    @Test
-    public void testCurrentDatabaseIsSnowflake() {
-        // Default current database should be SNOWFLAKE
-        assertEquals("SNOWFLAKE", engine.getCurrentDatabase());
-    }
-
-    @Test
-    public void testDefaultPublicSchemaExists() {
-        // PUBLIC schema should exist in SNOWFLAKE database
-        Database db = engine.getCatalog().getDatabase("SNOWFLAKE");
-        Schema publicSchema = db.getSchema("PUBLIC");
-        assertNotNull(publicSchema);
-        assertEquals("PUBLIC", publicSchema.getName());
-    }
-
-    @Test
-    public void testDefaultInformationSchemaExists() {
-        // INFORMATION_SCHEMA should exist in SNOWFLAKE database
-        Database db = engine.getCatalog().getDatabase("SNOWFLAKE");
-        Schema infoSchema = db.getSchema("INFORMATION_SCHEMA");
-        assertNotNull(infoSchema);
-        assertEquals("INFORMATION_SCHEMA", infoSchema.getName());
-    }
-
-    @Test
-    public void testCurrentSchemaIsPublic() {
-        // Default current schema should be PUBLIC
-        assertEquals("PUBLIC", engine.getCurrentSchema());
-    }
-
-    @Test
-    public void testShowSchemasIncludesBothDefaultSchemas() {
-        // SHOW SCHEMAS should return both PUBLIC and INFORMATION_SCHEMA
-        ResultSet result = engine.executeQuery("SHOW SCHEMAS");
-
-        boolean foundPublic = false;
-        boolean foundInfoSchema = false;
-
-        while (result.next()) {
-            String schemaName = (String) result.getValue("name");
-            if ("PUBLIC".equals(schemaName)) {
-                foundPublic = true;
-            }
-            if ("INFORMATION_SCHEMA".equals(schemaName)) {
-                foundInfoSchema = true;
-            }
-        }
-
-        assertTrue(foundPublic, "PUBLIC schema should exist");
-        assertTrue(foundInfoSchema, "INFORMATION_SCHEMA should exist");
+        final ResultSet databases = engine.executeQuery("SHOW DATABASES LIKE 'SNOWFLAKE'");
+        soleRowWhere(databases, "name", "SNOWFLAKE");
     }
 
     @Test
     public void testNewDatabaseGetsDefaultSchemas() {
-        // Create a new database
-        engine.execute("CREATE DATABASE test_db");
+        // test_db was created fresh for this test: it must carry both default schemas.
+        final ResultSet schemas = engine.executeQuery("SHOW SCHEMAS IN DATABASE test_db");
+        soleRowWhere(schemas, "name", "PUBLIC");
+        soleRowWhere(schemas, "name", "INFORMATION_SCHEMA");
+    }
 
-        // Verify it has PUBLIC schema
-        Database db = engine.getCatalog().getDatabase("TEST_DB");
-        Schema publicSchema = db.getSchema("PUBLIC");
-        assertNotNull(publicSchema, "New database should have PUBLIC schema");
-
-        // Verify it has INFORMATION_SCHEMA
-        Schema infoSchema = db.getSchema("INFORMATION_SCHEMA");
-        assertNotNull(infoSchema, "New database should have INFORMATION_SCHEMA");
+    @Test
+    public void testShowSchemasIncludesBothDefaultSchemas() {
+        final ResultSet schemas = engine.executeQuery("SHOW SCHEMAS");
+        soleRowWhere(schemas, "name", "PUBLIC");
+        soleRowWhere(schemas, "name", "INFORMATION_SCHEMA");
     }
 
     @Test
     public void testCanDropPublicSchema() {
-        // Live-Snowflake verified: PUBLIC is droppable like any other schema.
-        engine.execute("DROP SCHEMA PUBLIC");
-        // INFORMATION_SCHEMA stays protected.
-        RuntimeException exception = assertThrows(RuntimeException.class, () -> {
-            engine.execute("DROP SCHEMA INFORMATION_SCHEMA");
-        });
-        assertTrue(exception.getMessage().contains("INFORMATION_SCHEMA"));
+        // PUBLIC is droppable like any other schema.
+        engine.execute("DROP SCHEMA test_db.PUBLIC");
+
+        assertEquals(0, engine.executeQuery("SHOW SCHEMAS LIKE 'PUBLIC'").getRowCount());
     }
 
     @Test
     public void testCannotDropInformationSchema() {
-        // Attempt to drop INFORMATION_SCHEMA should fail
-        RuntimeException exception = assertThrows(RuntimeException.class, () -> {
-            engine.execute("DROP SCHEMA INFORMATION_SCHEMA");
+        final RuntimeException exception = assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.execute("DROP SCHEMA test_db.INFORMATION_SCHEMA");
+            }
         });
-        assertTrue(exception.getMessage().contains("Cannot drop INFORMATION_SCHEMA schema"));
+        assertTrue(exception.getMessage().contains("INFORMATION_SCHEMA"), exception.getMessage());
     }
 
     @Test
     public void testInformationSchemaHasSystemViews() {
-        // Use INFORMATION_SCHEMA
-        engine.execute("USE SCHEMA INFORMATION_SCHEMA");
-
-        // Query system views
-        ResultSet tables = engine.executeQuery("SHOW VIEWS");
+        final ResultSet views = engine.executeQuery("SHOW VIEWS IN SCHEMA test_db.INFORMATION_SCHEMA");
 
         // Should have at least DATABASES, SCHEMATA, TABLES, COLUMNS, VIEWS
-        assertTrue(tables.getRowCount() >= 5,
+        assertTrue(views.getRowCount() >= 5,
             "INFORMATION_SCHEMA should have at least 5 system views");
+    }
+
+    @Test
+    public void testCannotDropInformationSchemaViews() {
+        // INFORMATION_SCHEMA is read-only: dropping one of its views refuses with the
+        // access-control wording — under DROP VIEW and DROP TABLE alike, since the view is
+        // found before any kind check.
+        final RuntimeException viaDropView = assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.execute("DROP VIEW test_db.information_schema.tables");
+            }
+        });
+        assertTrue(viaDropView.getMessage().contains(
+            "Insufficient privileges to operate on view 'TABLES'"), viaDropView.getMessage());
+
+        final RuntimeException viaDropTable = assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.execute("DROP TABLE test_db.information_schema.tables");
+            }
+        });
+        assertTrue(viaDropTable.getMessage().contains(
+            "Insufficient privileges to operate on view 'TABLES'"), viaDropTable.getMessage());
+
+        // IF EXISTS forgives absence, never this refusal.
+        final RuntimeException underIfExists = assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.execute("DROP VIEW IF EXISTS test_db.information_schema.tables");
+            }
+        });
+        assertTrue(underIfExists.getMessage().contains("Insufficient privileges"), underIfExists.getMessage());
+
+        // The view is untouched.
+        soleRowWhere(engine.executeQuery("SHOW VIEWS IN SCHEMA test_db.INFORMATION_SCHEMA"),
+            "name", "TABLES");
+    }
+
+    @Test
+    public void testUserObjectsNamedLikeSystemViewsStayDroppable() {
+        // Protection is keyed on the schema, not the name: a user view or table that merely
+        // shares a system view's name creates and drops freely.
+        engine.execute("CREATE VIEW tables AS SELECT 1 AS c");
+        engine.execute("DROP VIEW tables");
+        assertEquals(0, engine.executeQuery("SHOW VIEWS LIKE 'tables'").getRowCount());
+
+        engine.execute("CREATE TABLE columns (id INTEGER)");
+        engine.execute("DROP TABLE columns");
+        assertEquals(0, engine.executeQuery("SHOW TABLES LIKE 'columns'").getRowCount());
     }
 }

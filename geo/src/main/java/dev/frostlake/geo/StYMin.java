@@ -32,6 +32,8 @@ public class StYMin extends BuiltInFunction {
         return geo == null ? null : Double.valueOf(GeoShapes.extent(geo.node())[2]);
     }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return 1; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return 1; }
 }

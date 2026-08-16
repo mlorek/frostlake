@@ -26,7 +26,7 @@ public class ScalarSubqueryWithStarTest extends BaseDatabaseTest {
 
     @Test
     public void testScalarSubqueryWithStarFromDerivedTable() {
-        ResultSet result = engine.executeQuery("select (select 1), * from (select 2 as c) as t");
+        final ResultSet result = engine.executeQuery("select (select 1), * from (select 2 as c) as t");
 
         assertEquals(2, result.getColumnCount(), "Should have 2 columns");
         assertEquals(1, result.getRowCount(), "Should have 1 row");
@@ -39,7 +39,7 @@ public class ScalarSubqueryWithStarTest extends BaseDatabaseTest {
         engine.execute("CREATE TABLE test_table (id INTEGER, name VARCHAR)");
         engine.execute("INSERT INTO test_table VALUES (1, 'Alice')");
 
-        ResultSet result = engine.executeQuery("select (select 100), * from test_table");
+        final ResultSet result = engine.executeQuery("select (select 100), * from test_table");
 
         assertEquals(3, result.getColumnCount(), "Should have 3 columns");
         assertEquals(1, result.getRowCount(), "Should have 1 row");
@@ -53,7 +53,7 @@ public class ScalarSubqueryWithStarTest extends BaseDatabaseTest {
         engine.execute("CREATE TABLE test_table (val INTEGER)");
         engine.execute("INSERT INTO test_table VALUES (42)");
 
-        ResultSet result = engine.executeQuery("select (select 1), (select 2), * from test_table");
+        final ResultSet result = engine.executeQuery("select (select 1), (select 2), * from test_table");
 
         assertEquals(3, result.getColumnCount(), "Should have 3 columns");
         assertEquals(1, result.getRowCount(), "Should have 1 row");

@@ -29,17 +29,19 @@ public class Strtok extends TextArgumentFunction {
     @Override
     public Object evaluate(final List<Object> args) {
         if (args.get(0) == null) return null;
-        String str = args.get(0).toString();
-        String delimiters = args.size() > 1 && args.get(1) != null ? args.get(1).toString() : " ";
-        int partNum = args.size() > 2 && args.get(2) != null ? ((Number) args.get(2)).intValue() : 1;
-        String regex = "[" + Pattern.quote(delimiters) + "]+";
-        String[] tokens = str.split(regex, -1);
-        List<String> nonEmpty = new ArrayList<>();
+        final String str = args.get(0).toString();
+        final String delimiters = args.size() > 1 && args.get(1) != null ? args.get(1).toString() : " ";
+        final int partNum = args.size() > 2 && args.get(2) != null ? ((Number) args.get(2)).intValue() : 1;
+        final String regex = "[" + Pattern.quote(delimiters) + "]+";
+        final String[] tokens = str.split(regex, -1);
+        final List<String> nonEmpty = new ArrayList<>();
         for (final String t : tokens) { if (!t.isEmpty()) nonEmpty.add(t); }
         if (partNum < 1 || partNum > nonEmpty.size()) return null;
         return nonEmpty.get(partNum - 1);
     }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return 3; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return 3; }
 }

@@ -36,11 +36,9 @@ import org.antlr.v4.runtime.CommonTokenStream;
  * <p>The kind names are Snowflake's own, as they appear in its refusal — {@code TABLE}, {@code STAGE},
  * {@code FILE_FORMAT} — with the underscore in FILE_FORMAT and no space.
  *
- * <p>Only the kinds Frostlake's grammar can express are answered here. Snowflake also refuses
- * {@code CREATE TEMPORARY VIEW} and {@code CREATE TEMPORARY FUNCTION} under owner's rights, but
- * Frostlake's grammar has no TEMPORARY on either statement, so those spellings fail as unsupported
- * syntax before any of this is reached. That is a separate gap in the grammar, not one this guard can
- * paper over — and papering over it is exactly what the text check used to do.
+ * <p>Only the kinds Frostlake's grammar can express are answered here — which, since the grammar
+ * learned the temporary spellings of VIEW and FUNCTION, is every kind Snowflake refuses under owner's
+ * rights.
  */
 public final class TemporaryObjectStatements {
 
@@ -58,12 +56,7 @@ public final class TemporaryObjectStatements {
         if (create == null) {
             return null;
         }
-        // TRANSIENT is deliberately absent: measured live, an owner's rights procedure creates a
-        // transient table happily. Only the temporary spellings are refused.
-        final boolean temporary = create.TEMPORARY() != null
-            || create.TEMP() != null
-            || create.VOLATILE() != null;
-        if (!temporary) {
+        if (!isTemporary(create)) {
             return null;
         }
         if (create.TABLE() != null) {
@@ -75,7 +68,26 @@ public final class TemporaryObjectStatements {
         if (create.FILE() != null && create.FORMAT() != null) {
             return "FILE_FORMAT";
         }
+        if (create.VIEW() != null) {
+            return "VIEW";
+        }
+        if (create.FUNCTION() != null) {
+            return "FUNCTION";
+        }
         return null;
+    }
+
+    /**
+     * Whether a parsed {@code CREATE} carries one of the temporary keywords.
+     *
+     * <p>TRANSIENT is deliberately absent: measured live, an owner's rights procedure creates a
+     * transient table happily, and a transient object outlives its session. Only TEMPORARY, TEMP and
+     * VOLATILE are the temporary spellings — VOLATILE included, live-verified for views, functions and
+     * procedures alike, where a leading VOLATILE is the temporary keyword and not the volatility
+     * attribute a function may carry after RETURNS.
+     */
+    public static boolean isTemporary(final FrostlakeParser.CreateStatementContext create) {
+        return create.TEMPORARY() != null || create.TEMP() != null || create.VOLATILE() != null;
     }
 
     /** The statement's {@code CREATE} node, or null when the text is not a single parseable CREATE. */

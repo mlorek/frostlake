@@ -26,7 +26,6 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.junit.jupiter.api.Assumptions.assumeFalse;
 
 /**
  * {@code TO_FILE} — building a FILE value.
@@ -45,7 +44,6 @@ public class ToFileTest extends StagedFileTestSupport {
      */
     @Test
     public void buildsADescriptorFromARealStagedFile() {
-        assumeFalse(isLiveSnowflake(), stageOnlyReason());
         stage("hello.txt", "hello world\nsecond line\n");
 
         assertEquals("hello.txt", scalar("SELECT FL_GET_RELATIVE_PATH(TO_FILE('@st/hello.txt'))"));
@@ -65,7 +63,6 @@ public class ToFileTest extends StagedFileTestSupport {
      */
     @Test
     public void contentTypeComesFromTheExtensionNotTheBytes() {
-        assumeFalse(isLiveSnowflake(), stageOnlyReason());
         stageBytes("png_named.txt", PNG_BYTES);
         stage("text_named.png", "this is not a png, it is plain text\n");
 
@@ -79,7 +76,6 @@ public class ToFileTest extends StagedFileTestSupport {
     /** Live: a file with no extension at all is {@code application/octet-stream}, hence {@code unknown}. */
     @Test
     public void fileWithoutAnExtensionIsOctetStream() {
-        assumeFalse(isLiveSnowflake(), stageOnlyReason());
         stage("noext", "no extension here\n");
 
         assertEquals("application/octet-stream", scalar("SELECT FL_GET_CONTENT_TYPE(TO_FILE('@st/noext'))"));
@@ -89,7 +85,6 @@ public class ToFileTest extends StagedFileTestSupport {
     /** Live: a file in a sub-directory keeps the sub-path in RELATIVE_PATH, with no leading slash. */
     @Test
     public void subDirectoryIsKeptInTheRelativePath() {
-        assumeFalse(isLiveSnowflake(), stageOnlyReason());
         stage("sub/nested.txt", "nested file\n");
 
         assertEquals("sub/nested.txt", scalar("SELECT FL_GET_RELATIVE_PATH(TO_FILE('@st/sub/nested.txt'))"));
@@ -102,7 +97,6 @@ public class ToFileTest extends StagedFileTestSupport {
      */
     @Test
     public void missingFileRaisesSnowflakesNotFoundError() {
-        assumeFalse(isLiveSnowflake(), stageOnlyReason());
 
         final RuntimeException error = assertThrows(RuntimeException.class, new Executable() {
             @Override
@@ -120,7 +114,6 @@ public class ToFileTest extends StagedFileTestSupport {
     /** Live: a DIRECTORY is not a file — both {@code @st/sub} and {@code @st/} fail "was not found". */
     @Test
     public void directoryIsNotAFile() {
-        assumeFalse(isLiveSnowflake(), stageOnlyReason());
         stage("sub/nested.txt", "nested file\n");
 
         assertThrows(RuntimeException.class, new Executable() {
@@ -143,7 +136,6 @@ public class ToFileTest extends StagedFileTestSupport {
      */
     @Test
     public void twoArgumentFormJoinsWithASlash() {
-        assumeFalse(isLiveSnowflake(), stageOnlyReason());
         stage("hello.txt", "hello world\nsecond line\n");
 
         assertEquals("hello.txt", scalar("SELECT FL_GET_RELATIVE_PATH(TO_FILE('@st', 'hello.txt'))"));
@@ -170,7 +162,6 @@ public class ToFileTest extends StagedFileTestSupport {
     /** Live: a database- or schema-qualified stage name resolves to the same fully-qualified STAGE. */
     @Test
     public void qualifiedStageNameResolves() {
-        assumeFalse(isLiveSnowflake(), stageOnlyReason());
         stage("hello.txt", "hello world\nsecond line\n");
 
         assertEquals("@TEST_DB.TEST_SCHEMA.ST",

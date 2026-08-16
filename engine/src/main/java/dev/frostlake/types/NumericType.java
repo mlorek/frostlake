@@ -61,15 +61,32 @@ public class NumericType extends DataType {
         if (!(other instanceof NumericType)) {
             return null;
         }
-        NumericType otherNumeric = (NumericType) other;
-        int maxPrecision = Math.max(this.precision, otherNumeric.precision);
-        int maxScale = Math.max(this.scale, otherNumeric.scale);
+        final NumericType otherNumeric = (NumericType) other;
+        final int maxPrecision = Math.max(this.precision, otherNumeric.precision);
+        final int maxScale = Math.max(this.scale, otherNumeric.scale);
         return new NumericType("NUMBER", maxPrecision, maxScale);
     }
 
     @Override
     public int getSize() {
         return 16; // Approximate size for numeric values
+    }
+
+    /**
+     * Whether a type is one of the APPROXIMATE numeric spellings, which carry no precision and scale.
+     *
+     * <p>Live-verified on every metadata surface: a FLOAT column is {@code {"type":"REAL"}} in SHOW
+     * COLUMNS with no numbers beside it, and leaves NUMERIC_PRECISION and NUMERIC_SCALE NULL in
+     * INFORMATION_SCHEMA. The nominal pair these constants carry is an engine-internal placeholder and
+     * must not be published to a client as though it were declared.
+     *
+     * @param type the type to test
+     * @return true for FLOAT and its aliases
+     */
+    public static boolean isApproximate(final DataType type) {
+        return type instanceof NumericType
+            && ("FLOAT".equalsIgnoreCase(type.getName()) || "DOUBLE".equalsIgnoreCase(type.getName())
+                || "REAL".equalsIgnoreCase(type.getName()));
     }
 
     // Snowflake gives EVERY integer alias the same precision and scale — live-verified,

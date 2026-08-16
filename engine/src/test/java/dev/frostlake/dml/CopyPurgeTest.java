@@ -63,6 +63,7 @@ public class CopyPurgeTest {
         cfg.setProperty(EngineConfig.PROP_STAGE_INTERNAL_LOCAL_ROOT, internalRoot.toString());
         // NOTE: command.removeEnabled is left at its default (false) throughout this suite — PURGE is
         // deliberately not gated behind the REMOVE / RM guard, and these tests pin that.
+        cfg.setProperty(EngineConfig.PROP_STAGE_FILE_URL_ENABLED, "true");
         engine = new DatabaseEngine(cfg);
         engine.execute("CREATE DATABASE db");
         engine.execute("USE DATABASE db");
@@ -129,7 +130,7 @@ public class CopyPurgeTest {
     @Test
     public void purgeDeletesTheLoadedFile() throws IOException {
         engine.execute("CREATE TABLE t (id INTEGER, name VARCHAR)");
-        engine.executeQuery("PUT " + localCsvUrl("u.csv", TWO_GOOD_ROWS) + " @%t");
+        engine.executeQuery("PUT " + localCsvUrl("u.csv", TWO_GOOD_ROWS) + " @%t AUTO_COMPRESS=FALSE");
         assertStaged(tableStageDir("t"), "u.csv");
 
         final ResultSet copied = engine.executeQuery(
@@ -145,7 +146,7 @@ public class CopyPurgeTest {
     @Test
     public void defaultKeepsTheStagedFile() throws IOException {
         engine.execute("CREATE TABLE t (id INTEGER, name VARCHAR)");
-        engine.executeQuery("PUT " + localCsvUrl("u.csv", TWO_GOOD_ROWS) + " @%t");
+        engine.executeQuery("PUT " + localCsvUrl("u.csv", TWO_GOOD_ROWS) + " @%t AUTO_COMPRESS=FALSE");
 
         engine.executeQuery("COPY INTO t FILE_FORMAT = (TYPE = CSV SKIP_HEADER = 1)");
 
@@ -157,7 +158,7 @@ public class CopyPurgeTest {
     @Test
     public void purgeFalseKeepsTheStagedFile() throws IOException {
         engine.execute("CREATE TABLE t (id INTEGER, name VARCHAR)");
-        engine.executeQuery("PUT " + localCsvUrl("u.csv", TWO_GOOD_ROWS) + " @%t");
+        engine.executeQuery("PUT " + localCsvUrl("u.csv", TWO_GOOD_ROWS) + " @%t AUTO_COMPRESS=FALSE");
 
         engine.executeQuery("COPY INTO t FILE_FORMAT = (TYPE = CSV SKIP_HEADER = 1) PURGE = FALSE");
 
@@ -172,8 +173,8 @@ public class CopyPurgeTest {
     @Test
     public void purgeKeepsFilesExcludedByPattern() throws IOException {
         engine.execute("CREATE TABLE t (id INTEGER, name VARCHAR)");
-        engine.executeQuery("PUT " + localCsvUrl("keep.csv", TWO_GOOD_ROWS) + " @%t");
-        engine.executeQuery("PUT " + localCsvUrl("load.csv", TWO_GOOD_ROWS) + " @%t");
+        engine.executeQuery("PUT " + localCsvUrl("keep.csv", TWO_GOOD_ROWS) + " @%t AUTO_COMPRESS=FALSE");
+        engine.executeQuery("PUT " + localCsvUrl("load.csv", TWO_GOOD_ROWS) + " @%t AUTO_COMPRESS=FALSE");
 
         engine.executeQuery(
             "COPY INTO t PATTERN = '.*load[.]csv' FILE_FORMAT = (TYPE = CSV SKIP_HEADER = 1) PURGE = TRUE");
@@ -186,8 +187,8 @@ public class CopyPurgeTest {
     @Test
     public void purgeKeepsFilesExcludedByFilesOption() throws IOException {
         engine.execute("CREATE TABLE t (id INTEGER, name VARCHAR)");
-        engine.executeQuery("PUT " + localCsvUrl("keep.csv", TWO_GOOD_ROWS) + " @%t");
-        engine.executeQuery("PUT " + localCsvUrl("load.csv", TWO_GOOD_ROWS) + " @%t");
+        engine.executeQuery("PUT " + localCsvUrl("keep.csv", TWO_GOOD_ROWS) + " @%t AUTO_COMPRESS=FALSE");
+        engine.executeQuery("PUT " + localCsvUrl("load.csv", TWO_GOOD_ROWS) + " @%t AUTO_COMPRESS=FALSE");
 
         engine.executeQuery(
             "COPY INTO t FILES = ('load.csv') FILE_FORMAT = (TYPE = CSV SKIP_HEADER = 1) PURGE = TRUE");
@@ -204,7 +205,7 @@ public class CopyPurgeTest {
     @Test
     public void purgeKeepsAnAlreadyLoadedFile() throws IOException {
         engine.execute("CREATE TABLE t (id INTEGER, name VARCHAR)");
-        engine.executeQuery("PUT " + localCsvUrl("u.csv", TWO_GOOD_ROWS) + " @%t");
+        engine.executeQuery("PUT " + localCsvUrl("u.csv", TWO_GOOD_ROWS) + " @%t AUTO_COMPRESS=FALSE");
         engine.executeQuery("COPY INTO t FILE_FORMAT = (TYPE = CSV SKIP_HEADER = 1)");
 
         final ResultSet again = engine.executeQuery(
@@ -220,7 +221,7 @@ public class CopyPurgeTest {
     @Test
     public void forceReloadPurgesAnAlreadyLoadedFile() throws IOException {
         engine.execute("CREATE TABLE t (id INTEGER, name VARCHAR)");
-        engine.executeQuery("PUT " + localCsvUrl("u.csv", TWO_GOOD_ROWS) + " @%t");
+        engine.executeQuery("PUT " + localCsvUrl("u.csv", TWO_GOOD_ROWS) + " @%t AUTO_COMPRESS=FALSE");
         engine.executeQuery("COPY INTO t FILE_FORMAT = (TYPE = CSV SKIP_HEADER = 1)");
 
         engine.executeQuery(
@@ -234,7 +235,7 @@ public class CopyPurgeTest {
     @Test
     public void partiallyLoadedFileIsPurged() throws IOException {
         engine.execute("CREATE TABLE t (id INTEGER, name VARCHAR)");
-        engine.executeQuery("PUT " + localCsvUrl("mixed.csv", ONE_GOOD_ONE_BAD_ROW) + " @%t");
+        engine.executeQuery("PUT " + localCsvUrl("mixed.csv", ONE_GOOD_ONE_BAD_ROW) + " @%t AUTO_COMPRESS=FALSE");
 
         final ResultSet copied = engine.executeQuery(
             "COPY INTO t FILE_FORMAT = (TYPE = CSV SKIP_HEADER = 1) ON_ERROR = CONTINUE PURGE = TRUE");
@@ -251,7 +252,7 @@ public class CopyPurgeTest {
     @Test
     public void whollyRejectedFileIsNotPurged() throws IOException {
         engine.execute("CREATE TABLE t (id INTEGER, name VARCHAR)");
-        engine.executeQuery("PUT " + localCsvUrl("bad.csv", ALL_BAD_ROWS) + " @%t");
+        engine.executeQuery("PUT " + localCsvUrl("bad.csv", ALL_BAD_ROWS) + " @%t AUTO_COMPRESS=FALSE");
 
         engine.executeQuery(
             "COPY INTO t FILE_FORMAT = (TYPE = CSV SKIP_HEADER = 1) ON_ERROR = CONTINUE PURGE = TRUE");
@@ -270,7 +271,7 @@ public class CopyPurgeTest {
     @Test
     public void fileDroppedByTheErrorBudgetIsNotPurged() throws IOException {
         engine.execute("CREATE TABLE t (id INTEGER, name VARCHAR)");
-        engine.executeQuery("PUT " + localCsvUrl("mixed.csv", ONE_GOOD_ONE_BAD_ROW) + " @%t");
+        engine.executeQuery("PUT " + localCsvUrl("mixed.csv", ONE_GOOD_ONE_BAD_ROW) + " @%t AUTO_COMPRESS=FALSE");
 
         engine.executeQuery(
             "COPY INTO t FILE_FORMAT = (TYPE = CSV SKIP_HEADER = 1) ON_ERROR = SKIP_FILE PURGE = TRUE");
@@ -286,9 +287,9 @@ public class CopyPurgeTest {
     @Test
     public void multiFileMixedOutcomePurgesOnlyTheLoadedFiles() throws IOException {
         engine.execute("CREATE TABLE t (id INTEGER, name VARCHAR)");
-        engine.executeQuery("PUT " + localCsvUrl("good.csv", TWO_GOOD_ROWS) + " @%t");
-        engine.executeQuery("PUT " + localCsvUrl("mixed.csv", ONE_GOOD_ONE_BAD_ROW) + " @%t");
-        engine.executeQuery("PUT " + localCsvUrl("bad.csv", ALL_BAD_ROWS) + " @%t");
+        engine.executeQuery("PUT " + localCsvUrl("good.csv", TWO_GOOD_ROWS) + " @%t AUTO_COMPRESS=FALSE");
+        engine.executeQuery("PUT " + localCsvUrl("mixed.csv", ONE_GOOD_ONE_BAD_ROW) + " @%t AUTO_COMPRESS=FALSE");
+        engine.executeQuery("PUT " + localCsvUrl("bad.csv", ALL_BAD_ROWS) + " @%t AUTO_COMPRESS=FALSE");
 
         engine.executeQuery(
             "COPY INTO t FILE_FORMAT = (TYPE = CSV SKIP_HEADER = 1) ON_ERROR = CONTINUE PURGE = TRUE");
@@ -306,8 +307,8 @@ public class CopyPurgeTest {
     @Test
     public void abortedLoadPurgesNothing() throws IOException {
         engine.execute("CREATE TABLE t (id INTEGER, name VARCHAR)");
-        engine.executeQuery("PUT " + localCsvUrl("good.csv", TWO_GOOD_ROWS) + " @%t");
-        engine.executeQuery("PUT " + localCsvUrl("mixed.csv", ONE_GOOD_ONE_BAD_ROW) + " @%t");
+        engine.executeQuery("PUT " + localCsvUrl("good.csv", TWO_GOOD_ROWS) + " @%t AUTO_COMPRESS=FALSE");
+        engine.executeQuery("PUT " + localCsvUrl("mixed.csv", ONE_GOOD_ONE_BAD_ROW) + " @%t AUTO_COMPRESS=FALSE");
 
         assertThrows(RuntimeException.class, new Executable() {
             @Override
@@ -325,7 +326,7 @@ public class CopyPurgeTest {
     @Test
     public void validationModePurgesNothing() throws IOException {
         engine.execute("CREATE TABLE t (id INTEGER, name VARCHAR)");
-        engine.executeQuery("PUT " + localCsvUrl("u.csv", TWO_GOOD_ROWS) + " @%t");
+        engine.executeQuery("PUT " + localCsvUrl("u.csv", TWO_GOOD_ROWS) + " @%t AUTO_COMPRESS=FALSE");
 
         engine.executeQuery("COPY INTO t FILE_FORMAT = (TYPE = CSV SKIP_HEADER = 1)"
             + " VALIDATION_MODE = 'RETURN_ERRORS' PURGE = TRUE");
@@ -346,7 +347,7 @@ public class CopyPurgeTest {
     @Test
     public void fileLoadingZeroRowsCleanlyIsStillPurged() throws IOException {
         engine.execute("CREATE TABLE t (id INTEGER, name VARCHAR)");
-        engine.executeQuery("PUT " + localCsvUrl("headeronly.csv", "id,name\n") + " @%t");
+        engine.executeQuery("PUT " + localCsvUrl("headeronly.csv", "id,name\n") + " @%t AUTO_COMPRESS=FALSE");
 
         final ResultSet copied = engine.executeQuery(
             "COPY INTO t FILE_FORMAT = (TYPE = CSV SKIP_HEADER = 1) PURGE = TRUE");
@@ -361,8 +362,8 @@ public class CopyPurgeTest {
     public void purgeWorksOnANamedStage() throws IOException {
         engine.execute("CREATE STAGE st URL='file://" + namedStageDir + "'");
         engine.execute("CREATE TABLE t (id INTEGER, name VARCHAR)");
-        engine.executeQuery("PUT " + localCsvUrl("keep.csv", TWO_GOOD_ROWS) + " @st");
-        engine.executeQuery("PUT " + localCsvUrl("load.csv", TWO_GOOD_ROWS) + " @st");
+        engine.executeQuery("PUT " + localCsvUrl("keep.csv", TWO_GOOD_ROWS) + " @st AUTO_COMPRESS=FALSE");
+        engine.executeQuery("PUT " + localCsvUrl("load.csv", TWO_GOOD_ROWS) + " @st AUTO_COMPRESS=FALSE");
 
         engine.executeQuery("COPY INTO t FROM @st FILES = ('load.csv')"
             + " FILE_FORMAT = (TYPE = CSV SKIP_HEADER = 1) PURGE = TRUE");
@@ -376,7 +377,7 @@ public class CopyPurgeTest {
     @Test
     public void purgeWorksOnTheUserStage() throws IOException {
         engine.execute("CREATE TABLE t (id INTEGER, name VARCHAR)");
-        engine.executeQuery("PUT " + localCsvUrl("u.csv", TWO_GOOD_ROWS) + " @~/p141");
+        engine.executeQuery("PUT " + localCsvUrl("u.csv", TWO_GOOD_ROWS) + " @~/p141 AUTO_COMPRESS=FALSE");
 
         engine.executeQuery("COPY INTO t FROM @~/p141 FILE_FORMAT = (TYPE = CSV SKIP_HEADER = 1) PURGE = TRUE");
 
@@ -398,7 +399,7 @@ public class CopyPurgeTest {
             "this suite must run with the REMOVE guard at its default (disabled)");
 
         engine.execute("CREATE TABLE t (id INTEGER, name VARCHAR)");
-        engine.executeQuery("PUT " + localCsvUrl("u.csv", TWO_GOOD_ROWS) + " @%t");
+        engine.executeQuery("PUT " + localCsvUrl("u.csv", TWO_GOOD_ROWS) + " @%t AUTO_COMPRESS=FALSE");
 
         // The bare command is refused …
         assertThrows(RuntimeException.class, new Executable() {
@@ -441,7 +442,7 @@ public class CopyPurgeTest {
     @Test
     public void aPurgeThatCannotDeleteStillReportsASuccessfulLoad() throws IOException {
         engine.execute("CREATE TABLE t (id INTEGER, name VARCHAR)");
-        engine.executeQuery("PUT " + localCsvUrl("u.csv", TWO_GOOD_ROWS) + " @%t");
+        engine.executeQuery("PUT " + localCsvUrl("u.csv", TWO_GOOD_ROWS) + " @%t AUTO_COMPRESS=FALSE");
         final File stageDir = tableStageDir("t").toFile();
 
         assertTrue(stageDir.setWritable(false), "could not make the stage directory read-only");

@@ -21,7 +21,22 @@ import dev.frostlake.ExecutionResult;
 import dev.frostlake.metastore.Catalog;
 import dev.frostlake.transaction.TransactionManager;
 
-import java.sql.*;
+import java.sql.Array;
+import java.sql.Blob;
+import java.sql.CallableStatement;
+import java.sql.Clob;
+import java.sql.Connection;
+import java.sql.NClob;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.SQLClientInfoException;
+import java.sql.SQLException;
+import java.sql.SQLFeatureNotSupportedException;
+import java.sql.SQLWarning;
+import java.sql.SQLXML;
+import java.sql.Savepoint;
+import java.sql.Statement;
+import java.sql.Struct;
 import java.util.Map;
 import java.util.Properties;
 import java.util.concurrent.Executor;
@@ -34,7 +49,6 @@ public class DirectConnection implements Connection {
 
     private final DatabaseEngine engine;
     private boolean closed = false;
-    private boolean autoCommit = true;
     private int savepointIdCounter = 0;
     // This connection's own session context over the SHARED per-name engine, mirroring what a real
     // Snowflake connection carries. Every statement runs inside a per-thread scope built from these,
@@ -43,12 +57,22 @@ public class DirectConnection implements Connection {
     private String sessionDatabase;
     private String sessionSchema;
     private boolean sessionAutoCommit;
+    /** The session's MULTI_STATEMENT_COUNT (1 = single statement only, 0 = any). */
+    private int multiStatementCount = 1;
 
     public DirectConnection(final DatabaseEngine engine) {
         this.engine = engine;
         this.sessionDatabase = engine.getCurrentDatabase();
         this.sessionSchema = engine.getCurrentSchema();
         this.sessionAutoCommit = engine.isAutoCommit();
+    }
+
+    int getMultiStatementCount() {
+        return multiStatementCount;
+    }
+
+    void setMultiStatementCount(final int count) {
+        this.multiStatementCount = count;
     }
 
     /**
@@ -109,7 +133,6 @@ public class DirectConnection implements Connection {
 
     @Override
     public void setAutoCommit(final boolean autoCommit) throws SQLException {
-        this.autoCommit = autoCommit;
         // The connection's session context supplies the mode to every statement via executeScoped —
         // writing the engine's global flag here would leak the mode into other connections.
         this.sessionAutoCommit = autoCommit;
@@ -117,7 +140,9 @@ public class DirectConnection implements Connection {
 
     @Override
     public boolean getAutoCommit() throws SQLException {
-        return autoCommit;
+        // The session's EFFECTIVE mode: an ALTER SESSION SET AUTOCOMMIT executed over this
+        // connection moves it too, not just setAutoCommit.
+        return sessionAutoCommit;
     }
 
     @Override
@@ -336,7 +361,7 @@ public class DirectConnection implements Connection {
         checkClosed();
         // For Struct, we need attribute names, but JDBC createStruct doesn't provide them
         // Generate default attribute names: ATTR1, ATTR2, etc.
-        String[] attributeNames = new String[attributes.length];
+        final String[] attributeNames = new String[attributes.length];
         for (int i = 0; i < attributes.length; i++) {
             attributeNames[i] = "ATTR" + (i + 1);
         }

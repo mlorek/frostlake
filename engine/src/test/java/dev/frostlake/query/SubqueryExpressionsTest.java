@@ -21,10 +21,7 @@ import dev.frostlake.storage.ResultSet;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class SubqueryExpressionsTest extends BaseDatabaseTest {
 
@@ -47,7 +44,7 @@ public class SubqueryExpressionsTest extends BaseDatabaseTest {
 
     @Test
     public void testExistsWithNonEmptyTable() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT name FROM employees WHERE EXISTS (SELECT 1 FROM departments)"
         );
         // Should return all employees (departments table is not empty)
@@ -57,7 +54,7 @@ public class SubqueryExpressionsTest extends BaseDatabaseTest {
     @Test
     public void testExistsWithEmptyTable() {
         engine.execute("CREATE TABLE empty_table (id INTEGER)");
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT name FROM employees WHERE EXISTS (SELECT 1 FROM empty_table)"
         );
         // Should return no rows (empty_table is empty)
@@ -66,7 +63,7 @@ public class SubqueryExpressionsTest extends BaseDatabaseTest {
 
     @Test
     public void testNotExistsWithNonEmptyTable() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT name FROM employees WHERE NOT EXISTS (SELECT 1 FROM departments)"
         );
         // Should return no rows (departments table is not empty, so NOT EXISTS is false)
@@ -76,7 +73,7 @@ public class SubqueryExpressionsTest extends BaseDatabaseTest {
     @Test
     public void testNotExistsWithEmptyTable() {
         engine.execute("CREATE TABLE empty_table (id INTEGER)");
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT name FROM employees WHERE NOT EXISTS (SELECT 1 FROM empty_table)"
         );
         // Should return all rows (empty_table is empty, so NOT EXISTS is true)
@@ -85,7 +82,7 @@ public class SubqueryExpressionsTest extends BaseDatabaseTest {
 
     @Test
     public void testExistsWithSpecificCondition() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT name FROM employees WHERE EXISTS (SELECT 1 FROM departments WHERE name = 'Engineering')"
         );
         // Should return all employees (Engineering dept exists)
@@ -94,7 +91,7 @@ public class SubqueryExpressionsTest extends BaseDatabaseTest {
 
     @Test
     public void testExistsWithNoMatch() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT name FROM employees WHERE EXISTS (SELECT 1 FROM departments WHERE name = 'NonExistent')"
         );
         // Should return no rows (no such department)
@@ -103,7 +100,7 @@ public class SubqueryExpressionsTest extends BaseDatabaseTest {
 
     @Test
     public void testExistsWithMultipleConditions() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT name FROM employees WHERE salary > 55000 AND EXISTS (SELECT 1 FROM departments)"
         );
         // Should return employees with salary > 55000 (Bob, Diana)
@@ -114,7 +111,7 @@ public class SubqueryExpressionsTest extends BaseDatabaseTest {
 
     @Test
     public void testScalarSubqueryConstant() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT name, salary + (SELECT 1000) as new_salary FROM employees WHERE id = 1"
         );
         assertEquals(1, result.getRowCount());
@@ -123,7 +120,7 @@ public class SubqueryExpressionsTest extends BaseDatabaseTest {
 
     @Test
     public void testScalarSubqueryAggregate() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT name FROM employees WHERE salary > (SELECT AVG(salary) FROM employees)"
         );
         // Average salary is (50000+60000+55000+70000)/4 = 58750
@@ -133,7 +130,7 @@ public class SubqueryExpressionsTest extends BaseDatabaseTest {
 
     @Test
     public void testScalarSubqueryMax() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT name FROM employees WHERE salary = (SELECT MAX(salary) FROM employees)"
         );
         // Should return Diana (highest salary)
@@ -144,7 +141,7 @@ public class SubqueryExpressionsTest extends BaseDatabaseTest {
     @Test
     public void testScalarSubqueryReturnsNull() {
         engine.execute("CREATE TABLE empty_test (val INTEGER)");
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT name, (SELECT MAX(val) FROM empty_test) as max_val FROM employees WHERE id = 1"
         );
         // Empty table aggregate should return NULL
@@ -165,7 +162,7 @@ public class SubqueryExpressionsTest extends BaseDatabaseTest {
 
     @Test
     public void testScalarSubqueryInComparison() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT name FROM employees WHERE (SELECT COUNT(*) FROM departments) > 2"
         );
         // departments has 3 rows, so all employees should be returned
@@ -174,7 +171,7 @@ public class SubqueryExpressionsTest extends BaseDatabaseTest {
 
     @Test
     public void testScalarSubqueryInSelect() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT name, (SELECT COUNT(*) FROM departments) as dept_count FROM employees WHERE id = 1"
         );
         assertEquals(1, result.getRowCount());
@@ -183,7 +180,7 @@ public class SubqueryExpressionsTest extends BaseDatabaseTest {
 
     @Test
     public void testMultipleScalarSubqueriesInSelect() {
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT name, (SELECT COUNT(*) FROM departments) as dept_count, (SELECT MAX(salary) FROM employees) as max_salary FROM employees WHERE id = 1
             """);
         assertEquals(1, result.getRowCount());
@@ -193,7 +190,7 @@ public class SubqueryExpressionsTest extends BaseDatabaseTest {
 
     @Test
     public void testScalarSubqueryInSelectWithMultipleRows() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT name, (SELECT COUNT(*) FROM departments) as dept_count FROM employees"
         );
         assertEquals(4, result.getRowCount());
@@ -214,7 +211,7 @@ public class SubqueryExpressionsTest extends BaseDatabaseTest {
         engine.execute("INSERT INTO customers VALUES (2, 'Bob')");
         engine.execute("INSERT INTO customers VALUES (3, 'Charlie')");
 
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT name, (SELECT COUNT(*) FROM orders WHERE orders.customer_id = customers.id) as order_count FROM customers ORDER BY id
             """);
         assertEquals(3, result.getRowCount());
@@ -234,7 +231,7 @@ public class SubqueryExpressionsTest extends BaseDatabaseTest {
         engine.execute("INSERT INTO customers VALUES (1, 'Alice')");
         engine.execute("INSERT INTO customers VALUES (2, 'Bob')");
 
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT name, (SELECT SUM(amount) FROM orders WHERE orders.customer_id = customers.id) as total FROM customers ORDER BY id
             """);
         assertEquals(2, result.getRowCount());
@@ -258,7 +255,7 @@ public class SubqueryExpressionsTest extends BaseDatabaseTest {
         engine.execute("INSERT INTO t2 VALUES (2, 'y')");
 
         // Test correlated EXISTS - should return rows where t1.i matches t2.i (1 and 2)
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT * FROM t1 WHERE EXISTS (SELECT * FROM t2 WHERE t1.i = t2.i)"
         );
         assertEquals(2, result.getRowCount());
@@ -280,7 +277,7 @@ public class SubqueryExpressionsTest extends BaseDatabaseTest {
         engine.execute("INSERT INTO t2 VALUES (2, 'y')");
 
         // Test correlated NOT EXISTS - should return rows where t1.i does NOT match t2.i (3)
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT * FROM t1 WHERE NOT EXISTS (SELECT * FROM t2 WHERE t1.i = t2.i)"
         );
         assertEquals(1, result.getRowCount());
@@ -291,7 +288,7 @@ public class SubqueryExpressionsTest extends BaseDatabaseTest {
     public void testCorrelatedExistsWithRealExample() {
         // Test with actual employee-department relationship
         // Find employees whose department exists in departments table
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT name FROM employees WHERE EXISTS (SELECT 1 FROM departments WHERE departments.id = employees.dept_id)
             """);
         // Alice (dept_id=10), Bob (dept_id=20), Charlie (dept_id=10) should match
@@ -312,7 +309,7 @@ public class SubqueryExpressionsTest extends BaseDatabaseTest {
         engine.execute("INSERT INTO t2 VALUES (2, 99)");
 
         // Both columns must match
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT * FROM t1 WHERE EXISTS (SELECT * FROM t2 WHERE t1.i = t2.i AND t1.j = t2.j)"
         );
         // Only (1, 10) should match
@@ -333,7 +330,7 @@ public class SubqueryExpressionsTest extends BaseDatabaseTest {
         engine.execute("INSERT INTO t2 VALUES (65000)");
 
         // Find salaries greater than any min_salary
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT * FROM t1 WHERE EXISTS (SELECT * FROM t2 WHERE t1.salary > t2.min_salary)"
         );
         // 60000 and 70000 are both > 55000
@@ -365,7 +362,7 @@ public class SubqueryExpressionsTest extends BaseDatabaseTest {
 
         // 4-level nested correlated subquery
         // Find level1 records that have corresponding records all the way to level4
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT * FROM level1
             WHERE EXISTS (
               SELECT * FROM level2 WHERE level2.parent_id = level1.id

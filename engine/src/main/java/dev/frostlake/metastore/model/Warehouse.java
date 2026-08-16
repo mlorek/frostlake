@@ -24,8 +24,8 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Set;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Represents a Snowflake Compute Warehouse
@@ -39,7 +39,7 @@ public class Warehouse implements Taggable {
     private ScalingPolicy scalingPolicy;
     private int minClusterCount;
     private int maxClusterCount;
-    private int autoSuspendSeconds;
+    private Integer autoSuspendSeconds;
     private boolean autoResume;
     private final LocalDateTime createdAt;
     private LocalDateTime lastStateChange;
@@ -64,7 +64,9 @@ public class Warehouse implements Taggable {
     public Warehouse(final String name, final WarehouseSize size) {
         this.name = name;
         this.size = size;
-        this.state = WarehouseState.SUSPENDED;
+        // A new warehouse starts running unless INITIALLY_SUSPENDED = TRUE says otherwise
+        // (live-verified: SHOW WAREHOUSES reads STARTED right after CREATE).
+        this.state = WarehouseState.STARTED;
         this.scalingPolicy = ScalingPolicy.STANDARD;
         this.minClusterCount = 1;
         this.maxClusterCount = 1;
@@ -92,16 +94,30 @@ public class Warehouse implements Taggable {
         this.lastStateChange = LocalDateTime.now();
     }
 
+    /** ALTER WAREHOUSE … SUSPEND. Suspending a warehouse that is already suspended is an error
+     *  (live-verified wording), unlike a compute pool's idempotent suspend. */
     public void suspend() {
         if (state == WarehouseState.SUSPENDED) {
-            return;
+            throw new RuntimeException("Invalid state. Warehouse '" + name.toUpperCase()
+                + "' cannot be suspended.");
         }
         this.state = WarehouseState.SUSPENDING;
         this.state = WarehouseState.SUSPENDED;
         this.lastStateChange = LocalDateTime.now();
     }
 
-    public void resume() {
+    /**
+     * ALTER WAREHOUSE … RESUME. Resuming a warehouse that is already running is an error, unless
+     * the statement said IF SUSPENDED (live-verified wording).
+     */
+    public void resume(final boolean ifSuspended) {
+        if (state == WarehouseState.STARTED) {
+            if (ifSuspended) {
+                return;
+            }
+            throw new RuntimeException("Invalid state. Warehouse '" + name.toUpperCase()
+                + "' cannot be resumed since it is not suspended.");
+        }
         start();
     }
 
@@ -113,8 +129,8 @@ public class Warehouse implements Taggable {
         // Round up to minimum 1 minute billing
         long executionMs = execution.getExecutionTimeMs();
         if (executionMs < 60000) executionMs = 60000; // Minimum 1 minute
-        double executionMinutes = executionMs / 60000.0;
-        double creditsUsed = (size.getCreditsPerHour() * executionMinutes) / 60.0;
+        final double executionMinutes = executionMs / 60000.0;
+        final double creditsUsed = (size.getCreditsPerHour() * executionMinutes) / 60.0;
         totalCreditsUsed += (long) Math.ceil(creditsUsed);
     }
 
@@ -196,11 +212,12 @@ public class Warehouse implements Taggable {
         this.maxClusterCount = maxClusterCount;
     }
 
-    public int getAutoSuspendSeconds() {
+    public Integer getAutoSuspendSeconds() {
         return autoSuspendSeconds;
     }
 
-    public void setAutoSuspendSeconds(final int autoSuspendSeconds) {
+    /** Null after UNSET AUTO_SUSPEND: live leaves the cell empty, not at the default. */
+    public void setAutoSuspendSeconds(final Integer autoSuspendSeconds) {
         this.autoSuspendSeconds = autoSuspendSeconds;
     }
 

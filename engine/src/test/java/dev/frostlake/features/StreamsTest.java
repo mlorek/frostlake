@@ -17,44 +17,36 @@
 package dev.frostlake.features;
 
 import dev.frostlake.BaseDatabaseTest;
-import dev.frostlake.metastore.*;
-import dev.frostlake.metastore.model.ChangeType;
-import dev.frostlake.metastore.model.Schema;
-import dev.frostlake.metastore.model.Stream;
-import dev.frostlake.metastore.model.StreamRecord;
-import dev.frostlake.metastore.model.StreamSourceType;
-import dev.frostlake.metastore.model.StreamType;
 import dev.frostlake.storage.ResultSet;
-import org.junit.jupiter.api.Assumptions;
+import dev.frostlake.storage.Row;
 import org.junit.jupiter.api.Test;
 
-import java.util.List;
-
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Tests for STREAM feature
+ * STREAM behavior, asserted through the SQL surface — {@code SHOW STREAMS} cells and reads of the
+ * stream itself ({@code METADATA$ACTION} / {@code METADATA$ISUPDATE} per change row) — so every
+ * check runs against whichever engine executed the DDL/DML, embedded or live. A stream is consumed
+ * by a DML statement that reads it, not by a plain SELECT.
  */
 public class StreamsTest extends BaseDatabaseTest {
 
-    private static final String CATALOG_ASSERTIONS =
-        "reads the stream's change records off the in-memory Stream model via engine.getCatalog(), "
-        + "which under SF_LIVE still points at the embedded engine — the CREATE STREAM and the DML "
-        + "went to Snowflake, so the embedded catalog holds neither the stream nor its records";
+    private long countOf(final String sql) {
+        return ((Number) engine.executeQuery(sql).getRows().get(0).getValue(0)).longValue();
+    }
 
     @Test
     public void testCreateStream() {
         engine.execute("CREATE TABLE users (id INTEGER, name VARCHAR, email VARCHAR)");
         engine.execute("CREATE STREAM user_stream ON TABLE users");
 
-        Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_ASSERTIONS);
-        Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
-        Stream stream = schema.getStream("user_stream");
-
-        assertNotNull(stream);
-        assertEquals("USER_STREAM", stream.getName().toUpperCase());
-        assertEquals("USERS", stream.getSourceTableName().toUpperCase());
-        assertEquals(StreamType.STANDARD, stream.getStreamType());
+        final ResultSet streams = engine.executeQuery("SHOW STREAMS LIKE 'user_stream'");
+        final Row stream = soleRowWhere(streams, "name", "USER_STREAM");
+        assertTrue(cell(streams, stream, "table_name").endsWith("USERS"),
+            cell(streams, stream, "table_name"));
+        assertEquals("Table", cell(streams, stream, "source_type"));
+        assertEquals("DEFAULT", cell(streams, stream, "mode"));
     }
 
     @Test
@@ -62,11 +54,8 @@ public class StreamsTest extends BaseDatabaseTest {
         engine.execute("CREATE TABLE users (id INTEGER, name VARCHAR)");
         engine.execute("CREATE STREAM user_stream ON TABLE users APPEND_ONLY = TRUE");
 
-        Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_ASSERTIONS);
-        Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
-        Stream stream = schema.getStream("user_stream");
-
-        assertEquals(StreamType.APPEND_ONLY, stream.getStreamType());
+        final ResultSet streams = engine.executeQuery("SHOW STREAMS LIKE 'user_stream'");
+        assertEquals("APPEND_ONLY", cell(streams, soleRowWhere(streams, "name", "USER_STREAM"), "mode"));
     }
 
     @Test
@@ -80,8 +69,7 @@ public class StreamsTest extends BaseDatabaseTest {
         engine.execute("CREATE SCHEMA other_schema");
         engine.execute("USE SCHEMA other_schema");
 
-        final ResultSet rs = engine.executeQuery("SELECT COUNT(*) AS c FROM test_schema.strm");
-        assertEquals(2L, ((Number) rs.getRows().get(0).getValue(0)).longValue());
+        assertEquals(2L, countOf("SELECT COUNT(*) AS c FROM test_schema.strm"));
     }
 
     @Test
@@ -93,8 +81,7 @@ public class StreamsTest extends BaseDatabaseTest {
         engine.execute("CREATE STREAM test_schema.strm ON TABLE test_schema.fact");
         engine.execute("INSERT INTO test_schema.fact VALUES (1), (2), (3)");
 
-        final ResultSet rs = engine.executeQuery("SELECT COUNT(*) AS c FROM IDENTIFIER('test_schema.strm')");
-        assertEquals(3L, ((Number) rs.getRows().get(0).getValue(0)).longValue());
+        assertEquals(3L, countOf("SELECT COUNT(*) AS c FROM IDENTIFIER('test_schema.strm')"));
     }
 
     @Test
@@ -102,15 +89,13 @@ public class StreamsTest extends BaseDatabaseTest {
         engine.execute("CREATE TABLE users (id INTEGER, name VARCHAR)");
         engine.execute("CREATE STREAM user_stream ON TABLE users");
 
-        Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_ASSERTIONS);
-        Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
-        Stream stream = schema.getStream("user_stream");
-
         engine.execute("INSERT INTO users VALUES (1, 'Alice'), (2, 'Bob')");
 
-        List<StreamRecord> records = stream.getUnconsumedRecords();
-        assertEquals(2, records.size());
-        assertEquals(ChangeType.INSERT, records.get(0).getChangeType());
+        final ResultSet delta = engine.executeQuery(
+            "SELECT id, METADATA$ACTION, METADATA$ISUPDATE FROM user_stream");
+        assertEquals(2, delta.getRowCount());
+        assertEquals(2, rowsWhere(delta, "METADATA$ACTION", "INSERT").size());
+        assertEquals(0, rowsWhere(delta, "METADATA$ISUPDATE", "true").size());
     }
 
     @Test
@@ -122,16 +107,15 @@ public class StreamsTest extends BaseDatabaseTest {
 
         engine.execute("UPDATE users SET age = 31 WHERE id = 1");
 
-        Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_ASSERTIONS);
-        Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
-        Stream stream = schema.getStream("user_stream");
-
-        List<StreamRecord> records = stream.getUnconsumedRecords();
-        assertEquals(2, records.size());
-        assertEquals(ChangeType.DELETE, records.get(0).getChangeType());
-        assertEquals(ChangeType.INSERT, records.get(1).getChangeType());
-        assertTrue(records.get(0).isUpdate());
-        assertTrue(records.get(1).isUpdate());
+        // An UPDATE reads as a DELETE of the old image plus an INSERT of the new one, both flagged
+        // METADATA$ISUPDATE.
+        final ResultSet delta = engine.executeQuery(
+            "SELECT id, METADATA$ACTION, METADATA$ISUPDATE FROM user_stream");
+        assertEquals(2, delta.getRowCount());
+        final Row deleted = soleRowWhere(delta, "METADATA$ACTION", "DELETE");
+        final Row inserted = soleRowWhere(delta, "METADATA$ACTION", "INSERT");
+        assertEquals("true", cell(delta, deleted, "METADATA$ISUPDATE"));
+        assertEquals("true", cell(delta, inserted, "METADATA$ISUPDATE"));
     }
 
     @Test
@@ -143,13 +127,10 @@ public class StreamsTest extends BaseDatabaseTest {
 
         engine.execute("DELETE FROM users WHERE id = 1");
 
-        Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_ASSERTIONS);
-        Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
-        Stream stream = schema.getStream("user_stream");
-
-        List<StreamRecord> records = stream.getUnconsumedRecords();
-        assertEquals(1, records.size());
-        assertEquals(ChangeType.DELETE, records.get(0).getChangeType());
+        final ResultSet delta = engine.executeQuery(
+            "SELECT id, METADATA$ACTION, METADATA$ISUPDATE FROM user_stream");
+        assertEquals(1, delta.getRowCount());
+        soleRowWhere(delta, "METADATA$ACTION", "DELETE");
     }
 
     @Test
@@ -161,31 +142,28 @@ public class StreamsTest extends BaseDatabaseTest {
         engine.execute("UPDATE users SET name = 'Alicia' WHERE id = 1");
         engine.execute("DELETE FROM users WHERE id = 1");
 
-        Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_ASSERTIONS);
-        Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
-        Stream stream = schema.getStream("user_stream");
-
-        List<StreamRecord> records = stream.getUnconsumedRecords();
-        assertEquals(1, records.size());
-        assertEquals(ChangeType.INSERT, records.get(0).getChangeType());
+        final ResultSet delta = engine.executeQuery(
+            "SELECT id, METADATA$ACTION, METADATA$ISUPDATE FROM user_stream");
+        assertEquals(1, delta.getRowCount());
+        soleRowWhere(delta, "METADATA$ACTION", "INSERT");
     }
 
     @Test
     public void testStreamConsume() {
         engine.execute("CREATE TABLE users (id INTEGER, name VARCHAR)");
         engine.execute("CREATE STREAM user_stream ON TABLE users");
+        engine.execute("CREATE TABLE users_sink (id INTEGER, name VARCHAR)");
 
         engine.execute("INSERT INTO users VALUES (1, 'Alice')");
 
-        Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_ASSERTIONS);
-        Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
-        Stream stream = schema.getStream("user_stream");
+        assertEquals(1L, countOf("SELECT COUNT(*) FROM user_stream"));
 
-        assertEquals(1, stream.getUnconsumedCount());
+        // A DML statement reading the stream consumes it when its transaction commits; a plain
+        // SELECT never does.
+        engine.execute("INSERT INTO users_sink SELECT id, name FROM user_stream");
 
-        stream.consume();
-
-        assertEquals(0, stream.getUnconsumedCount());
+        assertEquals(0L, countOf("SELECT COUNT(*) FROM user_stream"));
+        assertEquals(1L, countOf("SELECT COUNT(*) FROM users_sink"));
     }
 
     @Test
@@ -194,12 +172,7 @@ public class StreamsTest extends BaseDatabaseTest {
         engine.execute("CREATE STREAM user_stream ON TABLE users");
         engine.execute("DROP STREAM user_stream");
 
-        Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_ASSERTIONS);
-        Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
-
-        assertThrows(RuntimeException.class, () -> {
-            schema.getStream("user_stream");
-        });
+        assertEquals(0, engine.executeQuery("SHOW STREAMS LIKE 'user_stream'").getRowCount());
     }
 
     @Test
@@ -209,11 +182,7 @@ public class StreamsTest extends BaseDatabaseTest {
 
         engine.execute("INSERT INTO orders VALUES (1, 100, 'pending'), (2, 200, 'completed')");
 
-        Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_ASSERTIONS);
-        Schema schema = engine.getCatalog().getDatabase("test_db").getSchema("test_schema");
-        Stream stream = schema.getStream("order_stream");
-
-        assertEquals(2, stream.getUnconsumedCount());
+        assertEquals(2L, countOf("SELECT COUNT(*) FROM order_stream"));
     }
 
     @Test
@@ -247,9 +216,7 @@ public class StreamsTest extends BaseDatabaseTest {
         assertEquals(1, viaId.getRowCount());
 
         // The cloned stream preserved its VIEW source type.
-        Assumptions.assumeFalse(isLiveSnowflake(), CATALOG_ASSERTIONS);
-        final Stream cloned = engine.getCatalog().getDatabase("clonedst").getSchema("bt").getStream("s_and_delete");
-        assertNotNull(cloned);
-        assertEquals(StreamSourceType.VIEW, cloned.getSourceType());
+        final ResultSet streams = engine.executeQuery("SHOW STREAMS IN SCHEMA bt");
+        assertEquals("View", cell(streams, soleRowWhere(streams, "name", "S_AND_DELETE"), "source_type"));
     }
 }

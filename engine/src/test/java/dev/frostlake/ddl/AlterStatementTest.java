@@ -16,45 +16,38 @@
 
 package dev.frostlake.ddl;
 
-import dev.frostlake.DatabaseEngine;
+import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.Row;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Test ALTER statements for various Snowflake objects
  */
-public class AlterStatementTest {
+public class AlterStatementTest extends BaseDatabaseTest {
 
-    private DatabaseEngine engine;
-
-    @BeforeEach
-    public void setup() {
-        engine = new DatabaseEngine();
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
-        engine.execute("CREATE SCHEMA test_schema");
-        engine.execute("USE SCHEMA test_schema");
-    }
-
-    @AfterEach
-    public void teardown() {
-        if (engine != null) {
-            engine.shutdown();
-        }
-    }
+    /**
+     * Why several tests below stop at the live switch: they assert on the CATALOG MODEL (or set the
+     * session role through the security manager), and that model is the EMBEDDED metastore even during
+     * a live run — the object they look for was created on the account. Such a test cannot compare the
+     * two sides; running it live would only ever report the embedded engine back to itself.
+     */
 
     @Test
     public void testAlterDatabaseRename() {
         engine.execute("CREATE DATABASE old_db");
         engine.execute("ALTER DATABASE old_db RENAME TO new_db");
 
-        ResultSet rs = engine.executeQuery("SHOW DATABASES");
+        final ResultSet rs = engine.executeQuery("SHOW DATABASES");
         assertTrue(containsValue(rs, "new_db"), "Database should be renamed to new_db");
         assertFalse(containsValue(rs, "old_db"), "Old database name should not exist");
     }
@@ -63,7 +56,7 @@ public class AlterStatementTest {
     public void testAlterDatabaseSetComment() {
         engine.execute("ALTER DATABASE test_db SET COMMENT = 'Test database comment'");
 
-        ResultSet rs = engine.executeQuery("SHOW DATABASES");
+        final ResultSet rs = engine.executeQuery("SHOW DATABASES");
         // Note: Comment validation would require DESCRIBE DATABASE
         assertTrue(rs.getRowCount() > 0, "Database should exist");
     }
@@ -73,7 +66,7 @@ public class AlterStatementTest {
         engine.execute("CREATE SCHEMA old_schema");
         engine.execute("ALTER SCHEMA old_schema RENAME TO new_schema");
 
-        ResultSet rs = engine.executeQuery("SHOW SCHEMAS");
+        final ResultSet rs = engine.executeQuery("SHOW SCHEMAS");
         assertTrue(containsValue(rs, "new_schema"), "Schema should be renamed to new_schema");
         assertFalse(containsValue(rs, "old_schema"), "Old schema name should not exist");
     }
@@ -82,7 +75,7 @@ public class AlterStatementTest {
     public void testAlterSchemaSetComment() {
         engine.execute("ALTER SCHEMA test_schema SET COMMENT = 'Test schema comment'");
 
-        ResultSet rs = engine.executeQuery("SHOW SCHEMAS");
+        final ResultSet rs = engine.executeQuery("SHOW SCHEMAS");
         assertTrue(rs.getRowCount() > 0, "Schema should exist");
     }
 
@@ -91,7 +84,7 @@ public class AlterStatementTest {
         engine.execute("CREATE TABLE old_table (id INT, name VARCHAR)");
         engine.execute("ALTER TABLE old_table RENAME TO new_table");
 
-        ResultSet rs = engine.executeQuery("SHOW TABLES");
+        final ResultSet rs = engine.executeQuery("SHOW TABLES");
         assertTrue(containsValue(rs, "new_table"), "Table should be renamed to new_table");
         assertFalse(containsValue(rs, "old_table"), "Old table name should not exist");
     }
@@ -102,7 +95,7 @@ public class AlterStatementTest {
         engine.execute("ALTER TABLE users ADD COLUMN email VARCHAR");
 
         engine.execute("INSERT INTO users VALUES (1, 'Alice', 'alice@example.com')");
-        ResultSet rs = engine.executeQuery("SELECT * FROM users");
+        final ResultSet rs = engine.executeQuery("SELECT * FROM users");
 
         assertEquals(3, rs.getColumnCount(), "Table should have 3 columns after ADD COLUMN");
         assertEquals("EMAIL", rs.getColumns().get(2).getName().toUpperCase(),
@@ -115,7 +108,7 @@ public class AlterStatementTest {
         engine.execute("INSERT INTO users VALUES (1, 'Alice', 'alice@example.com')");
         engine.execute("ALTER TABLE users DROP COLUMN email");
 
-        ResultSet rs = engine.executeQuery("SELECT * FROM users");
+        final ResultSet rs = engine.executeQuery("SELECT * FROM users");
         assertEquals(2, rs.getColumnCount(), "Table should have 2 columns after DROP COLUMN");
 
         // Verify the remaining columns are correct
@@ -129,7 +122,7 @@ public class AlterStatementTest {
         engine.execute("INSERT INTO users VALUES (1, 'Alice')");
         engine.execute("ALTER TABLE users RENAME COLUMN name TO full_name");
 
-        ResultSet rs = engine.executeQuery("SELECT * FROM users");
+        final ResultSet rs = engine.executeQuery("SELECT * FROM users");
         assertEquals("FULL_NAME", rs.getColumns().get(1).getName().toUpperCase(),
                      "Column should be renamed to full_name");
 
@@ -143,7 +136,7 @@ public class AlterStatementTest {
         engine.execute("CREATE TABLE users (id INT, name VARCHAR)");
         engine.execute("ALTER TABLE users SET COMMENT = 'User data table'");
 
-        ResultSet rs = engine.executeQuery("SHOW TABLES");
+        final ResultSet rs = engine.executeQuery("SHOW TABLES");
         assertTrue(rs.getRowCount() > 0, "Table should exist");
     }
 
@@ -153,7 +146,7 @@ public class AlterStatementTest {
         engine.execute("CREATE VIEW old_view AS SELECT * FROM users");
         engine.execute("ALTER VIEW old_view RENAME TO new_view");
 
-        ResultSet rs = engine.executeQuery("SHOW VIEWS");
+        final ResultSet rs = engine.executeQuery("SHOW VIEWS");
         assertTrue(containsValue(rs, "new_view"), "View should be renamed to new_view");
         assertFalse(containsValue(rs, "old_view"), "Old view name should not exist");
     }
@@ -164,7 +157,7 @@ public class AlterStatementTest {
         engine.execute("CREATE VIEW user_view AS SELECT * FROM users");
         engine.execute("ALTER VIEW user_view SET COMMENT = 'User view'");
 
-        ResultSet rs = engine.executeQuery("SHOW VIEWS");
+        final ResultSet rs = engine.executeQuery("SHOW VIEWS");
         assertTrue(rs.getRowCount() > 0, "View should exist");
     }
 
@@ -197,10 +190,10 @@ public class AlterStatementTest {
 
     @Test
     public void testAlterUserSetPassword() {
-        engine.execute("CREATE USER test_user PASSWORD = 'oldpass'");
-        engine.execute("ALTER USER test_user SET PASSWORD = 'newpass'");
+        engine.execute("CREATE USER test_user PASSWORD = 'Fl0stlake-Old-Passw0rd!'");
+        engine.execute("ALTER USER test_user SET PASSWORD = 'Fr0stlake-New-Passw0rd!'");
 
-        ResultSet rs = engine.executeQuery("SHOW USERS");
+        final ResultSet rs = engine.executeQuery("SHOW USERS");
         assertTrue(containsValue(rs, "test_user"), "User should exist");
     }
 
@@ -210,7 +203,7 @@ public class AlterStatementTest {
         engine.execute("CREATE USER test_user PASSWORD = 'pass123'");
         engine.execute("ALTER USER test_user SET DEFAULT_ROLE = test_role");
 
-        ResultSet rs = engine.executeQuery("SHOW USERS");
+        final ResultSet rs = engine.executeQuery("SHOW USERS");
         assertTrue(containsValue(rs, "test_user"), "User should exist");
     }
 
@@ -219,7 +212,7 @@ public class AlterStatementTest {
         engine.execute("CREATE USER test_user PASSWORD = 'pass123'");
         engine.execute("ALTER USER test_user SET COMMENT = 'Test user account'");
 
-        ResultSet rs = engine.executeQuery("SHOW USERS");
+        final ResultSet rs = engine.executeQuery("SHOW USERS");
         assertTrue(containsValue(rs, "test_user"), "User should exist");
     }
 
@@ -228,7 +221,7 @@ public class AlterStatementTest {
         engine.execute("CREATE ROLE old_role");
         engine.execute("ALTER ROLE old_role RENAME TO new_role");
 
-        ResultSet rs = engine.executeQuery("SHOW ROLES");
+        final ResultSet rs = engine.executeQuery("SHOW ROLES");
         assertTrue(containsValue(rs, "new_role"), "Role should be renamed to new_role");
         assertFalse(containsValue(rs, "old_role"), "Old role name should not exist");
     }
@@ -238,7 +231,7 @@ public class AlterStatementTest {
         engine.execute("CREATE ROLE test_role");
         engine.execute("ALTER ROLE test_role SET COMMENT = 'Test role'");
 
-        ResultSet rs = engine.executeQuery("SHOW ROLES");
+        final ResultSet rs = engine.executeQuery("SHOW ROLES");
         assertTrue(containsValue(rs, "test_role"), "Role should exist");
     }
 
@@ -247,7 +240,7 @@ public class AlterStatementTest {
         engine.execute("CREATE WAREHOUSE old_wh");
         engine.execute("ALTER WAREHOUSE old_wh RENAME TO new_wh");
 
-        ResultSet rs = engine.executeQuery("SHOW WAREHOUSES");
+        final ResultSet rs = engine.executeQuery("SHOW WAREHOUSES");
         assertTrue(containsValue(rs, "new_wh"), "Warehouse should be renamed to new_wh");
         assertFalse(containsValue(rs, "old_wh"), "Old warehouse name should not exist");
     }
@@ -257,7 +250,7 @@ public class AlterStatementTest {
         engine.execute("CREATE WAREHOUSE test_wh");
         engine.execute("ALTER WAREHOUSE test_wh SET COMMENT = 'Test warehouse'");
 
-        ResultSet rs = engine.executeQuery("SHOW WAREHOUSES");
+        final ResultSet rs = engine.executeQuery("SHOW WAREHOUSES");
         assertTrue(containsValue(rs, "test_wh"), "Warehouse should exist");
     }
 
@@ -266,7 +259,7 @@ public class AlterStatementTest {
         engine.execute("CREATE WAREHOUSE test_wh WITH WAREHOUSE_SIZE = 'SMALL'");
         engine.execute("ALTER WAREHOUSE test_wh SET WAREHOUSE_SIZE = 'LARGE'");
 
-        ResultSet rs = engine.executeQuery("SHOW WAREHOUSES");
+        final ResultSet rs = engine.executeQuery("SHOW WAREHOUSES");
         assertTrue(containsValue(rs, "test_wh"), "Warehouse should exist");
     }
 
@@ -275,7 +268,7 @@ public class AlterStatementTest {
         engine.execute("CREATE WAREHOUSE test_wh");
         engine.execute("ALTER WAREHOUSE test_wh SET AUTO_SUSPEND = 300");
 
-        ResultSet rs = engine.executeQuery("SHOW WAREHOUSES");
+        final ResultSet rs = engine.executeQuery("SHOW WAREHOUSES");
         assertTrue(containsValue(rs, "test_wh"), "Warehouse should exist");
     }
 
@@ -290,21 +283,25 @@ public class AlterStatementTest {
     public void testAlterDatabaseRenameUppercasesName() {
         engine.execute("CREATE DATABASE old_db2");
         engine.execute("ALTER DATABASE old_db2 RENAME TO new_db2");
-        assertEquals("NEW_DB2", engine.getCatalog().getDatabase("new_db2").getName());
+        // Exact-case cell: the lookup is case-insensitive, the STORED spelling must be upper.
+        final ResultSet dbs = engine.executeQuery("SHOW DATABASES LIKE 'new_db2'");
+        assertEquals("NEW_DB2", cell(dbs, soleRowWhere(dbs, "name", "new_db2"), "name"));
     }
 
     @Test
     public void testAlterUserRenameUppercasesName() {
         engine.execute("CREATE USER old_user2 PASSWORD = 'p'");
         engine.execute("ALTER USER old_user2 RENAME TO new_user2");
-        assertEquals("NEW_USER2", engine.getCatalog().getUser("new_user2").getName());
+        final ResultSet users = engine.executeQuery("SHOW USERS LIKE 'new_user2'");
+        assertEquals("NEW_USER2", cell(users, soleRowWhere(users, "name", "new_user2"), "name"));
     }
 
     @Test
     public void testAlterRoleRenameUppercasesName() {
         engine.execute("CREATE ROLE old_role2");
         engine.execute("ALTER ROLE old_role2 RENAME TO new_role2");
-        assertEquals("NEW_ROLE2", engine.getCatalog().getRole("new_role2").getName());
+        final ResultSet roles = engine.executeQuery("SHOW ROLES LIKE 'new_role2'");
+        assertEquals("NEW_ROLE2", cell(roles, soleRowWhere(roles, "name", "new_role2"), "name"));
     }
 
     @Test
@@ -312,11 +309,13 @@ public class AlterStatementTest {
         engine.execute("CREATE ROLE analyst_role");
         // CREATE USER ... DEFAULT_ROLE upper-cases the referenced role (roles are stored upper-cased).
         engine.execute("CREATE USER dr_user PASSWORD = 'p' DEFAULT_ROLE = analyst_role");
-        assertEquals("ANALYST_ROLE", engine.getCatalog().getUser("dr_user").getDefaultRole());
+        ResultSet users = engine.executeQuery("SHOW USERS LIKE 'dr_user'");
+        assertEquals("ANALYST_ROLE", cell(users, soleRowWhere(users, "name", "dr_user"), "default_role"));
         // ALTER USER ... SET DEFAULT_ROLE upper-cases it too, symmetric with CREATE.
         engine.execute("CREATE ROLE other_role");
         engine.execute("ALTER USER dr_user SET DEFAULT_ROLE = other_role");
-        assertEquals("OTHER_ROLE", engine.getCatalog().getUser("dr_user").getDefaultRole());
+        users = engine.executeQuery("SHOW USERS LIKE 'dr_user'");
+        assertEquals("OTHER_ROLE", cell(users, soleRowWhere(users, "name", "dr_user"), "default_role"));
     }
 
     @Test
@@ -325,23 +324,17 @@ public class AlterStatementTest {
         engine.execute("CREATE MATERIALIZED VIEW mv_old AS SELECT id, val FROM mv_src");
         engine.execute("ALTER MATERIALIZED VIEW mv_old RENAME TO mv_new");
 
-        final var schema = engine.getCatalog().getDatabase("TEST_DB").getSchema("TEST_SCHEMA");
-        // Re-keyed: findable by the new name (MV names are stored verbatim, so no upper-casing here)...
-        assertEquals("MV_NEW", schema.getMaterializedView("mv_new").getName());
-        // ...and no longer findable by the old name.
-        assertThrows(RuntimeException.class, new Executable() {
-            @Override
-            public void execute() {
-                schema.getMaterializedView("mv_old");
-            }
-        });
+        // Re-keyed: listed under the new name, gone under the old.
+        final ResultSet renamed = engine.executeQuery("SHOW MATERIALIZED VIEWS LIKE 'mv_new'");
+        assertEquals("MV_NEW", cell(renamed, soleRowWhere(renamed, "name", "mv_new"), "name"));
+        assertEquals(0, engine.executeQuery("SHOW MATERIALIZED VIEWS LIKE 'mv_old'").getRowCount());
     }
 
     @Test
     public void testShowSchemasIsCurrentCaseInsensitive() {
         // test_schema (set current in setup) is stored verbatim/lower-case while the current schema is
         // tracked upper-cased; SHOW SCHEMAS must still flag it is_current = Y (case-insensitive match).
-        ResultSet rs = engine.executeQuery("SHOW SCHEMAS");
+        final ResultSet rs = engine.executeQuery("SHOW SCHEMAS");
         boolean foundCurrent = false;
         while (rs.next()) {
             if ("test_schema".equalsIgnoreCase((String) rs.getValue("name"))) {
@@ -354,44 +347,46 @@ public class AlterStatementTest {
 
     @Test
     public void testGrantorTrackedFromSession() {
+        // A freshly created role is not granted to the shared live session's user, so USE ROLE of
+        // it refuses there; the grantor rule is asserted embedded.
+        Assumptions.assumeFalse(isLiveSnowflake(),
+            "USE ROLE of a just-created role needs a grant to the session user on a live account");
         engine.execute("CREATE ROLE granting_role");
         engine.execute("CREATE ROLE child_role");
         engine.execute("CREATE ROLE parent_role");
-        engine.getSecurityManager().getSessionContext().setCurrentRole("granting_role");
+        engine.execute("USE ROLE granting_role");
         engine.execute("GRANT ROLE child_role TO ROLE parent_role");
         // granted_by reflects the session's current role at GRANT time, not a hard-coded SYSADMIN.
+        final ResultSet grants = engine.executeQuery("SHOW GRANTS OF ROLE child_role");
         assertEquals("GRANTING_ROLE",
-            engine.getCatalog().getRole("PARENT_ROLE").getRoleGrantor("CHILD_ROLE"));
+            cell(grants, soleRowWhere(grants, "grantee_name", "PARENT_ROLE"), "granted_by"));
     }
 
     @Test
     public void testObjectOwnerStampedWithCreatingRole() {
+        // Same live precondition as the grantor test: the fresh role is not granted to the shared
+        // session's user, so USE ROLE refuses there.
+        Assumptions.assumeFalse(isLiveSnowflake(),
+            "USE ROLE of a just-created role needs a grant to the session user on a live account");
         engine.execute("CREATE ROLE data_owner");
-        engine.getSecurityManager().getSessionContext().setCurrentRole("data_owner");
+        engine.execute("USE ROLE data_owner");
         engine.execute("CREATE TABLE owned_tbl (id INTEGER)");
-        // The model object carries the creating role as owner...
+        // SHOW TABLES surfaces the creating role as owner (no longer a hard-coded SYSADMIN).
+        final ResultSet rs = engine.executeQuery("SHOW TABLES LIKE 'owned_tbl'");
         assertEquals("DATA_OWNER",
-            engine.getCatalog().getDatabase("TEST_DB").getSchema("TEST_SCHEMA").getTable("OWNED_TBL").getOwner());
-        // ...and SHOW TABLES surfaces it (no longer a hard-coded SYSADMIN).
-        ResultSet rs = engine.executeQuery("SHOW TABLES");
-        boolean found = false;
-        while (rs.next()) {
-            if ("owned_tbl".equalsIgnoreCase((String) rs.getValue("name"))) {
-                assertEquals("DATA_OWNER", rs.getValue("owner"), "table owner should be the creating role");
-                found = true;
-            }
-        }
-        assertTrue(found, "owned_tbl should appear in SHOW TABLES");
+            cell(rs, soleRowWhere(rs, "name", "owned_tbl"), "owner"),
+            "table owner should be the creating role");
     }
 
     @Test
     public void testAlterColumnSetDefaultIsRestrictedToSequences() {
-        // Live-Snowflake verified: only a SEQUENCE default may be set after creation; a literal
-        // default raises "Unsupported feature 'Alter Column Set Default'". DROP DEFAULT still works
-        // against a CREATE-time default.
+        // ALTER COLUMN SET DEFAULT is refused in almost every shape. The only accepted one is
+        // re-pointing a column that ALREADY has a sequence default at a sequence; adding a sequence
+        // default where there was none, and any literal default at all, both raise
+        // "Unsupported feature 'Alter Column Set Default'." DROP DEFAULT is unrestricted.
         engine.execute("CREATE TABLE def_tbl (id INT, region VARCHAR(50) NOT NULL DEFAULT 'EU')");
         engine.execute("INSERT INTO def_tbl(id) VALUES (1)");
-        ResultSet rs = engine.executeQuery("SELECT region FROM def_tbl");
+        final ResultSet rs = engine.executeQuery("SELECT region FROM def_tbl");
         assertEquals("EU", rs.getRows().get(0).getValue(0));
 
         assertThrows(RuntimeException.class, new Executable() {
@@ -401,8 +396,19 @@ public class AlterStatementTest {
             }
         });
 
+        // The ONE accepted shape: a column that ALREADY carries a sequence default may be re-pointed
+        // at a sequence — even a different one. Adding a sequence default to a column that has none
+        // is refused just like a literal, which is what this test used to do on `id`.
         engine.execute("CREATE SEQUENCE def_seq");
-        engine.execute("ALTER TABLE def_tbl ALTER COLUMN id SET DEFAULT def_seq.NEXTVAL");
+        engine.execute("CREATE SEQUENCE def_seq2");
+        assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.execute("ALTER TABLE def_tbl ALTER COLUMN id SET DEFAULT def_seq.NEXTVAL");
+            }
+        });
+        engine.execute("CREATE TABLE seq_tbl (id NUMBER DEFAULT def_seq.NEXTVAL, txt VARCHAR)");
+        engine.execute("ALTER TABLE seq_tbl ALTER COLUMN id SET DEFAULT def_seq2.NEXTVAL");
 
         engine.execute("ALTER TABLE def_tbl ALTER COLUMN region DROP DEFAULT");
         assertThrows(RuntimeException.class, new Executable() {
@@ -415,14 +421,18 @@ public class AlterStatementTest {
 
     @Test
     public void testShowRolesIsCurrentReflectsSession() {
+        // Same live precondition as the grantor test: the fresh role is not granted to the shared
+        // session's user, so USE ROLE refuses there.
+        Assumptions.assumeFalse(isLiveSnowflake(),
+            "USE ROLE of a just-created role needs a grant to the session user on a live account");
         // is_current must track the session's current role, not a hard-coded SYSADMIN.
         engine.execute("CREATE ROLE my_show_role");
-        engine.getSecurityManager().getSessionContext().setCurrentRole("my_show_role");
-        ResultSet rs = engine.executeQuery("SHOW ROLES");
+        engine.execute("USE ROLE my_show_role");
+        final ResultSet rs = engine.executeQuery("SHOW ROLES");
         boolean checkedCurrent = false;
         boolean checkedSysadmin = false;
         while (rs.next()) {
-            String name = (String) rs.getValue("name");
+            final String name = (String) rs.getValue("name");
             if ("MY_SHOW_ROLE".equals(name)) {
                 assertEquals("Y", rs.getValue("is_current"), "switched-to role should be is_current=Y");
                 checkedCurrent = true;
@@ -441,7 +451,7 @@ public class AlterStatementTest {
         try { nameIdx = rs.getColumnIndex("name"); } catch (final Exception ignored) {}
         while (rs.next()) {
             for (int i = 0; i < rs.getColumns().size(); i++) {
-                Object colValue = rs.getValue(i);
+                final Object colValue = rs.getValue(i);
                 if (colValue != null && colValue.toString().equalsIgnoreCase(value)) {
                     return true;
                 }

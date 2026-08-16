@@ -96,6 +96,8 @@ public class NormalizeFn extends TextArgumentFunction {
         return text.endsWith(".0") ? text.substring(0, text.length() - 2) : text;
     }
 
-    @Override public int getMinArgCount() { return 3; }
-    @Override public int getMaxArgCount() { return 3; }
+    @Override
+    public int getMinArgCount() { return 3; }
+    @Override
+    public int getMaxArgCount() { return 3; }
 }

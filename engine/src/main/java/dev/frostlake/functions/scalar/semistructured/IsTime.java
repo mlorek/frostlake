@@ -30,6 +30,8 @@ public class IsTime extends StructuredArgumentFunction {
         return args.get(0) == null ? null : args.get(0) instanceof LocalTime;
     }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return 1; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return 1; }
 }

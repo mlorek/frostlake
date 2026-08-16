@@ -21,13 +21,22 @@ import dev.frostlake.types.StringType;
 
 import java.util.List;
 
-/** CURRENT_STATEMENT() — the executing statement text (not tracked; NULL). */
+/** CURRENT_STATEMENT() — the text of the statement being executed, from the session. */
 public class CurrentStatement extends BuiltInFunction {
-    public CurrentStatement() { super("CURRENT_STATEMENT", StringType.VARCHAR); }
+    private final dev.frostlake.security.SessionContext sessionContext;
+
+    public CurrentStatement(final dev.frostlake.security.SessionContext sessionContext) {
+        super("CURRENT_STATEMENT", StringType.VARCHAR);
+        this.sessionContext = sessionContext;
+    }
 
     @Override
-    public Object evaluate(final List<Object> args) { return null; }
+    public Object evaluate(final List<Object> args) {
+        return sessionContext != null ? sessionContext.getCurrentStatement() : null;
+    }
 
-    @Override public int getMinArgCount() { return 0; }
-    @Override public int getMaxArgCount() { return 0; }
+    @Override
+    public int getMinArgCount() { return 0; }
+    @Override
+    public int getMaxArgCount() { return 0; }
 }

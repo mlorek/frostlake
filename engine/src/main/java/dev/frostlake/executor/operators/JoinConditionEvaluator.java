@@ -20,7 +20,7 @@ import dev.frostlake.storage.Row;
 
 /**
  * Interface for evaluating join conditions on pairs of rows.
- * Replaces BiFunction<Row, Row, Boolean>.
+ * Replaces {@code BiFunction<Row, Row, Boolean>}.
  */
 public interface JoinConditionEvaluator {
     /**

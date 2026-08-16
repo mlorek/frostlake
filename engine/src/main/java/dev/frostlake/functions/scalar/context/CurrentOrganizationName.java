@@ -43,6 +43,8 @@ public class CurrentOrganizationName extends BuiltInFunction {
     @Override
     public Object evaluate(final List<Object> args) { return config.getOrganizationName(); }
 
-    @Override public int getMinArgCount() { return 0; }
-    @Override public int getMaxArgCount() { return 0; }
+    @Override
+    public int getMinArgCount() { return 0; }
+    @Override
+    public int getMaxArgCount() { return 0; }
 }

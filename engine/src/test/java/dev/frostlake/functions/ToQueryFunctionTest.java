@@ -21,8 +21,10 @@ import dev.frostlake.storage.ResultSet;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /**
  * TO_QUERY table function — {@code SELECT * FROM TABLE(TO_QUERY('<sql>'))} compiles the text into a
@@ -63,6 +65,56 @@ public class ToQueryFunctionTest extends BaseDatabaseTest {
             "SELECT s FROM TABLE(TO_QUERY('SELECT s FROM tq WHERE x = :v', v => '2'))");
         assertEquals(1, rs.getRowCount());
         assertEquals("b", String.valueOf(rs.getRows().get(0).getValue(0)));
+    }
+
+    /**
+     * The query text's parameter is named <b>SQL</b>. Frostlake called it INPUT, so it ran a spelling
+     * no account accepts and refused the one every account does — the two-sided version of accepting
+     * SQL that Snowflake rejects.
+     */
+    @Test
+    public void theQueryTextParameterIsNamedSql() {
+        final ResultSet rs = engine.executeQuery(
+            "SELECT * FROM TABLE(TO_QUERY(SQL => 'SELECT s FROM tq WHERE x = 2'))");
+        assertEquals(1, rs.getRowCount());
+        assertEquals("b", String.valueOf(rs.getRows().get(0).getValue(0)));
+
+        // and it composes with the binds
+        final ResultSet bound = engine.executeQuery(
+            "SELECT s FROM TABLE(TO_QUERY(SQL => 'SELECT s FROM tq WHERE x = :v', v => '3'))");
+        assertEquals("c", String.valueOf(bound.getRows().get(0).getValue(0)));
+
+        assertEquals("SQL compilation error: error line 1 at position 20\n"
+            + "missing required argument [SQL] for function [TO_QUERY]",
+            messageOf("SELECT * FROM TABLE(TO_QUERY(INPUT => 'SELECT 1 AS n'))"));
+        assertEquals("SQL compilation error: error line 1 at position 20\n"
+            + "not enough arguments for function [TO_QUERY], expected 1, got 0",
+            messageOf("SELECT * FROM TABLE(TO_QUERY())"));
+    }
+
+    /**
+     * SYSTEM$USER_TASK_CANCEL_ONGOING_EXECUTIONS is a SCALAR function — it answers a status sentence
+     * in a select list, and wrapping it in {@code TABLE(…)} is refused. Frostlake ran it either way.
+     */
+    @Test
+    public void theTaskCancelSystemFunctionIsNotATableFunction() {
+        assertEquals("SQL compilation error:\n"
+            + "Unknown table function SYSTEM$USER_TASK_CANCEL_ONGOING_EXECUTIONS",
+            messageOf("SELECT * FROM TABLE(SYSTEM$USER_TASK_CANCEL_ONGOING_EXECUTIONS('nosuch'))"));
+    }
+
+    private String messageOf(final String sql) {
+        final RuntimeException thrown = assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.executeQuery(sql);
+            }
+        }, "Snowflake refuses this statement: " + sql);
+        Throwable root = thrown;
+        while (root.getCause() != null) {
+            root = root.getCause();
+        }
+        return String.valueOf(root.getMessage());
     }
 
     @Test

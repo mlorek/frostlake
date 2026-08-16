@@ -50,7 +50,7 @@ final class SubqueryEvaluator {
             throw new RuntimeException("Cannot evaluate EXISTS: QueryExecutor not available");
         }
 
-        List<ResultSet> results = executeSubquery(subquery);
+        final List<ResultSet> results = executeSubquery(subquery);
 
         if (results.isEmpty()) {
             return false;
@@ -65,13 +65,13 @@ final class SubqueryEvaluator {
             throw new RuntimeException("Cannot evaluate subquery: QueryExecutor not available");
         }
 
-        List<ResultSet> results = executeSubquery(subquery);
+        final List<ResultSet> results = executeSubquery(subquery);
 
         if (results.isEmpty() || results.get(0).getRowCount() == 0) {
             return null;
         }
 
-        ResultSet resultSet = results.get(0);
+        final ResultSet resultSet = results.get(0);
         if (resultSet.getRowCount() > 1) {
             throw new RuntimeException("Scalar subquery returned more than one row");
         }
@@ -85,13 +85,25 @@ final class SubqueryEvaluator {
             throw new RuntimeException("Cannot evaluate IN subquery: QueryExecutor not available");
         }
 
-        List<ResultSet> results = executeSubquery(subquery);
+        final List<ResultSet> results = executeSubquery(subquery);
 
         if (results.isEmpty()) {
             return not;
         }
 
-        ResultSet resultSet = results.get(0);
+        final ResultSet resultSet = results.get(0);
+
+        // Three-valued logic (live-verified), mirroring the literal-list IN in
+        // ExpressionEvaluatorVisitor.visitIn: a NULL probe is UNKNOWN even over an EMPTY subquery
+        // (the probe short-circuits before membership is considered); a non-NULL probe over an
+        // empty subquery is FALSE for IN / TRUE for NOT IN; and a miss over a set that contains a
+        // NULL member is UNKNOWN for both.
+        if (value == null) {
+            return null;
+        }
+        if (resultSet.getRowCount() == 0) {
+            return not;
+        }
 
         final SubqueryMemo subqueryMemo = visitor.getSubqueryMemo();
         // Uncorrelated subquery (result cached, identical for every outer row): build a membership
@@ -102,18 +114,26 @@ final class SubqueryEvaluator {
                 set = PreparedInSet.build(resultSet.getRows());
                 subqueryMemo.recordInSet(subquery, set);
             }
-            return set.contains(value) ? !not : not;
+            if (set.contains(value)) {
+                return !not;
+            }
+            return set.hasNull() ? null : not;
         }
 
         // Correlated (or no memo): linear scan with early exit (result differs per outer row).
+        boolean anyNull = false;
         for (final Row subRow : resultSet.getRows()) {
-            Object subValue = subRow.getValue(0);
+            final Object subValue = subRow.getValue(0);
+            if (subValue == null) {
+                anyNull = true;
+                continue;
+            }
             if (ExpressionArithmetic.equals(value, subValue)) {
                 return !not;
             }
         }
 
-        return not;
+        return anyNull ? null : not;
     }
 
     /**
@@ -126,18 +146,18 @@ final class SubqueryEvaluator {
     List<ResultSet> executeSubquery(final String subquery) {
         final SubqueryMemo subqueryMemo = visitor.getSubqueryMemo();
         if (subqueryMemo != null) {
-            List<ResultSet> cached = subqueryMemo.cachedResult(subquery);
+            final List<ResultSet> cached = subqueryMemo.cachedResult(subquery);
             if (cached != null) {
                 return cached;
             }
         }
         final QueryExecutor queryExecutor = visitor.getQueryExecutor();
-        Map<String, Object> context = buildLateralContext();
+        final Map<String, Object> context = buildLateralContext();
         if (subqueryMemo == null || subqueryMemo.isCorrelated(subquery)) {
             return queryExecutor.executeWithLateralContext(subquery, context);
         }
-        long before = visitor.lateralReadCount();
-        List<ResultSet> results = queryExecutor.executeWithLateralContext(subquery, context);
+        final long before = visitor.lateralReadCount();
+        final List<ResultSet> results = queryExecutor.executeWithLateralContext(subquery, context);
         if (visitor.lateralReadCount() == before) {
             subqueryMemo.recordUncorrelated(subquery, results);
         } else {
@@ -147,7 +167,7 @@ final class SubqueryEvaluator {
     }
 
     private Map<String, Object> buildLateralContext() {
-        Map<String, Object> context = new HashMap<>();
+        final Map<String, Object> context = new HashMap<>();
 
         final Map<String, Object> lateralContext = visitor.getLateralContext();
         if (lateralContext != null) {
@@ -157,10 +177,10 @@ final class SubqueryEvaluator {
         final Table table = visitor.getTable();
         final Row row = visitor.getRow();
         if (table != null && row != null) {
-            List<TableColumn> columns = table.getColumns();
+            final List<TableColumn> columns = table.getColumns();
             for (int i = 0; i < columns.size(); i++) {
-                String colName = columns.get(i).getName();
-                Object value = row.getValue(i);
+                final String colName = columns.get(i).getName();
+                final Object value = row.getValue(i);
                 context.put(table.getName() + "." + colName, value);
                 context.put(table.getName().toUpperCase() + "." + colName.toUpperCase(), value);
                 // BARE names too: a correlated subquery may reference an outer column unqualified —

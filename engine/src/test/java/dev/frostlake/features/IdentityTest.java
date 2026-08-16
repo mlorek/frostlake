@@ -16,148 +16,131 @@
 
 package dev.frostlake.features;
 
-import dev.frostlake.DatabaseEngine;
-import dev.frostlake.metastore.model.Table;
-import dev.frostlake.metastore.model.TableColumn;
+import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
-import org.junit.jupiter.api.AfterAll;
-import org.junit.jupiter.api.BeforeAll;
-import org.junit.jupiter.api.MethodOrderer;
-import org.junit.jupiter.api.Order;
+import dev.frostlake.storage.Row;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.TestInstance;
-import org.junit.jupiter.api.TestMethodOrder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import java.util.Arrays;
+import java.util.HashSet;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Tests for IDENTITY column functionality (auto-increment with custom start/increment)
+ * IDENTITY column functionality (auto-increment with custom start/increment), asserted through
+ * the SQL surface — the {@code DESCRIBE TABLE} default cell spells the generator
+ * ({@code IDENTITY START n INCREMENT m}) and the generated values are read back with ordered
+ * queries — so every check runs against whichever engine executed the DDL/DML, embedded or live.
+ *
+ * <p>Snowflake guarantees identity values are unique and ascending, NOT that they are gap-free:
+ * separate INSERT statements may draw from a fresh range (live-measured: single-row inserts read
+ * 1, 2 and the next statement jumped to 101). Exact values are therefore asserted only WITHIN one
+ * multi-row INSERT, which is contiguous; across statements the tests assert order and the seed.
  */
-@TestInstance(TestInstance.Lifecycle.PER_CLASS)
-@TestMethodOrder(MethodOrderer.OrderAnnotation.class)
-public class IdentityTest {
+public class IdentityTest extends BaseDatabaseTest {
     private static final Logger logger = LoggerFactory.getLogger(IdentityTest.class);
 
-    private DatabaseEngine engine;
-
-    @BeforeAll
-    public void setUp() {
-        engine = new DatabaseEngine();
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
-        logger.info("DatabaseEngine initialized for IDENTITY tests");
-    }
-
-    @AfterAll
-    public void tearDown() {
-        if (engine != null) {
-            engine.shutdown();
+    /** Asserts every generated id is distinct and ascending — all Snowflake guarantees. */
+    private void assertAscendingDistinct(final ResultSet rs) {
+        long previous = Long.MIN_VALUE;
+        for (final Row row : rs.getRows()) {
+            final long id = Long.parseLong(cell(rs, row, "ID"));
+            assertTrue(id > previous, "identity values must ascend, saw " + id + " after " + previous);
+            previous = id;
         }
     }
 
+    /** Asserts the column's DESCRIBE default cell spells this identity generator. */
+    private void assertIdentity(final String table, final String column, final long start, final long increment) {
+        final String cellText = describeCell(table, column, "default");
+        assertNotNull(cellText, column + " should carry an identity default");
+        assertTrue(cellText.contains("IDENTITY START " + start + " INCREMENT " + increment),
+            column + "'s default cell reads: " + cellText);
+    }
+
     @Test
-    @Order(1)
     public void testSimpleIdentity() {
         logger.info("Testing simple IDENTITY");
         engine.execute("CREATE TABLE test_identity (id INTEGER IDENTITY, name VARCHAR)");
 
-        Table table = engine.getCatalog().resolveTable("TEST_IDENTITY");
-        assertNotNull(table);
-
-        TableColumn idCol = table.getColumn("id");
-        assertTrue(idCol.isAutoIncrement());
-        assertEquals(1, idCol.getIdentityStart());
-        assertEquals(1, idCol.getIdentityIncrement());
+        assertIdentity("test_identity", "ID", 1, 1);
     }
 
     @Test
-    @Order(2)
     public void testIdentityWithStartAndIncrement() {
         logger.info("Testing IDENTITY with custom start and increment");
         engine.execute("CREATE TABLE test_identity_custom (id INTEGER IDENTITY(100, 5), name VARCHAR)");
 
-        Table table = engine.getCatalog().resolveTable("TEST_IDENTITY_CUSTOM");
-        assertNotNull(table);
-
-        TableColumn idCol = table.getColumn("id");
-        assertTrue(idCol.isAutoIncrement());
-        assertEquals(100, idCol.getIdentityStart());
-        assertEquals(5, idCol.getIdentityIncrement());
+        assertIdentity("test_identity_custom", "ID", 100, 5);
     }
 
     @Test
-    @Order(3)
     public void testIdentityAutoInsert() {
         logger.info("Testing IDENTITY auto-generates values on INSERT");
+        engine.execute("CREATE TABLE test_identity (id INTEGER IDENTITY, name VARCHAR)");
         engine.execute("INSERT INTO test_identity (name) VALUES ('Alice')");
         engine.execute("INSERT INTO test_identity (name) VALUES ('Bob')");
         engine.execute("INSERT INTO test_identity (name) VALUES ('Charlie')");
 
-        ResultSet rs = engine.executeQuery("SELECT * FROM test_identity ORDER BY id");
+        final ResultSet rs = engine.executeQuery("SELECT * FROM test_identity ORDER BY id");
         assertNotNull(rs);
         assertEquals(3, rs.getRowCount());
 
-        // Check that IDs are 1, 2, 3
-        assertEquals(1L, rs.getRows().get(0).getValue(0));
-        assertEquals("Alice", rs.getRows().get(0).getValue(1));
-
-        assertEquals(2L, rs.getRows().get(1).getValue(0));
-        assertEquals("Bob", rs.getRows().get(1).getValue(1));
-
-        assertEquals(3L, rs.getRows().get(2).getValue(0));
-        assertEquals("Charlie", rs.getRows().get(2).getValue(1));
+        // The seed is exact, so the first row is pinned — but identity values across LATER
+        // single-row INSERTs are only unique and ascending-per-statement, not statement-ordered
+        // (a real account can give the third INSERT a smaller value than the second), so the
+        // remaining names are asserted as a set, not by position.
+        assertEquals("1", cell(rs, rs.getRows().get(0), "ID"));
+        assertEquals("Alice", cell(rs, rs.getRows().get(0), "NAME"));
+        final Set<String> laterNames = new HashSet<String>();
+        laterNames.add(cell(rs, rs.getRows().get(1), "NAME"));
+        laterNames.add(cell(rs, rs.getRows().get(2), "NAME"));
+        assertEquals(new HashSet<String>(Arrays.asList("Bob", "Charlie")), laterNames);
+        assertAscendingDistinct(rs);
     }
 
     @Test
-    @Order(4)
     public void testIdentityCustomAutoInsert() {
         logger.info("Testing IDENTITY with custom start/increment auto-generates values");
+        engine.execute("CREATE TABLE test_identity_custom (id INTEGER IDENTITY(100, 5), name VARCHAR)");
         engine.execute("INSERT INTO test_identity_custom (name) VALUES ('Alice')");
         engine.execute("INSERT INTO test_identity_custom (name) VALUES ('Bob')");
         engine.execute("INSERT INTO test_identity_custom (name) VALUES ('Charlie')");
 
-        ResultSet rs = engine.executeQuery("SELECT * FROM test_identity_custom ORDER BY id");
+        final ResultSet rs = engine.executeQuery("SELECT * FROM test_identity_custom ORDER BY id");
         assertNotNull(rs);
         assertEquals(3, rs.getRowCount());
 
-        // Check that IDs are 100, 105, 110
-        assertEquals(100L, rs.getRows().get(0).getValue(0));
-        assertEquals("Alice", rs.getRows().get(0).getValue(1));
-
-        assertEquals(105L, rs.getRows().get(1).getValue(0));
-        assertEquals("Bob", rs.getRows().get(1).getValue(1));
-
-        assertEquals(110L, rs.getRows().get(2).getValue(0));
-        assertEquals("Charlie", rs.getRows().get(2).getValue(1));
+        assertEquals("100", cell(rs, rs.getRows().get(0), "ID"));
+        assertAscendingDistinct(rs);
     }
 
     @Test
-    @Order(5)
     public void testIdentityWithExplicitValue() {
         logger.info("Testing IDENTITY with explicit value insertion");
         engine.execute("CREATE TABLE test_identity_explicit (id INTEGER IDENTITY, name VARCHAR)");
         engine.execute("INSERT INTO test_identity_explicit (id, name) VALUES (50, 'Explicit')");
         engine.execute("INSERT INTO test_identity_explicit (name) VALUES ('Auto')");
 
-        ResultSet rs = engine.executeQuery("SELECT * FROM test_identity_explicit ORDER BY id");
+        final ResultSet rs = engine.executeQuery("SELECT * FROM test_identity_explicit ORDER BY id");
         assertNotNull(rs);
         assertEquals(2, rs.getRowCount());
 
-        // ORDER BY id sorts 1 before 50
-        // Auto-increment should continue from 1 (not affected by explicit value)
-        assertEquals(1L, rs.getRows().get(0).getValue(0));
-        assertEquals("Auto", rs.getRows().get(0).getValue(1));
+        // ORDER BY id sorts the generated 1 before the explicit 50: the generator is not advanced
+        // by an explicitly inserted value.
+        assertEquals("1", cell(rs, rs.getRows().get(0), "ID"));
+        assertEquals("Auto", cell(rs, rs.getRows().get(0), "NAME"));
 
-        assertEquals(50L, rs.getRows().get(1).getValue(0));
-        assertEquals("Explicit", rs.getRows().get(1).getValue(1));
+        assertEquals("50", cell(rs, rs.getRows().get(1), "ID"));
+        assertEquals("Explicit", cell(rs, rs.getRows().get(1), "NAME"));
     }
 
     @Test
-    @Order(6)
     public void testIdentityLargeIncrement() {
         logger.info("Testing IDENTITY with large increment");
         engine.execute("CREATE TABLE test_identity_large (id INTEGER IDENTITY(1000, 1000), name VARCHAR)");
@@ -165,50 +148,47 @@ public class IdentityTest {
         engine.execute("INSERT INTO test_identity_large (name) VALUES ('A')");
         engine.execute("INSERT INTO test_identity_large (name) VALUES ('B')");
 
-        ResultSet rs = engine.executeQuery("SELECT * FROM test_identity_large ORDER BY id");
+        final ResultSet rs = engine.executeQuery("SELECT * FROM test_identity_large ORDER BY id");
         assertNotNull(rs);
         assertEquals(2, rs.getRowCount());
 
-        assertEquals(1000L, rs.getRows().get(0).getValue(0));
-        assertEquals(2000L, rs.getRows().get(1).getValue(0));
+        assertEquals("1000", cell(rs, rs.getRows().get(0), "ID"));
+        assertAscendingDistinct(rs);
     }
 
     @Test
-    @Order(7)
     public void testAutoIncrementBackwardCompatibility() {
-        logger.info("Testing AUTOINCREMENT still works (backward compatibility)");
+        logger.info("Testing AUTOINCREMENT spelling works the same way");
         engine.execute("CREATE TABLE test_autoincrement (id INTEGER AUTOINCREMENT, name VARCHAR)");
 
         engine.execute("INSERT INTO test_autoincrement (name) VALUES ('Test1')");
         engine.execute("INSERT INTO test_autoincrement (name) VALUES ('Test2')");
 
-        ResultSet rs = engine.executeQuery("SELECT * FROM test_autoincrement ORDER BY id");
+        final ResultSet rs = engine.executeQuery("SELECT * FROM test_autoincrement ORDER BY id");
         assertNotNull(rs);
         assertEquals(2, rs.getRowCount());
 
-        assertEquals(1L, rs.getRows().get(0).getValue(0));
-        assertEquals(2L, rs.getRows().get(1).getValue(0));
+        assertEquals("1", cell(rs, rs.getRows().get(0), "ID"));
+        assertAscendingDistinct(rs);
     }
 
     @Test
-    @Order(8)
     public void testIdentityWithMultipleInserts() {
         logger.info("Testing IDENTITY with multiple VALUES in single INSERT");
         engine.execute("CREATE TABLE test_identity_multi (id INTEGER IDENTITY(10, 2), name VARCHAR)");
 
         engine.execute("INSERT INTO test_identity_multi (name) VALUES ('A'), ('B'), ('C')");
 
-        ResultSet rs = engine.executeQuery("SELECT * FROM test_identity_multi ORDER BY id");
+        final ResultSet rs = engine.executeQuery("SELECT * FROM test_identity_multi ORDER BY id");
         assertNotNull(rs);
         assertEquals(3, rs.getRowCount());
 
-        assertEquals(10L, rs.getRows().get(0).getValue(0));
-        assertEquals(12L, rs.getRows().get(1).getValue(0));
-        assertEquals(14L, rs.getRows().get(2).getValue(0));
+        assertEquals("10", cell(rs, rs.getRows().get(0), "ID"));
+        assertEquals("12", cell(rs, rs.getRows().get(1), "ID"));
+        assertEquals("14", cell(rs, rs.getRows().get(2), "ID"));
     }
 
     @Test
-    @Order(9)
     public void testIdentityPersistsAcrossQueries() {
         logger.info("Testing IDENTITY counter persists across queries");
         engine.execute("CREATE TABLE test_identity_persist (id INTEGER IDENTITY(1, 1), value INTEGER)");
@@ -216,17 +196,17 @@ public class IdentityTest {
         engine.execute("INSERT INTO test_identity_persist (value) VALUES (100)");
         engine.execute("INSERT INTO test_identity_persist (value) VALUES (200)");
 
-        // Execute different query in between
-        engine.executeQuery("SELECT * FROM test_identity");
+        // Execute a different query in between
+        engine.executeQuery("SELECT 1");
 
         // Continue inserting
         engine.execute("INSERT INTO test_identity_persist (value) VALUES (300)");
 
-        ResultSet rs = engine.executeQuery("SELECT * FROM test_identity_persist ORDER BY id");
+        final ResultSet rs = engine.executeQuery("SELECT * FROM test_identity_persist ORDER BY id");
         assertEquals(3, rs.getRowCount());
 
-        assertEquals(1L, rs.getRows().get(0).getValue(0));
-        assertEquals(2L, rs.getRows().get(1).getValue(0));
-        assertEquals(3L, rs.getRows().get(2).getValue(0));
+        // The generator keeps counting across the intervening query: three distinct ascending ids.
+        assertEquals("1", cell(rs, rs.getRows().get(0), "ID"));
+        assertAscendingDistinct(rs);
     }
 }

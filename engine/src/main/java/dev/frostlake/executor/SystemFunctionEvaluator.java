@@ -21,6 +21,7 @@ import dev.frostlake.metastore.Catalog;
 import dev.frostlake.metastore.model.Task;
 import dev.frostlake.metastore.model.TaskState;
 import dev.frostlake.storage.StorageEngine;
+import dev.frostlake.storage.TableStorage;
 import dev.frostlake.task.TaskScheduler;
 import dev.frostlake.transaction.TransactionManager;
 import org.slf4j.Logger;
@@ -66,12 +67,12 @@ public class SystemFunctionEvaluator {
         switch (funcName.toUpperCase()) {
             case "SYSTEM$TYPEOF": {
                 if (!args.isEmpty() && args.get(0) != null) {
-                    Object v = args.get(0);
+                    final Object v = args.get(0);
                     if (v instanceof Boolean) return "BOOLEAN[LOB]";
                     if (v instanceof Long || v instanceof Integer) return "INTEGER[LOB]";
                     if (v instanceof Double || v instanceof BigDecimal) return "FLOAT[LOB]";
                     if (v instanceof LocalDateTime || v instanceof LocalDate) return "TIMESTAMP_NTZ[LOB]";
-                    String s = v.toString().trim();
+                    final String s = v.toString().trim();
                     if (s.startsWith("{")) return "OBJECT[LOB]";
                     if (s.startsWith("[")) return "ARRAY[LOB]";
                     return "VARCHAR[LOB]";
@@ -87,7 +88,7 @@ public class SystemFunctionEvaluator {
                 return System.currentTimeMillis();
             case "SYSTEM$WAIT": {
                 if (!args.isEmpty() && args.get(0) instanceof Number) {
-                    long ms = (long)(((Number) args.get(0)).doubleValue() * 1000);
+                    final long ms = (long)(((Number) args.get(0)).doubleValue() * 1000);
                     if (ms > 0 && ms <= 30_000) {
                         try { Thread.sleep(ms); } catch (final InterruptedException ignored) {}
                     }
@@ -99,11 +100,11 @@ public class SystemFunctionEvaluator {
                 else if (!args.isEmpty()) logger.info("SYSTEM$LOG: {}", args.get(0));
                 return null;
             case "SYSTEM$CLUSTERING_DEPTH": {
-                String t = args.isEmpty() || args.get(0) == null ? "" : args.get(0).toString().replaceAll("^'|'$", "");
+                final String t = args.isEmpty() || args.get(0) == null ? "" : args.get(0).toString().replaceAll("^'|'$", "");
                 return "{\"average_depth\": 1.0, \"table_name\": \"" + t + "\"}";
             }
             case "SYSTEM$CLUSTERING_INFORMATION": {
-                String t = args.isEmpty() || args.get(0) == null ? "" : args.get(0).toString().replaceAll("^'|'$", "");
+                final String t = args.isEmpty() || args.get(0) == null ? "" : args.get(0).toString().replaceAll("^'|'$", "");
                 return "{\"clustering_key\": null, \"total_partition_count\": 1, \"average_depth\": 1.0, \"table_name\": \"" + t + "\"}";
             }
             case "SYSTEM$CLUSTERING_RATIO":
@@ -118,11 +119,12 @@ public class SystemFunctionEvaluator {
                 return "Query cancelled.";
             case "SYSTEM$STREAM_BACKLOG": {
                 if (!args.isEmpty() && args.get(0) != null) {
-                    String name = args.get(0).toString().replaceAll("^'|'$", "").toUpperCase();
-                    String dbN = catalog.getCurrentDatabase(), scN = catalog.getCurrentSchema();
+                    final String name = args.get(0).toString().replaceAll("^'|'$", "").toUpperCase();
+                    final String dbN = catalog.getCurrentDatabase();
+                    final String scN = catalog.getCurrentSchema();
                     if (dbN != null && scN != null) {
                         try {
-                            StorageEngine.TableStorage ts =
+                            final TableStorage ts =
                                 storageEngine.getTableStorage(dbN + "." + scN + "." + name);
                             return ts != null ? (long) ts.getRowCount() : 0L;
                         } catch (final Exception ignored) {}
@@ -131,7 +133,7 @@ public class SystemFunctionEvaluator {
                 return 0L;
             }
             case "SYSTEM$STREAM_GET_TABLE_TIMESTAMP":
-                return LocalDateTime.now();
+                return StatementClock.now();
             case "SYSTEM$CURRENT_USER_TASK_NAME": {
                 final Task current = TaskScheduler.currentTask();
                 return current != null ? current.getName() : null;
@@ -168,7 +170,7 @@ public class SystemFunctionEvaluator {
             case "SYSTEM$GET_TASK_GRAPH_CONFIG":
                 return "{}";
             case "SYSTEM$PIPE_STATUS": {
-                String pipeName = args.isEmpty() || args.get(0) == null ? "" : args.get(0).toString().replaceAll("^'|'$", "");
+                final String pipeName = args.isEmpty() || args.get(0) == null ? "" : args.get(0).toString().replaceAll("^'|'$", "");
                 // Reflect the pipe's actual state (RUNNING/PAUSED); getPipe throws on an unknown pipe, matching Snowflake.
                 if (catalog != null && !pipeName.isEmpty()) {
                     return catalog.getPipe(pipeName).getStatusJson();
@@ -203,7 +205,8 @@ public class SystemFunctionEvaluator {
                 return "{\"status\": \"OK\"}";
             case "SYSTEM$TASK_DEPENDENTS_ENABLE": {
                 if (!args.isEmpty() && args.get(0) != null) {
-                    String dbN = catalog.getCurrentDatabase(), scN = catalog.getCurrentSchema();
+                    final String dbN = catalog.getCurrentDatabase();
+                    final String scN = catalog.getCurrentSchema();
                     if (dbN != null && scN != null) {
                         try {
                             enableTaskDependents(

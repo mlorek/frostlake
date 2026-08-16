@@ -23,6 +23,7 @@ import dev.frostlake.storage.Row;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
+import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
@@ -90,14 +91,14 @@ public class ShowQualifiedAndAccountScopeTest extends BaseDatabaseTest {
 
     /** The kinds that take the plain {@code SHOW <kind> IN …} shape, and the object each one owns. */
     private static final List<String> KINDS = List.of(
-        "STAGES", "STREAMS", "TASKS", "SEQUENCES", "FILE FORMATS",
+        "TABLES", "OBJECTS", "STAGES", "STREAMS", "TASKS", "SEQUENCES", "FILE FORMATS",
         "TAGS", "MASKING POLICIES", "ROW ACCESS POLICIES");
 
     private static final List<String> IN_A = List.of(
-        "A_STAGE", "A_STREAM", "A_TASK", "A_SEQ", "A_FF", "A_TAG", "A_MP", "A_RAP");
+        "A_TBL", "A_TBL", "A_STAGE", "A_STREAM", "A_TASK", "A_SEQ", "A_FF", "A_TAG", "A_MP", "A_RAP");
 
     private static final List<String> IN_B = List.of(
-        "B_STAGE", "B_STREAM", "B_TASK", "B_SEQ", "B_FF", "B_TAG", "B_MP", "B_RAP");
+        "B_TBL", "B_TBL", "B_STAGE", "B_STREAM", "B_TASK", "B_SEQ", "B_FF", "B_TAG", "B_MP", "B_RAP");
 
     /**
      * A qualified schema reference names its own database. The session sits in {@code fl_scope_b}, so a
@@ -126,6 +127,47 @@ public class ShowQualifiedAndAccountScopeTest extends BaseDatabaseTest {
             assertTrue(listed.contains(IN_A.get(i)) && listed.contains(IN_B.get(i)),
                 "SHOW " + kind + " IN ACCOUNT must list both databases' objects, listed " + listed);
         }
+    }
+
+    /**
+     * The account fold orders database-major, then schema, then name — a later-named table in an
+     * earlier schema outranks an earlier-named table in a later schema (live-verified).
+     */
+    @Test
+    public void inAccountOrdersByDatabaseSchemaThenName() {
+        twoDatabasesOfObjects();
+        engine.execute("CREATE SCHEMA fl_scope_a.extra");
+        engine.execute("CREATE TABLE fl_scope_a.extra.z_tbl (id INTEGER)");
+
+        final ResultSet rs = engine.executeQuery("SHOW TABLES LIKE '%_TBL' IN ACCOUNT");
+        final int nameIdx = rs.getColumnIndex("name");
+        final int dbIdx = rs.getColumnIndex("database_name");
+        final int schemaIdx = rs.getColumnIndex("schema_name");
+        final List<String> listed = new ArrayList<String>();
+        for (final Row row : rs.getRows()) {
+            final String db = String.valueOf(row.getValue(dbIdx));
+            if (db.startsWith("FL_SCOPE")) {
+                listed.add(db + "." + row.getValue(schemaIdx) + "." + row.getValue(nameIdx));
+            }
+        }
+        assertEquals(List.of(
+            "FL_SCOPE_A.EXTRA.Z_TBL",
+            "FL_SCOPE_A.PUBLIC.A_TBL",
+            "FL_SCOPE_B.PUBLIC.B_TBL"), listed);
+    }
+
+    /** SHOW SCHEMAS IN ACCOUNT spans every database (the narrower form takes one database name). */
+    @Test
+    public void showSchemasInAccountSpansEveryDatabase() {
+        twoDatabasesOfObjects();
+        final ResultSet rs = engine.executeQuery("SHOW SCHEMAS LIKE 'PUBLIC' IN ACCOUNT");
+        final int dbIdx = rs.getColumnIndex("database_name");
+        final Set<String> dbs = new HashSet<String>();
+        for (final Row row : rs.getRows()) {
+            dbs.add(String.valueOf(row.getValue(dbIdx)));
+        }
+        assertTrue(dbs.contains("FL_SCOPE_A") && dbs.contains("FL_SCOPE_B"),
+            "SHOW SCHEMAS IN ACCOUNT must list both databases' PUBLIC schemas, listed " + dbs);
     }
 
     /** The unscoped listing stays scoped to the current schema, which is what makes IN ACCOUNT mean something. */

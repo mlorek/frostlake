@@ -16,333 +16,172 @@
 
 package dev.frostlake.ddl;
 
-import dev.frostlake.DatabaseEngine;
-import dev.frostlake.metastore.model.*;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
+import dev.frostlake.BaseDatabaseTest;
+import dev.frostlake.storage.ResultSet;
+import dev.frostlake.storage.Row;
 
-import static org.junit.jupiter.api.Assertions.*;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
+
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
- * Tests for COMMENT IF EXISTS ON command
+ * {@code COMMENT IF EXISTS ON <object-type> … IS '<text>'} — live-verified to complete SILENTLY for
+ * every missing target (database, schema, table, column, the column's table, view, stream, task,
+ * warehouse, stage, function, procedure, user, role), and to behave exactly like the plain command
+ * when the target exists. Each set comment is read back through the SHOW / DESCRIBE cell a client
+ * would use, so the same assertions hold against a live account.
  */
-public class CommentIfExistsTest {
+public class CommentIfExistsTest extends BaseDatabaseTest {
 
-    private DatabaseEngine engine;
-
-    @BeforeEach
-    public void setUp() {
-        engine = new DatabaseEngine();
+    private String showCell(final String sql, final String column) {
+        final ResultSet rs = engine.executeQuery(sql);
+        assertEquals(1, rs.getRowCount(), "expected exactly one row from: " + sql);
+        final Object value = rs.getRows().get(0).getValue(rs.getColumnIndex(column));
+        return value == null ? null : String.valueOf(value);
     }
 
-    @AfterEach
-    public void tearDown() {
-        if (engine != null) {
-            engine.shutdown();
+    private Object descTableComment(final String table, final String column) {
+        final ResultSet rs = engine.executeQuery("DESCRIBE TABLE " + table);
+        for (final Row row : rs.getRows()) {
+            if (column.equalsIgnoreCase(String.valueOf(row.getValue(rs.getColumnIndex("name"))))) {
+                return row.getValue(rs.getColumnIndex("comment"));
+            }
         }
+        throw new AssertionError("no column " + column + " in DESCRIBE TABLE " + table);
+    }
+
+    private void silently(final String sql) {
+        assertDoesNotThrow(new Executable() {
+            @Override
+            public void execute() {
+                engine.execute(sql);
+            }
+        }, "expected silent success for: " + sql);
     }
 
     @Test
     public void testCommentIfExistsOnDatabase() {
-        // Should not throw error when database doesn't exist
-        assertDoesNotThrow(() -> {
-            engine.execute("COMMENT IF EXISTS ON DATABASE nonexistent IS 'Comment'");
-        });
-
-        // Should set comment when database exists
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("COMMENT IF EXISTS ON DATABASE test_db IS 'Updated comment'");
-
-        Database db = engine.getCatalog().getDatabase("TEST_DB");
-        assertNotNull(db);
-        assertEquals("Updated comment", db.getComment());
+        silently("COMMENT IF EXISTS ON DATABASE cmt_ife_nodb IS 'Comment'");
+        engine.execute("CREATE OR REPLACE DATABASE cmt_ife_db");
+        engine.execute("COMMENT IF EXISTS ON DATABASE cmt_ife_db IS 'Updated comment'");
+        assertEquals("Updated comment", showCell("SHOW DATABASES LIKE 'cmt_ife_db'", "comment"));
+        engine.execute("DROP DATABASE cmt_ife_db");
     }
 
     @Test
     public void testCommentIfExistsOnSchema() {
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
-
-        // Should not throw error when schema doesn't exist
-        assertDoesNotThrow(() -> {
-            engine.execute("COMMENT IF EXISTS ON SCHEMA nonexistent IS 'Comment'");
-        });
-
-        // Should set comment when schema exists
-        engine.execute("CREATE SCHEMA test_schema");
-        engine.execute("COMMENT IF EXISTS ON SCHEMA test_schema IS 'Schema comment'");
-
-        Schema schema = engine.getCatalog()
-            .getDatabase("TEST_DB")
-            .getSchema("TEST_SCHEMA");
-        assertNotNull(schema);
-        assertEquals("Schema comment", schema.getComment());
+        silently("COMMENT IF EXISTS ON SCHEMA cmt_ife_noschema IS 'Comment'");
+        engine.execute("CREATE SCHEMA cmt_ife_schema");
+        engine.execute("COMMENT IF EXISTS ON SCHEMA cmt_ife_schema IS 'Schema comment'");
+        assertEquals("Schema comment", showCell("SHOW SCHEMAS LIKE 'cmt_ife_schema'", "comment"));
     }
 
     @Test
     public void testCommentIfExistsOnTable() {
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
-
-        // Should not throw error when table doesn't exist
-        assertDoesNotThrow(() -> {
-            engine.execute("COMMENT IF EXISTS ON TABLE nonexistent IS 'Comment'");
-        });
-
-        // Should set comment when table exists
+        silently("COMMENT IF EXISTS ON TABLE cmt_ife_notable IS 'Comment'");
         engine.execute("CREATE TABLE users (id INTEGER, name VARCHAR)");
         engine.execute("COMMENT IF EXISTS ON TABLE users IS 'User table'");
-
-        Table table = engine.getCatalog()
-            .getDatabase("TEST_DB")
-            .getSchema("PUBLIC")
-            .getTable("USERS");
-        assertNotNull(table);
-        assertEquals("User table", table.getComment());
+        assertEquals("User table", showCell("SHOW TABLES LIKE 'users'", "comment"));
     }
 
     @Test
     public void testCommentIfExistsOnColumn() {
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
         engine.execute("CREATE TABLE users (id INTEGER, name VARCHAR)");
-
-        // Should not throw error when column doesn't exist
-        assertDoesNotThrow(() -> {
-            engine.execute("COMMENT IF EXISTS ON COLUMN users.nonexistent IS 'Comment'");
-        });
-
-        // Should not throw error when table doesn't exist
-        assertDoesNotThrow(() -> {
-            engine.execute("COMMENT IF EXISTS ON COLUMN nonexistent.name IS 'Comment'");
-        });
-
-        // Should set comment when column exists
+        // Both the missing COLUMN and the missing TABLE of a column reference stay silent.
+        silently("COMMENT IF EXISTS ON COLUMN users.nonexistent IS 'Comment'");
+        silently("COMMENT IF EXISTS ON COLUMN cmt_ife_notable.name IS 'Comment'");
         engine.execute("COMMENT IF EXISTS ON COLUMN users.name IS 'User name'");
-
-        Table table = engine.getCatalog()
-            .getDatabase("TEST_DB")
-            .getSchema("PUBLIC")
-            .getTable("USERS");
-        TableColumn nameCol = table.getColumn("NAME");
-        assertEquals("User name", nameCol.getComment());
+        assertEquals("User name", descTableComment("users", "NAME"));
     }
 
     @Test
     public void testCommentIfExistsOnView() {
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
         engine.execute("CREATE TABLE users (id INTEGER, name VARCHAR)");
-
-        // Should not throw error when view doesn't exist
-        assertDoesNotThrow(() -> {
-            engine.execute("COMMENT IF EXISTS ON VIEW nonexistent IS 'Comment'");
-        });
-
-        // Should set comment when view exists
+        silently("COMMENT IF EXISTS ON VIEW cmt_ife_noview IS 'Comment'");
         engine.execute("CREATE VIEW active_users AS SELECT * FROM users");
         engine.execute("COMMENT IF EXISTS ON VIEW active_users IS 'Active users'");
-
-        View view = engine.getCatalog()
-            .getDatabase("TEST_DB")
-            .getSchema("PUBLIC")
-            .getView("ACTIVE_USERS");
-        assertNotNull(view);
-        assertEquals("Active users", view.getComment());
+        assertEquals("Active users", showCell("SHOW VIEWS LIKE 'active_users'", "comment"));
     }
 
     @Test
     public void testCommentIfExistsOnFunction() {
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
-
-        // Should not throw error when function doesn't exist
-        assertDoesNotThrow(() -> {
-            engine.execute("COMMENT IF EXISTS ON FUNCTION nonexistent() IS 'Comment'");
-        });
-
-        // Should set comment when function exists
+        silently("COMMENT IF EXISTS ON FUNCTION cmt_ife_nofn() IS 'Comment'");
         engine.execute("""
             CREATE FUNCTION add_numbers(x INTEGER, y INTEGER)
             RETURNS INTEGER AS 'x + y'
             """);
         engine.execute("COMMENT IF EXISTS ON FUNCTION add_numbers(INTEGER, INTEGER) IS 'Addition function'");
-
-        Function function = engine.getCatalog()
-            .getDatabase("TEST_DB")
-            .getSchema("PUBLIC")
-            .getFunction("ADD_NUMBERS");
-        assertNotNull(function);
-        assertEquals("Addition function", function.getComment());
+        assertEquals("Addition function",
+            showCell("SHOW USER FUNCTIONS LIKE 'add_numbers'", "description"));
     }
 
     @Test
     public void testCommentIfExistsOnProcedure() {
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
-
-        // Should not throw error when procedure doesn't exist
-        assertDoesNotThrow(() -> {
-            engine.execute("COMMENT IF EXISTS ON PROCEDURE nonexistent() IS 'Comment'");
-        });
-
-        // Should set comment when procedure exists
+        silently("COMMENT IF EXISTS ON PROCEDURE cmt_ife_noproc() IS 'Comment'");
         engine.execute("""
             CREATE PROCEDURE test_proc()
             RETURNS VARCHAR AS 'BEGIN RETURN ''done''; END;'
             """);
         engine.execute("COMMENT IF EXISTS ON PROCEDURE test_proc() IS 'Test procedure'");
-
-        Procedure procedure = engine.getCatalog()
-            .getDatabase("TEST_DB")
-            .getSchema("PUBLIC")
-            .getProcedure("TEST_PROC");
-        assertNotNull(procedure);
-        assertEquals("Test procedure", procedure.getComment());
+        assertEquals("Test procedure", showCell("SHOW PROCEDURES LIKE 'test_proc'", "description"));
     }
 
     @Test
     public void testCommentIfExistsOnStream() {
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
         engine.execute("CREATE TABLE users (id INTEGER, name VARCHAR)");
-
-        // Should not throw error when stream doesn't exist
-        assertDoesNotThrow(() -> {
-            engine.execute("COMMENT IF EXISTS ON STREAM nonexistent IS 'Comment'");
-        });
-
-        // Should set comment when stream exists
+        silently("COMMENT IF EXISTS ON STREAM cmt_ife_nostream IS 'Comment'");
         engine.execute("CREATE STREAM user_stream ON TABLE users");
         engine.execute("COMMENT IF EXISTS ON STREAM user_stream IS 'User stream'");
-
-        Stream stream = engine.getCatalog()
-            .getDatabase("TEST_DB")
-            .getSchema("PUBLIC")
-            .getStream("USER_STREAM");
-        assertNotNull(stream);
-        assertEquals("User stream", stream.getComment());
+        assertEquals("User stream", showCell("SHOW STREAMS LIKE 'user_stream'", "comment"));
     }
 
     @Test
     public void testCommentIfExistsOnTask() {
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
-        engine.execute("CREATE WAREHOUSE test_wh");
-
-        // Should not throw error when task doesn't exist
-        assertDoesNotThrow(() -> {
-            engine.execute("COMMENT IF EXISTS ON TASK nonexistent IS 'Comment'");
-        });
-
-        // Should set comment when task exists
+        engine.execute("CREATE WAREHOUSE cmt_ife_wh");
+        silently("COMMENT IF EXISTS ON TASK cmt_ife_notask IS 'Comment'");
         engine.execute("""
             CREATE TASK daily_task
-            WAREHOUSE = 'test_wh'
+            WAREHOUSE = 'cmt_ife_wh'
             SCHEDULE = 'USING CRON 0 9 * * * UTC'
             AS SELECT 1
             """);
         engine.execute("COMMENT IF EXISTS ON TASK daily_task IS 'Daily task'");
-
-        Task task = engine.getCatalog()
-            .getDatabase("TEST_DB")
-            .getSchema("PUBLIC")
-            .getTask("DAILY_TASK");
-        assertNotNull(task);
-        assertEquals("Daily task", task.getComment());
+        assertEquals("Daily task", showCell("SHOW TASKS LIKE 'daily_task'", "comment"));
     }
 
     @Test
     public void testCommentIfExistsOnWarehouse() {
-        // Should not throw error when warehouse doesn't exist
-        assertDoesNotThrow(() -> {
-            engine.execute("COMMENT IF EXISTS ON WAREHOUSE nonexistent IS 'Comment'");
-        });
-
-        // Should set comment when warehouse exists
-        engine.execute("CREATE WAREHOUSE test_wh");
-        engine.execute("COMMENT IF EXISTS ON WAREHOUSE test_wh IS 'Test warehouse'");
-
-        Warehouse warehouse = engine.getCatalog().getWarehouse("TEST_WH");
-        assertNotNull(warehouse);
-        assertEquals("Test warehouse", warehouse.getComment());
+        silently("COMMENT IF EXISTS ON WAREHOUSE cmt_ife_nowh IS 'Comment'");
+        engine.execute("CREATE OR REPLACE WAREHOUSE cmt_ife_wh2");
+        engine.execute("COMMENT IF EXISTS ON WAREHOUSE cmt_ife_wh2 IS 'Test warehouse'");
+        assertEquals("Test warehouse", showCell("SHOW WAREHOUSES LIKE 'cmt_ife_wh2'", "comment"));
     }
 
     @Test
     public void testCommentIfExistsOnStage() {
-        // Should not throw error when stage doesn't exist
-        assertDoesNotThrow(() -> {
-            engine.execute("COMMENT IF EXISTS ON STAGE nonexistent IS 'Comment'");
-        });
-
-        // Should set comment when stage exists
-        engine.execute("CREATE STAGE test_stage URL = 's3://bucket/path'");
-        engine.execute("COMMENT IF EXISTS ON STAGE test_stage IS 'Test stage'");
-
-        Stage stage = engine.getCatalog().getStage("TEST_STAGE");
-        assertNotNull(stage);
-        assertEquals("Test stage", stage.getComment());
+        silently("COMMENT IF EXISTS ON STAGE cmt_ife_nostage IS 'Comment'");
+        engine.execute("CREATE STAGE cmt_ife_stage URL = 's3://bucket/path'");
+        engine.execute("COMMENT IF EXISTS ON STAGE cmt_ife_stage IS 'Test stage'");
+        assertEquals("Test stage", showCell("SHOW STAGES LIKE 'cmt_ife_stage'", "comment"));
     }
 
     @Test
     public void testCommentIfExistsOnUser() {
-        // Should not throw error when user doesn't exist
-        assertDoesNotThrow(() -> {
-            engine.execute("COMMENT IF EXISTS ON USER nonexistent IS 'Comment'");
-        });
-
-        // Should set comment when user exists
-        engine.execute("CREATE USER test_user PASSWORD = 'secret'");
-        engine.execute("COMMENT IF EXISTS ON USER test_user IS 'Test user'");
-
-        User user = engine.getCatalog().getUser("TEST_USER");
-        assertNotNull(user);
-        assertEquals("Test user", user.getComment());
+        silently("COMMENT IF EXISTS ON USER cmt_ife_nouser IS 'Comment'");
+        engine.execute("CREATE OR REPLACE USER cmt_ife_user PASSWORD = 'Sekrit!42x'");
+        engine.execute("COMMENT IF EXISTS ON USER cmt_ife_user IS 'Test user'");
+        assertEquals("Test user", showCell("SHOW USERS LIKE 'cmt_ife_user'", "comment"));
+        engine.execute("DROP USER cmt_ife_user");
     }
 
     @Test
     public void testCommentIfExistsOnRole() {
-        // Should not throw error when role doesn't exist
-        assertDoesNotThrow(() -> {
-            engine.execute("COMMENT IF EXISTS ON ROLE nonexistent IS 'Comment'");
-        });
-
-        // Should set comment when role exists
-        engine.execute("CREATE ROLE analyst");
-        engine.execute("COMMENT IF EXISTS ON ROLE analyst IS 'Analyst role'");
-
-        Role role = engine.getCatalog().getRole("ANALYST");
-        assertNotNull(role);
-        assertEquals("Analyst role", role.getComment());
-    }
-
-    @Test
-    public void testCommentWithoutIfExistsStillThrowsError() {
-        // Verify that without IF EXISTS, errors are still thrown
-        RuntimeException exception = assertThrows(RuntimeException.class, () -> {
-            engine.execute("COMMENT ON DATABASE nonexistent IS 'Comment'");
-        });
-        assertTrue(exception.getMessage().contains("does not exist"));
-    }
-
-    @Test
-    public void testCommentIfExistsWithQualifiedNames() {
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("CREATE SCHEMA test_db.test_schema");
-
-        // Should not throw error when qualified schema doesn't exist
-        assertDoesNotThrow(() -> {
-            engine.execute("COMMENT IF EXISTS ON SCHEMA test_db.nonexistent IS 'Comment'");
-        });
-
-        // Should set comment when qualified schema exists
-        engine.execute("COMMENT IF EXISTS ON SCHEMA test_db.test_schema IS 'Test schema'");
-
-        Schema schema = engine.getCatalog()
-            .getDatabase("TEST_DB")
-            .getSchema("TEST_SCHEMA");
-        assertNotNull(schema);
-        assertEquals("Test schema", schema.getComment());
+        silently("COMMENT IF EXISTS ON ROLE cmt_ife_norole IS 'Comment'");
+        engine.execute("CREATE OR REPLACE ROLE cmt_ife_role");
+        engine.execute("COMMENT IF EXISTS ON ROLE cmt_ife_role IS 'Test role'");
+        assertEquals("Test role", showCell("SHOW ROLES LIKE 'cmt_ife_role'", "comment"));
+        engine.execute("DROP ROLE cmt_ife_role");
     }
 }

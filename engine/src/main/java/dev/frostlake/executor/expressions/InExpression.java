@@ -68,7 +68,7 @@ public class InExpression implements Expression {
 
     @Override
     public String toString() {
-        StringBuilder sb = new StringBuilder();
+        final StringBuilder sb = new StringBuilder();
         sb.append(value);
         if (not) sb.append(" NOT");
         sb.append(" IN (");

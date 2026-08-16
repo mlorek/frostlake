@@ -17,16 +17,21 @@
 package dev.frostlake.functions;
 
 import dev.frostlake.BaseJdbcTest;
-import org.junit.jupiter.api.Test;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Timestamp;
 import java.time.LocalDateTime;
-
-import static org.junit.jupiter.api.Assertions.*;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 public class ToTimestampNtzTest extends BaseJdbcTest {
     private static final Logger logger = LoggerFactory.getLogger(ToTimestampNtzTest.class);
@@ -35,14 +40,14 @@ public class ToTimestampNtzTest extends BaseJdbcTest {
     public void testToTimestampNtzFromIsoString() throws SQLException {
         logger.info("Testing TO_TIMESTAMP_NTZ with ISO format string");
 
-        ResultSet rs = statement.executeQuery("SELECT TO_TIMESTAMP_NTZ('2024-01-15T10:30:45') AS ts");
+        final ResultSet rs = statement.executeQuery("SELECT TO_TIMESTAMP_NTZ('2024-01-15T10:30:45') AS ts");
         assertTrue(rs.next());
 
-        Object result = rs.getObject("ts");
+        final Object result = rs.getObject("ts");
         assertNotNull(result);
         logger.info("Result type: {}, value: {}", result.getClass().getName(), result);
 
-        LocalDateTime expected = LocalDateTime.of(2024, 1, 15, 10, 30, 45);
+        final LocalDateTime expected = LocalDateTime.of(2024, 1, 15, 10, 30, 45);
         if (result instanceof Timestamp) {
             assertEquals(expected, ((Timestamp) result).toLocalDateTime());
         } else if (result instanceof LocalDateTime) {
@@ -58,13 +63,13 @@ public class ToTimestampNtzTest extends BaseJdbcTest {
     public void testToTimestampNtzFromSpaceSeparatedString() throws SQLException {
         logger.info("Testing TO_TIMESTAMP_NTZ with space-separated format");
 
-        ResultSet rs = statement.executeQuery("SELECT TO_TIMESTAMP_NTZ('2024-01-15 10:30:45') AS ts");
+        final ResultSet rs = statement.executeQuery("SELECT TO_TIMESTAMP_NTZ('2024-01-15 10:30:45') AS ts");
         assertTrue(rs.next());
 
-        Object result = rs.getObject("ts");
+        final Object result = rs.getObject("ts");
         assertNotNull(result);
 
-        LocalDateTime expected = LocalDateTime.of(2024, 1, 15, 10, 30, 45);
+        final LocalDateTime expected = LocalDateTime.of(2024, 1, 15, 10, 30, 45);
         if (result instanceof Timestamp) {
             assertEquals(expected, ((Timestamp) result).toLocalDateTime());
         } else if (result instanceof LocalDateTime) {
@@ -78,13 +83,13 @@ public class ToTimestampNtzTest extends BaseJdbcTest {
     public void testToTimestampNtzFromDateString() throws SQLException {
         logger.info("Testing TO_TIMESTAMP_NTZ with date-only string");
 
-        ResultSet rs = statement.executeQuery("SELECT TO_TIMESTAMP_NTZ('2024-01-15') AS ts");
+        final ResultSet rs = statement.executeQuery("SELECT TO_TIMESTAMP_NTZ('2024-01-15') AS ts");
         assertTrue(rs.next());
 
-        Object result = rs.getObject("ts");
+        final Object result = rs.getObject("ts");
         assertNotNull(result);
 
-        LocalDateTime expected = LocalDateTime.of(2024, 1, 15, 0, 0, 0);
+        final LocalDateTime expected = LocalDateTime.of(2024, 1, 15, 0, 0, 0);
         if (result instanceof Timestamp) {
             assertEquals(expected, ((Timestamp) result).toLocalDateTime());
         } else if (result instanceof LocalDateTime) {
@@ -99,10 +104,10 @@ public class ToTimestampNtzTest extends BaseJdbcTest {
         logger.info("Testing TO_TIMESTAMP_NTZ with epoch seconds");
 
         // 1705315845 = 2024-01-15 10:30:45 UTC
-        ResultSet rs = statement.executeQuery("SELECT TO_TIMESTAMP_NTZ(1705315845) AS ts");
+        final ResultSet rs = statement.executeQuery("SELECT TO_TIMESTAMP_NTZ(1705315845) AS ts");
         assertTrue(rs.next());
 
-        Object result = rs.getObject("ts");
+        final Object result = rs.getObject("ts");
         assertNotNull(result);
         logger.info("Result: {}", result);
 
@@ -113,10 +118,10 @@ public class ToTimestampNtzTest extends BaseJdbcTest {
     public void testToTimestampNtzWithNull() throws SQLException {
         logger.info("Testing TO_TIMESTAMP_NTZ with NULL");
 
-        ResultSet rs = statement.executeQuery("SELECT TO_TIMESTAMP_NTZ(NULL) AS ts");
+        final ResultSet rs = statement.executeQuery("SELECT TO_TIMESTAMP_NTZ(NULL) AS ts");
         assertTrue(rs.next());
 
-        Object result = rs.getObject("ts");
+        final Object result = rs.getObject("ts");
         assertNull(result);
 
         rs.close();
@@ -131,7 +136,7 @@ public class ToTimestampNtzTest extends BaseJdbcTest {
         statement.execute("INSERT INTO events VALUES (2, '2024-01-16 11:45:30')");
         statement.execute("INSERT INTO events VALUES (3, '2024-01-14 09:15:20')");
 
-        ResultSet rs = statement.executeQuery(
+        final ResultSet rs = statement.executeQuery(
             "SELECT id FROM events WHERE TO_TIMESTAMP_NTZ(event_time) > TO_TIMESTAMP_NTZ('2024-01-15 00:00:00') ORDER BY id"
         );
 
@@ -152,10 +157,10 @@ public class ToTimestampNtzTest extends BaseJdbcTest {
         statement.execute("CREATE TABLE logs (id INTEGER, log_time TIMESTAMP_NTZ)");
         statement.execute("INSERT INTO logs VALUES (1, TO_TIMESTAMP_NTZ('2024-01-15 10:30:45'))");
 
-        ResultSet rs = statement.executeQuery("SELECT log_time FROM logs WHERE id = 1");
+        final ResultSet rs = statement.executeQuery("SELECT log_time FROM logs WHERE id = 1");
         assertTrue(rs.next());
 
-        Object result = rs.getObject("log_time");
+        final Object result = rs.getObject("log_time");
         assertNotNull(result);
 
         rs.close();
@@ -169,7 +174,7 @@ public class ToTimestampNtzTest extends BaseJdbcTest {
         statement.execute("INSERT INTO raw_data VALUES (1, '2024-01-15T10:30:45')");
         statement.execute("INSERT INTO raw_data VALUES (2, '2024-01-16 11:45:30')");
 
-        ResultSet rs = statement.executeQuery("SELECT id, TO_TIMESTAMP_NTZ(ts_string) AS parsed_ts FROM raw_data ORDER BY id");
+        final ResultSet rs = statement.executeQuery("SELECT id, TO_TIMESTAMP_NTZ(ts_string) AS parsed_ts FROM raw_data ORDER BY id");
 
         assertTrue(rs.next());
         assertEquals(1, rs.getInt("id"));
@@ -187,7 +192,7 @@ public class ToTimestampNtzTest extends BaseJdbcTest {
     public void testToTimestampNtzComparison() throws SQLException {
         logger.info("Testing TO_TIMESTAMP_NTZ in comparison operations");
 
-        ResultSet rs = statement.executeQuery(
+        final ResultSet rs = statement.executeQuery(
             "SELECT TO_TIMESTAMP_NTZ('2024-01-15 10:30:45') < TO_TIMESTAMP_NTZ('2024-01-16 10:30:45') AS result"
         );
 
@@ -201,8 +206,12 @@ public class ToTimestampNtzTest extends BaseJdbcTest {
     public void testToTimestampNtzInvalid() {
         logger.info("Testing TO_TIMESTAMP_NTZ with invalid input");
 
-        assertThrows(SQLException.class, () -> {
-            statement.executeQuery("SELECT TO_TIMESTAMP_NTZ('invalid-timestamp')");
+        assertThrows(SQLException.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                statement.executeQuery("SELECT TO_TIMESTAMP_NTZ('invalid-timestamp')");
+                
+            }
         });
     }
 }

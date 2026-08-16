@@ -26,7 +26,6 @@ import org.junit.jupiter.api.Test;
 import java.util.ArrayList;
 import java.util.List;
 
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -58,8 +57,8 @@ public class TabCompletionTest {
 
     @Test
     public void testKeywordCompletion() {
-        List<Candidate> candidates = new ArrayList<Candidate>();
-        ParsedLine line = createParsedLine("SEL", 0);
+        final List<Candidate> candidates = new ArrayList<Candidate>();
+        final ParsedLine line = createParsedLine("SEL", 0);
 
         completer.complete(null, line, candidates);
 
@@ -75,8 +74,8 @@ public class TabCompletionTest {
 
     @Test
     public void testKeywordCompletionCaseInsensitive() {
-        List<Candidate> candidates = new ArrayList<Candidate>();
-        ParsedLine line = createParsedLine("sel", 0);
+        final List<Candidate> candidates = new ArrayList<Candidate>();
+        final ParsedLine line = createParsedLine("sel", 0);
 
         completer.complete(null, line, candidates);
 
@@ -92,8 +91,8 @@ public class TabCompletionTest {
 
     @Test
     public void testTableNameCompletion() {
-        List<Candidate> candidates = new ArrayList<Candidate>();
-        ParsedLine line = createParsedLine("SELECT * FROM emp", 14);
+        final List<Candidate> candidates = new ArrayList<Candidate>();
+        final ParsedLine line = createParsedLine("SELECT * FROM emp", 14);
 
         completer.complete(null, line, candidates);
 
@@ -109,8 +108,8 @@ public class TabCompletionTest {
 
     @Test
     public void testTableNameCompletionAfterJoin() {
-        List<Candidate> candidates = new ArrayList<Candidate>();
-        ParsedLine line = createParsedLine("SELECT * FROM employees JOIN dep", 29);
+        final List<Candidate> candidates = new ArrayList<Candidate>();
+        final ParsedLine line = createParsedLine("SELECT * FROM employees JOIN dep", 29);
 
         completer.complete(null, line, candidates);
 
@@ -126,8 +125,8 @@ public class TabCompletionTest {
 
     @Test
     public void testColumnNameCompletion() {
-        List<Candidate> candidates = new ArrayList<Candidate>();
-        ParsedLine line = createParsedLine("SELECT nam", 7);
+        final List<Candidate> candidates = new ArrayList<Candidate>();
+        final ParsedLine line = createParsedLine("SELECT nam", 7);
 
         completer.complete(null, line, candidates);
 
@@ -143,8 +142,8 @@ public class TabCompletionTest {
 
     @Test
     public void testColumnNameCompletionInWhere() {
-        List<Candidate> candidates = new ArrayList<Candidate>();
-        ParsedLine line = createParsedLine("SELECT * FROM employees WHERE dep", 30);
+        final List<Candidate> candidates = new ArrayList<Candidate>();
+        final ParsedLine line = createParsedLine("SELECT * FROM employees WHERE dep", 30);
 
         completer.complete(null, line, candidates);
 
@@ -160,8 +159,8 @@ public class TabCompletionTest {
 
     @Test
     public void testFunctionCompletion() {
-        List<Candidate> candidates = new ArrayList<Candidate>();
-        ParsedLine line = createParsedLine("SELECT COU", 7);
+        final List<Candidate> candidates = new ArrayList<Candidate>();
+        final ParsedLine line = createParsedLine("SELECT COU", 7);
 
         completer.complete(null, line, candidates);
 
@@ -177,8 +176,8 @@ public class TabCompletionTest {
 
     @Test
     public void testDatabaseCompletion() {
-        List<Candidate> candidates = new ArrayList<Candidate>();
-        ParsedLine line = createParsedLine("USE DATABASE test", 13);
+        final List<Candidate> candidates = new ArrayList<Candidate>();
+        final ParsedLine line = createParsedLine("USE DATABASE test", 13);
 
         completer.complete(null, line, candidates);
 
@@ -194,8 +193,8 @@ public class TabCompletionTest {
 
     @Test
     public void testSchemaCompletion() {
-        List<Candidate> candidates = new ArrayList<Candidate>();
-        ParsedLine line = createParsedLine("USE SCHEMA test", 11);
+        final List<Candidate> candidates = new ArrayList<Candidate>();
+        final ParsedLine line = createParsedLine("USE SCHEMA test", 11);
 
         completer.complete(null, line, candidates);
 
@@ -211,8 +210,8 @@ public class TabCompletionTest {
 
     @Test
     public void testNoCompletionForEmptyWord() {
-        List<Candidate> candidates = new ArrayList<Candidate>();
-        ParsedLine line = createParsedLine("SELECT ", 7);
+        final List<Candidate> candidates = new ArrayList<Candidate>();
+        final ParsedLine line = createParsedLine("SELECT ", 7);
 
         completer.complete(null, line, candidates);
 
@@ -222,8 +221,8 @@ public class TabCompletionTest {
 
     @Test
     public void testMultipleKeywordMatches() {
-        List<Candidate> candidates = new ArrayList<Candidate>();
-        ParsedLine line = createParsedLine("CRE", 0);
+        final List<Candidate> candidates = new ArrayList<Candidate>();
+        final ParsedLine line = createParsedLine("CRE", 0);
 
         completer.complete(null, line, candidates);
 
@@ -240,8 +239,8 @@ public class TabCompletionTest {
 
     @Test
     public void testAggregateFunctionCompletion() {
-        List<Candidate> candidates = new ArrayList<Candidate>();
-        ParsedLine line = createParsedLine("SELECT SU", 7);
+        final List<Candidate> candidates = new ArrayList<Candidate>();
+        final ParsedLine line = createParsedLine("SELECT SU", 7);
 
         completer.complete(null, line, candidates);
 
@@ -257,8 +256,8 @@ public class TabCompletionTest {
 
     @Test
     public void testStringFunctionCompletion() {
-        List<Candidate> candidates = new ArrayList<Candidate>();
-        ParsedLine line = createParsedLine("SELECT UPP", 7);
+        final List<Candidate> candidates = new ArrayList<Candidate>();
+        final ParsedLine line = createParsedLine("SELECT UPP", 7);
 
         completer.complete(null, line, candidates);
 
@@ -274,8 +273,8 @@ public class TabCompletionTest {
 
     @Test
     public void testNoMatchingCompletions() {
-        List<Candidate> candidates = new ArrayList<Candidate>();
-        ParsedLine line = createParsedLine("SELECT zzz", 7);
+        final List<Candidate> candidates = new ArrayList<Candidate>();
+        final ParsedLine line = createParsedLine("SELECT zzz", 7);
 
         completer.complete(null, line, candidates);
 
@@ -308,7 +307,7 @@ public class TabCompletionTest {
                     end++;
                 }
 
-                String word = line.substring(start, end);
+                final String word = line.substring(start, end);
                 return word.trim();
             }
 
@@ -324,7 +323,7 @@ public class TabCompletionTest {
 
             @Override
             public List<String> words() {
-                List<String> result = new ArrayList<String>();
+                final List<String> result = new ArrayList<String>();
                 for (final String word : line.split("\\s+")) {
                     if (!word.isEmpty()) {
                         result.add(word);

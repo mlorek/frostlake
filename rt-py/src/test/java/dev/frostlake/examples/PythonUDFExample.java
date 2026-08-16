@@ -20,8 +20,8 @@ import dev.frostlake.DatabaseEngine;
 import dev.frostlake.metastore.model.Function;
 import dev.frostlake.metastore.model.Parameter;
 import dev.frostlake.metastore.model.Schema;
-import dev.frostlake.types.NumericType;
 import dev.frostlake.rt.py.PythonExecutor;
+import dev.frostlake.types.NumericType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -35,11 +35,15 @@ import java.util.List;
  * This shows Python functions alongside SQL and JavaScript functions,
  * demonstrating the engine's multi-language UDF capabilities.
  */
-public class PythonUDFExample {
+public final class PythonUDFExample {
+
+    /** Static helpers only — never instantiated. */
+    private PythonUDFExample() {
+    }
     private static final Logger logger = LoggerFactory.getLogger(PythonUDFExample.class);
 
     public static void main(final String[] args) {
-        DatabaseEngine engine = new DatabaseEngine();
+        final DatabaseEngine engine = new DatabaseEngine();
 
         try {
             engine.execute("CREATE DATABASE demo_db");
@@ -59,9 +63,9 @@ public class PythonUDFExample {
                 $$
                 """);
 
-            Schema schema = engine.getCatalog().getDatabase("DEMO_DB").getSchema("PUBLIC");
-            Function square = schema.getFunction("py_square");
-            Object result1 = PythonExecutor.executePythonFunction(square, Arrays.asList(7));
+            final Schema schema = engine.getCatalog().getDatabase("DEMO_DB").getSchema("PUBLIC");
+            final Function square = schema.getFunction("py_square");
+            final Object result1 = PythonExecutor.executePythonFunction(square, Arrays.asList(7));
             logger.info("   py_square(7) = " + result1);
             logger.info("");
 
@@ -77,8 +81,8 @@ public class PythonUDFExample {
                 $$
                 """);
 
-            Function titleCase = schema.getFunction("py_title_case");
-            Object result2 = PythonExecutor.executePythonFunction(titleCase, Arrays.asList("hello world"));
+            final Function titleCase = schema.getFunction("py_title_case");
+            final Object result2 = PythonExecutor.executePythonFunction(titleCase, Arrays.asList("hello world"));
             logger.info("   py_title_case('hello world') = " + result2);
             logger.info("");
 
@@ -103,7 +107,7 @@ public class PythonUDFExample {
                 $$
                 """);
 
-            Function grade = schema.getFunction("py_grade");
+            final Function grade = schema.getFunction("py_grade");
             logger.info("   py_grade(95) = " + PythonExecutor.executePythonFunction(grade, Arrays.asList(95)));
             logger.info("   py_grade(75) = " + PythonExecutor.executePythonFunction(grade, Arrays.asList(75)));
             logger.info("   py_grade(55) = " + PythonExecutor.executePythonFunction(grade, Arrays.asList(55)));
@@ -124,10 +128,10 @@ public class PythonUDFExample {
                 $$
                 """);
 
-            Function factorial = schema.getFunction("py_factorial");
+            final Function factorial = schema.getFunction("py_factorial");
             logger.info("   Factorial values:");
             for (int i = 1; i <= 6; i++) {
-                Object fact = PythonExecutor.executePythonFunction(factorial, Arrays.asList(i));
+                final Object fact = PythonExecutor.executePythonFunction(factorial, Arrays.asList(i));
                 logger.info("   " + i + "! = " + fact);
             }
             logger.info("");
@@ -145,8 +149,8 @@ public class PythonUDFExample {
                 $$
                 """);
 
-            Function sumSquares = schema.getFunction("py_sum_squares");
-            Object result5 = PythonExecutor.executePythonFunction(sumSquares, Arrays.asList(5));
+            final Function sumSquares = schema.getFunction("py_sum_squares");
+            final Object result5 = PythonExecutor.executePythonFunction(sumSquares, Arrays.asList(5));
             logger.info("   Sum of squares from 1 to 5: " + result5);
             logger.info("   (1² + 2² + 3² + 4² + 5² = " + result5 + ")");
             logger.info("");
@@ -164,18 +168,18 @@ public class PythonUDFExample {
                 $$
                 """);
 
-            Function reverseWords = schema.getFunction("py_reverse_words");
-            Object result6 = PythonExecutor.executePythonFunction(reverseWords, Arrays.asList("Python is awesome"));
+            final Function reverseWords = schema.getFunction("py_reverse_words");
+            final Object result6 = PythonExecutor.executePythonFunction(reverseWords, Arrays.asList("Python is awesome"));
             logger.info("   Original: 'Python is awesome'");
             logger.info("   Reversed: '" + result6 + "'");
             logger.info("");
 
             // Example 7: Complex function with nested definition
             logger.info("7. Fibonacci Sequence");
-            List<Parameter> fibParams = new ArrayList<>();
+            final List<Parameter> fibParams = new ArrayList<>();
             fibParams.add(new Parameter("n", NumericType.INTEGER));
 
-            String fibBody = """
+            final String fibBody = """
                 def fibonacci(n):
                     if n <= 1:
                         return n
@@ -185,12 +189,12 @@ public class PythonUDFExample {
                     return b
                 """;
 
-            Function fibonacci = new Function("py_fib", fibParams, NumericType.INTEGER,
+            final Function fibonacci = new Function("py_fib", fibParams, NumericType.INTEGER,
                                              fibBody, false, "PYTHON");
 
             logger.info("   Fibonacci sequence:");
             for (int i = 0; i <= 10; i++) {
-                Object fib = PythonExecutor.executePythonFunction(fibonacci, Arrays.asList(i));
+                final Object fib = PythonExecutor.executePythonFunction(fibonacci, Arrays.asList(i));
                 logger.info("   F(" + i + ") = " + fib);
             }
             logger.info("");
@@ -221,9 +225,9 @@ public class PythonUDFExample {
                 """);
 
             logger.info("   Three functions, same result:");
-            Function sqlDouble = schema.getFunction("sql_double");
-            Function jsDouble = schema.getFunction("js_double");
-            Function pyDouble = schema.getFunction("py_double");
+            final Function sqlDouble = schema.getFunction("sql_double");
+            final Function jsDouble = schema.getFunction("js_double");
+            final Function pyDouble = schema.getFunction("py_double");
 
             logger.info("   SQL:        " + sqlDouble.getLanguage() + " - Body: " + sqlDouble.getBody());
             logger.info("   JavaScript: " + jsDouble.getLanguage() + " - Body: " + jsDouble.getBody());
@@ -232,34 +236,36 @@ public class PythonUDFExample {
 
             // Example 9: Practical use case - Temperature conversion
             logger.info("9. Practical Example: Temperature Conversion");
-            List<Parameter> tempParams = new ArrayList<>();
+            final List<Parameter> tempParams = new ArrayList<>();
             tempParams.add(new Parameter("fahrenheit", NumericType.INTEGER));
 
-            String tempBody = """
+            final String tempBody = """
                 celsius = (fahrenheit - 32) * 5.0 / 9.0
                 return int(round(celsius))
                 """;
 
-            Function fahrenheitToCelsius = new Function("f_to_c", tempParams, NumericType.INTEGER,
+            final Function fahrenheitToCelsius = new Function("f_to_c", tempParams, NumericType.INTEGER,
                                                        tempBody, false, "PYTHON");
 
             logger.info("   Fahrenheit to Celsius conversions:");
-            int[] temps = {32, 50, 68, 86, 100, 212};
+            final int[] temps = {32, 50, 68, 86, 100, 212};
             for (final int temp : temps) {
-                Object celsius = PythonExecutor.executePythonFunction(fahrenheitToCelsius, Arrays.asList(temp));
+                final Object celsius = PythonExecutor.executePythonFunction(fahrenheitToCelsius, Arrays.asList(temp));
                 logger.info("   " + temp + "°F = " + celsius + "°C");
             }
             logger.info("");
 
             // Show all functions
             logger.info("10. All Created Functions");
-            var functions = engine.showFunctions();
+            final var functions = engine.showFunctions();
             logger.info("   Total functions: " + functions.getRowCount());
-            int sqlCount = 0, jsCount = 0, pyCount = 0;
+            int sqlCount = 0;
+            int jsCount = 0;
+            int pyCount = 0;
             for (final var row : functions.getRows()) {
-                String funcName = row.getValue(0).toString();
+                final String funcName = row.getValue(0).toString();
                 try {
-                    Function func = schema.getFunction(funcName.split("\\.")[2]);
+                    final Function func = schema.getFunction(funcName.split("\\.")[2]);
                     if ("SQL".equals(func.getLanguage())) sqlCount++;
                     else if ("JAVASCRIPT".equals(func.getLanguage())) jsCount++;
                     else if ("PYTHON".equals(func.getLanguage())) pyCount++;

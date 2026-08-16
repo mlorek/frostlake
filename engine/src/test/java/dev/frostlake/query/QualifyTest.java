@@ -16,9 +16,12 @@
 
 package dev.frostlake.query;
 
-import dev.frostlake.DatabaseEngine;
+import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
-import org.junit.jupiter.api.*;
+import org.junit.jupiter.api.MethodOrderer;
+import org.junit.jupiter.api.Order;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestMethodOrder;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -27,21 +30,11 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * Tests for QUALIFY clause with window functions
  */
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
-public class QualifyTest {
+public class QualifyTest extends BaseDatabaseTest {
 
-    private static DatabaseEngine engine;
-
-    @BeforeAll
-    public static void setup() {
-        engine = new DatabaseEngine();
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
-        engine.execute("USE SCHEMA PUBLIC");
-
-        // Create test table with employee data
+    @Override
+    protected void setupTest() {
         engine.execute("CREATE TABLE employees (id INTEGER, name VARCHAR, department VARCHAR, salary INTEGER)");
-
-        // Insert test data
         engine.execute("INSERT INTO employees VALUES (1, 'Alice', 'Engineering', 100000)");
         engine.execute("INSERT INTO employees VALUES (2, 'Bob', 'Engineering', 95000)");
         engine.execute("INSERT INTO employees VALUES (3, 'Charlie', 'Engineering', 90000)");
@@ -52,16 +45,11 @@ public class QualifyTest {
         engine.execute("INSERT INTO employees VALUES (8, 'Henry', 'HR', 65000)");
     }
 
-    @AfterAll
-    public static void teardown() {
-        engine.shutdown();
-    }
-
     @Test
     @Order(1)
     public void testQualifyWithRowNumber() {
         // Get top 3 employees overall
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT id, name, ROW_NUMBER() OVER (ORDER BY salary DESC) as rank
             FROM employees
             QUALIFY rank <= 3
@@ -74,7 +62,7 @@ public class QualifyTest {
     @Order(2)
     public void testQualifyWithRowNumberPartition() {
         // Top 2 employees per department: 3 departments (Engineering, Sales, HR) x 2 = 6 rows.
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT id, name, department, ROW_NUMBER() OVER (PARTITION BY department ORDER BY salary DESC) as dept_rank
             FROM employees
             QUALIFY dept_rank <= 2
@@ -87,7 +75,7 @@ public class QualifyTest {
     @Order(3)
     public void testQualifyWithRank() {
         // Get employees with rank <= 2
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT id, name, RANK() OVER (ORDER BY salary DESC) as rank
             FROM employees
             QUALIFY rank <= 2
@@ -100,7 +88,7 @@ public class QualifyTest {
     @Order(4)
     public void testQualifyWithDenseRank() {
         // Get employees with dense rank = 1
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT id, name, DENSE_RANK() OVER (ORDER BY salary DESC) as dense_rank
             FROM employees
             QUALIFY dense_rank = 1
@@ -113,7 +101,7 @@ public class QualifyTest {
     @Order(5)
     public void testQualifyGreaterThan() {
         // Get employees with row number > 5
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT id, name, ROW_NUMBER() OVER (ORDER BY id) as row_num
             FROM employees
             QUALIFY row_num > 5
@@ -126,7 +114,7 @@ public class QualifyTest {
     @Order(6)
     public void testQualifyEquals() {
         // Get employee with row number exactly 3
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT id, name, ROW_NUMBER() OVER (ORDER BY id) as row_num
             FROM employees
             QUALIFY row_num = 3
@@ -139,7 +127,7 @@ public class QualifyTest {
     @Order(7)
     public void testQualifyWithOrderBy() {
         // QUALIFY filters before ORDER BY
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT id, name, ROW_NUMBER() OVER (ORDER BY salary DESC) as rank
             FROM employees
             QUALIFY rank <= 3
@@ -151,7 +139,7 @@ public class QualifyTest {
         // Verify they're ordered by name (not salary)
         result.reset();
         result.next();
-        String firstName = (String) result.getValue("name");
+        final String firstName = (String) result.getValue("name");
         assertTrue(firstName != null, "Should have name in first row");
     }
 
@@ -159,7 +147,7 @@ public class QualifyTest {
     @Order(8)
     public void testQualifyWithWhere() {
         // Combine WHERE and QUALIFY
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT id, name, department, ROW_NUMBER() OVER (ORDER BY salary DESC) as rank
             FROM employees
             WHERE department = 'Engineering'
@@ -173,7 +161,7 @@ public class QualifyTest {
     @Order(9)
     public void testQualifyWithLimit() {
         // Combine QUALIFY and LIMIT
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT id, name, ROW_NUMBER() OVER (ORDER BY salary DESC) as rank
             FROM employees
             QUALIFY rank <= 5
@@ -187,7 +175,7 @@ public class QualifyTest {
     @Order(10)
     public void testQualifyNoMatch() {
         // QUALIFY condition that matches nothing
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT id, name, ROW_NUMBER() OVER (ORDER BY id) as row_num
             FROM employees
             QUALIFY row_num > 100
@@ -200,7 +188,7 @@ public class QualifyTest {
     @Order(11)
     public void testQualifyNotEquals() {
         // Use != operator
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT id, name, ROW_NUMBER() OVER (ORDER BY id) as row_num
             FROM employees
             QUALIFY row_num != 1
@@ -213,7 +201,7 @@ public class QualifyTest {
     @Order(12)
     public void testQualifyLessThan() {
         // Use < operator
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT id, name, ROW_NUMBER() OVER (ORDER BY id) as row_num
             FROM employees
             QUALIFY row_num < 4
@@ -226,7 +214,7 @@ public class QualifyTest {
     @Order(13)
     public void testQualifyGreaterThanOrEqual() {
         // Use >= operator
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT id, name, ROW_NUMBER() OVER (ORDER BY id DESC) as row_num
             FROM employees
             QUALIFY row_num >= 6
@@ -239,7 +227,7 @@ public class QualifyTest {
     @Order(14)
     public void testQualifyWithTop() {
         // Combine QUALIFY with TOP
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT TOP 2 id, name, ROW_NUMBER() OVER (ORDER BY salary DESC) as rank
             FROM employees
             QUALIFY rank <= 5
@@ -252,7 +240,7 @@ public class QualifyTest {
     @Order(15)
     public void testMultipleWindowFunctionsWithQualify() {
         // Multiple window functions, QUALIFY on one
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT id, name,
             ROW_NUMBER() OVER (ORDER BY salary DESC) as overall_rank,
             ROW_NUMBER() OVER (PARTITION BY department ORDER BY salary DESC) as dept_rank

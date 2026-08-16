@@ -30,7 +30,7 @@ public class QueryIdTest extends BaseDatabaseTest {
         engine.execute("CREATE TABLE test_table (id INTEGER, name VARCHAR)");
         engine.execute("INSERT INTO test_table VALUES (1, 'Alice')");
 
-        ExecutionResult result = engine.execute("SELECT * FROM test_table");
+        final ExecutionResult result = engine.execute("SELECT * FROM test_table");
 
         assertNotNull(result.getQueryId(), "Query ID should not be null");
         assertTrue(result.getQueryId().length() > 0, "Query ID should not be empty");
@@ -40,7 +40,7 @@ public class QueryIdTest extends BaseDatabaseTest {
     public void testQueryIdIsReturnedForInsert() {
         engine.execute("CREATE TABLE test_table (id INTEGER, name VARCHAR)");
 
-        ExecutionResult result = engine.execute("INSERT INTO test_table VALUES (1, 'Bob')");
+        final ExecutionResult result = engine.execute("INSERT INTO test_table VALUES (1, 'Bob')");
 
         assertNotNull(result.getQueryId(), "Query ID should not be null for INSERT");
         assertTrue(result.getQueryId().length() > 0, "Query ID should not be empty");
@@ -50,8 +50,8 @@ public class QueryIdTest extends BaseDatabaseTest {
     public void testDifferentQueriesHaveDifferentIds() {
         engine.execute("CREATE TABLE test_table (id INTEGER)");
 
-        ExecutionResult result1 = engine.execute("INSERT INTO test_table VALUES (1)");
-        ExecutionResult result2 = engine.execute("INSERT INTO test_table VALUES (2)");
+        final ExecutionResult result1 = engine.execute("INSERT INTO test_table VALUES (1)");
+        final ExecutionResult result2 = engine.execute("INSERT INTO test_table VALUES (2)");
 
         assertNotNull(result1.getQueryId());
         assertNotNull(result2.getQueryId());

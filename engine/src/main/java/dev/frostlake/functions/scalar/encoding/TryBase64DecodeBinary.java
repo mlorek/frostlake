@@ -24,7 +24,7 @@ import java.util.List;
 
 /** TRY_BASE64_DECODE_BINARY(string) — BASE64_DECODE_BINARY that returns NULL instead of erroring. */
 public class TryBase64DecodeBinary extends BuiltInFunction {
-    public TryBase64DecodeBinary() { super("TRY_BASE64_DECODE_BINARY", BinaryType.BINARY); }
+    public TryBase64DecodeBinary() { super("TRY_BASE64_DECODE_BINARY", BinaryType.VARBINARY); }
 
     @Override
     public Object evaluate(final List<Object> args) {
@@ -36,6 +36,8 @@ public class TryBase64DecodeBinary extends BuiltInFunction {
         }
     }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return 1; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return 1; }
 }

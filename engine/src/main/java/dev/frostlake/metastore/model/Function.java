@@ -35,6 +35,7 @@ public class Function extends SqlObject {
     private NullHandling nullHandling = NullHandling.CALLED_ON_NULL_INPUT;
     private Volatility volatility = Volatility.VOLATILE;
     private boolean secure = false;
+    private boolean temporary = false;
     private List<String> imports = new ArrayList<>();
 
     public Function(final String name, final List<Parameter> parameters,
@@ -114,6 +115,16 @@ public class Function extends SqlObject {
 
     public boolean isSecure() { return secure; }
     public void setSecure(final boolean secure) { this.secure = secure; }
+
+    /**
+     * A TEMPORARY (TEMP / VOLATILE) function lives only as long as the session that created it, the same
+     * lifetime Frostlake gives a temporary table. Live also makes it invisible to other sessions and
+     * lets it shadow a permanent object of the same name; Frostlake has one namespace per catalog, so
+     * it models the lifetime and not the isolation.
+     */
+    public boolean isTemporary() { return temporary; }
+
+    public void setTemporary(final boolean temporary) { this.temporary = temporary; }
 
     public List<String> getImports() { return new ArrayList<>(imports); }
     public void setImports(final List<String> imports) { this.imports = imports != null ? new ArrayList<>(imports) : new ArrayList<>(); }

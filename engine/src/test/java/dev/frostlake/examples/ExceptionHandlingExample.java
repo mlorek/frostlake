@@ -34,7 +34,7 @@ public class ExceptionHandlingExample {
 
     @Test
     public void demonstrateBasicExceptionHandling() {
-        DatabaseEngine engine = new DatabaseEngine();
+        final DatabaseEngine engine = new DatabaseEngine();
 
         try {
             engine.execute("CREATE DATABASE demo_db");
@@ -153,7 +153,7 @@ public class ExceptionHandlingExample {
 
     @Test
     public void demonstrateExceptionHandlingUseCase() {
-        DatabaseEngine engine = new DatabaseEngine();
+        final DatabaseEngine engine = new DatabaseEngine();
 
         try {
             engine.execute("CREATE DATABASE demo_db");

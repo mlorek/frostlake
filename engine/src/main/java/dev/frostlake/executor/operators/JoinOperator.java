@@ -96,6 +96,12 @@ public class JoinOperator implements Operator {
             joinType, leftRows.size(), rightRows.size());
 
         if (joinType == JoinType.CROSS || (joinCondition == null && conditionEvaluator == null)) {
+            // A comma join whose equality was pushed down from WHERE arrives here WITH keys and
+            // WITHOUT a condition: the keys ARE the condition, so the hash path applies and the
+            // cartesian product is never built.
+            if (leftKeyIdx != null && rightKeyIdx != null) {
+                return executeHashJoin(leftRows);
+            }
             return executeCrossJoin(leftRows);
         }
 
@@ -113,7 +119,7 @@ public class JoinOperator implements Operator {
                 joinType, leftTable.getName(), rightTable.getName());
         }
 
-        String conditionPreview = joinCondition.length() > 30
+        final String conditionPreview = joinCondition.length() > 30
             ? joinCondition.substring(0, 27) + "..."
             : joinCondition;
 
@@ -125,11 +131,11 @@ public class JoinOperator implements Operator {
      * Execute CROSS JOIN - Cartesian product of left and right rows.
      */
     private List<Row> executeCrossJoin(final List<Row> leftRows) {
-        List<Row> resultRows = new ArrayList<>();
+        final List<Row> resultRows = new ArrayList<>();
 
         for (final Row leftRow : leftRows) {
             for (final Row rightRow : rightRows) {
-                Row combinedRow = combineRows(leftRow, rightRow);
+                final Row combinedRow = combineRows(leftRow, rightRow);
                 resultRows.add(combinedRow);
             }
         }
@@ -144,8 +150,8 @@ public class JoinOperator implements Operator {
      * Execute conditional JOIN (INNER, LEFT, RIGHT, FULL).
      */
     private List<Row> executeConditionalJoin(final List<Row> leftRows) {
-        List<Row> resultRows = new ArrayList<>();
-        Set<Integer> matchedRightRows = new HashSet<>();
+        final List<Row> resultRows = new ArrayList<>();
+        final Set<Integer> matchedRightRows = new HashSet<>();
 
         // Process each left row
         for (final Row leftRow : leftRows) {
@@ -153,10 +159,10 @@ public class JoinOperator implements Operator {
 
             // Try to match with each right row
             for (int rightIdx = 0; rightIdx < rightRows.size(); rightIdx++) {
-                Row rightRow = rightRows.get(rightIdx);
+                final Row rightRow = rightRows.get(rightIdx);
 
                 // Evaluate join condition
-                boolean matches = evaluateCondition(leftRow, rightRow);
+                final boolean matches = evaluateCondition(leftRow, rightRow);
 
                 if (matches) {
                     resultRows.add(combineRows(leftRow, rightRow));
@@ -193,9 +199,9 @@ public class JoinOperator implements Operator {
      * regardless of key normalization. Handles all join types like {@link #executeConditionalJoin}.
      */
     private List<Row> executeHashJoin(final List<Row> leftRows) {
-        Map<List<Object>, List<Integer>> rightIndex = new HashMap<>();
+        final Map<List<Object>, List<Integer>> rightIndex = new HashMap<>();
         for (int r = 0; r < rightRows.size(); r++) {
-            List<Object> key = buildKey(rightRows.get(r), rightKeyIdx);
+            final List<Object> key = buildKey(rightRows.get(r), rightKeyIdx);
             List<Integer> bucket = rightIndex.get(key);
             if (bucket == null) {
                 bucket = new ArrayList<>();
@@ -204,16 +210,16 @@ public class JoinOperator implements Operator {
             bucket.add(r);
         }
 
-        List<Row> resultRows = new ArrayList<>();
-        boolean[] matchedRight = new boolean[rightRows.size()];
+        final List<Row> resultRows = new ArrayList<>();
+        final boolean[] matchedRight = new boolean[rightRows.size()];
 
         for (final Row leftRow : leftRows) {
             boolean leftMatchFound = false;
-            List<Integer> candidates = rightIndex.get(buildKey(leftRow, leftKeyIdx));
+            final List<Integer> candidates = rightIndex.get(buildKey(leftRow, leftKeyIdx));
             if (candidates != null) {
                 for (final int idx : candidates) {
-                    Row rightRow = rightRows.get(idx);
-                    if (evaluateCondition(leftRow, rightRow)) {
+                    final Row rightRow = rightRows.get(idx);
+                    if (matchesBeyondKeys(leftRow, rightRow)) {
                         resultRows.add(combineRows(leftRow, rightRow));
                         leftMatchFound = true;
                         matchedRight[idx] = true;
@@ -239,7 +245,7 @@ public class JoinOperator implements Operator {
     }
 
     private List<Object> buildKey(final Row row, final int[] keyIdx) {
-        List<Object> key = new ArrayList<>(keyIdx.length);
+        final List<Object> key = new ArrayList<>(keyIdx.length);
         for (int i = 0; i < keyIdx.length; i++) {
             key.add(normalizeKey(row.getValue(keyIdx[i])));
         }
@@ -288,6 +294,17 @@ public class JoinOperator implements Operator {
     /**
      * Evaluate join condition on a pair of rows.
      */
+    /**
+     * Whether a candidate pair that already AGREES ON THE KEYS also satisfies the join condition. With
+     * no condition at all the keys are the whole of it — the shape a comma join takes once its WHERE
+     * equality has been pushed down — and the pair matches. Without this, evaluateCondition's
+     * no-evaluator answer of FALSE would make such a join return nothing.
+     */
+    private boolean matchesBeyondKeys(final Row leftRow, final Row rightRow) {
+        return joinCondition == null && conditionEvaluator == null
+            || evaluateCondition(leftRow, rightRow);
+    }
+
     private boolean evaluateCondition(final Row leftRow, final Row rightRow) {
         if (conditionEvaluator == null) {
             logger.warn("No condition evaluator provided for conditional join");
@@ -306,7 +323,7 @@ public class JoinOperator implements Operator {
      * Combine left and right rows.
      */
     private Row combineRows(final Row leftRow, final Row rightRow) {
-        List<Object> combinedValues = new ArrayList<>(leftRow.getValues());
+        final List<Object> combinedValues = new ArrayList<>(leftRow.getValues());
         combinedValues.addAll(rightRow.getValues());
         return Row.of(combinedValues);
     }
@@ -315,8 +332,9 @@ public class JoinOperator implements Operator {
      * Combine left row with NULLs for right columns (for LEFT JOIN unmatched rows).
      */
     private Row combineRowsWithNullRight(final Row leftRow) {
-        List<Object> combinedValues = new ArrayList<>(leftRow.getValues());
-        for (int i = 0; i < rightTable.getColumns().size(); i++) {
+        final List<Object> combinedValues = new ArrayList<>(leftRow.getValues());
+        final int rightWidth = rightTable.columnCount();
+        for (int i = 0; i < rightWidth; i++) {
             combinedValues.add(null);
         }
         return Row.of(combinedValues);
@@ -326,8 +344,9 @@ public class JoinOperator implements Operator {
      * Combine right row with NULLs for left columns (for RIGHT JOIN unmatched rows).
      */
     private Row combineRowsWithNullLeft(final Row rightRow) {
-        List<Object> combinedValues = new ArrayList<>();
-        for (int i = 0; i < leftTable.getColumns().size(); i++) {
+        final List<Object> combinedValues = new ArrayList<>();
+        final int leftWidth = leftTable.columnCount();
+        for (int i = 0; i < leftWidth; i++) {
             combinedValues.add(null);
         }
         combinedValues.addAll(rightRow.getValues());

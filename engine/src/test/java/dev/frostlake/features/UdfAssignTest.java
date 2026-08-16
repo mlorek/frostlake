@@ -16,35 +16,24 @@
 
 package dev.frostlake.features;
 
-import dev.frostlake.DatabaseEngine;
+import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 
-public class UdfAssignTest {
+public class UdfAssignTest extends BaseDatabaseTest {
 
-    private DatabaseEngine engine;
-
-    @BeforeEach
-    public void setUp() {
-        engine = new DatabaseEngine();
+    @Override
+    protected void setupTest() {
         engine.execute("CREATE DATABASE IF NOT EXISTS test_db");
-        engine.execute("USE DATABASE test_db");
-        engine.execute("USE SCHEMA public");
         engine.execute("CREATE OR REPLACE FUNCTION f() RETURNS OBJECT AS '{}'");
-    }
-
-    @AfterEach
-    public void tearDown() {
-        if (engine != null) engine.shutdown();
     }
 
     @Test
     public void testAssignFunctionCall() {
-        ResultSet rs = engine.executeQuery(
+        final ResultSet rs = engine.executeQuery(
             "DECLARE o OBJECT DEFAULT NULL; BEGIN o := f(); RETURN o; END");
         assertNotNull(rs);
         assertEquals(1, rs.getRowCount());
@@ -53,7 +42,7 @@ public class UdfAssignTest {
 
     @Test
     public void testAssignParenFunctionCall() {
-        ResultSet rs = engine.executeQuery(
+        final ResultSet rs = engine.executeQuery(
             "DECLARE o OBJECT DEFAULT NULL; BEGIN o := (f()); RETURN o; END");
         assertNotNull(rs);
         assertEquals(1, rs.getRowCount());

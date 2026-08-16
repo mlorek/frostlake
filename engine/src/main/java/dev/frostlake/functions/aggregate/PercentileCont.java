@@ -20,9 +20,6 @@ import dev.frostlake.functions.AggregateFunction;
 import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.types.NumericType;
 
-import java.math.BigDecimal;
-import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
 
 public class PercentileCont extends AggregateFunction {
@@ -34,8 +31,10 @@ public class PercentileCont extends AggregateFunction {
     @Override
     public Object evaluate(final List<Object> args) { return null; }
 
-    @Override public int getMinArgCount() { return 2; }
-    @Override public int getMaxArgCount() { return 2; }
+    @Override
+    public int getMinArgCount() { return 2; }
+    @Override
+    public int getMaxArgCount() { return 2; }
 
     /**
      * The FRACTION argument is a plain number, and refuses a semi-structured value with the ordinary
@@ -49,31 +48,4 @@ public class PercentileCont extends AggregateFunction {
         return SemiStructuredRejection.ARGUMENT_TYPES;
     }
 
-    public static class PercentileContAccumulator implements Accumulator {
-        private final List<Double> values = new ArrayList<>();
-        private final double percentile;
-
-        public PercentileContAccumulator(final double p) { this.percentile = p; }
-
-        @Override
-        public void accumulate(final Object v) {
-            if (v != null) values.add(new BigDecimal(v.toString()).doubleValue());
-        }
-
-        @Override
-        public Object getResult() {
-            if (values.isEmpty()) return null;
-            List<Double> sorted = new ArrayList<>(values);
-            Collections.sort(sorted);
-            double idx = percentile * (sorted.size() - 1);
-            int lo = (int) idx; int hi = Math.min(lo + 1, sorted.size() - 1);
-            return sorted.get(lo) * (1 - (idx - lo)) + sorted.get(hi) * (idx - lo);
-        }
-
-        @Override
-        public void reset() { values.clear(); }
-
-        @Override
-        public void merge(final Accumulator other) { values.addAll(((PercentileContAccumulator) other).values); }
-    }
 }

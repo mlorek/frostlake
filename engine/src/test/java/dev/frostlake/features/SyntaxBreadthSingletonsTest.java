@@ -127,12 +127,7 @@ public class SyntaxBreadthSingletonsTest extends BaseDatabaseTest {
     @Test
     public void dollarQuotedColumnComment() {
         engine.execute("CREATE TABLE dq (id INTEGER COMMENT $$some comment$$)");
-        // The CREATE runs on both backends; only the read-back is embedded-only.
-        Assumptions.assumeFalse(isLiveSnowflake(),
-            "reads the stored column comment through engine.getCatalog(), which live Snowflake never "
-            + "populates (the account's comment lives in its own INFORMATION_SCHEMA)");
-        assertEquals("some comment", engine.getCatalog().getDatabase("TEST_DB").getSchema("TEST_SCHEMA")
-            .getTable("DQ").getColumn("ID").getComment());
+        assertEquals("some comment", describeCell("dq", "ID", "comment"));
     }
 
     @Test

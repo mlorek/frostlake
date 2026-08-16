@@ -163,6 +163,8 @@ public class SplitTextMarkdownHeader extends BuiltInFunction {
         return headers;
     }
 
-    @Override public int getMinArgCount() { return 3; }
-    @Override public int getMaxArgCount() { return 4; }
+    @Override
+    public int getMinArgCount() { return 3; }
+    @Override
+    public int getMaxArgCount() { return 4; }
 }

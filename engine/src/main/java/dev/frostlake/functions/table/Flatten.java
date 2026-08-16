@@ -16,11 +16,7 @@
 
 package dev.frostlake.functions.table;
 
-import tools.jackson.databind.JsonNode;
-import tools.jackson.databind.ObjectMapper;
-import tools.jackson.databind.cfg.JsonNodeFeature;
-import tools.jackson.databind.json.JsonMapper;
-import tools.jackson.databind.node.StringNode;
+import dev.frostlake.executor.SqlCompilationError;
 import dev.frostlake.functions.TableFunction;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
@@ -29,35 +25,72 @@ import dev.frostlake.types.NumericType;
 import dev.frostlake.types.StringType;
 import dev.frostlake.values.VariantUndefined;
 import dev.frostlake.values.VariantValue;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.cfg.JsonNodeFeature;
+import tools.jackson.databind.json.JsonMapper;
+import tools.jackson.databind.node.StringNode;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 /**
- * FLATTEN table function - flattens semi-structured data into rows
- * Supports VARIANT, OBJECT, and ARRAY types
+ * FLATTEN — expands semi-structured data into one row per element.
  *
- * Returns columns:
- * - SEQ: sequence number (0-based)
- * - KEY: key name for objects, null for arrays
- * - PATH: path to the element
- * - INDEX: array index for arrays, null for objects
- * - VALUE: the flattened value
- * - THIS: the original input value
+ * <p>Returns SEQ, KEY, PATH, INDEX, VALUE and THIS. <b>INPUT must be VARIANT, OBJECT or ARRAY</b>:
+ * Snowflake will not read JSON out of a VARCHAR, and answers
+ * {@code invalid type [VARCHAR(7)] for parameter 'INPUT'} for {@code FLATTEN(INPUT => '[1,2,3]')} —
+ * {@code PARSE_JSON} is the supported spelling. That refusal, the argument names and the boolean-ness
+ * of OUTER / RECURSIVE are all settled while the statement is compiled (see
+ * {@code TableFunctionArguments}); what is left here is what a value decides.
+ *
+ * <p>The measured row rules:
+ * <ul>
+ *   <li>SEQ numbers the INPUT RECORD, not the element: every row of one call carries the same SEQ,
+ *       starting at 1.</li>
+ *   <li>Only a container expands. A VARIANT holding a scalar — a string, a number, a JSON null —
+ *       contributes NO rows, so {@code FLATTEN(PARSE_JSON('"abc"'))} is empty rather than one row, and
+ *       a string that merely LOOKS like JSON is not re-read as JSON.</li>
+ *   <li>RECURSIVE descends only through what the MODE emitted. Under {@code MODE => 'ARRAY'} an
+ *       object's members are neither emitted nor followed, which is why
+ *       {@code FLATTEN(PARSE_JSON('{"arr":[1,2,3]}'), MODE => 'ARRAY', RECURSIVE => TRUE)} is
+ *       empty.</li>
+ *   <li>PATH prefixes the reported path rather than replacing it: {@code PATH => 'a.b'} reports
+ *       {@code a.b[0]}. A path that matches nothing, or matches a scalar, yields no rows.</li>
+ *   <li>OUTER's stand-in row is all NULL. For an empty container it still reports the container as
+ *       THIS and an empty PATH; for a scalar or NULL input both are NULL.</li>
+ * </ul>
  */
 public class Flatten extends TableFunction {
 
     private static final ObjectMapper JACKSON = JsonMapper.builder().enable(JsonNodeFeature.USE_BIG_DECIMAL_FOR_FLOATS).build();
 
+    /**
+     * Snowflake's SEQ is a sequence number for the INPUT RECORD, so one call numbers all its rows
+     * alike. Live increments it across the rows of a scanned column; a single call always reports 1.
+     */
+    private static final long INPUT_SEQUENCE = 1L;
+
+    /** The order the positional form fills FLATTEN's parameters in. */
+    private static final String[] POSITIONAL_PARAMETERS = {"INPUT", "PATH", "OUTER", "RECURSIVE", "MODE"};
+
     public Flatten() {
         super("FLATTEN");
     }
 
-    /** Positional form {@code FLATTEN(input)} — the first argument is INPUT. */
+    /**
+     * The positional form fills the same five parameters in order — {@code FLATTEN(input, path, outer,
+     * recursive, mode)} — and each one it is given counts, so a positional PATH selects a sub-element
+     * exactly as the named one does.
+     */
     @Override
     public ResultSet execute(final List<Object> positionalArgs) {
         final Map<String, Object> namedArgs = new HashMap<>();
-        if (!positionalArgs.isEmpty()) {
-            namedArgs.put("INPUT", positionalArgs.get(0));
+        for (int i = 0; i < positionalArgs.size() && i < POSITIONAL_PARAMETERS.length; i++) {
+            namedArgs.put(POSITIONAL_PARAMETERS[i], positionalArgs.get(i));
         }
         return execute(namedArgs);
     }
@@ -71,19 +104,19 @@ public class Flatten extends TableFunction {
         // all-NULL row (OUTER => TRUE). Only an ABSENT INPUT argument is an error, which validateArgs()
         // above already rejects. Throwing here aborted the WHOLE statement — the table function is expanded
         // for every left row before WHERE can filter, so one NULL in a scanned column killed the query.
-        Object input = namedArgs.get("INPUT");
+        final Object input = namedArgs.get("INPUT");
 
         // Get optional parameters
-        String path = namedArgs.containsKey("PATH") ? namedArgs.get("PATH").toString() : null;
-        boolean outer = namedArgs.containsKey("OUTER") &&
+        final String path = namedArgs.containsKey("PATH") ? namedArgs.get("PATH").toString() : null;
+        final boolean outer = namedArgs.containsKey("OUTER") &&
                        Boolean.parseBoolean(namedArgs.get("OUTER").toString());
-        boolean recursive = namedArgs.containsKey("RECURSIVE") &&
+        final boolean recursive = namedArgs.containsKey("RECURSIVE") &&
                            Boolean.parseBoolean(namedArgs.get("RECURSIVE").toString());
         final FlattenMode mode = namedArgs.containsKey("MODE")
                 ? FlattenMode.fromString(namedArgs.get("MODE").toString()) : FlattenMode.BOTH;
 
         // Create result columns
-        List<ResultSetColumn> columns = new ArrayList<>();
+        final List<ResultSetColumn> columns = new ArrayList<>();
         columns.add(new ResultSetColumn("SEQ", NumericType.INTEGER));
         columns.add(new ResultSetColumn("KEY", StringType.VARCHAR));
         columns.add(new ResultSetColumn("PATH", StringType.VARCHAR));
@@ -91,12 +124,12 @@ public class Flatten extends TableFunction {
         columns.add(new ResultSetColumn("VALUE", StringType.VARCHAR));
         columns.add(new ResultSetColumn("THIS", StringType.VARCHAR));
 
-        List<Row> rows = new ArrayList<>();
+        final List<Row> rows = new ArrayList<>();
 
         // Parse input as JSON (a semi-structured wrapper contributes its CANONICAL text — toString
         // renders XML-shaped variants as XML text, which is not parseable JSON)
         JsonNode jsonInput = parseInput(input);
-        String inputStr;
+        final String inputStr;
         if (input == null) {
             inputStr = null;
         } else if (input instanceof VariantValue) {
@@ -105,23 +138,31 @@ public class Flatten extends TableFunction {
             inputStr = input.toString();
         }
 
-        // Apply path filter if specified
+        // Apply path filter if specified. The path also PREFIXES every reported path — live answers
+        // "a.b[0]" for PATH => 'a.b', not "[0]".
+        String pathPrefix = "";
         if (path != null && !path.isEmpty()) {
             jsonInput = navigatePath(jsonInput, path);
+            pathPrefix = path;
         }
 
         // Flatten the JSON structure
-        flattenElement(jsonInput, "", inputStr, rows, 0, recursive, mode, outer);
+        final boolean expandable = jsonInput != null && (jsonInput.isObject() || jsonInput.isArray());
+        if (expandable) {
+            flattenElement(jsonInput, pathPrefix, inputStr, rows, recursive, mode, outer);
+        }
 
-        // If outer is true and no rows were generated, add a single null row
+        // If outer is true and no rows were generated, add a single null row. It reports the input as
+        // THIS only when the input WAS a container that simply held nothing — a scalar, a NULL, and a
+        // path that matched nothing all leave THIS and PATH null too.
         if (outer && rows.isEmpty()) {
-            List<Object> values = new ArrayList<>();
-            values.add(0L);      // SEQ
-            values.add(null);    // KEY
-            values.add(null);    // PATH
-            values.add(null);    // INDEX
-            values.add(null);    // VALUE
-            values.add(inputStr); // THIS
+            final List<Object> values = new ArrayList<>();
+            values.add(INPUT_SEQUENCE);              // SEQ
+            values.add(null);                        // KEY
+            values.add(expandable ? pathPrefix : null);   // PATH
+            values.add(null);                        // INDEX
+            values.add(null);                        // VALUE
+            values.add(expandable ? inputStr : null);     // THIS
             rows.add(new Row(values));
         }
 
@@ -136,7 +177,7 @@ public class Flatten extends TableFunction {
             return ((VariantValue) input).node();
         }
 
-        String inputStr = input.toString();
+        final String inputStr = input.toString();
 
         // Try to parse as JSON
         try {
@@ -154,7 +195,7 @@ public class Flatten extends TableFunction {
         }
 
         // Simple path navigation (e.g., "field1.field2" or "array[0]")
-        String[] parts = path.split("\\.");
+        final String[] parts = path.split("\\.");
         JsonNode current = element;
 
         for (final String part : parts) {
@@ -164,8 +205,8 @@ public class Flatten extends TableFunction {
 
             // Handle array index
             if (part.matches(".*\\[\\d+\\]")) {
-                String fieldName = part.substring(0, part.indexOf('['));
-                int index = Integer.parseInt(part.substring(part.indexOf('[') + 1, part.indexOf(']')));
+                final String fieldName = part.substring(0, part.indexOf('['));
+                final int index = Integer.parseInt(part.substring(part.indexOf('[') + 1, part.indexOf(']')));
 
                 if (!fieldName.isEmpty() && current.isObject()) {
                     current = current.get(fieldName);
@@ -188,33 +229,39 @@ public class Flatten extends TableFunction {
         return current;
     }
 
-    private int flattenElement(final JsonNode element, final String currentPath, final String thisValue,
-                               final List<Row> rows, final int seqStart, final boolean recursive,
-                               final FlattenMode mode, final boolean outer) {
-        int seq = seqStart;
-
+    /**
+     * Walk one container, emitting the rows its MODE calls for.
+     *
+     * <p>Recursion follows emission: a member the mode did not emit is not descended into either, which
+     * is why {@code MODE => 'ARRAY'} over an object yields nothing at all however deep the arrays
+     * underneath it are. A scalar is never expanded — only a container reaches here.
+     */
+    private void flattenElement(final JsonNode element, final String currentPath, final String thisValue,
+                                final List<Row> rows, final boolean recursive,
+                                final FlattenMode mode, final boolean outer) {
         if (element == null || element.isNull()) {
-            return seq;
+            return;
         }
 
         if (element.isObject()) {
             if (element.size() == 0 && outer) {
                 // Empty object with outer=true
-                addRow(rows, seq++, null, currentPath, null, null, thisValue);
+                addRow(rows, null, currentPath, null, null, thisValue);
             } else {
-                Set<Map.Entry<String, JsonNode>> fields = element.properties();
+                final Set<Map.Entry<String, JsonNode>> fields = element.properties();
                 for(final Map.Entry<String, JsonNode> entry : fields) {
-                    String key = entry.getKey();
-                    JsonNode value = entry.getValue();
-                    String newPath = currentPath.isEmpty() ? key : currentPath + "." + key;
+                    final String key = entry.getKey();
+                    final JsonNode value = entry.getValue();
+                    final String newPath = currentPath.isEmpty() ? key : currentPath + "." + key;
+                    final boolean emitted = mode == FlattenMode.OBJECT || mode == FlattenMode.BOTH;
 
-                    if (mode == FlattenMode.OBJECT || mode == FlattenMode.BOTH) {
-                        addRow(rows, seq++, key, newPath, null, nodeToValue(value), thisValue);
+                    if (emitted) {
+                        addRow(rows, key, newPath, null, nodeToValue(value), thisValue);
                     }
 
                     // Recursive flattening
-                    if (recursive && (value.isObject() || value.isArray())) {
-                        seq = flattenElement(value, newPath, thisValue, rows, seq, true, mode, outer);
+                    if (recursive && emitted && (value.isObject() || value.isArray())) {
+                        flattenElement(value, newPath, thisValue, rows, true, mode, outer);
                     }
                 }
             }
@@ -230,39 +277,37 @@ public class Flatten extends TableFunction {
             }
             if (visible == 0 && outer) {
                 // Empty array with outer=true
-                addRow(rows, seq++, null, currentPath, null, null, thisValue);
+                addRow(rows, null, currentPath, null, null, thisValue);
             } else {
                 for (int i = 0; i < element.size(); i++) {
-                    JsonNode value = element.get(i);
-                    String newPath = currentPath + "[" + i + "]";
+                    final JsonNode value = element.get(i);
+                    final String newPath = currentPath + "[" + i + "]";
                     if (VariantUndefined.isUndefined(value)) {
                         continue;
                     }
+                    final boolean emitted = mode == FlattenMode.ARRAY || mode == FlattenMode.BOTH;
 
-                    if (mode == FlattenMode.ARRAY || mode == FlattenMode.BOTH) {
-                        addRow(rows, seq++, null, newPath, (long) i, nodeToValue(value), thisValue);
+                    if (emitted) {
+                        addRow(rows, null, newPath, (long) i, nodeToValue(value), thisValue);
                     }
 
                     // Recursive flattening
-                    if (recursive && (value.isObject() || value.isArray())) {
-                        seq = flattenElement(value, newPath, thisValue, rows, seq, true, mode, outer);
+                    if (recursive && emitted && (value.isObject() || value.isArray())) {
+                        flattenElement(value, newPath, thisValue, rows, true, mode, outer);
                     }
                 }
             }
-        } else {
-            // Primitive value
-            addRow(rows, seq++, null, currentPath, null, nodeToValue(element), thisValue);
         }
-
-        return seq;
     }
 
-    private void addRow(final List<Row> rows, final int seq, final String key, final String path, final Long index,
+    private void addRow(final List<Row> rows, final String key, final String path, final Long index,
                        final Object value, final String thisValue) {
-        List<Object> values = new ArrayList<>();
-        values.add((long) seq);
+        final List<Object> values = new ArrayList<>();
+        values.add(INPUT_SEQUENCE);
         values.add(key);
-        values.add(path.isEmpty() ? null : path);
+        // An empty path stays EMPTY rather than becoming NULL: the OUTER stand-in row for a container
+        // that held nothing is the only row that has one, and live reports '' there.
+        values.add(path);
         values.add(index);
         values.add(value);
         values.add(thisValue);
@@ -315,32 +360,17 @@ public class Flatten extends TableFunction {
         return VariantValue.ofNode(node);
     }
 
+    /**
+     * What is left once the statement has compiled: the argument NAMES and the missing-INPUT refusal
+     * are raised from the parse tree, where they carry a position, so only the MODE value is judged
+     * here — live spells it {@code Bad flattening mode 'NOPE' (not 'BOTH', 'ARRAY', or 'OBJECT')}.
+     */
     @Override
     public void validateArgs(final Map<String, Object> namedArgs) {
-        if (namedArgs.isEmpty()) {
-            throw new RuntimeException("FLATTEN function requires INPUT argument");
-        }
-
-        // Validate INPUT parameter is present
-        if (!namedArgs.containsKey("INPUT")) {
-            throw new RuntimeException("FLATTEN function requires INPUT argument");
-        }
-
-        // Check for valid argument names
-        for (final String key : namedArgs.keySet()) {
-            String upperKey = key.toUpperCase();
-            if (!upperKey.equals("INPUT") && !upperKey.equals("PATH") &&
-                !upperKey.equals("OUTER") && !upperKey.equals("RECURSIVE") &&
-                !upperKey.equals("MODE")) {
-                throw new RuntimeException("Invalid argument for FLATTEN: " + key +
-                    ". Valid arguments are INPUT, PATH, OUTER, RECURSIVE, MODE");
-            }
-        }
-
-        // Validate MODE if present
         if (namedArgs.containsKey("MODE")
                 && FlattenMode.fromString(namedArgs.get("MODE").toString()) == null) {
-            throw new RuntimeException("MODE must be OBJECT, ARRAY, or BOTH");
+            throw new RuntimeException(SqlCompilationError.of("Bad flattening mode '"
+                + namedArgs.get("MODE") + "' (not 'BOTH', 'ARRAY', or 'OBJECT')"));
         }
     }
 }

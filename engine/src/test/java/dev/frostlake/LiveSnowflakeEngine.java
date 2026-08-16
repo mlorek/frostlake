@@ -21,7 +21,15 @@ import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.storage.ResultSet;
 import dev.frostlake.storage.ResultSetColumn;
 import dev.frostlake.storage.Row;
+import dev.frostlake.types.ArrayType;
+import dev.frostlake.types.BinaryType;
+import dev.frostlake.types.BooleanType;
+import dev.frostlake.types.DataType;
+import dev.frostlake.types.DateTimeType;
+import dev.frostlake.types.NumericType;
+import dev.frostlake.types.ObjectType;
 import dev.frostlake.types.StringType;
+import dev.frostlake.types.VariantType;
 import dev.frostlake.values.BinaryValue;
 import net.snowflake.client.api.statement.SnowflakeStatement;
 import org.antlr.v4.runtime.BaseErrorListener;
@@ -82,6 +90,16 @@ public class LiveSnowflakeEngine extends DatabaseEngine {
 
     private String executeOne(final String sql, final List<ResultSet> results) {
         try (final Statement statement = LiveSnowflake.shared().createStatement()) {
+            LiveSnowflake.pinSingleStatement(statement);
+            // The driver classifies COPY (and the stage file operations) as non-queries under
+            // execute(), answering only an update count and hiding the result rows the server
+            // sends (and the embedded engine returns). executeQuery surfaces them.
+            if (needsResultSetRoute(sql)) {
+                try (final java.sql.ResultSet rs = statement.executeQuery(sql)) {
+                    results.add(convert(rs));
+                }
+                return queryIdOf(statement);
+            }
             boolean isResultSet = statement.execute(sql);
             while (true) {
                 if (isResultSet) {
@@ -102,6 +120,17 @@ public class LiveSnowflakeEngine extends DatabaseEngine {
             LiveSnowflake.markSharedDirty();   // a failed script can abandon a transaction mid-flight
             throw new RuntimeException(e.getMessage(), e);
         }
+    }
+
+    private static boolean needsResultSetRoute(final String sql) {
+        final String trimmed = sql.trim();
+        int end = 0;
+        while (end < trimmed.length() && Character.isLetter(trimmed.charAt(end))) {
+            end++;
+        }
+        final String first = trimmed.substring(0, end).toUpperCase();
+        return "COPY".equals(first) || "PUT".equals(first) || "GET".equals(first)
+            || "LIST".equals(first) || "REMOVE".equals(first) || "RM".equals(first);
     }
 
     private String queryIdOf(final Statement statement) {
@@ -142,8 +171,26 @@ public class LiveSnowflakeEngine extends DatabaseEngine {
             if (failed[0] || script.flowChain().isEmpty()) {
                 return Collections.singletonList(sql);
             }
+            // A single statement goes over VERBATIM. Slicing it from its first token's start index
+            // would drop the leading whitespace, and Snowflake reports a syntax error at the token's
+            // own line and column — so the split would silently move the error being measured, and a
+            // position test would read the account's answer to text it never sent.
+            if (script.flowChain().size() == 1) {
+                return Collections.singletonList(sql);
+            }
+            // Only text the SOURCE separates with a semicolon is split. Where the engine's parser
+            // finds two statements with nothing between them, that reading is the engine's own and
+            // may be exactly the divergence under test — forwarding the halves separately would ask
+            // the account about text it was never given, and a wrong reading would come back green.
             final List<String> statements = new ArrayList<String>();
             for (final FrostlakeParser.FlowChainContext chain : script.flowChain()) {
+                if (!statements.isEmpty()) {
+                    final int gapStart = script.flowChain().get(statements.size() - 1)
+                        .getStop().getStopIndex() + 1;
+                    if (sql.substring(gapStart, chain.getStart().getStartIndex()).indexOf(';') < 0) {
+                        return Collections.singletonList(sql);
+                    }
+                }
                 statements.add(sql.substring(chain.getStart().getStartIndex(),
                     chain.getStop().getStopIndex() + 1));
             }
@@ -296,9 +343,7 @@ public class LiveSnowflakeEngine extends DatabaseEngine {
         final List<ResultSetColumn> columns = new ArrayList<ResultSetColumn>();
         final boolean[] semiStructured = new boolean[columnCount];
         for (int i = 1; i <= columnCount; i++) {
-            // Column DATA TYPES are not modeled in live mode (everything reports VARCHAR): the
-            // switch exists to compare VALUES; Snowflake's JDBC type names don't map 1:1 anyway.
-            columns.add(new ResultSetColumn(metaData.getColumnLabel(i), StringType.VARCHAR));
+            columns.add(new ResultSetColumn(metaData.getColumnLabel(i), declaredType(metaData, i)));
             final String typeName = String.valueOf(metaData.getColumnTypeName(i)).toUpperCase();
             semiStructured[i - 1] = typeName.equals("VARIANT") || typeName.equals("OBJECT")
                 || typeName.equals("ARRAY");
@@ -363,6 +408,76 @@ public class LiveSnowflakeEngine extends DatabaseEngine {
             }
         }
         return value;
+    }
+
+    /**
+     * The account's own type for a result column, read from the driver's metadata. The JDBC type INT
+     * is not enough on its own — VARIANT, OBJECT and ARRAY all arrive as {@code Types.VARCHAR} — so the
+     * TYPE NAME decides the family and precision/scale carry the parameters. Measured on the account,
+     * over the JSON result format this session forces:
+     *
+     * <pre>
+     *   INT              NUMBER precision 38 scale 0        TIME           TIME  scale 9
+     *   NUMBER(10,2)     NUMBER precision 10 scale 2        TIMESTAMP_NTZ  TIMESTAMPNTZ scale 9
+     *   FLOAT            DOUBLE                             TIMESTAMP_LTZ  TIMESTAMPLTZ scale 9
+     *   VARCHAR(5)       VARCHAR precision 5                TIMESTAMP_TZ   TIMESTAMPTZ  scale 9
+     *   TEXT             VARCHAR precision 16777216         VARIANT/OBJECT/ARRAY by NAME
+     *   BINARY(8)        BINARY precision 8                 DATE           DATE
+     * </pre>
+     *
+     * <p>Without this every column read VARCHAR, so no test could compare a declared type against the
+     * account at all.
+     */
+    private DataType declaredType(final ResultSetMetaData metaData, final int index) throws SQLException {
+        final String typeName = String.valueOf(metaData.getColumnTypeName(index)).toUpperCase();
+        final int precision = metaData.getPrecision(index);
+        final int scale = metaData.getScale(index);
+        switch (typeName) {
+            case "NUMBER":
+            case "NUMERIC":
+            case "DECIMAL":
+                return new NumericType("NUMBER", precision, scale);
+            case "DOUBLE":
+            case "DOUBLE PRECISION":
+            case "FLOAT":
+            case "REAL":
+                // The driver carries NO precision or scale for this family (both read 0), so only the
+                // family itself is measurable here — compare the name, not the parameters.
+                return new NumericType("FLOAT", precision, scale);
+            case "VARCHAR":
+            case "TEXT":
+            case "STRING":
+            case "CHAR":
+                return new StringType("VARCHAR", precision);
+            case "BINARY":
+            case "VARBINARY":
+                return new BinaryType("BINARY", precision);
+            case "BOOLEAN":
+                return new BooleanType();
+            case "DATE":
+                return new DateTimeType("DATE", 0, false);
+            case "TIME":
+                return new DateTimeType("TIME", scale, false);
+            case "TIMESTAMPNTZ":
+            case "TIMESTAMP_NTZ":
+            case "TIMESTAMP":
+            case "DATETIME":
+                return new DateTimeType("TIMESTAMP_NTZ", scale, false);
+            case "TIMESTAMPLTZ":
+            case "TIMESTAMP_LTZ":
+                return new DateTimeType("TIMESTAMP_LTZ", scale, true);
+            case "TIMESTAMPTZ":
+            case "TIMESTAMP_TZ":
+                return new DateTimeType("TIMESTAMP_TZ", scale, true);
+            case "VARIANT":
+                return new VariantType();
+            case "OBJECT":
+                return new ObjectType();
+            case "ARRAY":
+                return new ArrayType(new VariantType());
+            default:
+                return StringType.VARCHAR;
+        }
     }
 
     private ResultSet updateCountResult(final int count, final String sql) {

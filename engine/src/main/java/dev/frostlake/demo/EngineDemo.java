@@ -50,7 +50,7 @@ public class EngineDemo extends AbstractDemo {
 
 
         // Insert sample data
-        ResultSet resultSet = engine.executeQuery("""
+        final ResultSet resultSet = engine.executeQuery("""
                 SELECT *
                 FROM t1
                 WHERE EXISTS (
@@ -66,7 +66,7 @@ public class EngineDemo extends AbstractDemo {
                 """);
 
         System.out.println(resultSet.getRowCount());
-        List<Row> rows = resultSet.getRows();
+        final List<Row> rows = resultSet.getRows();
         System.out.println(rows);
     }
 }

@@ -321,6 +321,7 @@ final class JdbcMetadataQueries {
         // The listing and its re-projection go out as ONE multi-statement request: RESULT_SCAN
         // reads the listing back, and pairing them costs one round trip instead of two.
         final Statement statement = connection.createStatement();
+        allowInternalPack(statement);
         statement.execute("SHOW PRIMARY KEYS IN ACCOUNT; " + sql);
         // Advance exactly once, past the listing, to the re-projection: a further getMoreResults()
         // would close that result set while looking for a third statement that does not exist.
@@ -395,6 +396,7 @@ final class JdbcMetadataQueries {
         // wants when drawing a table's inbound references.
         sql.append(" ORDER BY PKTABLE_CAT, PKTABLE_SCHEM, PKTABLE_NAME, KEY_SEQ");
         final Statement statement = connection.createStatement();
+        allowInternalPack(statement);
         statement.execute("SHOW IMPORTED KEYS IN ACCOUNT; " + sql);
         statement.getMoreResults();
         return statement.getResultSet();
@@ -584,4 +586,17 @@ final class JdbcMetadataQueries {
     private static ResultSet query(final Connection connection, final String sql) throws SQLException {
         return connection.createStatement().executeQuery(sql);
     }
+
+    /**
+     * The driver's OWN metadata packs are internal plumbing — like the real driver's, they are
+     * never subject to the caller's MULTI_STATEMENT_COUNT gate.
+     */
+    private static void allowInternalPack(final Statement statement) throws SQLException {
+        if (statement instanceof DirectStatement) {
+            ((DirectStatement) statement).setParameter("MULTI_STATEMENT_COUNT", 0);
+        } else if (statement instanceof DatabaseStatement) {
+            ((DatabaseStatement) statement).setParameter("MULTI_STATEMENT_COUNT", 0);
+        }
+    }
+
 }

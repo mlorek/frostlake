@@ -25,25 +25,7 @@ public class CaseExpression implements Expression {
     private final List<WhenClause> whenClauses;
     private final Expression elseExpression;
 
-    public static class WhenClause {
-        private final Expression condition;
-        private final Expression result;
-
-        public WhenClause(final Expression condition, final Expression result) {
-            this.condition = condition;
-            this.result = result;
-        }
-
-        public Expression getCondition() {
-            return condition;
-        }
-
-        public Expression getResult() {
-            return result;
-        }
-    }
-
-    public CaseExpression(final List<WhenClause> whenClauses, final Expression elseExpression) {
+public CaseExpression(final List<WhenClause> whenClauses, final Expression elseExpression) {
         this.whenClauses = whenClauses;
         this.elseExpression = elseExpression;
     }
@@ -63,7 +45,7 @@ public class CaseExpression implements Expression {
 
     @Override
     public String toString() {
-        StringBuilder sb = new StringBuilder("CASE");
+        final StringBuilder sb = new StringBuilder("CASE");
         for (final WhenClause when : whenClauses) {
             sb.append(" WHEN ").append(when.condition).append(" THEN ").append(when.result);
         }

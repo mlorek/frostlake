@@ -40,7 +40,7 @@ public class ScalarSubqueryInSelectTest extends BaseDatabaseTest {
 
     @Test
     public void testSimpleScalarSubquery() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT name, price, (SELECT AVG(price) FROM products) as avg_price FROM products WHERE id = 1"
         );
         assertEquals(1, result.getRowCount());
@@ -51,7 +51,7 @@ public class ScalarSubqueryInSelectTest extends BaseDatabaseTest {
 
     @Test
     public void testCorrelatedScalarSubquery() {
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT
                 name,
                 (SELECT AVG(price) FROM products WHERE products.category_id = categories.id) as avg_price
@@ -96,7 +96,7 @@ public class ScalarSubqueryInSelectTest extends BaseDatabaseTest {
 
     @Test
     public void testMultipleCorrelatedScalarSubqueries() {
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT
                 name,
                 (SELECT COUNT(*) FROM products WHERE products.category_id = categories.id) as product_count,
@@ -123,7 +123,7 @@ public class ScalarSubqueryInSelectTest extends BaseDatabaseTest {
     public void testScalarSubqueryReturnsNull() {
         engine.execute("CREATE TABLE empty (id INTEGER)");
 
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT name, (SELECT MAX(id) FROM empty) as max_empty FROM products WHERE id = 1"
         );
         assertEquals(1, result.getRowCount());
@@ -133,7 +133,7 @@ public class ScalarSubqueryInSelectTest extends BaseDatabaseTest {
 
     @Test
     public void testScalarSubqueryInArithmetic() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT name, price - (SELECT AVG(price) FROM products) as diff_from_avg FROM products WHERE id = 1"
         );
         assertEquals(1, result.getRowCount());

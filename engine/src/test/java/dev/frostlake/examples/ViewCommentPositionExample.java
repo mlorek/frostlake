@@ -27,7 +27,7 @@ public class ViewCommentPositionExample {
 
     @Test
     public void demonstrateViewCommentPositions() {
-        DatabaseEngine engine = new DatabaseEngine();
+        final DatabaseEngine engine = new DatabaseEngine();
 
         try {
             engine.execute("CREATE DATABASE demo_db");
@@ -43,7 +43,7 @@ public class ViewCommentPositionExample {
 
             engine.execute("CREATE VIEW products_view AS SELECT id, name, price FROM products COMMENT = 'All products catalog'");
 
-            ResultSet rs1 = engine.executeQuery("SELECT id, name, price FROM products_view ORDER BY id");
+            final ResultSet rs1 = engine.executeQuery("SELECT id, name, price FROM products_view ORDER BY id");
             logger.info("Products view (COMMENT after SELECT):");
             for (int i = 0; i < rs1.getRowCount(); i++) {
                 logger.info("  {}: {} - ${}",
@@ -61,7 +61,7 @@ public class ViewCommentPositionExample {
 
             engine.execute("CREATE VIEW employees_view COMMENT = 'Active employees list' AS SELECT id, name, dept FROM employees");
 
-            ResultSet rs2 = engine.executeQuery("SELECT id, name, dept FROM employees_view ORDER BY id");
+            final ResultSet rs2 = engine.executeQuery("SELECT id, name, dept FROM employees_view ORDER BY id");
             logger.info("Employees view (COMMENT before AS):");
             for (int i = 0; i < rs2.getRowCount(); i++) {
                 logger.info("  {}: {} - {}",
@@ -79,7 +79,7 @@ public class ViewCommentPositionExample {
 
             engine.execute("CREATE VIEW order_summary (id, customer, amount) COMMENT = 'Order details summary' AS SELECT order_id, customer_id, total FROM orders");
 
-            ResultSet rs3 = engine.executeQuery("SELECT id, customer, amount FROM order_summary WHERE amount > 600");
+            final ResultSet rs3 = engine.executeQuery("SELECT id, customer, amount FROM order_summary WHERE amount > 600");
             logger.info("Order summary (COMMENT before AS with columns):");
             for (int i = 0; i < rs3.getRowCount(); i++) {
                 logger.info("  Order {}: Customer {} - ${}",
@@ -97,7 +97,7 @@ public class ViewCommentPositionExample {
 
             engine.execute("CREATE VIEW pending_items AS SELECT id, description FROM todo_items WHERE completed = 0");
 
-            ResultSet rs4 = engine.executeQuery("SELECT id, description FROM pending_items");
+            final ResultSet rs4 = engine.executeQuery("SELECT id, description FROM pending_items");
             logger.info("Pending tasks (no COMMENT):");
             for (int i = 0; i < rs4.getRowCount(); i++) {
                 logger.info("  Task {}: {}",
@@ -114,7 +114,7 @@ public class ViewCommentPositionExample {
 
             engine.execute("CREATE VIEW inventory_view COMMENT = 'Current inventory levels' AS SELECT item, quantity FROM inventory");
 
-            ResultSet rs5a = engine.executeQuery("SELECT item, quantity FROM inventory_view");
+            final ResultSet rs5a = engine.executeQuery("SELECT item, quantity FROM inventory_view");
             logger.info("Original inventory view:");
             for (int i = 0; i < rs5a.getRowCount(); i++) {
                 logger.info("  {}: {}",
@@ -126,7 +126,7 @@ public class ViewCommentPositionExample {
             // Replace with different comment
             engine.execute("CREATE OR REPLACE VIEW inventory_view COMMENT = 'Updated inventory snapshot' AS SELECT item, quantity FROM inventory WHERE quantity > 60");
 
-            ResultSet rs5b = engine.executeQuery("SELECT item, quantity FROM inventory_view");
+            final ResultSet rs5b = engine.executeQuery("SELECT item, quantity FROM inventory_view");
             logger.info("Replaced inventory view (filtered):");
             for (int i = 0; i < rs5b.getRowCount(); i++) {
                 logger.info("  {}: {}",
@@ -145,7 +145,7 @@ public class ViewCommentPositionExample {
 
             engine.execute("CREATE VIEW regional_revenue (region, total) COMMENT = 'Revenue by region summary' AS SELECT region, SUM(revenue) FROM sales GROUP BY region");
 
-            ResultSet rs6 = engine.executeQuery("SELECT region, total FROM regional_revenue ORDER BY region");
+            final ResultSet rs6 = engine.executeQuery("SELECT region, total FROM regional_revenue ORDER BY region");
             logger.info("Regional revenue (COMMENT before AS):");
             for (int i = 0; i < rs6.getRowCount(); i++) {
                 logger.info("  {}: ${}",

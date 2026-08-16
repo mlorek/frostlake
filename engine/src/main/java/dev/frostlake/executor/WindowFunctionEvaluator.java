@@ -16,16 +16,27 @@
 
 package dev.frostlake.executor;
 
+import dev.frostlake.executor.expressions.ArrayAccessExpression;
+import dev.frostlake.executor.expressions.AstPrinterVisitor;
+import dev.frostlake.executor.expressions.BinaryOperationExpression;
+import dev.frostlake.executor.expressions.CastExpression;
+import dev.frostlake.executor.expressions.ColumnReferenceExpression;
+import dev.frostlake.executor.expressions.Expression;
+import dev.frostlake.executor.expressions.ExpressionSource;
+import dev.frostlake.executor.expressions.IsNullExpression;
+import dev.frostlake.executor.expressions.LiteralExpression;
+import dev.frostlake.executor.expressions.ObjectAccessExpression;
+import dev.frostlake.executor.expressions.SortKeyRole;
+import dev.frostlake.executor.expressions.SourcePosition;
+import dev.frostlake.executor.expressions.UnaryOperationExpression;
 import dev.frostlake.functions.AggregateFunction;
 import dev.frostlake.functions.aggregate.ApproxPercentileAccumulator;
-import dev.frostlake.functions.aggregate.Corr;
+import dev.frostlake.functions.aggregate.CorrAccumulator;
 import dev.frostlake.functions.aggregate.CovarAccumulator;
 import dev.frostlake.functions.aggregate.ListAggAccumulator;
 import dev.frostlake.functions.aggregate.MaxByMinByAccumulator;
 import dev.frostlake.functions.aggregate.ObjectAggAccumulator;
 import dev.frostlake.functions.aggregate.RegrAccumulator;
-import dev.frostlake.executor.expressions.AstPrinterVisitor;
-import dev.frostlake.executor.expressions.SortKeyRole;
 import dev.frostlake.functions.window.WindowFunctionHelper;
 import dev.frostlake.functions.window.WindowFunctionNames;
 import dev.frostlake.metastore.model.Table;
@@ -42,10 +53,12 @@ import java.util.Deque;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.IdentityHashMap;
-import java.util.Set;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import org.antlr.v4.runtime.Token;
+import org.antlr.v4.runtime.misc.Interval;
 import org.antlr.v4.runtime.tree.ParseTree;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -64,6 +77,10 @@ final class WindowFunctionEvaluator {
     private final QueryExecutor executor;
 
     // SELECT-list alias -> its defining expression text, for the window computation currently running. A
+    /** The window functions that take no arguments — a call with any refuses (live-verified). */
+    private static final java.util.Set<String> ZERO_ARGUMENT_WINDOW_FUNCTIONS = java.util.Set.of(
+        "ROW_NUMBER", "RANK", "DENSE_RANK", "CUME_DIST", "PERCENT_RANK");
+
     // window PARTITION BY / ORDER BY may reference a SELECT alias (e.g. QUALIFY ROW_NUMBER() OVER
     // (PARTITION BY <alias> ...)); when such a key isn't a base column it resolves to this expression.
     // Set/restored around computeWindowFunctions so a nested subquery's window functions don't clobber it;
@@ -75,6 +92,13 @@ final class WindowFunctionEvaluator {
     // ORDER BY key that IS a select item — OVER (ORDER BY SUM(amount) DESC) — read the computed value.
     private Map<String, Integer> windowSelectItemCanonicalIndex = new HashMap<>();
     private final Deque<Map<String, Integer>> savedCanonicalScopes = new ArrayDeque<>();
+
+    // How to compute an expression over a grouped output row's SOURCE GROUP, for the window computation
+    // currently running over already-projected rows; null otherwise. A key or an argument that is a raw
+    // aggregate — OVER (ORDER BY SUM(b)), LAG(SUM(b)) — has no value on the projected row unless the
+    // SELECT list happens to carry it, and the group is the only place left to compute it. Saved and
+    // restored around the computation so a nested subquery cannot clobber it.
+    private GroupedExpressionValues groupedValues;
 
     WindowFunctionEvaluator(final QueryExecutor executor) {
         this.executor = executor;
@@ -107,7 +131,7 @@ final class WindowFunctionEvaluator {
     }
 
     boolean isSimpleStar(final FrostlakeParser.SelectClauseContext ctx) {
-        List<FrostlakeParser.SelectItemContext> items = ctx.selectList().selectItem();
+        final List<FrostlakeParser.SelectItemContext> items = ctx.selectList().selectItem();
         // A star carrying EXCLUDE/RENAME/REPLACE/ILIKE modifiers is NOT a pass-through: it must go through
         // projection so those modifiers reshape the row values, not just the column metadata.
         return items.size() == 1 && SelectItemAccessors.isStarItem(items.get(0))
@@ -122,6 +146,17 @@ final class WindowFunctionEvaluator {
             }
         }
         return false;
+    }
+
+    /**
+     * Whether a whole CLAUSE carries an aggregate of this query's — an ORDER BY key or a QUALIFY
+     * predicate, either of which makes the query aggregate exactly as a select item would.
+     *
+     * @param node the clause's parse tree
+     * @return true when it contains an aggregate call belonging to this query
+     */
+    boolean hasAggregateInTree(final ParseTree node) {
+        return containsAggregate(node);
     }
 
     boolean hasAggregateFunctionInExpression(final FrostlakeParser.ExpressionContext expr) {
@@ -193,13 +228,20 @@ final class WindowFunctionEvaluator {
         return !windowCalls.isEmpty();
     }
 
-    Map<Integer, Map<Integer, Object>> computeWindowFunctions(final List<Row> rows, final FrostlakeParser.SelectClauseContext ctx, final Table table) {
-        return computeWindowFunctions(rows, ctx, table, false);
+    /** True when the parse subtree contains a window call ({@code fn(...) OVER (...)}) anywhere. */
+    boolean hasWindowFunctionInTree(final ParseTree node) {
+        final List<FrostlakeParser.FunctionCallExprContext> windowCalls = new ArrayList<>();
+        collectWindowFunctionCalls(node, windowCalls);
+        return !windowCalls.isEmpty();
     }
 
-    Map<Integer, Map<Integer, Object>> computeWindowFunctions(final List<Row> rows, final FrostlakeParser.SelectClauseContext ctx, final Table table, final boolean rowsAreProjected) {
+    Map<Integer, Map<Integer, Object>> computeWindowFunctions(final List<Row> rows, final FrostlakeParser.SelectClauseContext ctx, final Table table) {
+        return computeWindowFunctions(rows, ctx, table, false, table);
+    }
+
+    Map<Integer, Map<Integer, Object>> computeWindowFunctions(final List<Row> rows, final FrostlakeParser.SelectClauseContext ctx, final Table table, final boolean rowsAreProjected, final Table baseTable) {
         // Returns: Map<rowIndex, Map<selectItemIndex, windowFunctionResult>>
-        Map<Integer, Map<Integer, Object>> results = new HashMap<>();
+        final Map<Integer, Map<Integer, Object>> results = new HashMap<>();
 
         // Expose this query's SELECT aliases so a PARTITION BY / window ORDER BY can reference one; saved and
         // restored so a nested subquery's window computation doesn't leak its aliases back out.
@@ -213,7 +255,12 @@ final class WindowFunctionEvaluator {
                 collectWindowFunctionCalls(SelectItemAccessors.getItemValueExpr(item), selectWindowCalls);
             }
         }
-        rejectFileWindowArguments(selectWindowCalls, table, executor.selectItemAliasNames(ctx));
+        // Over GROUPED rows the shape carries the SELECT list, not the FROM columns, so a window
+        // ARGUMENT is judged against the BASE relation — LAG(MAX(c)) OVER (…) reads c from the rows
+        // behind the grouping, and live runs it. Whether that reference is GROUPED is a different
+        // question, answered by the grouped select-list validator.
+        rejectFileWindowArguments(selectWindowCalls, rowsAreProjected ? baseTable : table,
+            executor.selectItemAliasNames(ctx));
         // …and so is a FILE or GEOSPATIAL key in the OVER spec. The per-partition call below only runs
         // once a partition is actually built, which never happens over an EMPTY input — while live
         // rejects the query at COMPILE time either way ("Expressions of type GEOGRAPHY cannot be used
@@ -227,20 +274,30 @@ final class WindowFunctionEvaluator {
         // Per OVER clause: rows grouped into partitions (PARTITION BY) and each partition sorted
         // (ORDER BY) exactly once, then reused across every row — instead of re-partitioning/re-sorting
         // per row. Built lazily on first use; see sortedPartitionForRow.
-        Map<FrostlakeParser.OverClauseContext, Map<List<Object>, List<Row>>> overCache = new HashMap<>();
+        final Map<FrostlakeParser.OverClauseContext, Map<List<Object>, List<Row>>> overCache = new HashMap<>();
+        resetPartitionOrderCache();
+
+        // Classify each select item ONCE — whether it carries a window call (a tree walk) is a
+        // per-STATEMENT fact the row loop used to re-derive per row per item.
+        final List<FrostlakeParser.SelectItemContext> selectItems = ctx.selectList().selectItem();
+        final FrostlakeParser.ExpressionContext[] windowItemExprs =
+            new FrostlakeParser.ExpressionContext[selectItems.size()];
+        for (int itemIdx = 0; itemIdx < selectItems.size(); itemIdx++) {
+            final FrostlakeParser.SelectItemContext item = selectItems.get(itemIdx);
+            if (SelectItemAccessors.isExprItem(item)
+                    && hasWindowFunctionInExpression(SelectItemAccessors.getItemValueExpr(item))) {
+                windowItemExprs[itemIdx] = SelectItemAccessors.getItemValueExpr(item);
+            }
+        }
 
         // For each row, compute window function values
         for (int rowIdx = 0; rowIdx < rows.size(); rowIdx++) {
-            Map<Integer, Object> rowResults = new HashMap<>();
-
-            // Evaluate each select item
-            int selectItemIdx = 0;
-            for (final FrostlakeParser.SelectItemContext item : ctx.selectList().selectItem()) {
-                if (SelectItemAccessors.isExprItem(item) && hasWindowFunctionInExpression(SelectItemAccessors.getItemValueExpr(item))) {
-                    Object value = evaluateWindowFunction(SelectItemAccessors.getItemValueExpr(item), rows, rowIdx, ctx, table, overCache);
-                    rowResults.put(selectItemIdx, value);
+            final Map<Integer, Object> rowResults = new HashMap<>();
+            for (int itemIdx = 0; itemIdx < windowItemExprs.length; itemIdx++) {
+                if (windowItemExprs[itemIdx] != null) {
+                    final Object value = evaluateWindowFunction(windowItemExprs[itemIdx], rows, rowIdx, ctx, table, overCache);
+                    rowResults.put(itemIdx, value);
                 }
-                selectItemIdx++;
             }
 
             results.put(rowIdx, rowResults);
@@ -274,6 +331,61 @@ final class WindowFunctionEvaluator {
         windowSelectItemCanonicalIndex =
             rowsAreProjected ? buildSelectItemCanonicalIndex(ctx) : new HashMap<>();
         return saved;
+    }
+
+    /**
+     * Install the group resolver for the computation about to run, answering the previous one so the
+     * caller can restore it.
+     *
+     * @param values the resolver, or null when the rows are not grouped
+     * @return the resolver that was installed before
+     */
+    GroupedExpressionValues beginGroupedValues(final GroupedExpressionValues values) {
+        final GroupedExpressionValues saved = groupedValues;
+        groupedValues = values;
+        return saved;
+    }
+
+    /**
+     * Restore the resolver saved by {@link #beginGroupedValues}.
+     *
+     * @param saved the resolver to put back
+     */
+    void endGroupedValues(final GroupedExpressionValues saved) {
+        groupedValues = saved;
+    }
+
+    /**
+     * An expression's value for a grouped row, computed over its source group, or {@code UNRESOLVED}
+     * when there is no group resolver, no group, or nothing the group can answer.
+     *
+     * @param exprText the expression as written
+     * @param row      the row being valued
+     * @return the value, or {@link GroupedExpressionValues#UNRESOLVED}
+     */
+    private Object groupedValueOf(final String exprText, final Row row) {
+        if (groupedValues == null || exprText == null || row == null) {
+            return GroupedExpressionValues.UNRESOLVED;
+        }
+        return groupedValues.valueOf(row, exprText);
+    }
+
+    /**
+     * A window function ARGUMENT's value for one row. Over grouped rows the argument may be a raw
+     * aggregate — {@code LAG(SUM(b))}, {@code SUM(SUM(b)) OVER ()} — which the projected row does not
+     * carry, so the group answers it; everything else evaluates as it always did.
+     *
+     * @param argExpr the argument as written
+     * @param row     the row being valued
+     * @param table   the shape the row is in
+     * @return the argument's value
+     */
+    private Object argumentValue(final String argExpr, final Row row, final Table table) {
+        final Object grouped = groupedValueOf(argExpr, row);
+        if (grouped != GroupedExpressionValues.UNRESOLVED) {
+            return grouped;
+        }
+        return executor.evaluateExpression(argExpr, row, table);
     }
 
     /** Restore the alias scope saved by {@link #beginWindowAliasScope}. */
@@ -317,28 +429,79 @@ final class WindowFunctionEvaluator {
             if (!SelectItemAccessors.isExprItem(item)) {
                 continue;
             }
-            final FrostlakeParser.IdentifierContext aliasCtx = SelectItemAccessors.getItemAlias(item);
+            final String aliasCtx = SelectItemAccessors.getItemAlias(item);
             if (aliasCtx == null || hasWindowFunctionInExpression(SelectItemAccessors.getItemValueExpr(item))) {
                 continue;
             }
-            aliases.put(SqlIdentifiers.canonical(aliasCtx),
+            aliases.put(aliasCtx,
                 ParseTreeText.getOriginalText(SelectItemAccessors.getItemExpression(item)));
         }
         return aliases;
+    }
+
+
+    /** How many slots a star item occupies in a grouped (projected) row — its expanded column count. */
+    private int starSlotWidth(final FrostlakeParser.SelectItemContext item, final Table table) {
+        if (SelectItemAccessors.isStarItem(item)) {
+            return executor.bareStarExpressions(item, table).size();
+        }
+        return executor.starItemColumns(item, table, Collections.emptyMap()).size();
+    }
+
+
+    /**
+     * One ORDER BY key that the SELECT list does not carry, computed for a row of the source.
+     *
+     * <p>Ordinarily that is a FROM column the projection is about to drop, and evaluating its text
+     * against the source row is the whole job. A key that CONTAINS A WINDOW CALL is different: no
+     * evaluator can produce that value from one row, because a window reads the whole partition. Each
+     * call in the key is therefore computed by the window machinery and published under its own source
+     * text, which is exactly how the parsed key refers to it — so
+     * {@code ORDER BY ROW_NUMBER() OVER (ORDER BY b)} and
+     * {@code ORDER BY ROW_NUMBER() OVER (ORDER BY b) + 1} both resolve, the second by evaluating the
+     * arithmetic around a value that is already known.
+     */
+    private Object extraOrderKeyValue(final String keyText,
+                                      final FrostlakeParser.ExpressionContext keyTree,
+                                      final List<Row> rows, final int rowIdx,
+                                      final FrostlakeParser.SelectClauseContext ctx, final Table table,
+                                      final Row originalRow,
+                                      final Map<FrostlakeParser.OverClauseContext,
+                                          Map<List<Object>, List<Row>>> overCache) {
+        final List<FrostlakeParser.FunctionCallExprContext> windowCalls = new ArrayList<>();
+        if (keyTree != null) {
+            collectWindowFunctionCalls(keyTree, windowCalls);
+        }
+        if (windowCalls.isEmpty()) {
+            return executor.evaluateExpression(keyText, originalRow, table);
+        }
+        final Map<String, Object> windowValues = new HashMap<>();
+        for (final FrostlakeParser.FunctionCallExprContext call : windowCalls) {
+            windowValues.put(ParseTreeText.getOriginalText(call),
+                evaluateWindowFunction(call, rows, rowIdx, ctx, table, overCache));
+        }
+        final ExpressionEvaluator keyEvaluator = new ExpressionEvaluator(table,
+            executor.getFunctionRegistry(), executor.getCatalog(), executor);
+        keyEvaluator.setResultContext(windowValues);
+        return keyEvaluator.evaluate(ExpressionEvaluator.parse(keyText), originalRow);
     }
 
     List<Row> addWindowFunctionsToRows(final List<Row> rows,
                                                 final Map<Integer, Map<Integer, Object>> windowFunctionResults,
                                                 final FrostlakeParser.SelectClauseContext ctx,
                                                 final Table table,
+                                                final Table baseTable,
                                                 final boolean rowsAreProjected,
                                                 final List<String> extraOrderKeyExprs,
+                                                final List<FrostlakeParser.ExpressionContext> extraOrderKeyTrees,
                                                 final Map<Row, Object[]> extraKeyValuesOut) {
-        List<Row> resultRows = new ArrayList<>();
+        final List<Row> resultRows = new ArrayList<>();
+        final Map<FrostlakeParser.OverClauseContext, Map<List<Object>, List<Row>>> extraKeyOverCache =
+            new HashMap<>();
 
         for (int rowIdx = 0; rowIdx < rows.size(); rowIdx++) {
-            Row originalRow = rows.get(rowIdx);
-            List<Object> values = new ArrayList<>();
+            final Row originalRow = rows.get(rowIdx);
+            final List<Object> values = new ArrayList<>();
 
             // This loop IS the projection for a windowed query (QueryExecutor skips ProjectOperator when the
             // SELECT list has a window function), so it must offer the same Snowflake lateral column aliases:
@@ -347,14 +510,23 @@ final class WindowFunctionEvaluator {
             // Without this an alias reference threw "Column not found" for the whole query. Fresh per row.
             final Map<String, Object> lateralAliases = new HashMap<>();
 
-            // Add values for each select item
+            // Add values for each select item. A grouped (projected) row carries one value per
+            // EXPANDED output column — a star spans several slots there — so the read cursor into
+            // it advances by each item's width, independently of the item index that keys the
+            // window results.
             int selectItemIdx = 0;
+            int projectedSlot = 0;
             for (final FrostlakeParser.SelectItemContext item : ctx.selectList().selectItem()) {
                 if (!SelectItemAccessors.isExprItem(item)) {
                     if (rowsAreProjected) {
-                        if (selectItemIdx < originalRow.getValues().size()) {
-                            // The grouped projection already produced this slot's value; keep the layout aligned.
-                            values.add(originalRow.getValue(selectItemIdx));
+                        // The grouped projection already produced this item's value(s); a star was
+                        // expanded to its columns, so copy its whole width to keep the layout aligned.
+                        final int width = SelectItemAccessors.isStarItem(item)
+                                || SelectItemAccessors.isQualifiedStarItem(item)
+                            ? starSlotWidth(item, baseTable) : 1;
+                        for (int s = 0; s < width && projectedSlot < originalRow.getValues().size(); s++) {
+                            values.add(originalRow.getValue(projectedSlot));
+                            projectedSlot++;
                         }
                     } else if (SelectItemAccessors.isObjectStarItem(item)) {
                         // The braced star is ONE object over the row's columns, not the columns themselves.
@@ -381,16 +553,20 @@ final class WindowFunctionEvaluator {
                 final String exprText = ParseTreeText.getOriginalText(SelectItemAccessors.getItemExpression(item));
                 final String bare = exprText.trim().toUpperCase();
                 if (hasWindowFunctionInExpression(SelectItemAccessors.getItemValueExpr(item))) {
-                    Map<Integer, Object> rowWindowResults = windowFunctionResults.get(rowIdx);
+                    final Map<Integer, Object> rowWindowResults = windowFunctionResults.get(rowIdx);
                     value = rowWindowResults != null && rowWindowResults.containsKey(selectItemIdx)
                         ? rowWindowResults.get(selectItemIdx) : null;
+                    if (rowsAreProjected) {
+                        projectedSlot++;   // the grouped row holds a placeholder slot for this item
+                    }
                 } else if (rowsAreProjected) {
                     // GROUP BY / implicit aggregation already computed every non-window item — the row IS the
                     // SELECT-list shape. Take the value positionally: re-evaluating the item's text here sent
                     // aggregate calls (ARRAY_AGG(…)) to the scalar evaluator, which failed with
                     // "Unknown function", and would recompute expressions against the wrong table anyway.
-                    value = selectItemIdx < originalRow.getValues().size()
-                        ? originalRow.getValue(selectItemIdx) : null;
+                    value = projectedSlot < originalRow.getValues().size()
+                        ? originalRow.getValue(projectedSlot) : null;
+                    projectedSlot++;
                 } else if (lateralAliases.containsKey(bare) && !table.hasColumn(bare)) {
                     // The item IS an earlier alias: reuse that value. Recomputing is not an option when the
                     // defining item was a window function. A real column of the same name still wins.
@@ -399,9 +575,9 @@ final class WindowFunctionEvaluator {
                     value = executor.evaluateExpression(exprText, originalRow, table, lateralAliases);
                 }
                 values.add(value);
-                final FrostlakeParser.IdentifierContext alias = SelectItemAccessors.getItemAlias(item);
+                final String alias = SelectItemAccessors.getItemAlias(item);
                 if (alias != null) {
-                    lateralAliases.put(ParseTreeText.getIdentifier(alias).toUpperCase(), value);
+                    lateralAliases.put(alias.toUpperCase(), value);
                 }
                 selectItemIdx++;
             }
@@ -415,7 +591,10 @@ final class WindowFunctionEvaluator {
             if (extraOrderKeyExprs != null && !extraOrderKeyExprs.isEmpty()) {
                 final Object[] keyVals = new Object[extraOrderKeyExprs.size()];
                 for (int e = 0; e < extraOrderKeyExprs.size(); e++) {
-                    keyVals[e] = executor.evaluateExpression(extraOrderKeyExprs.get(e), originalRow, table);
+                    keyVals[e] = extraOrderKeyValue(extraOrderKeyExprs.get(e),
+                        extraOrderKeyTrees == null || e >= extraOrderKeyTrees.size()
+                            ? null : extraOrderKeyTrees.get(e),
+                        rows, rowIdx, ctx, table, originalRow, extraKeyOverCache);
                 }
                 extraKeyValuesOut.put(projected, keyVals);
             }
@@ -433,9 +612,9 @@ final class WindowFunctionEvaluator {
             return evaluateNestedWindowExpression(expr, allRows, currentRowIndex, ctx, table, overCache);
         }
 
-        FrostlakeParser.FunctionCallExprContext funcCtx = (FrostlakeParser.FunctionCallExprContext) expr;
-        String functionName = funcCtx.functionName().getText().toUpperCase();
-        FrostlakeParser.OverClauseContext overClause = funcCtx.overClause();
+        final FrostlakeParser.FunctionCallExprContext funcCtx = (FrostlakeParser.FunctionCallExprContext) expr;
+        final String functionName = funcCtx.functionName().getText().toUpperCase();
+        final FrostlakeParser.OverClauseContext overClause = funcCtx.overClause();
 
         if (overClause == null) {
             // A plain function call with no OVER of its own, but its arguments may contain window calls
@@ -454,9 +633,26 @@ final class WindowFunctionEvaluator {
             throw new RuntimeException("Unsupported window function: " + functionName);
         }
 
+        // The rank family takes NO arguments (measured: ROW_NUMBER(1) refuses as
+        // "too many arguments for function [ROW_NUMBER(1)] expected 0, got 1").
+        if (ZERO_ARGUMENT_WINDOW_FUNCTIONS.contains(functionName)
+                && funcCtx.functionArgList() != null
+                && !funcCtx.functionArgList().functionArg().isEmpty()) {
+            final StringBuilder rendered = new StringBuilder();
+            for (final FrostlakeParser.FunctionArgContext argCtx : funcCtx.functionArgList().functionArg()) {
+                if (rendered.length() > 0) {
+                    rendered.append(", ");
+                }
+                rendered.append(executor.getOriginalText(argCtx));
+            }
+            throw new RuntimeException("too many arguments for function [" + functionName
+                + "(" + rendered + ")] expected 0, got "
+                + funcCtx.functionArgList().functionArg().size());
+        }
+
         // The current row's partition (PARTITION BY), sorted by ORDER BY — grouped and sorted once per
         // OVER clause and cached, then shared read-only by every function for this window.
-        List<Row> sortedPartition =
+        final List<Row> sortedPartition =
             sortedPartitionForRow(overClause, allRows.get(currentRowIndex), allRows, table, overCache);
 
         // Compute window function based on type
@@ -471,15 +667,17 @@ final class WindowFunctionEvaluator {
                 return computeLag(funcCtx, sortedPartition, currentRowIndex, overClause, allRows, table);
             case "LEAD":
                 return computeLead(funcCtx, sortedPartition, currentRowIndex, overClause, allRows, table);
-            case "COUNT":
-                return computeWindowCount(funcCtx,
-                    frameRows(overClause, sortedPartition, allRows.get(currentRowIndex), table), table);
+            case "COUNT": {
+                final int[] frame = frameBounds(overClause, sortedPartition, allRows.get(currentRowIndex), table);
+                return computeWindowCount(funcCtx, sortedPartition, frame[0], frame[1], table);
+            }
             case "SUM":
             case "AVG":
             case "MIN":
-            case "MAX":
-                return computeWindowAggregate(functionName, funcCtx,
-                    frameRows(overClause, sortedPartition, allRows.get(currentRowIndex), table), table);
+            case "MAX": {
+                final int[] frame = frameBounds(overClause, sortedPartition, allRows.get(currentRowIndex), table);
+                return computeWindowAggregate(functionName, funcCtx, sortedPartition, frame[0], frame[1], table);
+            }
             case "NTILE":
                 return computeNtile(funcCtx, sortedPartition, allRows.get(currentRowIndex), table);
             case "PERCENT_RANK":
@@ -488,19 +686,22 @@ final class WindowFunctionEvaluator {
                 return computeCumeDist(sortedPartition, allRows.get(currentRowIndex), overClause, table);
             case "RATIO_TO_REPORT":
                 return computeRatioToReport(funcCtx, sortedPartition, allRows.get(currentRowIndex), table);
-            case "FIRST_VALUE":
-                return computeFirstValue(funcCtx,
-                    valueFrameRows(functionName, overClause, sortedPartition, allRows.get(currentRowIndex), table), table);
-            case "LAST_VALUE":
-                return computeLastValue(funcCtx,
-                    valueFrameRows(functionName, overClause, sortedPartition, allRows.get(currentRowIndex), table), table);
-            case "NTH_VALUE":
-                return computeNthValue(funcCtx,
-                    valueFrameRows(functionName, overClause, sortedPartition, allRows.get(currentRowIndex), table), table);
+            case "FIRST_VALUE": {
+                final int[] frame = valueFrameBounds(functionName, overClause, sortedPartition, allRows.get(currentRowIndex), table);
+                return computeFirstValue(funcCtx, sortedPartition, frame[0], frame[1], table);
+            }
+            case "LAST_VALUE": {
+                final int[] frame = valueFrameBounds(functionName, overClause, sortedPartition, allRows.get(currentRowIndex), table);
+                return computeLastValue(funcCtx, sortedPartition, frame[0], frame[1], table);
+            }
+            case "NTH_VALUE": {
+                final int[] frame = valueFrameBounds(functionName, overClause, sortedPartition, allRows.get(currentRowIndex), table);
+                return computeNthValue(funcCtx, sortedPartition, frame[0], frame[1], table);
+            }
             case "CONDITIONAL_TRUE_EVENT":
-                return computeConditionalTrueEvent(funcCtx, sortedPartition, allRows.get(currentRowIndex), table);
+                return computeConditionalTrueEvent(funcCtx, sortedPartition, allRows.get(currentRowIndex), overClause, table);
             case "CONDITIONAL_CHANGE_EVENT":
-                return computeConditionalChangeEvent(funcCtx, sortedPartition, allRows.get(currentRowIndex), table);
+                return computeConditionalChangeEvent(funcCtx, sortedPartition, allRows.get(currentRowIndex), overClause, table);
             default:
                 // Any registered aggregate is usable as a window function over the frame — Snowflake allows
                 // e.g. ARRAY_AGG(x) OVER (PARTITION BY g), LISTAGG, MEDIAN, … — evaluated with the same
@@ -562,16 +763,28 @@ final class WindowFunctionEvaluator {
      */
     private Long computeConditionalTrueEvent(final FrostlakeParser.FunctionCallExprContext funcCtx,
                                              final List<Row> sortedPartition, final Row currentRow,
+                                             final FrostlakeParser.OverClauseContext overClause,
                                              final Table table) {
         final String argExpr = conditionalEventArg(funcCtx);
-        final int pos = positionInSortedPartition(sortedPartition, currentRow);
+        final int pos = conditionalEventPosition(sortedPartition, currentRow, overClause, table);
+        final Object[] vector = frameArgVector(sortedPartition, argExpr, table, VECTOR_MODE_EXPRESSION);
         long count = 0L;
         for (int i = 0; i <= pos; i++) {
-            if (isTruthy(executor.evaluateExpression(argExpr, sortedPartition.get(i), table))) {
+            final Object v = vector != null ? vector[i]
+                : argumentValue(argExpr, sortedPartition.get(i), table);
+            if (isTruthy(v)) {
                 count++;
             }
         }
         return count;
+    }
+
+    /** The current row's 0-based partition position for the CONDITIONAL_* prefix walk — the same
+     *  first-equal anchor (with the same last-index fallback) the frame computation uses. */
+    private int conditionalEventPosition(final List<Row> sortedPartition, final Row currentRow,
+                                         final FrostlakeParser.OverClauseContext overClause, final Table table) {
+        final Long anchor = orderMapsFor(sortedPartition, overClause, table).position(currentRow);
+        return anchor != null ? (int) (anchor.longValue() - 1) : sortedPartition.size() - 1;
     }
 
     /**
@@ -583,14 +796,17 @@ final class WindowFunctionEvaluator {
      */
     private Long computeConditionalChangeEvent(final FrostlakeParser.FunctionCallExprContext funcCtx,
                                                final List<Row> sortedPartition, final Row currentRow,
+                                               final FrostlakeParser.OverClauseContext overClause,
                                                final Table table) {
         final String argExpr = conditionalEventArg(funcCtx);
-        final int pos = positionInSortedPartition(sortedPartition, currentRow);
+        final int pos = conditionalEventPosition(sortedPartition, currentRow, overClause, table);
+        final Object[] vector = frameArgVector(sortedPartition, argExpr, table, VECTOR_MODE_EXPRESSION);
         long count = 0L;
         Object prev = sortedPartition.isEmpty() ? null
-            : executor.evaluateExpression(argExpr, sortedPartition.get(0), table);
+            : (vector != null ? vector[0] : argumentValue(argExpr, sortedPartition.get(0), table));
         for (int i = 1; i <= pos; i++) {
-            final Object cur = executor.evaluateExpression(argExpr, sortedPartition.get(i), table);
+            final Object cur = vector != null ? vector[i]
+                : argumentValue(argExpr, sortedPartition.get(i), table);
             if (prev != null && cur != null && ValueComparisons.compareValues(cur, prev) != 0) {
                 count++;
             }
@@ -605,16 +821,6 @@ final class WindowFunctionEvaluator {
             throw new RuntimeException("CONDITIONAL_TRUE_EVENT / CONDITIONAL_CHANGE_EVENT requires one argument");
         }
         return ParseTreeText.getOriginalText(windowArgs(funcCtx).get(0));
-    }
-
-    /** 0-based index of {@code currentRow} within the already-sorted partition (mirrors computeRowNumber). */
-    private static int positionInSortedPartition(final List<Row> sortedPartition, final Row currentRow) {
-        for (int i = 0; i < sortedPartition.size(); i++) {
-            if (sortedPartition.get(i).equals(currentRow)) {
-                return i;
-            }
-        }
-        return sortedPartition.size() - 1;
     }
 
     /** Snowflake truthiness of a CONDITIONAL_TRUE_EVENT argument: TRUE, or a non-zero number. */
@@ -640,7 +846,7 @@ final class WindowFunctionEvaluator {
             partitions = buildSortedPartitions(overClause, allRows, table);
             overCache.put(overClause, partitions);
         }
-        List<Row> partition = partitions.get(partitionKey(currentRow, overClause.partitionByClause(), table));
+        final List<Row> partition = partitions.get(partitionKey(currentRow, overClause.partitionByClause(), table));
         // currentRow is one of allRows, so its key is always present; fall back defensively.
         return partition != null ? partition : allRows;
     }
@@ -652,9 +858,9 @@ final class WindowFunctionEvaluator {
     private Map<List<Object>, List<Row>> buildSortedPartitions(final FrostlakeParser.OverClauseContext overClause,
                                                                final List<Row> allRows, final Table table) {
         rejectFileWindowKeys(overClause, table);
-        Map<List<Object>, List<Row>> groups = new LinkedHashMap<>();
+        final Map<List<Object>, List<Row>> groups = new LinkedHashMap<>();
         for (final Row row : allRows) {
-            List<Object> key = partitionKey(row, overClause.partitionByClause(), table);
+            final List<Object> key = partitionKey(row, overClause.partitionByClause(), table);
             List<Row> group = groups.get(key);
             if (group == null) {
                 group = new ArrayList<>();
@@ -693,15 +899,40 @@ final class WindowFunctionEvaluator {
         // live), so the output aliases are exempt from the walk's scope rejection.
         checker.setScopeExemptNames(outputAliasNames);
         for (final FrostlakeParser.FunctionCallExprContext call : windowCalls) {
-            final List<String> argTexts = new ArrayList<>();
-            for (final FrostlakeParser.BooleanExprContext arg : windowArgs(call)) {
-                argTexts.add(ParseTreeText.getOriginalText(arg));
-            }
-            if (argTexts.isEmpty()) {
+            final List<FrostlakeParser.BooleanExprContext> args = windowArgs(call);
+            if (args.isEmpty()) {
                 continue;
             }
-            checker.validateStrictWindowed(ExpressionEvaluator.parse(
-                call.functionName().getText() + "(" + String.join(", ", argTexts) + ")"));
+            // The argument list is copied VERBATIM, spacing and all, so every argument keeps its
+            // distance from the one before it; joining them with a fixed ", " moved the second
+            // argument of `LEAD(a,nosuchcol)` by a character. The origin is then anchored so the
+            // FIRST argument lands where it stands in the statement — live points at the argument,
+            // not at the call, and not at the function name.
+            final Token firstArg = args.get(0).getStart();
+            final Token lastArg = args.get(args.size() - 1).getStop();
+            final String name = call.functionName().getText();
+            final String argsAsWritten = firstArg.getInputStream() == null ? null
+                : firstArg.getInputStream().getText(
+                    new Interval(firstArg.getStartIndex(), lastArg.getStopIndex()));
+            final int anchor = firstArg.getCharPositionInLine() - (name.length() + 1);
+            final SourcePosition displacedCall = ExpressionSource.beginNested(anchor >= 0
+                ? new SourcePosition(firstArg.getLine(), anchor)
+                : new SourcePosition(call.getStart().getLine(), call.getStart().getCharPositionInLine()));
+            try {
+                if (argsAsWritten != null) {
+                    checker.validateStrictWindowed(
+                        ExpressionEvaluator.parse(name + "(" + argsAsWritten + ")"));
+                } else {
+                    final List<String> argTexts = new ArrayList<>();
+                    for (final FrostlakeParser.BooleanExprContext arg : args) {
+                        argTexts.add(ParseTreeText.getOriginalText(arg));
+                    }
+                    checker.validateStrictWindowed(ExpressionEvaluator.parse(
+                        name + "(" + String.join(", ", argTexts) + ")"));
+                }
+            } finally {
+                ExpressionSource.end(displacedCall);
+            }
         }
     }
 
@@ -731,7 +962,7 @@ final class WindowFunctionEvaluator {
      */
     private List<Object> partitionKey(final Row row, final FrostlakeParser.PartitionByClauseContext partitionBy,
                                       final Table table) {
-        List<Object> key = new ArrayList<>();
+        final List<Object> key = new ArrayList<>();
         if (partitionBy != null) {
             for (final FrostlakeParser.ExpressionContext expr : partitionBy.expressionList().expression()) {
                 key.add(ValueComparisons.canonicalGroupKeyValue(evaluateOrderKey(ParseTreeText.getOriginalText(expr), row, table)));
@@ -740,113 +971,241 @@ final class WindowFunctionEvaluator {
         return key;
     }
 
+    // Per-batch, per-thread: the single-pass position/rank maps of each sorted partition, keyed
+    // by the partition LIST's identity (partitions are built once per OVER clause and shared).
+    // Thread-local because this evaluator is a per-engine singleton and concurrent read-locked
+    // SELECTs each run their own batch. Cleared at every batch entry so rows never outlive their
+    // query on a pooled thread.
+    private final ThreadLocal<Map<List<Row>, WindowPartitionOrder>> partitionOrderCache =
+        new ThreadLocal<Map<List<Row>, WindowPartitionOrder>>() {
+            @Override
+            protected Map<List<Row>, WindowPartitionOrder> initialValue() {
+                return new IdentityHashMap<List<Row>, WindowPartitionOrder>();
+            }
+        };
+
+    /** Drop the per-thread partition order maps and argument vectors — called at each window-batch entry. */
+    void resetPartitionOrderCache() {
+        partitionOrderCache.get().clear();
+        frameArgVectors.get().clear();
+        argumentFactMemo.get().clear();
+    }
+
+    // Per-batch, per-thread: each sorted partition's evaluated ARGUMENT VECTORS, keyed by the
+    // partition list's identity and then by the argument's evaluation mode + source text. One
+    // evaluation per partition row replaces the former re-evaluation of the same argument for
+    // every frame row of every output row — the quadratic expression walks behind a running
+    // SUM(x) OVER (ORDER BY …). Cells hold the EXACT objects the row path would produce (no
+    // canonicalization); the function-dependent JSON-null mapping stays at read time.
+    private final ThreadLocal<Map<List<Row>, Map<String, Object[]>>> frameArgVectors =
+        new ThreadLocal<Map<List<Row>, Map<String, Object[]>>>() {
+            @Override
+            protected Map<List<Row>, Map<String, Object[]>> initialValue() {
+                return new IdentityHashMap<List<Row>, Map<String, Object[]>>();
+            }
+        };
+
+    // Per-batch, per-thread memo of per-ARGUMENT-TEXT facts: "s:" + text → vector-safety verdict,
+    // "v:" + text → declared-VARIANT verdict. Both are statement-invariant but were derived per
+    // OUTPUT ROW (the variant check re-parsed and re-inferred each time).
+    private final ThreadLocal<Map<String, Boolean>> argumentFactMemo =
+        new ThreadLocal<Map<String, Boolean>>() {
+            @Override
+            protected Map<String, Boolean> initialValue() {
+                return new HashMap<String, Boolean>();
+            }
+        };
+
+    /** Argument-vector mode: cells evaluated like ORDER BY keys (ordinals resolve positionally). */
+    private static final String VECTOR_MODE_ORDER_KEY = "K:";
+    /** Argument-vector mode: cells evaluated as plain expressions (CONDITIONAL_*'s rule). */
+    private static final String VECTOR_MODE_EXPRESSION = "E:";
+
+    /** Whether the frame-vector path is on (execution.window.frameVectors, default true). */
+    private boolean frameVectorsEnabled() {
+        return executor.getEngineConfig() == null
+            || executor.getEngineConfig().isWindowFrameVectorsEnabled();
+    }
+
+    /**
+     * The argument vector to read frames from, or null when the row path must be used — the flag is
+     * off, or the argument's shape is not vector-safe. Built on first use per (partition, mode+text)
+     * and cached for the batch.
+     */
+    private Object[] frameArgVector(final List<Row> partition, final String argExpr, final Table table,
+                                    final String mode) {
+        if (argExpr == null || !frameVectorsEnabled() || !isVectorSafeArgument(argExpr)) {
+            return null;
+        }
+        final Map<List<Row>, Map<String, Object[]>> byPartition = frameArgVectors.get();
+        Map<String, Object[]> byArg = byPartition.get(partition);
+        if (byArg == null) {
+            byArg = new HashMap<>();
+            byPartition.put(partition, byArg);
+        }
+        final String key = mode + argExpr;
+        Object[] vector = byArg.get(key);
+        if (vector == null) {
+            vector = new Object[partition.size()];
+            for (int i = 0; i < partition.size(); i++) {
+                vector[i] = VECTOR_MODE_ORDER_KEY.equals(mode)
+                    ? extractColumnValue(partition.get(i), argExpr, table)
+                    : argumentValue(argExpr, partition.get(i), table);
+            }
+            byArg.put(key, vector);
+        }
+        return vector;
+    }
+
+    /**
+     * Whether an argument's parsed shape is safe to evaluate once per row and reuse across frames:
+     * literals, column references and semi-structured access, casts, arithmetic/comparison and
+     * NULL-tests over those. Everything else — in particular ANY function call, since a volatile
+     * one (RANDOM, SEQ…) observably changes value between frame walks — keeps the row path; an
+     * unknown node kind therefore fails SAFE. Memoized per argument text for the batch.
+     */
+    private boolean isVectorSafeArgument(final String argExpr) {
+        final Map<String, Boolean> memo = argumentFactMemo.get();
+        final String key = "s:" + argExpr;
+        final Boolean known = memo.get(key);
+        if (known != null) {
+            return known;
+        }
+        boolean safe;
+        try {
+            safe = isVectorSafeNode(ExpressionEvaluator.parse(argExpr));
+        } catch (final RuntimeException notAnExpression) {
+            safe = false;
+        }
+        memo.put(key, safe);
+        return safe;
+    }
+
+    private boolean isVectorSafeNode(final Expression node) {
+        if (node == null) {
+            return true;
+        }
+        if (node instanceof LiteralExpression || node instanceof ColumnReferenceExpression) {
+            return true;
+        }
+        if (node instanceof CastExpression) {
+            return isVectorSafeNode(((CastExpression) node).getExpression());
+        }
+        if (node instanceof UnaryOperationExpression) {
+            return isVectorSafeNode(((UnaryOperationExpression) node).getOperand());
+        }
+        if (node instanceof BinaryOperationExpression) {
+            final BinaryOperationExpression bin = (BinaryOperationExpression) node;
+            return isVectorSafeNode(bin.getLeft()) && isVectorSafeNode(bin.getRight());
+        }
+        if (node instanceof IsNullExpression) {
+            return isVectorSafeNode(((IsNullExpression) node).getOperand());
+        }
+        if (node instanceof ObjectAccessExpression) {
+            return isVectorSafeNode(((ObjectAccessExpression) node).getBase());
+        }
+        if (node instanceof ArrayAccessExpression) {
+            final ArrayAccessExpression access = (ArrayAccessExpression) node;
+            return isVectorSafeNode(access.getArray()) && isVectorSafeNode(access.getIndex());
+        }
+        return false;
+    }
+
+    /**
+     * The single-pass position/RANK/DENSE_RANK maps of one sorted partition, built on first use
+     * and cached for the batch. One pass replaces the former per-output-row linear scans (with
+     * their per-scanned-row ORDER BY key re-evaluation) — the O(n²·keys) that made
+     * {@code QUALIFY ROW_NUMBER() OVER (…) = 1} quadratic.
+     */
+    private WindowPartitionOrder orderMapsFor(final List<Row> sortedRows,
+                                              final FrostlakeParser.OverClauseContext overClause,
+                                              final Table table) {
+        final Map<List<Row>, WindowPartitionOrder> cache = partitionOrderCache.get();
+        WindowPartitionOrder order = cache.get(sortedRows);
+        if (order != null) {
+            return order;
+        }
+        // IDENTITY-keyed: over grouped rows a projection can make every row EQUAL by value (a select
+        // list that is only a window call), and a value-keyed map then held one entry for the whole
+        // partition, handing every row the same rank.
+        final Map<Row, Long> position = new IdentityHashMap<>();
+        final Map<Row, Long> rank = new IdentityHashMap<>();
+        final Map<Row, Long> dense = new IdentityHashMap<>();
+        final int size = sortedRows.size();
+        final int[] firstPeer = new int[size];
+        final int[] lastPeer = new int[size];
+        long currentRank = 1;
+        long currentDense = 1;
+        int groupStart = 0;
+        List<Object> previousKey = null;
+        for (int i = 0; i < size; i++) {
+            final Row row = sortedRows.get(i);
+            if (overClause.orderByClause() != null) {
+                final List<Object> key = orderKeyTuple(row, overClause.orderByClause(), table);
+                if (i > 0 && previousKey != null && !orderKeyTuplesEqual(key, previousKey)) {
+                    currentRank = i + 1;
+                    currentDense++;
+                    for (int j = groupStart; j < i; j++) {
+                        lastPeer[j] = i - 1;
+                    }
+                    groupStart = i;
+                }
+                previousKey = key;
+            }
+            firstPeer[i] = overClause.orderByClause() != null ? groupStart : 0;
+            if (!position.containsKey(row)) {
+                position.put(row, Long.valueOf(i + 1));
+            }
+            if (!rank.containsKey(row)) {
+                rank.put(row, Long.valueOf(currentRank));
+            }
+            if (!dense.containsKey(row)) {
+                dense.put(row, Long.valueOf(currentDense));
+            }
+        }
+        for (int j = groupStart; j < size; j++) {
+            lastPeer[j] = overClause.orderByClause() != null ? size - 1 : size - 1;
+        }
+        if (overClause.orderByClause() == null) {
+            for (int j = 0; j < size; j++) {
+                lastPeer[j] = size - 1;
+            }
+        }
+        order = new WindowPartitionOrder(position, rank, dense, firstPeer, lastPeer);
+        cache.put(sortedRows, order);
+        return order;
+    }
+
     private Long computeRowNumber(final List<Row> partitionRows, final int currentRowIndex,
                                    final FrostlakeParser.OverClauseContext overClause,
                                    final List<Row> allRows, final Table table) {
-        Row currentRow = allRows.get(currentRowIndex);
-
-        // partitionRows arrives already sorted by the OVER ORDER BY (sorted once per partition by the
-        // caller and cached), so no re-sort here.
-        List<Row> sortedRows = partitionRows;
-
-        // Find position of current row in sorted partition (1-based)
-        for (int i = 0; i < sortedRows.size(); i++) {
-            if (sortedRows.get(i).equals(currentRow)) {
-                return (long) (i + 1);
-            }
-        }
-
-        // Fallback: return row number based on original position
-        return (long) (currentRowIndex + 1);
+        final Row currentRow = allRows.get(currentRowIndex);
+        final Long position = orderMapsFor(partitionRows, overClause, table).position(currentRow);
+        // Fallback mirrors the former scan: a row absent from its partition keeps its input position.
+        return position != null ? position : Long.valueOf(currentRowIndex + 1);
     }
 
     private Long computeRank(final List<Row> partitionRows, final int currentRowIndex,
                              final FrostlakeParser.OverClauseContext overClause,
                              final List<Row> allRows, final Table table) {
-        Row currentRow = allRows.get(currentRowIndex);
-
-        // partitionRows arrives already sorted by the OVER ORDER BY (sorted once per partition by the
-        // caller and cached), so no re-sort here.
-        List<Row> sortedRows = partitionRows;
-
-        // Find position and check for ties
-        long rank = 1;
-        List<Object> currentOrderKey = null;
-        List<Object> previousOrderKey = null;
-
-        for (int i = 0; i < sortedRows.size(); i++) {
-            Row row = sortedRows.get(i);
-
-            // The full ORDER BY key tuple for this row (every key, not just the first).
-            if (overClause.orderByClause() != null) {
-                currentOrderKey = orderKeyTuple(row, overClause.orderByClause(), table);
-            }
-
-            // Check for ties with the previous row across ALL keys.
-            if (i > 0 && previousOrderKey != null && currentOrderKey != null) {
-                if (!orderKeyTuplesEqual(currentOrderKey, previousOrderKey)) {
-                    // Key tuple changed — rank jumps to this row's position (gaps allowed).
-                    rank = i + 1;
-                }
-            }
-
-            if (row.equals(currentRow)) {
-                return rank;
-            }
-
-            previousOrderKey = currentOrderKey;
-        }
-
-        // Fallback
-        return (long) (currentRowIndex + 1);
+        final Row currentRow = allRows.get(currentRowIndex);
+        final Long rank = orderMapsFor(partitionRows, overClause, table).rank(currentRow);
+        return rank != null ? rank : Long.valueOf(currentRowIndex + 1);
     }
 
     private Long computeDenseRank(final List<Row> partitionRows, final int currentRowIndex,
                                    final FrostlakeParser.OverClauseContext overClause,
                                    final List<Row> allRows, final Table table) {
-        Row currentRow = allRows.get(currentRowIndex);
-
-        // partitionRows arrives already sorted by the OVER ORDER BY (sorted once per partition by the
-        // caller and cached), so no re-sort here.
-        List<Row> sortedRows = partitionRows;
-
-        // Find position and check for ties (dense rank has no gaps)
-        long rank = 1;
-        List<Object> currentOrderKey = null;
-        List<Object> previousOrderKey = null;
-
-        for (int i = 0; i < sortedRows.size(); i++) {
-            Row row = sortedRows.get(i);
-
-            // The full ORDER BY key tuple for this row (every key, not just the first).
-            if (overClause.orderByClause() != null) {
-                currentOrderKey = orderKeyTuple(row, overClause.orderByClause(), table);
-            }
-
-            // Check for ties with the previous row across ALL keys.
-            if (i > 0 && previousOrderKey != null && currentOrderKey != null) {
-                if (!orderKeyTuplesEqual(currentOrderKey, previousOrderKey)) {
-                    // Key tuple changed — increment by 1 (no gaps in dense rank).
-                    rank++;
-                }
-            }
-
-            if (row.equals(currentRow)) {
-                return rank;
-            }
-
-            previousOrderKey = currentOrderKey;
-        }
-
-        // Fallback
-        return (long) (currentRowIndex + 1);
+        final Row currentRow = allRows.get(currentRowIndex);
+        final Long denseRank = orderMapsFor(partitionRows, overClause, table).denseRank(currentRow);
+        return denseRank != null ? denseRank : Long.valueOf(currentRowIndex + 1);
     }
 
     private Object computeLag(final FrostlakeParser.FunctionCallExprContext funcCtx,
                               final List<Row> partitionRows, final int currentRowIndex,
                               final FrostlakeParser.OverClauseContext overClause,
                               final List<Row> allRows, final Table table) {
-        Row currentRow = allRows.get(currentRowIndex);
+        final Row currentRow = allRows.get(currentRowIndex);
 
         // Parse LAG arguments: LAG(column_expr, offset, default_value)
         // offset defaults to 1, default_value defaults to NULL
@@ -855,31 +1214,31 @@ final class WindowFunctionEvaluator {
         String columnExpr = null;
 
         if (!windowArgs(funcCtx).isEmpty()) {
-            List<FrostlakeParser.BooleanExprContext> args = windowArgs(funcCtx);
+            final List<FrostlakeParser.BooleanExprContext> args = windowArgs(funcCtx);
 
             // First argument: column expression
             columnExpr = ParseTreeText.getOriginalText(args.get(0));
 
-            // Second argument (optional): offset
+            // Second argument (optional): offset — evaluated through the expression AST, so a
+            // computed constant (1 + 1) is its value, not its source text.
             if (args.size() > 1) {
-                try {
-                    String offsetStr = ParseTreeText.getOriginalText(args.get(1));
-                    offset = Integer.parseInt(offsetStr);
-                } catch (final NumberFormatException e) {
+                final Object offsetVal = constantArgValue(ParseTreeText.getOriginalText(args.get(1)));
+                if (offsetVal instanceof Number) {
+                    offset = ((Number) offsetVal).intValue();
+                } else {
                     logger.warn("Invalid offset for LAG function: {}", args.get(1));
                 }
             }
 
             // Third argument (optional): default value
             if (args.size() > 2) {
-                String defaultStr = ParseTreeText.getOriginalText(args.get(2));
-                defaultValue = parseLiteralValue(defaultStr);
+                defaultValue = constantArgValue(ParseTreeText.getOriginalText(args.get(2)));
             }
         }
 
         // partitionRows arrives already sorted by the OVER ORDER BY (sorted once per partition by the
         // caller and cached), so no re-sort here.
-        List<Row> sortedRows = partitionRows;
+        final List<Row> sortedRows = partitionRows;
 
         // Find position of current row in sorted partition
         int currentPosition = -1;
@@ -895,7 +1254,7 @@ final class WindowFunctionEvaluator {
         }
 
         // Calculate the LAG position (backward)
-        int lagPosition = currentPosition - offset;
+        final int lagPosition = currentPosition - offset;
 
         // If out of bounds, return default value
         if (lagPosition < 0 || lagPosition >= sortedRows.size()) {
@@ -903,7 +1262,7 @@ final class WindowFunctionEvaluator {
         }
 
         // Get the row at LAG position
-        Row lagRow = sortedRows.get(lagPosition);
+        final Row lagRow = sortedRows.get(lagPosition);
 
         // Extract the column value from the LAG row
         return extractColumnValue(lagRow, columnExpr, table);
@@ -913,7 +1272,7 @@ final class WindowFunctionEvaluator {
                                final List<Row> partitionRows, final int currentRowIndex,
                                final FrostlakeParser.OverClauseContext overClause,
                                final List<Row> allRows, final Table table) {
-        Row currentRow = allRows.get(currentRowIndex);
+        final Row currentRow = allRows.get(currentRowIndex);
 
         // Parse LEAD arguments: LEAD(column_expr, offset, default_value)
         // offset defaults to 1, default_value defaults to NULL
@@ -922,31 +1281,31 @@ final class WindowFunctionEvaluator {
         String columnExpr = null;
 
         if (!windowArgs(funcCtx).isEmpty()) {
-            List<FrostlakeParser.BooleanExprContext> args = windowArgs(funcCtx);
+            final List<FrostlakeParser.BooleanExprContext> args = windowArgs(funcCtx);
 
             // First argument: column expression
             columnExpr = ParseTreeText.getOriginalText(args.get(0));
 
-            // Second argument (optional): offset
+            // Second argument (optional): offset — evaluated through the expression AST, so a
+            // computed constant (1 + 1) is its value, not its source text.
             if (args.size() > 1) {
-                try {
-                    String offsetStr = ParseTreeText.getOriginalText(args.get(1));
-                    offset = Integer.parseInt(offsetStr);
-                } catch (final NumberFormatException e) {
+                final Object offsetVal = constantArgValue(ParseTreeText.getOriginalText(args.get(1)));
+                if (offsetVal instanceof Number) {
+                    offset = ((Number) offsetVal).intValue();
+                } else {
                     logger.warn("Invalid offset for LEAD function: {}", args.get(1));
                 }
             }
 
             // Third argument (optional): default value
             if (args.size() > 2) {
-                String defaultStr = ParseTreeText.getOriginalText(args.get(2));
-                defaultValue = parseLiteralValue(defaultStr);
+                defaultValue = constantArgValue(ParseTreeText.getOriginalText(args.get(2)));
             }
         }
 
         // partitionRows arrives already sorted by the OVER ORDER BY (sorted once per partition by the
         // caller and cached), so no re-sort here.
-        List<Row> sortedRows = partitionRows;
+        final List<Row> sortedRows = partitionRows;
 
         // Find position of current row in sorted partition
         int currentPosition = -1;
@@ -962,7 +1321,7 @@ final class WindowFunctionEvaluator {
         }
 
         // Calculate the LEAD position (forward)
-        int leadPosition = currentPosition + offset;
+        final int leadPosition = currentPosition + offset;
 
         // If out of bounds, return default value
         if (leadPosition < 0 || leadPosition >= sortedRows.size()) {
@@ -970,7 +1329,7 @@ final class WindowFunctionEvaluator {
         }
 
         // Get the row at LEAD position
-        Row leadRow = sortedRows.get(leadPosition);
+        final Row leadRow = sortedRows.get(leadPosition);
 
         // Extract the column value from the LEAD row
         return extractColumnValue(leadRow, columnExpr, table);
@@ -990,48 +1349,52 @@ final class WindowFunctionEvaluator {
     private Double computePercentRank(final List<Row> sortedPartition, final Row currentRow,
                                        final FrostlakeParser.OverClauseContext overClause,
                                        final Table table) {
-        List<Object> orderVals = extractOrderValues(sortedPartition, overClause, table);
+        final List<Object> orderVals = extractOrderValues(sortedPartition, overClause, table);
         return WindowFunctionHelper.percentRank(sortedPartition, currentRow, orderVals);
     }
 
     private Double computeCumeDist(final List<Row> sortedPartition, final Row currentRow,
                                     final FrostlakeParser.OverClauseContext overClause,
                                     final Table table) {
-        List<Object> orderVals = extractOrderValues(sortedPartition, overClause, table);
+        final List<Object> orderVals = extractOrderValues(sortedPartition, overClause, table);
         return WindowFunctionHelper.cumeDist(sortedPartition, currentRow, orderVals);
     }
 
     private Object computeRatioToReport(final FrostlakeParser.FunctionCallExprContext funcCtx,
                                          final List<Row> sortedPartition, final Row currentRow,
                                          final Table table) {
-        String colExpr = !windowArgs(funcCtx).isEmpty()
+        final String colExpr = !windowArgs(funcCtx).isEmpty()
             ? ParseTreeText.getOriginalText(windowArgs(funcCtx).get(0)) : null;
-        Object curVal = extractColumnValue(currentRow, colExpr, table);
-        List<Object> allVals = new ArrayList<>();
-        for (final Row r : sortedPartition) allVals.add(extractColumnValue(r, colExpr, table));
+        final Object curVal = extractColumnValue(currentRow, colExpr, table);
+        final List<Object> allVals = frameValues(sortedPartition, 0, sortedPartition.size() - 1, colExpr, table);
         return WindowFunctionHelper.ratioToReport(curVal, allVals);
     }
 
     private Object computeFirstValue(final FrostlakeParser.FunctionCallExprContext funcCtx,
-                                      final List<Row> frameRows, final Table table) {
+                                      final List<Row> partition, final int from, final int to, final Table table) {
         final String colExpr = !windowArgs(funcCtx).isEmpty()
             ? ParseTreeText.getOriginalText(windowArgs(funcCtx).get(0)) : null;
-        final List<Object> values = new ArrayList<>();
-        for (final Row r : frameRows) {
-            values.add(extractColumnValue(r, colExpr, table));
+        return WindowFunctionHelper.firstValue(
+            frameValues(partition, from, to, colExpr, table), ignoreNulls(funcCtx));
+    }
+
+    /** The argument's values over frame rows {@code [from, to]} — vector reads when safe, else row evaluation. */
+    private List<Object> frameValues(final List<Row> partition, final int from, final int to,
+                                     final String colExpr, final Table table) {
+        final Object[] vector = frameArgVector(partition, colExpr, table, VECTOR_MODE_ORDER_KEY);
+        final List<Object> values = new ArrayList<>(Math.max(0, to - from + 1));
+        for (int i = from; i <= to; i++) {
+            values.add(vector != null ? vector[i] : extractColumnValue(partition.get(i), colExpr, table));
         }
-        return WindowFunctionHelper.firstValue(values, ignoreNulls(funcCtx));
+        return values;
     }
 
     private Object computeLastValue(final FrostlakeParser.FunctionCallExprContext funcCtx,
-                                     final List<Row> frameRows, final Table table) {
+                                     final List<Row> partition, final int from, final int to, final Table table) {
         final String colExpr = !windowArgs(funcCtx).isEmpty()
             ? ParseTreeText.getOriginalText(windowArgs(funcCtx).get(0)) : null;
-        final List<Object> values = new ArrayList<>();
-        for (final Row r : frameRows) {
-            values.add(extractColumnValue(r, colExpr, table));
-        }
-        return WindowFunctionHelper.lastValue(values, ignoreNulls(funcCtx));
+        return WindowFunctionHelper.lastValue(
+            frameValues(partition, from, to, colExpr, table), ignoreNulls(funcCtx));
     }
 
     /** Whether a window value function carries an explicit {@code IGNORE NULLS} clause (default RESPECT).
@@ -1047,14 +1410,13 @@ final class WindowFunctionEvaluator {
     }
 
     private Object computeNthValue(final FrostlakeParser.FunctionCallExprContext funcCtx,
-                                    final List<Row> sortedPartition, final Table table) {
+                                    final List<Row> partition, final int from, final int to, final Table table) {
         if (windowArgs(funcCtx).size() < 2) return null;
-        String colExpr = ParseTreeText.getOriginalText(windowArgs(funcCtx).get(0));
+        final String colExpr = ParseTreeText.getOriginalText(windowArgs(funcCtx).get(0));
         int n = 1;
         try { n = Integer.parseInt(ParseTreeText.getOriginalText(windowArgs(funcCtx).get(1))); }
         catch (final NumberFormatException ignored) {}
-        List<Object> vals = new ArrayList<>();
-        for (final Row r : sortedPartition) vals.add(extractColumnValue(r, colExpr, table));
+        List<Object> vals = frameValues(partition, from, to, colExpr, table);
         if (ignoreNulls(funcCtx)) {
             final List<Object> nonNull = new ArrayList<>();
             for (final Object v : vals) {
@@ -1086,38 +1448,52 @@ final class WindowFunctionEvaluator {
      * default is the WHOLE partition — LAST_VALUE(x) OVER (ORDER BY y) is the partition's last
      * value on every row (both live-verified). An explicit frame is honoured normally.
      */
-    private List<Row> valueFrameRows(final String functionName,
-                                     final FrostlakeParser.OverClauseContext overClause,
-                                     final List<Row> partition, final Row currentRow, final Table table) {
+    private int[] valueFrameBounds(final String functionName,
+                                   final FrostlakeParser.OverClauseContext overClause,
+                                   final List<Row> partition, final Row currentRow, final Table table) {
         if (overClause.orderByClause() == null) {
             throw new RuntimeException("Window function type [" + functionName
                 + "] requires ORDER BY in window specification.");
         }
         if (overClause.windowFrame() == null) {
-            return partition;
+            return new int[] {0, partition.size() - 1};
         }
-        return frameRows(overClause, partition, currentRow, table);
+        return frameBounds(overClause, partition, currentRow, table);
     }
 
     private List<Row> frameRows(final FrostlakeParser.OverClauseContext overClause, final List<Row> partition,
                                 final Row currentRow, final Table table) {
+        final int[] bounds = frameBounds(overClause, partition, currentRow, table);
+        if (bounds[0] > bounds[1]) {
+            return new ArrayList<>();   // an empty frame (e.g. 2 FOLLOWING at the end of the partition)
+        }
+        return partition.subList(bounds[0], bounds[1] + 1);
+    }
+
+    /**
+     * The frame as inclusive {@code [start, end]} indices into the sorted partition (start &gt; end
+     * means an empty frame). This is {@link #frameRows}' bound computation without the subList, so
+     * vector readers can address the partition's argument vector directly.
+     */
+    private int[] frameBounds(final FrostlakeParser.OverClauseContext overClause, final List<Row> partition,
+                              final Row currentRow, final Table table) {
         final int size = partition.size();
         if (size == 0) {
-            return partition;
+            return new int[] {0, -1};
         }
-        int pos = WindowFunctionHelper.indexOf(partition, currentRow);
-        if (pos < 0) {
-            pos = size - 1;
-        }
+        // Anchor via the partition's single-pass position map (first-equal, exactly what the old
+        // linear scan found), falling back to the last index as before.
+        final Long anchor = orderMapsFor(partition, overClause, table).position(currentRow);
+        final int pos = anchor != null ? (int) (anchor.longValue() - 1) : size - 1;
         final FrostlakeParser.WindowFrameContext frame = overClause.windowFrame();
         final boolean hasOrderBy = overClause.orderByClause() != null;
 
         if (frame == null) {
             if (!hasOrderBy) {
-                return partition;   // no ORDER BY ⇒ the frame is the whole partition
+                return new int[] {0, size - 1};   // no ORDER BY ⇒ the frame is the whole partition
             }
             // Default running frame: UNBOUNDED PRECEDING … CURRENT ROW (RANGE ⇒ through the last peer).
-            return partition.subList(0, lastPeer(partition, pos, overClause, table) + 1);
+            return new int[] {0, lastPeer(partition, pos, overClause, table)};
         }
 
         final boolean isRange = frame.RANGE() != null;
@@ -1127,12 +1503,7 @@ final class WindowFunctionEvaluator {
             ? boundIndex(partition, pos, bounds.get(1), overClause, table, isRange, false)
             : (isRange ? lastPeer(partition, pos, overClause, table) : pos);   // single bound ⇒ … AND CURRENT ROW
 
-        final int s = Math.max(0, start);
-        final int e = Math.min(size - 1, end);
-        if (s > e) {
-            return new ArrayList<>();   // an empty frame (e.g. 2 FOLLOWING at the end of the partition)
-        }
-        return partition.subList(s, e + 1);
+        return new int[] {Math.max(0, start), Math.min(size - 1, end)};
     }
 
     /** Resolve one frame bound to an inclusive index into the sorted partition. ROWS bounds are positional;
@@ -1221,34 +1592,24 @@ final class WindowFunctionEvaluator {
         }
     }
 
-    /** First index whose ORDER BY value equals the current row's (its first peer); 0 when there is no ORDER BY. */
+    /** First index whose ORDER BY value equals the current row's (its first peer); 0 when there is no ORDER BY.
+     *  An array read off the partition's single-pass order maps. */
     private int firstPeer(final List<Row> partition, final int pos, final FrostlakeParser.OverClauseContext overClause,
                           final Table table) {
         if (overClause.orderByClause() == null) {
             return 0;
         }
-        final List<Object> cur = orderKeyTuple(partition.get(pos), overClause.orderByClause(), table);
-        int i = pos;
-        while (i > 0 && orderKeyTuplesEqual(orderKeyTuple(partition.get(i - 1), overClause.orderByClause(), table), cur)) {
-            i--;
-        }
-        return i;
+        return orderMapsFor(partition, overClause, table).firstPeer(pos);
     }
 
     /** Last index whose ORDER BY value equals the current row's (its last peer); the last index when there
-     *  is no ORDER BY. */
+     *  is no ORDER BY. An array read off the partition's single-pass order maps. */
     private int lastPeer(final List<Row> partition, final int pos, final FrostlakeParser.OverClauseContext overClause,
                          final Table table) {
         if (overClause.orderByClause() == null) {
             return partition.size() - 1;
         }
-        final List<Object> cur = orderKeyTuple(partition.get(pos), overClause.orderByClause(), table);
-        int i = pos;
-        while (i < partition.size() - 1
-                && orderKeyTuplesEqual(orderKeyTuple(partition.get(i + 1), overClause.orderByClause(), table), cur)) {
-            i++;
-        }
-        return i;
+        return orderMapsFor(partition, overClause, table).lastPeer(pos);
     }
 
     /**
@@ -1257,26 +1618,45 @@ final class WindowFunctionEvaluator {
      * behaviour; running/cumulative frames (ORDER BY … ROWS/RANGE) are not yet modelled here.
      */
     private Object computeWindowAggregate(final String functionName, final FrostlakeParser.FunctionCallExprContext funcCtx,
-                                          final List<Row> sortedPartition, final Table table) {
+                                          final List<Row> partition, final int from, final int to, final Table table) {
         final String colExpr = !windowArgs(funcCtx).isEmpty()
             ? ParseTreeText.getOriginalText(windowArgs(funcCtx).get(0)) : null;
-        final List<Object> values = new ArrayList<>();
-        for (final Row r : sortedPartition) {
+        final Object[] vector = frameArgVector(partition, colExpr, table, VECTOR_MODE_ORDER_KEY);
+        final List<Object> values = new ArrayList<>(Math.max(0, to - from + 1));
+        for (int i = from; i <= to; i++) {
             // Same JSON-null rule as the grouped path and the generic window dispatch: a VARIANT
             // JSON null is missing input for SUM/AVG and a VALUE for MIN/MAX — without this a
             // windowed AVG counted the JSON null as 0 in its divisor (grouped AVG skips it).
             values.add(colExpr == null ? null
-                : VariantJsonNulls.asAggregateInput(functionName, extractColumnValue(r, colExpr, table)));
+                : VariantJsonNulls.asAggregateInput(functionName, vector != null ? vector[i]
+                    : extractColumnValue(partition.get(i), colExpr, table)));
         }
         switch (functionName) {
             case "SUM": return WindowFunctionHelper.sum(values,
-                isStaticallyVariantArgument(colExpr, table));
+                isStaticallyVariantArgumentMemo(colExpr, table));
             case "AVG": return WindowFunctionHelper.avg(values,
-                isStaticallyVariantArgument(colExpr, table));
+                isStaticallyVariantArgumentMemo(colExpr, table));
             case "MIN": return WindowFunctionHelper.min(values);
             case "MAX": return WindowFunctionHelper.max(values);
             default:    return null;
         }
+    }
+
+    /** Per-batch memo over {@link #isStaticallyVariantArgument} — the verdict is per argument TEXT,
+     *  but was re-derived (a parse plus a static-type walk) for every output row. */
+    private boolean isStaticallyVariantArgumentMemo(final String argExpr, final Table table) {
+        if (argExpr == null || argExpr.isEmpty()) {
+            return false;
+        }
+        final Map<String, Boolean> memo = argumentFactMemo.get();
+        final String key = "v:" + argExpr;
+        final Boolean known = memo.get(key);
+        if (known != null) {
+            return known;
+        }
+        final boolean variant = isStaticallyVariantArgument(argExpr, table);
+        memo.put(key, variant);
+        return variant;
     }
 
     /**
@@ -1306,15 +1686,17 @@ final class WindowFunctionEvaluator {
      * this method, so an empty argument list only defends against a malformed call.
      */
     private Object computeWindowCount(final FrostlakeParser.FunctionCallExprContext funcCtx,
-                                      final List<Row> frame, final Table table) {
+                                      final List<Row> partition, final int from, final int to, final Table table) {
         final List<FrostlakeParser.BooleanExprContext> args = windowArgs(funcCtx);
         if (args.isEmpty()) {
-            return (long) frame.size();
+            return (long) Math.max(0, to - from + 1);
         }
         final String argExpr = ParseTreeText.getOriginalText(args.get(0));
+        final Object[] vector = frameArgVector(partition, argExpr, table, VECTOR_MODE_ORDER_KEY);
         long count = 0;
-        for (final Row r : frame) {
-            if (VariantJsonNulls.asAggregateInput("COUNT", extractColumnValue(r, argExpr, table)) != null) {
+        for (int i = from; i <= to; i++) {
+            final Object raw = vector != null ? vector[i] : extractColumnValue(partition.get(i), argExpr, table);
+            if (VariantJsonNulls.asAggregateInput("COUNT", raw) != null) {
                 count++;
             }
         }
@@ -1337,13 +1719,13 @@ final class WindowFunctionEvaluator {
         // OBJECT_AGG, CORR / COVAR / REGR) receive both per-row values. Feeding only the first argument
         // silently returned an empty/NULL aggregate over the frame.
         if (secondExpr != null && acc instanceof ListAggAccumulator) {
-            ((ListAggAccumulator) acc).setDelimiter(String.valueOf(parseLiteralValue(secondExpr)));
+            ((ListAggAccumulator) acc).setDelimiter(String.valueOf(constantArgValue(secondExpr)));
         } else if (secondExpr != null && acc instanceof ApproxPercentileAccumulator) {
             ((ApproxPercentileAccumulator) acc).setPercentile(new BigDecimal(secondExpr.trim()).doubleValue());
         }
         final boolean pairFed = secondExpr != null
             && (acc instanceof MaxByMinByAccumulator || acc instanceof ObjectAggAccumulator
-                || acc instanceof Corr.CorrAccumulator || acc instanceof CovarAccumulator
+                || acc instanceof CorrAccumulator || acc instanceof CovarAccumulator
                 || acc instanceof RegrAccumulator);
         final Set<Object> seen = funcCtx.DISTINCT() != null ? new HashSet<>() : null;
         for (final Row r : frame) {
@@ -1365,8 +1747,8 @@ final class WindowFunctionEvaluator {
                 } else if (v != null && second != null) {
                     final double dy = WindowFunctionHelper.toDouble(v);
                     final double dx = WindowFunctionHelper.toDouble(second);
-                    if (acc instanceof Corr.CorrAccumulator) {
-                        ((Corr.CorrAccumulator) acc).accumulate(dy, dx);
+                    if (acc instanceof CorrAccumulator) {
+                        ((CorrAccumulator) acc).accumulate(dy, dx);
                     } else if (acc instanceof CovarAccumulator) {
                         ((CovarAccumulator) acc).accumulate(dy, dx);
                     } else {
@@ -1383,7 +1765,7 @@ final class WindowFunctionEvaluator {
     private List<Object> extractOrderValues(final List<Row> sortedRows,
                                              final FrostlakeParser.OverClauseContext overClause,
                                              final Table table) {
-        List<Object> vals = new ArrayList<>();
+        final List<Object> vals = new ArrayList<>();
         for (final Row r : sortedRows) {
             vals.add(overClause.orderByClause() != null ? getOrderByValue(r, overClause.orderByClause(), table) : null);
         }
@@ -1400,51 +1782,21 @@ final class WindowFunctionEvaluator {
         return evaluateOrderKey(columnExpr, row, table);
     }
 
-    private Object parseLiteralValue(final String literal) {
-        if (literal == null) {
+    /**
+     * Evaluate a CONSTANT window-function argument (offset, default, delimiter) through the
+     * expression AST. Hand-stripping quotes off the flattened source text returned escaped quotes
+     * undecoded ({@code 'O''Brien'} stayed {@code O''Brien}) and computed constants like
+     * {@code 1 + 1} as their own source text.
+     */
+    private Object constantArgValue(final String argText) {
+        if (argText == null) {
             return null;
         }
-
-        final String trimmedLiteral = literal.trim();
-
-        // String literal
-        if (trimmedLiteral.startsWith("'") && trimmedLiteral.endsWith("'")) {
-            return trimmedLiteral.substring(1, trimmedLiteral.length() - 1);
-        }
-
-        // NULL
-        if (trimmedLiteral.equalsIgnoreCase("NULL")) {
-            return null;
-        }
-
-        // Boolean
-        if (trimmedLiteral.equalsIgnoreCase("TRUE")) {
-            return true;
-        }
-        if (trimmedLiteral.equalsIgnoreCase("FALSE")) {
-            return false;
-        }
-
-        // Try as integer
-        try {
-            return Long.parseLong(trimmedLiteral);
-        } catch (final NumberFormatException e) {
-            // Not an integer
-        }
-
-        // Try as double
-        try {
-            return Double.parseDouble(trimmedLiteral);
-        } catch (final NumberFormatException e) {
-            // Not a double
-        }
-
-        // Return as string if nothing else matches
-        return trimmedLiteral;
+        return executor.evaluateExpression(argText, null, (Table) null);
     }
 
     List<Row> sortRowsForWindow(final List<Row> rows, final FrostlakeParser.OrderByClauseContext orderByClause, final Table table) {
-        List<Row> sorted = new ArrayList<>(rows);
+        final List<Row> sorted = new ArrayList<>(rows);
         if (sorted.size() <= 1) {
             return sorted;
         }
@@ -1520,6 +1872,13 @@ final class WindowFunctionEvaluator {
             } catch (final RuntimeException notAnExpression) {
                 // fall through to the alias / generic paths
             }
+        }
+        // Still grouped, and the key is NOT one of the select items — the group itself is the only
+        // place its value exists. This is the ordinary shape: OVER (ORDER BY SUM(b)) beside a SELECT
+        // list that never projects SUM(b).
+        final Object grouped = groupedValueOf(trimmed, row);
+        if (grouped != GroupedExpressionValues.UNRESOLVED) {
+            return grouped;
         }
         // A bare name that names a SELECT-list alias (and isn't a base column) resolves to the alias's
         // defining expression — Snowflake allows a window PARTITION BY / ORDER BY to reference a SELECT

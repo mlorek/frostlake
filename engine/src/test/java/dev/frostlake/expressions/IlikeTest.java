@@ -24,7 +24,9 @@ import org.slf4j.LoggerFactory;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class IlikeTest extends BaseJdbcTest {
     private static final Logger logger = LoggerFactory.getLogger(IlikeTest.class);
@@ -39,7 +41,7 @@ public class IlikeTest extends BaseJdbcTest {
         statement.execute("INSERT INTO products VALUES (3, 'cherry')");
         statement.execute("INSERT INTO products VALUES (4, 'Grape')");
 
-        ResultSet rs = statement.executeQuery("SELECT name FROM products WHERE name ILIKE 'apple' ORDER BY id");
+        final ResultSet rs = statement.executeQuery("SELECT name FROM products WHERE name ILIKE 'apple' ORDER BY id");
         assertTrue(rs.next());
         assertEquals("Apple", rs.getString(1));
         assertFalse(rs.next());
@@ -75,7 +77,7 @@ public class IlikeTest extends BaseJdbcTest {
         statement.execute("INSERT INTO codes VALUES (2, 'a456')");
         statement.execute("INSERT INTO codes VALUES (3, 'B789')");
 
-        ResultSet rs = statement.executeQuery("SELECT code FROM codes WHERE code ILIKE 'a___' ORDER BY id");
+        final ResultSet rs = statement.executeQuery("SELECT code FROM codes WHERE code ILIKE 'a___' ORDER BY id");
         assertTrue(rs.next());
         assertEquals("A123", rs.getString(1));
         assertTrue(rs.next());
@@ -112,7 +114,7 @@ public class IlikeTest extends BaseJdbcTest {
         statement.execute("INSERT INTO status_table VALUES (2, 'INACTIVE')");
         statement.execute("INSERT INTO status_table VALUES (3, 'Pending')");
 
-        ResultSet rs = statement.executeQuery("SELECT status FROM status_table WHERE status NOT ILIKE 'active' ORDER BY id");
+        final ResultSet rs = statement.executeQuery("SELECT status FROM status_table WHERE status NOT ILIKE 'active' ORDER BY id");
         assertTrue(rs.next());
         assertEquals("INACTIVE", rs.getString(1));
         assertTrue(rs.next());
@@ -129,7 +131,7 @@ public class IlikeTest extends BaseJdbcTest {
         statement.execute("INSERT INTO nullable_data VALUES (2, NULL)");
         statement.execute("INSERT INTO nullable_data VALUES (3, 'DATA')");
 
-        ResultSet rs = statement.executeQuery("SELECT id FROM nullable_data WHERE value ILIKE '%test%' ORDER BY id");
+        final ResultSet rs = statement.executeQuery("SELECT id FROM nullable_data WHERE value ILIKE '%test%' ORDER BY id");
         assertTrue(rs.next());
         assertEquals(1, rs.getInt(1));
         assertFalse(rs.next());
@@ -144,7 +146,7 @@ public class IlikeTest extends BaseJdbcTest {
         statement.execute("INSERT INTO emails VALUES (2, 'admin@TEST.ORG')");
         statement.execute("INSERT INTO emails VALUES (3, 'info@example.com')");
 
-        ResultSet rs = statement.executeQuery("SELECT email FROM emails WHERE email ILIKE '%@example.com' ORDER BY id");
+        final ResultSet rs = statement.executeQuery("SELECT email FROM emails WHERE email ILIKE '%@example.com' ORDER BY id");
         assertTrue(rs.next());
         assertEquals("user@EXAMPLE.com", rs.getString(1));
         assertTrue(rs.next());
@@ -161,7 +163,7 @@ public class IlikeTest extends BaseJdbcTest {
         statement.execute("INSERT INTO employees VALUES (2, 'Jane Smith', 'ENGINEERING')");
         statement.execute("INSERT INTO employees VALUES (3, 'Bob Wilson', 'Sales')");
 
-        ResultSet rs = statement.executeQuery(
+        final ResultSet rs = statement.executeQuery(
             "SELECT name FROM employees " +
             "WHERE name ILIKE '%doe%' OR department ILIKE 'engineering' " +
             "ORDER BY id"

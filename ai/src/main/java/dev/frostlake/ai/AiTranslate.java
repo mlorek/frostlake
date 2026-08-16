@@ -38,6 +38,8 @@ public class AiTranslate extends BuiltInFunction {
         return translate.evaluate(args.subList(0, 3));
     }
 
-    @Override public int getMinArgCount() { return 3; }
-    @Override public int getMaxArgCount() { return 4; }
+    @Override
+    public int getMinArgCount() { return 3; }
+    @Override
+    public int getMaxArgCount() { return 4; }
 }

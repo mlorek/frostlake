@@ -24,7 +24,7 @@ import java.util.List;
 
 /** STRING_AS_BINARY(s) — the string's UTF-8 bytes as BINARY. */
 public class StringAsBinary extends BuiltInFunction {
-    public StringAsBinary() { super("STRING_AS_BINARY", BinaryType.BINARY); }
+    public StringAsBinary() { super("STRING_AS_BINARY", BinaryType.VARBINARY); }
 
     @Override
     public Object evaluate(final List<Object> args) {
@@ -33,6 +33,8 @@ public class StringAsBinary extends BuiltInFunction {
         return BinaryValue.of(args.get(0).toString().getBytes(StandardCharsets.UTF_8));
     }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return 1; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return 1; }
 }

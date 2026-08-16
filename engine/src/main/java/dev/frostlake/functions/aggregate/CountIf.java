@@ -30,22 +30,9 @@ public class CountIf extends AggregateFunction {
     @Override
     public Object evaluate(final List<Object> args) { return null; }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return 1; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return 1; }
 
-    private static class CountIfAccumulator implements Accumulator {
-        private long count = 0;
-
-        @Override
-        public void accumulate(final Object v) { if (BoolOrAgg.isTruthy(v)) count++; }
-
-        @Override
-        public Object getResult() { return count; }
-
-        @Override
-        public void reset() { count = 0; }
-
-        @Override
-        public void merge(final Accumulator other) { count += ((CountIfAccumulator) other).count; }
-    }
 }

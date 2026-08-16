@@ -42,6 +42,8 @@ public class Getbit extends NumericArgumentFunction {
         return BigInteger.valueOf(value).testBit(position) ? 1L : 0L;
     }
 
-    @Override public int getMinArgCount() { return 2; }
-    @Override public int getMaxArgCount() { return 2; }
+    @Override
+    public int getMinArgCount() { return 2; }
+    @Override
+    public int getMaxArgCount() { return 2; }
 }

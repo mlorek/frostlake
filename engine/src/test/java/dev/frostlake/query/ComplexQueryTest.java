@@ -50,7 +50,7 @@ public class ComplexQueryTest extends BaseDatabaseTest {
 
     @Test
     public void testWhereWithOrderByAndLimit() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT * FROM employees WHERE salary > 70000 ORDER BY salary DESC LIMIT 2"
         );
 
@@ -59,7 +59,7 @@ public class ComplexQueryTest extends BaseDatabaseTest {
 
     @Test
     public void testGroupByWithOrderByAndLimit() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT department, COUNT(*) FROM employees GROUP BY department ORDER BY COUNT(*) DESC LIMIT 2"
         );
 
@@ -68,7 +68,7 @@ public class ComplexQueryTest extends BaseDatabaseTest {
 
     @Test
     public void testWhereWithGroupByAndOrderBy() {
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT department, AVG(salary), COUNT(*)
             FROM employees
             WHERE age < 35
@@ -83,7 +83,7 @@ public class ComplexQueryTest extends BaseDatabaseTest {
 
     @Test
     public void testMultipleAggregatesWithComplexConditions() {
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT department, COUNT(*), AVG(salary), MAX(salary), MIN(age)
             FROM employees
             WHERE salary >= 70000
@@ -96,7 +96,7 @@ public class ComplexQueryTest extends BaseDatabaseTest {
 
     @Test
     public void testComplexWhereClause() {
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT * FROM employees
             WHERE (department = 'Engineering' AND salary > 85000) OR (department = 'Sales' AND age > 30)
             """);
@@ -113,8 +113,8 @@ public class ComplexQueryTest extends BaseDatabaseTest {
         engine.execute("INSERT INTO departments VALUES ('HR', 'Building C')");
 
         // For now just test basic queries on both tables
-        ResultSet empResult = engine.executeQuery("SELECT * FROM employees");
-        ResultSet deptResult = engine.executeQuery("SELECT * FROM departments");
+        final ResultSet empResult = engine.executeQuery("SELECT * FROM employees");
+        final ResultSet deptResult = engine.executeQuery("SELECT * FROM departments");
 
         assertEquals(6, empResult.getRowCount());
         assertEquals(3, deptResult.getRowCount());

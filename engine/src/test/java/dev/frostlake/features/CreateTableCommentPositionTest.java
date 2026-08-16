@@ -16,40 +16,39 @@
 
 package dev.frostlake.features;
 
-import dev.frostlake.DatabaseEngine;
-import dev.frostlake.metastore.model.Table;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
+import dev.frostlake.BaseDatabaseTest;
+import dev.frostlake.storage.ResultSet;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Tests for COMMENT clause position in CREATE TABLE statement
- * COMMENT can appear immediately after table name or at the end
+ * The COMMENT clause's positions in CREATE TABLE — immediately after the table name or at the
+ * statement's end — asserted through the SQL surface: the {@code comment} and {@code cluster_by}
+ * cells of {@code SHOW TABLES} (an unset comment reads as the empty string) and
+ * {@code DESCRIBE TABLE} row counts, so every check runs against whichever engine executed the
+ * DDL, embedded or live.
  */
-public class CreateTableCommentPositionTest {
+public class CreateTableCommentPositionTest extends BaseDatabaseTest {
     private static final Logger logger = LoggerFactory.getLogger(CreateTableCommentPositionTest.class);
 
-    private DatabaseEngine engine;
-
-    @BeforeEach
-    public void setUp() {
-        engine = new DatabaseEngine();
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
-        logger.info("DatabaseEngine initialized for CREATE TABLE COMMENT position tests");
+    /** One SHOW TABLES cell for the given table in the current schema. */
+    private String tableCell(final String table, final String column) {
+        final ResultSet rs = engine.executeQuery("SHOW TABLES LIKE '" + table + "'");
+        return cell(rs, soleRowWhere(rs, "name", table.toUpperCase()), column);
     }
 
-    @AfterEach
-    public void tearDown() {
-        if (engine != null) {
-            engine.shutdown();
-        }
+    private String tableComment(final String table) {
+        return tableCell(table, "comment");
+    }
+
+    private int columnCount(final String table) {
+        return engine.executeQuery("DESCRIBE TABLE " + table).getRowCount();
     }
 
     @Test
@@ -58,9 +57,7 @@ public class CreateTableCommentPositionTest {
 
         engine.execute("CREATE TABLE test1 COMMENT = 'Table comment' (id INTEGER, name VARCHAR)");
 
-        Table table = engine.getCatalog().resolveTable("TEST1");
-        assertNotNull(table);
-        assertEquals("Table comment", table.getComment());
+        assertEquals("Table comment", tableComment("test1"));
 
         logger.info("COMMENT after table name works correctly");
     }
@@ -71,9 +68,7 @@ public class CreateTableCommentPositionTest {
 
         engine.execute("CREATE TABLE test2 (id INTEGER, name VARCHAR) COMMENT = 'End comment'");
 
-        Table table = engine.getCatalog().resolveTable("TEST2");
-        assertNotNull(table);
-        assertEquals("End comment", table.getComment());
+        assertEquals("End comment", tableComment("test2"));
 
         logger.info("COMMENT at end works correctly");
     }
@@ -84,11 +79,8 @@ public class CreateTableCommentPositionTest {
 
         engine.execute("CREATE TABLE test3 COMMENT = 'Clustered table' (id INTEGER, date DATE) CLUSTER BY (date)");
 
-        Table table = engine.getCatalog().resolveTable("TEST3");
-        assertNotNull(table);
-        assertEquals("Clustered table", table.getComment());
-        assertEquals(1, table.getClusterKeys().size());
-        assertEquals("date", table.getClusterKeys().get(0));
+        assertEquals("Clustered table", tableComment("test3"));
+        assertEquals("LINEAR(date)", tableCell("test3", "cluster_by"));
 
         logger.info("COMMENT after table name with CLUSTER BY works correctly");
     }
@@ -99,10 +91,8 @@ public class CreateTableCommentPositionTest {
 
         engine.execute("CREATE TABLE test4 (id INTEGER, date DATE) CLUSTER BY (date) COMMENT = 'Clustered at end'");
 
-        Table table = engine.getCatalog().resolveTable("TEST4");
-        assertNotNull(table);
-        assertEquals("Clustered at end", table.getComment());
-        assertEquals(1, table.getClusterKeys().size());
+        assertEquals("Clustered at end", tableComment("test4"));
+        assertEquals("LINEAR(date)", tableCell("test4", "cluster_by"));
 
         logger.info("COMMENT at end with CLUSTER BY works correctly");
     }
@@ -113,24 +103,28 @@ public class CreateTableCommentPositionTest {
 
         engine.execute("CREATE TABLE test5 COMMENT = 'Comment first' (id INTEGER, date DATE) CLUSTER BY (date)");
 
-        Table table = engine.getCatalog().resolveTable("TEST5");
-        assertNotNull(table);
-        assertEquals("Comment first", table.getComment());
+        assertEquals("Comment first", tableComment("test5"));
 
         logger.info("COMMENT before CLUSTER BY works correctly");
     }
 
     @Test
-    public void testBothCommentPositionsPrioritizeFirst() {
-        logger.info("Testing both COMMENT positions - should prioritize first one");
+    public void testTwoCommentClausesAreRefused() {
+        logger.info("Testing that a second COMMENT clause is refused");
 
-        engine.execute("CREATE TABLE test6 COMMENT = 'First position' (id INTEGER) COMMENT = 'Second position'");
+        // A table carries at most one COMMENT, wherever it sits (live-verified). The refusal is
+        // specific to COMMENT: a repeated CLUSTER BY is accepted.
+        final RuntimeException e = assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.execute("CREATE TABLE test6 COMMENT = 'First position' (id INTEGER) COMMENT = 'Second position'");
+            }
+        });
+        assertTrue(e.getMessage().contains("duplicate property 'COMMENT'"), e.getMessage());
 
-        Table table = engine.getCatalog().resolveTable("TEST6");
-        assertNotNull(table);
-        assertEquals("First position", table.getComment());
+        assertEquals(0, engine.executeQuery("SHOW TABLES LIKE 'test6'").getRowCount());
 
-        logger.info("First COMMENT position takes precedence");
+        logger.info("A second COMMENT clause is refused");
     }
 
     @Test
@@ -139,9 +133,7 @@ public class CreateTableCommentPositionTest {
 
         engine.execute("CREATE TABLE IF NOT EXISTS test7 COMMENT = 'With IF NOT EXISTS' (id INTEGER, name VARCHAR)");
 
-        Table table = engine.getCatalog().resolveTable("TEST7");
-        assertNotNull(table);
-        assertEquals("With IF NOT EXISTS", table.getComment());
+        assertEquals("With IF NOT EXISTS", tableComment("test7"));
 
         logger.info("COMMENT with IF NOT EXISTS works correctly");
     }
@@ -150,12 +142,11 @@ public class CreateTableCommentPositionTest {
     public void testCommentAfterTableNameWithQualifiedName() {
         logger.info("Testing COMMENT after qualified table name");
 
-        engine.execute("CREATE SCHEMA test_schema");
-        engine.execute("CREATE TABLE test_schema.test8 COMMENT = 'Qualified name' (id INTEGER)");
+        engine.execute("CREATE SCHEMA comment_pos_schema");
+        engine.execute("CREATE TABLE comment_pos_schema.test8 COMMENT = 'Qualified name' (id INTEGER)");
 
-        Table table = engine.getCatalog().resolveTable("TEST_SCHEMA.TEST8");
-        assertNotNull(table);
-        assertEquals("Qualified name", table.getComment());
+        final ResultSet rs = engine.executeQuery("SHOW TABLES LIKE 'test8' IN SCHEMA comment_pos_schema");
+        assertEquals("Qualified name", cell(rs, soleRowWhere(rs, "name", "TEST8"), "comment"));
 
         logger.info("COMMENT with qualified name works correctly");
     }
@@ -174,10 +165,8 @@ public class CreateTableCommentPositionTest {
             )
             """);
 
-        Table table = engine.getCatalog().resolveTable("TEST9");
-        assertNotNull(table);
-        assertEquals("Multi column table", table.getComment());
-        assertEquals(4, table.getColumns().size());
+        assertEquals("Multi column table", tableComment("test9"));
+        assertEquals(4, columnCount("test9"));
 
         logger.info("COMMENT with multiple columns works correctly");
     }
@@ -188,9 +177,7 @@ public class CreateTableCommentPositionTest {
 
         engine.execute("CREATE TABLE test10 (id INTEGER, name VARCHAR)");
 
-        Table table = engine.getCatalog().resolveTable("TEST10");
-        assertNotNull(table);
-        assertNull(table.getComment());
+        assertEquals("", tableComment("test10"));
 
         logger.info("CREATE TABLE without COMMENT works correctly");
     }
@@ -202,13 +189,8 @@ public class CreateTableCommentPositionTest {
         engine.execute("CREATE TABLE source (id INTEGER, name VARCHAR) COMMENT = 'Source table'");
         engine.execute("CREATE TABLE test11 COMMENT = 'Cloned with comment' CLONE source");
 
-        Table sourceTable = engine.getCatalog().resolveTable("SOURCE");
-        Table clonedTable = engine.getCatalog().resolveTable("TEST11");
-
-        assertNotNull(sourceTable);
-        assertNotNull(clonedTable);
-        assertEquals("Source table", sourceTable.getComment());
-        assertEquals("Cloned with comment", clonedTable.getComment());
+        assertEquals("Source table", tableComment("source"));
+        assertEquals("Cloned with comment", tableComment("test11"));
 
         logger.info("COMMENT with CLONE overrides source comment");
     }
@@ -220,9 +202,7 @@ public class CreateTableCommentPositionTest {
         engine.execute("CREATE TABLE source2 (id INTEGER) COMMENT = 'Original comment'");
         engine.execute("CREATE TABLE test12 CLONE source2");
 
-        Table clonedTable = engine.getCatalog().resolveTable("TEST12");
-        assertNotNull(clonedTable);
-        assertEquals("Original comment", clonedTable.getComment());
+        assertEquals("Original comment", tableComment("test12"));
 
         logger.info("CLONE without COMMENT inherits correctly");
     }
@@ -234,9 +214,7 @@ public class CreateTableCommentPositionTest {
         engine.execute("CREATE TABLE source3 (id INTEGER) COMMENT = 'Source'");
         engine.execute("CREATE TABLE test13 CLONE source3 COMMENT = 'New comment at end'");
 
-        Table clonedTable = engine.getCatalog().resolveTable("TEST13");
-        assertNotNull(clonedTable);
-        assertEquals("New comment at end", clonedTable.getComment());
+        assertEquals("New comment at end", tableComment("test13"));
 
         logger.info("COMMENT at end with CLONE works correctly");
     }
@@ -247,9 +225,7 @@ public class CreateTableCommentPositionTest {
 
         engine.execute("CREATE TABLE test14 COMMENT = 'Comment with \"quotes\" and \\'apostrophes\\'' (id INTEGER)");
 
-        Table table = engine.getCatalog().resolveTable("TEST14");
-        assertNotNull(table);
-        assertNotNull(table.getComment());
+        assertEquals("Comment with \"quotes\" and 'apostrophes'", tableComment("test14"));
 
         logger.info("COMMENT with special characters works correctly");
     }
@@ -267,9 +243,7 @@ public class CreateTableCommentPositionTest {
             )
             """);
 
-        Table table = engine.getCatalog().resolveTable("TEST15");
-        assertNotNull(table);
-        assertEquals("Table with constraints", table.getComment());
+        assertEquals("Table with constraints", tableComment("test15"));
 
         logger.info("COMMENT with column constraints works correctly");
     }
@@ -287,9 +261,7 @@ public class CreateTableCommentPositionTest {
             )
             """);
 
-        Table table = engine.getCatalog().resolveTable("TEST16");
-        assertNotNull(table);
-        assertEquals("Table with defaults", table.getComment());
+        assertEquals("Table with defaults", tableComment("test16"));
 
         logger.info("COMMENT with DEFAULT values works correctly");
     }
@@ -302,11 +274,8 @@ public class CreateTableCommentPositionTest {
         // this CLUSTER-BY-then-COMMENT order is emitted by some production DDL.
         engine.execute("CREATE TABLE test17 CLUSTER BY (date) COMMENT = 'Cluster then comment' (id INTEGER, date DATE)");
 
-        Table table = engine.getCatalog().resolveTable("TEST17");
-        assertNotNull(table);
-        assertEquals("Cluster then comment", table.getComment());
-        assertEquals(1, table.getClusterKeys().size());
-        assertEquals("date", table.getClusterKeys().get(0));
+        assertEquals("Cluster then comment", tableComment("test17"));
+        assertEquals("LINEAR(date)", tableCell("test17", "cluster_by"));
 
         logger.info("CLUSTER BY then COMMENT before columns works correctly");
     }
@@ -327,11 +296,9 @@ public class CreateTableCommentPositionTest {
             )
             """);
 
-        Table table = engine.getCatalog().resolveTable("TEST18");
-        assertNotNull(table);
-        assertEquals("{\"ver\": \"1.00.00\", \"doc\": \"derived KPI metric benchmarks.\"}", table.getComment());
-        assertEquals(3, table.getClusterKeys().size());
-        assertEquals(4, table.getColumns().size());
+        assertEquals("{\"ver\": \"1.00.00\", \"doc\": \"derived KPI metric benchmarks.\"}", tableComment("test18"));
+        assertEquals("LINEAR(EFFECTIVE_DATE, GROUP_TYPE, RECORD_ID)", tableCell("test18", "cluster_by"));
+        assertEquals(4, columnCount("test18"));
 
         logger.info("Multi-key CLUSTER BY then JSON COMMENT before columns works correctly");
     }

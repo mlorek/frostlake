@@ -28,6 +28,8 @@ public class CurrentIpAddress extends BuiltInFunction {
     @Override
     public Object evaluate(final List<Object> args) { return "127.0.0.1"; }
 
-    @Override public int getMinArgCount() { return 0; }
-    @Override public int getMaxArgCount() { return 0; }
+    @Override
+    public int getMinArgCount() { return 0; }
+    @Override
+    public int getMaxArgCount() { return 0; }
 }

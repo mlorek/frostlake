@@ -97,10 +97,14 @@ public class FlowOperatorTest extends BaseDatabaseTest {
                 engine.executeQuery("select * from $1");
             }
         });
-        // A $n with no chain at all is a pipe reference rather than an identifier. Live's message
-        // leads with the same phrase and then dumps one of its own AST objects; only the phrase is
-        // reproduced — see the throw site for why the dump is not.
-        assertTrue(outside.getMessage().contains("invalid pipe reference '$1'"),
+        // A $n with no chain at all is a pipe reference rather than an identifier. Both sides carry
+        // the position and the same leading phrase; only the quoted detail differs, because live dumps
+        // one of its own AST objects there ({@code SqlNamedExpression{ aliasName=<null>, expression=1}})
+        // where Frostlake names the reference the user wrote — see the throw site for why the dump is
+        // not reproduced. Asserting the shared part is therefore the whole claim that holds on both.
+        assertTrue(outside.getMessage().contains("error line 1 at position 14"),
+            "unexpected message: " + outside.getMessage());
+        assertTrue(outside.getMessage().contains("invalid pipe reference"),
             "unexpected message: " + outside.getMessage());
     }
 

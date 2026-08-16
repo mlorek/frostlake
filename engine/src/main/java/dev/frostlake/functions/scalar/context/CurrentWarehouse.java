@@ -33,6 +33,8 @@ public class CurrentWarehouse extends BuiltInFunction {
     @Override
     public Object evaluate(final List<Object> args) { return catalog.getCurrentWarehouse(); }
 
-    @Override public int getMinArgCount() { return 0; }
-    @Override public int getMaxArgCount() { return 0; }
+    @Override
+    public int getMinArgCount() { return 0; }
+    @Override
+    public int getMaxArgCount() { return 0; }
 }

@@ -1,5 +1,94 @@
 grammar Frostlake;
 
+@parser::members {
+    /** The unreserved EXCEPT may serve as a BARE (AS-less) alias only when the next token cannot
+     *  start a set-operation right-hand side — `SELECT 1 except` / `FROM t except` are aliases,
+     *  `... EXCEPT SELECT ...` stays a set-op (statements need no semicolon between them, so both
+     *  parses reach EOF and plain lookahead cannot decide). Every other word passes unchanged. */
+    private boolean exceptBareAliasAllowed() {
+        if (_input.LT(1).getType() != EXCEPT) {
+            return true;
+        }
+        final int next = _input.LT(2).getType();
+        return next != SELECT && next != LPAREN && next != WITH && next != ALL && next != DISTINCT;
+    }
+
+    /** Whether a token may BEGIN a column reference. THREE of the five words a NAME position admits do
+     *  not reach an expression: CASE, CAST and WHEN each lead their own construct there, and live
+     *  refuses `SELECT case FROM t` as a syntax error EVEN WHEN a column of that name exists — defining
+     *  one and referencing it are different vocabularies. TRY_CAST is the same story and was this
+     *  guard's original occupant.
+     *
+     *  <p>CONSTRAINT and DEFAULT are NOT in that group, measured: live PARSES both here and answers
+     *  "invalid identifier", which is the resolver talking, not the parser. They differ from each other
+     *  further down — a CONSTRAINT column RESOLVES once it exists, while an unquoted DEFAULT never does
+     *  (see ExpressionAstBuilder, where that one is refused).
+     *
+     *  <p>A predicate here is hoisted into every decision that can reach this alternative, which is why
+     *  the qualified STAR takes starQualifiedName rather than qualifiedName: sharing the rule let the
+     *  hoisted predicate eliminate `case.*` along with the bare reference. */
+    private boolean expressionLeadingName() {
+        switch (_input.LT(1).getType()) {
+            case TRY_CAST:
+                return false;
+            case CASE:
+            case CAST:
+            case WHEN:
+                // QUALIFYING is not REFERENCING: `case.a` names a column of the table CASE and live
+                // reads it, while the bare `case` is where the construct starts. A star over such a
+                // table expands to exactly these qualified references, so refusing them outright
+                // would break `SELECT case.* FROM case` on the way back out.
+                return _input.LT(2).getType() == DOT;
+            default:
+                return true;
+        }
+    }
+
+    /** Whether a token may lead a table name in the FROM position. A join keyword there is still a
+     *  KEYWORD when the name is BARE — live reads `FROM asof` as the start of an ASOF JOIN and refuses
+     *  it at end of input — but names a container when a dot follows, `FROM asof.t` reaching
+     *  "Schema 'ASOF' does not exist". Both spellings measured, for all eleven words. */
+    private boolean tableNameLeadAllowed() {
+        switch (_input.LT(1).getType()) {
+            case ASOF:
+            case CROSS:
+            case FULL:
+            case INNER:
+            case JOIN:
+            case LATERAL:
+            case LEFT:
+            case MATCH_CONDITION:
+            case NATURAL:
+            case RIGHT:
+            case USING:
+                return _input.LT(2).getType() == DOT;
+            default:
+                return true;
+        }
+    }
+
+    /** The words that may name a COLUMN but may NOT be a bare (AS-less) table alias, measured word by
+     *  word against a live account over a RAW connection. Every one of them LEADS something in the FROM
+     *  clause — a join, a lateral, a match condition — so a bare alias spelling it would swallow the
+     *  clause it starts, and live refuses the qualified `<w>.x` form with it.
+     *
+     *  <p>The list once held four more — BREAK, CONTINUE, RAISE and RETURN — described as statement
+     *  keywords live refuses here even though nothing in a FROM clause begins with them. It does not:
+     *  all four are ordinary aliases, and `SELECT break.x FROM st break` RESOLVES. They were excluded
+     *  because the test harness split `SELECT x FROM st break` into two statements before submitting
+     *  it, so the account was asked about a bare `break` and refused that instead. */
+    private boolean bareTableAliasAllowed() {
+        switch (_input.LT(1).getType()) {
+            case ASOF: case CROSS: case FULL: case INNER: case JOIN:
+            case LATERAL: case LEFT: case MATCH_CONDITION: case NATURAL:
+            case RIGHT: case USING:
+                return false;
+            default:
+                return true;
+        }
+    }
+}
+
 // Parser Rules - Simplified for demonstration
 sqlScript
     : (flowChain SEMI?)+ EOF
@@ -55,9 +144,13 @@ createStatement
     // `CREATE TABLE t`, `CREATE TABLE t TAG (…)` or `CREATE TABLE t CLUSTER BY (…)` is a syntax error in
     // Snowflake (live-verified), so the shape group below is NOT optional.
     | CREATE or_replace? (TRANSIENT | (LOCAL | GLOBAL)? (TEMPORARY | TEMP) | VOLATILE | HYBRID)? TABLE if_not_exists? objectName tableTailOption* (LPAREN columnList RPAREN tableTailOption* (AS selectStatement)? | CLONE qualifiedName timeTravelClause? | LIKE qualifiedName | columnListOptional? AS selectStatement) tableTailOption* SEMI?
-    | CREATE or_replace? SECURE? VIEW if_not_exists? qualifiedName copyGrants? viewProperty* (LPAREN viewColumnList RPAREN)? copyGrants? viewProperty* rowAccessPolicyClause? commentClause? tagList? AS selectStatement SEMI?
+    // TEMPORARY/TEMP/VOLATILE views, live-measured, including the keyword ORDER: SECURE comes
+    // BEFORE the temporary keyword on a view (`CREATE SECURE TEMPORARY VIEW` parses,
+    // `CREATE TEMPORARY SECURE VIEW` is a syntax error) — the opposite of a function, below.
+    | CREATE or_replace? SECURE? ((LOCAL | GLOBAL)? (TEMPORARY | TEMP | VOLATILE))? VIEW if_not_exists? qualifiedName copyGrants? viewProperty* (LPAREN viewColumnList RPAREN)? copyGrants? viewProperty* rowAccessPolicyClause? commentClause? tagList? AS selectStatement SEMI?
     | CREATE or_replace? SECURE? MATERIALIZED VIEW if_not_exists? qualifiedName copyGrants? (LPAREN viewColumnList RPAREN)? copyGrants? commentClause? tagList? AS selectStatement SEMI?
-    | CREATE or_replace? DYNAMIC TABLE if_not_exists? qualifiedName (LPAREN identifierList RPAREN)? dynamicTableOptions (LPAREN identifierList RPAREN)? AS selectStatement commentClause? SEMI?
+    // COMMENT is one of the pre-AS options; a trailing COMMENT after the query is a syntax error (live-verified).
+    | CREATE or_replace? DYNAMIC TABLE if_not_exists? qualifiedName (LPAREN identifierList RPAREN)? dynamicTableOptions (LPAREN identifierList RPAREN)? AS selectStatement SEMI?
     | CREATE or_replace? STREAM if_not_exists? qualifiedName ON (TABLE | VIEW) qualifiedName streamOptions? commentClause? SEMI?
     | CREATE or_replace? TASK if_not_exists? qualifiedName warehouseClause? taskOptions? afterClause? commentClause? (WHEN booleanExpr)? AS taskBody commentClause? SEMI?
     | CREATE or_replace? PIPE if_not_exists? qualifiedName pipeOptions? AS copyStatement commentClause? SEMI?
@@ -72,19 +165,49 @@ createStatement
     // and the parentheses around the defining query are optional.
     | CREATE or_replace? CORTEX SEARCH SERVICE if_not_exists? qualifiedName ON identifier
       (ATTRIBUTES identifierList)? cortexSearchOption* AS (LPAREN selectStatement RPAREN | selectStatement) SEMI?
-    | CREATE or_replace? (TEMPORARY | TEMP)? STAGE if_not_exists? qualifiedName stageProperties? commentClause? SEMI?
+    | CREATE or_replace? (TEMPORARY | TEMP)? STAGE if_not_exists? qualifiedName stageProperties? tagList? commentClause? SEMI?
     | CREATE or_replace? (TEMPORARY | TEMP)? FILE FORMAT if_not_exists? qualifiedName copyFormatOption* commentClause? SEMI?
     | CREATE or_replace? TAG if_not_exists? qualifiedName tagProperties? commentClause? SEMI?
-    | CREATE or_replace? SECURE? FUNCTION if_not_exists? qualifiedName LPAREN parameterList? RPAREN RETURNS returnType functionOption* (AS bodyDefinition)? SEMI?
-    | CREATE or_replace? PROCEDURE if_not_exists? qualifiedName LPAREN parameterList? RPAREN RETURNS returnType languageClause? runtimeVersionClause? packagesClause? importsClause? handlerClause? commentClause? executeAsClause? (AS bodyDefinition)?  SEMI?
+    // A function takes the temporary keyword BEFORE SECURE and admits no LOCAL/GLOBAL prefix —
+    // both live-measured, and both the reverse of the view rule above.
+    | CREATE or_replace? (TEMPORARY | TEMP | VOLATILE)? SECURE? FUNCTION if_not_exists? qualifiedName LPAREN parameterList? RPAREN RETURNS returnType functionOption* (AS bodyDefinition)? SEMI?
+    | CREATE or_replace? (TEMPORARY | TEMP | VOLATILE)? PROCEDURE if_not_exists? qualifiedName LPAREN parameterList? RPAREN RETURNS returnType languageClause? runtimeVersionClause? packagesClause? importsClause? handlerClause? commentClause? executeAsClause? (AS bodyDefinition)?  SEMI?
     | CREATE or_replace? USER if_not_exists? identifier userProperties? SEMI?
     | CREATE or_replace? ROLE if_not_exists? identifier commentClause? SEMI?
     | CREATE or_replace? MASKING POLICY if_not_exists? qualifiedName AS LPAREN parameterList RPAREN RETURNS dataTypeName typeParameters? THIN_ARROW (bodyDefinition | booleanExpr) commentClause? SEMI?
     | CREATE or_replace? ROW ACCESS POLICY if_not_exists? qualifiedName AS LPAREN parameterList RPAREN RETURNS BOOLEAN THIN_ARROW (bodyDefinition | booleanExpr) commentClause? SEMI?
+    | CREATE or_replace? CONTACT if_not_exists? qualifiedName contactProperty* SEMI?
+    | CREATE or_replace? PROJECTION POLICY if_not_exists? qualifiedName AS LPAREN parameterList? RPAREN RETURNS (dataTypeName | identifier) THIN_ARROW (bodyDefinition | booleanExpr) commentClause? SEMI?
+    | CREATE or_replace? AGGREGATION POLICY if_not_exists? qualifiedName AS LPAREN parameterList? RPAREN RETURNS (dataTypeName | identifier) THIN_ARROW (bodyDefinition | booleanExpr) commentClause? SEMI?
+    | CREATE or_replace? JOIN POLICY if_not_exists? qualifiedName AS LPAREN parameterList? RPAREN RETURNS (dataTypeName | identifier) THIN_ARROW (bodyDefinition | booleanExpr) commentClause? SEMI?
     ;
 
+// CREATE CONTACT's properties, all string-valued: COMMENT, URL and EMAIL_DISTRIBUTION_LIST (which
+// takes ONE address, live-verified, despite the plural name). Routed through optionKey so none of
+// the property names has to become a keyword.
+contactProperty
+    : optionKey EQ STRING_LITERAL
+    ;
+
+// A contact is attached to an object for a PURPOSE. Live takes three, and takes them quoted too.
+contactPurpose
+    : identifier
+    | STRING_LITERAL
+    ;
+
+contactAssignment
+    : contactPurpose EQ qualifiedName
+    ;
+
+// The '=' is positional (live-verified): an OBJECT-level comment REQUIRES it — CREATE TABLE t (x INT)
+// COMMENT 'x' is a syntax error at the string — while a COLUMN-level comment FORBIDS it — id INT
+// COMMENT = 'x' is a syntax error at the '='. The two rules below carry that split.
 commentClause
-    : COMMENT EQ? (STRING_LITERAL | DOLLAR_QUOTED_STRING)
+    : COMMENT EQ (STRING_LITERAL | DOLLAR_QUOTED_STRING)
+    ;
+
+columnCommentClause
+    : COMMENT (STRING_LITERAL | DOLLAR_QUOTED_STRING)
     ;
 
 executeAsClause
@@ -164,6 +287,10 @@ dropStatement
     | DROP ROLE if_exists? identifier SEMI?
     | DROP MASKING POLICY if_exists? qualifiedName SEMI?
     | DROP ROW ACCESS POLICY if_exists? qualifiedName SEMI?
+    | DROP CONTACT if_exists? qualifiedName SEMI?
+    | DROP PROJECTION POLICY if_exists? qualifiedName SEMI?
+    | DROP AGGREGATION POLICY if_exists? qualifiedName SEMI?
+    | DROP JOIN POLICY if_exists? qualifiedName SEMI?
     ;
 
 alterStatement
@@ -184,6 +311,10 @@ alterStatement
     | ALTER FILE FORMAT if_exists? qualifiedName fileFormatAction SEMI?
     | ALTER TAG if_exists? qualifiedName tagAction SEMI?
     | ALTER MASKING POLICY if_exists? qualifiedName maskingPolicyAction SEMI?
+    | ALTER CONTACT if_exists? qualifiedName SET commentClause SEMI?
+    | ALTER PROJECTION POLICY if_exists? qualifiedName projectionPolicyAction SEMI?
+    | ALTER AGGREGATION POLICY if_exists? qualifiedName projectionPolicyAction SEMI?
+    | ALTER JOIN POLICY if_exists? qualifiedName projectionPolicyAction SEMI?
     | ALTER ROW ACCESS POLICY if_exists? qualifiedName rowAccessPolicyAction SEMI?
     | ALTER USER if_exists? identifier userAction SEMI?
     | ALTER ROLE if_exists? identifier roleAction SEMI?
@@ -430,6 +561,9 @@ taskBody
     : sqlStatement                // Raw SQL statement
     | callStatement               // CALL <procedure>(...) — a task that just invokes a stored procedure
     | executeImmediateStatement   // EXECUTE IMMEDIATE expression
+    | beginEndBlock               // A Snowflake Scripting block, with or without its DECLARE section
+                                  // (live-verified). The block is written UNQUOTED, exactly like the
+                                  // unquoted procedure body — a $$-quoted one is a syntax error there.
     ;
 
 warehouseClause
@@ -489,9 +623,9 @@ copyIntoTableClause
     | PATTERN EQ STRING_LITERAL
     | VALIDATION_MODE EQ copyOptionValue
     | ON_ERROR EQ copyOptionValue
-    | SIZE_LIMIT EQ INTEGER_LITERAL
-    | PURGE EQ booleanValue
-    | FORCE EQ booleanValue
+    | SIZE_LIMIT EQ MINUS? INTEGER_LITERAL
+    | PURGE EQ copyOptionValue
+    | FORCE EQ copyOptionValue
     | MATCH_BY_COLUMN_NAME EQ copyOptionValue
     | optionKey EQ parenOptionList
     | identifier EQ copyOptionValue
@@ -502,9 +636,9 @@ copyIntoStageClause
     | FILE_FORMAT EQ LPAREN copyFormatOptions RPAREN
     | PARTITION BY expression
     | HEADER (EQ booleanValue)?
-    | OVERWRITE EQ booleanValue
-    | SINGLE EQ booleanValue
-    | MAX_FILE_SIZE EQ INTEGER_LITERAL
+    | OVERWRITE EQ copyOptionValue
+    | SINGLE EQ copyOptionValue
+    | MAX_FILE_SIZE EQ MINUS? INTEGER_LITERAL
     | VALIDATION_MODE EQ copyOptionValue
     | optionKey EQ parenOptionList
     | identifier EQ copyOptionValue
@@ -559,7 +693,7 @@ copyFormatOptions
 copyFormatOption
     : TYPE EQ copyOptionValue
     | FIELD_DELIMITER EQ copyOptionValue
-    | SKIP_HEADER EQ INTEGER_LITERAL
+    | SKIP_HEADER EQ MINUS? INTEGER_LITERAL
     | DATE_FORMAT EQ copyOptionValue
     | COMPRESSION EQ copyOptionValue
     | RECORD_DELIMITER EQ copyOptionValue
@@ -573,10 +707,14 @@ copyFormatOption
 // the keyword-valued enums CONTINUE/AUTO, an integer, or a boolean — matching Snowflake's unquoted forms.
 copyOptionValue
     : STRING_LITERAL
-    | INTEGER_LITERAL
+    | MINUS? INTEGER_LITERAL
     | booleanValue
     | CONTINUE
     | AUTO
+    // ERROR_LOGGING's value is the BAREWORD DEFAULT — live refuses the quoted spelling — and the
+    // keyword is no identifier, so it joins CONTINUE and AUTO as an admitted bare value. Every
+    // consumer validates its own values in Java, so widening here does not widen what they accept.
+    | DEFAULT
     | qualifiedName
     ;
 
@@ -595,7 +733,7 @@ warehouseProperties
 warehouseProperty
     : WAREHOUSE_TYPE EQ (STANDARD | STRING_LITERAL)
     | WAREHOUSE_SIZE EQ (STRING_LITERAL | identifier | SESSION_VAR_REF)
-    | AUTO_SUSPEND EQ INTEGER_LITERAL
+    | AUTO_SUSPEND EQ MINUS? INTEGER_LITERAL
     | AUTO_RESUME EQ booleanValue
     | MIN_CLUSTER_COUNT EQ INTEGER_LITERAL
     | MAX_CLUSTER_COUNT EQ INTEGER_LITERAL
@@ -688,12 +826,29 @@ columnTagAction
     ;
 
 warehouseAction
-    : RESUME
+    // The two multi-word forms are single LEXER tokens: they add no parser decisions, so large
+    // statements elsewhere keep their prediction complexity — an inline optional group after
+    // RESUME degrades ALL(*) prediction across a big corpus.
+    : RESUME_IF_SUSPENDED
+    | RESUME
     | SUSPEND
+    | ABORT_ALL_QUERIES
     | SET warehouseProperty+
+    | tagUnset
+    | UNSET warehouseUnsetProperty (COMMA warehouseUnsetProperty)*
     | RENAME TO identifier
     | tagSet
-    | tagUnset
+    ;
+
+// The names UNSET accepts: the declared warehouse properties, plus a bare identifier so an
+// unknown name parses and is refused with live's invalid-property wording. tagUnset is ordered
+// first in warehouseAction because TAG itself lexes as an identifier.
+warehouseUnsetProperty
+    : WAREHOUSE_TYPE | WAREHOUSE_SIZE | AUTO_SUSPEND | AUTO_RESUME | MIN_CLUSTER_COUNT
+    | MAX_CLUSTER_COUNT | SCALING_POLICY | INITIALLY_SUSPENDED | RESOURCE_MONITOR
+    | MAX_CONCURRENCY_LEVEL | STATEMENT_QUEUED_TIMEOUT_IN_SECONDS | STATEMENT_TIMEOUT_IN_SECONDS
+    | ENABLE_QUERY_ACCELERATION | QUERY_ACCELERATION_MAX_SCALE_FACTOR | GENERATION | COMMENT
+    | identifier
     ;
 
 databaseAction
@@ -709,6 +864,7 @@ databaseAction
 schemaAction
     : RENAME TO identifier
     | SET COMMENT EQ STRING_LITERAL
+    | SET optionKey EQ (parenOptionList | copyOptionValue)
     | tagSet
     | tagUnset
     ;
@@ -717,24 +873,55 @@ tableAction
     : RENAME TO qualifiedName
     | SWAP WITH qualifiedName
     | ADD COLUMN? if_not_exists? columnDef (COMMA alterAddColumnItem)*
-    | DROP COLUMN if_exists? identifier
+    | DROP CLUSTERING KEY
+    // Automatic reclustering is paused and resumed on a CLUSTERED table; SHOW TABLES'
+    // automatic_clustering cell follows it (live-verified: ON -> OFF -> ON).
+    | (SUSPEND | RESUME) RECLUSTER
     | RENAME COLUMN identifier TO identifier
+    // A constraint may be renamed, and its enforcement properties changed through either spelling
+    // (live-verified). VALIDATE / NOVALIDATE are deliberately ABSENT: the documentation lists them,
+    // live refuses both as syntax errors, and admitting them would be leniency.
+    | RENAME CONSTRAINT identifier TO identifier
+    | (ALTER | MODIFY) CONSTRAINT identifier constraintProperty+
     // ALTER TABLE t { ALTER | MODIFY } [(] [COLUMN] c1 action [, [COLUMN] c2 action]* [)] — the
     // column-action list. COLUMN is optional per item, the parens are optional but balanced.
     | (ALTER | MODIFY) LPAREN alterColumnItem (COMMA alterColumnItem)* RPAREN
     | (ALTER | MODIFY) alterColumnItem (COMMA alterColumnItem)*
     | SET COMMENT EQ STRING_LITERAL
-    | SET optionKey EQ (parenOptionList | copyOptionValue)
+    // One SET may carry SEVERAL properties, separated by a space or a comma (live-verified, and the
+    // same property may even repeat there — unlike CREATE TABLE, where a repeat is refused). Each
+    // pair is its own subrule so key and value stay paired however many there are.
+    | SET tableSetProperty (COMMA? tableSetProperty)*
     | CLUSTER BY LPAREN expressionList RPAREN
     | ADD tableConstraint
     | DROP CONSTRAINT identifier
     | DROP PRIMARY KEY
     | DROP UNIQUE LPAREN identifierList RPAREN
     | DROP FOREIGN KEY LPAREN identifierList RPAREN
-    | ALTER COLUMN identifier SET MASKING POLICY qualifiedName (USING LPAREN identifierList RPAREN)?
+    | ALTER COLUMN identifier SET MASKING POLICY qualifiedName (USING LPAREN identifierList RPAREN)? FORCE?
     | ALTER COLUMN identifier UNSET MASKING POLICY
+    | ADD DATA METRIC FUNCTION qualifiedName ON LPAREN identifierList? RPAREN
+    | DROP DATA METRIC FUNCTION qualifiedName ON LPAREN identifierList? RPAREN
+    | MODIFY DATA METRIC FUNCTION qualifiedName ON LPAREN identifierList? RPAREN (SUSPEND | RESUME)
+    | ADD SEARCH OPTIMIZATION (ON searchOptimizationTarget (COMMA searchOptimizationTarget)*)?
+    | DROP SEARCH OPTIMIZATION (ON searchOptimizationDrop (COMMA searchOptimizationDrop)*)?
+    | SET aggregationPolicyClause FORCE?
+    | UNSET AGGREGATION POLICY
+    | SET joinPolicyClause FORCE?
+    | UNSET JOIN POLICY
+    | ALTER COLUMN identifier SET PROJECTION POLICY qualifiedName FORCE?
+    | ALTER COLUMN identifier UNSET PROJECTION POLICY
+    | SET CONTACT contactAssignment (COMMA contactAssignment)*
+    | UNSET CONTACT contactPurpose (COMMA contactPurpose)*
     | ADD ROW ACCESS POLICY qualifiedName ON LPAREN identifierList RPAREN
     | DROP ROW ACCESS POLICY qualifiedName
+    // Detaches whatever is attached and is a no-op when nothing is (live-verified). Only the plural
+    // spelling parses — live refuses `DROP ALL ROW ACCESS POLICY` at the POLICY token.
+    | DROP ALL ROW ACCESS POLICIES
+    // COLUMN is optional (live-verified: `ALTER TABLE t DROP c`, a comma list and the IF EXISTS form
+    // all run). It sits AFTER the specific DROP alternatives so `DROP CLUSTERING KEY` — CLUSTERING
+    // being a legal identifier — is never a candidate column name.
+    | DROP COLUMN? if_exists? identifier (COMMA identifier)*
     | tagSet
     | tagUnset
     | columnTagAction
@@ -745,6 +932,18 @@ tableAction
 // keeps a single-token accessor in tableAction.
 tableUnsetProperties
     : UNSET optionKey (COMMA optionKey)*
+    ;
+
+// One key=value of an ALTER TABLE … SET, kept paired with its value.
+tableSetProperty
+    : optionKey EQ (parenOptionList | copyOptionValue)
+    ;
+
+// An enforcement property of ALTER TABLE … {ALTER | MODIFY} CONSTRAINT. Several may be given at
+// once (live-verified: `NOT ENFORCED NORELY` runs).
+constraintProperty
+    : NOT? ENFORCED
+    | relyOption
     ;
 
 cortexSearchOption
@@ -811,11 +1010,15 @@ alterColumnItem
     ;
 
 alterColumnItemAction
-    : ((SET DATA)? TYPE)? dataTypeName typeParameters?
-    | SET NOT NULL
+    : ((SET DATA)? TYPE)? dataTypeName typeParameters? collateClause?
+    // SET is optional before NOT NULL (live-verified: `ALTER COLUMN c NOT NULL` runs, as does the
+    // MODIFY spelling and the one that omits COLUMN as well). DROP NOT NULL has no such variant.
+    | SET? NOT NULL
     | DROP NOT NULL
     | SET DEFAULT defaultExpression
     | DROP DEFAULT
+    | COMMENT STRING_LITERAL
+    | UNSET COMMENT
     ;
 
 viewAction
@@ -823,6 +1026,7 @@ viewAction
     | SET COMMENT EQ STRING_LITERAL
     | ADD ROW ACCESS POLICY qualifiedName ON LPAREN identifierList RPAREN
     | DROP ROW ACCESS POLICY qualifiedName
+    | DROP ALL ROW ACCESS POLICIES
     | tagSet
     | tagUnset
     ;
@@ -867,8 +1071,11 @@ streamAction
 
 stageAction
     : SET URL EQ STRING_LITERAL
-    | SET FILE_FORMAT EQ STRING_LITERAL
+    | SET FILE_FORMAT EQ (STRING_LITERAL | parenOptionList | qualifiedName)
     | SET COMMENT EQ STRING_LITERAL
+    | RENAME TO identifier
+    | UNSET optionKey
+    | SET identifier EQ (STRING_LITERAL | parenOptionList)
     ;
 
 tagProperties
@@ -887,6 +1094,14 @@ tagAction
 
 maskingPolicyAction
     : RENAME TO identifier
+    ;
+
+// What a projection policy takes after ALTER: renamed, re-commented, or given a new body.
+projectionPolicyAction
+    : RENAME TO identifier
+    | SET commentClause
+    | UNSET COMMENT
+    | SET BODY THIN_ARROW booleanExpr
     ;
 
 rowAccessPolicyAction
@@ -972,9 +1187,9 @@ columnOrConstraint
     ;
 
 columnDef
-    // namePart, not identifier: INNER/JOIN/LEFT/CROSS and CASE are live-legal column names in a
+    // columnDefName, not identifier: INNER/JOIN/LEFT/CROSS and CASE are live-legal column names in a
     // column DEFINITION (measured — CREATE TABLE kw (inner INT, join INT, case INT, …) runs).
-    : namePart dataTypeName typeParameters?  columnConstraint* commentClause?
+    : columnDefName dataTypeName typeParameters?  columnConstraint* columnCommentClause?
     ;
 
 typeParameters
@@ -985,6 +1200,20 @@ tableConstraint
     : constraintName? PRIMARY KEY LPAREN identifierList RPAREN relyOption?
     | constraintName? UNIQUE LPAREN identifierList RPAREN relyOption?
     | constraintName? FOREIGN KEY LPAREN identifierList RPAREN REFERENCES qualifiedName LPAREN identifierList RPAREN referentialActions? relyOption?
+    | checkConstraint
+    ;
+
+// A CHECK constraint, named or not. The enforcement suffix is optional HERE — a CREATE TABLE takes
+// the constraint bare, with ENABLE NOVALIDATE or with NOT ENFORCED (all live-verified) — while the
+// ALTER form insists on ENABLE NOVALIDATE, which the handler enforces rather than the grammar so the
+// refusal is live's sentence and not a syntax error.
+checkConstraint
+    : constraintName? CHECK LPAREN booleanExpr RPAREN checkEnforcement?
+    ;
+
+checkEnforcement
+    : ENABLE NOVALIDATE
+    | NOT ENFORCED
     ;
 
 constraintName
@@ -1081,11 +1310,17 @@ columnConstraint
     | NOT? NULL
     | UNIQUE relyOption?
     | tagList
+    // A masking policy attaches in the column DEFINITION too, not only through ALTER COLUMN —
+    // live-verified on CREATE TABLE and on ALTER TABLE ADD COLUMN, with WITH optional exactly as it
+    // is for TAG, and the conditional USING form available here as well.
+    | WITH? MASKING POLICY qualifiedName (USING LPAREN identifierList RPAREN)?
+    | WITH? PROJECTION POLICY qualifiedName
+    | CHECK LPAREN booleanExpr RPAREN checkEnforcement?
     | AUTOINCREMENT identityProperties?
     | IDENTITY identityProperties?
     | DEFAULT defaultExpression
-    | REFERENCES qualifiedName LPAREN identifier RPAREN referentialActions? relyOption?
-    | FOREIGN KEY REFERENCES qualifiedName LPAREN identifier RPAREN referentialActions? relyOption?
+    | REFERENCES qualifiedName (LPAREN identifier RPAREN)? referentialActions? relyOption?
+    | FOREIGN KEY REFERENCES qualifiedName (LPAREN identifier RPAREN)? referentialActions? relyOption?
     | collateClause
     ;
 
@@ -1153,6 +1388,30 @@ optionKey
     | ON_ERROR | SIZE_LIMIT | PURGE | MATCH_BY_COLUMN_NAME | TYPE | FIELD_DELIMITER | RECORD_DELIMITER
     | COMPRESSION | DATE_FORMAT | ESCAPE | SKIP_HEADER | PATTERN | FORCE | HEADER | OVERWRITE | SINGLE
     | MAX_FILE_SIZE | VALIDATION_MODE | ENCRYPTION | FILE_FORMAT | DATA_RETENTION_TIME_IN_DAYS
+    | ENABLE
+    ;
+
+// EQUALITY(col) / SUBSTRING(col) / FULL_TEXT(col) / GEO(col), or EQUALITY(*) for every column. The
+// method is an ordinary identifier — live lets all four words name tables and columns too.
+searchOptimizationTarget
+    : identifier LPAREN (STAR | qualifiedName) RPAREN
+    ;
+
+// A DROP may name the expression or its number (live-verified: DROP … ON 1 removes expression 1).
+searchOptimizationDrop
+    : searchOptimizationTarget
+    | INTEGER_LITERAL
+    ;
+
+// An aggregation policy attaches to the TABLE, optionally naming the columns whose DISTINCT values
+// count as one entity for the minimum-group-size test (live-verified: without it rows are counted).
+aggregationPolicyClause
+    : AGGREGATION POLICY qualifiedName (ENTITY KEY LPAREN identifierList RPAREN)?
+    ;
+
+// A join policy attaches to the TABLE and takes no arguments of its own.
+joinPolicyClause
+    : JOIN POLICY qualifiedName
     ;
 
 // CREATE TABLE tail modifiers, in any order: comments, clustering, tags, a row access policy.
@@ -1161,6 +1420,8 @@ tableTailOption
     | clusterByClause
     | tagList
     | rowAccessPolicyClause
+    | WITH? aggregationPolicyClause
+    | WITH? joinPolicyClause
     | optionKey EQ (parenOptionList | copyOptionValue)   // CHANGE_TRACKING=TRUE etc. — accepted, not modeled
     ;
 
@@ -1217,7 +1478,7 @@ viewColumnList
     ;
 
 viewColumnDef
-    : identifier commentClause?
+    : identifier columnCommentClause?
     ;
 
 valueTupleList
@@ -1303,14 +1564,19 @@ withClause
     ;
 
 cteDefinition
-    : identifier columnListOptional? AS LPAREN selectStatement RPAREN   // AS is REQUIRED (live-Snowflake verified)
+    // The CTE name takes the full NAME vocabulary, not the column one: live accepts `WITH case AS (…)`
+    // and `WITH asof AS (…)` alike (measured for all five name words and all eight join words).
+    : nameStartPart columnListOptional? AS LPAREN selectStatement RPAREN   // AS is REQUIRED (live-Snowflake verified)
     ;
 
 // A hierarchical query replaces the grouping tail: Snowflake rejects GROUP BY, HAVING and QUALIFY after
 // a CONNECT BY (live-verified — all three are syntax errors), so the two tails are alternatives here.
+// The grouping tail is legal without FROM (live-verified: WHERE, GROUP BY, HAVING and QUALIFY all
+// parse on a FROM-less select; CONNECT BY parses too but is then refused semantically with
+// "missing FROM clause", enforced in the visitor).
 selectClause
     : SELECT (DISTINCT | ALL)? topClause? selectList
-      (FROM tableExpression whereClause? (connectByClause | groupByClause? havingClause? qualifyClause?))? whereClause?
+      (FROM tableExpression)? whereClause? (connectByClause | groupByClause? havingClause? qualifyClause?)
     ;
 
 // Snowflake hierarchical query: START WITH may come before or after CONNECT BY, but CONNECT BY is
@@ -1343,7 +1609,12 @@ tableExpression
 tableReference
     // PIVOT/UNPIVOT come AFTER the (optionally aliased) source and may carry their own trailing alias, e.g.
     // FROM (subquery) src PIVOT(...) p — so they live here, not glued to tableSource.
-    : LATERAL? tableSource (AS identifier (LPAREN identifierList RPAREN)? | nonJoinKeywordIdentifier (LPAREN identifierList RPAREN)?)?
+    // The bare-alias alternative carries a predicate for the unreserved EXCEPT: `FROM t except` is an
+    // alias only when what follows cannot START a set-operation right-hand side — otherwise
+    // `FROM t EXCEPT SELECT ...` must stay a set-op (both parses reach EOF, so lookahead alone
+    // cannot decide).
+    : LATERAL? tableSource (AS aliasName (LPAREN identifierList RPAREN)?
+        | {exceptBareAliasAllowed()}? nonJoinKeywordIdentifier (LPAREN identifierList RPAREN)?)?
       (pivotClause pivotAlias? | unpivotClause pivotAlias?)?
       sampleClause?
     ;
@@ -1383,6 +1654,16 @@ tableSource
     | LPAREN tableReference (COMMA tableReference | joinClause)+ RPAREN  // parenthesized FROM join: FROM (a JOIN b ON c ...) — pure grouping, keeps inner aliases in scope. The '+' (>=1 join/comma) disambiguates from (SELECT ...) and (single_table).
     | LPAREN VALUES valueTupleList (AS? identifier columnListOptional?)? RPAREN  // (VALUES (...) [AS] v (cols)) as subquery — Snowflake allows the alias inside the parens
     | VALUES valueTupleList                // Inline values
+    | tableFunctionExpr    // bare table function: LATERAL SPLIT_TO_TABLE(x, ',') — no TABLE() wrapper
+    ;
+
+// A bare table-function call used directly as a FROM source. Kept as its own rule (not inline
+// `expression`) so it cannot shadow a plain table name — it requires the parenthesised call.
+tableFunctionExpr
+    : functionName LPAREN RPAREN
+    | functionName LPAREN expression (COMMA expression)* RPAREN
+    | functionName LPAREN expression (COMMA expression)* (COMMA namedArgument)+ RPAREN
+    | functionName LPAREN namedArgument (COMMA namedArgument)* RPAREN
     ;
 
 // SELECT ... FROM @stage (FILE_FORMAT => 'name', PATTERN => 'regex'): named read parameters.
@@ -1496,13 +1777,18 @@ selectList
 
 selectItem
     : STAR starModifier*                                  # StarItem
-    | qualifiedName DOT STAR starModifier*                # QualifiedStarItem
+    | starQualifiedName DOT STAR starModifier*            # QualifiedStarItem
     // Snowflake's BRACED star is an OBJECT constructor over the row, not a star: {*} is
     // OBJECT_CONSTRUCT(*) and projects ONE column whose keys are the star's effective column names
     // ({* EXCLUDE (c)}, {t.*} pick which columns take part). It therefore needs its own alternative —
     // treating the braces as optional decoration on the star above expanded it to N columns instead.
-    | LBRACE (qualifiedName DOT)? STAR starModifier* RBRACE (AS? identifier)?  # ObjectStarItem
-    | booleanExpr (AS? identifier)?                       # ExprItem
+    // The bare (AS-less) alias carries a predicate for the unreserved EXCEPT: `SELECT 1 except` is
+    // an alias only when what follows cannot START a set-operation right-hand side — otherwise
+    // `SELECT 1 EXCEPT SELECT 2` must stay a set-op (both parses reach EOF, so lookahead alone
+    // cannot decide).
+    | LBRACE (starQualifiedName DOT)? STAR starModifier* RBRACE
+        (AS aliasName | {exceptBareAliasAllowed()}? identifier)?  # ObjectStarItem
+    | booleanExpr (AS aliasName | {exceptBareAliasAllowed()}? identifier)?  # ExprItem
     ;
 
 // Snowflake column-list modifiers on a SELECT * : EXCLUDE, RENAME, REPLACE, ILIKE.
@@ -1530,11 +1816,15 @@ groupByClause
     | GROUP BY groupByElement (COMMA groupByElement)*
     ;
 
+// The super-group forms come FIRST, and the order is load-bearing: rollup and cube are legal column
+// names live, so they are ordinary identifiers here too, and `ROLLUP(g)` would otherwise read as a
+// function call by the expression alternative alone. Matching the keyword form first leaves a bare
+// `GROUP BY rollup` — the column — to fall through to expression, which is what live does with both.
 groupByElement
-    : expression                                         // plain column/expression
-    | ROLLUP LPAREN groupByColumnList RPAREN             // ROLLUP(a, b, c)
+    : ROLLUP LPAREN groupByColumnList RPAREN             // ROLLUP(a, b, c)
     | CUBE LPAREN groupByColumnList RPAREN               // CUBE(a, b, c)
     | GROUPING SETS LPAREN groupingSetList RPAREN        // GROUPING SETS((a,b),(a),(b),())
+    | expression                                         // plain column/expression
     ;
 
 groupByColumnList
@@ -1601,19 +1891,41 @@ topClause
     : TOP INTEGER_LITERAL
     ;
 
+// LIMIT takes a literal or a BIND, never a general expression — live-verified: `LIMIT :batch_size`
+// runs (the Scripting doc's batch-processing loop is written that way) while `LIMIT 1+1` is a syntax
+// error. OFFSET binds the same way. A STRING literal parses but only the EMPTY string survives the
+// executor's check (live: LIMIT '' means no limit, OFFSET '' means zero, any other string is a
+// syntax error at the literal).
 limitClause
-    : LIMIT (INTEGER_LITERAL | NULL) (OFFSET INTEGER_LITERAL)?
+    : LIMIT (INTEGER_LITERAL | NULL | STRING_LITERAL | COLON identifier)
+      (OFFSET (INTEGER_LITERAL | STRING_LITERAL | COLON identifier))?
     ;
 
+// Every part of the ANSI spelling is optional but FETCH and the count: FETCH 2, FETCH FIRST 2,
+// FETCH NEXT 2 ROWS ONLY, and OFFSET 1 [ROWS] FETCH … all run (live-verified); a bare OFFSET
+// without a FETCH stays a syntax error, exactly as on the account.
 fetchClause
-    : FETCH (FIRST | NEXT) INTEGER_LITERAL (ROW | ROWS)? ONLY
+    : (OFFSET (INTEGER_LITERAL | COLON identifier) (ROW | ROWS)?)?
+      FETCH (FIRST | NEXT)? (INTEGER_LITERAL | COLON identifier) (ROW | ROWS)? ONLY?
     ;
 
+// WORK is the SQL-standard spelling of TRANSACTION and live accepts it on all three statements
+// (live-verified: BEGIN WORK / COMMIT WORK / ROLLBACK WORK).
+//
+// Only the OPENING statement takes a NAME — `COMMIT NAME x` is a syntax error live.
 transactionStatement
-    : BEGIN TRANSACTION? SEMI?
-    | START TRANSACTION SEMI?
-    | COMMIT SEMI?
-    | ROLLBACK SEMI?
+    : BEGIN (WORK | TRANSACTION)? transactionName? SEMI?
+    | START TRANSACTION transactionName? SEMI?
+    | COMMIT WORK? SEMI?
+    | ROLLBACK WORK? SEMI?
+    ;
+
+// The name is an IDENTIFIER, never a string literal (live refuses `BEGIN NAME 'a string'`), and it
+// replaces the UUID an unnamed transaction carries in SHOW TRANSACTIONS' name cell — folded upper
+// unquoted, case-preserved quoted. A DOTTED name is accepted and only its FIRST part is kept
+// (live-verified: `BEGIN NAME a.b` shows 'A'), which is why this takes a qualifiedName.
+transactionName
+    : NAME qualifiedName
     ;
 
 listStatement
@@ -1639,14 +1951,14 @@ stageFileOption
 
 showStatement
     : SHOW TERSE? DATABASES HISTORY? (LIKE STRING_LITERAL)? showTail SEMI?
-    | SHOW TERSE? SCHEMAS (LIKE STRING_LITERAL)? (IN DATABASE identifier)? showTail SEMI?
-    | SHOW TERSE? TABLES HISTORY? (LIKE STRING_LITERAL)? (IN (DATABASE | SCHEMA)? qualifiedName)? showTail SEMI?
+    | SHOW TERSE? SCHEMAS (LIKE STRING_LITERAL)? (IN (ACCOUNT | DATABASE identifier))? showTail SEMI?
+    | SHOW TERSE? TABLES HISTORY? (LIKE STRING_LITERAL)? (IN (ACCOUNT | (DATABASE | SCHEMA)? qualifiedName))? showTail SEMI?
     | SHOW TERSE? ICEBERG TABLES (LIKE STRING_LITERAL)? (IN (DATABASE | SCHEMA)? qualifiedName)? showTail SEMI?
     | SHOW TERSE? VIEWS (LIKE STRING_LITERAL)? (IN (DATABASE | SCHEMA | ACCOUNT)? qualifiedName?)? showTail SEMI?
     | SHOW TERSE? MATERIALIZED VIEWS (LIKE STRING_LITERAL)? (IN (DATABASE | SCHEMA)? qualifiedName)? showTail SEMI?
     | SHOW TERSE? DYNAMIC TABLES (LIKE STRING_LITERAL)? (IN (ACCOUNT | (DATABASE | SCHEMA)? qualifiedName))? showTail SEMI?
     | SHOW HYBRID TABLES (LIKE STRING_LITERAL)? (IN (DATABASE | SCHEMA)? qualifiedName)? SEMI?
-    | SHOW TERSE? COLUMNS (LIKE STRING_LITERAL)? (IN (TABLE | VIEW)? qualifiedName?)? showTail SEMI?   // FROM is not Snowflake syntax (live-verified)
+    | SHOW TERSE? COLUMNS (LIKE STRING_LITERAL)? (IN (ACCOUNT | (TABLE | VIEW | DATABASE | SCHEMA)? qualifiedName?))? showTail SEMI?   // FROM is not Snowflake syntax (live-verified)
     | SHOW TERSE? STREAMS (LIKE STRING_LITERAL)? (IN (ACCOUNT | (DATABASE | SCHEMA)? qualifiedName))? showTail SEMI?
     | SHOW TERSE? TASKS (LIKE STRING_LITERAL)? (IN (ACCOUNT | (DATABASE | SCHEMA)? qualifiedName))? showTail SEMI?
     | SHOW TERSE? PIPES (LIKE STRING_LITERAL)? (IN (ACCOUNT | (DATABASE | SCHEMA)? qualifiedName))? showTail SEMI?
@@ -1669,8 +1981,8 @@ showStatement
     //     while `SHOW USER TERSE FUNCTIONS` and `SHOW BUILTIN TERSE PROCEDURES` are syntax errors.
     // TERSE is accepted here but changes NOTHING — unlike SHOW TERSE TABLES it does not trim the column
     // set (see ShowModifierProfile). Neither do STARTS WITH and LIMIT, which parse and are then ignored.
-    | SHOW TERSE? (USER | BUILTIN)? PROCEDURES (LIKE STRING_LITERAL)? (IN (DATABASE | SCHEMA | APPLICATION PACKAGE?)? qualifiedName)? showTail SEMI?
-    | SHOW TERSE? (USER | BUILTIN)? FUNCTIONS (LIKE STRING_LITERAL)? (IN (DATABASE | SCHEMA | CLASS)? qualifiedName)? showTail SEMI?
+    | SHOW TERSE? (USER | BUILTIN)? PROCEDURES (LIKE STRING_LITERAL)? (IN (DATABASE | SCHEMA | APPLICATION PACKAGE? | CLASS)? qualifiedName)? showTail SEMI?
+    | SHOW TERSE? (USER | BUILTIN)? FUNCTIONS (LIKE STRING_LITERAL)? (IN (DATABASE | SCHEMA | CLASS | APPLICATION)? qualifiedName)? showTail SEMI?
     | SHOW TERSE? USERS (LIKE STRING_LITERAL)? showTail SEMI?
     | SHOW TERSE? ROLES (LIKE STRING_LITERAL)? showTail SEMI?
     | SHOW GRANTS ON objectType identifier SEMI?
@@ -1678,9 +1990,13 @@ showStatement
     | SHOW GRANTS OF ROLE identifier SEMI?           // who holds this role
     | SHOW GRANTS SEMI?                              // everything granted to the current user
     | SHOW TERSE? MASKING POLICIES (LIKE STRING_LITERAL)? (IN (ACCOUNT | (DATABASE | SCHEMA)? qualifiedName))? showTail SEMI?
+    | SHOW TERSE? CONTACTS (LIKE STRING_LITERAL)? (IN (ACCOUNT | (DATABASE | SCHEMA)? qualifiedName))? showTail SEMI?
+    | SHOW TERSE? PROJECTION POLICIES (LIKE STRING_LITERAL)? (IN (ACCOUNT | (DATABASE | SCHEMA)? qualifiedName))? showTail SEMI?
+    | SHOW TERSE? AGGREGATION POLICIES (LIKE STRING_LITERAL)? (IN (ACCOUNT | (DATABASE | SCHEMA)? qualifiedName))? showTail SEMI?
+    | SHOW TERSE? JOIN POLICIES (LIKE STRING_LITERAL)? (IN (ACCOUNT | (DATABASE | SCHEMA)? qualifiedName))? showTail SEMI?
     | SHOW TERSE? ROW ACCESS POLICIES (LIKE STRING_LITERAL)? (IN (ACCOUNT | (DATABASE | SCHEMA)? qualifiedName))? showTail SEMI?
     | SHOW PARAMETERS (LIKE STRING_LITERAL)? (IN (SESSION | ACCOUNT | (DATABASE | SCHEMA | TABLE | WAREHOUSE | USER | ROLE | TASK) identifier))? SEMI?
-    | SHOW TERSE? OBJECTS (LIKE STRING_LITERAL)? (IN (DATABASE | SCHEMA)? qualifiedName)? showTail SEMI?
+    | SHOW TERSE? OBJECTS (LIKE STRING_LITERAL)? (IN (ACCOUNT | (DATABASE | SCHEMA)? qualifiedName))? showTail SEMI?
     | SHOW ORGANIZATION ACCOUNTS SEMI?
     | SHOW ACCOUNTS SEMI?
     | SHOW LOCKS (IN ACCOUNT)? SEMI?
@@ -1742,6 +2058,10 @@ describeStatement
     | (DESCRIBE | DESC) USER identifier SEMI?
     | (DESCRIBE | DESC) MASKING POLICY qualifiedName SEMI?
     | (DESCRIBE | DESC) ROW ACCESS POLICY qualifiedName SEMI?
+    | (DESCRIBE | DESC) PROJECTION POLICY qualifiedName SEMI?
+    | (DESCRIBE | DESC) AGGREGATION POLICY qualifiedName SEMI?
+    | (DESCRIBE | DESC) JOIN POLICY qualifiedName SEMI?
+    | (DESCRIBE | DESC) SEARCH OPTIMIZATION ON qualifiedName SEMI?
     | (DESCRIBE | DESC) FILE FORMAT qualifiedName SEMI?
     | (DESCRIBE | DESC) RESULT (STRING_LITERAL | identifier LPAREN RPAREN) SEMI?
     // No bare `DESCRIBE <name>` alternative: Snowflake requires the object type (live-verified,
@@ -1780,7 +2100,7 @@ proceduralStatement
     ;
 
 declarationItem
-    : identifier (EXCEPTION LPAREN expression COMMA STRING_LITERAL RPAREN SEMI?
+    : identifier (EXCEPTION (LPAREN MINUS? INTEGER_LITERAL COMMA STRING_LITERAL RPAREN)? SEMI?
                  | CURSOR FOR cursorSource SEMI?
                  | RESULTSET (DEFAULT LPAREN selectStatement RPAREN)? SEMI?
                  | dataTypeName typeParameters? ((DEFAULT | COLON_EQ) expression)? SEMI?)
@@ -1798,10 +2118,6 @@ untypedDeclarationItem
 cursorSource
     : selectStatement
     | identifier
-    ;
-
-exceptionDeclaration
-    : identifier EXCEPTION LPAREN INTEGER_LITERAL COMMA STRING_LITERAL RPAREN SEMI?
     ;
 
 cursorDeclaration
@@ -1880,37 +2196,48 @@ caseStatement
 // no trailing label fails SEMANTICALLY with "Label 'MY_LOOP' not found", which is what proves the
 // syntax is real). The LEADING `my_loop:` declaration is NOT Snowflake — it is a syntax error at the
 // ':' — so there is deliberately no `loopLabel` rule.
+// A loop LABEL is written on the END, and may be a join keyword: the Scripting doc's nested example
+// closes with `END LOOP INNER;` / `END LOOP OUTER;`. INNER is admitted HERE rather than in the general
+// `identifier` rule, because live accepts `CREATE TABLE inner` yet refuses a bare `FROM inner` — see
+// KeywordColumnNamesTest.
 loopStatement
-    : LOOP statementList END LOOP identifier? SEMI?
+    : LOOP statementList END LOOP loopLabel? SEMI?
+    ;
+
+loopLabel
+    : identifier
+    | INNER
     ;
 
 whileStatement
-    : WHILE LPAREN booleanExpr RPAREN DO statementList END WHILE identifier? SEMI?
+    : WHILE LPAREN booleanExpr RPAREN DO statementList END WHILE loopLabel? SEMI?
     ;
 
 forStatement
-    : FOR identifier IN REVERSE? expression TO expression DO statementList END FOR identifier? SEMI?   // integer range
-    | FOR identifier IN expression DO statementList END FOR identifier? SEMI?                          // cursor / list
+    : FOR identifier IN REVERSE? expression TO expression DO statementList END FOR loopLabel? SEMI?   // integer range
+    | FOR identifier IN expression DO statementList END FOR loopLabel? SEMI?                          // cursor / list
     ;
 
 // UNTIL takes a PARENTHESIZED condition, like IF and WHILE (live-verified: `UNTIL i >= 3` is a
 // syntax error, `UNTIL (i >= 3)` runs).
 repeatStatement
-    : REPEAT statementList UNTIL LPAREN booleanExpr RPAREN END REPEAT identifier? SEMI?
+    : REPEAT statementList UNTIL LPAREN booleanExpr RPAREN END REPEAT loopLabel? SEMI?
     ;
 
+// RETURN TABLE takes a RESULTSET VARIABLE, never a direct query — live refuses
+// `RETURN TABLE(SELECT …)` as a syntax error at the SELECT (live-verified), so there is
+// deliberately no selectStatement alternative here.
 returnStatement
-    : RETURN TABLE LPAREN selectStatement RPAREN SEMI?
-    | RETURN TABLE LPAREN expression RPAREN SEMI?
+    : RETURN TABLE LPAREN expression RPAREN SEMI?
     | RETURN expression? SEMI?
     ;
 
 breakStatement
-    : BREAK identifier? SEMI?
+    : BREAK loopLabel? SEMI?
     ;
 
 continueStatement
-    : CONTINUE identifier? SEMI?
+    : CONTINUE loopLabel? SEMI?
     ;
 
 raiseStatement
@@ -1939,10 +2266,12 @@ beginEndBlock
     : declareSection? BEGIN statementList exceptionSection? END SEMI?
     ;
 
-// Stray semicolons between (and after) the declarations are tolerated, as Snowflake tolerates them —
-// real deployment scripts end their DECLARE section with a lone `;` line before BEGIN.
+// A declaration is terminated by its semicolon exactly like a statement (live-verified: an item
+// without one is a syntax error at the token that follows it, BEGIN included). Stray semicolons
+// AFTER a declaration are tolerated, as Snowflake tolerates them — real deployment scripts end
+// their DECLARE section with a lone `;` line before BEGIN — but the section may not OPEN with one.
 declareSection
-    : DECLARE SEMI* ((declarationItem | untypedDeclarationItem) SEMI*)+
+    : DECLARE ((declarationItem | untypedDeclarationItem) {_input.LT(-1).getType() == SEMI}? SEMI*)+
     ;
 
 exceptionSection
@@ -1975,6 +2304,12 @@ intoTarget
 
 nullStatement
     : NULL SEMI   // the separator is mandatory — BEGIN NULL END is a Snowflake syntax error (live-verified)
+    // …except when nothing follows at all. A bare `NULL` submitted on its own is refused live for
+    // being a scripting statement outside a block, at the WORD's own line and column — a refusal it
+    // can only reach by parsing first. Requiring the semicolon everywhere left the parser looking for
+    // more input and naming <EOF> instead. The lookahead keeps `BEGIN NULL END` refused: there the
+    // next token is END, not the end of input.
+    | {_input.LA(2) == Token.EOF}? NULL
     ;
 
 // Snowflake Scripting asynchronous execution. The engine is single-threaded, so ASYNC runs its wrapped
@@ -1988,9 +2323,15 @@ awaitStatement
     ;
 
 statementList
-    // A bare `;` is an empty statement (no-op); Snowflake Scripting tolerates stray semicolons
-    // between statements (e.g. `CALL foo(:x);` followed by a lone `;`).
-    : (statement | SEMI)+
+    // Every statement inside a block is TERMINATED by its semicolon: live refuses a block whose
+    // statement lacks one wherever it sits — mid-list, the last one before END, a nested block's
+    // END, END IF, END LOOP, END CASE, an EXCEPTION handler's body (live-verified). The statement
+    // rules each carry an optional trailing SEMI and consume it greedily, so the terminator is
+    // enforced here: once a statement is parsed, the token it just consumed must have been that
+    // semicolon. Extra semicolons AFTER a statement are tolerated (`RETURN 1;;`, a lone `;` line
+    // between two statements or before END), but a list may not START with one — live refuses
+    // `THEN ; RETURN 1;` at the ';' itself.
+    : (statement {_input.LT(-1).getType() == SEMI}? SEMI*)+
     ;
 
 // Boolean tier wrapping the value/predicate `expression` below. Currently a pass-through; the
@@ -2024,7 +2365,12 @@ expression
     // same word used as a plain column name (Snowflake resolves it the same way).
     | PRIOR qualifiedName                                        # PriorExpr
     | CONNECT_BY_ROOT qualifiedName                              # ConnectByRootExpr
-    | qualifiedName                                              # QualifiedNameExpr
+    // A column reference must not BEGIN with TRY_CAST: in expression position that token always
+    // starts the cast construct, so live refuses the bare reference with a syntax error at the
+    // NEXT token (SELECT/WHERE/GROUP BY/ORDER BY alike, live-verified) — while a QUALIFIED
+    // reference (t.try_cast) and every name position stay legal. With this alternative gated,
+    // TryCastExpr is the lone viable parse and its '(' requirement reports at the right token.
+    | {expressionLeadingName()}? qualifiedName                   # QualifiedNameExpr
     | jsonObjectLiteral                                          # JsonObjectExpr
     | jsonArrayLiteral                                           # JsonArrayExpr
     | caseExpression                                             # CaseExpr
@@ -2045,6 +2391,14 @@ expression
     | functionName LPAREN namedArgumentList RPAREN overClause?   # FunctionCallNamedArgsExpr
     | functionName LPAREN DISTINCT? functionArgList? nullHandling? RPAREN withinGroupClause?
           (FROM (FIRST | LAST) nullHandling? overClause | nullHandling? overClause?)     # FunctionCallExpr
+    // The ANSI POSITION(<needle> IN <haystack>) form. It sits AFTER the ordinary call on purpose, so a
+    // legitimate membership test inside an argument — UPPER(a IN (1, 2)) — parses as the call it is;
+    // this alternative only gets its turn once that parse has failed. It also matches for ANY function
+    // name rather than being gated on POSITION: a predicate here eliminates a SYNTACTICALLY VIABLE
+    // alternative, which leaves the decision with nothing to pick and anchors the refusal on the
+    // function NAME, where live anchors on the operand after IN. The name is checked after the parse
+    // instead, which is where live's sentence can be reproduced exactly.
+    | functionName LPAREN expression IN expression RPAREN                      # PositionInExpr
     | op=(PLUS | MINUS) expression                               # UnaryExpr
     | EXISTS LPAREN selectStatement RPAREN                       # ExistsExpr
     | LPAREN selectStatement RPAREN                              # ScalarSubqueryExpr
@@ -2066,7 +2420,8 @@ expression
     | expression NOT? IN LPAREN selectStatement RPAREN           # InSubqueryExpr
     | expression NOT? IN LPAREN expressionList RPAREN            # InListExpr
     | LPAREN expressionList RPAREN NOT? IN LPAREN selectStatement RPAREN  # TupleInSubqueryExpr
-    | LPAREN expressionList RPAREN NOT? IN LPAREN expressionList RPAREN   # TupleInListExpr
+    | LPAREN expressionList RPAREN NOT? IN LPAREN tupleRow (COMMA tupleRow)* RPAREN  # TupleInListExpr
+    | LPAREN expressionList RPAREN NOT? IN LPAREN expressionList RPAREN   # TupleInFlatListExpr
     | expression op=(EQ | NEQ | LT | LTE | GT | GTE) expression  # ComparisonExpr
     | expression op=(EQ | NEQ | LT | LTE | GT | GTE) quantifier LPAREN selectStatement RPAREN # QuantifiedComparisonExpr
     | LPAREN booleanExpr RPAREN                                  # ParenExpr
@@ -2141,6 +2496,13 @@ expressionList
     : expression (COMMA expression)*
     ;
 
+// One parenthesized row of a tuple-IN list: (a, b) IN ((1, 2), (3, 4)). The flat spelling
+// (a, b) IN (1, 2) parses via TupleInFlatListExpr but is a compile-time TYPE error (ROW vs
+// scalars), matching Snowflake.
+tupleRow
+    : LPAREN expressionList RPAREN
+    ;
+
 // Function-call argument list. Uses booleanExpr (which is a superset of expression) so a bare boolean —
 // COUNT_IF(a OR b), IFF(x AND y, …) — is accepted as an argument without extra parentheses, while the
 // value-context `expressionList` still keeps AND/OR out (so BETWEEN/LIKE operands don't absorb them).
@@ -2188,8 +2550,15 @@ namedArgument
 
 functionName
     : KW_IDENTIFIER LPAREN expression RPAREN   // IDENTIFIER('fn') / IDENTIFIER($var) as the function name
-    | identifier (DOT identifier)*
+    // TRY_CAST never heads a function name: TRY_CAST( always begins the cast construct, so the
+    // call shapes TRY_CAST(x, 'type') and TRY_CAST(x) are syntax errors at the comma/paren
+    // (live-verified), never calls of a registered or user function.
+    | {_input.LT(1).getType() != TRY_CAST}? identifier (DOT identifier)*
     | LIKE   // LIKE/ILIKE also have a function-call form: LIKE(subject, pattern), ILIKE(subject, pattern)
+    // Reserved words that are nonetheless FUNCTION names — reserved in identifier positions
+    // (live-verified), legal as calls: INSERT(base, pos, len, insert), RLIKE(subject, pattern).
+    | INSERT
+    | RLIKE
     | ILIKE
     ;
 
@@ -2209,18 +2578,64 @@ qualifiedName
 nameStartPart
     : identifier
     | INNER | JOIN | LEFT | CROSS
+    // CASE, CAST, CONSTRAINT, DEFAULT and WHEN lead a NAME wherever a name is the only thing that can
+    // appear: live accepts all five for a table, a view, a schema, a CTE, a RENAME TO target, an
+    // INSERT INTO target, a bare FROM reference and a `<name>.*` qualifier (every cell measured).
+    // In an EXPRESSION they reach the column resolver instead of the parser, which refuses the
+    // reference by name — the same "invalid identifier 'CONSTRAINT'" live gives. Guarding them here
+    // with a predicate is NOT the way to sharpen that: a predicate on the expression's use of
+    // qualifiedName is hoisted into the whole select-item decision and kills `case.*` with it.
+    | CASE | CAST | CONSTRAINT | DEFAULT | WHEN
     ;
 
 // The FROM position keeps the join keywords as KEYWORDS in the LEADING part — live, `FROM inner`
 // is "unexpected '<EOF>'" even though CREATE TABLE inner succeeds (both measured) — while a
 // qualified trailing part still reads (sch.inner).
-tableQualifiedName
-    : identifier (DOT namePart)*
+// The qualifier of a `<name>.*` is a NAME, not a column reference, so it takes the full name
+// vocabulary — live reads `SELECT case.* FROM case`. It cannot share qualifiedName with the
+// expression: the guard on that alternative is hoisted into the whole select-item decision and would
+// eliminate this one too.
+starQualifiedName
+    : nameStartPart (DOT namePart)*
     ;
 
+tableQualifiedName
+    : {tableNameLeadAllowed()}? nameStartPart (DOT namePart)*
+    ;
+
+// An ALIAS after AS takes a WIDER vocabulary than a column reference does. Live accepts every one of
+// `SELECT 1 AS case`, `AS cast`, `AS constraint`, `AS default`, `AS when` and the join words `AS cross`,
+// `AS inner`, `AS join` — none of which may name a column in an EXPRESSION, because there each of them
+// leads something. Measured word by word for the select-item and table-alias positions, which agree
+// exactly. It stays a rule of its own rather than widening `identifier`: the expression grammar has to
+// go on reading CASE as the start of a CASE expression.
+aliasName
+    : identifier
+    | CASE | CAST | CONSTRAINT | CROSS | DEFAULT | INNER | JOIN | WHEN
+    ;
+
+// A name being READ rather than defined: the part after a dot, a column list's entries, an UPDATE
+// SET target. Measured word by word against the account, and the vocabulary here is the column
+// DEFINITION's plus exactly one word — CONSTRAINT, which live reads as `t.constraint`,
+// `INSERT INTO t (constraint)` and `UPDATE t SET constraint = 1` alike, while refusing it as a
+// column's own name. Every other word tested behaves identically in both positions.
 namePart
+    : columnDefName
+    // CAST, DEFAULT and WHEN join CASE in columnDefName for the same reason: live DEFINES a column so
+    // named but cannot REFERENCE one — `SELECT cast FROM t` is its syntax error, because the
+    // expression these words lead owns that position. So they are names only where a name is the only
+    // thing possible.
+    | CONSTRAINT
+    ;
+
+// A column DEFINITION's name. It is namePart MINUS CONSTRAINT: there the word leads a table
+// constraint, so live reads `CREATE TABLE t (constraint INT)` as a constraint clause and trips on the
+// close paren. Splitting the two rules is what lets the after-dot position gain the word without
+// making that statement legal.
+columnDefName
     : identifier
     | INNER | JOIN | LEFT | CROSS | CASE
+    | CAST | DEFAULT | WHEN
     ;
 
 identifier
@@ -2291,6 +2706,17 @@ identifier
     | AUTO_SUSPEND_SECS      // Allow AUTO_SUSPEND_SECS as identifier (compute pool property)
     | PLACEMENT_GROUP        // Allow PLACEMENT_GROUP as identifier (compute pool property)
     | BACKUP_INSTANCE_FAMILIES  // Allow BACKUP_INSTANCE_FAMILIES as identifier (compute pool property)
+    | WORK          // Allow WORK as identifier (live-verified: a column AND a table may be named work;
+                    // the BEGIN/COMMIT/ROLLBACK WORK keyword is anchored by its statement word)
+    | RECLUSTER     // Allow RECLUSTER as identifier (live-verified: a column AND a table may be named
+                    // recluster; the clustering action is anchored by SUSPEND / RESUME)
+    | NORELY        // Allow NORELY as identifier (live-verified: `CREATE TABLE kw (norely INT)` runs;
+                    // the constraint property is anchored by RELY's own clause position)
+    | ENFORCED      // Allow ENFORCED as identifier (live-verified: a column AND a table may be named
+                    // enforced; the constraint property is anchored by ALTER/MODIFY CONSTRAINT)
+    | NAME          // Allow NAME as identifier (live-verified: a column and a table may be named name,
+                    // and `BEGIN NAME name` names a transaction NAME — the keyword is anchored by BEGIN
+                    // / START TRANSACTION, which is the only place it is one)
     | STOP          // Allow STOP as identifier (ALTER COMPUTE POOL ... STOP ALL is anchored by ALTER)
     | GENERATOR     // Allow GENERATOR as identifier (table function)
     | GET           // Allow GET as identifier (the GET(array/object, key) semi-structured function; the
@@ -2317,8 +2743,7 @@ identifier
     | INITIALIZE    // Allow INITIALIZE as identifier
     | INITIALLY_SUSPENDED
     | INPUT         // Allow INPUT as identifier (FLATTEN parameter)
-    | INTO          // Allow INTO as identifier
-    | INSERT        // Allow INSERT as identifier (the INSERT(str,pos,len,new) string function)
+    | EXCEPT        // EXCEPT is unreserved (usable as alias/table/column), unlike UNION/INTERSECT/MINUS
     | KEY           // Allow KEY as identifier (FLATTEN output column)
     | LAST          // Allow LAST as identifier (also ORDER BY ... NULLS LAST)
     | LEFT          // Allow LEFT as identifier (Snowflake compatible)
@@ -2327,7 +2752,6 @@ identifier
     | MAX_CONCURRENCY_LEVEL
     | MINUTE        // Allow MINUTE as identifier (can be column name)
     | MINUTES       // Allow MINUTES as identifier (can be column name)
-    | MINUS_KW      // Allow MINUS as identifier (reserved word, but permissive)
     | MODE          // Allow MODE as identifier (FLATTEN parameter)
     | MONTH         // Allow MONTH as identifier (can be column name)
     | MONTHS        // Allow MONTHS as identifier (can be column name)
@@ -2368,14 +2792,29 @@ identifier
     | QUOTED_IDENTIFIER
     | READ_ONLY     // Allow READ_ONLY as identifier
     | RECURSIVE     // Allow RECURSIVE as identifier (FLATTEN parameter)
-    | CURRENT       // Allow CURRENT as identifier (window-frame keyword)
     | RANGE         // Allow RANGE as identifier (window-frame keyword)
     | UNBOUNDED     // Allow UNBOUNDED as identifier (window-frame keyword)
     | PRECEDING     // Allow PRECEDING as identifier (window-frame keyword)
-    | FOLLOWING     // Allow FOLLOWING as identifier (window-frame keyword)
     | SYSTEM        // Allow SYSTEM as identifier (sampling method)
     | SEED          // Allow SEED as identifier (sampling keyword)
     | BERNOULLI     // Allow BERNOULLI as identifier (sampling method)
+    // The four SCRIPTING statement words are ordinary names in SQL, measured over a raw connection:
+    // each may be a column's name, a column reference and a bare table alias, and
+    // `SELECT break.x FROM st break` resolves. Only OUTSIDE a block, standing alone as a statement,
+    // are they refused — see SQLCommandVisitor.visitProceduralStatement, which is where that belongs.
+    | BREAK
+    | CONTINUE
+    | RAISE
+    | RETURN
+    | NOVALIDATE    // live: a column may be called novalidate (CHECK itself may NOT — it is reserved)
+    | BODY          // only a keyword inside ALTER … SET BODY
+    | AGGREGATION   // live: CREATE TABLE aggregation (aggregation INT) runs
+    | ENTITY        // live: a column may be called entity
+    | PROJECTION    // live: CREATE TABLE projection (projection INT) runs
+    | METRIC        // live: CREATE TABLE metric (metric INT, data INT) runs
+    | OPTIMIZATION  // live: CREATE TABLE search (optimization INT) runs
+    | CONTACT       // live: CREATE TABLE contact (contact INT) runs
+    | CONTACTS      // live: a column may be called contacts
     | NATURAL       // Allow NATURAL as identifier (join keyword)
     | REPEATABLE    // Allow REPEATABLE as identifier (sampling keyword)
     | REVERSE       // Allow REVERSE as identifier (range-FOR keyword)
@@ -2410,11 +2849,10 @@ identifier
     | STRING        // Allow STRING as identifier (data type and parameter)
     | SUSPEND_TASK_AFTER_NUM_FAILURES
     | TABLES        // Allow TABLES as identifier (for INFORMATION_SCHEMA views)
-    | RLIKE         // Allow RLIKE as identifier (also the RLIKE(subject, pattern) function form)
     | TAG           // Allow TAG as identifier
     | DIRECTORY     // Allow DIRECTORY as identifier (also the DIRECTORY(@stage) table source)
     | FIELDS        // Allow FIELDS as identifier (also CAST ... RENAME/ADD FIELDS)
-    | NVARCHAR | NVARCHAR2 | NCHAR | CHARACTER | VARYING | TIMESTAMPLTZ | TIMESTAMPTZ | LOCAL | ZONE
+    | NVARCHAR | NVARCHAR2 | NCHAR | CHARACTER | VARYING | TIMESTAMPLTZ | TIMESTAMPTZ | LOCAL | GLOBAL | ZONE
     | TERSE         // Allow TERSE as identifier (also the SHOW TERSE modifier)
     | STARTS        // Allow STARTS as identifier (also SHOW ... STARTS WITH)
     | HISTORY       // Allow HISTORY as identifier (also SHOW ... HISTORY)
@@ -2434,10 +2872,10 @@ identifier
     | TIMESTAMP_NTZ
     | TIMESTAMPNTZ
     | TRANSACTIONS  // Allow TRANSACTIONS as identifier
-    | TRY_CAST      // Allow TRY_CAST as identifier (also the 2-arg TRY_CAST(expr, 'type') function form)
+    | TRY_CAST      // identifier in NAME positions (alias, column/table name, live-verified);
+                    // the cast construct is keyword-anchored, and functionName refuses TRY_CAST as a
+                    // call head, so the construct wins wherever a call could be confused with it
     | TYPE
-    | UNIQUE        // Allow UNIQUE as identifier
-    | UPDATE        // Allow UPDATE as identifier (e.g. the keyword as a VARIANT path key: value:update)
     | URL
     | USER          // Allow USER as identifier
     | USERS         // Allow USERS as identifier
@@ -2459,6 +2897,7 @@ identifier
     | SQL
     | TRUNCATE      // Allow TRUNCATE as identifier (TRUNCATE() numeric function, alias of TRUNC)
     | CLUSTER
+    | CLUSTERING
     | IDENTITY
     | CHANGES
     | NUMERIC
@@ -2495,6 +2934,41 @@ identifier
     | SCHEDULE
     | SKIP_HEADER
     | WAREHOUSE
+    // Snowflake reserves only 64 words, and every OTHER word it lexes may name a column: the
+    // list below is the measured remainder — each one accepted live both as a column DEFINITION
+    // and as a REFERENCE (SELECT/WHERE/GROUP BY/ORDER BY). They are keywords here only because
+    // Frostlake tokenises them for some statement it supports, which is not a reason to refuse
+    // them as names. Measure before adding: the five words live DEFINES but cannot REFERENCE
+    // (CASE, CAST, DEFAULT, TRY_CAST, WHEN) belong in namePart instead, and the join words
+    // (INNER/JOIN/LEFT/CROSS/FULL) cannot live here at all — see nameStartPart.
+    | ACCESS | ACCOUNT | ADD | APPLY | ARRAY | ASC
+    // AT_KEYWORD, not AT: the token named AT is the '@' of a stage reference, and the WORD at is a
+    // separate token. Naming the wrong one here quietly makes '@' an identifier.
+    | ASYNC | AT_KEYWORD | AUTO | AUTO_INGEST | AWAIT | AWS_SNS_TOPIC
+    | BEGIN | BIGINT | BINARY | BOOLEAN | BREAK | BYTEINT
+    | CALL | CASCADE | CLONE | COLLATE | COMMIT | CONTINUE
+    | CUBE | CURRVAL | CURSOR | DATA_RETENTION_TIME_IN_DAYS | DECIMAL | DECLARE
+    | DESC | DESCRIBE | DISABLE | DOUBLE | ELSEIF | ENABLE
+    | ENCRYPTION | END | EXCEPTION | EXECUTE | EXECUTION | EXPLAIN
+    | FALSE | FETCH | FILES | FILE_FORMAT | FLOAT | FORCE
+    | FOREIGN | FORMATS | FULL | FUNCTION | FUTURE | GEOGRAPHY
+    | GEOMETRY | HEADER | IF | IMMEDIATE | IMPORT | IMPORTED
+    | INT | INTEGER | JAVA | JAVASCRIPT | KEYS | LATERAL
+    | LET | LIMIT | LIST | LOOP | MANAGE | MASKING
+    | MASKING_POLICY | MATCHED | MATCH_BY_COLUMN_NAME | MATERIALIZED | MAX_FILE_SIZE | MERGE
+    | MODIFY | MONITOR | MULTI_STATEMENT_COUNT | NO | NOORDER | OBJECT
+    | ONLY | ON_CREATE | ON_ERROR | ON_SCHEDULE | OPEN | OPERATE
+    | OVER | OVERWRITE | OWNERSHIP | PASSWORD | PAUSE | PIPE
+    | POLICIES | PRIMARY | PROCEDURE | PURGE | PYTHON | RAISE
+    | READ | REBUILD | REFRESH | REFRESH_MODE | REMOVE | RESTART
+    | RESTRICT | RESULTSET | RESUME | RETURN | RETURNS | RM
+    | ROLLBACK | ROLLUP | ROW_ACCESS_POLICY | SCALA | SECONDARY | SEQUENCE
+    | SESSION_POLICY | SHARE | SHOW | SINGLE | SIZE_LIMIT | SMALLINT
+    | SUSPEND | SWAP | TARGET_LAG | TASK | TIMESTAMP_LTZ | TIMESTAMP_TZ
+    | TINYINT | TOP | TRANSACTION | TRANSIENT | TRUE | UNDROP
+    | UNSET | UNTIL | USAGE | USE | USE_ANY_ROLE | USING
+    | VALIDATION_MODE | VARBINARY | VARCHAR | VARIANT | VIEW | WAREHOUSES
+    | WAREHOUSE_SIZE | WHILE | WITHIN | WRITE
     ;
 
 // A VARIANT path key (the field name after `:` or `.`) is just a JSON key, so — unlike a bare identifier —
@@ -2509,13 +2983,23 @@ variantPathKey
     | AND | OR | NOT | IN | IS | LIKE | BETWEEN | EXISTS
     | UNION | INTERSECT | ALL | DISTINCT | AS | BY
     | CASE | WHEN | THEN | ELSE | END | NULL | ASC | DESC
+    | INTO | INSERT | CURRENT | FOLLOWING | RLIKE | UNIQUE | UPDATE
     | LIMIT | WITH | QUALIFY | PIVOT | UNPIVOT | MERGE | SET | VALUES | SHOW
     | GRANT | REVOKE | DESCRIBE | USE | EXPLAIN | TRUNCATE | CALL | EXECUTE | RETURN
     ;
 
 nonJoinKeywordIdentifier
-    : IDENTIFIER
+    // A bare table alias is the WIDEST name position measured: everything a column may be called, less
+    // the fifteen words that lead something in a FROM clause (see bareTableAliasAllowed), plus ten that
+    // are NOT legal column names yet are legal aliases — live accepts `FROM t current_date` while
+    // refusing a column called current_date. The explicit list below it is older and narrower; the
+    // words it names that identifier already covers are harmless duplicates.
+    : {bareTableAliasAllowed()}? identifier
+    | CASE | CAST | CONSTRAINT | CURRENT_DATE | CURRENT_TIME | CURRENT_TIMESTAMP | CURRENT_USER
+    | DEFAULT | TRY_CAST | WHEN
+    | IDENTIFIER
     | KW_IDENTIFIER
+    | EXCEPT        // unreserved: `FROM t except` is a bare alias; `FROM t EXCEPT SELECT` still a set-op
     | APPEND_ONLY
     | DECFLOAT
     | FORMAT
@@ -2527,7 +3011,7 @@ nonJoinKeywordIdentifier
     | NUMBER
     | RENAME
     | REPLACE
-    | NVARCHAR | NVARCHAR2 | NCHAR | CHARACTER | VARYING | TIMESTAMPLTZ | TIMESTAMPTZ | LOCAL | ZONE
+    | NVARCHAR | NVARCHAR2 | NCHAR | CHARACTER | VARYING | TIMESTAMPLTZ | TIMESTAMPTZ | LOCAL | GLOBAL | ZONE
     | TERSE
     | STARTS
     | HISTORY
@@ -2535,7 +3019,6 @@ nonJoinKeywordIdentifier
     | APPLICATION
     | CLASS
     | PACKAGE
-    | RLIKE
     // Live-verified per word: `FROM h prior` and `FROM h connect_by_root` are accepted as bare table
     // aliases by Snowflake, while `FROM h asof` and `FROM h match_condition` are syntax errors there —
     // so ASOF and MATCH_CONDITION are deliberately NOT listed (ASOF would also make `FROM x asof JOIN y`
@@ -2555,7 +3038,6 @@ nonJoinKeywordIdentifier
     | USER
     | ROLE
     | COPY
-    | INTO
     | DATABASES
     | TABLES
     | COLUMNS
@@ -2569,7 +3051,6 @@ nonJoinKeywordIdentifier
     | TEXT
     | DELIMITER
     | DO            // Allow DO as an un-AS'd table alias (e.g. `FROM detection_output do`)
-    | UNIQUE
     | FLATTEN
     | INPUT
     | PATH
@@ -2611,6 +3092,7 @@ nonJoinKeywordIdentifier
     | RESOURCE
     | SHOW_INITIAL_ROWS
     | CLUSTER
+    | CLUSTERING
     | IDENTITY
     | CHANGES
     | NUMERIC
@@ -2832,6 +3314,17 @@ PRIOR: P R I O R;
 CONNECT_BY_ROOT: C O N N E C T UNDERSCORE B Y UNDERSCORE R O O T;
 RESUME: R E S U M E;
 SUSPEND: S U S P E N D;
+RECLUSTER: R E C L U S T E R;
+CHECK: C H E C K;
+CONTACT: C O N T A C T;
+METRIC: M E T R I C;
+OPTIMIZATION: O P T I M I Z A T I O N;
+PROJECTION: P R O J E C T I O N;
+AGGREGATION: A G G R E G A T I O N;
+ENTITY: E N T I T Y;
+BODY: B O D Y;
+NOVALIDATE: N O V A L I D A T E;
+CONTACTS: C O N T A C T S;
 PAUSE: P A U S E;
 REFRESH: R E F R E S H;
 REBUILD: R E B U I L D;
@@ -2873,6 +3366,11 @@ MIN_CLUSTER_COUNT: M I N UNDERSCORE C L U S T E R UNDERSCORE C O U N T;
 MAX_CLUSTER_COUNT: M A X UNDERSCORE C L U S T E R UNDERSCORE C O U N T;
 SCALING_POLICY: S C A L I N G UNDERSCORE P O L I C Y;
 INITIALLY_SUSPENDED: I N I T I A L L Y UNDERSCORE S U S P E N D E D;
+// Multi-word statements as single tokens (whitespace inside): zero parser-decision impact, and
+// the lexer's longest-match fallback still yields plain RESUME when the tail is absent.
+RESUME_IF_SUSPENDED: R E S U M E TOKEN_WS I F TOKEN_WS S U S P E N D E D;
+ABORT_ALL_QUERIES: A B O R T TOKEN_WS A L L TOKEN_WS Q U E R I E S;
+fragment TOKEN_WS: [ \t\r\n]+;
 MAX_CONCURRENCY_LEVEL: M A X UNDERSCORE C O N C U R R E N C Y UNDERSCORE L E V E L;
 STATEMENT_QUEUED_TIMEOUT_IN_SECONDS: S T A T E M E N T UNDERSCORE Q U E U E D UNDERSCORE T I M E O U T UNDERSCORE I N UNDERSCORE S E C O N D S;
 STATEMENT_TIMEOUT_IN_SECONDS: S T A T E M E N T UNDERSCORE T I M E O U T UNDERSCORE I N UNDERSCORE S E C O N D S;
@@ -2882,6 +3380,7 @@ GENERATION: G E N E R A T I O N;
 STANDARD: S T A N D A R D;
 ECONOMY: E C O N O M Y;
 MULTI_STATEMENT_COUNT: M U L T I UNDERSCORE S T A T E M E N T UNDERSCORE C O U N T;
+CLUSTERING: C L U S T E R I N G;
 CLUSTER: C L U S T E R;
 COLLATE: C O L L A T E;
 TRANSIENT: T R A N S I E N T;
@@ -2979,6 +3478,7 @@ ACTION: A C T I O N;
 NO: N O;
 RELY: R E L Y;
 NORELY: N O R E L Y;
+ENFORCED: E N F O R C E D;
 APPLY: A P P L Y;
 IMPORTED: I M P O R T E D;
 TERSE: T E R S E;
@@ -3116,6 +3616,8 @@ SECONDS: S E C O N D S;
 // Transaction
 BEGIN: B E G I N;
 TRANSACTION: T R A N S A C T I O N;
+WORK: W O R K;
+NAME: N A M E;
 COMMIT: C O M M I T;
 ROLLBACK: R O L L B A C K;
 
@@ -3170,7 +3672,7 @@ IDENTIFIER: [a-zA-Z_][a-zA-Z0-9_$]*;
 
 // Literals
 INTEGER_LITERAL: [0-9]+;
-FLOAT_LITERAL: [0-9]+ DOT [0-9]+ ([eE] [+-]? [0-9]+)?;
+FLOAT_LITERAL: [0-9]+ DOT [0-9]+ ([eE] [+-]? [0-9]+)? | [0-9]+ [eE] [+-]? [0-9]+;   // The second alternative is the DOT-less exponent (1e0, 1E+3, 1e-3), a number wherever a number is allowed. Without it the lexer split 1e0 into 1 and the identifier e0, which silently read as an ALIAS in a select list and was a syntax error everywhere else. An exponent is folded in before the type is taken, so these are FIXED-point: 1e0 is NUMBER(1,0) and 1e20 NUMBER(21,0).
 STRING_LITERAL: '\'' ('\\' . | '\'\'' | ~['\\])* '\'';    // Single-quoted. Backslash is EXCLUDED from ~[..] so it always begins a '\\' . escape (incl. \'); otherwise maximal-munch lets \'' lex as \ + '' and mis-aligns the string boundaries. Decode via SqlStringLiterals.
 DOLLAR_QUOTED_STRING: '$$' .*? '$$';
 

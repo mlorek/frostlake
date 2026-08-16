@@ -51,29 +51,29 @@ public class DatabaseMetaDataTest extends BaseJdbcTest {
 
     @Test
     public void testGetMetaData() throws SQLException {
-        DatabaseMetaData metaData = connection.getMetaData();
+        final DatabaseMetaData metaData = connection.getMetaData();
         assertNotNull(metaData);
     }
 
     @Test
     public void testGetDatabaseProductName() throws SQLException {
         Assumptions.assumeFalse(isLiveSnowflake(), DRIVER_IDENTITY);
-        DatabaseMetaData metaData = connection.getMetaData();
+        final DatabaseMetaData metaData = connection.getMetaData();
         assertEquals("Frostlake SQL Engine", metaData.getDatabaseProductName());
     }
 
     @Test
     public void testGetDatabaseProductVersion() throws SQLException {
         Assumptions.assumeFalse(isLiveSnowflake(), DRIVER_IDENTITY);
-        DatabaseMetaData metaData = connection.getMetaData();
+        final DatabaseMetaData metaData = connection.getMetaData();
         assertEquals("1.0.0", metaData.getDatabaseProductVersion());
     }
 
     @Test
     public void testGetDriverName() throws SQLException {
         Assumptions.assumeFalse(isLiveSnowflake(), DRIVER_IDENTITY);
-        DatabaseMetaData metaData = connection.getMetaData();
-        assertEquals("Frostlake Direct JDBC Driver", metaData.getDriverName());
+        final DatabaseMetaData metaData = connection.getMetaData();
+        assertEquals("Frostlake JDBC Driver", metaData.getDriverName());
     }
 
     @Test
@@ -81,12 +81,12 @@ public class DatabaseMetaDataTest extends BaseJdbcTest {
         statement.execute("CREATE TABLE meta_test1 (id INTEGER, name VARCHAR)");
         statement.execute("CREATE TABLE meta_test2 (value DOUBLE)");
 
-        DatabaseMetaData metaData = connection.getMetaData();
-        ResultSet rs = metaData.getTables(null, null, "META_TEST%", null);
+        final DatabaseMetaData metaData = connection.getMetaData();
+        final ResultSet rs = metaData.getTables(null, null, "META_TEST%", null);
 
         int count = 0;
         while (rs.next()) {
-            String tableName = rs.getString("TABLE_NAME");
+            final String tableName = rs.getString("TABLE_NAME");
             assertTrue(tableName.toUpperCase().startsWith("META_TEST"));
             count++;
         }
@@ -100,12 +100,12 @@ public class DatabaseMetaDataTest extends BaseJdbcTest {
         statement.execute("CREATE TABLE pattern_test2 (id INTEGER)");
         statement.execute("CREATE TABLE other_table (id INTEGER)");
 
-        DatabaseMetaData metaData = connection.getMetaData();
-        ResultSet rs = metaData.getTables(null, null, "PATTERN_TEST%", null);
+        final DatabaseMetaData metaData = connection.getMetaData();
+        final ResultSet rs = metaData.getTables(null, null, "PATTERN_TEST%", null);
 
         int count = 0;
         while (rs.next()) {
-            String tableName = rs.getString("TABLE_NAME");
+            final String tableName = rs.getString("TABLE_NAME");
             assertTrue(tableName.toUpperCase().startsWith("PATTERN_TEST"));
             count++;
         }
@@ -117,15 +117,15 @@ public class DatabaseMetaDataTest extends BaseJdbcTest {
     public void testGetColumns() throws SQLException {
         statement.execute("CREATE TABLE col_test (id INTEGER, name VARCHAR, value DOUBLE)");
 
-        DatabaseMetaData metaData = connection.getMetaData();
-        ResultSet rs = metaData.getColumns(null, null, "COL_TEST", null);
+        final DatabaseMetaData metaData = connection.getMetaData();
+        final ResultSet rs = metaData.getColumns(null, null, "COL_TEST", null);
 
         int count = 0;
         while (rs.next()) {
-            String tableName = rs.getString("TABLE_NAME");
-            String columnName = rs.getString("COLUMN_NAME");
+            final String tableName = rs.getString("TABLE_NAME");
+            final String columnName = rs.getString("COLUMN_NAME");
             assertEquals("COL_TEST", tableName.toUpperCase());
-            String upperColName = columnName.toUpperCase();
+            final String upperColName = columnName.toUpperCase();
             assertTrue(upperColName.equals("ID") || upperColName.equals("NAME") || upperColName.equals("VALUE"));
             count++;
         }
@@ -137,12 +137,12 @@ public class DatabaseMetaDataTest extends BaseJdbcTest {
     public void testGetColumnsWithPattern() throws SQLException {
         statement.execute("CREATE TABLE col_pattern (id INTEGER, name VARCHAR, email VARCHAR)");
 
-        DatabaseMetaData metaData = connection.getMetaData();
-        ResultSet rs = metaData.getColumns(null, null, "COL_PATTERN", "N%");
+        final DatabaseMetaData metaData = connection.getMetaData();
+        final ResultSet rs = metaData.getColumns(null, null, "COL_PATTERN", "N%");
 
         int count = 0;
         while (rs.next()) {
-            String columnName = rs.getString("COLUMN_NAME");
+            final String columnName = rs.getString("COLUMN_NAME");
             assertTrue(columnName.toUpperCase().startsWith("N"));
             count++;
         }
@@ -154,14 +154,14 @@ public class DatabaseMetaDataTest extends BaseJdbcTest {
     public void testGetColumnsDataTypes() throws SQLException {
         statement.execute("CREATE TABLE type_test (int_col INTEGER, str_col VARCHAR, dbl_col DOUBLE)");
 
-        DatabaseMetaData metaData = connection.getMetaData();
-        ResultSet rs = metaData.getColumns(null, null, "TYPE_TEST", null);
+        final DatabaseMetaData metaData = connection.getMetaData();
+        final ResultSet rs = metaData.getColumns(null, null, "TYPE_TEST", null);
 
         // TYPE_NAME is the name column. Snowflake's driver renames two of the catalog's families
         // on the way out — TEXT becomes VARCHAR and FLOAT becomes DOUBLE — and NUMBER stays NUMBER.
         while (rs.next()) {
-            String columnName = rs.getString("COLUMN_NAME");
-            String typeName = rs.getString("TYPE_NAME");
+            final String columnName = rs.getString("COLUMN_NAME");
+            final String typeName = rs.getString("TYPE_NAME");
             assertNotNull(typeName);
 
             if (columnName.equals("INT_COL")) {
@@ -179,8 +179,8 @@ public class DatabaseMetaDataTest extends BaseJdbcTest {
     public void testGetPrimaryKeys() throws SQLException {
         statement.execute("CREATE TABLE pk_test (id INTEGER PRIMARY KEY, name VARCHAR)");
 
-        DatabaseMetaData metaData = connection.getMetaData();
-        ResultSet rs = metaData.getPrimaryKeys(null, null, "PK_TEST");
+        final DatabaseMetaData metaData = connection.getMetaData();
+        final ResultSet rs = metaData.getPrimaryKeys(null, null, "PK_TEST");
 
         // Note: Primary key metadata not yet fully supported in INFORMATION_SCHEMA
         // This test verifies the method returns a ResultSet (even if empty)
@@ -202,8 +202,8 @@ public class DatabaseMetaDataTest extends BaseJdbcTest {
             CREATE TABLE pk_composite (id1 INTEGER, id2 INTEGER, value VARCHAR, PRIMARY KEY (id1, id2))
             """);
 
-        DatabaseMetaData metaData = connection.getMetaData();
-        ResultSet rs = metaData.getPrimaryKeys(null, null, "PK_COMPOSITE");
+        final DatabaseMetaData metaData = connection.getMetaData();
+        final ResultSet rs = metaData.getPrimaryKeys(null, null, "PK_COMPOSITE");
 
         // Note: Primary key metadata not yet fully supported in INFORMATION_SCHEMA
         assertNotNull(rs);
@@ -221,8 +221,8 @@ public class DatabaseMetaDataTest extends BaseJdbcTest {
     public void testGetPrimaryKeysNoPrimaryKey() throws SQLException {
         statement.execute("CREATE TABLE no_pk (id INTEGER, name VARCHAR)");
 
-        DatabaseMetaData metaData = connection.getMetaData();
-        ResultSet rs = metaData.getPrimaryKeys(null, null, "NO_PK");
+        final DatabaseMetaData metaData = connection.getMetaData();
+        final ResultSet rs = metaData.getPrimaryKeys(null, null, "NO_PK");
 
         assertFalse(rs.next());  // No primary keys
         rs.close();
@@ -230,8 +230,8 @@ public class DatabaseMetaDataTest extends BaseJdbcTest {
 
     @Test
     public void testGetPrimaryKeysNonExistentTable() throws SQLException {
-        DatabaseMetaData metaData = connection.getMetaData();
-        ResultSet rs = metaData.getPrimaryKeys(null, null, "NONEXISTENT_TABLE");
+        final DatabaseMetaData metaData = connection.getMetaData();
+        final ResultSet rs = metaData.getPrimaryKeys(null, null, "NONEXISTENT_TABLE");
 
         assertFalse(rs.next());  // No results for non-existent table
         rs.close();
@@ -239,21 +239,21 @@ public class DatabaseMetaDataTest extends BaseJdbcTest {
 
     @Test
     public void testSupportsTransactions() throws SQLException {
-        DatabaseMetaData metaData = connection.getMetaData();
+        final DatabaseMetaData metaData = connection.getMetaData();
         assertTrue(metaData.supportsTransactions());
     }
 
     @Test
     public void testSupportsResultSetType() throws SQLException {
-        DatabaseMetaData metaData = connection.getMetaData();
+        final DatabaseMetaData metaData = connection.getMetaData();
         assertTrue(metaData.supportsResultSetType(ResultSet.TYPE_FORWARD_ONLY));
     }
 
     @Test
     public void testGetSQLKeywords() throws SQLException {
         Assumptions.assumeFalse(isLiveSnowflake(), DRIVER_CAPABILITY);
-        DatabaseMetaData metaData = connection.getMetaData();
-        String keywords = metaData.getSQLKeywords();
+        final DatabaseMetaData metaData = connection.getMetaData();
+        final String keywords = metaData.getSQLKeywords();
         assertTrue(keywords.contains("VARIANT"));
         assertTrue(keywords.contains("ARRAY"));
         assertTrue(keywords.contains("FLATTEN"));
@@ -261,8 +261,8 @@ public class DatabaseMetaDataTest extends BaseJdbcTest {
 
     @Test
     public void testGetNumericFunctions() throws SQLException {
-        DatabaseMetaData metaData = connection.getMetaData();
-        String functions = metaData.getNumericFunctions();
+        final DatabaseMetaData metaData = connection.getMetaData();
+        final String functions = metaData.getNumericFunctions();
         assertTrue(functions.contains("ABS"));
         assertTrue(functions.contains("ROUND"));
         assertTrue(functions.contains("SQRT"));
@@ -270,8 +270,8 @@ public class DatabaseMetaDataTest extends BaseJdbcTest {
 
     @Test
     public void testGetStringFunctions() throws SQLException {
-        DatabaseMetaData metaData = connection.getMetaData();
-        String functions = metaData.getStringFunctions();
+        final DatabaseMetaData metaData = connection.getMetaData();
+        final String functions = metaData.getStringFunctions();
         assertTrue(functions.contains("CONCAT"));
         assertTrue(functions.contains("UPPER"));
         assertTrue(functions.contains("SUBSTRING"));
@@ -279,20 +279,20 @@ public class DatabaseMetaDataTest extends BaseJdbcTest {
 
     @Test
     public void testSupportsGroupBy() throws SQLException {
-        DatabaseMetaData metaData = connection.getMetaData();
+        final DatabaseMetaData metaData = connection.getMetaData();
         assertTrue(metaData.supportsGroupBy());
     }
 
     @Test
     public void testSupportsOuterJoins() throws SQLException {
-        DatabaseMetaData metaData = connection.getMetaData();
+        final DatabaseMetaData metaData = connection.getMetaData();
         assertTrue(metaData.supportsOuterJoins());
         assertTrue(metaData.supportsFullOuterJoins());
     }
 
     @Test
     public void testSupportsSubqueries() throws SQLException {
-        DatabaseMetaData metaData = connection.getMetaData();
+        final DatabaseMetaData metaData = connection.getMetaData();
         assertTrue(metaData.supportsSubqueriesInComparisons());
         assertTrue(metaData.supportsSubqueriesInExists());
         assertTrue(metaData.supportsCorrelatedSubqueries());
@@ -300,7 +300,7 @@ public class DatabaseMetaDataTest extends BaseJdbcTest {
 
     @Test
     public void testSupportsUnion() throws SQLException {
-        DatabaseMetaData metaData = connection.getMetaData();
+        final DatabaseMetaData metaData = connection.getMetaData();
         assertTrue(metaData.supportsUnion());
         assertTrue(metaData.supportsUnionAll());
     }
@@ -308,19 +308,19 @@ public class DatabaseMetaDataTest extends BaseJdbcTest {
     @Test
     public void testGetMaxColumnNameLength() throws SQLException {
         Assumptions.assumeFalse(isLiveSnowflake(), DRIVER_CAPABILITY);
-        DatabaseMetaData metaData = connection.getMetaData();
+        final DatabaseMetaData metaData = connection.getMetaData();
         assertEquals(256, metaData.getMaxColumnNameLength());
     }
 
     @Test
     public void testGetIdentifierQuoteString() throws SQLException {
-        DatabaseMetaData metaData = connection.getMetaData();
+        final DatabaseMetaData metaData = connection.getMetaData();
         assertEquals("\"", metaData.getIdentifierQuoteString());
     }
 
     @Test
     public void testSupportsAlterTable() throws SQLException {
-        DatabaseMetaData metaData = connection.getMetaData();
+        final DatabaseMetaData metaData = connection.getMetaData();
         assertTrue(metaData.supportsAlterTableWithAddColumn());
         assertTrue(metaData.supportsAlterTableWithDropColumn());
     }
@@ -328,7 +328,7 @@ public class DatabaseMetaDataTest extends BaseJdbcTest {
     @Test
     public void testNullSorting() throws SQLException {
         Assumptions.assumeFalse(isLiveSnowflake(), DRIVER_CAPABILITY);
-        DatabaseMetaData metaData = connection.getMetaData();
+        final DatabaseMetaData metaData = connection.getMetaData();
         assertFalse(metaData.nullsAreSortedHigh());
         assertTrue(metaData.nullsAreSortedLow());
         assertFalse(metaData.nullsAreSortedAtStart());
@@ -337,39 +337,39 @@ public class DatabaseMetaDataTest extends BaseJdbcTest {
 
     @Test
     public void testGetConnection() throws SQLException {
-        DatabaseMetaData metaData = connection.getMetaData();
+        final DatabaseMetaData metaData = connection.getMetaData();
         assertEquals(connection, metaData.getConnection());
     }
 
     @Test
     public void testSupportsBatchUpdates() throws SQLException {
-        DatabaseMetaData metaData = connection.getMetaData();
+        final DatabaseMetaData metaData = connection.getMetaData();
         assertTrue(metaData.supportsBatchUpdates());
     }
 
     @Test
     public void testSupportsSavepoints() throws SQLException {
-        DatabaseMetaData metaData = connection.getMetaData();
+        final DatabaseMetaData metaData = connection.getMetaData();
         assertFalse(metaData.supportsSavepoints());
     }
 
     @Test
     public void testSupportsNamedParameters() throws SQLException {
         Assumptions.assumeFalse(isLiveSnowflake(), DRIVER_CAPABILITY);
-        DatabaseMetaData metaData = connection.getMetaData();
+        final DatabaseMetaData metaData = connection.getMetaData();
         assertTrue(metaData.supportsNamedParameters());
     }
 
     @Test
     public void testSupportsGetGeneratedKeys() throws SQLException {
         Assumptions.assumeFalse(isLiveSnowflake(), DRIVER_CAPABILITY);
-        DatabaseMetaData metaData = connection.getMetaData();
+        final DatabaseMetaData metaData = connection.getMetaData();
         assertTrue(metaData.supportsGetGeneratedKeys());
     }
 
     @Test
     public void testGetJDBCVersion() throws SQLException {
-        DatabaseMetaData metaData = connection.getMetaData();
+        final DatabaseMetaData metaData = connection.getMetaData();
         assertEquals(4, metaData.getJDBCMajorVersion());
         assertEquals(2, metaData.getJDBCMinorVersion());
     }
@@ -382,7 +382,7 @@ public class DatabaseMetaDataTest extends BaseJdbcTest {
 
     /** Every schema name a getSchemas result reports, in the order the driver returned them. */
     private List<String> schemaNames(final ResultSet rs) throws SQLException {
-        List<String> names = new ArrayList<>();
+        final List<String> names = new ArrayList<>();
         while (rs.next()) {
             names.add(rs.getString("TABLE_SCHEM"));
         }
@@ -391,9 +391,9 @@ public class DatabaseMetaDataTest extends BaseJdbcTest {
 
     @Test
     public void testGetSchemasForCatalogListsPublicAndInformationSchema() throws SQLException {
-        DatabaseMetaData metaData = connection.getMetaData();
+        final DatabaseMetaData metaData = connection.getMetaData();
         try (ResultSet rs = metaData.getSchemas("TEST_DB", null)) {
-            List<String> names = new ArrayList<>();
+            final List<String> names = new ArrayList<>();
             while (rs.next()) {
                 names.add(rs.getString("TABLE_SCHEM"));
                 assertEquals("TEST_DB", rs.getString("TABLE_CATALOG"),
@@ -409,9 +409,9 @@ public class DatabaseMetaDataTest extends BaseJdbcTest {
     public void testGetSchemasColumnLabels() throws SQLException {
         // A browsing tool reads these by label, so the labels are part of the contract. Snowflake's
         // driver returns exactly two columns, TABLE_SCHEM then TABLE_CATALOG.
-        DatabaseMetaData metaData = connection.getMetaData();
+        final DatabaseMetaData metaData = connection.getMetaData();
         try (ResultSet rs = metaData.getSchemas("TEST_DB", null)) {
-            ResultSetMetaData md = rs.getMetaData();
+            final ResultSetMetaData md = rs.getMetaData();
             assertEquals(2, md.getColumnCount());
             assertEquals("TABLE_SCHEM", md.getColumnLabel(1).toUpperCase());
             assertEquals("TABLE_CATALOG", md.getColumnLabel(2).toUpperCase());
@@ -420,8 +420,8 @@ public class DatabaseMetaDataTest extends BaseJdbcTest {
 
     @Test
     public void testGetSchemasWildcardPatternMatchesEveryScheme() throws SQLException {
-        DatabaseMetaData metaData = connection.getMetaData();
-        List<String> withNull;
+        final DatabaseMetaData metaData = connection.getMetaData();
+        final List<String> withNull;
         try (ResultSet rs = metaData.getSchemas("TEST_DB", null)) {
             withNull = schemaNames(rs);
         }
@@ -432,7 +432,7 @@ public class DatabaseMetaDataTest extends BaseJdbcTest {
 
     @Test
     public void testGetSchemasHonoursSchemaPattern() throws SQLException {
-        DatabaseMetaData metaData = connection.getMetaData();
+        final DatabaseMetaData metaData = connection.getMetaData();
         try (ResultSet rs = metaData.getSchemas("TEST_DB", "PUB%")) {
             assertEquals(List.of("PUBLIC"), schemaNames(rs));
         }
@@ -444,7 +444,7 @@ public class DatabaseMetaDataTest extends BaseJdbcTest {
     @Test
     public void testGetSchemasUnknownCatalogIsEmptyNotAnError() throws SQLException {
         // Live Snowflake answers zero rows — it does not raise "database does not exist".
-        DatabaseMetaData metaData = connection.getMetaData();
+        final DatabaseMetaData metaData = connection.getMetaData();
         try (ResultSet rs = metaData.getSchemas("NO_SUCH_DATABASE_FL160", null)) {
             assertFalse(rs.next());
         }
@@ -454,7 +454,7 @@ public class DatabaseMetaDataTest extends BaseJdbcTest {
     public void testGetSchemasNullCatalogSpansCatalogs() throws SQLException {
         // JDBC's getSchemas() enumerates across catalogs, with TABLE_CATALOG telling them apart —
         // live-confirmed on Snowflake, where the no-arg and (null, null) forms return the same rows.
-        DatabaseMetaData metaData = connection.getMetaData();
+        final DatabaseMetaData metaData = connection.getMetaData();
         boolean sawTestDb = false;
         try (ResultSet rs = metaData.getSchemas(null, null)) {
             while (rs.next()) {
@@ -469,8 +469,8 @@ public class DatabaseMetaDataTest extends BaseJdbcTest {
 
     @Test
     public void testGetSchemasNoArgMatchesNullNull() throws SQLException {
-        DatabaseMetaData metaData = connection.getMetaData();
-        List<String> noArg;
+        final DatabaseMetaData metaData = connection.getMetaData();
+        final List<String> noArg;
         try (ResultSet rs = metaData.getSchemas()) {
             noArg = schemaNames(rs);
         }
@@ -489,9 +489,9 @@ public class DatabaseMetaDataTest extends BaseJdbcTest {
         statement.execute("CREATE DATABASE fl160_beta");
         statement.execute("CREATE SCHEMA fl160_beta.beta_only");
         try {
-            DatabaseMetaData metaData = connection.getMetaData();
+            final DatabaseMetaData metaData = connection.getMetaData();
             try (ResultSet rs = metaData.getSchemas("FL160_ALPHA", null)) {
-                List<String> names = new ArrayList<>();
+                final List<String> names = new ArrayList<>();
                 while (rs.next()) {
                     names.add(rs.getString("TABLE_SCHEM"));
                     assertEquals("FL160_ALPHA", rs.getString("TABLE_CATALOG"));
@@ -500,7 +500,7 @@ public class DatabaseMetaDataTest extends BaseJdbcTest {
                 assertFalse(names.contains("BETA_ONLY"), "leaked the sibling database's schema");
             }
             try (ResultSet rs = metaData.getSchemas("FL160_BETA", null)) {
-                List<String> names = new ArrayList<>();
+                final List<String> names = new ArrayList<>();
                 while (rs.next()) {
                     names.add(rs.getString("TABLE_SCHEM"));
                     assertEquals("FL160_BETA", rs.getString("TABLE_CATALOG"));
@@ -523,7 +523,7 @@ public class DatabaseMetaDataTest extends BaseJdbcTest {
         try {
             statement.execute("USE DATABASE test_db");
             statement.execute("USE SCHEMA PUBLIC");
-            DatabaseMetaData metaData = connection.getMetaData();
+            final DatabaseMetaData metaData = connection.getMetaData();
             boolean sawProbe = false;
             try (ResultSet rs = metaData.getTables("FL160_OTHER", "PUBLIC", "%", null)) {
                 while (rs.next()) {
@@ -570,10 +570,10 @@ public class DatabaseMetaDataTest extends BaseJdbcTest {
         statement.execute("CREATE TABLE fl162_tbl (id INTEGER, name VARCHAR)");
         statement.execute("CREATE VIEW fl162_vw AS SELECT id FROM fl162_tbl");
 
-        DatabaseMetaData metaData = connection.getMetaData();
+        final DatabaseMetaData metaData = connection.getMetaData();
         // Every type reported has to be one getTableTypes() offers, or a client that filters by
         // what it was told about can never match anything.
-        List<String> advertised = new ArrayList<>();
+        final List<String> advertised = new ArrayList<>();
         try (ResultSet rs = metaData.getTableTypes()) {
             while (rs.next()) {
                 advertised.add(rs.getString("TABLE_TYPE"));
@@ -581,7 +581,7 @@ public class DatabaseMetaDataTest extends BaseJdbcTest {
         }
         assertEquals(List.of("TABLE", "VIEW"), advertised);
 
-        Map<String, String> unfiltered = tableTypesOf(metaData, null);
+        final Map<String, String> unfiltered = tableTypesOf(metaData, null);
         assertEquals("TABLE", unfiltered.get("FL162_TBL"));
         assertEquals("VIEW", unfiltered.get("FL162_VW"),
             "a view must be listed, and as VIEW — it used to be absent entirely");
@@ -592,7 +592,7 @@ public class DatabaseMetaDataTest extends BaseJdbcTest {
         statement.execute("CREATE TABLE fl162_tbl (id INTEGER)");
         statement.execute("CREATE VIEW fl162_vw AS SELECT id FROM fl162_tbl");
 
-        DatabaseMetaData metaData = connection.getMetaData();
+        final DatabaseMetaData metaData = connection.getMetaData();
         assertEquals(Set.of("FL162_TBL"), tableTypesOf(metaData, new String[] {"TABLE"}).keySet());
         assertEquals(Set.of("FL162_VW"), tableTypesOf(metaData, new String[] {"VIEW"}).keySet());
         assertEquals(Set.of("FL162_TBL", "FL162_VW"),
@@ -616,7 +616,7 @@ public class DatabaseMetaDataTest extends BaseJdbcTest {
         statement.execute("CREATE TABLE fl162_tbl (id INTEGER)");
         statement.execute("CREATE MATERIALIZED VIEW fl162_mv AS SELECT id FROM fl162_tbl");
 
-        DatabaseMetaData metaData = connection.getMetaData();
+        final DatabaseMetaData metaData = connection.getMetaData();
         assertEquals("VIEW", tableTypesOf(metaData, null).get("FL162_MV"),
             "Snowflake reports a materialized view as VIEW");
         assertTrue(tableTypesOf(metaData, new String[] {"VIEW"}).containsKey("FL162_MV"));
@@ -627,7 +627,7 @@ public class DatabaseMetaDataTest extends BaseJdbcTest {
     public void testGetTablesReturnsTheSpecifiedColumns() throws SQLException {
         // A browsing tool reads these by label. Snowflake's driver returns exactly these ten,
         // in this order; the four columns returned before used non-spec TABLE_CATALOG/TABLE_SCHEMA.
-        DatabaseMetaData metaData = connection.getMetaData();
+        final DatabaseMetaData metaData = connection.getMetaData();
         try (ResultSet rs = metaData.getTables("TEST_DB", "PUBLIC", "%", null)) {
             assertEquals(List.of("TABLE_CAT", "TABLE_SCHEM", "TABLE_NAME", "TABLE_TYPE", "REMARKS",
                 "TYPE_CAT", "TYPE_SCHEM", "TYPE_NAME", "SELF_REFERENCING_COL_NAME", "REF_GENERATION"),
@@ -640,7 +640,7 @@ public class DatabaseMetaDataTest extends BaseJdbcTest {
     @Test
     public void testGetColumnsReturnsTheSpecifiedColumns() throws SQLException {
         statement.execute("CREATE TABLE fl162_shape (id INTEGER)");
-        DatabaseMetaData metaData = connection.getMetaData();
+        final DatabaseMetaData metaData = connection.getMetaData();
         try (ResultSet rs = metaData.getColumns("TEST_DB", "PUBLIC", "FL162_SHAPE", "%")) {
             assertEquals(List.of("TABLE_CAT", "TABLE_SCHEM", "TABLE_NAME", "COLUMN_NAME", "DATA_TYPE",
                 "TYPE_NAME", "COLUMN_SIZE", "BUFFER_LENGTH", "DECIMAL_DIGITS", "NUM_PREC_RADIX",
@@ -661,9 +661,9 @@ public class DatabaseMetaDataTest extends BaseJdbcTest {
                 c_bool BOOLEAN, c_date DATE, c_time TIME, c_ts TIMESTAMP_NTZ,
                 c_tstz TIMESTAMP_TZ, c_bin BINARY(16), c_variant VARIANT)
             """);
-        Map<String, Integer> codes = new TreeMap<>();
-        Map<String, String> names = new TreeMap<>();
-        DatabaseMetaData metaData = connection.getMetaData();
+        final Map<String, Integer> codes = new TreeMap<>();
+        final Map<String, String> names = new TreeMap<>();
+        final DatabaseMetaData metaData = connection.getMetaData();
         try (ResultSet rs = metaData.getColumns("TEST_DB", "PUBLIC", "FL162_TYPES", "%")) {
             while (rs.next()) {
                 codes.put(rs.getString("COLUMN_NAME").toUpperCase(), rs.getInt("DATA_TYPE"));
@@ -697,10 +697,10 @@ public class DatabaseMetaDataTest extends BaseJdbcTest {
                 c_number NUMBER(10,2), c_varchar VARCHAR(50), c_bin BINARY(16),
                 c_ts TIMESTAMP_NTZ, c_req INTEGER NOT NULL)
             """);
-        DatabaseMetaData metaData = connection.getMetaData();
+        final DatabaseMetaData metaData = connection.getMetaData();
         try (ResultSet rs = metaData.getColumns("TEST_DB", "PUBLIC", "FL162_SIZES", "%")) {
             while (rs.next()) {
-                String column = rs.getString("COLUMN_NAME").toUpperCase();
+                final String column = rs.getString("COLUMN_NAME").toUpperCase();
                 if ("C_NUMBER".equals(column)) {
                     assertEquals(10, rs.getInt("COLUMN_SIZE"), "precision is the size of a numeric");
                     assertEquals(2, rs.getInt("DECIMAL_DIGITS"));
@@ -747,7 +747,7 @@ public class DatabaseMetaDataTest extends BaseJdbcTest {
         statement.execute("CREATE VIEW fl164_proj AS SELECT id, label FROM fl164_base");
         statement.execute("CREATE VIEW fl164_over AS SELECT * FROM fl164_star");
 
-        DatabaseMetaData metaData = connection.getMetaData();
+        final DatabaseMetaData metaData = connection.getMetaData();
         // A SELECT * view carries every base column, in order, with the base column's own type —
         // the star is expanded once, when the view is created.
         assertEquals(List.of("ID", "LABEL", "AMOUNT", "RATIO", "OK"),
@@ -763,7 +763,7 @@ public class DatabaseMetaDataTest extends BaseJdbcTest {
         // Size, scale, position and the java.sql.Types code are the table's, not placeholders.
         try (ResultSet rs = metaData.getColumns("TEST_DB", "PUBLIC", "FL164_STAR", "%")) {
             while (rs.next()) {
-                String column = rs.getString("COLUMN_NAME").toUpperCase();
+                final String column = rs.getString("COLUMN_NAME").toUpperCase();
                 if ("LABEL".equals(column)) {
                     assertEquals(2, rs.getInt("ORDINAL_POSITION"));
                     assertEquals(30, rs.getInt("COLUMN_SIZE"));
@@ -785,7 +785,7 @@ public class DatabaseMetaDataTest extends BaseJdbcTest {
         statement.execute("CREATE TABLE fl164_base (id INTEGER, label VARCHAR(30))");
         statement.execute("CREATE VIEW fl164_named (k, v) AS SELECT id, label FROM fl164_base");
 
-        DatabaseMetaData metaData = connection.getMetaData();
+        final DatabaseMetaData metaData = connection.getMetaData();
         // The declared names win, and each still carries the type of the item it renames.
         assertEquals(Map.of("K", "NUMBER", "V", "VARCHAR"), columnTypesOf(metaData, "FL164_NAMED"));
     }
@@ -800,8 +800,8 @@ public class DatabaseMetaDataTest extends BaseJdbcTest {
             FROM fl164_base
             """);
 
-        DatabaseMetaData metaData = connection.getMetaData();
-        Map<String, String> columns = columnTypesOf(metaData, "FL164_EXPR");
+        final DatabaseMetaData metaData = connection.getMetaData();
+        final Map<String, String> columns = columnTypesOf(metaData, "FL164_EXPR");
         // Every projected expression is reported, under its alias and in projection order.
         assertEquals(List.of("BUMPED", "SHOUT", "OBJ", "POSITIVE"), new ArrayList<>(columns.keySet()));
         assertEquals("VARCHAR", columns.get("SHOUT"), "a string function's result is text");
@@ -819,7 +819,7 @@ public class DatabaseMetaDataTest extends BaseJdbcTest {
         statement.execute("CREATE TABLE fl164_base (id INTEGER, label VARCHAR(10))");
         statement.execute("CREATE VIEW fl164_star AS SELECT * FROM fl164_base");
 
-        DatabaseMetaData metaData = connection.getMetaData();
+        final DatabaseMetaData metaData = connection.getMetaData();
         assertEquals(10, sizeOfColumn(metaData, "FL164_STAR", "LABEL"));
 
         // Live-verified: a view's reported column metadata is a snapshot taken when the view was
@@ -849,7 +849,7 @@ public class DatabaseMetaDataTest extends BaseJdbcTest {
             """);
         statement.execute("CREATE VIEW fl164_star AS SELECT * FROM fl164_base");
 
-        DatabaseMetaData metaData = connection.getMetaData();
+        final DatabaseMetaData metaData = connection.getMetaData();
         // Live reports all three of these EMPTY for a view, however the underlying column was
         // declared: a view has no defaults, no identity and no constraints of its own.
         try (ResultSet rs = metaData.getColumns("TEST_DB", "PUBLIC", "FL164_STAR", "%")) {
@@ -902,7 +902,7 @@ public class DatabaseMetaDataTest extends BaseJdbcTest {
             FROM fl164_local
             """);
 
-        DatabaseMetaData metaData = connection.getMetaData();
+        final DatabaseMetaData metaData = connection.getMetaData();
         assertEquals("ARRAY", columnTypesOf(metaData, "FL164_UNQUALIFIED").get("TAGS"));
         assertEquals("ARRAY", columnTypesOf(metaData, "FL164_QUALIFIED").get("TAGS"),
             "a schema-qualified source must type its columns exactly as an unqualified one does");
@@ -932,7 +932,7 @@ public class DatabaseMetaDataTest extends BaseJdbcTest {
                 SELECT IFF(ARRAY_CONTAINS('x'::VARIANT, tags), ARRAY_APPEND(tags, 'y'), tags) AS tags
                 FROM fl164_src
                 """);
-            DatabaseMetaData metaData = connection.getMetaData();
+            final DatabaseMetaData metaData = connection.getMetaData();
             String inSource = null;
             try (ResultSet rs = metaData.getColumns("TEST_DB", "PUBLIC", "FL164_VIEW", "TAGS")) {
                 if (rs.next()) {
@@ -963,7 +963,7 @@ public class DatabaseMetaDataTest extends BaseJdbcTest {
         statement.execute("CREATE TABLE fl164_base (id INTEGER, label VARCHAR(30))");
         statement.execute("CREATE MATERIALIZED VIEW fl164_mv AS SELECT id, label FROM fl164_base");
 
-        DatabaseMetaData metaData = connection.getMetaData();
+        final DatabaseMetaData metaData = connection.getMetaData();
         assertEquals(Map.of("ID", "NUMBER", "LABEL", "VARCHAR"), columnTypesOf(metaData, "FL164_MV"));
     }
 
@@ -979,7 +979,7 @@ public class DatabaseMetaDataTest extends BaseJdbcTest {
     @Test
     public void testGetPrimaryKeysUsesTheSpecifiedColumnLabels() throws SQLException {
         statement.execute("CREATE TABLE fl162_pk (id INTEGER PRIMARY KEY, name VARCHAR)");
-        DatabaseMetaData metaData = connection.getMetaData();
+        final DatabaseMetaData metaData = connection.getMetaData();
         try (ResultSet rs = metaData.getPrimaryKeys("TEST_DB", "PUBLIC", "FL162_PK")) {
             assertEquals(List.of("TABLE_CAT", "TABLE_SCHEM", "TABLE_NAME", "COLUMN_NAME",
                 "KEY_SEQ", "PK_NAME"), labelsOf(rs));
@@ -988,8 +988,8 @@ public class DatabaseMetaDataTest extends BaseJdbcTest {
 
     /** The column labels of a result, upper-cased, in order. */
     private List<String> labelsOf(final ResultSet rs) throws SQLException {
-        ResultSetMetaData md = rs.getMetaData();
-        List<String> labels = new ArrayList<>();
+        final ResultSetMetaData md = rs.getMetaData();
+        final List<String> labels = new ArrayList<>();
         for (int i = 1; i <= md.getColumnCount(); i++) {
             labels.add(md.getColumnLabel(i).toUpperCase());
         }

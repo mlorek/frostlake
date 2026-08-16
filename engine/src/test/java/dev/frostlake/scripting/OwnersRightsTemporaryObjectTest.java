@@ -140,6 +140,22 @@ public class OwnersRightsTemporaryObjectTest extends BaseDatabaseTest {
             refusalOf("p_ff"), "CREATE TEMPORARY FILE FORMAT");
     }
 
+    /**
+     * The two kinds that used to escape this guard: before the grammar learned the temporary spellings
+     * of VIEW and FUNCTION, both failed as unsupported SYNTAX long before the owner's-rights check ran,
+     * so the refusal they were supposed to produce could not be asserted at all.
+     */
+    @Test
+    public void viewAndFunctionNameTheirOwnKind() {
+        javaProcedure("p_view", "OWNER", "CREATE TEMPORARY VIEW v1 AS SELECT 1 AS n");
+        assertRefusal("Stored procedure execution error: Unsupported statement type 'temporary VIEW'.",
+            refusalOf("p_view"), "CREATE TEMPORARY VIEW");
+
+        javaProcedure("p_fn", "OWNER", "CREATE TEMPORARY FUNCTION f1() RETURNS INTEGER AS '1'");
+        assertRefusal("Stored procedure execution error: Unsupported statement type 'temporary FUNCTION'.",
+            refusalOf("p_fn"), "CREATE TEMPORARY FUNCTION");
+    }
+
     /** TRANSIENT is NOT temporary: live creates it under owner's rights without complaint. */
     @Test
     public void transientAndPermanentObjectsAreAllowed() {

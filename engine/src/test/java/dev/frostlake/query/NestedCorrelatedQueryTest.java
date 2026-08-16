@@ -47,7 +47,7 @@ public class NestedCorrelatedQueryTest extends BaseDatabaseTest {
     public void testNestedCorrelatedExists() {
         logger.info("Testing nested correlated EXISTS subqueries");
 
-        String query = """
+        final String query = """
             SELECT *
             FROM t1
             WHERE EXISTS (
@@ -62,7 +62,7 @@ public class NestedCorrelatedQueryTest extends BaseDatabaseTest {
             )
             """;
 
-        ResultSet result = engine.executeQuery(query);
+        final ResultSet result = engine.executeQuery(query);
 
         // Expected: rows from t1 where i is in (1, 2)
         // Because:
@@ -77,8 +77,8 @@ public class NestedCorrelatedQueryTest extends BaseDatabaseTest {
 
         assertEquals(2, result.getRowCount(), "Should return 2 rows (i=1 and i=2)");
 
-        long val1 = ((Number) result.getRows().get(0).getValues().get(0)).longValue();
-        long val2 = ((Number) result.getRows().get(1).getValues().get(0)).longValue();
+        final long val1 = ((Number) result.getRows().get(0).getValues().get(0)).longValue();
+        final long val2 = ((Number) result.getRows().get(1).getValues().get(0)).longValue();
 
         assertEquals(1L, val1, "First row should be i=1");
         assertEquals(2L, val2, "Second row should be i=2");
@@ -90,7 +90,7 @@ public class NestedCorrelatedQueryTest extends BaseDatabaseTest {
     public void testSimpleCorrelatedExists() {
         logger.info("Testing simple correlated EXISTS subquery");
 
-        String query = """
+        final String query = """
             SELECT *
             FROM t1
             WHERE EXISTS (
@@ -100,7 +100,7 @@ public class NestedCorrelatedQueryTest extends BaseDatabaseTest {
             )
             """;
 
-        ResultSet result = engine.executeQuery(query);
+        final ResultSet result = engine.executeQuery(query);
 
         // Expected: rows from t1 where i is in (1, 2, 3)
         assertEquals(3, result.getRowCount(), "Should return 3 rows");
@@ -115,7 +115,7 @@ public class NestedCorrelatedQueryTest extends BaseDatabaseTest {
         engine.execute("CREATE TABLE t4 (i INTEGER)");
         engine.execute("INSERT INTO t4 VALUES (1)");
 
-        String query = """
+        final String query = """
             SELECT *
             FROM t1
             WHERE EXISTS (
@@ -135,13 +135,13 @@ public class NestedCorrelatedQueryTest extends BaseDatabaseTest {
             )
             """;
 
-        ResultSet result = engine.executeQuery(query);
+        final ResultSet result = engine.executeQuery(query);
 
         // Expected: only i=1
         // t1: 1,2,3,4 -> t2: 1,2,3 -> t3: 1,2 -> t4: 1
         assertEquals(1, result.getRowCount(), "Should return 1 row (i=1)");
 
-        long val = ((Number) result.getRows().get(0).getValues().get(0)).longValue();
+        final long val = ((Number) result.getRows().get(0).getValues().get(0)).longValue();
         assertEquals(1L, val, "Should be i=1");
 
         logger.info("Double nested correlated EXISTS works correctly");
@@ -151,7 +151,7 @@ public class NestedCorrelatedQueryTest extends BaseDatabaseTest {
     public void testNestedExistsDebug() {
         logger.info("Testing nested EXISTS with debug output");
 
-        String query = """
+        final String query = """
             SELECT *
             FROM t1
             WHERE EXISTS (
@@ -166,7 +166,7 @@ public class NestedCorrelatedQueryTest extends BaseDatabaseTest {
             )
             """;
 
-        ResultSet result = engine.executeQuery(query);
+        final ResultSet result = engine.executeQuery(query);
 
         logger.info("Result row count: {}", result.getRowCount());
         for (int i = 0; i < result.getRowCount(); i++) {
@@ -204,26 +204,26 @@ public class NestedCorrelatedQueryTest extends BaseDatabaseTest {
         logger.info("Manual check of nested EXISTS logic");
 
         // Check what's in each table
-        ResultSet t1Data = engine.executeQuery("SELECT * FROM t1 ORDER BY i");
+        final ResultSet t1Data = engine.executeQuery("SELECT * FROM t1 ORDER BY i");
         logger.info("t1 has {} rows", t1Data.getRowCount());
         for (int i = 0; i < t1Data.getRowCount(); i++) {
             logger.info("t1[{}] = {}", i, t1Data.getRows().get(i).getValues().get(0));
         }
 
-        ResultSet t2Data = engine.executeQuery("SELECT * FROM t2 ORDER BY i");
+        final ResultSet t2Data = engine.executeQuery("SELECT * FROM t2 ORDER BY i");
         logger.info("t2 has {} rows", t2Data.getRowCount());
         for (int i = 0; i < t2Data.getRowCount(); i++) {
             logger.info("t2[{}] = {}", i, t2Data.getRows().get(i).getValues().get(0));
         }
 
-        ResultSet t3Data = engine.executeQuery("SELECT * FROM t3 ORDER BY i");
+        final ResultSet t3Data = engine.executeQuery("SELECT * FROM t3 ORDER BY i");
         logger.info("t3 has {} rows", t3Data.getRowCount());
         for (int i = 0; i < t3Data.getRowCount(); i++) {
             logger.info("t3[{}] = {}", i, t3Data.getRows().get(i).getValues().get(0));
         }
 
         // Now test the nested query
-        String query = """
+        final String query = """
             SELECT *
             FROM t1
             WHERE EXISTS (
@@ -238,7 +238,7 @@ public class NestedCorrelatedQueryTest extends BaseDatabaseTest {
             )
             """;
 
-        ResultSet result = engine.executeQuery(query);
+        final ResultSet result = engine.executeQuery(query);
         logger.info("Query result has {} rows", result.getRowCount());
         for (int i = 0; i < result.getRowCount(); i++) {
             logger.info("result[{}] = {}", i, result.getRows().get(i).getValues().get(0));

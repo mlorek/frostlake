@@ -36,9 +36,15 @@ public class TryToDate extends BuiltInFunction {
                 + ")] for parameter 'TO_DATE'");
         }
         final String format = args.size() >= 2 && args.get(1) != null ? args.get(1).toString() : null;
-        try { return SharedFunctionHelpers.parseDateWithFormat(args.get(0), format); } catch (final Exception e) { return null; }
+        try {
+            return SharedFunctionHelpers.parseDateWithFormat(args.get(0), format);
+        } catch (final Exception e) {
+            return null;
+        }
     }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return 2; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return 2; }
 }

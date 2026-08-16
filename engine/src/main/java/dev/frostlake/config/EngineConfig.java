@@ -53,6 +53,7 @@ public class EngineConfig {
     public static final String PROP_CONSTRAINTS_ENFORCE_UNIQUE_KEY = "constraints.enforce.uniqueKey";
     public static final String PROP_CONSTRAINTS_ENFORCE_TYPES = "constraints.enforce.types";
     public static final String PROP_TIME_TRAVEL_ENABLED = "timeTravel.enabled";
+    public static final String PROP_EXECUTION_WINDOW_FRAME_VECTORS = "execution.window.frameVectors";
     public static final String PROP_TRANSACTION_DEFERRED_APPLY = "transaction.deferredApply";
     public static final String PROP_COMMAND_REMOVE_ENABLED = "command.removeEnabled";
     public static final String PROP_DEFAULT_USER = "default.user";
@@ -69,6 +70,8 @@ public class EngineConfig {
     public static final String PROP_QUERY_HISTORY_SIZE = "query.history.size";
     public static final String PROP_QUERY_RESULT_CACHE_SIZE = "query.result.cache.size";
     public static final String PROP_STAGE_S3_LOCAL_ROOT = "stage.s3.localRoot";
+    /** Opt-in for {@code file://} (and bare local-path) stage URLs, which a real account refuses. */
+    public static final String PROP_STAGE_FILE_URL_ENABLED = "stage.file.urlEnabled";
     public static final String PROP_STAGE_S3_LOCAL_MAPPINGS = "stage.s3.localMappings";
     public static final String PROP_STAGE_INTERNAL_LOCAL_ROOT = "stage.internal.localRoot";
     public static final String PROP_PYTHON_VENV = "python.venv";
@@ -200,7 +203,7 @@ public class EngineConfig {
         }
 
         // Try to load from user home directory (overrides classpath)
-        Path userConfigPath = Paths.get(USER_CONFIG_FILE);
+        final Path userConfigPath = Paths.get(USER_CONFIG_FILE);
         if (Files.exists(userConfigPath)) {
             loadConfigurationFromFile(USER_CONFIG_FILE);
         }
@@ -279,12 +282,32 @@ public class EngineConfig {
     }
 
     /**
+     * When true (the default), window functions evaluate their argument once per partition row into
+     * a per-batch vector and every output row's frame reads that vector — instead of re-evaluating
+     * the argument for each frame row, which makes a running frame quadratic in expression walks.
+     * Only volatile-free argument shapes are vectorized (anything else keeps the row path); set
+     * false to force the per-frame-row path everywhere.
+     */
+    public boolean isWindowFrameVectorsEnabled() {
+        return getBooleanProperty(PROP_EXECUTION_WINDOW_FRAME_VECTORS, true);
+    }
+
+    /**
      * When true (the default), DML buffers into a per-transaction write set and applies it on COMMIT
      * (deferred apply), giving real atomicity + READ COMMITTED across INSERT/UPDATE/DELETE/MERGE. Set to
      * false to use the legacy immediate-apply + undo-log path. See docs/acid-snowflake-plan.md.
      */
     public boolean isDeferredApply() {
         return getBooleanProperty(PROP_TRANSACTION_DEFERRED_APPLY, true);
+    }
+
+    /**
+     * When true, {@code CREATE STAGE} accepts {@code file://} (and bare local-path) URLs backed by
+     * the local filesystem — the local-development affordance. Off by default: a real account
+     * refuses those URLs, and the default surface matches it.
+     */
+    public boolean isStageFileUrlEnabled() {
+        return getBooleanProperty(PROP_STAGE_FILE_URL_ENABLED, false);
     }
 
     /**
@@ -419,7 +442,7 @@ public class EngineConfig {
     }
 
     public int getIntProperty(final String key, final int defaultValue) {
-        String value = properties.getProperty(key);
+        final String value = properties.getProperty(key);
         if (value != null) {
             try {
                 return Integer.parseInt(value.trim());
@@ -431,7 +454,7 @@ public class EngineConfig {
     }
 
     public boolean getBooleanProperty(final String key, final boolean defaultValue) {
-        String value = properties.getProperty(key);
+        final String value = properties.getProperty(key);
         if (value != null) {
             return Boolean.parseBoolean(value.trim());
         }

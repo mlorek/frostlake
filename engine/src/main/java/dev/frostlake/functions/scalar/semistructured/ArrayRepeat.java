@@ -18,10 +18,10 @@ package dev.frostlake.functions.scalar.semistructured;
 
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
-import tools.jackson.databind.JsonNode;
-import java.util.List;
 import dev.frostlake.types.ArrayType;
 import dev.frostlake.values.VariantValue;
+import java.util.List;
+import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.node.ArrayNode;
 
 /** ARRAY_REPEAT(value, n) — an array of n copies of the value. */
@@ -42,6 +42,8 @@ public class ArrayRepeat extends BuiltInFunction {
         return VariantValue.ofNode(result);
     }
 
-    @Override public int getMinArgCount() { return 2; }
-    @Override public int getMaxArgCount() { return 2; }
+    @Override
+    public int getMinArgCount() { return 2; }
+    @Override
+    public int getMaxArgCount() { return 2; }
 }

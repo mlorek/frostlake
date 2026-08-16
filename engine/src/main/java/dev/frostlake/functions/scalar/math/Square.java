@@ -27,10 +27,12 @@ public class Square extends NumericArgumentFunction {
     @Override
     public Object evaluate(final List<Object> args) {
         if (args.get(0) == null) return null;
-        double v = ((Number) args.get(0)).doubleValue();
+        final double v = ((Number) args.get(0)).doubleValue();
         return v * v;
     }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return 1; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return 1; }
 }

@@ -16,40 +16,62 @@
 
 package dev.frostlake.features;
 
-import dev.frostlake.DatabaseEngine;
+import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.metastore.model.DynamicTable;
+import dev.frostlake.metastore.model.Initialize;
 import dev.frostlake.storage.ResultSet;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
-public class DynamicTableTest {
+/**
+ * DYNAMIC TABLE DDL, asserted through the SQL surface — {@code SHOW DYNAMIC TABLES} cells
+ * (target_lag, refresh_mode, scheduling_state ACTIVE/SUSPENDED, warehouse, comment) and
+ * {@code DESCRIBE DYNAMIC TABLE} — so every check runs against whichever engine executed the DDL,
+ * embedded or live. The three cells with no SQL read surface yet (INITIALIZE, data retention days,
+ * last-refresh time) are asserted embedded-only, each with its reason.
+ */
+public class DynamicTableTest extends BaseDatabaseTest {
 
     private static final Logger logger = LoggerFactory.getLogger(DynamicTableTest.class);
-    private DatabaseEngine engine;
 
-    @BeforeEach
-    public void setUp() {
-        engine = new DatabaseEngine();
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
-        engine.execute("USE SCHEMA public");
-        engine.execute("CREATE WAREHOUSE wh1");
+    private static final String NO_SQL_SURFACE =
+        "this dynamic-table property has no SQL read surface yet (not a SHOW DYNAMIC TABLES cell), "
+        + "so it is asserted off the model, embedded only";
+
+    @Override
+    protected void setupTest() {
+        engine.execute("CREATE WAREHOUSE IF NOT EXISTS wh1 WITH WAREHOUSE_SIZE = 'XSMALL' "
+            + "AUTO_SUSPEND = 60 INITIALLY_SUSPENDED = TRUE");
         engine.execute("CREATE TABLE source (id INTEGER, val DOUBLE)");
         engine.execute("INSERT INTO source VALUES (1, 10.0), (2, 20.0), (3, 30.0)");
     }
 
-    @AfterEach
-    public void tearDown() {
-        if (engine != null) engine.shutdown();
+    @Override
+    protected void teardownTest() {
+        engine.execute("DROP WAREHOUSE IF EXISTS wh1");
+        engine.execute("DROP WAREHOUSE IF EXISTS wh2");
     }
 
     private DynamicTable getDt(final String name) {
-        return engine.getCatalog().getDatabase("TEST_DB").getSchema("PUBLIC").getDynamicTable(name);
+        return engine.getCatalog().getDatabase("TEST_DB").getSchema("TEST_SCHEMA").getDynamicTable(name);
+    }
+
+    private String dtCell(final String name, final String column) {
+        final ResultSet tables = engine.executeQuery("SHOW DYNAMIC TABLES LIKE '" + name + "'");
+        return cell(tables, soleRowWhere(tables, "name", name.toUpperCase()), column);
+    }
+
+    private int dtCount(final String name) {
+        return engine.executeQuery("SHOW DYNAMIC TABLES LIKE '" + name + "'").getRowCount();
     }
 
     // ── CREATE ────────────────────────────────────────────────────────────────
@@ -62,14 +84,13 @@ public class DynamicTableTest {
                 WAREHOUSE = wh1
                 AS SELECT id, val FROM source
             """);
-        DynamicTable dt = getDt("SALES_AGG");
-        assertNotNull(dt);
-        assertEquals("SALES_AGG", dt.getName());
-        assertEquals("1 minutes", dt.getTargetLag());
-        assertEquals("WH1", dt.getWarehouse());
-        assertEquals(DynamicTable.RefreshMode.AUTO, dt.getRefreshMode());
-        assertEquals(DynamicTable.State.RUNNING, dt.getState());
-        logger.info("Created basic dynamic table: {}", dt.getName());
+        // The lag is canonicalized ('1 minutes' reads back singular) and an AUTO-configured
+        // table reports its RESOLVED refresh mode, both live-verified.
+        assertEquals("1 minute", dtCell("sales_agg", "target_lag"));
+        assertEquals("WH1", dtCell("sales_agg", "warehouse"));
+        assertEquals("INCREMENTAL", dtCell("sales_agg", "refresh_mode"));
+        assertEquals("ACTIVE", dtCell("sales_agg", "scheduling_state"));
+        logger.info("Created basic dynamic table");
     }
 
     @Test
@@ -81,15 +102,15 @@ public class DynamicTableTest {
                 REFRESH_MODE = FULL
                 INITIALIZE = ON_SCHEDULE
                 DATA_RETENTION_TIME_IN_DAYS = 7
-                AS SELECT * FROM source
                 COMMENT = 'full options test'
+                AS SELECT * FROM source
             """);
-        DynamicTable dt = getDt("FULL_OPTS");
-        assertEquals("5 minutes", dt.getTargetLag());
-        assertEquals(DynamicTable.RefreshMode.FULL, dt.getRefreshMode());
-        assertEquals(DynamicTable.Initialize.ON_SCHEDULE, dt.getInitialize());
-        assertEquals(7, dt.getDataRetentionDays());
-        assertEquals("full options test", dt.getComment());
+        assertEquals("5 minutes", dtCell("full_opts", "target_lag"));
+        assertEquals("FULL", dtCell("full_opts", "refresh_mode"));
+        assertEquals("full options test", dtCell("full_opts", "comment"));
+        Assumptions.assumeFalse(isLiveSnowflake(), NO_SQL_SURFACE);
+        assertEquals(Initialize.ON_SCHEDULE, getDt("FULL_OPTS").getInitialize());
+        assertEquals(7, getDt("FULL_OPTS").getDataRetentionDays());
     }
 
     @Test
@@ -100,36 +121,74 @@ public class DynamicTableTest {
                 WAREHOUSE = wh1
                 AS SELECT id FROM source
             """);
-        DynamicTable dt = getDt("DOWNSTREAM_DT");
-        assertEquals("DOWNSTREAM", dt.getTargetLag());
+        assertEquals("DOWNSTREAM", dtCell("downstream_dt", "target_lag"));
     }
 
     @Test
     public void testCreateDynamicTableIncrementalMode() {
         engine.execute("""
             CREATE DYNAMIC TABLE incr_dt
-                TARGET_LAG = '30 seconds'
+                TARGET_LAG = '2 minutes'
                 WAREHOUSE = wh1
                 REFRESH_MODE = INCREMENTAL
                 AS SELECT * FROM source
             """);
-        assertEquals(DynamicTable.RefreshMode.INCREMENTAL, getDt("INCR_DT").getRefreshMode());
+        assertEquals("INCREMENTAL", dtCell("incr_dt", "refresh_mode"));
+    }
+
+    @Test
+    public void testSubMinuteTargetLagIsRefused() {
+        // Lags under sixty seconds are refused outright, quoting the input (live-verified).
+        final RuntimeException e = assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.execute("CREATE DYNAMIC TABLE too_fast TARGET_LAG = '30 seconds' WAREHOUSE = wh1 AS SELECT id FROM source");
+            }
+        });
+        assertTrue(e.getMessage().contains(
+            "Invalid TARGET_LAG value '30 seconds'. Dynamic Tables do not support lag values under 60 second(s)."),
+            e.getMessage());
+        assertEquals(0, dtCount("too_fast"));
+    }
+
+    @Test
+    public void testTargetLagIsCanonicalized() {
+        // The stored lag is a canonical decomposition, not the input echo (live-verified).
+        engine.execute("CREATE DYNAMIC TABLE lag_canon TARGET_LAG = '90 seconds' WAREHOUSE = wh1 AS SELECT id FROM source");
+        assertEquals("1 minute, 30 seconds", dtCell("lag_canon", "target_lag"));
+    }
+
+    @Test
+    public void testTrailingCommentAfterQueryIsRefused() {
+        // COMMENT is one of the pre-AS options; after the query it is a syntax error (live-verified).
+        final RuntimeException e = assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.execute("CREATE DYNAMIC TABLE trail_dt TARGET_LAG = '1 minute' WAREHOUSE = wh1 "
+                    + "AS SELECT id FROM source COMMENT = 'late'");
+            }
+        });
+        assertTrue(e.getMessage().toLowerCase().contains("syntax error"), e.getMessage());
     }
 
     @Test
     public void testCreateOrReplaceDynamicTable() {
         engine.execute("CREATE DYNAMIC TABLE replace_dt TARGET_LAG = '1 minutes' WAREHOUSE = wh1 AS SELECT id FROM source");
         engine.execute("CREATE OR REPLACE DYNAMIC TABLE replace_dt TARGET_LAG = '5 minutes' WAREHOUSE = wh1 AS SELECT val FROM source");
-        assertEquals("5 minutes", getDt("REPLACE_DT").getTargetLag());
+        assertEquals("5 minutes", dtCell("replace_dt", "target_lag"));
     }
 
     @Test
     public void testCreateDynamicTableIfNotExists() {
         engine.execute("CREATE DYNAMIC TABLE ine_dt TARGET_LAG = '1 minutes' WAREHOUSE = wh1 AS SELECT id FROM source");
-        assertDoesNotThrow(() ->
-            engine.execute("CREATE DYNAMIC TABLE IF NOT EXISTS ine_dt TARGET_LAG = '2 minutes' WAREHOUSE = wh1 AS SELECT id FROM source"));
+        assertDoesNotThrow(new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                engine.execute("CREATE DYNAMIC TABLE IF NOT EXISTS ine_dt TARGET_LAG = '2 minutes' WAREHOUSE = wh1 AS SELECT id FROM source");
+            }
+        });
         // Original should not be overwritten
-        assertEquals("1 minutes", getDt("INE_DT").getTargetLag());
+        assertEquals("1 minute", dtCell("ine_dt", "target_lag"));
     }
 
     // ── DROP ──────────────────────────────────────────────────────────────────
@@ -138,12 +197,17 @@ public class DynamicTableTest {
     public void testDropDynamicTable() {
         engine.execute("CREATE DYNAMIC TABLE drop_me TARGET_LAG = '1 minutes' WAREHOUSE = wh1 AS SELECT id FROM source");
         engine.execute("DROP DYNAMIC TABLE drop_me");
-        assertThrows(RuntimeException.class, () -> getDt("DROP_ME"));
+        assertEquals(0, dtCount("drop_me"));
     }
 
     @Test
     public void testDropDynamicTableIfExists() {
-        assertDoesNotThrow(() -> engine.execute("DROP DYNAMIC TABLE IF EXISTS nonexistent_dt"));
+        assertDoesNotThrow(new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                engine.execute("DROP DYNAMIC TABLE IF EXISTS nonexistent_dt");
+            }
+        });
     }
 
     // ── ALTER ─────────────────────────────────────────────────────────────────
@@ -152,9 +216,7 @@ public class DynamicTableTest {
     public void testAlterSuspend() {
         engine.execute("CREATE DYNAMIC TABLE sus_dt TARGET_LAG = '1 minutes' WAREHOUSE = wh1 AS SELECT id FROM source");
         engine.execute("ALTER DYNAMIC TABLE sus_dt SUSPEND");
-        DynamicTable dt = getDt("SUS_DT");
-        assertEquals(DynamicTable.State.SUSPENDED, dt.getState());
-        assertTrue(dt.isSuspended());
+        assertEquals("SUSPENDED", dtCell("sus_dt", "scheduling_state"));
     }
 
     @Test
@@ -162,14 +224,14 @@ public class DynamicTableTest {
         engine.execute("CREATE DYNAMIC TABLE res_dt TARGET_LAG = '1 minutes' WAREHOUSE = wh1 AS SELECT id FROM source");
         engine.execute("ALTER DYNAMIC TABLE res_dt SUSPEND");
         engine.execute("ALTER DYNAMIC TABLE res_dt RESUME");
-        assertEquals(DynamicTable.State.RUNNING, getDt("RES_DT").getState());
-        assertFalse(getDt("RES_DT").isSuspended());
+        assertEquals("ACTIVE", dtCell("res_dt", "scheduling_state"));
     }
 
     @Test
     public void testAlterRefresh() {
         engine.execute("CREATE DYNAMIC TABLE ref_dt TARGET_LAG = '1 minutes' WAREHOUSE = wh1 AS SELECT id FROM source");
         engine.execute("ALTER DYNAMIC TABLE ref_dt REFRESH");
+        Assumptions.assumeFalse(isLiveSnowflake(), NO_SQL_SURFACE);
         assertNotNull(getDt("REF_DT").getLastRefreshedTime());
     }
 
@@ -177,42 +239,51 @@ public class DynamicTableTest {
     public void testAlterSetTargetLag() {
         engine.execute("CREATE DYNAMIC TABLE lag_dt TARGET_LAG = '1 minutes' WAREHOUSE = wh1 AS SELECT id FROM source");
         engine.execute("ALTER DYNAMIC TABLE lag_dt SET TARGET_LAG = '10 minutes'");
-        assertEquals("10 minutes", getDt("LAG_DT").getTargetLag());
+        assertEquals("10 minutes", dtCell("lag_dt", "target_lag"));
     }
 
     @Test
     public void testAlterSetWarehouse() {
-        engine.execute("CREATE WAREHOUSE wh2");
+        engine.execute("CREATE WAREHOUSE IF NOT EXISTS wh2 WITH WAREHOUSE_SIZE = 'XSMALL' "
+            + "AUTO_SUSPEND = 60 INITIALLY_SUSPENDED = TRUE");
         engine.execute("CREATE DYNAMIC TABLE wh_dt TARGET_LAG = '1 minutes' WAREHOUSE = wh1 AS SELECT id FROM source");
         engine.execute("ALTER DYNAMIC TABLE wh_dt SET WAREHOUSE = wh2");
-        assertEquals("WH2", getDt("WH_DT").getWarehouse());
+        assertEquals("WH2", dtCell("wh_dt", "warehouse"));
     }
 
     @Test
     public void testAlterSetComment() {
         engine.execute("CREATE DYNAMIC TABLE cmt_dt TARGET_LAG = '1 minutes' WAREHOUSE = wh1 AS SELECT id FROM source");
         engine.execute("ALTER DYNAMIC TABLE cmt_dt SET COMMENT = 'updated comment'");
-        assertEquals("updated comment", getDt("CMT_DT").getComment());
+        assertEquals("updated comment", dtCell("cmt_dt", "comment"));
     }
 
     @Test
     public void testAlterSetDownstream() {
         engine.execute("CREATE DYNAMIC TABLE ds_dt TARGET_LAG = '1 minutes' WAREHOUSE = wh1 AS SELECT id FROM source");
         engine.execute("ALTER DYNAMIC TABLE ds_dt SET TARGET_LAG = DOWNSTREAM");
-        assertEquals("DOWNSTREAM", getDt("DS_DT").getTargetLag());
+        assertEquals("DOWNSTREAM", dtCell("ds_dt", "target_lag"));
     }
 
     @Test
-    public void testAlterSetRefreshMode() {
+    public void testAlterSetRefreshModeIsRefused() {
+        // The refresh mode is fixed at creation; ALTER refuses the property (live-verified).
         engine.execute("CREATE DYNAMIC TABLE rm_dt TARGET_LAG = '1 minutes' WAREHOUSE = wh1 AS SELECT id FROM source");
-        engine.execute("ALTER DYNAMIC TABLE rm_dt SET REFRESH_MODE = INCREMENTAL");
-        assertEquals(DynamicTable.RefreshMode.INCREMENTAL, getDt("RM_DT").getRefreshMode());
+        final RuntimeException e = assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.execute("ALTER DYNAMIC TABLE rm_dt SET REFRESH_MODE = INCREMENTAL");
+            }
+        });
+        assertTrue(e.getMessage().contains("invalid property 'REFRESH_MODE' for 'DYNAMIC_TABLE'"),
+            e.getMessage());
     }
 
     @Test
     public void testAlterSetDataRetention() {
         engine.execute("CREATE DYNAMIC TABLE dr_dt TARGET_LAG = '1 minutes' WAREHOUSE = wh1 AS SELECT id FROM source");
         engine.execute("ALTER DYNAMIC TABLE dr_dt SET DATA_RETENTION_TIME_IN_DAYS = 5");
+        Assumptions.assumeFalse(isLiveSnowflake(), NO_SQL_SURFACE);
         assertEquals(5, getDt("DR_DT").getDataRetentionDays());
     }
 
@@ -222,19 +293,20 @@ public class DynamicTableTest {
     public void testShowDynamicTables() {
         engine.execute("CREATE DYNAMIC TABLE show_dt1 TARGET_LAG = '1 minutes' WAREHOUSE = wh1 AS SELECT id FROM source");
         engine.execute("CREATE DYNAMIC TABLE show_dt2 TARGET_LAG = '2 minutes' WAREHOUSE = wh1 AS SELECT val FROM source");
-        ResultSet rs = engine.executeQuery("SHOW DYNAMIC TABLES");
+        final ResultSet rs = engine.executeQuery("SHOW DYNAMIC TABLES");
         assertNotNull(rs);
         assertEquals(2, rs.getRowCount());
         assertNotNull(rs.getColumnIndex("name"));
         assertNotNull(rs.getColumnIndex("target_lag"));
         assertNotNull(rs.getColumnIndex("scheduling_state"));
         assertNotNull(rs.getColumnIndex("warehouse"));
-        assertNotNull(rs.getColumnIndex("query"));
+        // The definition column is named text, never query (live-verified).
+        assertNotNull(rs.getColumnIndex("text"));
     }
 
     @Test
     public void testShowDynamicTablesEmpty() {
-        ResultSet rs = engine.executeQuery("SHOW DYNAMIC TABLES");
+        final ResultSet rs = engine.executeQuery("SHOW DYNAMIC TABLES");
         assertNotNull(rs);
         assertEquals(0, rs.getRowCount());
     }
@@ -243,8 +315,8 @@ public class DynamicTableTest {
     public void testShowDynamicTablesReflectsState() {
         engine.execute("CREATE DYNAMIC TABLE state_dt TARGET_LAG = '1 minutes' WAREHOUSE = wh1 AS SELECT id FROM source");
         engine.execute("ALTER DYNAMIC TABLE state_dt SUSPEND");
-        ResultSet rs = engine.executeQuery("SHOW DYNAMIC TABLES");
-        int schedIdx = rs.getColumnIndex("scheduling_state");
+        final ResultSet rs = engine.executeQuery("SHOW DYNAMIC TABLES");
+        final int schedIdx = rs.getColumnIndex("scheduling_state");
         assertEquals("SUSPENDED", rs.getRows().get(0).getValue(schedIdx).toString().toUpperCase());
     }
 
@@ -252,19 +324,13 @@ public class DynamicTableTest {
 
     @Test
     public void testDescribeDynamicTable() {
+        // DESCRIBE DYNAMIC TABLE answers the COLUMN list, exactly as DESCRIBE TABLE does
+        // (live-verified) — never property/value rows.
         engine.execute("CREATE DYNAMIC TABLE desc_dt TARGET_LAG = '3 minutes' WAREHOUSE = wh1 AS SELECT id, val FROM source");
-        ResultSet rs = engine.executeQuery("DESCRIBE DYNAMIC TABLE desc_dt");
-        assertNotNull(rs);
-        assertTrue(rs.getRowCount() > 0);
-        // Check that name and target_lag are present as properties
-        boolean foundName = false, foundLag = false;
-        for (int i = 0; i < rs.getRowCount(); i++) {
-            String prop = rs.getRows().get(i).getValue(0).toString();
-            if ("name".equals(prop)) foundName = true;
-            if ("target_lag".equals(prop)) foundLag = true;
-        }
-        assertTrue(foundName, "DESCRIBE should include 'name' property");
-        assertTrue(foundLag, "DESCRIBE should include 'target_lag' property");
+        final ResultSet rs = engine.executeQuery("DESCRIBE DYNAMIC TABLE desc_dt");
+        assertEquals(2, rs.getRowCount());
+        assertEquals("COLUMN", cell(rs, soleRowWhere(rs, "name", "ID"), "kind"));
+        assertEquals("COLUMN", cell(rs, soleRowWhere(rs, "name", "VAL"), "kind"));
     }
 
     // ── SHOW OBJECTS ──────────────────────────────────────────────────────────
@@ -272,10 +338,10 @@ public class DynamicTableTest {
     @Test
     public void testDynamicTableAppearsInShowObjects() {
         engine.execute("CREATE DYNAMIC TABLE obj_dt TARGET_LAG = '1 minutes' WAREHOUSE = wh1 AS SELECT id FROM source");
-        ResultSet rs = engine.executeQuery("SHOW OBJECTS");
-        int nameIdx = rs.getColumnIndex("name");
-        int kindIdx = rs.getColumnIndex("kind");
-        int dynamicIdx = rs.getColumnIndex("is_dynamic");
+        final ResultSet rs = engine.executeQuery("SHOW OBJECTS");
+        final int nameIdx = rs.getColumnIndex("name");
+        final int kindIdx = rs.getColumnIndex("kind");
+        final int dynamicIdx = rs.getColumnIndex("is_dynamic");
         boolean found = false;
         for (int i = 0; i < rs.getRowCount(); i++) {
             // A dynamic table is a TABLE here; is_dynamic is what distinguishes it.
@@ -294,6 +360,11 @@ public class DynamicTableTest {
     public void testDynamicTablesViewExistsInInformationSchema() {
         // INFORMATION_SCHEMA.DYNAMIC_TABLES view should be registered
         // Verify by using SHOW DYNAMIC TABLES (avoids keyword parsing issue)
-        assertDoesNotThrow(() -> engine.executeQuery("SHOW DYNAMIC TABLES"));
+        assertDoesNotThrow(new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                engine.executeQuery("SHOW DYNAMIC TABLES");
+            }
+        });
     }
 }

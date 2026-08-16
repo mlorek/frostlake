@@ -31,11 +31,13 @@ public class NextDay extends BuiltInFunction {
     @Override
     public Object evaluate(final List<Object> args) {
         if (args.get(0) == null || args.get(1) == null) return null;
-        LocalDate d = SharedFunctionHelpers.toLocalDate(args.get(0));
-        DayOfWeek dow = SharedFunctionHelpers.parseDayOfWeek(args.get(1).toString());
+        final LocalDate d = SharedFunctionHelpers.toLocalDate(args.get(0));
+        final DayOfWeek dow = SharedFunctionHelpers.parseDayOfWeek(args.get(1).toString());
         return d.with(TemporalAdjusters.next(dow));
     }
 
-    @Override public int getMinArgCount() { return 2; }
-    @Override public int getMaxArgCount() { return 2; }
+    @Override
+    public int getMinArgCount() { return 2; }
+    @Override
+    public int getMaxArgCount() { return 2; }
 }

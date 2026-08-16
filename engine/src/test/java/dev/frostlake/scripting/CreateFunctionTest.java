@@ -16,171 +16,86 @@
 
 package dev.frostlake.scripting;
 
-import dev.frostlake.DatabaseEngine;
-import dev.frostlake.metastore.model.Function;
-import dev.frostlake.metastore.model.Schema;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
+import dev.frostlake.BaseDatabaseTest;
+import dev.frostlake.storage.ResultSet;
+
 import org.junit.jupiter.api.Test;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 
-public class CreateFunctionTest {
+/**
+ * CREATE FUNCTION for SQL UDFs, asserted through SQL — the function is INVOKED and its results
+ * checked, and existence is read back through {@code SHOW USER FUNCTIONS LIKE} — never through
+ * engine internals, so the same assertions hold against a live account.
+ */
+public class CreateFunctionTest extends BaseDatabaseTest {
 
-    private DatabaseEngine engine;
-
-    @BeforeEach
-    public void setUp() {
-        engine = new DatabaseEngine();
+    private Object scalar(final String sql) {
+        final ResultSet rs = engine.executeQuery(sql);
+        assertEquals(1, rs.getRowCount(), "expected one row from: " + sql);
+        return rs.getRows().get(0).getValue(0);
     }
 
-    @AfterEach
-    public void tearDown() {
-        engine.shutdown();
+    private int shown(final String name) {
+        return engine.executeQuery("SHOW USER FUNCTIONS LIKE '" + name + "'").getRowCount();
     }
 
     @Test
     public void testCreateSimpleFunction() {
-        // Setup
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
-        engine.execute("USE SCHEMA PUBLIC");
-
-        // Create a simple scalar function
         engine.execute("CREATE FUNCTION add_numbers(x INTEGER, y INTEGER) RETURNS INTEGER AS 'x + y'");
-
-        // Verify function was created
-        Schema schema = engine.getCatalog().getDatabase("TEST_DB").getSchema("PUBLIC");
-        Function func = schema.getFunction("add_numbers");
-
-        assertNotNull(func, "Function should be created");
-        assertEquals("ADD_NUMBERS", func.getName());
-        assertEquals(2, func.getParameters().size());
-        assertEquals("X", func.getParameters().get(0).getName());
-        assertEquals("Y", func.getParameters().get(1).getName());
-        assertFalse(func.isTableFunction(), "Should be scalar function");
-        assertEquals("x + y", func.getBody());
+        assertEquals(1, shown("add_numbers"));
+        assertEquals(5L, ((Number) scalar("SELECT add_numbers(2, 3)")).longValue());
     }
 
     @Test
     public void testCreateFunctionWithNoParameters() {
-        // Setup
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
-        engine.execute("USE SCHEMA PUBLIC");
-
-        // Create a function with no parameters
-        engine.execute("CREATE FUNCTION get_pi() RETURNS FLOAT AS '3.14159'");
-
-        // Verify function was created
-        Schema schema = engine.getCatalog().getDatabase("TEST_DB").getSchema("PUBLIC");
-        Function func = schema.getFunction("get_pi");
-
-        assertNotNull(func, "Function should be created");
-        assertEquals("GET_PI", func.getName());
-        assertEquals(0, func.getParameters().size());
-        assertFalse(func.isTableFunction(), "Should be scalar function");
-        assertEquals("3.14159", func.getBody());
+        engine.execute("CREATE FUNCTION get_pi() RETURNS FLOAT AS '3.14159::FLOAT'");
+        assertEquals(1, shown("get_pi"));
+        assertEquals(3.14159, ((Number) scalar("SELECT get_pi()")).doubleValue(), 1e-9);
     }
 
     @Test
     public void testCreateFunctionWithQualifiedName() {
-        // Setup
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
         engine.execute("CREATE SCHEMA my_schema");
-
-        // Create function with schema-qualified name
+        engine.execute("USE SCHEMA test_schema");
         engine.execute("CREATE FUNCTION my_schema.multiply(a INTEGER, b INTEGER) RETURNS INTEGER AS 'a * b'");
-
-        // Verify function was created in correct schema
-        Schema schema = engine.getCatalog().getDatabase("TEST_DB").getSchema("MY_SCHEMA");
-        Function func = schema.getFunction("multiply");
-
-        assertNotNull(func, "Function should be created");
-        assertEquals("MULTIPLY", func.getName());
-        assertEquals(2, func.getParameters().size());
-        assertEquals("a * b", func.getBody());
+        assertEquals(42L, ((Number) scalar("SELECT my_schema.multiply(6, 7)")).longValue());
     }
 
     @Test
     public void testCreateTableFunction() {
-        // Setup
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
-        engine.execute("USE SCHEMA PUBLIC");
-
-        // Create a table function
         engine.execute("CREATE FUNCTION get_values() RETURNS TABLE(id INTEGER, name VARCHAR) AS 'SELECT 1, ''test'''");
-
-        // Verify function was created
-        Schema schema = engine.getCatalog().getDatabase("TEST_DB").getSchema("PUBLIC");
-        Function func = schema.getFunction("get_values");
-
-        assertNotNull(func, "Function should be created");
-        assertEquals("GET_VALUES", func.getName());
-        assertTrue(func.isTableFunction(), "Should be table function");
-        assertEquals("SELECT 1, 'test'", func.getBody());
+        final ResultSet rs = engine.executeQuery("SELECT * FROM TABLE(get_values())");
+        assertEquals(1, rs.getRowCount());
+        // The output columns carry the RETURNS TABLE names, not generated ones.
+        assertEquals("ID", rs.getColumns().get(0).getName());
+        assertEquals("NAME", rs.getColumns().get(1).getName());
+        assertEquals(1L, ((Number) rs.getRows().get(0).getValue(0)).longValue());
+        assertEquals("test", rs.getRows().get(0).getValue(1));
     }
 
     @Test
-    public void testCreateFunctionWithVarcharParameter() {
-        // Setup
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
-        engine.execute("USE SCHEMA PUBLIC");
-
-        // Create function with VARCHAR parameter
+    public void testCreateFunctionWithSingleParameter() {
         engine.execute("CREATE FUNCTION double_val(x INTEGER) RETURNS INTEGER AS 'x * 2'");
-
-        // Verify function was created
-        Schema schema = engine.getCatalog().getDatabase("TEST_DB").getSchema("PUBLIC");
-        Function func = schema.getFunction("double_val");
-
-        assertNotNull(func, "Function should be created");
-        assertEquals("DOUBLE_VAL", func.getName());
-        assertEquals(1, func.getParameters().size());
-        assertEquals("X", func.getParameters().get(0).getName());
-        assertEquals("x * 2", func.getBody());
+        assertEquals(1, shown("double_val"));
+        assertEquals(42L, ((Number) scalar("SELECT double_val(21)")).longValue());
     }
 
     @Test
     public void testDropFunctionExists() {
-        // Setup
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
-        engine.execute("USE SCHEMA PUBLIC");
-
-        // Create and then drop function
         engine.execute("CREATE FUNCTION test_func(x INTEGER) RETURNS INTEGER AS 'x * 2'");
-
-        Schema schema = engine.getCatalog().getDatabase("TEST_DB").getSchema("PUBLIC");
-        assertNotNull(schema.getFunction("test_func"), "Function should exist");
-
+        assertEquals(1, shown("test_func"));
         engine.execute("DROP FUNCTION test_func(INTEGER)");
-
-        // Verify function was dropped
-        RuntimeException exception = assertThrows(RuntimeException.class, () -> {
-            schema.getFunction("test_func");
-        });
-        assertTrue(exception.getMessage().contains("does not exist"));
+        assertEquals(0, shown("test_func"));
     }
 
     @Test
     public void testShowFunctions() {
-        // Setup
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
-        engine.execute("USE SCHEMA PUBLIC");
-
-        // Create multiple functions
         engine.execute("CREATE FUNCTION func1(x INTEGER) RETURNS INTEGER AS 'x'");
         engine.execute("CREATE FUNCTION func2(x INTEGER, y INTEGER) RETURNS INTEGER AS 'x + y'");
-
-        // Show functions
-        var result = engine.showFunctions();
-
-        assertNotNull(result);
-        assertEquals(2, result.getRowCount());
+        assertEquals(1, shown("func1"));
+        assertEquals(1, shown("func2"));
+        assertNotNull(engine.executeQuery("SHOW USER FUNCTIONS"));
     }
 }

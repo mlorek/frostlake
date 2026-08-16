@@ -17,13 +17,12 @@
 package dev.frostlake.stream;
 
 import dev.frostlake.BaseJdbcTest;
-import org.junit.jupiter.api.Test;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 import java.sql.ResultSet;
 import java.sql.SQLException;
-
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -42,10 +41,10 @@ public class StreamOnViewTest extends BaseJdbcTest {
         statement.execute("CREATE VIEW active_users AS SELECT id, name FROM users WHERE age >= 25");
         statement.execute("CREATE STREAM user_stream ON VIEW active_users");
 
-        ResultSet rs = statement.executeQuery("SHOW STREAMS");
+        final ResultSet rs = statement.executeQuery("SHOW STREAMS");
         boolean found = false;
         while (rs.next()) {
-            String name = rs.getString("name");
+            final String name = rs.getString("name");
             if ("USER_STREAM".equals(name)) {
                 found = true;
                 break;
@@ -62,10 +61,10 @@ public class StreamOnViewTest extends BaseJdbcTest {
         statement.execute("CREATE VIEW expensive_products AS SELECT * FROM products WHERE price > 100");
         statement.execute("CREATE STREAM product_stream ON VIEW expensive_products APPEND_ONLY = TRUE");
 
-        ResultSet rs = statement.executeQuery("SHOW STREAMS");
+        final ResultSet rs = statement.executeQuery("SHOW STREAMS");
         boolean found = false;
         while (rs.next()) {
-            String name = rs.getString("name");
+            final String name = rs.getString("name");
             if ("PRODUCT_STREAM".equals(name)) {
                 found = true;
                 break;
@@ -85,10 +84,10 @@ public class StreamOnViewTest extends BaseJdbcTest {
         statement.execute("CREATE VIEW large_orders AS SELECT * FROM orders WHERE amount > 60");
         statement.execute("CREATE STREAM order_stream ON VIEW large_orders SHOW_INITIAL_ROWS = TRUE");
 
-        ResultSet rs = statement.executeQuery("SHOW STREAMS");
+        final ResultSet rs = statement.executeQuery("SHOW STREAMS");
         boolean found = false;
         while (rs.next()) {
-            String name = rs.getString("name");
+            final String name = rs.getString("name");
             if ("ORDER_STREAM".equals(name)) {
                 found = true;
                 break;
@@ -101,8 +100,12 @@ public class StreamOnViewTest extends BaseJdbcTest {
     public void testCreateStreamOnNonExistentView() {
         logger.info("Testing CREATE STREAM on non-existent VIEW");
 
-        SQLException exception = assertThrows(SQLException.class, () -> {
-            statement.execute("CREATE STREAM test_stream ON VIEW non_existent_view");
+        final SQLException exception = assertThrows(SQLException.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                statement.execute("CREATE STREAM test_stream ON VIEW non_existent_view");
+                
+            }
         });
         // Live-verified on a real account: "SQL compilation error:\nView
         // 'NON_EXISTENT_VIEW' does not exist or not authorized."
@@ -123,10 +126,10 @@ public class StreamOnViewTest extends BaseJdbcTest {
         statement.execute("CREATE STREAM table_stream ON TABLE employees");
         statement.execute("CREATE STREAM view_stream ON VIEW high_earners");
 
-        ResultSet rs = statement.executeQuery("SHOW STREAMS");
+        final ResultSet rs = statement.executeQuery("SHOW STREAMS");
         int count = 0;
         while (rs.next()) {
-            String name = rs.getString("name");
+            final String name = rs.getString("name");
             if ("TABLE_STREAM".equals(name) || "VIEW_STREAM".equals(name)) {
                 count++;
             }
@@ -145,10 +148,10 @@ public class StreamOnViewTest extends BaseJdbcTest {
         statement.execute("CREATE VIEW low_stock AS SELECT * FROM inventory WHERE quantity < 10");
         statement.execute("CREATE STREAM stock_stream ON VIEW low_stock");
 
-        ResultSet rs = statement.executeQuery("SHOW STREAMS");
+        final ResultSet rs = statement.executeQuery("SHOW STREAMS");
         boolean found = false;
         while (rs.next()) {
-            String name = rs.getString("name");
+            final String name = rs.getString("name");
             if ("STOCK_STREAM".equals(name)) {
                 found = true;
                 break;
@@ -168,10 +171,10 @@ public class StreamOnViewTest extends BaseJdbcTest {
         // Should not throw error with IF NOT EXISTS
         statement.execute("CREATE STREAM IF NOT EXISTS customer_stream ON VIEW customer_view");
 
-        ResultSet rs = statement.executeQuery("SHOW STREAMS");
+        final ResultSet rs = statement.executeQuery("SHOW STREAMS");
         int count = 0;
         while (rs.next()) {
-            String name = rs.getString("name");
+            final String name = rs.getString("name");
             if ("CUSTOMER_STREAM".equals(name)) {
                 count++;
             }

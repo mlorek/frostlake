@@ -66,7 +66,7 @@ public class ShowFunctionsTest extends BaseDatabaseTest {
             return null;
         } catch (final RuntimeException e) {
             final String message = String.valueOf(e.getMessage());
-            return message.contains("Unknown function:")
+            return message.contains("Unknown function ")
                 || message.contains("Unknown table function:")
                 || message.contains("Unsupported window function:")
                 || message.contains("Unsupported system function:") ? message : null;

@@ -20,7 +20,6 @@ import dev.frostlake.executor.StatementClock;
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.types.DateTimeType;
 
-import java.time.LocalDateTime;
 import java.util.List;
 
 /**
@@ -34,6 +33,8 @@ public class Sysdate extends BuiltInFunction {
     @Override
     public Object evaluate(final List<Object> args) { return StatementClock.nowUtc(); }
 
-    @Override public int getMinArgCount() { return 0; }
-    @Override public int getMaxArgCount() { return 0; }
+    @Override
+    public int getMinArgCount() { return 0; }
+    @Override
+    public int getMaxArgCount() { return 0; }
 }

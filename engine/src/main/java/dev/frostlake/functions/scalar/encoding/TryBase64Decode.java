@@ -19,7 +19,6 @@ package dev.frostlake.functions.scalar.encoding;
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.types.StringType;
 
-import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 import java.util.List;
 
@@ -30,11 +29,12 @@ public class TryBase64Decode extends BuiltInFunction {
     public Object evaluate(final List<Object> args) {
         if (args.get(0) == null) return null;
         try {
-            byte[] decoded = Base64.getDecoder().decode(args.get(0).toString());
-            return new String(decoded, StandardCharsets.UTF_8);
+            return DecodedText.lenient(Base64.getDecoder().decode(args.get(0).toString()));
         } catch (final Exception e) { return null; }
     }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return 1; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return 1; }
 }

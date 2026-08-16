@@ -151,7 +151,15 @@
                 <artifactId>maven-surefire-plugin</artifactId>
                 <version>3.5.6</version>
                 <configuration>
-                    <argLine>-Dpolyglot.engine.WarnInterpreterOnly=false</argLine>
+                    <!--
+                      The add-opens flag is what the Snowflake driver's ARROW result format needs
+                      on Java 17. Without it the live harness had to force JSON results, which
+                      silently TRUNCATES every DOUBLE to 10 significant digits: the account
+                      answers PI() as 3.141592654 over JSON and 3.141592653589793 over Arrow.
+                      That made Frostlake look wrong on seven correct trigonometric results and
+                      would have hidden any real difference below the 10th digit.
+                    -->
+                    <argLine>-Dpolyglot.engine.WarnInterpreterOnly=false --add-opens=java.base/java.nio=ALL-UNNAMED</argLine>
                     <excludedGroups>${perf.excludedGroups}</excludedGroups>
                 </configuration>
             </plugin>

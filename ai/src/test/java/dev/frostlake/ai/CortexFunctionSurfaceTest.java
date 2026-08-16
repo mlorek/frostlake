@@ -39,7 +39,12 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 public class CortexFunctionSurfaceTest extends BaseDatabaseTest {
 
+    // Live spells an unresolved call two ways: "Unknown function NAME." for a bare name and
+    // "Unknown user-defined function SCHEMA.NAME." for a qualified one, the qualified form keeping the
+    // name exactly as written. These assertions read only WHETHER the name resolved, so they accept
+    // either sentence.
     private static final String UNKNOWN = "Unknown function";
+    private static final String UNKNOWN_QUALIFIED = "Unknown user-defined function";
 
     /**
      * Point the pack at a port nothing listens on. A name that resolves still reaches the transport and
@@ -71,12 +76,17 @@ public class CortexFunctionSurfaceTest extends BaseDatabaseTest {
 
     private void assertResolves(final String sql) {
         final String failed = failure(sql);
-        assertFalse(failed != null && failed.contains(UNKNOWN), sql + " -> " + failed);
+        assertFalse(failed != null && unresolved(failed), sql + " -> " + failed);
+    }
+
+    /** Whether a failure says the name did not resolve, in either of live's two spellings. */
+    private boolean unresolved(final String message) {
+        return message.contains(UNKNOWN) || message.contains(UNKNOWN_QUALIFIED);
     }
 
     private void assertUnknown(final String sql) {
         final String failed = failure(sql);
-        assertTrue(failed != null && failed.contains(UNKNOWN), sql + " -> " + failed);
+        assertTrue(failed != null && unresolved(failed), sql + " -> " + failed);
     }
 
     // ── The original set: qualified only ──────────────────────────────────────────

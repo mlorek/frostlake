@@ -34,17 +34,11 @@ public class ParseJson extends BuiltInFunction {
     @Override
     public Object evaluate(final List<Object> args) {
         if (args.get(0) == null) return null;
-        String input = args.get(0).toString().trim();
-        // A variant STRING whose content looks like JSON arrives in quoted JSON form (the path-extraction
-        // marker). Snowflake's implicit VARIANT→VARCHAR coercion hands PARSE_JSON the raw inner text, so
-        // a metadata field holding embedded JSON parses to its object — not to a string of it.
-        final String quotedVariantString = JsonTypeHelper.quotedJsonStringText(input);
-        if (quotedVariantString != null) {
-            final String inner = quotedVariantString.trim();
-            if (inner.startsWith("{") || inner.startsWith("[")) {
-                input = inner;
-            }
-        }
+        // The argument is TEXT by the time it arrives: a VARIANT one was coerced to VARCHAR at the call
+        // boundary, which is where the declared type is still known — see
+        // ExpressionEvaluatorVisitor.coerceVariantArgumentToText. Nothing here may second-guess the
+        // content: a quoted string is a JSON STRING, however much its inside looks like JSON.
+        final String input = args.get(0).toString().trim();
         // A literal JSON null parses to a JSON null VARIANT — represented as the text "null" so it stays
         // DISTINCT from a SQL NULL (Snowflake: "The JSON null value is distinct from the SQL NULL value").
         if (input.equalsIgnoreCase("null")) return VariantValue.of("null");
@@ -61,6 +55,8 @@ public class ParseJson extends BuiltInFunction {
         return ArrayFunctionHelper.toCanonicalVariant(node);
     }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return 1; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return 1; }
 }

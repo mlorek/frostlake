@@ -16,10 +16,8 @@
 
 package dev.frostlake.features;
 
-import dev.frostlake.DatabaseEngine;
+import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -31,24 +29,12 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /**
  * Tests for STRING_LITERAL with double quotes and newlines
  */
-public class StringLiteralTest {
+public class StringLiteralTest extends BaseDatabaseTest {
     private static final Logger logger = LoggerFactory.getLogger(StringLiteralTest.class);
 
-    private DatabaseEngine engine;
-
-    @BeforeEach
-    public void setUp() {
-        engine = new DatabaseEngine();
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
+    @Override
+    protected void setupTest() {
         logger.info("DatabaseEngine initialized for STRING_LITERAL tests");
-    }
-
-    @AfterEach
-    public void tearDown() {
-        if (engine != null) {
-            engine.shutdown();
-        }
     }
 
     @Test
@@ -58,11 +44,11 @@ public class StringLiteralTest {
         engine.execute("CREATE TABLE test_strings (id INTEGER, text VARCHAR)");
         engine.execute("INSERT INTO test_strings VALUES (1, 'Hello\nWorld')");
 
-        ResultSet rs = engine.executeQuery("SELECT text FROM test_strings WHERE id = 1");
+        final ResultSet rs = engine.executeQuery("SELECT text FROM test_strings WHERE id = 1");
         assertNotNull(rs);
         assertEquals(1, rs.getRowCount());
 
-        String text = (String) rs.getRows().get(0).getValue(0);
+        final String text = (String) rs.getRows().get(0).getValue(0);
         assertTrue(text.contains("\n") || text.contains("\\n"));
 
         logger.info("Single-quoted string with newline: {}", text);
@@ -72,7 +58,7 @@ public class StringLiteralTest {
     public void testSingleQuotedMultilineString() {
         logger.info("Testing single-quoted multi-line string");
 
-        String multiline = """
+        final String multiline = """
             First line
             Second line
             Third line""";
@@ -80,11 +66,11 @@ public class StringLiteralTest {
         engine.execute("CREATE TABLE test_multiline (id INTEGER, content VARCHAR)");
         engine.execute("INSERT INTO test_multiline VALUES (1, '" + multiline + "')");
 
-        ResultSet rs = engine.executeQuery("SELECT content FROM test_multiline WHERE id = 1");
+        final ResultSet rs = engine.executeQuery("SELECT content FROM test_multiline WHERE id = 1");
         assertNotNull(rs);
         assertEquals(1, rs.getRowCount());
 
-        String content = (String) rs.getRows().get(0).getValue(0);
+        final String content = (String) rs.getRows().get(0).getValue(0);
         assertNotNull(content);
 
         logger.info("Multi-line string stored: length={}", content.length());
@@ -97,7 +83,7 @@ public class StringLiteralTest {
         engine.execute("CREATE TABLE test_simple (id INTEGER, name VARCHAR)");
         engine.execute("INSERT INTO test_simple VALUES (1, 'Alice')");
 
-        ResultSet rs = engine.executeQuery("SELECT name FROM test_simple WHERE id = 1");
+        final ResultSet rs = engine.executeQuery("SELECT name FROM test_simple WHERE id = 1");
         assertNotNull(rs);
         assertEquals(1, rs.getRowCount());
         assertEquals("Alice", rs.getRows().get(0).getValue(0));
@@ -112,11 +98,11 @@ public class StringLiteralTest {
         engine.execute("CREATE TABLE test_escaped (id INTEGER, text VARCHAR)");
         engine.execute("INSERT INTO test_escaped VALUES (1, 'She said ''Hello''')");
 
-        ResultSet rs = engine.executeQuery("SELECT text FROM test_escaped WHERE id = 1");
+        final ResultSet rs = engine.executeQuery("SELECT text FROM test_escaped WHERE id = 1");
         assertNotNull(rs);
         assertEquals(1, rs.getRowCount());
 
-        String text = (String) rs.getRows().get(0).getValue(0);
+        final String text = (String) rs.getRows().get(0).getValue(0);
         assertNotNull(text);
 
         logger.info("Single-quoted string with escaped quotes: {}", text);
@@ -128,7 +114,7 @@ public class StringLiteralTest {
 
         engine.execute("CREATE TABLE test_comment (id INTEGER) COMMENT = 'This is a comment\nwith a newline'");
 
-        ResultSet rs = engine.executeQuery("SHOW TABLES");
+        final ResultSet rs = engine.executeQuery("SHOW TABLES");
         assertNotNull(rs);
         assertTrue(rs.getRowCount() > 0);
 

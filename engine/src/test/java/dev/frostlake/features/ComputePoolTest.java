@@ -72,6 +72,24 @@ public class ComputePoolTest extends BaseDatabaseTest {
         return names;
     }
 
+
+    /**
+     * The index of the row naming {@code pool}, or -1 when the listing does not carry it.
+     *
+     * <p>SHOW COMPUTE POOLS is ACCOUNT-scoped, and an account carries pools nobody created —
+     * SYSTEM_COMPUTE_POOL_CPU and _GPU are provisioned by Snowflake and cannot be dropped. So neither
+     * the row COUNT nor "row 0 is mine" can be assumed here, the way they can for the schema-scoped
+     * listings whose database this suite recreates per test.
+     */
+    private int rowOf(final ResultSet rs, final String pool) {
+        for (int i = 0; i < rs.getRows().size(); i++) {
+            if (pool.equals(String.valueOf(rs.getRows().get(i).getValue(rs.getColumnIndex("name"))))) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
     private Object cell(final ResultSet rs, final int row, final String column) {
         return rs.getRows().get(row).getValue(rs.getColumnIndex(column));
     }
@@ -101,22 +119,23 @@ public class ComputePoolTest extends BaseDatabaseTest {
             "target_nodes", "created_on", "resumed_on", "updated_on", "owner", "comment",
             "is_exclusive", "application", "placement_group", "backup_instance_families"),
             columnNames(rs));
-        assertEquals(1, rs.getRowCount());
-        assertEquals("P1", cell(rs, 0, "name"));
-        assertEquals("SUSPENDED", cell(rs, 0, "state"));
-        assertEquals(1L, cell(rs, 0, "min_nodes"));
-        assertEquals("CPU_X64_XS", cell(rs, 0, "instance_family"));
-        assertEquals(60L, cell(rs, 0, "auto_suspend_secs"));
-        assertEquals("true", cell(rs, 0, "auto_resume"));
-        assertEquals(0L, cell(rs, 0, "target_nodes"));
-        assertEquals("probe pool", cell(rs, 0, "comment"));
-        assertEquals("false", cell(rs, 0, "is_exclusive"));
-        assertNull(cell(rs, 0, "application"));
-        assertNull(cell(rs, 0, "placement_group"));
-        assertEquals("", cell(rs, 0, "backup_instance_families"));
+        final int p1 = rowOf(rs, "P1");
+        assertTrue(p1 >= 0, "P1 missing from: " + rs.getRowCount() + " rows");
+        assertEquals("P1", cell(rs, p1, "name"));
+        assertEquals("SUSPENDED", cell(rs, p1, "state"));
+        assertEquals(1L, cell(rs, p1, "min_nodes"));
+        assertEquals("CPU_X64_XS", cell(rs, p1, "instance_family"));
+        assertEquals(60L, cell(rs, p1, "auto_suspend_secs"));
+        assertEquals("true", cell(rs, p1, "auto_resume"));
+        assertEquals(0L, cell(rs, p1, "target_nodes"));
+        assertEquals("probe pool", cell(rs, p1, "comment"));
+        assertEquals("false", cell(rs, p1, "is_exclusive"));
+        assertNull(cell(rs, p1, "application"));
+        assertNull(cell(rs, p1, "placement_group"));
+        assertEquals("", cell(rs, p1, "backup_instance_families"));
         // Never resumed: the epoch, exactly as a real account reports it.
-        assertTrue(String.valueOf(cell(rs, 0, "resumed_on")).startsWith("19"),
-            "got: " + cell(rs, 0, "resumed_on"));
+        assertTrue(String.valueOf(cell(rs, p1, "resumed_on")).startsWith("19"),
+            "got: " + cell(rs, p1, "resumed_on"));
     }
 
     @Test
@@ -178,12 +197,13 @@ public class ComputePoolTest extends BaseDatabaseTest {
     public void optionalPropertiesDefault() {
         engine.execute("CREATE COMPUTE POOL P1 MIN_NODES = 1 MAX_NODES = 2 INSTANCE_FAMILY = GPU_NV_S");
         final ResultSet rs = engine.executeQuery("SHOW COMPUTE POOLS");
-        assertEquals("true", cell(rs, 0, "auto_resume"));
-        assertEquals(3600L, cell(rs, 0, "auto_suspend_secs"));
-        assertNull(cell(rs, 0, "comment"));
+        final int p1 = rowOf(rs, "P1");
+        assertEquals("true", cell(rs, p1, "auto_resume"));
+        assertEquals(3600L, cell(rs, p1, "auto_suspend_secs"));
+        assertNull(cell(rs, p1, "comment"));
         // INITIALLY_SUSPENDED defaults false, so the pool is asking for its nodes.
-        assertEquals("STARTING", cell(rs, 0, "state"));
-        assertEquals(1L, cell(rs, 0, "target_nodes"));
+        assertEquals("STARTING", cell(rs, p1, "state"));
+        assertEquals(1L, cell(rs, p1, "target_nodes"));
     }
 
     @Test
@@ -233,15 +253,15 @@ public class ComputePoolTest extends BaseDatabaseTest {
         engine.execute(CREATE_SUSPENDED);
         engine.execute("ALTER COMPUTE POOL P1 SET MAX_NODES = 2 AUTO_SUSPEND_SECS = 120 COMMENT = 'changed'");
         ResultSet rs = engine.executeQuery("SHOW COMPUTE POOLS");
-        assertEquals(2L, cell(rs, 0, "max_nodes"));
-        assertEquals(120L, cell(rs, 0, "auto_suspend_secs"));
-        assertEquals("changed", cell(rs, 0, "comment"));
+        assertEquals(2L, cell(rs, rowOf(rs, "P1"), "max_nodes"));
+        assertEquals(120L, cell(rs, rowOf(rs, "P1"), "auto_suspend_secs"));
+        assertEquals("changed", cell(rs, rowOf(rs, "P1"), "comment"));
 
         engine.execute("ALTER COMPUTE POOL P1 UNSET COMMENT");
         engine.execute("ALTER COMPUTE POOL P1 UNSET AUTO_SUSPEND_SECS");
         rs = engine.executeQuery("SHOW COMPUTE POOLS");
-        assertNull(cell(rs, 0, "comment"));
-        assertEquals(3600L, cell(rs, 0, "auto_suspend_secs"));
+        assertNull(cell(rs, rowOf(rs, "P1"), "comment"));
+        assertEquals(3600L, cell(rs, rowOf(rs, "P1"), "auto_suspend_secs"));
     }
 
     @Test
@@ -339,7 +359,7 @@ public class ComputePoolTest extends BaseDatabaseTest {
     public void dropRemovesThePool() {
         engine.execute(CREATE_SUSPENDED);
         engine.execute("DROP COMPUTE POOL P1");
-        assertEquals(0, engine.executeQuery("SHOW COMPUTE POOLS").getRowCount());
+        assertEquals(-1, rowOf(engine.executeQuery("SHOW COMPUTE POOLS"), "P1"));
     }
 
     // ── The ALTER surface beyond SET/UNSET of the simple properties, live-verified. ──────────────
@@ -432,6 +452,9 @@ public class ComputePoolTest extends BaseDatabaseTest {
     /** SET TAG and UNSET TAG are their own actions — mixing TAG into a property SET is a syntax error. */
     @Test
     public void tagsAreTheirOwnAlterActions() {
+        // The tag values are read back through the engine's own catalog, which the live harness does
+        // not populate — and live refuses the pool itself on this account tier.
+        Assumptions.assumeFalse(isLiveSnowflake(), "reads compute-pool tags from the engine catalog");
         engine.execute(CREATE_SUSPENDED);
         engine.execute("CREATE TAG pool_tag");
         engine.execute("ALTER COMPUTE POOL P1 SET TAG pool_tag = 'v1'");

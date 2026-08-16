@@ -16,12 +16,8 @@
 
 package dev.frostlake.features;
 
-import dev.frostlake.DatabaseEngine;
-import dev.frostlake.metastore.model.Table;
-import dev.frostlake.metastore.model.TableColumn;
+import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 import org.slf4j.Logger;
@@ -30,28 +26,33 @@ import org.slf4j.LoggerFactory;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Tests for ALTER COLUMN clause in ALTER TABLE statement
+ * ALTER TABLE … ALTER COLUMN … SET DATA TYPE, asserted through the SQL surface — the
+ * {@code DESCRIBE TABLE} type/comment/primary-key cells — so every check runs against whichever
+ * engine executed the DDL, embedded or live. Snowflake permits only the widening retypes: a
+ * VARCHAR may grow its length, a NUMBER may grow its precision at an unchanged scale, and a
+ * column may restate a synonymous spelling of its own type; every cross-family or narrowing
+ * change is refused with "cannot change column …". Type cells are matched by their family prefix,
+ * tolerant of the parameter suffixes the engines spell differently.
  */
-public class AlterColumnTest {
+public class AlterColumnTest extends BaseDatabaseTest {
     private static final Logger logger = LoggerFactory.getLogger(AlterColumnTest.class);
 
-    private DatabaseEngine engine;
-
-    @BeforeEach
-    public void setUp() {
-        engine = new DatabaseEngine();
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
-        logger.info("DatabaseEngine initialized for ALTER COLUMN tests");
+    /** The DESCRIBE TABLE type cell for one column. */
+    private String columnType(final String table, final String column) {
+        return describeCell(table, column, "type");
     }
 
-    @AfterEach
-    public void tearDown() {
-        if (engine != null) {
-            engine.shutdown();
-        }
+    private void assertAlterColumnRefused(final String sql) {
+        final RuntimeException e = assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.execute(sql);
+            }
+        });
+        assertTrue(e.getMessage().contains("cannot change column"), e.getMessage());
     }
 
     @Test
@@ -61,13 +62,7 @@ public class AlterColumnTest {
         engine.execute("CREATE TABLE users (id INTEGER, age INTEGER, name VARCHAR)");
         engine.execute("INSERT INTO users VALUES (1, 25, 'Alice')");
 
-        final RuntimeException e = assertThrows(RuntimeException.class, new Executable() {
-            @Override
-            public void execute() throws Throwable {
-                engine.execute("ALTER TABLE users ALTER COLUMN age SET DATA TYPE VARCHAR");
-            }
-        });
-        assertEquals(true, e.getMessage().contains("cannot change column"));
+        assertAlterColumnRefused("ALTER TABLE users ALTER COLUMN age SET DATA TYPE VARCHAR");
     }
 
     @Test
@@ -76,81 +71,96 @@ public class AlterColumnTest {
 
         engine.execute("CREATE TABLE products (id INTEGER, price VARCHAR, name VARCHAR)");
 
-        final RuntimeException e = assertThrows(RuntimeException.class, new Executable() {
-            @Override
-            public void execute() throws Throwable {
-                engine.execute("ALTER TABLE products ALTER COLUMN price SET DATA TYPE INTEGER");
-            }
-        });
-        assertEquals(true, e.getMessage().contains("cannot change column"));
+        assertAlterColumnRefused("ALTER TABLE products ALTER COLUMN price SET DATA TYPE INTEGER");
     }
 
     @Test
     public void testAlterColumnWithTypeParameters() {
-        logger.info("Testing ALTER COLUMN with type parameters (VARCHAR length)");
+        logger.info("Testing ALTER COLUMN with type parameters (VARCHAR length increase)");
 
-        engine.execute("CREATE TABLE documents (id INTEGER, content VARCHAR)");
+        engine.execute("CREATE TABLE documents (id INTEGER, content VARCHAR(100))");
 
         engine.execute("ALTER TABLE documents ALTER COLUMN content SET DATA TYPE VARCHAR(1000)");
 
-        Table table = engine.getCatalog().resolveTable("DOCUMENTS");
-        assertNotNull(table);
-
-        TableColumn contentColumn = table.getColumn("content");
-        assertEquals("VARCHAR", contentColumn.getDataType().getName());
+        assertTrue(columnType("documents", "CONTENT").startsWith("VARCHAR"));
 
         logger.info("Column type altered with type parameters successfully");
     }
 
     @Test
     public void testAlterColumnToDecimal() {
-        logger.info("Testing ALTER COLUMN to DECIMAL with precision and scale");
+        logger.info("Testing ALTER COLUMN to DECIMAL with grown precision at unchanged scale");
 
-        engine.execute("CREATE TABLE finances (id INTEGER, amount INTEGER)");
+        engine.execute("CREATE TABLE finances (id INTEGER, amount DECIMAL(10, 2))");
 
-        engine.execute("ALTER TABLE finances ALTER COLUMN amount SET DATA TYPE DECIMAL(10, 2)");
+        engine.execute("ALTER TABLE finances ALTER COLUMN amount SET DATA TYPE DECIMAL(12, 2)");
 
-        Table table = engine.getCatalog().resolveTable("FINANCES");
-        assertNotNull(table);
-
-        TableColumn amountColumn = table.getColumn("amount");
-        assertEquals("NUMBER", amountColumn.getDataType().getName());
+        assertTrue(columnType("finances", "AMOUNT").startsWith("NUMBER"));
 
         logger.info("Column type altered to DECIMAL successfully");
     }
 
     @Test
     public void testAlterColumnToTimestamp() {
-        logger.info("Testing ALTER COLUMN to TIMESTAMP");
+        logger.info("Testing ALTER COLUMN restating TIMESTAMP_NTZ as its TIMESTAMP synonym");
 
         engine.execute("CREATE TABLE events (id INTEGER, event_time TIMESTAMP_NTZ)");
 
         engine.execute("ALTER TABLE events ALTER COLUMN event_time SET DATA TYPE TIMESTAMP");
 
-        Table table = engine.getCatalog().resolveTable("EVENTS");
-        assertNotNull(table);
+        assertTrue(columnType("events", "EVENT_TIME").startsWith("TIMESTAMP"));
 
-        TableColumn eventTimeColumn = table.getColumn("event_time");
-        assertEquals("TIMESTAMP", eventTimeColumn.getDataType().getName());
-
-        logger.info("Column type altered to TIMESTAMP successfully");
+        logger.info("Column type restated as TIMESTAMP successfully");
     }
 
     @Test
-    public void testAlterColumnToDate() {
-        logger.info("Testing ALTER COLUMN to DATE");
+    public void testChangeTimestampToDateIsRejected() {
+        logger.info("Testing that TIMESTAMP -> DATE is rejected (Snowflake restriction)");
 
         engine.execute("CREATE TABLE orders (id INTEGER, order_date TIMESTAMP)");
 
-        engine.execute("ALTER TABLE orders ALTER COLUMN order_date SET DATA TYPE DATE");
+        assertAlterColumnRefused("ALTER TABLE orders ALTER COLUMN order_date SET DATA TYPE DATE");
+    }
 
-        Table table = engine.getCatalog().resolveTable("ORDERS");
-        assertNotNull(table);
+    @Test
+    public void testVarcharShrinkIsRejected() {
+        logger.info("Testing that shrinking a VARCHAR length is rejected (Snowflake restriction)");
 
-        TableColumn dateColumn = table.getColumn("order_date");
-        assertEquals("DATE", dateColumn.getDataType().getName());
+        engine.execute("CREATE TABLE notes (id INTEGER, body VARCHAR(1000))");
 
-        logger.info("Column type altered to DATE successfully");
+        final RuntimeException e = assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.execute("ALTER TABLE notes ALTER COLUMN body SET DATA TYPE VARCHAR(100)");
+            }
+        });
+        // The one retype refusal that spells its own reason, and names both parameterized types.
+        assertTrue(e.getMessage().contains(
+            "cannot change column BODY from type VARCHAR(1000) to VARCHAR(100)"), e.getMessage());
+        assertTrue(e.getMessage().contains(
+            "because reducing the byte-length of a varchar is not supported."), e.getMessage());
+    }
+
+    @Test
+    public void testNumberScaleChangeIsRejected() {
+        logger.info("Testing that changing a NUMBER scale is rejected (Snowflake restriction)");
+
+        engine.execute("CREATE TABLE prices (id INTEGER, amount NUMBER(10, 2))");
+
+        assertAlterColumnRefused("ALTER TABLE prices ALTER COLUMN amount SET DATA TYPE NUMBER(10, 4)");
+    }
+
+    @Test
+    public void testNumberPrecisionDecreaseIsAllowed() {
+        logger.info("Testing that decreasing a NUMBER precision at an unchanged scale is allowed");
+
+        engine.execute("CREATE TABLE ledgers (id INTEGER, amount NUMBER(20, 2))");
+        engine.execute("INSERT INTO ledgers VALUES (1, 1.25)");
+
+        // Precision may move either way as long as the SCALE is unchanged — even with rows present.
+        engine.execute("ALTER TABLE ledgers ALTER COLUMN amount SET DATA TYPE NUMBER(10, 2)");
+
+        assertTrue(columnType("ledgers", "AMOUNT").startsWith("NUMBER"));
     }
 
     @Test
@@ -161,7 +171,7 @@ public class AlterColumnTest {
 
         assertThrows(RuntimeException.class, new Executable() {
             @Override
-            public void execute() throws Throwable {
+            public void execute() {
                 engine.execute("ALTER TABLE test_table ALTER COLUMN non_existent SET DATA TYPE VARCHAR");
             }
         });
@@ -175,7 +185,7 @@ public class AlterColumnTest {
 
         assertThrows(RuntimeException.class, new Executable() {
             @Override
-            public void execute() throws Throwable {
+            public void execute() {
                 engine.execute("ALTER TABLE non_existent ALTER COLUMN col SET DATA TYPE VARCHAR");
             }
         });
@@ -196,20 +206,13 @@ public class AlterColumnTest {
     public void testAlterColumnPreservesComment() {
         logger.info("Testing that ALTER COLUMN preserves column comment");
 
-        engine.execute("CREATE TABLE test_table (id INTEGER, value VARCHAR(10) COMMENT = 'Important value')");
+        engine.execute("CREATE TABLE test_table (id INTEGER, value VARCHAR(10) COMMENT 'Important value')");
 
-        Table table = engine.getCatalog().resolveTable("TEST_TABLE");
-        TableColumn valueBefore = table.getColumn("value");
-        String commentBefore = valueBefore.getComment();
+        assertEquals("Important value", describeCell("test_table", "VALUE", "comment"));
 
         engine.execute("ALTER TABLE test_table ALTER COLUMN value SET DATA TYPE VARCHAR(200)");
 
-        table = engine.getCatalog().resolveTable("TEST_TABLE");
-        TableColumn valueAfter = table.getColumn("value");
-        String commentAfter = valueAfter.getComment();
-
-        assertEquals(commentBefore, commentAfter);
-        assertEquals("Important value", commentAfter);
+        assertEquals("Important value", describeCell("test_table", "VALUE", "comment"));
 
         logger.info("ALTER COLUMN preserved column comment");
     }
@@ -220,18 +223,11 @@ public class AlterColumnTest {
 
         engine.execute("CREATE TABLE test_table (id INTEGER PRIMARY KEY, name VARCHAR)");
 
-        Table table = engine.getCatalog().resolveTable("TEST_TABLE");
-        TableColumn idBefore = table.getColumn("id");
-        boolean isPrimaryKeyBefore = idBefore.isPrimaryKey();
+        assertEquals("Y", describeCell("test_table", "ID", "primary key"));
 
         engine.execute("ALTER TABLE test_table ALTER COLUMN id SET DATA TYPE BIGINT");
 
-        table = engine.getCatalog().resolveTable("TEST_TABLE");
-        TableColumn idAfter = table.getColumn("id");
-        boolean isPrimaryKeyAfter = idAfter.isPrimaryKey();
-
-        assertEquals(isPrimaryKeyBefore, isPrimaryKeyAfter);
-        assertEquals(true, isPrimaryKeyAfter);
+        assertEquals("Y", describeCell("test_table", "ID", "primary key"));
 
         logger.info("ALTER COLUMN preserved primary key constraint");
     }
@@ -246,11 +242,11 @@ public class AlterColumnTest {
         engine.execute("ALTER TABLE test_table ALTER COLUMN col2 SET DATA TYPE DECIMAL");
         engine.execute("ALTER TABLE test_table ALTER COLUMN col3 SET DATA TYPE BIGINT");
 
-        Table table = engine.getCatalog().resolveTable("TEST_TABLE");
-
-        assertEquals("VARCHAR", table.getColumn("col1").getDataType().getName());
-        assertEquals("NUMBER", table.getColumn("col2").getDataType().getName());
-        assertEquals("BIGINT", table.getColumn("col3").getDataType().getName());
+        assertTrue(columnType("test_table", "COL1").startsWith("VARCHAR"));
+        assertTrue(columnType("test_table", "COL2").startsWith("NUMBER"));
+        // BIGINT is NUMBER(38,0)'s synonym; either spelling of the one type is the pass.
+        final String col3Type = columnType("test_table", "COL3");
+        assertTrue(col3Type.startsWith("NUMBER") || col3Type.startsWith("BIGINT"), col3Type);
 
         logger.info("Multiple columns altered successfully");
     }
@@ -259,16 +255,12 @@ public class AlterColumnTest {
     public void testAlterColumnWithQualifiedName() {
         logger.info("Testing ALTER COLUMN with schema-qualified table name");
 
-        engine.execute("CREATE SCHEMA test_schema");
-        engine.execute("CREATE TABLE test_schema.products (id INTEGER, price INTEGER)");
+        engine.execute("CREATE SCHEMA alter_col_schema");
+        engine.execute("CREATE TABLE alter_col_schema.products (id INTEGER, price INTEGER)");
 
-        engine.execute("ALTER TABLE test_schema.products ALTER COLUMN price SET DATA TYPE DECIMAL");
+        engine.execute("ALTER TABLE alter_col_schema.products ALTER COLUMN price SET DATA TYPE DECIMAL");
 
-        Table table = engine.getCatalog().resolveTable("TEST_SCHEMA.PRODUCTS");
-        assertNotNull(table);
-
-        TableColumn priceColumn = table.getColumn("price");
-        assertEquals("NUMBER", priceColumn.getDataType().getName());
+        assertTrue(columnType("alter_col_schema.products", "PRICE").startsWith("NUMBER"));
 
         logger.info("ALTER COLUMN with qualified name works correctly");
     }
@@ -283,12 +275,13 @@ public class AlterColumnTest {
 
         engine.execute("ALTER TABLE customers ALTER COLUMN age SET DATA TYPE BIGINT");
 
-        ResultSet rs = engine.executeQuery("SELECT * FROM customers");
+        final ResultSet rs = engine.executeQuery("SELECT * FROM customers");
         assertNotNull(rs);
         assertEquals(2, rs.getRowCount());
 
-        Table table = engine.getCatalog().resolveTable("CUSTOMERS");
-        assertEquals("BIGINT", table.getColumn("age").getDataType().getName());
+        // BIGINT is NUMBER(38,0)'s synonym; either spelling of the one type is the pass.
+        final String ageType = columnType("customers", "AGE");
+        assertTrue(ageType.startsWith("NUMBER") || ageType.startsWith("BIGINT"), ageType);
 
         logger.info("ALTER COLUMN on table with data works correctly");
     }
@@ -304,11 +297,9 @@ public class AlterColumnTest {
         engine.execute("ALTER TABLE test_table RENAME COLUMN col2 TO col2_renamed");
         engine.execute("ALTER TABLE test_table ALTER COLUMN col3 SET DATA TYPE DECIMAL");
 
-        Table table = engine.getCatalog().resolveTable("TEST_TABLE");
-
-        assertEquals(4, table.getColumns().size());
-        assertEquals("VARCHAR", table.getColumn("col1").getDataType().getName());
-        assertEquals("NUMBER", table.getColumn("col3").getDataType().getName());
+        assertEquals(4, engine.executeQuery("DESCRIBE TABLE test_table").getRowCount());
+        assertTrue(columnType("test_table", "COL1").startsWith("VARCHAR"));
+        assertTrue(columnType("test_table", "COL3").startsWith("NUMBER"));
 
         logger.info("ALTER COLUMN combined with other operations works correctly");
     }
@@ -319,12 +310,6 @@ public class AlterColumnTest {
 
         engine.execute("CREATE TABLE flags (id INTEGER, is_active INTEGER)");
 
-        final RuntimeException e = assertThrows(RuntimeException.class, new Executable() {
-            @Override
-            public void execute() throws Throwable {
-                engine.execute("ALTER TABLE flags ALTER COLUMN is_active SET DATA TYPE BOOLEAN");
-            }
-        });
-        assertEquals(true, e.getMessage().contains("cannot change column"));
+        assertAlterColumnRefused("ALTER TABLE flags ALTER COLUMN is_active SET DATA TYPE BOOLEAN");
     }
 }

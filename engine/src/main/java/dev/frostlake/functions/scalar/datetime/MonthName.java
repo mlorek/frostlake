@@ -28,10 +28,14 @@ public class MonthName extends BuiltInFunction {
     @Override
     public Object evaluate(final List<Object> args) {
         if (args.get(0) == null) return null;
-        String m = SharedFunctionHelpers.toLocalDate(args.get(0)).getMonth().name();
-        return m.substring(0, 1) + m.substring(1).toLowerCase();
+        // Three letters, not the full name — live answers Jan,Feb,Mar,…,Dec, measured across a whole
+        // year, and NULL for NULL.
+        final String month = SharedFunctionHelpers.toLocalDate(args.get(0)).getMonth().name();
+        return month.substring(0, 1) + month.substring(1, 3).toLowerCase();
     }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return 1; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return 1; }
 }

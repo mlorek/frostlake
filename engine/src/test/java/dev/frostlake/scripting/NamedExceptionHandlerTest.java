@@ -16,17 +16,15 @@
 
 package dev.frostlake.scripting;
 
-import dev.frostlake.DatabaseEngine;
-import dev.frostlake.executor.procedural.ProceduralException;
+import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
 
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Named exception-handler matching: {@code EXCEPTION WHEN <user_exception_name>} must catch a {@code RAISE}
@@ -34,23 +32,11 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
  * contain the exception name, so a catch proves real name-matching rather than a coincidental message
  * substring (the previous behavior).
  */
-public class NamedExceptionHandlerTest {
+public class NamedExceptionHandlerTest extends BaseDatabaseTest {
 
-    private DatabaseEngine engine;
-
-    @BeforeEach
-    public void setUp() {
-        engine = new DatabaseEngine();
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
+    @Override
+    protected void setupTest() {
         engine.execute("CREATE TABLE caught (marker INTEGER)");
-    }
-
-    @AfterEach
-    public void tearDown() {
-        if (engine != null) {
-            engine.shutdown();
-        }
     }
 
     private int caughtMarker() {
@@ -80,7 +66,7 @@ public class NamedExceptionHandlerTest {
 
     @Test
     public void nonMatchingNamedHandlerDoesNotCatch() {
-        final ProceduralException ex = assertThrows(ProceduralException.class, new Executable() {
+        final RuntimeException ex = assertThrows(RuntimeException.class, new Executable() {
             @Override
             public void execute() {
                 engine.execute("""
@@ -96,7 +82,8 @@ public class NamedExceptionHandlerTest {
                     """);
             }
         });
-        assertEquals(-20001, ex.getErrorCode(), "a non-matching named handler must not catch; err_a propagates");
+        assertTrue(ex.getMessage().contains("aaa"),
+            "a non-matching named handler must not catch; err_a propagates: " + ex.getMessage());
         assertEquals(0, caughtCount(), "the handler body must not have run");
     }
 

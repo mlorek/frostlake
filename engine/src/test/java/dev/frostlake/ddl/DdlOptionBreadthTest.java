@@ -230,9 +230,9 @@ public class DdlOptionBreadthTest extends BaseDatabaseTest {
         assertEquals(15, count("SELECT seq_commas.NEXTVAL"));
         engine.execute("CREATE SEQUENCE seq_inline START=3 COMMENT = 'counts things' INCREMENT=2");
         assertEquals(3, count("SELECT seq_inline.NEXTVAL"));
-        Assumptions.assumeFalse(isLiveSnowflake(), ATTACH_METADATA);
-        assertEquals("counts things", engine.getCatalog().getDatabase("TEST_DB").getSchema("TEST_SCHEMA")
-            .getSequence("SEQ_INLINE").getComment());
+        final ResultSet sequences = engine.executeQuery("SHOW SEQUENCES LIKE 'seq_inline'");
+        assertEquals("counts things",
+            cell(sequences, soleRowWhere(sequences, "name", "SEQ_INLINE"), "comment"));
     }
 
     @Test

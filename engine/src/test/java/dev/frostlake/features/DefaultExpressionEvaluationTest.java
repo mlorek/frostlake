@@ -16,16 +16,15 @@
 
 package dev.frostlake.features;
 
-import dev.frostlake.DatabaseEngine;
+import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * A column DEFAULT that is a non-literal EXPRESSION (arithmetic, concatenation, function call, CASE) is now
@@ -33,24 +32,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
  * {@code DEFAULT 10 + 5} yields 15, not the string "10 + 5". Literal defaults are unchanged, and an
  * invalid expression default surfaces as an error at INSERT rather than silently inserting bogus text.
  */
-public class DefaultExpressionEvaluationTest {
-
-    private DatabaseEngine engine;
-
-    @BeforeEach
-    public void setUp() {
-        engine = new DatabaseEngine();
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
-        engine.execute("USE SCHEMA public");
-    }
-
-    @AfterEach
-    public void tearDown() {
-        if (engine != null) {
-            engine.shutdown();
-        }
-    }
+public class DefaultExpressionEvaluationTest extends BaseDatabaseTest {
 
     private Object firstValue(final String query) {
         final ResultSet rs = engine.executeQuery(query);
@@ -110,16 +92,17 @@ public class DefaultExpressionEvaluationTest {
     }
 
     @Test
-    public void invalidExpressionDefaultErrorsAtInsert() {
-        // A default referencing a non-existent column used to be stored as the text "badcol" and inserted
-        // verbatim; it must now fail when a row relies on it.
-        engine.execute("CREATE TABLE t (id INTEGER, x VARCHAR DEFAULT (badcol))");
-        assertThrows(RuntimeException.class, new Executable() {
+    public void invalidExpressionDefaultRefusedAtCreate() {
+        // A default naming a bare identifier has nothing legal to reference: the CREATE itself is
+        // refused with "invalid identifier" at the identifier's position — the table never exists.
+        final RuntimeException e = assertThrows(RuntimeException.class, new Executable() {
             @Override
             public void execute() {
-                engine.execute("INSERT INTO t (id) VALUES (1)");
+                engine.execute("CREATE TABLE t (id INTEGER, x VARCHAR DEFAULT (badcol))");
             }
         });
+        assertTrue(e.getMessage().contains("invalid identifier 'BADCOL'"),
+            "unexpected message: " + e.getMessage());
     }
 
     @Test

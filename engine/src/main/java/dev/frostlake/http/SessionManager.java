@@ -20,9 +20,11 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.Map;
+import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -35,6 +37,8 @@ public class SessionManager {
     private final Map<String, SessionContext> sessions;
     private final long sessionTimeoutMs;
     private final ScheduledExecutorService cleanupExecutor;
+    private final String defaultDatabase;
+    private final String defaultSchema;
 
     private static final long DEFAULT_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
 
@@ -43,12 +47,27 @@ public class SessionManager {
     }
 
     public SessionManager(final long sessionTimeoutMs) {
+        this("SNOWFLAKE", "PUBLIC", sessionTimeoutMs);
+    }
+
+    /** A manager whose new sessions start in the server's configured default database/schema. */
+    public SessionManager(final String defaultDatabase, final String defaultSchema) {
+        this(defaultDatabase, defaultSchema, DEFAULT_TIMEOUT_MS);
+    }
+
+    public SessionManager(final String defaultDatabase, final String defaultSchema,
+                          final long sessionTimeoutMs) {
+        this.defaultDatabase = defaultDatabase;
+        this.defaultSchema = defaultSchema;
         this.sessions = new ConcurrentHashMap<>();
         this.sessionTimeoutMs = sessionTimeoutMs;
-        this.cleanupExecutor = Executors.newSingleThreadScheduledExecutor((final var r) -> {
-            Thread t = new Thread(r, "SessionCleanup");
-            t.setDaemon(true);
-            return t;
+        this.cleanupExecutor = Executors.newSingleThreadScheduledExecutor(new ThreadFactory() {
+            @Override
+            public Thread newThread(final Runnable r) {
+                final Thread t = new Thread(r, "SessionCleanup");
+                t.setDaemon(true);
+                return t;
+            }
         });
 
         // Start cleanup task to remove expired sessions
@@ -56,11 +75,14 @@ public class SessionManager {
     }
 
     private void startCleanupTask() {
-        cleanupExecutor.scheduleAtFixedRate(() -> {
-            try {
-                cleanupExpiredSessions();
-            } catch (final Exception e) {
-                logger.error("Error during session cleanup", e);
+        cleanupExecutor.scheduleAtFixedRate(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    cleanupExpiredSessions();
+                } catch (final Exception e) {
+                    logger.error("Error during session cleanup", e);
+                }
             }
         }, 1, 5, TimeUnit.MINUTES);
     }
@@ -69,7 +91,8 @@ public class SessionManager {
      * Create a new session
      */
     public SessionContext createSession() {
-        SessionContext context = new SessionContext();
+        final SessionContext context = new SessionContext(
+            UUID.randomUUID().toString(), defaultDatabase, defaultSchema);
         sessions.put(context.getSessionId(), context);
         logger.info("Created new session: {}", context.getSessionId());
         return context;
@@ -85,7 +108,7 @@ public class SessionManager {
 
         SessionContext context = sessions.get(sessionId);
         if (context == null) {
-            context = new SessionContext(sessionId);
+            context = new SessionContext(sessionId, defaultDatabase, defaultSchema);
             sessions.put(sessionId, context);
             logger.info("Created session with provided ID: {}", sessionId);
         } else {
@@ -98,7 +121,7 @@ public class SessionManager {
      * Get existing session
      */
     public SessionContext getSession(final String sessionId) {
-        SessionContext context = sessions.get(sessionId);
+        final SessionContext context = sessions.get(sessionId);
         if (context != null) {
             context.touch();
         }
@@ -109,7 +132,7 @@ public class SessionManager {
      * Remove a session
      */
     public void removeSession(final String sessionId) {
-        SessionContext removed = sessions.remove(sessionId);
+        final SessionContext removed = sessions.remove(sessionId);
         if (removed != null) {
             logger.info("Removed session: {}", sessionId);
         }

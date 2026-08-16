@@ -20,7 +20,6 @@ import dev.frostlake.functions.AggregateFunction;
 import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.types.NumericType;
 
-import java.math.BigDecimal;
 import java.util.List;
 
 public class BitXorAgg extends AggregateFunction {
@@ -32,8 +31,10 @@ public class BitXorAgg extends AggregateFunction {
     @Override
     public Object evaluate(final List<Object> args) { return null; }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return 1; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return 1; }
 
     /** Live: "Invalid argument types for function 'BITXOR_AGG': (OBJECT)" — see {@link BitAndAgg}. */
     @Override
@@ -41,25 +42,4 @@ public class BitXorAgg extends AggregateFunction {
         return SemiStructuredRejection.ARGUMENT_TYPES;
     }
 
-    private static class BitXorAccumulator implements Accumulator {
-        private long result = 0L; private boolean hasValue = false;
-
-        @Override
-        public void accumulate(final Object v) {
-            if (v == null) return; hasValue = true;
-            result ^= new BigDecimal(v.toString()).longValue();
-        }
-
-        @Override
-        public Object getResult() { return hasValue ? result : null; }
-
-        @Override
-        public void reset() { result = 0L; hasValue = false; }
-
-        @Override
-        public void merge(final Accumulator other) {
-            BitXorAccumulator o = (BitXorAccumulator) other;
-            if (o.hasValue) { hasValue = true; result ^= o.result; }
-        }
-    }
 }

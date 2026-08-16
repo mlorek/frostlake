@@ -18,7 +18,7 @@ package dev.frostlake.functions.scalar.conversion;
 
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
-import dev.frostlake.types.DateTimeType;
+import dev.frostlake.types.TimestampFlavours;
 
 import java.util.List;
 
@@ -31,16 +31,22 @@ import java.util.List;
 public class TryToTimestamp extends BuiltInFunction {
     public TryToTimestamp() { this("TRY_TO_TIMESTAMP_NTZ"); }
 
-    public TryToTimestamp(final String name) { super(name, DateTimeType.TIMESTAMP_NTZ); }
+    public TryToTimestamp(final String name) { super(name, TimestampFlavours.forFunctionName(name)); }
 
     @Override
     public Object evaluate(final List<Object> args) {
         if (args.get(0) == null) return null;
         // The second argument is a format for a string input, or a scale (0-9) for a numeric epoch.
         final Object formatOrScale = args.size() >= 2 ? args.get(1) : null;
-        try { return SharedFunctionHelpers.parseTimestampWithFormatOrScale(args.get(0), formatOrScale); } catch (final Exception e) { return null; }
+        try {
+            return SharedFunctionHelpers.parseTimestampWithFormatOrScale(args.get(0), formatOrScale);
+        } catch (final Exception e) {
+            return null;
+        }
     }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return 2; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return 2; }
 }

@@ -19,6 +19,8 @@ package dev.frostlake.jdbc;
 import dev.frostlake.executor.SqlStringLiterals;
 import dev.frostlake.executor.SqlTokens;
 import dev.frostlake.parser.FrostlakeLexer;
+import dev.frostlake.types.DataType;
+import dev.frostlake.types.NumericType;
 import dev.frostlake.values.BinaryValue;
 import dev.frostlake.values.VariantValue;
 import java.io.IOException;
@@ -54,6 +56,29 @@ import org.antlr.v4.runtime.Token;
  * both the live objects and their string renderings.
  */
 public final class JdbcMarshaling {
+
+    /**
+     * Map an engine {@code DataType} to a {@link java.sql.Types} constant, using its PARAMETERS where
+     * they decide the answer. Every integer alias is NUMBER(38,0) in the catalog, as on a real account,
+     * so the name alone can no longer tell an integer column from a decimal one — the SCALE does, and
+     * live agrees: an INT column reports {@code Types.BIGINT} over JDBC and a NUMBER(10,2) reports
+     * {@code Types.DECIMAL}. It is the same rule this driver's metadata queries already apply to
+     * INFORMATION_SCHEMA rows.
+     */
+    public static int toSqlType(final DataType type) {
+        return type instanceof NumericType
+            ? toSqlType(type.getName(), ((NumericType) type).getScale())
+            : toSqlType(type.getName());
+    }
+
+    /** As above, for a caller that has the type's NAME and SCALE rather than the type itself. */
+    public static int toSqlType(final String typeName, final int scale) {
+        final String name = typeName == null ? "" : typeName.toUpperCase();
+        if (name.equals("NUMBER") || name.equals("NUMERIC") || name.equals("DECIMAL")) {
+            return scale == 0 ? Types.BIGINT : Types.DECIMAL;
+        }
+        return toSqlType(typeName);
+    }
 
     /** Map an engine {@code DataType} name to a {@link java.sql.Types} constant. */
     public static int toSqlType(final String typeName) {

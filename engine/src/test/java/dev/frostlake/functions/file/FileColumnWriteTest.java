@@ -24,7 +24,6 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.junit.jupiter.api.Assumptions.assumeFalse;
 
 /**
  * Writing to a FILE column — the path task #134 deliberately left failing and {@code TO_FILE} now
@@ -43,7 +42,6 @@ public class FileColumnWriteTest extends StagedFileTestSupport {
      */
     @Test
     public void stagePathStringIsResolvedOnWrite() {
-        assumeFalse(isLiveSnowflake(), stageOnlyReason());
         stage("hello.txt", "hello world\nsecond line\n");
         engine.execute("CREATE TABLE w (id INTEGER, f FILE)");
 
@@ -58,7 +56,6 @@ public class FileColumnWriteTest extends StagedFileTestSupport {
     /** Live: {@code INSERT … SELECT TO_FILE(…)} stores the same descriptor as the bare path does. */
     @Test
     public void toFileExpressionIsAccepted() {
-        assumeFalse(isLiveSnowflake(), stageOnlyReason());
         stage("image_real.png", "not really a png but the name decides\n");
         engine.execute("CREATE TABLE w (id INTEGER, f FILE)");
 
@@ -74,7 +71,6 @@ public class FileColumnWriteTest extends StagedFileTestSupport {
      */
     @Test
     public void updateReResolvesTheStagePath() {
-        assumeFalse(isLiveSnowflake(), stageOnlyReason());
         stage("hello.txt", "hello world\nsecond line\n");
         stage("plain.csv", "col1,col2\n1,2\n");
         engine.execute("CREATE TABLE w (id INTEGER, f FILE)");
@@ -92,7 +88,6 @@ public class FileColumnWriteTest extends StagedFileTestSupport {
      */
     @Test
     public void writeOfAMissingFileFails() {
-        assumeFalse(isLiveSnowflake(), stageOnlyReason());
         engine.execute("CREATE TABLE w (id INTEGER, f FILE)");
 
         final RuntimeException error = assertThrows(RuntimeException.class, new Executable() {

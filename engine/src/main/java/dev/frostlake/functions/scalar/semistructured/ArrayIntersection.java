@@ -34,8 +34,8 @@ public class ArrayIntersection extends BuiltInFunction {
 
     @Override
     public Object evaluate(final List<Object> args) {
-        ArrayNode a1 = ArrayFunctionHelper.parseArray(args.get(0));
-        ArrayNode a2 = ArrayFunctionHelper.parseArray(args.get(1));
+        final ArrayNode a1 = ArrayFunctionHelper.parseArray(args.get(0));
+        final ArrayNode a2 = ArrayFunctionHelper.parseArray(args.get(1));
         if (a1 == null || a2 == null) return null;
         // MULTISET intersection: with N copies in array1 and M in array2 the result keeps min(N,M), in
         // array1's order — except that an `undefined` is emitted LAST. Live-verified:
@@ -70,6 +70,8 @@ public class ArrayIntersection extends BuiltInFunction {
         return VariantValue.ofNode(result);
     }
 
-    @Override public int getMinArgCount() { return 2; }
-    @Override public int getMaxArgCount() { return 2; }
+    @Override
+    public int getMinArgCount() { return 2; }
+    @Override
+    public int getMaxArgCount() { return 2; }
 }

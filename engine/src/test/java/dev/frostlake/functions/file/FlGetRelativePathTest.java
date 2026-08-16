@@ -20,7 +20,6 @@ import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assumptions.assumeFalse;
 
 /**
  * {@code FL_GET_RELATIVE_PATH(file)} — the descriptor's {@code RELATIVE_PATH} field, the file's path
@@ -50,7 +49,6 @@ public class FlGetRelativePathTest extends StagedFileTestSupport {
     /** Live: a file at the stage root reports just its name, with no leading slash. */
     @Test
     public void stageRootFileIsJustItsName() {
-        assumeFalse(isLiveSnowflake(), stageOnlyReason());
         stage("hello.txt", "hello world\nsecond line\n");
 
         assertEquals("hello.txt", relativePath("TO_FILE('@st/hello.txt')"));
@@ -59,7 +57,6 @@ public class FlGetRelativePathTest extends StagedFileTestSupport {
     /** Live: a file in a sub-directory keeps the sub-path, still with no leading slash. */
     @Test
     public void subDirectoryIsKeptInThePath() {
-        assumeFalse(isLiveSnowflake(), stageOnlyReason());
         stage("sub/nested.txt", "nested file\n");
         stage("sub/deeper/leaf.txt", "deeper file\n");
 

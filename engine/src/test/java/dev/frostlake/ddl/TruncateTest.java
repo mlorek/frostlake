@@ -16,57 +16,51 @@
 
 package dev.frostlake.ddl;
 
-import dev.frostlake.DatabaseEngine;
+import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
-
-import static org.junit.jupiter.api.Assertions.*;
+import org.junit.jupiter.api.function.Executable;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Tests for TRUNCATE TABLE functionality
  */
-public class TruncateTest {
+public class TruncateTest extends BaseDatabaseTest {
 
-    private DatabaseEngine engine;
-
-    @BeforeEach
-    public void setup() {
-        engine = new DatabaseEngine();
-    }
-
-    @AfterEach
-    public void teardown() {
-        if (engine != null) {
-            engine.shutdown();
-        }
-    }
+    /**
+     * Snowflake does not ENFORCE primary keys at all — a PK is metadata there, so nothing is refused
+     * and nothing throws. Frostlake's enforcement is an EngineConfig toggle reached through the
+     * storage engine, which makes this a test of a Frostlake-only feature rather than of agreement.
+     */
+    private static final String PK_ENFORCEMENT_IS_FROSTLAKE_ONLY =
+        "primary-key enforcement is a Frostlake toggle; Snowflake does not enforce keys";
 
     @Test
     public void testTruncateTable() {
         // Create table and insert data
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
         engine.execute("CREATE TABLE users (id INTEGER, name VARCHAR)");
         engine.execute("INSERT INTO users VALUES (1, 'Alice'), (2, 'Bob'), (3, 'Charlie')");
 
         // Verify table has data
-        ResultSet beforeTruncate = engine.executeQuery("SELECT * FROM users");
+        final ResultSet beforeTruncate = engine.executeQuery("SELECT * FROM users");
         assertEquals(3, beforeTruncate.getRowCount(), "Table should have 3 rows before truncate");
 
         // Truncate the table
         engine.execute("TRUNCATE TABLE users");
 
         // Verify table is empty
-        ResultSet afterTruncate = engine.executeQuery("SELECT * FROM users");
+        final ResultSet afterTruncate = engine.executeQuery("SELECT * FROM users");
         assertEquals(0, afterTruncate.getRowCount(), "Table should be empty after truncate");
 
         // Verify table structure still exists
-        ResultSet tables = engine.executeQuery("SHOW TABLES");
+        final ResultSet tables = engine.executeQuery("SHOW TABLES");
         boolean foundUsers = false;
         while (tables.next()) {
-            String tableName = (String) tables.getValue("name");
+            final String tableName = (String) tables.getValue("name");
             if ("USERS".equalsIgnoreCase(tableName)) {
                 foundUsers = true;
                 break;
@@ -78,8 +72,6 @@ public class TruncateTest {
     @Test
     public void testTruncateTableWithoutTableKeyword() {
         // Test TRUNCATE without TABLE keyword (optional in Snowflake)
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
         engine.execute("CREATE TABLE products (id INTEGER, name VARCHAR)");
         engine.execute("INSERT INTO products VALUES (1, 'Widget'), (2, 'Gadget')");
 
@@ -87,30 +79,26 @@ public class TruncateTest {
         engine.execute("TRUNCATE products");
 
         // Verify table is empty
-        ResultSet result = engine.executeQuery("SELECT * FROM products");
+        final ResultSet result = engine.executeQuery("SELECT * FROM products");
         assertEquals(0, result.getRowCount(), "Table should be empty after truncate");
     }
 
     @Test
     public void testTruncateEmptyTable() {
         // Truncate an already empty table
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
         engine.execute("CREATE TABLE empty_table (id INTEGER, value VARCHAR)");
 
         // Truncate the empty table (should not error)
         engine.execute("TRUNCATE TABLE empty_table");
 
         // Verify still empty
-        ResultSet result = engine.executeQuery("SELECT * FROM empty_table");
+        final ResultSet result = engine.executeQuery("SELECT * FROM empty_table");
         assertEquals(0, result.getRowCount());
     }
 
     @Test
     public void testTruncateQualifiedName() {
         // Test TRUNCATE with schema-qualified table name
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
         engine.execute("CREATE SCHEMA schema1");
         engine.execute("CREATE TABLE schema1.test_table (id INTEGER, data VARCHAR)");
         engine.execute("INSERT INTO schema1.test_table VALUES (1, 'Data1'), (2, 'Data2')");
@@ -119,7 +107,7 @@ public class TruncateTest {
         engine.execute("TRUNCATE TABLE schema1.test_table");
 
         // Verify empty
-        ResultSet result = engine.executeQuery("SELECT * FROM schema1.test_table");
+        final ResultSet result = engine.executeQuery("SELECT * FROM schema1.test_table");
         assertEquals(0, result.getRowCount());
     }
 
@@ -140,54 +128,55 @@ public class TruncateTest {
         engine.execute("TRUNCATE TABLE db1.schema1.test_table");
 
         // Verify empty
-        ResultSet result = engine.executeQuery("SELECT * FROM db1.schema1.test_table");
+        final ResultSet result = engine.executeQuery("SELECT * FROM db1.schema1.test_table");
         assertEquals(0, result.getRowCount());
     }
 
     @Test
     public void testTruncateIfExists() {
         // Test TRUNCATE TABLE IF EXISTS on existing table
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
         engine.execute("CREATE TABLE existing_table (id INTEGER)");
         engine.execute("INSERT INTO existing_table VALUES (1)");
 
         // This should succeed
         engine.execute("TRUNCATE TABLE IF EXISTS existing_table");
 
-        ResultSet result = engine.executeQuery("SELECT * FROM existing_table");
+        final ResultSet result = engine.executeQuery("SELECT * FROM existing_table");
         assertEquals(0, result.getRowCount());
     }
 
     @Test
     public void testTruncateIfExistsNonExistent() {
         // Test TRUNCATE TABLE IF EXISTS on non-existent table (should not error)
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
 
         // This should not throw an exception
-        assertDoesNotThrow(() -> {
-            engine.execute("TRUNCATE TABLE IF EXISTS non_existent_table");
+        assertDoesNotThrow(new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                engine.execute("TRUNCATE TABLE IF EXISTS non_existent_table");
+                
+            }
         });
     }
 
     @Test
     public void testTruncateNonExistentTable() {
         // Test TRUNCATE on non-existent table (should error)
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
 
-        RuntimeException exception = assertThrows(RuntimeException.class, () -> {
-            engine.execute("TRUNCATE TABLE non_existent_table");
+        final RuntimeException exception = assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                engine.execute("TRUNCATE TABLE non_existent_table");
+                
+            }
         });
         assertTrue(exception.getMessage().contains("does not exist"));
     }
 
     @Test
     public void testTruncateTableWithPrimaryKey() {
+        Assumptions.assumeFalse(isLiveSnowflake(), PK_ENFORCEMENT_IS_FROSTLAKE_ONLY);
         // Ensure primary key constraint is maintained after truncate
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
         engine.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, name VARCHAR)");
         engine.execute("INSERT INTO users VALUES (1, 'Alice'), (2, 'Bob')");
 
@@ -196,14 +185,18 @@ public class TruncateTest {
 
         // Verify we can insert data again with same IDs
         engine.execute("INSERT INTO users VALUES (1, 'NewAlice')");
-        ResultSet result = engine.executeQuery("SELECT * FROM users");
+        final ResultSet result = engine.executeQuery("SELECT * FROM users");
         assertEquals(1, result.getRowCount());
 
         // Verify primary key constraint works when enforcement is enabled
         engine.getStorageEngine().setEnforcePrimaryKey(true);
         try {
-            RuntimeException exception = assertThrows(RuntimeException.class, () -> {
-                engine.execute("INSERT INTO users VALUES (1, 'Duplicate')");
+            final RuntimeException exception = assertThrows(RuntimeException.class, new Executable() {
+                @Override
+                public void execute() throws Throwable {
+                    engine.execute("INSERT INTO users VALUES (1, 'Duplicate')");
+                    
+                }
             });
             assertTrue(exception.getMessage().toLowerCase().contains("duplicate") ||
                        exception.getMessage().toLowerCase().contains("primary key"));
@@ -215,8 +208,6 @@ public class TruncateTest {
     @Test
     public void testTruncateAndReinsert() {
         // Verify we can insert data after truncating
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
         engine.execute("CREATE TABLE data (id INTEGER, value VARCHAR)");
         engine.execute("INSERT INTO data VALUES (1, 'Old')");
 
@@ -227,7 +218,7 @@ public class TruncateTest {
         engine.execute("INSERT INTO data VALUES (2, 'New')");
 
         // Verify new data exists
-        ResultSet result = engine.executeQuery("SELECT * FROM data");
+        final ResultSet result = engine.executeQuery("SELECT * FROM data");
         assertEquals(1, result.getRowCount());
         assertTrue(result.next());
         assertEquals(2L, result.getValue("id"));
@@ -237,8 +228,6 @@ public class TruncateTest {
     @Test
     public void testTruncateMultipleTimes() {
         // Truncate the same table multiple times
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
         engine.execute("CREATE TABLE test_table (id INTEGER)");
 
         // Insert and truncate multiple times
@@ -246,7 +235,7 @@ public class TruncateTest {
             engine.execute("INSERT INTO test_table VALUES (" + i + ")");
             engine.execute("TRUNCATE TABLE test_table");
 
-            ResultSet result = engine.executeQuery("SELECT * FROM test_table");
+            final ResultSet result = engine.executeQuery("SELECT * FROM test_table");
             assertEquals(0, result.getRowCount(), "Table should be empty after truncate #" + (i + 1));
         }
     }
@@ -254,8 +243,6 @@ public class TruncateTest {
     @Test
     public void testTruncateTableWithComment() {
         // Ensure table comment is preserved after truncate
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
         engine.execute("CREATE TABLE users (id INTEGER) COMMENT = 'User table'");
         engine.execute("INSERT INTO users VALUES (1)");
 
@@ -263,10 +250,10 @@ public class TruncateTest {
         engine.execute("TRUNCATE TABLE users");
 
         // Table should still exist with structure intact
-        ResultSet tables = engine.executeQuery("SHOW TABLES");
+        final ResultSet tables = engine.executeQuery("SHOW TABLES");
         boolean found = false;
         while (tables.next()) {
-            String tableName = (String) tables.getValue("name");
+            final String tableName = (String) tables.getValue("name");
             if ("USERS".equalsIgnoreCase(tableName)) {
                 found = true;
                 break;
@@ -278,8 +265,6 @@ public class TruncateTest {
     @Test
     public void testTruncateLargeTable() {
         // Test truncating a table with many rows
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
         engine.execute("CREATE TABLE large_table (id INTEGER, value VARCHAR)");
 
         // Insert many rows
@@ -288,14 +273,14 @@ public class TruncateTest {
         }
 
         // Verify row count before truncate
-        ResultSet beforeTruncate = engine.executeQuery("SELECT * FROM large_table");
+        final ResultSet beforeTruncate = engine.executeQuery("SELECT * FROM large_table");
         assertEquals(100, beforeTruncate.getRowCount());
 
         // Truncate
         engine.execute("TRUNCATE TABLE large_table");
 
         // Verify empty
-        ResultSet afterTruncate = engine.executeQuery("SELECT * FROM large_table");
+        final ResultSet afterTruncate = engine.executeQuery("SELECT * FROM large_table");
         assertEquals(0, afterTruncate.getRowCount());
     }
 }

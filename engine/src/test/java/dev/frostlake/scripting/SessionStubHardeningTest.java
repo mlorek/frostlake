@@ -35,10 +35,14 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * obtain the underlying JDBC connection ({@code session.jdbcConnection()}). Both calls compile (the
  * stub mirrors the real Snowpark surface) but are rejected at runtime, and the rejection message
  * propagates out of the CALL rather than being swallowed as a null-message wrapper.
+ *
+ * <p>Deliberately runs on its OWN engine: these assertions target the embedded stub sandbox, which a
+ * live account (running real Snowpark) does not share.
  */
 public class SessionStubHardeningTest {
 
     private static final Logger logger = LoggerFactory.getLogger(SessionStubHardeningTest.class);
+
     private DatabaseEngine engine;
 
     @BeforeEach

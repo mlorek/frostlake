@@ -21,17 +21,24 @@ import dev.frostlake.types.NumericType;
 
 import java.util.List;
 
+/**
+ * ACOS(x) — inverse cosine in radians. The argument must lie in {@code [-1, 1]}; a value outside that
+ * domain is an error rather than NaN. NULL yields NULL.
+ */
 public class Acos extends NumericArgumentFunction {
+    /** Registers the function as {@code ACOS} returning DOUBLE. */
     public Acos() { super("ACOS", NumericType.DOUBLE); }
 
     @Override
     public Object evaluate(final List<Object> args) {
         if (args.get(0) == null) return null;
-        double v = ((Number) args.get(0)).doubleValue();
+        final double v = ((Number) args.get(0)).doubleValue();
         if (v < -1 || v > 1) throw new RuntimeException("ACOS argument out of range [-1, 1]");
         return Math.acos(v);
     }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return 1; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return 1; }
 }

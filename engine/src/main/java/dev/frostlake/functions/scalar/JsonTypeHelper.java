@@ -26,7 +26,11 @@ import tools.jackson.databind.cfg.JsonNodeFeature;
 import tools.jackson.databind.json.JsonMapper;
 
 /** Shared utilities for JSON variant type-checking functions. */
-public class JsonTypeHelper {
+public final class JsonTypeHelper {
+
+    /** Static helpers only — never instantiated. */
+    private JsonTypeHelper() {
+    }
 
     private static final ObjectMapper MAPPER = JsonMapper.builder().enable(JsonNodeFeature.USE_BIG_DECIMAL_FOR_FLOATS).build();
 

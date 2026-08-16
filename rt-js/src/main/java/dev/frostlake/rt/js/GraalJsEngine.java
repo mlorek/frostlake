@@ -16,16 +16,16 @@
 
 package dev.frostlake.rt.js;
 
-import dev.frostlake.executor.udf.TruffleLogBridge;
 import com.oracle.truffle.js.scriptengine.GraalJSScriptEngine;
+import dev.frostlake.executor.udf.TruffleLogBridge;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Engine;
 import org.graalvm.polyglot.HostAccess;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import javax.script.ScriptEngine;
 import java.util.function.Predicate;
+import javax.script.ScriptEngine;
 
 /**
  * One shared polyglot {@link Engine} behind every Graal JavaScript {@code ScriptEngine} the executors

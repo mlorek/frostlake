@@ -26,15 +26,20 @@ import dev.frostlake.storage.ResultSetColumn;
  */
 public abstract class AbstractDemo {
 
+    /** The engine the demo runs against; created by {@link #setup()}, released by {@link #shutdown()}. */
     protected DatabaseEngine engine;
 
     /**
      * Main entry point - subclasses should implement this to define their demo logic
+     *
+     * @throws Exception if any demo step fails; {@link #execute()} reports it and still shuts down
      */
     protected abstract void runDemo() throws Exception;
 
     /**
      * Get the demo title to display at the start
+     *
+     * @return the title {@link #execute()} prints before running the demo
      */
     protected abstract String getDemoTitle();
 
@@ -73,6 +78,8 @@ public abstract class AbstractDemo {
 
     /**
      * Setup a database - create if doesn't exist and use it
+     *
+     * @param databaseName the database to create (if missing) and make current, with schema PUBLIC
      */
     protected void setupDatabase(final String databaseName) {
         try {
@@ -86,6 +93,8 @@ public abstract class AbstractDemo {
 
     /**
      * Print demo title with formatting
+     *
+     * @param title the text framed between {@code ===} markers
      */
     protected void printTitle(final String title) {
         System.out.println("=== " + title + " ===\n");
@@ -93,12 +102,14 @@ public abstract class AbstractDemo {
 
     /**
      * Print a section header with box formatting
+     *
+     * @param title the heading centered inside the box border
      */
     protected void printSectionHeader(final String title) {
-        int width = Math.max(title.length() + 4, 50);
-        String border = "╔" + "═".repeat(width) + "╗";
-        int padding = (width - title.length()) / 2;
-        String line = "║" + " ".repeat(padding) + title + " ".repeat(width - padding - title.length()) + "║";
+        final int width = Math.max(title.length() + 4, 50);
+        final String border = "╔" + "═".repeat(width) + "╗";
+        final int padding = (width - title.length()) / 2;
+        final String line = "║" + " ".repeat(padding) + title + " ".repeat(width - padding - title.length()) + "║";
 
         System.out.println("\n" + border);
         System.out.println(line);
@@ -107,6 +118,8 @@ public abstract class AbstractDemo {
 
     /**
      * Print a subsection header
+     *
+     * @param title the heading framed between {@code ---} markers
      */
     protected void printSubsection(final String title) {
         System.out.println("\n--- " + title + " ---");
@@ -114,6 +127,8 @@ public abstract class AbstractDemo {
 
     /**
      * Print an info line with a checkmark
+     *
+     * @param message the text printed after the checkmark
      */
     protected void printSuccess(final String message) {
         System.out.println("✓ " + message);
@@ -121,23 +136,29 @@ public abstract class AbstractDemo {
 
     /**
      * Query a table and print its contents
+     *
+     * @param tableName the table whose full contents are selected and printed
      */
     protected void printTable(final String tableName) {
-        ResultSet result = engine.executeQuery("SELECT * FROM " + tableName);
+        final ResultSet result = engine.executeQuery("SELECT * FROM " + tableName);
         printResultSet(result);
     }
 
     /**
      * Execute a query and print its results
+     *
+     * @param sql the query to run against the engine
      */
     protected void printQuery(final String sql) {
-        ResultSet result = engine.executeQuery(sql);
+        final ResultSet result = engine.executeQuery(sql);
         printResultSet(result);
     }
 
     /**
      * Print a result set with formatted output
      * Subclasses can override for custom formatting
+     *
+     * @param result the result set to print, at the default 20-character column width
      */
     protected void printResultSet(final ResultSet result) {
         printResultSet(result, 20); // Default column width
@@ -145,6 +166,9 @@ public abstract class AbstractDemo {
 
     /**
      * Print a result set with specified column width
+     *
+     * @param result      the result set to print, capped at {@link #getMaxDisplayRows()} rows
+     * @param columnWidth width of each printed column; longer values are truncated with an ellipsis
      */
     protected void printResultSet(final ResultSet result, final int columnWidth) {
         if (result.getRowCount() == 0) {
@@ -169,12 +193,12 @@ public abstract class AbstractDemo {
         // Print rows
         result.reset();
         int displayCount = 0;
-        int maxDisplayRows = getMaxDisplayRows();
+        final int maxDisplayRows = getMaxDisplayRows();
 
         while (result.next() && displayCount < maxDisplayRows) {
             System.out.print("   ");
             for (int i = 0; i < result.getColumnCount(); i++) {
-                Object value = result.getValue(i);
+                final Object value = result.getValue(i);
                 String displayValue = value != null ? value.toString() : "NULL";
 
                 // Truncate long values
@@ -198,6 +222,8 @@ public abstract class AbstractDemo {
     /**
      * Get maximum number of rows to display in result sets
      * Subclasses can override to show more or fewer rows
+     *
+     * @return the row display cap, 100 unless overridden
      */
     protected int getMaxDisplayRows() {
         return 100; // Default: show up to 100 rows
@@ -205,9 +231,12 @@ public abstract class AbstractDemo {
 
     /**
      * Get the row count from a table
+     *
+     * @param tableName the table to count
+     * @return how many rows a {@code SELECT *} over the table yields
      */
     protected int getRowCount(final String tableName) {
-        ResultSet result = engine.executeQuery("SELECT * FROM " + tableName);
+        final ResultSet result = engine.executeQuery("SELECT * FROM " + tableName);
         return result.getRowCount();
     }
 

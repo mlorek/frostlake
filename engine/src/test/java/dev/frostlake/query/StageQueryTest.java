@@ -50,9 +50,9 @@ public class StageQueryTest extends BaseDatabaseTest {
         Files.writeString(stageDir.resolve("b.csv"), "3,gamma\n");
         Files.writeString(stageDir.resolve("data1.json"), "{\"a\": {\"b\": \"deep\"}, \"n\": 7}\n");
         Assumptions.assumeFalse(isLiveSnowflake(),
-            "every test here queries a stage whose URL is a local `file://` directory the harness just "
-            + "wrote; a real account rejects that URL prefix outright — staged files there have to sit "
-            + "in a named internal stage populated by PUT, or in cloud storage");
+            "every test here reads files from a local `file://` directory the harness just wrote, "
+            + "which no account-side stage can see; the local-URL affordance itself is an explicit "
+            + "opt-in (stage.file.urlEnabled) whose default surface StageUrlPolicyTest pins");
         engine.execute("CREATE STAGE q_stage URL='file://" + stageDir + "'");
         engine.execute("CREATE FILE FORMAT q_json TYPE = 'JSON'");
     }

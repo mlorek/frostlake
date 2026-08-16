@@ -29,6 +29,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.zip.GZIPInputStream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -52,9 +53,9 @@ public class CopyUnloadStagePathTest extends BaseDatabaseTest {
     @BeforeEach
     public void skipWhenLive() {
         Assumptions.assumeFalse(isLiveSnowflake(),
-            "needs a `file://` local stage and then inspects the unloaded file on the local filesystem; "
-            + "a real account rejects the URL prefix and writes into a named internal stage or cloud "
-            + "storage the test process cannot read");
+            "unloads into a local `file://` stage and then inspects the produced file on the local "
+            + "filesystem, which no account-side run can do; the local-URL affordance itself is an "
+            + "explicit opt-in (stage.file.urlEnabled) whose default surface StageUrlPolicyTest pins");
     }
 
     @Test
@@ -65,7 +66,7 @@ public class CopyUnloadStagePathTest extends BaseDatabaseTest {
 
         final ResultSet rs = engine.executeQuery("""
             COPY INTO @exp_stage/reports/daily/ FROM (SELECT id, label FROM items)
-            FILE_FORMAT = (TYPE = 'CSV')
+            FILE_FORMAT = (TYPE = 'CSV' COMPRESSION = NONE)
             """);
         assertEquals(2, ((Number) rs.getRows().get(0).getValue(0)).intValue());
 
@@ -95,9 +96,10 @@ public class CopyUnloadStagePathTest extends BaseDatabaseTest {
             """);
         assertEquals(2, ((Number) rs.getRows().get(0).getValue(0)).intValue());
 
-        final Path out = stageDir.resolve("exports/orders/full-2026-07-28/data_0_0_0.json");
+        // COMPRESSION = GZIP names the file .json.gz and writes gzip bytes, as the account does.
+        final Path out = stageDir.resolve("exports/orders/full-2026-07-28/data_0_0_0.json.gz");
         assertTrue(Files.exists(out), "partitioned unload must write under <sub-path>/<partition-key>/");
-        final String content = new String(Files.readAllBytes(out), StandardCharsets.UTF_8);
+        final String content = gunzip(out);
         logger.info("Unloaded JSON content: {}", content);
         // A single-VARIANT-column unload writes the raw documents themselves (Snowflake TYPE=JSON
         // contract) — no {"RECORD": "..."} wrapper and no string-escaped embedding.
@@ -108,6 +110,12 @@ public class CopyUnloadStagePathTest extends BaseDatabaseTest {
         assertEquals("{\"order_id\":\"o2\",\"region_id\":\"r1\"}", lines[1]);
     }
 
+    private String gunzip(final Path file) throws IOException {
+        try (final GZIPInputStream in = new GZIPInputStream(Files.newInputStream(file))) {
+            return new String(in.readAllBytes(), StandardCharsets.UTF_8);
+        }
+    }
+
     @Test
     public void unloadToSchemaQualifiedStageSubPath() {
         engine.execute("CREATE TABLE metrics (k VARCHAR, v INTEGER)");
@@ -116,7 +124,7 @@ public class CopyUnloadStagePathTest extends BaseDatabaseTest {
 
         final ResultSet rs = engine.executeQuery("""
             COPY INTO @test_schema.q_stage/out/ FROM (SELECT k, v FROM metrics)
-            FILE_FORMAT = (TYPE = 'CSV')
+            FILE_FORMAT = (TYPE = 'CSV' COMPRESSION = NONE)
             """);
         assertEquals(1, ((Number) rs.getRows().get(0).getValue(0)).intValue());
         assertTrue(Files.exists(stageDir.resolve("out/data_0_0_0.csv")));

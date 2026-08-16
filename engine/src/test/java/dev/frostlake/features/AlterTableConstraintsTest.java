@@ -16,45 +16,27 @@
 
 package dev.frostlake.features;
 
-import dev.frostlake.DatabaseEngine;
-import dev.frostlake.metastore.model.ForeignKeyConstraint;
-import dev.frostlake.metastore.model.Table;
-import dev.frostlake.metastore.model.TableColumn;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
+import dev.frostlake.BaseDatabaseTest;
+import dev.frostlake.storage.ResultSet;
+import dev.frostlake.storage.Row;
 import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.util.List;
-
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Tests for ALTER TABLE ADD/DROP constraint commands
- * Allows adding and dropping PRIMARY KEY, UNIQUE, and FOREIGN KEY constraints
+ * ALTER TABLE ADD/DROP constraint commands — PRIMARY KEY, UNIQUE and FOREIGN KEY — asserted
+ * through the SQL surface: {@code DESCRIBE TABLE}'s "primary key"/"unique key" cells,
+ * {@code SHOW PRIMARY KEYS}, {@code SHOW UNIQUE KEYS} and {@code SHOW IMPORTED KEYS}. A foreign
+ * key declaring any referential action other than NO ACTION is dropped whole, silently, exactly
+ * as on the CREATE TABLE paths.
  */
-public class AlterTableConstraintsTest {
+public class AlterTableConstraintsTest extends BaseDatabaseTest {
     private static final Logger logger = LoggerFactory.getLogger(AlterTableConstraintsTest.class);
 
-    private DatabaseEngine engine;
-
-    @BeforeEach
-    public void setUp() {
-        engine = new DatabaseEngine();
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
-        logger.info("DatabaseEngine initialized for ALTER TABLE constraints tests");
-    }
-
-    @AfterEach
-    public void tearDown() {
-        if (engine != null) {
-            engine.shutdown();
-        }
+    private ResultSet importedKeys(final String childTable) {
+        return engine.executeQuery("SHOW IMPORTED KEYS IN TABLE " + childTable);
     }
 
     @Test
@@ -64,9 +46,8 @@ public class AlterTableConstraintsTest {
         engine.execute("CREATE TABLE users (id INTEGER, name VARCHAR, email VARCHAR)");
         engine.execute("ALTER TABLE users ADD PRIMARY KEY (id)");
 
-        Table table = engine.getCatalog().resolveTable("USERS");
-        TableColumn idColumn = table.getColumn("id");
-        assertTrue(idColumn.isPrimaryKey());
+        assertEquals("Y", describeCell("users", "ID", "primary key"));
+        assertEquals("N", describeCell("users", "NAME", "primary key"));
 
         logger.info("ALTER TABLE ADD PRIMARY KEY works correctly");
     }
@@ -78,10 +59,9 @@ public class AlterTableConstraintsTest {
         engine.execute("CREATE TABLE order_items (order_id INTEGER, item_id INTEGER, quantity INTEGER)");
         engine.execute("ALTER TABLE order_items ADD PRIMARY KEY (order_id, item_id)");
 
-        Table table = engine.getCatalog().resolveTable("ORDER_ITEMS");
-        assertTrue(table.getColumn("order_id").isPrimaryKey());
-        assertTrue(table.getColumn("item_id").isPrimaryKey());
-        assertFalse(table.getColumn("quantity").isPrimaryKey());
+        assertEquals("Y", describeCell("order_items", "ORDER_ID", "primary key"));
+        assertEquals("Y", describeCell("order_items", "ITEM_ID", "primary key"));
+        assertEquals("N", describeCell("order_items", "QUANTITY", "primary key"));
 
         logger.info("ALTER TABLE ADD composite PRIMARY KEY works correctly");
     }
@@ -93,8 +73,9 @@ public class AlterTableConstraintsTest {
         engine.execute("CREATE TABLE products (product_id INTEGER, name VARCHAR)");
         engine.execute("ALTER TABLE products ADD CONSTRAINT pk_products PRIMARY KEY (product_id)");
 
-        Table table = engine.getCatalog().resolveTable("PRODUCTS");
-        assertTrue(table.getColumn("product_id").isPrimaryKey());
+        final ResultSet keys = engine.executeQuery("SHOW PRIMARY KEYS IN TABLE products");
+        final Row key = soleRowWhere(keys, "column_name", "PRODUCT_ID");
+        assertEquals("PK_PRODUCTS", cell(keys, key, "constraint_name"));
 
         logger.info("ALTER TABLE ADD named PRIMARY KEY works correctly");
     }
@@ -106,9 +87,8 @@ public class AlterTableConstraintsTest {
         engine.execute("CREATE TABLE users (id INTEGER, email VARCHAR, phone VARCHAR)");
         engine.execute("ALTER TABLE users ADD UNIQUE (email)");
 
-        Table table = engine.getCatalog().resolveTable("USERS");
-        assertTrue(table.getColumn("email").isUnique());
-        assertFalse(table.getColumn("phone").isUnique());
+        assertEquals("Y", describeCell("users", "EMAIL", "unique key"));
+        assertEquals("N", describeCell("users", "PHONE", "unique key"));
 
         logger.info("ALTER TABLE ADD UNIQUE works correctly");
     }
@@ -120,10 +100,9 @@ public class AlterTableConstraintsTest {
         engine.execute("CREATE TABLE registrations (user_id INTEGER, event_id INTEGER, timestamp VARCHAR)");
         engine.execute("ALTER TABLE registrations ADD UNIQUE (user_id, event_id)");
 
-        Table table = engine.getCatalog().resolveTable("REGISTRATIONS");
-        assertTrue(table.getColumn("user_id").isUnique());
-        assertTrue(table.getColumn("event_id").isUnique());
-        assertFalse(table.getColumn("timestamp").isUnique());
+        assertEquals("Y", describeCell("registrations", "USER_ID", "unique key"));
+        assertEquals("Y", describeCell("registrations", "EVENT_ID", "unique key"));
+        assertEquals("N", describeCell("registrations", "TIMESTAMP", "unique key"));
 
         logger.info("ALTER TABLE ADD composite UNIQUE works correctly");
     }
@@ -135,8 +114,9 @@ public class AlterTableConstraintsTest {
         engine.execute("CREATE TABLE employees (id INTEGER, email VARCHAR)");
         engine.execute("ALTER TABLE employees ADD CONSTRAINT uk_email UNIQUE (email)");
 
-        Table table = engine.getCatalog().resolveTable("EMPLOYEES");
-        assertTrue(table.getColumn("email").isUnique());
+        final ResultSet keys = engine.executeQuery("SHOW UNIQUE KEYS IN TABLE employees");
+        final Row key = soleRowWhere(keys, "column_name", "EMAIL");
+        assertEquals("UK_EMAIL", cell(keys, key, "constraint_name"));
 
         logger.info("ALTER TABLE ADD named UNIQUE works correctly");
     }
@@ -149,14 +129,10 @@ public class AlterTableConstraintsTest {
         engine.execute("CREATE TABLE employees (emp_id INTEGER, name VARCHAR, dept_id INTEGER)");
         engine.execute("ALTER TABLE employees ADD FOREIGN KEY (dept_id) REFERENCES departments (dept_id)");
 
-        Table table = engine.getCatalog().resolveTable("EMPLOYEES");
-        List<ForeignKeyConstraint> foreignKeys = table.getForeignKeys();
-        assertEquals(1, foreignKeys.size());
-
-        ForeignKeyConstraint fk = foreignKeys.get(0);
-        assertEquals(1, fk.getColumnNames().size());
-        assertTrue(fk.getColumnNames().contains("DEPT_ID"));
-        assertTrue(fk.getReferencedTable().equalsIgnoreCase("departments"));
+        final ResultSet keys = importedKeys("employees");
+        final Row fk = soleRowWhere(keys, "fk_column_name", "DEPT_ID");
+        assertEquals("DEPARTMENTS", cell(keys, fk, "pk_table_name"));
+        assertEquals("DEPT_ID", cell(keys, fk, "pk_column_name"));
 
         logger.info("ALTER TABLE ADD FOREIGN KEY works correctly");
     }
@@ -169,12 +145,9 @@ public class AlterTableConstraintsTest {
         engine.execute("CREATE TABLE cities (city_id INTEGER, name VARCHAR, country_id INTEGER)");
         engine.execute("ALTER TABLE cities ADD CONSTRAINT fk_cities_countries FOREIGN KEY (country_id) REFERENCES countries (country_id)");
 
-        Table table = engine.getCatalog().resolveTable("CITIES");
-        List<ForeignKeyConstraint> foreignKeys = table.getForeignKeys();
-        assertEquals(1, foreignKeys.size());
-
-        ForeignKeyConstraint fk = foreignKeys.get(0);
-        assertEquals("FK_CITIES_COUNTRIES", fk.getConstraintName());
+        final ResultSet keys = importedKeys("cities");
+        final Row fk = soleRowWhere(keys, "fk_column_name", "COUNTRY_ID");
+        assertEquals("FK_CITIES_COUNTRIES", cell(keys, fk, "fk_name"));
 
         logger.info("ALTER TABLE ADD named FOREIGN KEY works correctly");
     }
@@ -187,14 +160,10 @@ public class AlterTableConstraintsTest {
         engine.execute("CREATE TABLE posts (post_id INTEGER, user_id INTEGER)");
         engine.execute("ALTER TABLE posts ADD FOREIGN KEY (user_id) REFERENCES users (user_id) ON DELETE CASCADE");
 
-        Table table = engine.getCatalog().resolveTable("POSTS");
-        List<ForeignKeyConstraint> foreignKeys = table.getForeignKeys();
-        assertEquals(1, foreignKeys.size());
+        // A referential action other than NO ACTION silently drops the whole constraint.
+        assertEquals(0, importedKeys("posts").getRowCount());
 
-        ForeignKeyConstraint fk = foreignKeys.get(0);
-        assertEquals("CASCADE", fk.getOnDelete());
-
-        logger.info("ALTER TABLE ADD FOREIGN KEY with ON DELETE works correctly");
+        logger.info("ALTER TABLE ADD FOREIGN KEY with ON DELETE dropped the constraint, as live does");
     }
 
     @Test
@@ -205,14 +174,9 @@ public class AlterTableConstraintsTest {
         engine.execute("CREATE TABLE products (prod_id INTEGER, cat_id INTEGER)");
         engine.execute("ALTER TABLE products ADD FOREIGN KEY (cat_id) REFERENCES categories (cat_id) ON UPDATE CASCADE");
 
-        Table table = engine.getCatalog().resolveTable("PRODUCTS");
-        List<ForeignKeyConstraint> foreignKeys = table.getForeignKeys();
-        assertEquals(1, foreignKeys.size());
+        assertEquals(0, importedKeys("products").getRowCount());
 
-        ForeignKeyConstraint fk = foreignKeys.get(0);
-        assertEquals("CASCADE", fk.getOnUpdate());
-
-        logger.info("ALTER TABLE ADD FOREIGN KEY with ON UPDATE works correctly");
+        logger.info("ALTER TABLE ADD FOREIGN KEY with ON UPDATE dropped the constraint, as live does");
     }
 
     @Test
@@ -223,15 +187,9 @@ public class AlterTableConstraintsTest {
         engine.execute("CREATE TABLE order_items (item_id INTEGER, order_id INTEGER)");
         engine.execute("ALTER TABLE order_items ADD FOREIGN KEY (order_id) REFERENCES orders (order_id) ON DELETE CASCADE ON UPDATE CASCADE");
 
-        Table table = engine.getCatalog().resolveTable("ORDER_ITEMS");
-        List<ForeignKeyConstraint> foreignKeys = table.getForeignKeys();
-        assertEquals(1, foreignKeys.size());
+        assertEquals(0, importedKeys("order_items").getRowCount());
 
-        ForeignKeyConstraint fk = foreignKeys.get(0);
-        assertEquals("CASCADE", fk.getOnDelete());
-        assertEquals("CASCADE", fk.getOnUpdate());
-
-        logger.info("ALTER TABLE ADD FOREIGN KEY with both actions works correctly");
+        logger.info("ALTER TABLE ADD FOREIGN KEY with both actions dropped the constraint, as live does");
     }
 
     @Test
@@ -242,14 +200,13 @@ public class AlterTableConstraintsTest {
         engine.execute("CREATE TABLE shipments (ship_id INTEGER, order_id INTEGER, customer_id INTEGER)");
         engine.execute("ALTER TABLE shipments ADD FOREIGN KEY (order_id, customer_id) REFERENCES order_headers (order_id, customer_id)");
 
-        Table table = engine.getCatalog().resolveTable("SHIPMENTS");
-        List<ForeignKeyConstraint> foreignKeys = table.getForeignKeys();
-        assertEquals(1, foreignKeys.size());
-
-        ForeignKeyConstraint fk = foreignKeys.get(0);
-        assertEquals(2, fk.getColumnNames().size());
-        assertTrue(fk.getColumnNames().contains("ORDER_ID"));
-        assertTrue(fk.getColumnNames().contains("CUSTOMER_ID"));
+        // One SHOW IMPORTED KEYS row per key column.
+        final ResultSet keys = importedKeys("shipments");
+        assertEquals(2, keys.getRowCount());
+        final Row first = soleRowWhere(keys, "fk_column_name", "ORDER_ID");
+        assertEquals("1", cell(keys, first, "key_sequence"));
+        final Row second = soleRowWhere(keys, "fk_column_name", "CUSTOMER_ID");
+        assertEquals("2", cell(keys, second, "key_sequence"));
 
         logger.info("ALTER TABLE ADD composite FOREIGN KEY works correctly");
     }
@@ -262,13 +219,11 @@ public class AlterTableConstraintsTest {
         engine.execute("CREATE TABLE child (id INTEGER, parent_id INTEGER)");
         engine.execute("ALTER TABLE child ADD CONSTRAINT fk_child_parent FOREIGN KEY (parent_id) REFERENCES parent (id)");
 
-        Table table = engine.getCatalog().resolveTable("CHILD");
-        assertEquals(1, table.getForeignKeys().size());
+        assertEquals(1, importedKeys("child").getRowCount());
 
         engine.execute("ALTER TABLE child DROP CONSTRAINT fk_child_parent");
 
-        table = engine.getCatalog().resolveTable("CHILD");
-        assertEquals(0, table.getForeignKeys().size());
+        assertEquals(0, importedKeys("child").getRowCount());
 
         logger.info("ALTER TABLE DROP CONSTRAINT works correctly");
     }
@@ -282,10 +237,9 @@ public class AlterTableConstraintsTest {
         engine.execute("ALTER TABLE users ADD UNIQUE (email)");
         engine.execute("ALTER TABLE users ADD UNIQUE (phone)");
 
-        Table table = engine.getCatalog().resolveTable("USERS");
-        assertTrue(table.getColumn("user_id").isPrimaryKey());
-        assertTrue(table.getColumn("email").isUnique());
-        assertTrue(table.getColumn("phone").isUnique());
+        assertEquals("Y", describeCell("users", "USER_ID", "primary key"));
+        assertEquals("Y", describeCell("users", "EMAIL", "unique key"));
+        assertEquals("Y", describeCell("users", "PHONE", "unique key"));
 
         logger.info("ALTER TABLE with multiple constraint operations works correctly");
     }
@@ -298,8 +252,7 @@ public class AlterTableConstraintsTest {
         engine.execute("CREATE TABLE analytics.users (id INTEGER, name VARCHAR)");
         engine.execute("ALTER TABLE analytics.users ADD PRIMARY KEY (id)");
 
-        Table table = engine.getCatalog().resolveTable("ANALYTICS.USERS");
-        assertTrue(table.getColumn("id").isPrimaryKey());
+        assertEquals("Y", describeCell("analytics.users", "ID", "primary key"));
 
         logger.info("ALTER TABLE ADD constraint with qualified name works correctly");
     }
@@ -311,8 +264,7 @@ public class AlterTableConstraintsTest {
         engine.execute("CREATE TABLE test1 (id INTEGER)");
         engine.execute("ALTER TABLE IF EXISTS test1 ADD PRIMARY KEY (id)");
 
-        Table table = engine.getCatalog().resolveTable("TEST1");
-        assertTrue(table.getColumn("id").isPrimaryKey());
+        assertEquals("Y", describeCell("test1", "ID", "primary key"));
 
         engine.execute("ALTER TABLE IF EXISTS nonexistent ADD PRIMARY KEY (id)");
 
@@ -329,11 +281,12 @@ public class AlterTableConstraintsTest {
         engine.execute("ALTER TABLE teams ADD UNIQUE (name)");
         engine.execute("ALTER TABLE teams CLUSTER BY (city)");
 
-        Table table = engine.getCatalog().resolveTable("TEAMS");
-        assertEquals(3, table.getColumns().size());
-        assertTrue(table.getColumn("team_id").isPrimaryKey());
-        assertTrue(table.getColumn("name").isUnique());
-        assertEquals(1, table.getClusterKeys().size());
+        assertEquals(3, engine.executeQuery("DESCRIBE TABLE teams").getRowCount());
+        assertEquals("Y", describeCell("teams", "TEAM_ID", "primary key"));
+        assertEquals("Y", describeCell("teams", "NAME", "unique key"));
+
+        final ResultSet tables = engine.executeQuery("SHOW TABLES LIKE 'teams'");
+        assertEquals("LINEAR(city)", cell(tables, soleRowWhere(tables, "name", "TEAMS"), "cluster_by"));
 
         logger.info("Mixed ALTER TABLE operations with constraints work correctly");
     }
@@ -346,14 +299,9 @@ public class AlterTableConstraintsTest {
         engine.execute("CREATE TABLE employees (emp_id INTEGER, mgr_id INTEGER)");
         engine.execute("ALTER TABLE employees ADD FOREIGN KEY (mgr_id) REFERENCES managers (mgr_id) ON DELETE SET NULL");
 
-        Table table = engine.getCatalog().resolveTable("EMPLOYEES");
-        List<ForeignKeyConstraint> foreignKeys = table.getForeignKeys();
-        assertEquals(1, foreignKeys.size());
+        assertEquals(0, importedKeys("employees").getRowCount());
 
-        ForeignKeyConstraint fk = foreignKeys.get(0);
-        assertTrue(fk.getOnDelete().contains("NULL"));
-
-        logger.info("ALTER TABLE ADD FOREIGN KEY with SET NULL works correctly");
+        logger.info("ALTER TABLE ADD FOREIGN KEY with SET NULL dropped the constraint, as live does");
     }
 
     @Test
@@ -364,14 +312,9 @@ public class AlterTableConstraintsTest {
         engine.execute("CREATE TABLE transactions (txn_id INTEGER, wallet_id INTEGER)");
         engine.execute("ALTER TABLE transactions ADD FOREIGN KEY (wallet_id) REFERENCES wallets (wallet_id) ON DELETE RESTRICT");
 
-        Table table = engine.getCatalog().resolveTable("TRANSACTIONS");
-        List<ForeignKeyConstraint> foreignKeys = table.getForeignKeys();
-        assertEquals(1, foreignKeys.size());
+        assertEquals(0, importedKeys("transactions").getRowCount());
 
-        ForeignKeyConstraint fk = foreignKeys.get(0);
-        assertEquals("RESTRICT", fk.getOnDelete());
-
-        logger.info("ALTER TABLE ADD FOREIGN KEY with RESTRICT works correctly");
+        logger.info("ALTER TABLE ADD FOREIGN KEY with RESTRICT dropped the constraint, as live does");
     }
 
     @Test
@@ -382,12 +325,11 @@ public class AlterTableConstraintsTest {
         engine.execute("CREATE TABLE products (prod_id INTEGER, vendor_id INTEGER)");
         engine.execute("ALTER TABLE products ADD FOREIGN KEY (vendor_id) REFERENCES vendors (vendor_id) ON UPDATE NO ACTION");
 
-        Table table = engine.getCatalog().resolveTable("PRODUCTS");
-        List<ForeignKeyConstraint> foreignKeys = table.getForeignKeys();
-        assertEquals(1, foreignKeys.size());
-
-        ForeignKeyConstraint fk = foreignKeys.get(0);
-        assertTrue(fk.getOnUpdate().contains("ACTION"));
+        // NO ACTION is the one supported referential action: the constraint is kept.
+        final ResultSet keys = importedKeys("products");
+        final Row fk = soleRowWhere(keys, "fk_column_name", "VENDOR_ID");
+        assertEquals("NO ACTION", cell(keys, fk, "update_rule"));
+        assertEquals("NO ACTION", cell(keys, fk, "delete_rule"));
 
         logger.info("ALTER TABLE ADD FOREIGN KEY with NO ACTION works correctly");
     }

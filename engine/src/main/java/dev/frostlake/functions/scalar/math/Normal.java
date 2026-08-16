@@ -28,11 +28,16 @@ public class Normal extends BuiltInFunction {
 
     @Override
     public Object evaluate(final List<Object> args) {
-        double mean   = args.size() > 0 && args.get(0) != null ? ((Number) args.get(0)).doubleValue() : 0.0;
-        double stddev = args.size() > 1 && args.get(1) != null ? ((Number) args.get(1)).doubleValue() : 1.0;
+        final double mean   = args.size() > 0 && args.get(0) != null ? ((Number) args.get(0)).doubleValue() : 0.0;
+        final double stddev = args.size() > 1 && args.get(1) != null ? ((Number) args.get(1)).doubleValue() : 1.0;
         return mean + stddev * RNG.nextGaussian();
     }
 
-    @Override public int getMinArgCount() { return 0; }
-    @Override public int getMaxArgCount() { return 2; }
+    // Exactly three arguments. Live refuses NORMAL(0, 1) AND NORMAL(0::FLOAT, 1::FLOAT) while
+    // accepting NORMAL(0, 1, RANDOM()) with plain integers, so it is the ARITY that matters — the
+    // message names the argument TYPES, which is misleading.
+    @Override
+    public int getMinArgCount() { return 3; }
+    @Override
+    public int getMaxArgCount() { return 3; }
 }

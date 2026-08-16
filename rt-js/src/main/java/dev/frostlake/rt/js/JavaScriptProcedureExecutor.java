@@ -18,27 +18,26 @@ package dev.frostlake.rt.js;
 
 import dev.frostlake.DatabaseEngine;
 import dev.frostlake.functions.scalar.ArrayFunctionHelper;
-import dev.frostlake.jdbc.JdbcMarshaling;
 import dev.frostlake.metastore.model.Parameter;
 import dev.frostlake.metastore.model.Procedure;
 import dev.frostlake.metastore.model.UdfLanguage;
-import dev.frostlake.values.VariantValue;
-import dev.frostlake.storage.ResultSet;
-import dev.frostlake.storage.Row;
 import dev.frostlake.types.ArrayType;
 import dev.frostlake.types.DataType;
 import dev.frostlake.types.TypeCategory;
+import dev.frostlake.values.VariantValue;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.List;
 import javax.script.ScriptEngine;
 import javax.script.ScriptEngineManager;
 import javax.script.ScriptException;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Map;
 
-public class JavaScriptProcedureExecutor {
+public final class JavaScriptProcedureExecutor {
+
+    /** Static helpers only — never instantiated. */
+    private JavaScriptProcedureExecutor() {
+    }
 
     static {
         // GraalVM's polyglot and Truffle artifacts can resolve to mismatched patch versions on a downstream
@@ -80,33 +79,33 @@ public class JavaScriptProcedureExecutor {
         }
 
         try {
-            List<Parameter> parameters = procedure.getParameters();
+            final List<Parameter> parameters = procedure.getParameters();
             if (parameters.size() != arguments.size()) {
                 throw new RuntimeException("Procedure " + procedure.getName() + " expects " +
                     parameters.size() + " arguments but got " + arguments.size());
             }
 
             for (int i = 0; i < parameters.size(); i++) {
-                String paramName = parameters.get(i).getName();
-                Object value = arguments.get(i);
+                final String paramName = parameters.get(i).getName();
+                final Object value = arguments.get(i);
                 scriptEngine.put(paramName, value);
                 reparseSemiStructured(scriptEngine, parameters.get(i), paramName, value);
             }
 
-            SnowflakeAPIWrapper apiWrapper = new SnowflakeAPIWrapper(engine);
+            final SnowflakeAPIWrapper apiWrapper = new SnowflakeAPIWrapper(engine);
             scriptEngine.put("snowflake", apiWrapper);
 
-            String body = procedure.getBody().trim();
+            final String body = procedure.getBody().trim();
             // A JS object/array return value must come back as JSON text so it round-trips as a Frostlake
             // OBJECT/ARRAY (a raw JS Value stringifies to "{a: 1}", which isn't valid JSON and breaks
             // downstream variant-path access). Scalars (string/number/boolean) and null pass through.
-            String wrappedCode = "(function() {\n"
+            final String wrappedCode = "(function() {\n"
                 + "  var __result = (function() {\n" + body + "\n  })();\n"
                 + "  return (__result !== null && __result !== undefined && typeof __result === 'object')\n"
                 + "      ? JSON.stringify(__result) : __result;\n"
                 + "})()";
 
-            Object result = scriptEngine.eval(wrappedCode);
+            final Object result = scriptEngine.eval(wrappedCode);
 
             logger.debug("JavaScript procedure {} executed successfully", procedure.getName());
             return result;
@@ -169,162 +168,4 @@ public class JavaScriptProcedureExecutor {
         }
     }
 
-    public static class SnowflakeAPIWrapper {
-        private final DatabaseEngine engine;
-
-        public SnowflakeAPIWrapper(final DatabaseEngine engine) {
-            this.engine = engine;
-        }
-
-        public JavaScriptResultSet execute(final Object options) {
-            String sqlText = null;
-
-            if (options instanceof Map) {
-                Map<?, ?> optMap = (Map<?, ?>) options;
-                Object sqlObj = optMap.get("sqlText");
-                if (sqlObj == null) {
-                    sqlObj = optMap.get("sql");
-                }
-                if (sqlObj != null) {
-                    sqlText = String.valueOf(sqlObj);
-                }
-            }
-
-            if (sqlText == null) {
-                throw new RuntimeException("sqlText is required in snowflake.execute() options");
-            }
-
-            try {
-                ResultSet rs = engine.executeQuery(sqlText);
-                return new JavaScriptResultSet(rs);
-            } catch (final Exception e) {
-                throw new RuntimeException("Error executing SQL: " + e.getMessage(), e);
-            }
-        }
-
-        /**
-         * The standard Snowflake stored-procedure API: {@code snowflake.createStatement({sqlText, binds})}
-         * returns a Statement whose {@code execute()} runs the SQL. Real Snowflake JS procedures use this
-         * two-step form (createStatement → execute), not the one-step {@code snowflake.execute(...)} above.
-         */
-        public SnowflakeStatement createStatement(final Object options) {
-            String sqlText = null;
-            final List<Object> binds = new ArrayList<>();
-
-            if (options instanceof Map) {
-                final Map<?, ?> optMap = (Map<?, ?>) options;
-                Object sqlObj = optMap.get("sqlText");
-                if (sqlObj == null) {
-                    sqlObj = optMap.get("sql");
-                }
-                if (sqlObj != null) {
-                    sqlText = String.valueOf(sqlObj);
-                }
-                final Object bindsObj = optMap.get("binds");
-                if (bindsObj instanceof List) {
-                    binds.addAll((List<?>) bindsObj);
-                }
-            }
-
-            if (sqlText == null) {
-                throw new RuntimeException("sqlText is required in snowflake.createStatement() options");
-            }
-
-            return new SnowflakeStatement(engine, sqlText, binds);
-        }
-    }
-
-    /**
-     * A prepared statement created by {@code snowflake.createStatement}. Its {@code execute()} substitutes any
-     * positional {@code ?} binds and runs the SQL; column metadata (count/name) reflects the last execution,
-     * as the Snowflake API exposes it on the statement.
-     */
-    public static class SnowflakeStatement {
-        private final DatabaseEngine engine;
-        private final String sqlText;
-        private final List<Object> binds;
-        private ResultSet lastResult;
-
-        SnowflakeStatement(final DatabaseEngine engine, final String sqlText, final List<Object> binds) {
-            this.engine = engine;
-            this.sqlText = sqlText;
-            this.binds = binds;
-        }
-
-        public JavaScriptResultSet execute() {
-            final String sql = (binds == null || binds.isEmpty())
-                ? sqlText : JdbcMarshaling.substitutePlaceholders(sqlText, binds);
-            try {
-                final ResultSet rs = engine.executeQuery(sql);
-                this.lastResult = rs;
-                return new JavaScriptResultSet(rs);
-            } catch (final Exception e) {
-                throw new RuntimeException("Error executing SQL: " + e.getMessage(), e);
-            }
-        }
-
-        public int getColumnCount() {
-            return lastResult == null ? 0 : lastResult.getColumnCount();
-        }
-
-        public String getColumnName(final int columnIndex) {
-            return lastResult == null ? null : lastResult.getColumns().get(columnIndex - 1).getName();
-        }
-
-        public int getRowCount() {
-            return lastResult == null ? 0 : lastResult.getRowCount();
-        }
-    }
-
-    public static class JavaScriptResultSet {
-        private final ResultSet resultSet;
-        private int currentRow = -1;
-
-        public JavaScriptResultSet(final ResultSet resultSet) {
-            this.resultSet = resultSet;
-        }
-
-        public boolean next() {
-            currentRow++;
-            return currentRow < resultSet.getRowCount();
-        }
-
-        public Object getColumnValue(final int columnIndex) {
-            if (currentRow < 0 || currentRow >= resultSet.getRowCount()) {
-                throw new RuntimeException("No current row. Call next() first.");
-            }
-
-            Row row = resultSet.getRows().get(currentRow);
-            int index = columnIndex - 1;
-
-            if (index < 0 || index >= row.size()) {
-                throw new RuntimeException("Column index " + columnIndex + " is out of range");
-            }
-
-            return row.getValue(index);
-        }
-
-        public Object getColumnValue(final String columnName) {
-            if (currentRow < 0 || currentRow >= resultSet.getRowCount()) {
-                throw new RuntimeException("No current row. Call next() first.");
-            }
-
-            Row row = resultSet.getRows().get(currentRow);
-            for (int i = 0; i < resultSet.getColumns().size(); i++) {
-                if (resultSet.getColumns().get(i).getName().equalsIgnoreCase(columnName)) {
-                    return row.getValue(i);
-                }
-            }
-
-            throw new RuntimeException("Column " + columnName + " not found");
-        }
-
-        public int getRowCount() {
-            return resultSet.getRowCount();
-        }
-
-        public int getColumnCount() {
-            return resultSet.getColumnCount();
-        }
-    }
 }

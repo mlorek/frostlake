@@ -34,7 +34,6 @@ import javax.xml.parsers.DocumentBuilderFactory;
 
 import java.io.IOException;
 import java.io.InputStream;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
@@ -52,7 +51,7 @@ public class XmlStageReader implements StageFileReader {
     @Override
     public List<JsonNode> readRecords(final Path file) throws IOException {
         final List<JsonNode> records = new ArrayList<>();
-        try (final InputStream in = Files.newInputStream(file)) {
+        try (final InputStream in = StagedFileIo.inputStream(file)) {
             final DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
             factory.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
             factory.setFeature("http://xml.org/sax/features/external-general-entities", false);

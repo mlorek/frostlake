@@ -20,7 +20,6 @@ import dev.frostlake.functions.AggregateFunction;
 import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.types.NumericType;
 
-import java.util.ArrayList;
 import java.util.List;
 
 public class StdDev extends AggregateFunction {
@@ -36,8 +35,10 @@ public class StdDev extends AggregateFunction {
     @Override
     public Object evaluate(final List<Object> args) { return null; }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return 1; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return 1; }
 
     /**
      * The moment aggregates reach their internal sum of SQUARES before they reach any type check, so
@@ -51,32 +52,4 @@ public class StdDev extends AggregateFunction {
         return SemiStructuredRejection.MULTIPLY_OPERANDS;
     }
 
-    public static class StdDevAccumulator implements Accumulator {
-        final List<Double> values = new ArrayList<>();
-
-        @Override
-        public void accumulate(final Object value) {
-            if (value != null) values.add(((Number) value).doubleValue());
-        }
-
-        @Override
-        public Object getResult() {
-            if (values.isEmpty()) return null;
-            double sum = 0.0;
-            for (final double v : values) sum += v;
-            double mean = sum / values.size();
-            double varianceSum = 0.0;
-            for (final double v : values) varianceSum += Math.pow(v - mean, 2);
-            double variance = varianceSum / values.size();
-            return Math.sqrt(variance);
-        }
-
-        @Override
-        public void reset() { values.clear(); }
-
-        @Override
-        public void merge(final Accumulator other) {
-            values.addAll(((StdDevAccumulator) other).values);
-        }
-    }
 }

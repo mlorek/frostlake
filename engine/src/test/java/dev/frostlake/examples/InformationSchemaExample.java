@@ -25,11 +25,15 @@ import org.slf4j.LoggerFactory;
 /**
  * Example demonstrating INFORMATION_SCHEMA system views
  */
-public class InformationSchemaExample {
+public final class InformationSchemaExample {
+
+    /** Static helpers only — never instantiated. */
+    private InformationSchemaExample() {
+    }
     private static final Logger logger = LoggerFactory.getLogger(InformationSchemaExample.class);
 
     public static void main(final String[] args) {
-        DatabaseEngine engine = new DatabaseEngine();
+        final DatabaseEngine engine = new DatabaseEngine();
 
         try {
             logger.info("=== INFORMATION_SCHEMA System Views ===\n");
@@ -51,7 +55,7 @@ public class InformationSchemaExample {
             // 1. Query all databases
             logger.info("1. Query INFORMATION_SCHEMA.DATABASES:");
             logger.info("   {}", "-".repeat(60));
-            ResultSet databases = engine.executeQuery("SELECT DATABASE_NAME FROM INFORMATION_SCHEMA.DATABASES ORDER BY DATABASE_NAME");
+            final ResultSet databases = engine.executeQuery("SELECT DATABASE_NAME FROM INFORMATION_SCHEMA.DATABASES ORDER BY DATABASE_NAME");
             for (final Row row : databases.getRows()) {
                 logger.info("   - Database: {}", row.getValue(0));
             }
@@ -60,7 +64,7 @@ public class InformationSchemaExample {
             // 2. Query all schemas in current database
             logger.info("2. Query INFORMATION_SCHEMA.SCHEMATA:");
             logger.info("   {}", "-".repeat(60));
-            ResultSet schemas = engine.executeQuery(
+            final ResultSet schemas = engine.executeQuery(
                 "SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA WHERE CATALOG_NAME = 'DEMO_DB'"
             );
             for (final Row row : schemas.getRows()) {
@@ -71,7 +75,7 @@ public class InformationSchemaExample {
             // 3. Query all tables
             logger.info("3. Query INFORMATION_SCHEMA.TABLES:");
             logger.info("   {}", "-".repeat(60));
-            ResultSet tables = engine.executeQuery(
+            final ResultSet tables = engine.executeQuery(
                 "SELECT TABLE_NAME, TABLE_TYPE FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_CATALOG = 'DEMO_DB' AND TABLE_SCHEMA = 'PUBLIC'"
             );
             for (final Row row : tables.getRows()) {
@@ -82,7 +86,7 @@ public class InformationSchemaExample {
             // 4. Query columns for a specific table
             logger.info("4. Query INFORMATION_SCHEMA.COLUMNS for employees table:");
             logger.info("   {}", "-".repeat(60));
-            ResultSet columns = engine.executeQuery("""
+            final ResultSet columns = engine.executeQuery("""
                 SELECT COLUMN_NAME, DATA_TYPE, ORDINAL_POSITION
                 FROM INFORMATION_SCHEMA.COLUMNS
                 WHERE TABLE_NAME = 'EMPLOYEES'
@@ -96,7 +100,7 @@ public class InformationSchemaExample {
             // 5. Query all views
             logger.info("5. Query INFORMATION_SCHEMA.VIEWS:");
             logger.info("   {}", "-".repeat(60));
-            ResultSet views = engine.executeQuery(
+            final ResultSet views = engine.executeQuery(
                 "SELECT TABLE_NAME, VIEW_DEFINITION FROM INFORMATION_SCHEMA.VIEWS"
             );
             for (final Row row : views.getRows()) {
@@ -108,7 +112,7 @@ public class InformationSchemaExample {
             // 6. Join TABLES and COLUMNS to show table structure
             logger.info("6. Join TABLES and COLUMNS for comprehensive view:");
             logger.info("   {}", "-".repeat(60));
-            ResultSet tableStructure = engine.executeQuery("""
+            final ResultSet tableStructure = engine.executeQuery("""
                 SELECT t.TABLE_NAME, c.COLUMN_NAME, c.DATA_TYPE
                 FROM INFORMATION_SCHEMA.TABLES t
                 INNER JOIN INFORMATION_SCHEMA.COLUMNS c
@@ -117,7 +121,7 @@ public class InformationSchemaExample {
                 """);
             String currentTable = null;
             for (final Row row : tableStructure.getRows()) {
-                String tableName = (String) row.getValue(0);
+                final String tableName = (String) row.getValue(0);
                 if (!tableName.equals(currentTable)) {
                     if (currentTable != null) logger.info("");
                     logger.info("   Table: {}", tableName);
@@ -130,13 +134,13 @@ public class InformationSchemaExample {
             // 7. Count objects by type
             logger.info("7. Object counts:");
             logger.info("   {}", "-".repeat(60));
-            ResultSet dbCount = engine.executeQuery("SELECT COUNT(*) FROM INFORMATION_SCHEMA.DATABASES");
+            final ResultSet dbCount = engine.executeQuery("SELECT COUNT(*) FROM INFORMATION_SCHEMA.DATABASES");
             logger.info("   - Databases: {}", dbCount.getRows().get(0).getValue(0));
 
-            ResultSet tableCount = engine.executeQuery("SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_TYPE = 'BASE TABLE'");
+            final ResultSet tableCount = engine.executeQuery("SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_TYPE = 'BASE TABLE'");
             logger.info("   - Tables: {}", tableCount.getRows().get(0).getValue(0));
 
-            ResultSet viewCount = engine.executeQuery("SELECT COUNT(*) FROM INFORMATION_SCHEMA.VIEWS");
+            final ResultSet viewCount = engine.executeQuery("SELECT COUNT(*) FROM INFORMATION_SCHEMA.VIEWS");
             logger.info("   - Views: {}", viewCount.getRows().get(0).getValue(0));
             logger.info("");
 

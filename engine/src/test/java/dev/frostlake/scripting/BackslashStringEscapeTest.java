@@ -16,10 +16,8 @@
 
 package dev.frostlake.scripting;
 
-import dev.frostlake.DatabaseEngine;
+import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -38,25 +36,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
  * re-parsed at CALL, so both layers must agree — previously the body was left with stray backslashes that
  * failed to re-lex (<em>token recognition error at: '\'</em>).
  */
-public class BackslashStringEscapeTest {
-
-    private DatabaseEngine engine;
-
-    @BeforeEach
-    public void setUp() {
-        engine = new DatabaseEngine();
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
-        engine.execute("CREATE SCHEMA test_schema");
-        engine.execute("USE SCHEMA test_schema");
-    }
-
-    @AfterEach
-    public void tearDown() {
-        if (engine != null) {
-            engine.shutdown();
-        }
-    }
+public class BackslashStringEscapeTest extends BaseDatabaseTest {
 
     private String scalar(final String sql) {
         final ResultSet rs = engine.executeQuery(sql);

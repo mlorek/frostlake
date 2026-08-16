@@ -35,6 +35,8 @@ public class CurrentClient extends BuiltInFunction {
         return CLIENT_IDENTIFIER;
     }
 
-    @Override public int getMinArgCount() { return 0; }
-    @Override public int getMaxArgCount() { return 0; }
+    @Override
+    public int getMinArgCount() { return 0; }
+    @Override
+    public int getMaxArgCount() { return 0; }
 }

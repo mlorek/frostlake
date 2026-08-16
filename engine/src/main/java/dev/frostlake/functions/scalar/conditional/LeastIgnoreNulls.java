@@ -16,6 +16,7 @@
 
 package dev.frostlake.functions.scalar.conditional;
 
+import dev.frostlake.executor.ValueComparisons;
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.types.VariantType;
 
@@ -30,8 +31,8 @@ public class LeastIgnoreNulls extends BuiltInFunction {
     public LeastIgnoreNulls() { super("LEAST_IGNORE_NULLS", VariantType.VARIANT); }
 
     @Override
-    @SuppressWarnings("unchecked")
-    public Object evaluate(final List<Object> args) {
+    public Object evaluate(final List<Object> rawArgs) {
+        final List<Object> args = OrderingCoercion.coerceAll(rawArgs);
         if (args.isEmpty()) {
             return null;
         }
@@ -42,17 +43,15 @@ public class LeastIgnoreNulls extends BuiltInFunction {
             }
             if (min == null) {
                 min = arg;
-            } else if (arg instanceof Comparable && min instanceof Comparable) {
-                final Comparable comparableArg = (Comparable) arg;
-                final Comparable comparableBest = (Comparable) min;
-                if (comparableArg.compareTo(comparableBest) < 0) {
-                    min = arg;
-                }
+            } else if (ValueComparisons.compareValues(arg, min) < 0) {
+                min = arg;
             }
         }
         return min;
     }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return Integer.MAX_VALUE; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return Integer.MAX_VALUE; }
 }

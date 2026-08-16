@@ -16,12 +16,12 @@
 
 package dev.frostlake.jdbc;
 
+import dev.frostlake.http.SqlRequest;
+import dev.frostlake.http.SqlResponse;
 import tools.jackson.core.JacksonException;
 import tools.jackson.databind.DeserializationFeature;
 import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.json.JsonMapper;
-import dev.frostlake.http.SqlRequest;
-import dev.frostlake.http.SqlResponse;
 
 import java.io.IOException;
 import java.net.URI;
@@ -52,25 +52,25 @@ class HttpClient {
      * Execute SQL and return response
      */
     public SqlResponse execute(final String sql) throws SQLException {
-        SqlRequest request = new SqlRequest();
+        final SqlRequest request = new SqlRequest();
         request.setSql(sql);
         request.setSessionId(sessionId);
 
-        String requestJson;
+        final String requestJson;
         try {
             requestJson = MAPPER.writeValueAsString(request);
         } catch (final JacksonException e) {
             throw new SQLException("Failed to serialize request: " + e.getMessage(), e);
         }
 
-        HttpRequest httpRequest = HttpRequest.newBuilder()
+        final HttpRequest httpRequest = HttpRequest.newBuilder()
             .uri(URI.create(baseUrl + "/api/execute"))
             .header("Content-Type", "application/json")
             .POST(HttpRequest.BodyPublishers.ofString(requestJson))
             .build();
 
         try {
-            HttpResponse<String> httpResponse = client.send(
+            final HttpResponse<String> httpResponse = client.send(
                 httpRequest,
                 HttpResponse.BodyHandlers.ofString()
             );
@@ -79,7 +79,7 @@ class HttpClient {
                 throw new SQLException("HTTP error: " + httpResponse.statusCode() + " - " + httpResponse.body());
             }
 
-            SqlResponse response = MAPPER.readValue(httpResponse.body(), SqlResponse.class);
+            final SqlResponse response = MAPPER.readValue(httpResponse.body(), SqlResponse.class);
 
             // Update session ID
             if (response.getSessionId() != null) {
@@ -111,13 +111,13 @@ class HttpClient {
      * Check server health
      */
     public boolean isHealthy() {
-        HttpRequest request = HttpRequest.newBuilder()
+        final HttpRequest request = HttpRequest.newBuilder()
             .uri(URI.create(baseUrl + "/api/health"))
             .GET()
             .build();
 
         try {
-            HttpResponse<String> response = client.send(
+            final HttpResponse<String> response = client.send(
                 request,
                 HttpResponse.BodyHandlers.ofString()
             );

@@ -43,7 +43,7 @@ final class JsonPathExtractor {
     /** Extract a property from a JSON object string using Jackson. Returns null if not found or invalid JSON. */
     static Object extractJsonProperty(final String jsonString, final String property) {
         if (jsonString == null) return null;
-        String s = jsonString.trim();
+        final String s = jsonString.trim();
         if (!s.startsWith("{") && !s.startsWith("[")) return null;
         try {
             return extractProperty(JACKSON.readTree(s), property);
@@ -58,6 +58,16 @@ final class JsonPathExtractor {
      * plain decimal).
      */
     static Object extractProperty(final JsonNode root, final String property) {
+        return jsonNodeToJava(propertyNode(root, property));
+    }
+
+    /**
+     * The RAW child node at {@code property} (same lookup as {@link #extractProperty}, including
+     * the case-insensitive fallback) with NO value conversion — for INTERMEDIATE path steps, where
+     * converting per step wrapped every subtree in a {@code VariantValue} whose constructor
+     * serialized it, only for the next step to unwrap the node again.
+     */
+    static JsonNode propertyNode(final JsonNode root, final String property) {
         if (root == null || (!root.isObject() && !root.isArray())) return null;
         JsonNode node = root.get(property);
         if (node == null && root.isObject()) {
@@ -70,12 +80,12 @@ final class JsonPathExtractor {
                 }
             }
         }
-        return jsonNodeToJava(node);
+        return node;
     }
 
     static Object extractJsonArrayElement(final String jsonString, final int index) {
         if (jsonString == null) return null;
-        String s = jsonString.trim();
+        final String s = jsonString.trim();
         if (!s.startsWith("[")) return null;
         try {
             return extractElement(JACKSON.readTree(s), index);
@@ -99,6 +109,10 @@ final class JsonPathExtractor {
         // ARRAY_CONSTRUCT(1,NULL,2)[1] IS NULL is TRUE while PARSE_JSON('[1,null,2]')[1] IS NULL is FALSE.
         if (VariantUndefined.isUndefined(node)) return null;
         if (node.isNull()) return VariantValue.of("null");
+        // A member that kept its extended type (DATE/TIME/TIMESTAMP/BINARY inside an OBJECT or ARRAY)
+        // extracts as that typed value — live: TYPEOF(OBJECT_CONSTRUCT('b', <binary>):b) is BINARY.
+        final Object typedMember = dev.frostlake.values.TypedScalarNode.typedValueOf(node);
+        if (typedMember != null) return typedMember;
         if (node.isTextual()) {
             // A STRING whose content itself looks like JSON structure ('["ROLE"]', '{"a":1}') keeps its
             // QUOTED JSON form — unquoting it made a string value indistinguishable from a real

@@ -16,24 +16,21 @@
 
 package dev.frostlake.features;
 
-import dev.frostlake.DatabaseEngine;
+import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
-public class TaskHistoryFunctionTest {
+public class TaskHistoryFunctionTest extends BaseDatabaseTest {
 
-    private DatabaseEngine engine;
-
-    @BeforeEach
-    public void setUp() {
-        engine = new DatabaseEngine();
+    @Override
+    protected void setupTest() {
         engine.execute("CREATE DATABASE IF NOT EXISTS test_db");
-        engine.execute("USE DATABASE test_db");
-        engine.execute("USE SCHEMA public");
         engine.execute("CREATE WAREHOUSE IF NOT EXISTS test_wh");
         engine.execute(
             "CREATE OR REPLACE TASK my_task " +
@@ -43,14 +40,9 @@ public class TaskHistoryFunctionTest {
         );
     }
 
-    @AfterEach
-    public void tearDown() {
-        if (engine != null) engine.shutdown();
-    }
-
     @Test
     public void testTaskHistoryNoArgs() {
-        ResultSet rs = engine.executeQuery(
+        final ResultSet rs = engine.executeQuery(
             "SELECT * FROM TABLE(INFORMATION_SCHEMA.TASK_HISTORY())");
         assertNotNull(rs);
         assertNotNull(rs.getColumnIndex("name"));
@@ -60,7 +52,7 @@ public class TaskHistoryFunctionTest {
 
     @Test
     public void testTaskHistoryWithTaskName() {
-        ResultSet rs = engine.executeQuery(
+        final ResultSet rs = engine.executeQuery(
             "SELECT * FROM TABLE(INFORMATION_SCHEMA.TASK_HISTORY(TASK_NAME => 'my_task'))");
         assertNotNull(rs);
         // no executions yet — should return empty
@@ -69,18 +61,33 @@ public class TaskHistoryFunctionTest {
 
     @Test
     public void testTaskHistoryWithResultLimit() {
-        ResultSet rs = engine.executeQuery(
+        final ResultSet rs = engine.executeQuery(
             "SELECT * FROM TABLE(INFORMATION_SCHEMA.TASK_HISTORY(RESULT_LIMIT => 10))");
         assertNotNull(rs);
         assertTrue(rs.getRowCount() <= 10);
     }
 
+    /**
+     * TASK_HISTORY lives ONLY under INFORMATION_SCHEMA — the bare name resolves to nothing. This test
+     * asserted the opposite, which is a spelling no account runs; the database-qualified form is the
+     * other one that works.
+     */
     @Test
-    public void testTaskHistoryUnqualified() {
-        // Also callable without schema prefix
-        ResultSet rs = engine.executeQuery(
-            "SELECT * FROM TABLE(TASK_HISTORY())");
-        assertNotNull(rs);
-        assertNotNull(rs.getColumnIndex("name"));
+    public void theBareNameIsNotAFunction() {
+        final RuntimeException thrown = assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.executeQuery("SELECT * FROM TABLE(TASK_HISTORY())");
+            }
+        });
+        Throwable root = thrown;
+        while (root.getCause() != null) {
+            root = root.getCause();
+        }
+        assertEquals("SQL compilation error:\nInvalid identifier TASK_HISTORY", root.getMessage());
+
+        final ResultSet qualified = engine.executeQuery(
+            "SELECT * FROM TABLE(test_db.INFORMATION_SCHEMA.TASK_HISTORY(RESULT_LIMIT => 1))");
+        assertNotNull(qualified);
     }
 }

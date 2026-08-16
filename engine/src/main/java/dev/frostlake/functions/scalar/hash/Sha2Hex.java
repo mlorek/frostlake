@@ -28,10 +28,12 @@ public class Sha2Hex extends BuiltInFunction {
     @Override
     public Object evaluate(final List<Object> args) {
         if (args.get(0) == null) return null;
-        int bits = args.size() > 1 && args.get(1) != null ? ((Number) args.get(1)).intValue() : 256;
+        final int bits = args.size() > 1 && args.get(1) != null ? ((Number) args.get(1)).intValue() : 256;
         return SharedFunctionHelpers.toHex(SharedFunctionHelpers.digest("SHA-" + bits, SharedFunctionHelpers.toUtf8(args.get(0))));
     }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return 2; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return 2; }
 }

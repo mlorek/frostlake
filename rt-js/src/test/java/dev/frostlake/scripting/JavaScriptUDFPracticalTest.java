@@ -68,8 +68,8 @@ public class JavaScriptUDFPracticalTest {
             $$
             """);
 
-        Schema schema = engine.getCatalog().getDatabase("TEST_DB").getSchema("PUBLIC");
-        Function func = schema.getFunction("validate_email");
+        final Schema schema = engine.getCatalog().getDatabase("TEST_DB").getSchema("PUBLIC");
+        final Function func = schema.getFunction("validate_email");
 
         assertEquals("VALID",
             JavaScriptExecutor.executeJavaScriptFunction(func, Arrays.asList("user@example.com")));
@@ -97,8 +97,8 @@ public class JavaScriptUDFPracticalTest {
             $$
             """);
 
-        Schema schema = engine.getCatalog().getDatabase("TEST_DB").getSchema("PUBLIC");
-        Function func = schema.getFunction("format_phone");
+        final Schema schema = engine.getCatalog().getDatabase("TEST_DB").getSchema("PUBLIC");
+        final Function func = schema.getFunction("format_phone");
 
         assertEquals("(555) 123-4567",
             JavaScriptExecutor.executeJavaScriptFunction(func, Arrays.asList("5551234567")));
@@ -124,10 +124,10 @@ public class JavaScriptUDFPracticalTest {
             $$
             """);
 
-        Schema schema = engine.getCatalog().getDatabase("TEST_DB").getSchema("PUBLIC");
-        Function func = schema.getFunction("extract_json_field");
+        final Schema schema = engine.getCatalog().getDatabase("TEST_DB").getSchema("PUBLIC");
+        final Function func = schema.getFunction("extract_json_field");
 
-        String json = "{\"name\":\"John\",\"age\":30,\"city\":\"New York\"}";
+        final String json = "{\"name\":\"John\",\"age\":30,\"city\":\"New York\"}";
         assertEquals("John",
             JavaScriptExecutor.executeJavaScriptFunction(func, Arrays.asList(json, "name")));
         assertEquals("30",
@@ -151,8 +151,8 @@ public class JavaScriptUDFPracticalTest {
             $$
             """);
 
-        Schema schema = engine.getCatalog().getDatabase("TEST_DB").getSchema("PUBLIC");
-        Function func = schema.getFunction("generate_slug");
+        final Schema schema = engine.getCatalog().getDatabase("TEST_DB").getSchema("PUBLIC");
+        final Function func = schema.getFunction("generate_slug");
 
         assertEquals("hello-world",
             JavaScriptExecutor.executeJavaScriptFunction(func, Arrays.asList("Hello World")));
@@ -176,8 +176,8 @@ public class JavaScriptUDFPracticalTest {
             $$
             """);
 
-        Schema schema = engine.getCatalog().getDatabase("TEST_DB").getSchema("PUBLIC");
-        Function func = schema.getFunction("check_password_strength");
+        final Schema schema = engine.getCatalog().getDatabase("TEST_DB").getSchema("PUBLIC");
+        final Function func = schema.getFunction("check_password_strength");
 
         assertEquals("WEAK",
             JavaScriptExecutor.executeJavaScriptFunction(func, Arrays.asList("pass")));
@@ -203,10 +203,10 @@ public class JavaScriptUDFPracticalTest {
             $$
             """);
 
-        Schema schema = engine.getCatalog().getDatabase("TEST_DB").getSchema("PUBLIC");
-        Function func = schema.getFunction("days_until_date");
+        final Schema schema = engine.getCatalog().getDatabase("TEST_DB").getSchema("PUBLIC");
+        final Function func = schema.getFunction("days_until_date");
 
-        Object result = JavaScriptExecutor.executeJavaScriptFunction(
+        final Object result = JavaScriptExecutor.executeJavaScriptFunction(
             func,
             Arrays.asList(2026, 12, 31)
         );
@@ -227,8 +227,8 @@ public class JavaScriptUDFPracticalTest {
             $$
             """);
 
-        Schema schema = engine.getCatalog().getDatabase("TEST_DB").getSchema("PUBLIC");
-        Function func = schema.getFunction("format_currency");
+        final Schema schema = engine.getCatalog().getDatabase("TEST_DB").getSchema("PUBLIC");
+        final Function func = schema.getFunction("format_currency");
 
         assertEquals("$1,234.56",
             JavaScriptExecutor.executeJavaScriptFunction(func, Arrays.asList(1234.56)));
@@ -247,8 +247,8 @@ public class JavaScriptUDFPracticalTest {
             AS 'return full_name.split(" ").map(function(w) { return w.charAt(0).toUpperCase(); }).join("");'
             """);
 
-        Schema schema = engine.getCatalog().getDatabase("TEST_DB").getSchema("PUBLIC");
-        Function func = schema.getFunction("get_initials");
+        final Schema schema = engine.getCatalog().getDatabase("TEST_DB").getSchema("PUBLIC");
+        final Function func = schema.getFunction("get_initials");
 
         assertEquals("JD",
             JavaScriptExecutor.executeJavaScriptFunction(func, Arrays.asList("John Doe")));
@@ -274,10 +274,10 @@ public class JavaScriptUDFPracticalTest {
             $$
             """);
 
-        Schema schema = engine.getCatalog().getDatabase("TEST_DB").getSchema("PUBLIC");
-        Function func = schema.getFunction("encode_hex");
+        final Schema schema = engine.getCatalog().getDatabase("TEST_DB").getSchema("PUBLIC");
+        final Function func = schema.getFunction("encode_hex");
 
-        Object result = JavaScriptExecutor.executeJavaScriptFunction(func, Arrays.asList("Hello"));
+        final Object result = JavaScriptExecutor.executeJavaScriptFunction(func, Arrays.asList("Hello"));
         assertNotNull(result);
         assertEquals("48656C6C6F", result);
         logger.info("Hex encoded 'Hello': {}", result);
@@ -309,11 +309,11 @@ public class JavaScriptUDFPracticalTest {
             $$
             """);
 
-        Schema schema = engine.getCatalog().getDatabase("TEST_DB").getSchema("PUBLIC");
-        Function func = schema.getFunction("calculate_shipping_cost");
+        final Schema schema = engine.getCatalog().getDatabase("TEST_DB").getSchema("PUBLIC");
+        final Function func = schema.getFunction("calculate_shipping_cost");
 
         // Standard shipping: 10 lbs, 100 miles, not express
-        Object result1 = JavaScriptExecutor.executeJavaScriptFunction(
+        final Object result1 = JavaScriptExecutor.executeJavaScriptFunction(
             func,
             Arrays.asList(10.0, 100, 0)
         );
@@ -321,7 +321,7 @@ public class JavaScriptUDFPracticalTest {
         assertTrue(((Number) result1).doubleValue() > 0);
 
         // Express shipping: 10 lbs, 100 miles, express
-        Object result2 = JavaScriptExecutor.executeJavaScriptFunction(
+        final Object result2 = JavaScriptExecutor.executeJavaScriptFunction(
             func,
             Arrays.asList(10.0, 100, 1)
         );
@@ -329,7 +329,7 @@ public class JavaScriptUDFPracticalTest {
         assertTrue(((Number) result2).doubleValue() > ((Number) result1).doubleValue());
 
         // Heavy item discount: 60 lbs, 100 miles, not express
-        Object result3 = JavaScriptExecutor.executeJavaScriptFunction(
+        final Object result3 = JavaScriptExecutor.executeJavaScriptFunction(
             func,
             Arrays.asList(60.0, 100, 0)
         );

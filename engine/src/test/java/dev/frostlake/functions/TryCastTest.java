@@ -23,6 +23,7 @@ import org.junit.jupiter.api.function.Executable;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * TRY_CAST(expr AS type) converts like CAST but returns NULL for a value that cannot be converted, rather
@@ -76,5 +77,79 @@ public class TryCastTest extends BaseDatabaseTest {
             SELECT TRY_CAST(SPLIT_PART('sev:42', ':', 2) AS INTEGER)
             """);
         assertEquals(42L, ((Number) v).longValue());
+    }
+
+    @Test
+    public void functionCallShapesAreSyntaxErrors() {
+        // TRY_CAST is pure grammar: the two-argument function form and the one-argument form are
+        // both syntax errors (live-verified: "unexpected ','" / "unexpected ')'"), never calls.
+        assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                val("SELECT TRY_CAST('1.5', 'NUMBER(10,2)')");
+            }
+        });
+        assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                val("SELECT TRY_CAST('1.5')");
+            }
+        });
+    }
+
+    @Test
+    public void tryCastRemainsAnIdentifierInNamePositions() {
+        // Live accepts try_cast as an alias, a column name and a table name — only the
+        // expression/call position is reserved for the cast construct.
+        assertEquals(1L, ((Number) val("SELECT 1 AS try_cast")).longValue());
+        assertEquals(1L, ((Number) val("SELECT 1 try_cast")).longValue());
+        engine.executeQuery("CREATE TABLE try_cast_names (try_cast INT)");
+        engine.executeQuery("CREATE TABLE try_cast (a INT)");
+        engine.executeQuery("INSERT INTO try_cast VALUES (7)");
+        assertEquals(7L, ((Number) val("SELECT a FROM try_cast")).longValue());
+    }
+
+    @Test
+    public void bareExpressionPositionIsTheConstruct() {
+        // In EXPRESSION position TRY_CAST always begins the cast construct, never a column
+        // reference — live refuses the bare reference with a syntax error at the NEXT token in
+        // every expression clause (live-verified: SELECT "unexpected 'FROM'", FROM-less
+        // "unexpected '<EOF>'", WHERE "unexpected '='", GROUP BY / ORDER BY "unexpected '<EOF>'",
+        // mid-arithmetic "unexpected '+'").
+        engine.executeQuery("CREATE TABLE try_cast_expr (id INTEGER, try_cast INTEGER)");
+        engine.executeQuery("INSERT INTO try_cast_expr VALUES (1, 7)");
+        assertSyntaxRefused("SELECT try_cast FROM try_cast_expr");
+        assertSyntaxRefused("SELECT TRY_CAST");
+        assertSyntaxRefused("SELECT id FROM try_cast_expr WHERE try_cast = 7");
+        assertSyntaxRefused("SELECT COUNT(*) FROM try_cast_expr GROUP BY try_cast");
+        assertSyntaxRefused("SELECT id FROM try_cast_expr ORDER BY try_cast");
+        assertSyntaxRefused("SELECT try_cast + 1 FROM try_cast_expr");
+    }
+
+    @Test
+    public void qualifiedAndQuotedReferencesReachTheColumn() {
+        // The two live-legal escapes for a column literally named try_cast: qualify it (table or
+        // alias) or quote it; SET targets and INSERT column lists are name positions and need
+        // neither (all live-verified).
+        engine.executeQuery("CREATE TABLE try_cast_q (id INTEGER, try_cast INTEGER)");
+        engine.executeQuery("INSERT INTO try_cast_q VALUES (1, 7)");
+        assertEquals(7L, ((Number) val("SELECT try_cast_q.try_cast FROM try_cast_q")).longValue());
+        assertEquals(7L, ((Number) val("SELECT x.try_cast FROM try_cast_q x")).longValue());
+        assertEquals(7L, ((Number) val("SELECT \"TRY_CAST\" FROM try_cast_q")).longValue());
+        engine.executeQuery("UPDATE try_cast_q SET try_cast = 8");
+        assertEquals(8L, ((Number) val("SELECT x.try_cast FROM try_cast_q x")).longValue());
+        engine.executeQuery("INSERT INTO try_cast_q (id, try_cast) VALUES (2, 9)");
+        assertEquals(2L, ((Number) val("SELECT COUNT(*) FROM try_cast_q")).longValue());
+    }
+
+    private void assertSyntaxRefused(final String sql) {
+        final RuntimeException refusal = assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                val(sql);
+            }
+        }, sql);
+        assertTrue(refusal.getMessage().toLowerCase().contains("syntax"),
+            sql + " should be refused as a SYNTAX error, was: " + refusal.getMessage());
     }
 }

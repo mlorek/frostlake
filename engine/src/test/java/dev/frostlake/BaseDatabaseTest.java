@@ -16,8 +16,20 @@
 
 package dev.frostlake;
 
+import dev.frostlake.config.EngineConfig;
+import dev.frostlake.storage.ResultSet;
+import dev.frostlake.storage.Row;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
  * Base class for all Frostlake engine tests providing common setup/teardown.
@@ -40,24 +52,75 @@ public abstract class BaseDatabaseTest {
             LiveSnowflake.resetSharedIfDirty();
             // Record which account-level objects pre-date the run, before the suite creates any.
             LiveAccountObjects.captureBaseline(LiveSnowflake.shared());
-            engine.execute("CREATE OR REPLACE DATABASE test_db");
+            try {
+                createTestContext("CREATE OR REPLACE DATABASE test_db");
+            } catch (final RuntimeException storm) {
+                // A long shared session can hit a storm — the driver executing a statement late
+                // or twice under load, so the sequence fails with a temporally impossible error
+                // (USE SCHEMA missing right after its CREATE, CREATE SCHEMA 'already exists'
+                // right after the database was replaced). One retry on a FRESH connection
+                // recovers it; a second failure is a real refusal and propagates.
+                LiveSnowflake.forceReconnect();
+                createTestContext("CREATE OR REPLACE DATABASE test_db");
+            }
             // Everything the TEST creates from here on is the test's to clean up, not the harness's.
             LiveAccountObjects.beginTest();
+        } else if (FrostlakeJdbc.enabled()) {
+            // FL_JDBC=1: same suite, but every statement detours through the direct JDBC driver.
+            engine = new FrostlakeJdbcEngine();
+            enableLocalStageUrls(engine);
+            createTestContext("CREATE DATABASE test_db");
         } else {
             engine = new DatabaseEngine();
-            engine.execute("CREATE DATABASE test_db");
+            enableLocalStageUrls(engine);
+            createTestContext("CREATE DATABASE test_db");
         }
-        engine.execute("USE DATABASE test_db");
-        engine.execute("CREATE SCHEMA test_schema");
-        engine.execute("USE SCHEMA test_schema");
 
         // Allow subclasses to add their own setup
         setupTest();
     }
 
+    /** The per-test working context, from the database statement given to the final USE SCHEMA. */
+    private void createTestContext(final String createDatabase) {
+        engine.execute(createDatabase);
+        engine.execute("USE DATABASE test_db");
+        engine.execute("CREATE SCHEMA test_schema");
+        engine.execute("USE SCHEMA test_schema");
+    }
+
     /** Whether this run targets live Snowflake — for tests that must skip engine-internal checks there. */
     protected static boolean isLiveSnowflake() {
         return LiveSnowflake.enabled();
+    }
+
+    /**
+     * The suite's stages point at local {@code file://} directories the tests write, so the harness
+     * opts in to the local-URL affordance the DEFAULT config refuses (a real account refuses those
+     * URLs — see StageUrlPolicyTest for the default surface). REMOVE is enabled the same way: the
+     * default config keeps it off as a destructive-command guard (RemoveCommandConfigTest pins
+     * that), while a real account always allows it.
+     */
+    protected static void enableLocalStageUrls(final DatabaseEngine target) {
+        target.getConfig().setProperty(EngineConfig.PROP_STAGE_FILE_URL_ENABLED, "true");
+        target.getConfig().setProperty(EngineConfig.PROP_COMMAND_REMOVE_ENABLED, "true");
+    }
+
+    /**
+     * Stage a small file on a named internal stage through the SAME SQL both transports run: the
+     * content is written to a fresh local temp file and PUT with {@code AUTO_COMPRESS=FALSE}, so
+     * the staged name is deterministic. Embedded, the file lands in the stage's engine-managed
+     * directory; live, the JDBC driver uploads it.
+     */
+    protected void stageLocalFile(final String stage, final String fileName, final String content) {
+        try {
+            final Path dir = Files.createTempDirectory("fl_stage_put");
+            final Path file = dir.resolve(fileName);
+            Files.writeString(file, content);
+            engine.execute("PUT file://" + file.toAbsolutePath() + " @" + stage
+                + " AUTO_COMPRESS=FALSE");
+        } catch (final IOException e) {
+            throw new RuntimeException("could not stage " + fileName, e);
+        }
     }
 
     @AfterEach
@@ -77,6 +140,42 @@ public abstract class BaseDatabaseTest {
         if (engine != null) {
             engine.shutdown();
         }
+    }
+
+    // ---- SHOW/DESCRIBE cell helpers -------------------------------------------------------------
+    // Assertions over metadata go through the SQL surface (SHOW …, DESCRIBE …) so they hold against
+    // whichever engine executed the DDL — embedded or live. Cells are addressed by COLUMN NAME, not
+    // position, because live may append columns.
+
+    /** The value of {@code column} in one SHOW/DESCRIBE result row, as text (null-safe). */
+    protected final String cell(final ResultSet rs, final Row row, final String column) {
+        final Object value = row.getValue(rs.getColumnIndex(column));
+        return value == null ? null : value.toString();
+    }
+
+    /** The rows whose {@code column} cell equals {@code value}, compared case-insensitively. */
+    protected final List<Row> rowsWhere(final ResultSet rs, final String column, final String value) {
+        final List<Row> matches = new ArrayList<>();
+        for (final Row row : rs.getRows()) {
+            final String cell = cell(rs, row, column);
+            if (cell != null && cell.equalsIgnoreCase(value)) {
+                matches.add(row);
+            }
+        }
+        return matches;
+    }
+
+    /** The single row whose {@code column} cell equals {@code value} — asserts exactly one match. */
+    protected final Row soleRowWhere(final ResultSet rs, final String column, final String value) {
+        final List<Row> matches = rowsWhere(rs, column, value);
+        assertEquals(1, matches.size(), "expected exactly one row with " + column + "=" + value);
+        return matches.get(0);
+    }
+
+    /** One DESCRIBE TABLE cell: the {@code header} column of {@code columnName}'s row. */
+    protected final String describeCell(final String table, final String columnName, final String header) {
+        final ResultSet rs = engine.executeQuery("DESCRIBE TABLE " + table);
+        return cell(rs, soleRowWhere(rs, "name", columnName), header);
     }
 
     /**

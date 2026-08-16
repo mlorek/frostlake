@@ -51,10 +51,10 @@ public class HavingOperator implements Operator {
         logger.debug("Applying HAVING filter: {}", havingExpression);
 
         final Expression condition = ExpressionEvaluator.parse(havingExpression);
-        List<Row> filtered = new ArrayList<>();
+        final List<Row> filtered = new ArrayList<>();
         for (final Row row : input) {
             try {
-                boolean passes = havingEvaluator.evaluate(condition, row);
+                final boolean passes = havingEvaluator.evaluate(condition, row);
                 if (passes) {
                     filtered.add(row);
                 }

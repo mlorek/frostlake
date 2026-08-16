@@ -19,9 +19,7 @@ package dev.frostlake.functions.aggregate;
 import dev.frostlake.functions.AggregateFunction;
 import dev.frostlake.functions.SemiStructuredRejection;
 import dev.frostlake.types.NumericType;
-import dev.frostlake.values.VariantValue;
 
-import java.math.BigDecimal;
 import java.util.List;
 
 public class Sum extends AggregateFunction {
@@ -37,8 +35,10 @@ public class Sum extends AggregateFunction {
     @Override
     public Object evaluate(final List<Object> args) { return null; }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return 1; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return 1; }
 
     /**
      * SUM adds numbers, and a semi-structured value is not one. Live, {@code SUM(o)} over
@@ -55,46 +55,4 @@ public class Sum extends AggregateFunction {
         return SemiStructuredRejection.ARGUMENT_TYPES;
     }
 
-    private static class SumAccumulator implements Accumulator {
-        private BigDecimal sum = BigDecimal.ZERO;
-        private boolean hasValue = false;
-        // Live-verified: SUM over VARIANT values is DOUBLE (SUM of PARSE_JSON('1'), PARSE_JSON('2') is 3.0,
-        // SYSTEM$TYPEOF FLOAT) — any VARIANT input flips the whole sum to a double result.
-        private boolean anyVariant = false;
-
-        @Override
-        public void accumulate(final Object value) {
-            if (value != null) {
-                if (value instanceof VariantValue) {
-                    anyVariant = true;
-                }
-                sum = sum.add(new BigDecimal(value.toString()));
-                hasValue = true;
-            }
-        }
-
-        // SUM over no non-null input rows is NULL in Snowflake, not zero.
-        @Override
-        public Object getResult() {
-            if (!hasValue) {
-                return null;
-            }
-            return anyVariant ? Double.valueOf(sum.doubleValue()) : sum;
-        }
-
-        @Override
-        public void reset() {
-            sum = BigDecimal.ZERO;
-            hasValue = false;
-            anyVariant = false;
-        }
-
-        @Override
-        public void merge(final Accumulator other) {
-            final SumAccumulator o = (SumAccumulator) other;
-            sum = sum.add(o.sum);
-            hasValue = hasValue || o.hasValue;
-            anyVariant = anyVariant || o.anyVariant;
-        }
-    }
 }

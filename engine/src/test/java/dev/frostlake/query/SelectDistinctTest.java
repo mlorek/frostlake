@@ -52,7 +52,7 @@ public class SelectDistinctTest extends BaseDatabaseTest {
     public void testSelectDistinctSingleColumn() {
         logger.info("Testing SELECT DISTINCT on single column");
 
-        ResultSet result = engine.executeQuery("SELECT DISTINCT category FROM test_data");
+        final ResultSet result = engine.executeQuery("SELECT DISTINCT category FROM test_data");
 
         assertEquals(3, result.getRowCount());
         assertEquals(1, result.getColumnCount());
@@ -62,7 +62,7 @@ public class SelectDistinctTest extends BaseDatabaseTest {
     public void testSelectDistinctMultipleColumns() {
         logger.info("Testing SELECT DISTINCT on multiple columns");
 
-        ResultSet result = engine.executeQuery("SELECT DISTINCT category, value FROM test_data");
+        final ResultSet result = engine.executeQuery("SELECT DISTINCT category, value FROM test_data");
 
         assertEquals(3, result.getRowCount());
         assertEquals(2, result.getColumnCount());
@@ -72,9 +72,11 @@ public class SelectDistinctTest extends BaseDatabaseTest {
     public void testSelectDistinctFromValues() {
         logger.info("Testing SELECT DISTINCT from VALUES");
 
-        ResultSet result = engine.executeQuery("""
+        // ORDER BY pins the read order — DISTINCT alone guarantees no output order.
+        final ResultSet result = engine.executeQuery("""
             SELECT DISTINCT $1, $2
             FROM VALUES(1, 2), (1, 2), (3, 4)
+            ORDER BY 1
             """);
 
         assertEquals(2, result.getRowCount());
@@ -89,7 +91,7 @@ public class SelectDistinctTest extends BaseDatabaseTest {
     public void testSelectDistinctFromValuesWithAlias() {
         logger.info("Testing SELECT DISTINCT from VALUES with alias");
 
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT DISTINCT a, b
             FROM VALUES(1, 2), (1, 2) AS t(a, b)
             """);
@@ -102,7 +104,7 @@ public class SelectDistinctTest extends BaseDatabaseTest {
     public void testSelectDistinctWithWhere() {
         logger.info("Testing SELECT DISTINCT with WHERE clause");
 
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT DISTINCT category
             FROM test_data
             WHERE value >= 20
@@ -116,7 +118,7 @@ public class SelectDistinctTest extends BaseDatabaseTest {
     public void testSelectDistinctWithOrderBy() {
         logger.info("Testing SELECT DISTINCT with ORDER BY");
 
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT DISTINCT category
             FROM test_data
             ORDER BY category DESC
@@ -133,7 +135,7 @@ public class SelectDistinctTest extends BaseDatabaseTest {
     public void testSelectDistinctWithLimit() {
         logger.info("Testing SELECT DISTINCT with LIMIT");
 
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT DISTINCT category
             FROM test_data
             LIMIT 2
@@ -150,7 +152,7 @@ public class SelectDistinctTest extends BaseDatabaseTest {
         engine.execute("CREATE TABLE same_values (col VARCHAR)");
         engine.execute("INSERT INTO same_values VALUES ('A'), ('A'), ('A')");
 
-        ResultSet result = engine.executeQuery("SELECT DISTINCT col FROM same_values");
+        final ResultSet result = engine.executeQuery("SELECT DISTINCT col FROM same_values");
 
         assertEquals(1, result.getRowCount());
         assertEquals(1, result.getColumnCount());
@@ -164,7 +166,7 @@ public class SelectDistinctTest extends BaseDatabaseTest {
         engine.execute("CREATE TABLE unique_values (col VARCHAR)");
         engine.execute("INSERT INTO unique_values VALUES ('A'), ('B'), ('C')");
 
-        ResultSet result = engine.executeQuery("SELECT DISTINCT col FROM unique_values");
+        final ResultSet result = engine.executeQuery("SELECT DISTINCT col FROM unique_values");
 
         assertEquals(3, result.getRowCount());
         assertEquals(1, result.getColumnCount());
@@ -177,7 +179,7 @@ public class SelectDistinctTest extends BaseDatabaseTest {
         engine.execute("CREATE TABLE with_nulls (col VARCHAR)");
         engine.execute("INSERT INTO with_nulls VALUES ('A'), (NULL), ('A'), (NULL), ('B')");
 
-        ResultSet result = engine.executeQuery("SELECT DISTINCT col FROM with_nulls");
+        final ResultSet result = engine.executeQuery("SELECT DISTINCT col FROM with_nulls");
 
         assertEquals(3, result.getRowCount());
         assertEquals(1, result.getColumnCount());
@@ -187,8 +189,8 @@ public class SelectDistinctTest extends BaseDatabaseTest {
     public void testSelectDistinctVsSelectAll() {
         logger.info("Testing SELECT DISTINCT vs SELECT all");
 
-        ResultSet allResult = engine.executeQuery("SELECT category FROM test_data");
-        ResultSet distinctResult = engine.executeQuery("SELECT DISTINCT category FROM test_data");
+        final ResultSet allResult = engine.executeQuery("SELECT category FROM test_data");
+        final ResultSet distinctResult = engine.executeQuery("SELECT DISTINCT category FROM test_data");
 
         assertEquals(5, allResult.getRowCount());
         assertEquals(3, distinctResult.getRowCount());
@@ -198,7 +200,7 @@ public class SelectDistinctTest extends BaseDatabaseTest {
     public void testSelectDistinctWithExpressions() {
         logger.info("Testing SELECT DISTINCT with expressions");
 
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT DISTINCT value * 2 AS doubled
             FROM test_data
             """);
@@ -211,7 +213,7 @@ public class SelectDistinctTest extends BaseDatabaseTest {
     public void testSelectDistinctWithFunctions() {
         logger.info("Testing SELECT DISTINCT with functions");
 
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT DISTINCT UPPER(category) AS upper_cat
             FROM test_data
             """);
@@ -226,7 +228,7 @@ public class SelectDistinctTest extends BaseDatabaseTest {
 
         engine.execute("CREATE TABLE empty (col VARCHAR)");
 
-        ResultSet result = engine.executeQuery("SELECT DISTINCT col FROM empty");
+        final ResultSet result = engine.executeQuery("SELECT DISTINCT col FROM empty");
 
         assertEquals(0, result.getRowCount());
         assertEquals(1, result.getColumnCount());
@@ -239,7 +241,7 @@ public class SelectDistinctTest extends BaseDatabaseTest {
         engine.execute("CREATE TABLE categories (name VARCHAR)");
         engine.execute("INSERT INTO categories VALUES ('A'), ('B'), ('C')");
 
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT DISTINCT c.name
             FROM categories c
             JOIN test_data t ON c.name = t.category
@@ -253,7 +255,7 @@ public class SelectDistinctTest extends BaseDatabaseTest {
     public void testSelectDistinctStar() {
         logger.info("Testing SELECT DISTINCT *");
 
-        ResultSet result = engine.executeQuery("SELECT DISTINCT * FROM test_data");
+        final ResultSet result = engine.executeQuery("SELECT DISTINCT * FROM test_data");
 
         assertEquals(5, result.getRowCount());
         assertEquals(3, result.getColumnCount());
@@ -263,7 +265,7 @@ public class SelectDistinctTest extends BaseDatabaseTest {
     public void testSelectDistinctThreeColumns() {
         logger.info("Testing SELECT DISTINCT on three columns");
 
-        ResultSet result = engine.executeQuery("SELECT DISTINCT id, category, value FROM test_data");
+        final ResultSet result = engine.executeQuery("SELECT DISTINCT id, category, value FROM test_data");
 
         assertEquals(5, result.getRowCount());
         assertEquals(3, result.getColumnCount());
@@ -276,7 +278,7 @@ public class SelectDistinctTest extends BaseDatabaseTest {
             + "to hand the distinct rows back in any order");
         logger.info("Testing SELECT DISTINCT with positional parameters");
 
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT DISTINCT $1, $2
             FROM VALUES(1, 'A'), (2, 'B'), (1, 'A'), (2, 'B'), (3, 'C')
             """);
@@ -295,7 +297,7 @@ public class SelectDistinctTest extends BaseDatabaseTest {
     public void testSelectDistinctWithPositionalParametersAndExpressions() {
         logger.info("Testing SELECT DISTINCT with positional parameters and expressions");
 
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT DISTINCT ABS($1), UPPER($2)
             FROM VALUES(-1, 'a'), (-1, 'a'), (2, 'b'), (2, 'b')
             """);
@@ -308,7 +310,7 @@ public class SelectDistinctTest extends BaseDatabaseTest {
     public void testSelectDistinctWithTrailingComma() {
         logger.info("Testing SELECT DISTINCT with trailing comma");
 
-        ResultSet result = engine.executeQuery("""
+        final ResultSet result = engine.executeQuery("""
             SELECT DISTINCT
                 category,
                 value,

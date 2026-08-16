@@ -58,6 +58,22 @@ public final class NumericLiteralTypes {
         return forDecimal(decimal);
     }
 
+    /**
+     * The exact value a numeric literal's SOURCE TEXT stands for, in plain notation.
+     *
+     * <p>An exponent is a way of WRITING a fixed-point number, not a floating-point marker: live prints
+     * {@code 1e20} back as 100000000000000000000 and {@code 1e-3} as 0.001. {@code BigDecimal} keeps a
+     * negative scale for the first of those and would render it as {@code 1E+20}, so the scale is
+     * raised to zero — the value is unchanged and only its spelling becomes the one live uses.
+     *
+     * @param text the literal exactly as written
+     * @return its value
+     */
+    public static BigDecimal exactValue(final String text) {
+        final BigDecimal parsed = new BigDecimal(text);
+        return parsed.scale() < 0 ? parsed.setScale(0) : parsed;
+    }
+
     /** The NUMBER type of an exact decimal value. */
     public static NumericType forDecimal(final BigDecimal value) {
         final BigDecimal normalized = value.stripTrailingZeros();

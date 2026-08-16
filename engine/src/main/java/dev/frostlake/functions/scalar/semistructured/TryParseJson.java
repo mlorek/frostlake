@@ -31,16 +31,10 @@ public class TryParseJson extends BuiltInFunction {
     @Override
     public Object evaluate(final List<Object> args) {
         if (args.get(0) == null) return null;
-        String input = args.get(0).toString().trim();
-        // A variant STRING in quoted JSON form (the path-extraction marker for structural-looking
-        // content) coerces to its raw inner text first, as Snowflake's VARIANT→VARCHAR cast does.
-        final String quotedVariantString = JsonTypeHelper.quotedJsonStringText(input);
-        if (quotedVariantString != null) {
-            final String inner = quotedVariantString.trim();
-            if (inner.startsWith("{") || inner.startsWith("[")) {
-                input = inner;
-            }
-        }
+        // The argument is TEXT by the time it arrives, a VARIANT one having been coerced to VARCHAR at
+        // the call boundary — see ExpressionEvaluatorVisitor.coerceVariantArgumentToText. A quoted
+        // string is a JSON STRING here, whatever its content looks like.
+        final String input = args.get(0).toString().trim();
         // 'null' parses to the VARIANT JSON null, exactly as PARSE_JSON does — live:
         // TYPEOF(TRY_PARSE_JSON('null')) = 'NULL_VALUE', not SQL NULL.
         if (input.equalsIgnoreCase("null")) return VariantValue.of("null");
@@ -50,6 +44,8 @@ public class TryParseJson extends BuiltInFunction {
         return node == null ? null : VariantValue.ofNode(node);
     }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return 1; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return 1; }
 }

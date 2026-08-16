@@ -16,10 +16,8 @@
 
 package dev.frostlake.query;
 
-import dev.frostlake.DatabaseEngine;
+import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -28,24 +26,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 /**
  * Tests for HAVING clause with GROUP BY
  */
-public class HavingTest {
-    private DatabaseEngine engine;
-
-    @BeforeEach
-    public void setup() {
-        engine = new DatabaseEngine();
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
-        engine.execute("CREATE SCHEMA test_schema");
-        engine.execute("USE SCHEMA test_schema");
-    }
-
-    @AfterEach
-    public void teardown() {
-        if (engine != null) {
-            engine.shutdown();
-        }
-    }
+public class HavingTest extends BaseDatabaseTest {
 
     @Test
     public void testHavingWithCount() {
@@ -58,7 +39,7 @@ public class HavingTest {
         engine.execute("INSERT INTO orders VALUES ('Charlie', 180)");
 
         // Select customers with more than 2 orders
-        ResultSet rs = engine.executeQuery("""
+        final ResultSet rs = engine.executeQuery("""
             SELECT customer, COUNT(*) as order_count FROM orders GROUP BY customer HAVING COUNT(*) > 2
             """);
 
@@ -80,7 +61,7 @@ public class HavingTest {
         // Select regions with total sales > 2000
         // East = 1000 + 1500 = 2500, West = 800 + 600 = 1400, North = 2000
         // HAVING > 2000 means only East (2500)
-        ResultSet rs = engine.executeQuery("""
+        final ResultSet rs = engine.executeQuery("""
             SELECT region, SUM(amount) as total FROM sales GROUP BY region HAVING SUM(amount) > 2000
             """);
 
@@ -101,8 +82,10 @@ public class HavingTest {
         engine.execute("INSERT INTO scores VALUES ('Charlie', 98)");
 
         // Select students with average score >= 90
-        ResultSet rs = engine.executeQuery("""
+        // ORDER BY pins the read order — grouped output alone guarantees none.
+        final ResultSet rs = engine.executeQuery("""
             SELECT student, AVG(score) as avg_score FROM scores GROUP BY student HAVING AVG(score) >= 90
+            ORDER BY student
             """);
 
         assertNotNull(rs);
@@ -126,7 +109,7 @@ public class HavingTest {
         engine.execute("INSERT INTO transactions VALUES ('B', 75)");
 
         // Use alias in HAVING clause
-        ResultSet rs = engine.executeQuery("""
+        final ResultSet rs = engine.executeQuery("""
             SELECT acct_id, SUM(amount) as total_amount FROM transactions GROUP BY acct_id HAVING total_amount > 200
             """);
 
@@ -134,7 +117,7 @@ public class HavingTest {
         assertEquals(1, rs.getRows().size());
         assertEquals("A", rs.getRows().get(0).getValue(0));
         // SUM can return Long or Double
-        Number total = (Number) rs.getRows().get(0).getValue(1);
+        final Number total = (Number) rs.getRows().get(0).getValue(1);
         assertEquals(450.0, total.doubleValue(), 0.01);
     }
 
@@ -152,7 +135,7 @@ public class HavingTest {
         // Books: 10 + 15 = 25
         // Clothing: 8
         // All three match > 5
-        ResultSet rs = engine.executeQuery("""
+        final ResultSet rs = engine.executeQuery("""
             SELECT category, SUM(quantity) as total_qty, COUNT(*) as num_sales FROM sales_data GROUP BY category HAVING SUM(quantity) > 5
             """);
 
@@ -168,7 +151,7 @@ public class HavingTest {
         engine.execute("INSERT INTO numbers VALUES (30)");
 
         // Aggregate without GROUP BY, with HAVING
-        ResultSet rs = engine.executeQuery("SELECT COUNT(*) as total FROM numbers HAVING COUNT(*) > 2");
+        final ResultSet rs = engine.executeQuery("SELECT COUNT(*) as total FROM numbers HAVING COUNT(*) > 2");
 
         assertNotNull(rs);
         assertEquals(1, rs.getRows().size());
@@ -183,7 +166,7 @@ public class HavingTest {
         engine.execute("INSERT INTO items VALUES ('C', 3)");
 
         // HAVING that filters everything
-        ResultSet rs = engine.executeQuery("""
+        final ResultSet rs = engine.executeQuery("""
             SELECT category, SUM(count) as total FROM items GROUP BY category HAVING SUM(count) > 100
             """);
 

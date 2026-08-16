@@ -28,18 +28,18 @@ import javax.crypto.spec.GCMParameterSpec;
 import javax.crypto.spec.SecretKeySpec;
 
 public class Decrypt extends BuiltInFunction {
-    public Decrypt() { super("DECRYPT", BinaryType.BINARY); }
+    public Decrypt() { super("DECRYPT", BinaryType.VARBINARY); }
 
     @Override
     public Object evaluate(final List<Object> args) {
         if (args.get(0) == null || args.get(1) == null) return null;
         try {
-            byte[] key = Arrays.copyOf(
+            final byte[] key = Arrays.copyOf(
                 SharedFunctionHelpers.digest("SHA-256", SharedFunctionHelpers.toUtf8(args.get(1))), 32);
-            byte[] combined = SharedFunctionHelpers.binaryArgBytes(args.get(0), "DECRYPT");
-            byte[] iv  = Arrays.copyOf(combined, 12);
-            byte[] enc = Arrays.copyOfRange(combined, 12, combined.length);
-            Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
+            final byte[] combined = SharedFunctionHelpers.binaryArgBytes(args.get(0), "DECRYPT");
+            final byte[] iv  = Arrays.copyOf(combined, 12);
+            final byte[] enc = Arrays.copyOfRange(combined, 12, combined.length);
+            final Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
             cipher.init(Cipher.DECRYPT_MODE,
                 new SecretKeySpec(key, "AES"),
                 new GCMParameterSpec(128, iv));
@@ -52,6 +52,8 @@ public class Decrypt extends BuiltInFunction {
         }
     }
 
-    @Override public int getMinArgCount() { return 2; }
-    @Override public int getMaxArgCount() { return 3; }
+    @Override
+    public int getMinArgCount() { return 2; }
+    @Override
+    public int getMaxArgCount() { return 3; }
 }

@@ -81,6 +81,8 @@ public class RegexpSubstrAll extends TextArgumentFunction {
         return array.toString();
     }
 
-    @Override public int getMinArgCount() { return 2; }
-    @Override public int getMaxArgCount() { return 6; }
+    @Override
+    public int getMinArgCount() { return 2; }
+    @Override
+    public int getMaxArgCount() { return 6; }
 }

@@ -17,8 +17,12 @@
 package dev.frostlake.executor.commands;
 
 import dev.frostlake.executor.QueryExecutor;
-import dev.frostlake.metastore.*;
-import dev.frostlake.metastore.model.*;
+import dev.frostlake.metastore.Catalog;
+import dev.frostlake.metastore.model.ContainerType;
+import dev.frostlake.metastore.model.Database;
+import dev.frostlake.metastore.model.Privilege;
+import dev.frostlake.metastore.model.Schema;
+import dev.frostlake.metastore.model.Table;
 import dev.frostlake.parser.FrostlakeParser;
 import dev.frostlake.storage.StorageEngine;
 
@@ -74,7 +78,7 @@ public class CreateNamespaceHandler implements CommandHandler {
     }
 
     public Object handleCreateDatabase(final FrostlakeParser.CreateStatementContext ctx, final boolean ifNotExists) {
-        String dbName = getText(ctx.identifier(0));
+        final String dbName = getText(ctx.identifier(0));
         if (ctx.or_replace() != null) {
             try {
                 final Database replaced = catalog.getDatabase(dbName);
@@ -91,7 +95,7 @@ public class CreateNamespaceHandler implements CommandHandler {
         }
         try {
             if (ctx.CLONE() != null) {
-                String sourceDbName = getText(ctx.identifier(1));
+                final String sourceDbName = getText(ctx.identifier(1));
                 catalog.cloneDatabase(sourceDbName, dbName);
                 ddl.cloneDatabaseData(sourceDbName.toUpperCase(), dbName.toUpperCase());
                 logger.trace("Cloned database: {} from {}", dbName, sourceDbName);
@@ -100,8 +104,8 @@ public class CreateNamespaceHandler implements CommandHandler {
                 logger.trace("Created database: {}", dbName);
             }
 
-            Database db = catalog.getDatabase(dbName);
-            String comment = ddl.extractCommentFromList(ctx.commentClause());
+            final Database db = catalog.getDatabase(dbName);
+            final String comment = ddl.extractCommentFromList(ctx.commentClause());
             if (comment != null) db.setComment(comment);
             // Snowflake activates a newly created database: it becomes the session's current
             // database, with PUBLIC as the current schema (live-verified).
@@ -114,8 +118,8 @@ public class CreateNamespaceHandler implements CommandHandler {
     }
 
     public Object handleCreateSchema(final FrostlakeParser.CreateStatementContext ctx, final boolean ifNotExists) {
-        String schemaName = getText(ctx.qualifiedName(0));
-        String[] parts = qualifiedNameParts(ctx.qualifiedName(0));
+        final String schemaName = getText(ctx.qualifiedName(0));
+        final String[] parts = qualifiedNameParts(ctx.qualifiedName(0));
         // A schema is contained by a database; creating one needs CREATE SCHEMA on that database.
         final String containerDb = parts.length == 2 ? parts[0] : catalog.getCurrentDatabase();
         if (containerDb != null) {
@@ -123,8 +127,8 @@ public class CreateNamespaceHandler implements CommandHandler {
         }
         if (ctx.or_replace() != null) {
             try {
-                String dbN = parts.length == 2 ? parts[0] : catalog.getCurrentDatabase();
-                String scN = parts.length == 2 ? parts[1] : parts[0];
+                final String dbN = parts.length == 2 ? parts[0] : catalog.getCurrentDatabase();
+                final String scN = parts.length == 2 ? parts[1] : parts[0];
                 if (dbN != null) {
                     final Schema replacedSchema = catalog.getDatabase(dbN).getSchema(scN);
                     if (replacedSchema != null) {
@@ -138,22 +142,22 @@ public class CreateNamespaceHandler implements CommandHandler {
             } catch (final RuntimeException ignored) {}
         }
         try {
-            Schema schema;
+            final Schema schema;
 
             if (ctx.CLONE() != null) {
-                String sourceSchemaName = getText(ctx.qualifiedName(1));
-                String[] sourceParts = qualifiedNameParts(ctx.qualifiedName(1));
+                final String sourceSchemaName = getText(ctx.qualifiedName(1));
+                final String[] sourceParts = qualifiedNameParts(ctx.qualifiedName(1));
 
-                String sourceDbName;
-                String sourceSchema;
-                String targetDbName;
-                String targetSchema;
+                final String sourceDbName;
+                final String sourceSchema;
+                final String targetDbName;
+                final String targetSchema;
 
                 if (parts.length == 1) {
                     if (catalog.getCurrentDatabase() == null) {
                         throw new RuntimeException("No database selected");
                     }
-                    Database db = catalog.getDatabase(catalog.getCurrentDatabase());
+                    final Database db = catalog.getDatabase(catalog.getCurrentDatabase());
 
                     if (sourceParts.length == 1) {
                         schema = db.cloneSchema(sourceParts[0], parts[0]);
@@ -165,17 +169,17 @@ public class CreateNamespaceHandler implements CommandHandler {
                         throw new RuntimeException("Source schema must be in current database when target is unqualified");
                     }
                 } else if (parts.length == 2) {
-                    Database db = catalog.getDatabase(parts[0]);
+                    final Database db = catalog.getDatabase(parts[0]);
 
                     if (sourceParts.length == 1) {
-                        Database sourceDb = catalog.getDatabase(catalog.getCurrentDatabase());
+                        final Database sourceDb = catalog.getDatabase(catalog.getCurrentDatabase());
                         schema = sourceDb.cloneSchemaTo(sourceParts[0], db, parts[1]);
                         sourceDbName = catalog.getCurrentDatabase().toUpperCase();
                         sourceSchema = sourceParts[0].toUpperCase();
                         targetDbName = parts[0].toUpperCase();
                         targetSchema = parts[1].toUpperCase();
                     } else if (sourceParts.length == 2) {
-                        Database sourceDb = catalog.getDatabase(sourceParts[0]);
+                        final Database sourceDb = catalog.getDatabase(sourceParts[0]);
                         schema = sourceDb.cloneSchemaTo(sourceParts[1], db, parts[1]);
                         sourceDbName = sourceParts[0].toUpperCase();
                         sourceSchema = sourceParts[1].toUpperCase();
@@ -207,7 +211,7 @@ public class CreateNamespaceHandler implements CommandHandler {
                 logger.trace("Created schema: {}", schemaName);
             }
 
-            String comment = ddl.extractCommentFromList(ctx.commentClause());
+            final String comment = ddl.extractCommentFromList(ctx.commentClause());
             if (comment != null) {
                 schema.setComment(comment);
             }

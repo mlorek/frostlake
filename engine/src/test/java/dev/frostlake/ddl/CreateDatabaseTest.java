@@ -33,7 +33,7 @@ public class CreateDatabaseTest extends BaseDatabaseTest {
     public void testCreateDatabase() {
         engine.execute("CREATE DATABASE new_db");
 
-        ResultSet databases = engine.showDatabases();
+        final ResultSet databases = engine.showDatabases();
         assertTrue(databases.getRowCount() > 0, "Should have at least one database");
     }
 
@@ -47,7 +47,7 @@ public class CreateDatabaseTest extends BaseDatabaseTest {
         engine.execute("CREATE DATABASE cdt_multi_1");
         engine.execute("CREATE DATABASE cdt_multi_2");
 
-        ResultSet databases = engine.executeQuery("SHOW DATABASES LIKE 'CDT_MULTI_%'");
+        final ResultSet databases = engine.executeQuery("SHOW DATABASES LIKE 'CDT_MULTI_%'");
         assertEquals(2, databases.getRowCount(), "Both created databases should be listed");
 
         // CREATE DATABASE activates the new database, so step back before dropping them.
@@ -60,7 +60,7 @@ public class CreateDatabaseTest extends BaseDatabaseTest {
     @Test
     public void testUseDatabaseAfterCreate() {
         engine.execute("CREATE DATABASE use_test_db");
-        ExecutionResult result = engine.execute("USE DATABASE use_test_db");
+        final ExecutionResult result = engine.execute("USE DATABASE use_test_db");
         assertTrue(result.isSuccess(), "Should be able to use newly created database");
     }
 }

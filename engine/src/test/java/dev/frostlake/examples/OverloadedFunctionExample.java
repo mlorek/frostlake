@@ -26,7 +26,7 @@ public class OverloadedFunctionExample {
 
     @Test
     public void demonstrateOverloadedFunctions() {
-        DatabaseEngine engine = new DatabaseEngine();
+        final DatabaseEngine engine = new DatabaseEngine();
 
         try {
             engine.execute("CREATE DATABASE demo_db");

@@ -18,8 +18,8 @@ package dev.frostlake.metastore;
 
 import java.time.Duration;
 import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
-import java.util.UUID;
 
 /**
  * Represents a single query execution in the query history
@@ -55,7 +55,9 @@ public class QueryHistory {
         this.warehouse = warehouse;
         this.user = user;
         this.role = role;
-        this.startTime = LocalDateTime.now();
+        // UTC wall time, the engine's session zone — AT(STATEMENT => …) time travel compares this
+        // against UTC-domain snapshot instants.
+        this.startTime = LocalDateTime.now(ZoneOffset.UTC);
         this.status = QueryStatus.RUNNING;
         this.executionTimeMs = 0;
         this.rowsProduced = 0;
@@ -74,9 +76,15 @@ public class QueryHistory {
         this.queryId = queryId;
     }
 
+    /** Set the kind from the PARSED statement — the constructor's text sniff stands only for
+     *  statements the parser refused. */
+    public void setQueryType(final StatementKind queryType) {
+        this.queryType = queryType;
+    }
+
     private StatementKind determineQueryType(final String query) {
         if (query == null) return StatementKind.UNKNOWN;
-        String upperQuery = query.trim().toUpperCase();
+        final String upperQuery = query.trim().toUpperCase();
 
         if (upperQuery.startsWith("SELECT")) return StatementKind.SELECT;
         if (upperQuery.startsWith("INSERT")) return StatementKind.INSERT;

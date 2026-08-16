@@ -84,8 +84,10 @@ public class DateTimeArithmeticOperatorTest extends BaseDatabaseTest {
 
     @Test
     public void datePlusIntervalPromotesToTimestamp() {
-        // Live-verified nuance: a DAY-or-finer interval promotes the DATE to TIMESTAMP (midnight),
-        // while MONTH/YEAR intervals preserve the DATE.
+        // Live-verified nuance, and it is SPELLING-SPECIFIC: with the unit as a KEYWORD after the
+        // string — the form used here — a DAY-or-finer interval promotes the DATE to TIMESTAMP
+        // (midnight), while MONTH/YEAR preserve the DATE. The other spelling does NOT agree for DAY:
+        // `d + INTERVAL '5 days'` stays a DATE. See IntervalArithmeticTypeTest for that half.
         assertEquals("2020-01-20T00:00", scalar("SELECT d + INTERVAL '5' DAY FROM t").toString());
         assertEquals("2020-02-15", scalar("SELECT d + INTERVAL '1' MONTH FROM t").toString());
         assertEquals("2021-01-15", scalar("SELECT d + INTERVAL '1' YEAR FROM t").toString());

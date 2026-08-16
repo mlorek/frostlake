@@ -17,20 +17,33 @@
 package dev.frostlake.features;
 
 import dev.frostlake.DatabaseEngine;
+import dev.frostlake.config.EngineConfig;
 import dev.frostlake.metastore.model.Stage;
 import dev.frostlake.metastore.model.StageFile;
 import dev.frostlake.metastore.model.StageType;
 import dev.frostlake.storage.ResultSet;
-import org.junit.jupiter.api.*;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 import java.io.IOException;
+import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
-
-import static org.junit.jupiter.api.Assertions.*;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.MethodOrderer;
+import org.junit.jupiter.api.Order;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInstance;
+import org.junit.jupiter.api.TestMethodOrder;
+import org.junit.jupiter.api.function.Executable;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 /**
  * Tests for STAGE functionality (local filesystem staging)
@@ -46,6 +59,9 @@ public class StagesTest {
     @BeforeAll
     public void setUp() throws IOException {
         engine = new DatabaseEngine();
+        // The tests point stages at local file:// directories - opt in to the affordance the
+        // default config refuses (a real account refuses those URLs).
+        engine.getConfig().setProperty(EngineConfig.PROP_STAGE_FILE_URL_ENABLED, "true");
         engine.execute("CREATE DATABASE IF NOT EXISTS test_db");
         engine.execute("USE DATABASE test_db");
         engine.execute("USE SCHEMA public");
@@ -65,19 +81,27 @@ public class StagesTest {
     public void tearDown() throws IOException {
         // Clean up test directory
         if (testStageDir != null && Files.exists(testStageDir)) {
-            Files.walk(testStageDir)
-                .sorted((final var a, final var b) -> b.compareTo(a)) // Delete files before directories
-                .forEach((final var path) -> {
-                    try {
-                        Files.delete(path);
-                    } catch (final IOException e) {
-                        logger.error("Failed to delete: {}", path, e);
-                    }
-                });
+            deleteRecursively(testStageDir);
         }
 
         if (engine != null) {
             engine.shutdown();
+        }
+    }
+
+    /** Depth-first delete: children before the directory that holds them. */
+    private void deleteRecursively(final Path path) throws IOException {
+        if (Files.isDirectory(path)) {
+            try (DirectoryStream<Path> children = Files.newDirectoryStream(path)) {
+                for (final Path child : children) {
+                    deleteRecursively(child);
+                }
+            }
+        }
+        try {
+            Files.delete(path);
+        } catch (final IOException e) {
+            logger.error("Failed to delete: {}", path, e);
         }
     }
 
@@ -86,7 +110,7 @@ public class StagesTest {
     public void testCreateStage() {
         engine.execute("CREATE STAGE my_stage URL = 'file://" + testStageDir + "'");
 
-        Stage stage = engine.getCatalog().getStage("my_stage");
+        final Stage stage = engine.getCatalog().getStage("my_stage");
         assertNotNull(stage);
         assertEquals("MY_STAGE", stage.getName());
         assertEquals(StageType.INTERNAL, stage.getType());
@@ -96,7 +120,7 @@ public class StagesTest {
     @Test
     @Order(2)
     public void testCreateStageWithOptions() {
-        Path csvStageDir = testStageDir.resolve("csv_stage");
+        final Path csvStageDir = testStageDir.resolve("csv_stage");
         try {
             Files.createDirectories(csvStageDir);
         } catch (final IOException e) {
@@ -110,7 +134,7 @@ public class StagesTest {
             COMMENT = 'CSV data stage'
             """.formatted(csvStageDir));
 
-        Stage stage = engine.getCatalog().getStage("csv_stage");
+        final Stage stage = engine.getCatalog().getStage("csv_stage");
         assertNotNull(stage);
         assertEquals("CSV", stage.getFileFormat());
         assertEquals("CSV data stage", stage.getComment());
@@ -119,7 +143,7 @@ public class StagesTest {
     @Test
     @Order(3)
     public void testListStage() {
-        ResultSet result = engine.executeQuery("LIST @my_stage");
+        final ResultSet result = engine.executeQuery("LIST @my_stage");
 
         assertNotNull(result);
         assertTrue(result.getRowCount() >= 3, "Should have at least 3 files");
@@ -137,10 +161,10 @@ public class StagesTest {
         boolean foundReport = false;
 
         while (result.next()) {
-            String fileName = (String) result.getValue("name");
-            if ("data1.csv".equals(fileName)) foundData1 = true;
-            if ("data2.csv".equals(fileName)) foundData2 = true;
-            if ("report.txt".equals(fileName)) foundReport = true;
+            final String fileName = (String) result.getValue("name");
+            if ("my_stage/data1.csv".equals(fileName)) foundData1 = true;
+            if ("my_stage/data2.csv".equals(fileName)) foundData2 = true;
+            if ("my_stage/report.txt".equals(fileName)) foundReport = true;
         }
 
         assertTrue(foundData1, "Should find data1.csv");
@@ -151,7 +175,7 @@ public class StagesTest {
     @Test
     @Order(4)
     public void testListStageWithPattern() {
-        ResultSet result = engine.executeQuery("LIST @my_stage PATTERN = '*.csv'");
+        final ResultSet result = engine.executeQuery("LIST @my_stage PATTERN = '.*\\.csv'");
 
         assertNotNull(result);
         assertTrue(result.getRowCount() >= 2, "Should have at least 2 CSV files");
@@ -159,7 +183,7 @@ public class StagesTest {
         // All files should be CSV
         result.reset();
         while (result.next()) {
-            String fileName = (String) result.getValue("name");
+            final String fileName = (String) result.getValue("name");
             assertTrue(fileName.endsWith(".csv"), "File should be CSV: " + fileName);
         }
     }
@@ -167,7 +191,7 @@ public class StagesTest {
     @Test
     @Order(5)
     public void testListEmptyStage() {
-        Path emptyStageDir = testStageDir.resolve("empty_stage");
+        final Path emptyStageDir = testStageDir.resolve("empty_stage");
         try {
             Files.createDirectories(emptyStageDir);
         } catch (final IOException e) {
@@ -175,7 +199,7 @@ public class StagesTest {
         }
 
         engine.execute("CREATE STAGE empty_stage URL = 'file://" + emptyStageDir + "'");
-        ResultSet result = engine.executeQuery("LIST @empty_stage");
+        final ResultSet result = engine.executeQuery("LIST @empty_stage");
 
         assertNotNull(result);
         assertEquals(0, result.getRowCount(), "Empty stage should have no files");
@@ -186,55 +210,71 @@ public class StagesTest {
     public void testDropStage() {
         engine.execute("DROP STAGE csv_stage");
 
-        assertThrows(RuntimeException.class, () -> {
-            engine.getCatalog().getStage("csv_stage");
+        assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                engine.getCatalog().getStage("csv_stage");
+                
+            }
         }, "Stage should not exist after DROP");
     }
 
     @Test
     @Order(7)
     public void testStageAlreadyExists() {
-        assertThrows(RuntimeException.class, () -> {
-            engine.getCatalog().createStage("my_stage", StageType.INTERNAL,
-                                           "file://" + testStageDir);
+        assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                engine.getCatalog().createStage("my_stage", StageType.INTERNAL,
+                                               "file://" + testStageDir);
+                
+            }
         }, "Should not allow creating stage with duplicate name");
     }
 
     @Test
     @Order(8)
     public void testDropNonExistentStage() {
-        assertThrows(RuntimeException.class, () -> {
-            engine.getCatalog().dropStage("nonexistent_stage");
+        assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                engine.getCatalog().dropStage("nonexistent_stage");
+                
+            }
         }, "Should fail when dropping non-existent stage");
     }
 
     @Test
     @Order(9)
     public void testListNonExistentStage() {
-        assertThrows(RuntimeException.class, () -> {
-            engine.getCatalog().getStage("nonexistent_stage");
+        assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                engine.getCatalog().getStage("nonexistent_stage");
+                
+            }
         }, "Should fail when getting non-existent stage");
     }
 
     @Test
     @Order(10)
     public void testStageFileOperations() throws IOException {
-        Stage stage = engine.getCatalog().getStage("my_stage");
+        final Stage stage = engine.getCatalog().getStage("my_stage");
 
         // Test file exists
         assertTrue(stage.fileExists("data1.csv"));
         assertFalse(stage.fileExists("nonexistent.csv"));
 
         // Test get file path
-        Path filePath = stage.getFilePath("data1.csv");
+        final Path filePath = stage.getFilePath("data1.csv");
         assertTrue(Files.exists(filePath));
 
         // Test list files
-        List<StageFile> files = stage.listFiles();
+        final List<StageFile> files = stage.listFiles();
         assertTrue(files.size() >= 3);
 
         // Test list files with pattern
-        List<StageFile> csvFiles = stage.listFiles("*.csv");
+        final List<StageFile> csvFiles = stage.listFiles("*.csv");
         assertTrue(csvFiles.size() >= 2);
         for (final StageFile file : csvFiles) {
             assertTrue(file.getName().endsWith(".csv"));
@@ -244,10 +284,10 @@ public class StagesTest {
     @Test
     @Order(11)
     public void testStagePutFile() throws IOException {
-        Stage stage = engine.getCatalog().getStage("my_stage");
+        final Stage stage = engine.getCatalog().getStage("my_stage");
 
         // Create a test file
-        Path tempFile = Files.createTempFile("test", ".txt");
+        final Path tempFile = Files.createTempFile("test", ".txt");
         Files.write(tempFile, "Test content".getBytes());
 
         // Put file into stage
@@ -263,10 +303,10 @@ public class StagesTest {
     @Test
     @Order(12)
     public void testStageGetFile() throws IOException {
-        Stage stage = engine.getCatalog().getStage("my_stage");
+        final Stage stage = engine.getCatalog().getStage("my_stage");
 
         // Get file from stage
-        Path destFile = Files.createTempFile("retrieved", ".csv");
+        final Path destFile = Files.createTempFile("retrieved", ".csv");
         stage.getFile("data1.csv", destFile);
 
         // Verify file was retrieved
@@ -280,29 +320,29 @@ public class StagesTest {
     @Test
     @Order(13)
     public void testStageRemoveFile() throws IOException {
-        Stage stage = engine.getCatalog().getStage("my_stage");
+        final Stage stage = engine.getCatalog().getStage("my_stage");
 
         // Create a test file in stage
-        Path testFile = testStageDir.resolve("to_delete.txt");
+        final Path testFile = testStageDir.resolve("to_delete.txt");
         Files.write(testFile, "Will be deleted".getBytes());
 
         assertTrue(stage.fileExists("to_delete.txt"));
 
         // Remove file
-        boolean removed = stage.removeFile("to_delete.txt");
+        final boolean removed = stage.removeFile("to_delete.txt");
         assertTrue(removed);
         assertFalse(stage.fileExists("to_delete.txt"));
 
         // Try to remove non-existent file
-        boolean removedAgain = stage.removeFile("to_delete.txt");
+        final boolean removedAgain = stage.removeFile("to_delete.txt");
         assertFalse(removedAgain);
     }
 
     @Test
     @Order(14)
     public void testMultipleStages() {
-        Path stage1Dir = testStageDir.resolve("stage1");
-        Path stage2Dir = testStageDir.resolve("stage2");
+        final Path stage1Dir = testStageDir.resolve("stage1");
+        final Path stage2Dir = testStageDir.resolve("stage2");
 
         try {
             Files.createDirectories(stage1Dir);
@@ -318,27 +358,27 @@ public class StagesTest {
         engine.execute("CREATE STAGE stage2 URL = 'file://" + stage2Dir + "'");
 
         // List stage1
-        ResultSet result1 = engine.executeQuery("LIST @stage1");
+        final ResultSet result1 = engine.executeQuery("LIST @stage1");
         assertEquals(1, result1.getRowCount());
         result1.next();
-        assertEquals("file1.txt", result1.getValue("name"));
+        assertEquals("stage1/file1.txt", result1.getValue("name"));
 
         // List stage2
-        ResultSet result2 = engine.executeQuery("LIST @stage2");
+        final ResultSet result2 = engine.executeQuery("LIST @stage2");
         assertEquals(1, result2.getRowCount());
         result2.next();
-        assertEquals("file2.txt", result2.getValue("name"));
+        assertEquals("stage2/file2.txt", result2.getValue("name"));
 
         // Verify stages are independent
-        Stage s1 = engine.getCatalog().getStage("stage1");
-        Stage s2 = engine.getCatalog().getStage("stage2");
+        final Stage s1 = engine.getCatalog().getStage("stage1");
+        final Stage s2 = engine.getCatalog().getStage("stage2");
         assertNotEquals(s1.getUrl(), s2.getUrl());
     }
 
     @Test
     @Order(15)
     public void testGetAllStages() {
-        List<Stage> stages = engine.getCatalog().getAllStages();
+        final List<Stage> stages = engine.getCatalog().getAllStages();
 
         // Should have my_stage, empty_stage, stage1, stage2
         assertTrue(stages.size() >= 4);

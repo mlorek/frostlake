@@ -52,63 +52,63 @@ public class OrderByTest extends BaseDatabaseTest {
 
     @Test
     public void testOrderByAscending() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT * FROM employees ORDER BY salary ASC"
         );
 
         assertEquals(6, result.getRowCount());
 
-        List<Row> rows = result.getRows();
+        final List<Row> rows = result.getRows();
         assertEquals(65000L, ((Number) rows.get(0).getValue(3)).longValue());
         assertEquals(95000L, ((Number) rows.get(5).getValue(3)).longValue());
     }
 
     @Test
     public void testOrderByDescending() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT * FROM employees ORDER BY age DESC"
         );
 
         assertEquals(6, result.getRowCount());
 
-        List<Row> rows = result.getRows();
+        final List<Row> rows = result.getRows();
         assertEquals(40L, ((Number) rows.get(0).getValue(4)).longValue());
     }
 
     @Test
     public void testOrderByMultipleColumns() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT * FROM employees ORDER BY department ASC, salary DESC"
         );
 
         assertEquals(6, result.getRowCount());
 
-        List<Row> rows = result.getRows();
+        final List<Row> rows = result.getRows();
         assertEquals("Engineering", rows.get(0).getValue(2).toString());
         assertEquals(95000L, ((Number) rows.get(0).getValue(3)).longValue());
     }
 
     @Test
     public void testOrderByWithWhere() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT * FROM employees WHERE salary > 70000 ORDER BY salary DESC"
         );
 
         assertEquals(4, result.getRowCount());
 
-        List<Row> rows = result.getRows();
+        final List<Row> rows = result.getRows();
         assertEquals(95000L, ((Number) rows.get(0).getValue(3)).longValue());
     }
 
     @Test
     public void testOrderByWithLimit() {
-        ResultSet result = engine.executeQuery(
+        final ResultSet result = engine.executeQuery(
             "SELECT * FROM employees ORDER BY salary DESC LIMIT 2"
         );
 
         assertEquals(2, result.getRowCount());
 
-        List<Row> rows = result.getRows();
+        final List<Row> rows = result.getRows();
         assertEquals(95000L, ((Number) rows.get(0).getValue(3)).longValue());
         assertEquals(90000L, ((Number) rows.get(1).getValue(3)).longValue());
     }

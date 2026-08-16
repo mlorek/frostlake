@@ -162,6 +162,8 @@ public class CortexSearchPreview extends BuiltInFunction {
         return hits.subList(0, Math.min(limit, hits.size()));
     }
 
-    @Override public int getMinArgCount() { return 2; }
-    @Override public int getMaxArgCount() { return 2; }
+    @Override
+    public int getMinArgCount() { return 2; }
+    @Override
+    public int getMaxArgCount() { return 2; }
 }

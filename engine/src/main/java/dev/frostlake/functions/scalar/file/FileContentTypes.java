@@ -112,7 +112,7 @@ public final class FileContentTypes {
         BY_EXTENSION.put("mov", "video/quicktime");
         BY_EXTENSION.put("avi", "video/x-msvideo");
         BY_EXTENSION.put("zip", "application/zip");
-        BY_EXTENSION.put("gz", "application/x-gzip");
+        BY_EXTENSION.put("gz", "application/gzip");
         BY_EXTENSION.put("tar", "application/x-tar");
         BY_EXTENSION.put("rar", "application/vnd.rar");
         BY_EXTENSION.put("7z", "application/x-7z-compressed");

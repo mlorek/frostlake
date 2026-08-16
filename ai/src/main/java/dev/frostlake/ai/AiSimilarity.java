@@ -46,6 +46,8 @@ public class AiSimilarity extends BuiltInFunction {
         return Double.valueOf(CosineSimilarity.of(a, b));
     }
 
-    @Override public int getMinArgCount() { return 2; }
-    @Override public int getMaxArgCount() { return 2; }
+    @Override
+    public int getMinArgCount() { return 2; }
+    @Override
+    public int getMaxArgCount() { return 2; }
 }

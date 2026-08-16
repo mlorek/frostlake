@@ -26,10 +26,6 @@ import java.time.LocalDateTime;
  */
 public class DynamicTable extends SqlObject {
 
-    public enum RefreshMode { AUTO, FULL, INCREMENTAL }
-    public enum Initialize { ON_CREATE, ON_SCHEDULE }
-    public enum State { RUNNING, SUSPENDED, FAILED }
-
     private final String query;
     private String targetLag;          // e.g. "1 minutes", "DOWNSTREAM"
     private String warehouse;

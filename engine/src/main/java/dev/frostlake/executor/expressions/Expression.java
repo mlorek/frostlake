@@ -16,7 +16,6 @@
 
 package dev.frostlake.executor.expressions;
 
-import dev.frostlake.storage.Row;
 
 /**
  * Base interface for all expression nodes in the AST

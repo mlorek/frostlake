@@ -18,6 +18,7 @@ package dev.frostlake.metastore.model;
 
 
 import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 import java.util.List;
 
 public class StreamRecord {
@@ -38,7 +39,9 @@ public class StreamRecord {
         this.changeType = changeType;
         this.isUpdate = isUpdate;
         this.rowId = rowId;
-        this.timestamp = LocalDateTime.now();
+        // UTC wall time, the engine's session zone — change-window comparisons read this beside
+        // UTC-domain statement clocks.
+        this.timestamp = LocalDateTime.now(ZoneOffset.UTC);
         this.sourceTable = sourceTable;
     }
 

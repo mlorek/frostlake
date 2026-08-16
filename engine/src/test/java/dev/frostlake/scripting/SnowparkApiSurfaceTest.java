@@ -30,8 +30,11 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
  * unchanged. Before these classes existed {@code collect()} handed back Frostlake's own storage row,
  * whose only accessor is {@code getValue(int)}, so {@code rows[0].getString(0)} did not compile at all.
  *
- * <p>These run embedded only: on live the same handler is compiled by Snowflake against the real
- * Snowpark, which is the thing being imitated rather than a second opinion on it.
+ * <p>On a live run the very same handler source is compiled by Snowflake against the REAL Snowpark, so
+ * every line here is a two-sided claim: a method the stub offers but Snowpark does not will not compile
+ * there, and a value the stub prints differently will not match. That is what makes this class the
+ * stub's specification rather than a description of it — so assert on values and on the vocabulary the
+ * real API prints, never on generated SQL text, which Snowpark builds its own way and never exposes.
  */
 public class SnowparkApiSurfaceTest extends BaseDatabaseTest {
 
@@ -89,33 +92,56 @@ public class SnowparkApiSurfaceTest extends BaseDatabaseTest {
             } }"""));
     }
 
-    /** schema() describes the result the way Snowpark names types, and StructType iterates. */
+    /**
+     * schema() describes the result in Snowpark's two vocabularies at once: {@code typeName()} is the
+     * type's CLASS name — {@code LongType}, not {@code Long} — while {@code toString()} matches it
+     * except for DECIMAL, the one type that carries parameters. Both live-verified.
+     */
     @Test
     public void schemaDescribesTheResult() {
         sampleRow();
-        assertEquals("ID:Long NAME:String PRICE:Decimal(10, 2) | size=3", call("sp_schema", """
+        assertEquals("ID:LongType=LongType NAME:StringType=StringType"
+            + " PRICE:DecimalType=Decimal(10, 2) | size=3", call("sp_schema", """
             import com.snowflake.snowpark_java.*;
             import com.snowflake.snowpark_java.types.*;
             class H { public String go(Session s) {
               StructType st = s.sql("SELECT id, name, price FROM sp_t").schema();
               StringBuilder b = new StringBuilder();
-              for (StructField f : st) b.append(f.name()).append(':').append(f.dataType().typeName()).append(' ');
+              for (StructField f : st) b.append(f.name()).append(':').append(f.dataType().typeName())
+                  .append('=').append(f.dataType().toString()).append(' ');
               return b.toString().trim() + " | size=" + st.size();
             } }"""));
     }
 
-    /** Functions and Column compose into the SQL they stand for, operands parenthesised. */
+    /**
+     * Functions and Column compose a predicate and a projection, used the only way the real API allows:
+     * handed to {@code filter} and {@code select}. Snowpark exposes no accessor for a Column's SQL —
+     * its {@code toString()} prints an internal expression tree — so the result rows, not the generated
+     * text, are what both sides can be held to.
+     */
     @Test
-    public void functionsAndColumnBuildSql() {
+    public void functionsAndColumnDriveFilterAndSelect() {
         sampleRow();
-        assertEquals("((price > 10) AND (name = 'alice')) -> ALICE", call("sp_fn", """
+        assertEquals("1:ALICE", call("sp_fn", """
             import com.snowflake.snowpark_java.*;
             import static com.snowflake.snowpark_java.Functions.*;
             class H { public String go(Session s) {
               Column c = col("price").gt(lit(10)).and(col("name").equal_to(lit("alice")));
-              Row[] r = s.sql("SELECT " + upper(col("name")).getSql() + " AS u FROM sp_t WHERE "
-                  + c.getSql()).collect();
-              return c.getSql() + " -> " + r[0].getString(0);
+              Row[] r = s.sql("SELECT * FROM sp_t").filter(c).select(upper(col("name")).as("u")).collect();
+              return r.length + ":" + r[0].getString(0);
+            } }"""));
+    }
+
+    /** A predicate the rows fail keeps none of them, through the same plan operations. */
+    @Test
+    public void aFilterThatMatchesNothingReturnsNoRows() {
+        sampleRow();
+        assertEquals("0", call("sp_fn_empty", """
+            import com.snowflake.snowpark_java.*;
+            import static com.snowflake.snowpark_java.Functions.*;
+            class H { public String go(Session s) {
+              Column c = col("name").equal_to(lit("nobody"));
+              return String.valueOf(s.sql("SELECT * FROM sp_t").where(c).collect().length);
             } }"""));
     }
 
@@ -127,20 +153,24 @@ public class SnowparkApiSurfaceTest extends BaseDatabaseTest {
             import com.snowflake.snowpark_java.*;
             import static com.snowflake.snowpark_java.Functions.*;
             class H { public String go(Session s) {
-              Row[] r = s.sql("SELECT " + lit("O'Brien").getSql() + " = 'O''Brien' AS same").collect();
+              Row[] r = s.sql("SELECT 'O''Brien' AS expected FROM sp_t")
+                  .select(lit("O'Brien").equal_to(col("expected")).as("same")).collect();
               return r[0].getBoolean(0) ? "1" : "0";
             } }"""));
     }
 
     /**
-     * A constant keeps its own class so {@code StringType s = DataTypes.StringType} compiles, and CAST
-     * renders the SQL name rather than the name Snowpark prints — {@code VARCHAR}, not {@code String}.
+     * A constant keeps its own class so {@code StringType s = DataTypes.StringType} compiles, and the
+     * three printed forms are the ones live prints: {@code typeName()} is the class name,
+     * {@code DecimalType.toString()} is the only one carrying parameters, and a StructField folds an
+     * unquoted name to upper case and names its type in the SHORT vocabulary ({@code Long}). The cast
+     * is checked by its result — {@code VARCHAR}, the SQL name, is not something the API will show us.
      */
     @Test
-    public void dataTypesKeepTheirClassAndTheirSqlName() {
+    public void dataTypesKeepTheirClassAndTheirPrintedForm() {
         sampleRow();
-        assertEquals("String/Decimal(10, 2)/StructField(id, Long, Nullable = false)/CAST(id AS VARCHAR)",
-            call("sp_types", """
+        assertEquals("StringType/DecimalType/Decimal(10, 2)"
+            + "/StructField(ID, Long, Nullable = false)/7", call("sp_types", """
             import com.snowflake.snowpark_java.*;
             import com.snowflake.snowpark_java.types.*;
             import static com.snowflake.snowpark_java.Functions.*;
@@ -148,7 +178,123 @@ public class SnowparkApiSurfaceTest extends BaseDatabaseTest {
               StringType st = DataTypes.StringType;
               DataType dec = DataTypes.createDecimalType(10, 2);
               StructField f = new StructField("id", DataTypes.LongType, false);
-              return st.typeName() + "/" + dec + "/" + f + "/" + col("id").cast(st).getSql();
+              Row[] r = s.sql("SELECT id FROM sp_t").select(col("id").cast(st).as("c")).collect();
+              return st.typeName() + "/" + dec.typeName() + "/" + dec + "/" + f + "/" + r[0].getString(0);
+            } }"""));
+    }
+
+    /** A quoted field name keeps its case AND its quotes, where an unquoted one is folded. */
+    @Test
+    public void aQuotedFieldNameIsKeptVerbatim() {
+        sampleRow();
+        assertEquals("MIXED/\"mixedName\"", call("sp_field", """
+            import com.snowflake.snowpark_java.*;
+            import com.snowflake.snowpark_java.types.*;
+            class H { public String go(Session s) {
+              return new StructField("mixed", DataTypes.StringType).name() + "/"
+                  + new StructField("\\"mixedName\\"", DataTypes.StringType).name();
+            } }"""));
+    }
+
+    /** The container types print their element types in the same class-name vocabulary. */
+    @Test
+    public void containerTypesPrintTheirElementType() {
+        sampleRow();
+        assertEquals("ArrayType/ArrayType[StringType]", call("sp_arr", """
+            import com.snowflake.snowpark_java.*;
+            import com.snowflake.snowpark_java.types.*;
+            class H { public String go(Session s) {
+              ArrayType a = DataTypes.createArrayType(DataTypes.StringType);
+              return a.typeName() + "/" + a;
+            } }"""));
+    }
+
+    /** Negation is spelled {@code unary_not()} on the real Column, not {@code not()}. */
+    @Test
+    public void negationIsSpelledUnaryNot() {
+        sampleRow();
+        assertEquals("false", call("sp_not", """
+            import com.snowflake.snowpark_java.*;
+            import static com.snowflake.snowpark_java.Functions.*;
+            class H { public String go(Session s) {
+              Row[] r = s.sql("SELECT ok FROM sp_t").select(col("ok").unary_not().as("n")).collect();
+              return String.valueOf(r[0].getBoolean(0));
+            } }"""));
+    }
+
+    /**
+     * The wider Column surface, used through a plan the way the real API requires. Every signature
+     * here was measured by reflection on the account before it was written, so this test compiles
+     * against the REAL Snowpark on a live run — which is the whole point: a method with the right
+     * name but the wrong parameter type would pass here and fail there.
+     */
+    @Test
+    public void theWiderColumnSurfaceWorks() {
+        sampleRow();
+        assertEquals("1:7:false:ALICE:true", call("sp_col2", """
+            import com.snowflake.snowpark_java.*;
+            import static com.snowflake.snowpark_java.Functions.*;
+            class H { public String go(Session s) {
+              DataFrame d = s.sql("SELECT * FROM sp_t");
+              Row[] r = d.filter(col("id").between(lit(1), lit(10)))
+                         .select(col("id"), col("id").unary_minus().as("neg"),
+                                 col("name").isNull().as("n"), upper(col("name")).as("u"),
+                                 col("id").equal_null(lit(7)).as("e")).collect();
+              return r.length + ":" + (-r[0].getInt(1)) + ":" + r[0].getBoolean(2)
+                   + ":" + r[0].getString(3) + ":" + r[0].getBoolean(4);
+            } }"""));
+    }
+
+    /** {@code getName()} answers a name for a plain column and nothing for a composed expression. */
+    @Test
+    public void aColumnKnowsItsNameOnlyWhenItHasOne() {
+        sampleRow();
+        assertEquals("\"NAME\"/absent", call("sp_colname", """
+            import com.snowflake.snowpark_java.*;
+            import static com.snowflake.snowpark_java.Functions.*;
+            class H { public String go(Session s) {
+              return col("name").getName().orElse("absent") + "/"
+                   + upper(col("name")).getName().orElse("absent");
+            } }"""));
+    }
+
+    /**
+     * The wider DataFrame surface — sort, limit, distinct, set operations and the row actions — each
+     * a PLAN operation that submits nothing until an action asks for rows.
+     */
+    @Test
+    public void theWiderDataFrameSurfaceWorks() {
+        engine.execute("CREATE OR REPLACE TABLE sp_n (n INTEGER)");
+        engine.execute("INSERT INTO sp_n VALUES (3), (1), (2), (2)");
+        assertEquals("1|3|3|1|4|2", call("sp_df2", """
+            import com.snowflake.snowpark_java.*;
+            import static com.snowflake.snowpark_java.Functions.*;
+            class H { public String go(Session s) {
+              DataFrame d = s.sql("SELECT n FROM sp_n");
+              int firstAsc = d.sort(col("n").asc()).first().get().getInt(0);
+              int distinct = d.distinct().collect().length;
+              int limited  = d.limit(3).collect().length;
+              int inter    = d.intersect(s.sql("SELECT 1 AS n")).collect().length;
+              long total   = d.union(s.sql("SELECT 9 AS n")).count();
+              int firstTwo = d.first(2).length;
+              return firstAsc + "|" + distinct + "|" + limited + "|" + inter + "|" + total
+                   + "|" + firstTwo;
+            } }"""));
+    }
+
+    /** withColumn appends, drop removes by name, and agg folds the whole frame. */
+    @Test
+    public void withColumnDropAndAggReshapeTheFrame() {
+        sampleRow();
+        assertEquals("1:14:1", call("sp_df3", """
+            import com.snowflake.snowpark_java.*;
+            import static com.snowflake.snowpark_java.Functions.*;
+            class H { public String go(Session s) {
+              DataFrame d = s.sql("SELECT id, name FROM sp_t");
+              Row[] wide = d.withColumn("twice", col("id").multiply(lit(2))).collect();
+              int thin = d.drop("name").collect()[0].size();
+              Row[] agg  = d.agg(count(col("id")).as("c")).collect();
+              return thin + ":" + wide[0].getInt(2) + ":" + agg[0].getInt(0);
             } }"""));
     }
 }

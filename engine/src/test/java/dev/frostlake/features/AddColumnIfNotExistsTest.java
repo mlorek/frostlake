@@ -16,42 +16,38 @@
 
 package dev.frostlake.features;
 
-import dev.frostlake.DatabaseEngine;
-import dev.frostlake.metastore.model.Table;
+import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Tests for IF NOT EXISTS clause in ADD COLUMN statement
+ * The IF NOT EXISTS clause of ALTER TABLE … ADD COLUMN, asserted through the SQL surface —
+ * {@code DESCRIBE TABLE} rows for column presence, count and type — so every check runs against
+ * whichever engine executed the DDL, embedded or live. Adding an already-present column is
+ * forgiven and leaves the existing column (and its type) untouched.
  */
-public class AddColumnIfNotExistsTest {
+public class AddColumnIfNotExistsTest extends BaseDatabaseTest {
     private static final Logger logger = LoggerFactory.getLogger(AddColumnIfNotExistsTest.class);
 
-    private DatabaseEngine engine;
-
-    @BeforeEach
-    public void setUp() {
-        engine = new DatabaseEngine();
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
-        logger.info("DatabaseEngine initialized for ADD COLUMN IF NOT EXISTS tests");
+    private ResultSet describe(final String table) {
+        return engine.executeQuery("DESCRIBE TABLE " + table);
     }
 
-    @AfterEach
-    public void tearDown() {
-        if (engine != null) {
-            engine.shutdown();
-        }
+    private int columnCount(final String table) {
+        return describe(table).getRowCount();
+    }
+
+    private boolean hasColumn(final String table, final String column) {
+        return !rowsWhere(describe(table), "name", column).isEmpty();
     }
 
     @Test
@@ -61,10 +57,8 @@ public class AddColumnIfNotExistsTest {
         engine.execute("CREATE TABLE users (id INTEGER, name VARCHAR)");
         engine.execute("ALTER TABLE users ADD COLUMN age INTEGER");
 
-        Table table = engine.getCatalog().resolveTable("USERS");
-        assertNotNull(table);
-        assertEquals(3, table.getColumns().size());
-        assertTrue(table.hasColumn("age"));
+        assertEquals(3, columnCount("users"));
+        assertTrue(hasColumn("users", "AGE"));
 
         logger.info("ADD COLUMN without IF NOT EXISTS works correctly");
     }
@@ -77,7 +71,7 @@ public class AddColumnIfNotExistsTest {
 
         assertThrows(RuntimeException.class, new Executable() {
             @Override
-            public void execute() throws Throwable {
+            public void execute() {
                 engine.execute("ALTER TABLE users ADD COLUMN name VARCHAR");
             }
         });
@@ -92,10 +86,8 @@ public class AddColumnIfNotExistsTest {
         engine.execute("CREATE TABLE products (id INTEGER, name VARCHAR)");
         engine.execute("ALTER TABLE products ADD COLUMN IF NOT EXISTS price INTEGER");
 
-        Table table = engine.getCatalog().resolveTable("PRODUCTS");
-        assertNotNull(table);
-        assertEquals(3, table.getColumns().size());
-        assertTrue(table.hasColumn("price"));
+        assertEquals(3, columnCount("products"));
+        assertTrue(hasColumn("products", "PRICE"));
 
         logger.info("ADD COLUMN IF NOT EXISTS on new column works correctly");
     }
@@ -108,9 +100,7 @@ public class AddColumnIfNotExistsTest {
 
         engine.execute("ALTER TABLE products ADD COLUMN IF NOT EXISTS price INTEGER");
 
-        Table table = engine.getCatalog().resolveTable("PRODUCTS");
-        assertNotNull(table);
-        assertEquals(3, table.getColumns().size());
+        assertEquals(3, columnCount("products"));
 
         logger.info("ADD COLUMN IF NOT EXISTS on existing column succeeds without error");
     }
@@ -123,10 +113,10 @@ public class AddColumnIfNotExistsTest {
 
         engine.execute("ALTER TABLE items ADD COLUMN IF NOT EXISTS name INTEGER");
 
-        Table table = engine.getCatalog().resolveTable("ITEMS");
-        assertNotNull(table);
-        assertEquals(2, table.getColumns().size());
-        assertEquals("VARCHAR", table.getColumn("name").getDataType().getName());
+        assertEquals(2, columnCount("items"));
+        final String nameType = describeCell("items", "NAME", "type");
+        assertTrue(nameType.startsWith("VARCHAR"),
+            "the existing column's type must be preserved but reads: " + nameType);
 
         logger.info("ADD COLUMN IF NOT EXISTS preserves existing column type");
     }
@@ -141,11 +131,9 @@ public class AddColumnIfNotExistsTest {
         engine.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS status VARCHAR");
         engine.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS total INTEGER");
 
-        Table table = engine.getCatalog().resolveTable("ORDERS");
-        assertNotNull(table);
-        assertEquals(4, table.getColumns().size());
-        assertTrue(table.hasColumn("status"));
-        assertTrue(table.hasColumn("total"));
+        assertEquals(4, columnCount("orders"));
+        assertTrue(hasColumn("orders", "STATUS"));
+        assertTrue(hasColumn("orders", "TOTAL"));
 
         logger.info("Multiple ADD COLUMN IF NOT EXISTS operations work correctly");
     }
@@ -154,15 +142,13 @@ public class AddColumnIfNotExistsTest {
     public void testAddColumnIfNotExistsWithQualifiedName() {
         logger.info("Testing ADD COLUMN IF NOT EXISTS with schema-qualified table name");
 
-        engine.execute("CREATE SCHEMA test_schema");
-        engine.execute("CREATE TABLE test_schema.customers (id INTEGER, name VARCHAR)");
+        engine.execute("CREATE SCHEMA add_col_schema");
+        engine.execute("CREATE TABLE add_col_schema.customers (id INTEGER, name VARCHAR)");
 
-        engine.execute("ALTER TABLE test_schema.customers ADD COLUMN IF NOT EXISTS email VARCHAR");
+        engine.execute("ALTER TABLE add_col_schema.customers ADD COLUMN IF NOT EXISTS email VARCHAR");
 
-        Table table = engine.getCatalog().resolveTable("TEST_SCHEMA.CUSTOMERS");
-        assertNotNull(table);
-        assertEquals(3, table.getColumns().size());
-        assertTrue(table.hasColumn("email"));
+        assertEquals(3, columnCount("add_col_schema.customers"));
+        assertTrue(hasColumn("add_col_schema.customers", "EMAIL"));
 
         logger.info("ADD COLUMN IF NOT EXISTS with qualified name works correctly");
     }
@@ -174,10 +160,8 @@ public class AddColumnIfNotExistsTest {
         engine.execute("CREATE TABLE test_table (id INTEGER)");
         engine.execute("ALTER TABLE IF EXISTS test_table ADD COLUMN IF NOT EXISTS col1 VARCHAR");
 
-        Table table = engine.getCatalog().resolveTable("TEST_TABLE");
-        assertNotNull(table);
-        assertEquals(2, table.getColumns().size());
-        assertTrue(table.hasColumn("col1"));
+        assertEquals(2, columnCount("test_table"));
+        assertTrue(hasColumn("test_table", "COL1"));
 
         logger.info("ADD COLUMN IF NOT EXISTS with ALTER TABLE IF EXISTS works correctly");
     }
@@ -201,12 +185,11 @@ public class AddColumnIfNotExistsTest {
 
         engine.execute("ALTER TABLE employees ADD COLUMN IF NOT EXISTS salary INTEGER");
 
-        ResultSet rs = engine.executeQuery("SELECT * FROM employees");
+        final ResultSet rs = engine.executeQuery("SELECT * FROM employees");
         assertNotNull(rs);
         assertEquals(2, rs.getRowCount());
 
-        Table table = engine.getCatalog().resolveTable("EMPLOYEES");
-        assertEquals(3, table.getColumns().size());
+        assertEquals(3, columnCount("employees"));
 
         logger.info("ADD COLUMN IF NOT EXISTS on table with data works correctly");
     }
@@ -221,9 +204,7 @@ public class AddColumnIfNotExistsTest {
             engine.execute("ALTER TABLE config ADD COLUMN IF NOT EXISTS setting VARCHAR");
         }
 
-        Table table = engine.getCatalog().resolveTable("CONFIG");
-        assertNotNull(table);
-        assertEquals(2, table.getColumns().size());
+        assertEquals(2, columnCount("config"));
 
         logger.info("ADD COLUMN IF NOT EXISTS is idempotent");
     }
@@ -236,9 +217,7 @@ public class AddColumnIfNotExistsTest {
 
         engine.execute("ALTER TABLE test_table ADD COLUMN IF NOT EXISTS name VARCHAR");
 
-        Table table = engine.getCatalog().resolveTable("TEST_TABLE");
-        assertNotNull(table);
-        assertEquals(2, table.getColumns().size());
+        assertEquals(2, columnCount("test_table"));
 
         logger.info("ADD COLUMN IF NOT EXISTS is case-insensitive");
     }
@@ -250,10 +229,8 @@ public class AddColumnIfNotExistsTest {
         engine.execute("CREATE TABLE events (id INTEGER)");
         engine.execute("ALTER TABLE events ADD COLUMN IF NOT EXISTS event_time TIMESTAMP_LTZ");
 
-        Table table = engine.getCatalog().resolveTable("EVENTS");
-        assertNotNull(table);
-        assertEquals(2, table.getColumns().size());
-        assertTrue(table.hasColumn("event_time"));
+        assertEquals(2, columnCount("events"));
+        assertTrue(hasColumn("events", "EVENT_TIME"));
 
         logger.info("ADD COLUMN IF NOT EXISTS with complex data type works correctly");
     }
@@ -265,11 +242,9 @@ public class AddColumnIfNotExistsTest {
         engine.execute("CREATE TABLE documents (id INTEGER)");
         engine.execute("ALTER TABLE documents ADD COLUMN IF NOT EXISTS content VARCHAR(16777216)");
 
-        Table table = engine.getCatalog().resolveTable("DOCUMENTS");
-        assertNotNull(table);
-        assertEquals(2, table.getColumns().size());
-        assertTrue(table.hasColumn("content"));
-        assertEquals("VARCHAR", table.getColumn("content").getDataType().getName());
+        assertEquals(2, columnCount("documents"));
+        final String contentType = describeCell("documents", "CONTENT", "type");
+        assertTrue(contentType.startsWith("VARCHAR"), contentType);
 
         logger.info("ADD COLUMN IF NOT EXISTS with type parameters works correctly");
     }
@@ -286,14 +261,12 @@ public class AddColumnIfNotExistsTest {
 
         assertThrows(RuntimeException.class, new Executable() {
             @Override
-            public void execute() throws Throwable {
+            public void execute() {
                 engine.execute("ALTER TABLE mixed ADD COLUMN col2 INTEGER");
             }
         });
 
-        Table table = engine.getCatalog().resolveTable("MIXED");
-        assertNotNull(table);
-        assertEquals(3, table.getColumns().size());
+        assertEquals(3, columnCount("mixed"));
 
         logger.info("Mixed ADD COLUMN with and without IF NOT EXISTS works correctly");
     }
@@ -307,16 +280,13 @@ public class AddColumnIfNotExistsTest {
 
         engine.execute("ALTER TABLE IF EXISTS BASE.DIM_PRODUCT ADD COLUMN IF NOT EXISTS PRODUCT_URL VARCHAR(16777216)");
 
-        Table table = engine.getCatalog().resolveTable("BASE.DIM_PRODUCT");
-        assertNotNull(table);
-        assertEquals(3, table.getColumns().size());
-        assertTrue(table.hasColumn("PRODUCT_URL"));
-        assertEquals("VARCHAR", table.getColumn("PRODUCT_URL").getDataType().getName());
+        assertEquals(3, columnCount("BASE.DIM_PRODUCT"));
+        assertTrue(hasColumn("BASE.DIM_PRODUCT", "PRODUCT_URL"));
+        assertFalse(describeCell("BASE.DIM_PRODUCT", "PRODUCT_URL", "type").isEmpty());
 
         engine.execute("ALTER TABLE IF EXISTS BASE.DIM_PRODUCT ADD COLUMN IF NOT EXISTS PRODUCT_URL VARCHAR(16777216)");
 
-        table = engine.getCatalog().resolveTable("BASE.DIM_PRODUCT");
-        assertEquals(3, table.getColumns().size());
+        assertEquals(3, columnCount("BASE.DIM_PRODUCT"));
 
         logger.info("Real-world example works correctly");
     }

@@ -35,6 +35,8 @@ public class CurrentDatabase extends BuiltInFunction {
         return catalog.getCurrentDatabase();
     }
 
-    @Override public int getMinArgCount() { return 0; }
-    @Override public int getMaxArgCount() { return 0; }
+    @Override
+    public int getMinArgCount() { return 0; }
+    @Override
+    public int getMaxArgCount() { return 0; }
 }

@@ -27,7 +27,7 @@ public class Factorial extends NumericArgumentFunction {
     @Override
     public Object evaluate(final List<Object> args) {
         if (args.get(0) == null) return null;
-        long n = ((Number) args.get(0)).longValue();
+        final long n = ((Number) args.get(0)).longValue();
         if (n < 0) throw new RuntimeException("FACTORIAL requires a non-negative integer");
         if (n > 20) throw new RuntimeException("FACTORIAL argument too large (max 20)");
         long result = 1;
@@ -35,6 +35,8 @@ public class Factorial extends NumericArgumentFunction {
         return result;
     }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return 1; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return 1; }
 }

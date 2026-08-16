@@ -55,7 +55,7 @@ public class ExecuteImmediateDollarQuotedTest extends BaseJdbcTest {
             """);
 
         // Verify table was created
-        ResultSet rs = statement.executeQuery("SHOW TABLES");
+        final ResultSet rs = statement.executeQuery("SHOW TABLES");
         assertTrue(rs.next(), "Table should be created");
         assertEquals("PRODUCTS", rs.getString("name"));
         rs.close();
@@ -70,7 +70,7 @@ public class ExecuteImmediateDollarQuotedTest extends BaseJdbcTest {
         statement.execute("EXECUTE IMMEDIATE $$INSERT INTO users VALUES (1, 'John O''Brien')$$");
 
         // Verify data was inserted (note: quote escaping is preserved from the INSERT statement)
-        ResultSet rs = statement.executeQuery("SELECT * FROM users");
+        final ResultSet rs = statement.executeQuery("SELECT * FROM users");
         assertTrue(rs.next(), "Should have data");
         assertEquals(1, rs.getInt("id"));
         // The INSERT statement itself has escaped quotes, so they remain escaped
@@ -86,7 +86,7 @@ public class ExecuteImmediateDollarQuotedTest extends BaseJdbcTest {
         statement.execute("INSERT INTO employees VALUES (2, 'Bob', 50000)");
 
         // Execute SELECT with dollar-quoted string
-        ResultSet rs = statement.executeQuery("EXECUTE IMMEDIATE $$SELECT * FROM employees WHERE salary > 60000$$");
+        final ResultSet rs = statement.executeQuery("EXECUTE IMMEDIATE $$SELECT * FROM employees WHERE salary > 60000$$");
 
         assertTrue(rs.next(), "Should have result");
         assertEquals("Alice", rs.getString("name"));
@@ -98,7 +98,7 @@ public class ExecuteImmediateDollarQuotedTest extends BaseJdbcTest {
     public void testExecuteImmediateWithComplexDollarQuotedSQL() throws SQLException {
         // Create procedure with EXECUTE IMMEDIATE using dollar-quoted string
         // Note: Using $$ in EXECUTE IMMEDIATE, but single quotes for procedure body
-        String sql = """
+        final String sql = """
             EXECUTE IMMEDIATE $$CREATE PROCEDURE calculate_bonus(emp_salary INTEGER) RETURNS INTEGER AS 'BEGIN RETURN emp_salary * 0.10; END'$$
             """;
 
@@ -117,7 +117,7 @@ public class ExecuteImmediateDollarQuotedTest extends BaseJdbcTest {
             """);
 
         // Verify table was created
-        ResultSet rs = statement.executeQuery("SHOW TABLES");
+        final ResultSet rs = statement.executeQuery("SHOW TABLES");
         boolean found = false;
         while (rs.next()) {
             if ("INVENTORY".equals(rs.getString("name"))) {
@@ -143,7 +143,7 @@ public class ExecuteImmediateDollarQuotedTest extends BaseJdbcTest {
             """);
 
         // Verify view was created and works
-        ResultSet rs = statement.executeQuery("SELECT * FROM high_value_orders");
+        final ResultSet rs = statement.executeQuery("SELECT * FROM high_value_orders");
         int count = 0;
         while (rs.next()) {
             count++;
@@ -172,10 +172,10 @@ public class ExecuteImmediateDollarQuotedTest extends BaseJdbcTest {
         statement.execute("EXECUTE IMMEDIATE $$CREATE TABLE test2 (id INTEGER)$$");
 
         // Verify both tables were created
-        ResultSet rs = statement.executeQuery("SHOW TABLES");
+        final ResultSet rs = statement.executeQuery("SHOW TABLES");
         int count = 0;
         while (rs.next()) {
-            String tableName = rs.getString("name");
+            final String tableName = rs.getString("name");
             if ("TEST1".equals(tableName) || "TEST2".equals(tableName)) {
                 count++;
             }
@@ -194,7 +194,7 @@ public class ExecuteImmediateDollarQuotedTest extends BaseJdbcTest {
         // Delete with dollar-quoted string
         statement.execute("EXECUTE IMMEDIATE $$DELETE FROM items WHERE id = 1$$");
 
-        ResultSet rs = statement.executeQuery("SELECT * FROM items");
+        final ResultSet rs = statement.executeQuery("SELECT * FROM items");
         assertTrue(rs.next(), "Should have data");
         assertEquals(2, rs.getInt("id"));
         assertFalse(rs.next(), "Should have only one row");
@@ -210,7 +210,7 @@ public class ExecuteImmediateDollarQuotedTest extends BaseJdbcTest {
         // Update with dollar-quoted string
         statement.execute("EXECUTE IMMEDIATE $$UPDATE prices SET amount = 200 WHERE id = 1$$");
 
-        ResultSet rs = statement.executeQuery("SELECT * FROM prices");
+        final ResultSet rs = statement.executeQuery("SELECT * FROM prices");
         assertTrue(rs.next(), "Should have data");
         assertEquals(200, rs.getInt("amount"));
         rs.close();

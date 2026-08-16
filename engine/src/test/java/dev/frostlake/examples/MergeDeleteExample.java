@@ -38,7 +38,7 @@ public class MergeDeleteExample {
 
     @Test
     public void demonstrateMergeDeleteOperations() {
-        DatabaseEngine engine = new DatabaseEngine();
+        final DatabaseEngine engine = new DatabaseEngine();
 
         try {
             engine.execute("CREATE DATABASE demo_db");
@@ -178,7 +178,7 @@ public class MergeDeleteExample {
 
     @Test
     public void demonstrateMergeDeleteUseCase() {
-        DatabaseEngine engine = new DatabaseEngine();
+        final DatabaseEngine engine = new DatabaseEngine();
 
         try {
             engine.execute("CREATE DATABASE demo_db");

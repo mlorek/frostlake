@@ -16,11 +16,9 @@
 
 package dev.frostlake.scripting;
 
-import dev.frostlake.DatabaseEngine;
+import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
 
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -32,23 +30,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
  * no-match-without-ELSE no-op. (This is distinct from CASE as an <em>expression</em>, which is covered by
  * the procedural-expression tests.)
  */
-public class CaseStatementTest {
-
-    private DatabaseEngine engine;
-
-    @BeforeEach
-    public void setUp() {
-        engine = new DatabaseEngine();
-        engine.execute("CREATE DATABASE test_db");
-        engine.execute("USE DATABASE test_db");
-    }
-
-    @AfterEach
-    public void tearDown() {
-        if (engine != null) {
-            engine.shutdown();
-        }
-    }
+public class CaseStatementTest extends BaseDatabaseTest {
 
     private int runReturningInt(final String block) {
         final ResultSet rs = engine.executeQuery(block);

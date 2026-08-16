@@ -18,7 +18,7 @@ package dev.frostlake.functions.scalar.hash;
 
 import dev.frostlake.functions.BuiltInFunction;
 import dev.frostlake.functions.scalar.SharedFunctionHelpers;
-import dev.frostlake.types.NumericType;
+import dev.frostlake.types.IntegerResultWidths;
 
 import java.util.List;
 
@@ -34,19 +34,28 @@ import java.util.List;
  * engine. HASH_AGG has the same limitation.
  */
 public class HashFn extends BuiltInFunction {
-    public HashFn() { super("HASH", NumericType.BIGINT); }
+    public HashFn() { super("HASH", IntegerResultWidths.WIDE_COUNTER); }
 
     @Override
     public Object evaluate(final List<Object> args) {
         long h = 0xcbf29ce484222325L;
         for (final Object arg : args) {
-            if (arg == null) { h ^= 0L; h *= 0x100000001b3L; continue; }
-            byte[] b = SharedFunctionHelpers.toUtf8(arg);
-            for (final byte v : b) { h ^= v; h *= 0x100000001b3L; }
+            if (arg == null) {
+                h ^= 0L;
+                h *= 0x100000001b3L;
+                continue;
+            }
+            final byte[] b = SharedFunctionHelpers.toUtf8(arg);
+            for (final byte v : b) {
+                h ^= v;
+                h *= 0x100000001b3L;
+            }
         }
         return h;
     }
 
-    @Override public int getMinArgCount() { return 1; }
-    @Override public int getMaxArgCount() { return Integer.MAX_VALUE; }
+    @Override
+    public int getMinArgCount() { return 1; }
+    @Override
+    public int getMaxArgCount() { return Integer.MAX_VALUE; }
 }

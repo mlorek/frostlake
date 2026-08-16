@@ -18,7 +18,6 @@ package dev.frostlake.jdbc;
 
 import java.sql.SQLException;
 import java.sql.Struct;
-import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
@@ -114,7 +113,7 @@ public class DirectStruct implements Struct {
      */
     public Map<String, Object> asMap() throws SQLException {
         checkFreed();
-        Map<String, Object> result = new LinkedHashMap<>();
+        final Map<String, Object> result = new LinkedHashMap<>();
         for (int i = 0; i < attributeNames.length; i++) {
             result.put(attributeNames[i], attributes[i]);
         }
@@ -134,7 +133,7 @@ public class DirectStruct implements Struct {
         if (freed) {
             return "DirectStruct{freed}";
         }
-        StringBuilder sb = new StringBuilder("DirectStruct{typeName='");
+        final StringBuilder sb = new StringBuilder("DirectStruct{typeName='");
         sb.append(typeName).append("', fields={");
         for (int i = 0; i < attributeNames.length; i++) {
             if (i > 0) {

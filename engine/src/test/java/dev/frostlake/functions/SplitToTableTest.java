@@ -16,75 +16,57 @@
 
 package dev.frostlake.functions;
 
-import dev.frostlake.DatabaseEngine;
+import dev.frostlake.BaseDatabaseTest;
 import dev.frostlake.storage.ResultSet;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
+
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Tests for SPLIT_TO_TABLE table function
+ * SPLIT_TO_TABLE splits a string into one row per part.
+ *
+ * <p>Its two parameters are DOCUMENTED as STRING and DELIMITER, and Snowflake does not accept either
+ * by name — {@code SPLIT_TO_TABLE(STRING => 'a,b', DELIMITER => ',')} is refused outright. This class
+ * was written against the named form and passed, which is the whole reason it is written positionally
+ * now: the engine had been accepting a spelling no account will run. Whether a table function takes
+ * {@code NAME => value} is a property of the FUNCTION — FLATTEN does, GENERATOR ignores what it cannot
+ * use, this one refuses — so the refusals below are asserted, not assumed.
  */
-public class SplitToTableTest {
-
-    private DatabaseEngine engine;
-
-    @BeforeEach
-    public void setUp() {
-        engine = new DatabaseEngine();
-        engine.execute("CREATE DATABASE IF NOT EXISTS test_db");
-        engine.execute("USE DATABASE test_db");
-        engine.execute("USE SCHEMA public");
-    }
-
-    @AfterEach
-    public void tearDown() {
-        if (engine != null) {
-            engine.shutdown();
-        }
-    }
+public class SplitToTableTest extends BaseDatabaseTest {
 
     @Test
     public void testBasicSplitWithCommaDelimiter() {
-        ResultSet result = engine.executeQuery(
-            "SELECT * FROM TABLE(SPLIT_TO_TABLE(STRING => 'apple,banana,cherry', DELIMITER => ','))"
-        );
-        assertNotNull(result);
+        final ResultSet result = engine.executeQuery(
+            "SELECT * FROM TABLE(SPLIT_TO_TABLE('apple,banana,cherry', ','))");
         assertEquals(3, result.getRowCount());
 
-        // Check columns
         assertEquals(3, result.getColumns().size());
         assertEquals("SEQ", result.getColumns().get(0).getName());
         assertEquals("INDEX", result.getColumns().get(1).getName());
         assertEquals("VALUE", result.getColumns().get(2).getName());
 
-        // Check first row
-        assertEquals(0L, result.getRows().get(0).getValue(0));
+        // SEQ numbers the INPUT RECORD, so all three rows share it and it starts at 1; INDEX is the
+        // 1-based position of the part.
+        assertEquals(1L, result.getRows().get(0).getValue(0));
         assertEquals(1L, result.getRows().get(0).getValue(1));
         assertEquals("apple", result.getRows().get(0).getValue(2));
 
-        // Check second row
         assertEquals(1L, result.getRows().get(1).getValue(0));
         assertEquals(2L, result.getRows().get(1).getValue(1));
         assertEquals("banana", result.getRows().get(1).getValue(2));
 
-        // Check third row
-        assertEquals(2L, result.getRows().get(2).getValue(0));
+        assertEquals(1L, result.getRows().get(2).getValue(0));
         assertEquals(3L, result.getRows().get(2).getValue(1));
         assertEquals("cherry", result.getRows().get(2).getValue(2));
     }
 
     @Test
     public void testSplitWithPipeDelimiter() {
-        ResultSet result = engine.executeQuery(
-            "SELECT * FROM TABLE(SPLIT_TO_TABLE(STRING => 'red|green|blue', DELIMITER => '|'))"
-        );
-        assertNotNull(result);
+        final ResultSet result = engine.executeQuery(
+            "SELECT * FROM TABLE(SPLIT_TO_TABLE('red|green|blue', '|'))");
         assertEquals(3, result.getRowCount());
         assertEquals("red", result.getRows().get(0).getValue(2));
         assertEquals("green", result.getRows().get(1).getValue(2));
@@ -93,10 +75,8 @@ public class SplitToTableTest {
 
     @Test
     public void testSplitWithSpaceDelimiter() {
-        ResultSet result = engine.executeQuery(
-            "SELECT * FROM TABLE(SPLIT_TO_TABLE(STRING => 'one two three', DELIMITER => ' '))"
-        );
-        assertNotNull(result);
+        final ResultSet result = engine.executeQuery(
+            "SELECT * FROM TABLE(SPLIT_TO_TABLE('one two three', ' '))");
         assertEquals(3, result.getRowCount());
         assertEquals("one", result.getRows().get(0).getValue(2));
         assertEquals("two", result.getRows().get(1).getValue(2));
@@ -105,10 +85,8 @@ public class SplitToTableTest {
 
     @Test
     public void testSplitWithMultiCharacterDelimiter() {
-        ResultSet result = engine.executeQuery(
-            "SELECT * FROM TABLE(SPLIT_TO_TABLE(STRING => 'alpha::beta::gamma', DELIMITER => '::'))"
-        );
-        assertNotNull(result);
+        final ResultSet result = engine.executeQuery(
+            "SELECT * FROM TABLE(SPLIT_TO_TABLE('alpha::beta::gamma', '::'))");
         assertEquals(3, result.getRowCount());
         assertEquals("alpha", result.getRows().get(0).getValue(2));
         assertEquals("beta", result.getRows().get(1).getValue(2));
@@ -117,32 +95,25 @@ public class SplitToTableTest {
 
     @Test
     public void testSplitEmptyString() {
-        ResultSet result = engine.executeQuery(
-            "SELECT * FROM TABLE(SPLIT_TO_TABLE(STRING => '', DELIMITER => ','))"
-        );
-        assertNotNull(result);
+        final ResultSet result = engine.executeQuery("SELECT * FROM TABLE(SPLIT_TO_TABLE('', ','))");
         assertEquals(1, result.getRowCount());
         assertEquals("", result.getRows().get(0).getValue(2));
     }
 
     @Test
     public void testSplitSingleValue() {
-        ResultSet result = engine.executeQuery(
-            "SELECT * FROM TABLE(SPLIT_TO_TABLE(STRING => 'onlyOne', DELIMITER => ','))"
-        );
-        assertNotNull(result);
+        final ResultSet result = engine.executeQuery(
+            "SELECT * FROM TABLE(SPLIT_TO_TABLE('onlyOne', ','))");
         assertEquals(1, result.getRowCount());
-        assertEquals(0L, result.getRows().get(0).getValue(0));
+        assertEquals(1L, result.getRows().get(0).getValue(0));
         assertEquals(1L, result.getRows().get(0).getValue(1));
         assertEquals("onlyOne", result.getRows().get(0).getValue(2));
     }
 
     @Test
     public void testSplitWithTrailingDelimiter() {
-        ResultSet result = engine.executeQuery(
-            "SELECT * FROM TABLE(SPLIT_TO_TABLE(STRING => 'a,b,c,', DELIMITER => ','))"
-        );
-        assertNotNull(result);
+        final ResultSet result = engine.executeQuery(
+            "SELECT * FROM TABLE(SPLIT_TO_TABLE('a,b,c,', ','))");
         assertEquals(4, result.getRowCount());
         assertEquals("a", result.getRows().get(0).getValue(2));
         assertEquals("b", result.getRows().get(1).getValue(2));
@@ -152,10 +123,8 @@ public class SplitToTableTest {
 
     @Test
     public void testSplitWithLeadingDelimiter() {
-        ResultSet result = engine.executeQuery(
-            "SELECT * FROM TABLE(SPLIT_TO_TABLE(STRING => ',a,b,c', DELIMITER => ','))"
-        );
-        assertNotNull(result);
+        final ResultSet result = engine.executeQuery(
+            "SELECT * FROM TABLE(SPLIT_TO_TABLE(',a,b,c', ','))");
         assertEquals(4, result.getRowCount());
         assertEquals("", result.getRows().get(0).getValue(2));
         assertEquals("a", result.getRows().get(1).getValue(2));
@@ -165,10 +134,8 @@ public class SplitToTableTest {
 
     @Test
     public void testSplitWithConsecutiveDelimiters() {
-        ResultSet result = engine.executeQuery(
-            "SELECT * FROM TABLE(SPLIT_TO_TABLE(STRING => 'a,,b,,c', DELIMITER => ','))"
-        );
-        assertNotNull(result);
+        final ResultSet result = engine.executeQuery(
+            "SELECT * FROM TABLE(SPLIT_TO_TABLE('a,,b,,c', ','))");
         assertEquals(5, result.getRowCount());
         assertEquals("a", result.getRows().get(0).getValue(2));
         assertEquals("", result.getRows().get(1).getValue(2));
@@ -177,13 +144,29 @@ public class SplitToTableTest {
         assertEquals("c", result.getRows().get(4).getValue(2));
     }
 
+    /** An EMPTY delimiter splits nowhere — the whole string comes back as a single row. */
+    @Test
+    public void anEmptyDelimiterDoesNotSplit() {
+        final ResultSet result = engine.executeQuery("SELECT * FROM TABLE(SPLIT_TO_TABLE('abc', ''))");
+        assertEquals(1, result.getRowCount());
+        assertEquals("abc", result.getRows().get(0).getValue(2));
+    }
+
+    /** A NULL on either side contributes NO rows — not an empty-string row. */
+    @Test
+    public void aNullStringOrDelimiterYieldsNoRows() {
+        assertEquals(0, engine.executeQuery(
+            "SELECT * FROM TABLE(SPLIT_TO_TABLE(NULL, ','))").getRowCount());
+        assertEquals(0, engine.executeQuery(
+            "SELECT * FROM TABLE(SPLIT_TO_TABLE('a,b', NULL))").getRowCount());
+    }
+
     @Test
     public void testSplitWithWhereClause() {
-        ResultSet result = engine.executeQuery("""
-            SELECT VALUE FROM TABLE(SPLIT_TO_TABLE(STRING => 'apple,banana,cherry', DELIMITER => ','))
+        final ResultSet result = engine.executeQuery("""
+            SELECT VALUE FROM TABLE(SPLIT_TO_TABLE('apple,banana,cherry', ','))
             WHERE INDEX > 1
             """);
-        assertNotNull(result);
         assertEquals(2, result.getRowCount());
         assertEquals("banana", result.getRows().get(0).getValue(0));
         assertEquals("cherry", result.getRows().get(1).getValue(0));
@@ -191,10 +174,8 @@ public class SplitToTableTest {
 
     @Test
     public void testSplitWithAlias() {
-        ResultSet result = engine.executeQuery(
-            "SELECT VALUE, INDEX FROM TABLE(SPLIT_TO_TABLE(STRING => 'x,y,z', DELIMITER => ',')) s"
-        );
-        assertNotNull(result);
+        final ResultSet result = engine.executeQuery(
+            "SELECT VALUE, INDEX FROM TABLE(SPLIT_TO_TABLE('x,y,z', ',')) s");
         assertEquals(3, result.getRowCount());
         assertEquals("x", result.getRows().get(0).getValue(0));
         assertEquals(1L, result.getRows().get(0).getValue(1));
@@ -206,55 +187,82 @@ public class SplitToTableTest {
 
     @Test
     public void testSplitWithOrderBy() {
-        ResultSet result = engine.executeQuery("""
-            SELECT VALUE FROM TABLE(SPLIT_TO_TABLE(STRING => 'zebra,apple,monkey', DELIMITER => ','))
+        final ResultSet result = engine.executeQuery("""
+            SELECT VALUE FROM TABLE(SPLIT_TO_TABLE('zebra,apple,monkey', ','))
             ORDER BY VALUE
             """);
-        assertNotNull(result);
         assertEquals(3, result.getRowCount());
         assertEquals("apple", result.getRows().get(0).getValue(0));
         assertEquals("monkey", result.getRows().get(1).getValue(0));
         assertEquals("zebra", result.getRows().get(2).getValue(0));
     }
 
+    // ---- the refusals ------------------------------------------------------------------------
+
+    /**
+     * No parameter may be passed by name, and the refusal reports the FIRST named one with its
+     * position in the argument list. The name is upper-cased however it was written, and a quoted one
+     * keeps its quotes.
+     */
     @Test
-    public void testSplitMissingStringParameter() {
-        RuntimeException exception = assertThrows(RuntimeException.class, () -> {
-            engine.executeQuery("SELECT * FROM TABLE(SPLIT_TO_TABLE(DELIMITER => ','))");
-        });
-        assertTrue(exception.getMessage().contains("STRING"));
+    public void aNamedArgumentIsRefused() {
+        refused("SELECT * FROM TABLE(SPLIT_TO_TABLE(STRING => 'a,b', DELIMITER => ','))",
+            "invalid argument for function [SPLIT_TO_TABLE] unexpected argument [STRING] at position 1,");
+        refused("SELECT * FROM TABLE(SPLIT_TO_TABLE(string => 'a,b'))",
+            "invalid argument for function [SPLIT_TO_TABLE] unexpected argument [STRING] at position 1,");
+        refused("SELECT * FROM TABLE(SPLIT_TO_TABLE(\"string\" => 'a,b'))",
+            "invalid argument for function [SPLIT_TO_TABLE] unexpected argument [\"STRING\"] at position 1,");
+        // A name after a positional argument is reported at ITS position, not at 1.
+        refused("SELECT * FROM TABLE(SPLIT_TO_TABLE('a,b', DELIMITER => ','))",
+            "invalid argument for function [SPLIT_TO_TABLE] unexpected argument [DELIMITER] at position 2,");
+        refused("SELECT * FROM TABLE(SPLIT_TO_TABLE('test', INVALID_PARAM => 'value'))",
+            "invalid argument for function [SPLIT_TO_TABLE] unexpected argument [INVALID_PARAM] at position 2,");
     }
 
+    /**
+     * Both arguments are required — there is no default delimiter. Live spells the three arity
+     * refusals three different ways, and the one-argument call is the odd one: it names the internal
+     * SPLIT rewrite the arguments were folded into, and carries no position at all.
+     */
     @Test
-    public void testSplitInvalidParameter() {
-        RuntimeException exception = assertThrows(RuntimeException.class, () -> {
-            engine.executeQuery(
-                "SELECT * FROM TABLE(SPLIT_TO_TABLE(STRING => 'test', INVALID_PARAM => 'value'))"
-            );
-        });
-        assertTrue(exception.getMessage().contains("Invalid argument"));
+    public void aCallWithoutExactlyTwoArgumentsIsRefused() {
+        assertEquals("SQL compilation error: error line 1 at position 20\n"
+            + "not enough arguments for function [SPLIT_TO_TABLE], expected 1, got 0",
+            messageOf("SELECT * FROM TABLE(SPLIT_TO_TABLE())"));
+        assertEquals("SQL compilation error: error line 0 at position -1\n"
+            + "not enough arguments for function [SPLIT('a,b,c' AS \"1\")], expected 2, got 1",
+            messageOf("SELECT * FROM TABLE(SPLIT_TO_TABLE('a,b,c'))"));
+        assertEquals("SQL compilation error: error line 1 at position 20\n"
+            + "too many arguments for function [SPLIT_TO_TABLE] expected 2, got 3",
+            messageOf("SELECT * FROM TABLE(SPLIT_TO_TABLE('a', ',', 'x'))"));
     }
 
+    /** Both parameters take a VARCHAR, and a number is refused rather than converted. */
     @Test
-    public void testSplitNoDelimiterDefaultsToComma() {
-        ResultSet result = engine.executeQuery(
-            "SELECT * FROM TABLE(SPLIT_TO_TABLE(STRING => 'a,b,c'))"
-        );
-        assertNotNull(result);
-        assertEquals(3, result.getRowCount());
-        assertEquals("a", result.getRows().get(0).getValue(2));
-        assertEquals("b", result.getRows().get(1).getValue(2));
-        assertEquals("c", result.getRows().get(2).getValue(2));
+    public void aNonStringArgumentIsRefused() {
+        assertEquals("SQL compilation error:\ninvalid type [NUMBER(3,0)] for parameter '1'",
+            messageOf("SELECT * FROM TABLE(SPLIT_TO_TABLE(123, ','))"));
+        assertEquals("SQL compilation error:\ninvalid type [NUMBER(1,0)] for parameter '2'",
+            messageOf("SELECT * FROM TABLE(SPLIT_TO_TABLE('1,2', 1))"));
     }
 
-    @Test
-    public void testSplitToTablePositionalArgs() {
-        // Positional form SPLIT_TO_TABLE(string, delimiter) — no NAME => bindings.
-        ResultSet result = engine.executeQuery(
-            "SELECT * FROM TABLE(SPLIT_TO_TABLE('apple,banana,cherry', ','))");
-        assertEquals(3, result.getRowCount());
-        assertEquals("apple", result.getRows().get(0).getValue(2));
-        assertEquals("banana", result.getRows().get(1).getValue(2));
-        assertEquals("cherry", result.getRows().get(2).getValue(2));
+    private void refused(final String sql, final String expectedDetail) {
+        assertEquals("SQL compilation error: error line 1 at position 20\n" + expectedDetail,
+            messageOf(sql), sql);
+    }
+
+    /** The root-cause message of a statement that must fail. */
+    private String messageOf(final String sql) {
+        final RuntimeException thrown = assertThrows(RuntimeException.class, new Executable() {
+            @Override
+            public void execute() {
+                engine.executeQuery(sql);
+            }
+        }, "Snowflake refuses this statement: " + sql);
+        Throwable root = thrown;
+        while (root.getCause() != null) {
+            root = root.getCause();
+        }
+        return String.valueOf(root.getMessage());
     }
 }
